@@ -75,6 +75,11 @@ class ProductionSettings(BaseSettings):
     # that ran tools (for sessions that live long enough that waiting for the end would
     # defer distillation indefinitely).
     UNIFY_TURN_STORAGE_REVIEWS: bool = False
+    # Library searches without query text: by default an empty query returns a sample of the
+    # library (newest first), which suits a model that wants to browse. Set true to reject an
+    # empty query with an actionable error instead, so the model must say what it is looking
+    # for (a task name, the words a docstring would use) before it sees any result.
+    UNIFY_REQUIRE_SEARCH_QUERY: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue

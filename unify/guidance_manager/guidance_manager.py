@@ -9,7 +9,7 @@ from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
 from ..common.stale_reason import StaleReason, merge_stale_reasons
 from ..common.text_search import rank_by_text
-from ..common.tool_outcome import ToolOutcome
+from ..common.tool_outcome import ToolErrorException, ToolOutcome
 from .base import BaseGuidanceManager
 from .builtins import ensure_seeded
 from .types.guidance import Guidance
@@ -338,6 +338,23 @@ class GuidanceManager(BaseGuidanceManager):
         references: Optional[Dict[str, str]] = None,
         k: int = 10,
     ) -> List[Guidance]:
+        if not any(str(v or "").strip() for v in (references or {}).values()):
+            from unify.settings import SETTINGS
+
+            if SETTINGS.UNIFY_REQUIRE_SEARCH_QUERY:
+                # An empty search would return the newest entries; with the flag the model
+                # must say what it is looking for first.
+                return ToolErrorException(
+                    {
+                        "error_kind": "missing_query",
+                        "message": (
+                            "references is required: no guidance was searched. Give the words "
+                            "a matching entry's title or content would contain, such as the "
+                            "task name or id this work is for, and call search again."
+                        ),
+                        "details": {"references": references, "k": k},
+                    },
+                ).payload
         rows = rank_by_text(
             self._rows(self._scope()),
             references,

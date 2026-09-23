@@ -26,6 +26,7 @@ from typing import (
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
 from ..common.text_search import SIMILARITY_FIELD, rank_by_text
+from ..common.tool_outcome import ToolErrorException
 from .activation import (
     ActivationSettings,
     activation,
@@ -2112,8 +2113,23 @@ class FunctionManager(BaseFunctionManager):
 
         # Soft models sometimes call search with ``{}`` / empty query during
         # discovery; an empty query has nothing to match, so return a plain
-        # catalogue sample instead.
+        # catalogue sample instead (or, with UNIFY_REQUIRE_SEARCH_QUERY, an error
+        # that asks for the query, so the model names what it is looking for).
         if not str(query or "").strip():
+            from unify.settings import SETTINGS
+
+            if SETTINGS.UNIFY_REQUIRE_SEARCH_QUERY:
+                return ToolErrorException(
+                    {
+                        "error_kind": "missing_query",
+                        "message": (
+                            "query is required: no functions were searched. Give the words a "
+                            "matching function's name or docstring would contain, such as the "
+                            "task name or id this work is for, and call search_functions again."
+                        ),
+                        "details": {"query": query, "n": n},
+                    },
+                ).payload
             return self.filter_functions(
                 filter=None,
                 offset=0,
