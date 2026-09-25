@@ -241,9 +241,9 @@ async def query_llm(
     Cost and observability
     ----------------------
     This performs a billable UniLLM call. Because it is built on
-    ``new_llm_client``, normal UniLLM caching, logging, cost tracking, event
-    hooks, spending limits, and billing attribution apply. Keep prompts compact
-    and use structured outputs when Python needs to branch on the result.
+    ``new_llm_client``, normal UniLLM caching, logging, cost tracking, and
+    event hooks apply. Keep prompts compact and use structured outputs when
+    Python needs to branch on the result.
 
     ### Choosing A Model For `query_llm(...)`
 
