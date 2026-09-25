@@ -301,7 +301,6 @@ Every session owns a pseudo-terminal. A passing session closes itself after ten 
 - **Execution**: Run via the python module to ensure path visibility:
   - `.venv/bin/python -m pre_commit run --all-files`
 - **When to run**: run pre-commit *before* committing so the hooks never surprise you.
-- On newly wrapped code, `black` and `add-trailing-comma` each rewrite the other's output once, so the hooks can fail twice before they pass. Re-stage and run them again until they pass; never bypass them.
 
 ## Dependencies
 - This project uses `uv` for dependency management.
@@ -1019,6 +1018,10 @@ pre-commit run --files <changed-files>   # or: pre-commit run --all-files
 ```
 
 3. Never bypass hooks: do not use `git commit -n` / `--no-verify`.
+
+On newly wrapped code, `black` and `add-trailing-comma` each rewrite the
+other's output once, so the hooks can fail twice before they pass. Re-stage
+and run them again until they pass.
 
 ## Formatting across multiple repos
 
