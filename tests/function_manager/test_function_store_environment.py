@@ -274,6 +274,30 @@ def test_get_sandbox_instance_empty_returns_empty_namespace(fm_factory):
     assert not any(attr for attr in dir(sandbox) if not attr.startswith("_"))
 
 
+@_handle_project
+@pytest.mark.asyncio
+async def test_actor_sandbox_can_call_promoted_functions(fm_factory):
+    """The actor hides promoted ids from its own FunctionManager's discovery;
+    the sandbox must still expose those functions under the namespace."""
+    from unify.actor.code_act_actor import CodeActActor
+
+    fm = fm_factory()
+    fm.add_functions(implementations=[_PY_ALPHA])
+    env = FunctionStoreEnvironment(fm, function_names=["alpha"])
+
+    actor = CodeActActor(environments=[env], function_manager=fm)
+    assert fm.exclude_compositional_ids == {env._func_metadata[0]["function_id"]}
+
+    out = await actor._session_executor.execute(
+        code="print(await functions.alpha(3))",
+        state_mode="stateless",
+        session_id=None,
+    )
+
+    assert out["error"] is None
+    assert "6" in str(out["stdout"])
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 6. Exclusion integration — tagged functions hidden from FM search
 # ────────────────────────────────────────────────────────────────────────────

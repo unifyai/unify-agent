@@ -122,22 +122,29 @@ class FunctionStoreEnvironment(BaseEnvironment):
         """
         ns_dict: Dict[str, Any] = {}
 
-        # Build filter to fetch all functions with callables.
-        names = [row["name"] for row in self._func_metadata if row.get("name")]
-        if not names:
+        # Load the promoted rows by id, not through filter_functions: the
+        # CodeActActor excludes these ids from the same FunctionManager's
+        # discovery reads, which would otherwise leave the namespace empty.
+        rows = [
+            (
+                row
+                if row.get("is_primitive")
+                else self._function_manager._get_log_by_function_id(
+                    function_id=row["function_id"],
+                    raise_if_missing=False,
+                )
+            )
+            for row in self._func_metadata
+            if row.get("function_id") is not None
+        ]
+        rows = [row for row in rows if row is not None]
+        if not rows:
             return SimpleNamespace()
 
-        name_clauses = [f"name == '{n}'" for n in names]
-        name_filter = " or ".join(name_clauses)
-
-        result = self._function_manager.filter_functions(
-            filter=name_filter,
-            _return_callable=True,
-            _namespace=ns_dict,
-            _also_return_metadata=True,
+        callables_list = self._function_manager._inject_callables_for_functions(
+            rows,
+            namespace=ns_dict,
         )
-
-        callables_list = result.get("callables", []) if isinstance(result, dict) else []
 
         # Build a SimpleNamespace from the injected callables.
         sandbox_ns = SimpleNamespace()
