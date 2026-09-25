@@ -38,9 +38,9 @@ unify shares the stance of [Prime Agent](https://github.com/PrimeIntellect-ai/pr
 `unify` and its LLM client `unillm` are sibling checkouts linked by an editable install:
 
 ```bash
-git clone https://github.com/unifyai/unify.git
+git clone https://github.com/unifyai/unify-agent.git
 git clone https://github.com/unifyai/unillm.git
-cd unify
+cd unify-agent
 uv sync --all-groups
 cp .env.example .env      # add your provider key
 ```

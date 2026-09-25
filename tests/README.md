@@ -306,6 +306,8 @@ This lets you browse **all logs from all worktrees** in one place (the main repo
 | Tests not found | Check that path exists and isn't in `EXCLUDE_DIRS` |
 | Permission denied | `chmod +x tests/*.sh` |
 | `--session-timeout` has no effect on macOS | `brew install coreutils` (provides `timeout`) |
+| `create window failed: fork failed: Device not configured` | The machine is out of pseudo-terminals, usually held by failed sessions from earlier runs: `kill_failed --all` |
+| Every model-reaching test fails with a 403 `Key limit exceeded` | The OpenRouter key hit its spending limit; the code is not at fault |
 
 ---
 

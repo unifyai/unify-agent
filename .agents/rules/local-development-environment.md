@@ -40,6 +40,7 @@ The script **always blocks** until all tests complete (or timeout), streaming pa
 
 - By default: One tmux session per *test*. All tests run concurrently (maximum speed).
 - With `-s`: One tmux session per *file*. Tests within a file run serially.
+- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/conversation_manager/domains/managers_utils.py`.
 
 **Examples:**
 ```bash
@@ -63,6 +64,8 @@ tests/parallel_run.sh --timeout 300 tests/function_manager/
 - If the script exits with code 1, failures were detected.
 - Do **NOT** inspect `tmux` panes directly.
 - **ALWAYS** read the corresponding log file in `logs/pytest/` for the failed session.
+- A test that fails only inside a large parallel run can be a load flake. Re-run it on its own before debugging it.
+- When every model-reaching test fails at once with `APIError(status=403)` and `Key limit exceeded`, the OpenRouter key has hit its spending limit. The code is not at fault.
 
 ### Log Directory Naming
 Log directories use a **datetime-prefixed format** for natural time-based ordering in the filesystem:
@@ -95,6 +98,8 @@ logs/pytest/
 - Run: `tests/kill_server.sh` to kill the entire tmux server for YOUR terminal.
 - For cross-terminal cleanup: `tests/kill_failed.sh --all` or `tests/kill_server.sh --all`
 
+Every session owns a pseudo-terminal. A passing session closes itself after ten seconds, but a failed one keeps its shell open until it is killed. macOS caps pseudo-terminals at `kern.tty.ptmx_max` (511 by default), so failed sessions left over from earlier runs, in any terminal, eventually make tmux fail with `create window failed: fork failed: Device not configured`. The error names whichever test was starting, so it reads like that test's failure. Check `ls /dev/ttys* | wc -l` before a big run; `tests/kill_failed.sh --all` frees what failed sessions hold without stopping anyone's running tests.
+
 ### Permissions
 - Use `required_permissions: ['all']` to ensure access to `.env` and log files.
 
@@ -103,6 +108,7 @@ logs/pytest/
 - **Execution**: Run via the python module to ensure path visibility:
   - `.venv/bin/python -m pre_commit run --all-files`
 - **When to run**: run pre-commit *before* committing so the hooks never surprise you.
+- On newly wrapped code, `black` and `add-trailing-comma` each rewrite the other's output once, so the hooks can fail twice before they pass. Re-stage and run them again until they pass; never bypass them.
 
 ## Dependencies
 - This project uses `uv` for dependency management.

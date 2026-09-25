@@ -5,10 +5,10 @@
 Unify depends on one sibling repository, the LLM client `unillm`. Clone both as siblings:
 
 ```bash
-git clone https://github.com/unifyai/unify.git
+git clone https://github.com/unifyai/unify-agent.git
 git clone https://github.com/unifyai/unillm.git
 
-cd unify
+cd unify-agent
 pip install uv && uv sync --all-groups
 cp .env.example .env      # add one LLM provider key
 ```

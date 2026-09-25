@@ -12,6 +12,8 @@ We *never* stub the LLM client. Tests always use a real LLM via `unillm.AsyncUni
 
 Never rely on sleeps to align events in tests. Always use the trigger helpers in `tests/async_helpers.py` to ensure each event occurs in the necessary order. This makes tests robust to significant timing differences between cached responses (milliseconds) and live LLM calls (up to a minute).
 
+Anchor a trigger on something that happens while a tool runs, not before or during an LLM call. Tools run for real in both a live run and a cached replay, so only LLM latency differs between the two: an event keyed to an LLM call lands at a different point on replay, and one that cancels a call mid-flight leaves no recording for the replay to hit.
+
 ## Symbolic ↔ Eval Spectrum
 
 Tests fall on a **spectrum** between two paradigms. Understanding where a test sits on this spectrum is essential for writing, debugging, and interpreting test results.
@@ -57,6 +59,8 @@ When `UNILLM_CACHE="true"` (the default), all LLM responses are cached:
 - After caching, both test types effectively verify that *symbolic logic has not regressed*
 - Tests run fast on CI (milliseconds vs seconds/minutes for real LLM calls)
 - To re-evaluate LLM behavior: delete `.cache.ndjson`, set `UNILLM_CACHE="false"`, or use `--no-cache`
+
+A test replays only if its LLM input is identical on every run, so nothing that varies between runs (a random or clock-derived value, rows read without an `ORDER BY`) may reach a prompt, a tool argument or a tool result. Canonical keying (`UNILLM_CACHE_KEYING=canonical`; the default is `exact`) scrubs ISO timestamps, UUIDs, hex runs of 32 or more characters and `/tmp` paths, but never plain numbers or shorter hex.
 
 ### The Cache Is Never the Problem
 

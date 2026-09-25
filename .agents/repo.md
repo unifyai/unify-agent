@@ -137,6 +137,16 @@ Beyond the shared git rules below: never use `git rebase -i` or `git add -i`
 (interactive flags don't work in non-interactive shells), and never edit
 `git config`.
 
+This code is `unifyai/unify-agent` on GitHub. `unifyai/unify` is a public,
+archived snapshot of the earlier hosted product's code, which the essays in
+`docs/writeups/` link to.
+
+`unillm` is installed editable from the sibling checkout `../unillm`, so every
+run here uses whatever that checkout holds; keep it on `main`. A change here
+that needs a unillm change is finished only when that unillm commit is on
+unillm's `main` on GitHub: before pushing, check
+`git -C ../unillm status -sb` for `[ahead N]`.
+
 ## Repo map
 
 ```

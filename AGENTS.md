@@ -150,6 +150,16 @@ Beyond the shared git rules below: never use `git rebase -i` or `git add -i`
 (interactive flags don't work in non-interactive shells), and never edit
 `git config`.
 
+This code is `unifyai/unify-agent` on GitHub. `unifyai/unify` is a public,
+archived snapshot of the earlier hosted product's code, which the essays in
+`docs/writeups/` link to.
+
+`unillm` is installed editable from the sibling checkout `../unillm`, so every
+run here uses whatever that checkout holds; keep it on `main`. A change here
+that needs a unillm change is finished only when that unillm commit is on
+unillm's `main` on GitHub: before pushing, check
+`git -C ../unillm status -sb` for `[ahead N]`.
+
 ## Repo map
 
 ```
@@ -223,6 +233,7 @@ The script **always blocks** until all tests complete (or timeout), streaming pa
 
 - By default: One tmux session per *test*. All tests run concurrently (maximum speed).
 - With `-s`: One tmux session per *file*. Tests within a file run serially.
+- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/conversation_manager/domains/managers_utils.py`.
 
 **Examples:**
 ```bash
@@ -246,6 +257,8 @@ tests/parallel_run.sh --timeout 300 tests/function_manager/
 - If the script exits with code 1, failures were detected.
 - Do **NOT** inspect `tmux` panes directly.
 - **ALWAYS** read the corresponding log file in `logs/pytest/` for the failed session.
+- A test that fails only inside a large parallel run can be a load flake. Re-run it on its own before debugging it.
+- When every model-reaching test fails at once with `APIError(status=403)` and `Key limit exceeded`, the OpenRouter key has hit its spending limit. The code is not at fault.
 
 ### Log Directory Naming
 Log directories use a **datetime-prefixed format** for natural time-based ordering in the filesystem:
@@ -278,6 +291,8 @@ logs/pytest/
 - Run: `tests/kill_server.sh` to kill the entire tmux server for YOUR terminal.
 - For cross-terminal cleanup: `tests/kill_failed.sh --all` or `tests/kill_server.sh --all`
 
+Every session owns a pseudo-terminal. A passing session closes itself after ten seconds, but a failed one keeps its shell open until it is killed. macOS caps pseudo-terminals at `kern.tty.ptmx_max` (511 by default), so failed sessions left over from earlier runs, in any terminal, eventually make tmux fail with `create window failed: fork failed: Device not configured`. The error names whichever test was starting, so it reads like that test's failure. Check `ls /dev/ttys* | wc -l` before a big run; `tests/kill_failed.sh --all` frees what failed sessions hold without stopping anyone's running tests.
+
 ### Permissions
 - Use `required_permissions: ['all']` to ensure access to `.env` and log files.
 
@@ -286,6 +301,7 @@ logs/pytest/
 - **Execution**: Run via the python module to ensure path visibility:
   - `.venv/bin/python -m pre_commit run --all-files`
 - **When to run**: run pre-commit *before* committing so the hooks never surprise you.
+- On newly wrapped code, `black` and `add-trailing-comma` each rewrite the other's output once, so the hooks can fail twice before they pass. Re-stage and run them again until they pass; never bypass them.
 
 ## Dependencies
 - This project uses `uv` for dependency management.
@@ -501,6 +517,10 @@ The public API for all state managers (`FunctionManager`, `GuidanceManager`) is 
 
 The prompts in each prompt builder file should focus on the high level usage patterns, general guidance to the LLM, and specifically how to reason about the **composition** of tools, which tool to use in which scenario with contrastive explanations etc. However, in order to have a fully modular design and maximise our separation of concerns, it's very important that we do **not** bloat these prompts with any purely tool-specific information. This belongs exclusively in the tool's unique docstring (which the LLM gets access to). If the guidance is about deciding between two tools or using these tools together for complex composite behaviour, then it belongs in the prompt for the high-level public method in `prompt_builders.py`. If it's purely tool-specific, then it belongs in the tools own docstring.
 
+## Tests That Guard the Prompts
+
+`tests/actor/code_act/test_prompt_builders.py` and `tests/conversation_manager/core/test_prompt_builders.py` pin phrases of the rendered prompts with exact substring asserts. Change a pinned phrase and its assert together, and keep each pinned phrase on one line of the prompt source: the source's line breaks survive into the rendered prompt, so re-wrapping a paragraph can split a phrase and fail the assert. `tests/test_prompt_token_budgets.py` caps the tokens every call pays for its system prompt and tool schemas; tighten its budget in the same change as a cut.
+
 Use this to decide which component owns what and where its jurisdiction ends. Keep manager docstrings implementation‑agnostic; this guide is only for high‑level routing and composition.
 
 ### ConversationManager
@@ -617,6 +637,8 @@ We *never* stub the LLM client. Tests always use a real LLM via `unillm.AsyncUni
 
 Never rely on sleeps to align events in tests. Always use the trigger helpers in `tests/async_helpers.py` to ensure each event occurs in the necessary order. This makes tests robust to significant timing differences between cached responses (milliseconds) and live LLM calls (up to a minute).
 
+Anchor a trigger on something that happens while a tool runs, not before or during an LLM call. Tools run for real in both a live run and a cached replay, so only LLM latency differs between the two: an event keyed to an LLM call lands at a different point on replay, and one that cancels a call mid-flight leaves no recording for the replay to hit.
+
 ## Symbolic ↔ Eval Spectrum
 
 Tests fall on a **spectrum** between two paradigms. Understanding where a test sits on this spectrum is essential for writing, debugging, and interpreting test results.
@@ -662,6 +684,8 @@ When `UNILLM_CACHE="true"` (the default), all LLM responses are cached:
 - After caching, both test types effectively verify that *symbolic logic has not regressed*
 - Tests run fast on CI (milliseconds vs seconds/minutes for real LLM calls)
 - To re-evaluate LLM behavior: delete `.cache.ndjson`, set `UNILLM_CACHE="false"`, or use `--no-cache`
+
+A test replays only if its LLM input is identical on every run, so nothing that varies between runs (a random or clock-derived value, rows read without an `ORDER BY`) may reach a prompt, a tool argument or a tool result. Canonical keying (`UNILLM_CACHE_KEYING=canonical`; the default is `exact`) scrubs ISO timestamps, UUIDs, hex runs of 32 or more characters and `/tmp` paths, but never plain numbers or shorter hex.
 
 ### The Cache Is Never the Problem
 
