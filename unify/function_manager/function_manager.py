@@ -25,7 +25,8 @@ from typing import (
 )
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
-from ..common.text_search import SIMILARITY_FIELD, rank_by_text
+from ..common.semantic_search import embed_ahead, rank_rows
+from ..common.text_search import SIMILARITY_FIELD
 from .activation import (
     ActivationSettings,
     activation,
@@ -144,8 +145,18 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# The fields a search query's words are looked for in, per function row.
+# The fields a search query's words are looked for in when search falls
+# back to word matching.
 SEARCHED_FUNCTION_FIELDS = ("name", "docstring", "metadata")
+
+
+def function_search_text(row: Dict[str, Any]) -> str:
+    """The text a function is embedded by: its name, signature and docstring."""
+    return (
+        f"Function Name: {row['name']}\n"
+        f"Signature: {row.get('argspec') or ''}\n"
+        f"Docstring: {row.get('docstring') or ''}"
+    )
 
 
 class _LineageTrackedFunction:
@@ -861,10 +872,10 @@ class FunctionManager(BaseFunctionManager):
         n: int,
         include_dormant: bool,
     ) -> List[Dict[str, Any]]:
-        """Order search results by word match × standing; drop the lapsed.
+        """Order search results by similarity × standing; drop the lapsed.
 
-        The match dominates (the activation term is capped in settings) and
-        backfilled rows — which matched nothing — keep their tail position.
+        Similarity dominates (the activation term is capped in settings) and
+        backfilled rows — which carry no similarity — keep their tail position.
         Primitives never drop out of scope: platform surface is not memory.
         Each surviving row is annotated with the components — ``_similarity``,
         ``_standing``, ``_retrieval_score`` — so the querying model sees WHY
@@ -1139,6 +1150,7 @@ class FunctionManager(BaseFunctionManager):
         entries_to_update: List[Dict[str, Any]] = []
         log_ids_to_update: List[int] = []
         log_id_to_name: Dict[int, str] = {}
+        search_texts: Dict[str, str] = {}
 
         # Sandbox namespace roots whose dotted calls should be recorded in
         # depends_on (e.g. "primitives.actor.act" → depends_on includes
@@ -1209,6 +1221,9 @@ class FunctionManager(BaseFunctionManager):
                     ],
                 }
 
+                search_texts[name] = function_search_text(
+                    {"name": name, "argspec": signature, "docstring": docstring},
+                )
                 if prior is not None:
                     # Update existing function
                     log_id = int(prior["function_id"])
@@ -1262,6 +1277,12 @@ class FunctionManager(BaseFunctionManager):
                     name = log_id_to_name.get(log_id)
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
+
+        embed_ahead(
+            text
+            for name, text in search_texts.items()
+            if results.get(name) in ("added", "updated")
+        )
 
         # Check for errors and raise if requested
         if raise_on_error:
@@ -2091,7 +2112,7 @@ class FunctionManager(BaseFunctionManager):
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
 
-    # 5. Text Search ---------------------------------------------------- #
+    # 5. Semantic Search ------------------------------------------------ #
     @functools.wraps(BaseFunctionManager.search_functions, updated=())
     def search_functions(
         self,
@@ -2125,7 +2146,7 @@ class FunctionManager(BaseFunctionManager):
             )
 
         # Overfetch so the activation pass has candidates to rank and drop:
-        # the text-match cut to `limit` happens before standing is known, and
+        # the similarity cut to `limit` happens before standing is known, and
         # a scope-filtered result set must still be able to fill n slots.
         activation_settings = self.activation_settings
         fetch_limit = (
@@ -2136,9 +2157,11 @@ class FunctionManager(BaseFunctionManager):
             if activation_settings.enabled
             else n
         )
-        results = rank_by_text(
-            self._rows(self._discovery_scope()),
-            {field: query for field in SEARCHED_FUNCTION_FIELDS},
+        candidates = self._rows(self._discovery_scope())
+        results = rank_rows(
+            candidates,
+            [(query, [function_search_text(row) for row in candidates])],
+            word_references={field: query for field in SEARCHED_FUNCTION_FIELDS},
             limit=fetch_limit,
             id_field="function_id",
             backfill=True,

@@ -1,7 +1,7 @@
 """
 Tests for action primitives in FunctionManager.
 
-Tests the primitives registry, the seeded ``primitives`` table, and text
+Tests the primitives registry, the seeded ``primitives`` table, and semantic
 search that includes both user-defined functions and action primitives.
 
 Primitives are seeded into the ``primitives`` table from the registry when a
@@ -268,7 +268,7 @@ def test_seeded_rows_resolve_to_runtime_callables(function_manager_factory):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 3. Text search with primitives tests
+# 3. Semantic search with primitives tests
 # ────────────────────────────────────────────────────────────────────────────
 
 

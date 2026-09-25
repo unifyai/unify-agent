@@ -65,7 +65,7 @@ To measure the actor on its own, without the conversation loop above it, hand it
 
 Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent; the conversation loop is what unify adds on top.
 
-Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `/help` inside the chat lists the few slash commands (attach a file, quit); `unify --debug` streams the runtime logs to the terminal.
+Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the embeddings cache, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `/help` inside the chat lists the few slash commands (attach a file, quit); `unify --debug` streams the runtime logs to the terminal.
 
 <details>
 <summary>Configuration</summary>
@@ -76,8 +76,9 @@ Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLit
 |---|---|
 | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | At least one provider key |
 | `UNIFY_MODEL`, `UNIFY_REASONING_EFFORT` | The default model (a unillm `model@provider` endpoint) and effort |
-| `UNIFY_HOME` | Where the store, environment and workspace live (default `~/.unify`) |
+| `UNIFY_HOME` | Where the store, embeddings cache, environment and workspace live (default `~/.unify`) |
 | `UNIFY_STORE_PATH` | An explicit path for the SQLite store |
+| `UNIFY_EMBED_MODEL` | The `<model>@openrouter` embedding model for skill search (default `openai/text-embedding-3-small@openrouter`) |
 | `UNILLM_CACHE` | Cache LLM responses locally; later runs replay identical calls |
 | `ASSISTANT_FIRST_NAME`, `USER_FIRST_NAME`, … | Optional identity for the assistant and its user |
 
@@ -171,7 +172,7 @@ Two libraries the actor consults before reaching for raw code:
 - **Functions**: executable Python with a docstring and pip dependencies, run in-process with dependencies ensured in the workspace environment.
 - **Guidance**: procedural how-to prose (walkthroughs, multi-step strategies), linked to the functions it composes.
 
-Search is a plain word match over names, docstrings, titles and content: the libraries are small enough that nothing heavier earns its place. Skills in the [Agent Skills](https://agentskills.io) format import as guidance through `scripts/skill_migration`.
+Search is semantic: functions (name, signature, docstring) and procedures (title, content) are embedded as they are written, with `openai/text-embedding-3-small` through OpenRouter and the same key as the LLM calls, and a query is ranked by cosine similarity, so a paraphrase finds a skill that words the task differently. Without an OpenRouter key search falls back to a plain word match, and the log says so. Skills in the [Agent Skills](https://agentskills.io) format import as guidance through `scripts/skill_migration`.
 
 ### The local store
 

@@ -20,7 +20,7 @@ Second, code is second-class. A script can only be found through its skill's des
 
 ## Two libraries, linked both ways
 
-In Unify, a stored function is a real catalogue entry: name, signature, docstring, and the implementation itself, found by a word search over its name and docstring. Guidance is a separate entry: a title and freeform prose. The link between them is explicit and many-to-many — guidance carries `function_ids`, functions carry the inverse `guidance_ids`, with foreign keys enforced both ways.
+In Unify, a stored function is a real catalogue entry: name, signature, docstring, and the implementation itself, indexed for semantic search. Guidance is a separate entry: a title and freeform prose. The link between them is explicit and many-to-many — guidance carries `function_ids`, functions carry the inverse `guidance_ids`, with foreign keys enforced both ways.
 
 <p align="center">
   <picture>
