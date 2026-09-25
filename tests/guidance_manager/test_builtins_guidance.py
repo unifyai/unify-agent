@@ -139,7 +139,7 @@ def test_default_library_surfaces_through_guidance_manager():
         assert len(full.content) > GUIDANCE_PREVIEW_CHARS
 
 
-def test_default_library_text_search():
+def test_default_library_semantic_search():
     gm = GuidanceManager()
 
     results = gm.search(

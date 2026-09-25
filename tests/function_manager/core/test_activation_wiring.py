@@ -1,6 +1,6 @@
 """Symbolic: search_functions ranks by standing and drops the lapsed.
 
-The text-ranking step is monkeypatched, so these tests pin the wiring —
+The ranking step is monkeypatched, so these tests pin the wiring —
 overfetch, activation ordering, scope dropout, include_dormant, primitive
 immunity, and the disabled master switch — without depending on what the
 store holds.
@@ -56,11 +56,11 @@ def _row(
 def _patch_search(monkeypatch: pytest.MonkeyPatch, rows: List[Dict[str, Any]]):
     calls: Dict[str, Any] = {}
 
-    def _fake(candidates, references, *, limit, id_field, backfill):
+    def _fake(candidates, terms, *, word_references, limit, id_field, backfill):
         calls["limit"] = limit
         return [dict(r) for r in rows]
 
-    monkeypatch.setattr(fm_module, "rank_by_text", _fake)
+    monkeypatch.setattr(fm_module, "rank_rows", _fake)
     # Search-hit bumps would write usage for rows that do not exist.
     monkeypatch.setattr(
         FunctionManager,

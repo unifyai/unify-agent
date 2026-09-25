@@ -6,7 +6,7 @@ Global pytest configuration for the Unify test suite.
 
 Sections:
   1. Imports and logging guard
-  2. Test stubs (DateTime)
+  2. Test stubs (DateTime, embeddings)
   3. Singleton isolation
   4. Command-line options
   5. Custom logging helpers
@@ -79,7 +79,7 @@ def pytest_report_header(config):
 
 
 # --------------------------------------------------------------------------- #
-# 2. Test stubs (DateTime)                                                    #
+# 2. Test stubs (DateTime, embeddings)                                        #
 # --------------------------------------------------------------------------- #
 
 _FIXED_DATETIME = datetime(2025, 6, 13, 12, 0, 0, tzinfo=timezone.utc)
@@ -145,6 +145,71 @@ def stub_external_deps(monkeypatch):
         "unify.common._async_tool.time_context.perf_counter",
         _static_perf_counter,
     )
+
+
+def _isolate_embeddings(monkeypatch, tmp_path) -> None:
+    """A private embeddings cache, and fallback warnings that fire afresh."""
+    from unify.common import embeddings, semantic_search
+
+    monkeypatch.setenv("UNIFY_EMBED_CACHE", str(tmp_path / "embeddings.sqlite"))
+    monkeypatch.setattr(semantic_search, "_REPORTED", set())
+    embeddings.reset()
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch, tmp_path):
+    """Embed from the deterministic concept space in ``tests.embedding_helpers``.
+
+    No network: the provider is replaced, the model is named apart from any
+    real one and the cache is private to the test.
+    """
+    from tests.embedding_helpers import FakeEmbeddings
+    from unify.common import embeddings
+
+    fake = FakeEmbeddings()
+    _isolate_embeddings(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNIFY_EMBED_MODEL", "test/concepts")
+    monkeypatch.setattr(embeddings, "_provider", lambda model: fake)
+    yield fake
+    embeddings.reset()
+
+
+@pytest.fixture
+def no_embedding_key(monkeypatch, tmp_path):
+    """The settings hold no OpenRouter key, and a request would fail the test."""
+    import requests
+    from pydantic import SecretStr
+    from unillm.settings import SETTINGS as UNILLM_SETTINGS
+    from unify.common import embeddings
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("no embeddings request may be sent without a key")
+
+    _isolate_embeddings(monkeypatch, tmp_path)
+    monkeypatch.delenv("UNIFY_EMBED_MODEL", raising=False)
+    monkeypatch.setattr(UNILLM_SETTINGS, "OPENROUTER_API_KEY", SecretStr(""))
+    monkeypatch.setattr(requests, "post", _refuse)
+    yield
+    embeddings.reset()
+
+
+@pytest.fixture
+def semantic_search_warnings(caplog):
+    """The warnings semantic search has logged so far in the test.
+
+    The ``unify`` logger does not propagate to the root logger, so the
+    capture handler is attached to it directly.
+    """
+    unify_logger = logging.getLogger("unify")
+    unify_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.WARNING, logger="unify.common.semantic_search")
+    yield lambda: [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "unify.common.semantic_search"
+        and record.levelno == logging.WARNING
+    ]
+    unify_logger.removeHandler(caplog.handler)
 
 
 # --------------------------------------------------------------------------- #

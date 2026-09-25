@@ -67,7 +67,8 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     ANTHROPIC_API_KEY: SecretStr = SecretStr("")
     DEEPSEEK_API_KEY: SecretStr = SecretStr("")
-    # OpenRouter — used for ``*@openrouter`` endpoints (the default model).
+    # OpenRouter — used for ``*@openrouter`` endpoints (the default model) and
+    # for the skill libraries' embeddings (``UNIFY_EMBED_MODEL``).
     OPENROUTER_API_KEY: SecretStr = SecretStr("")
     UNIFY_VALIDATE_LLM_PROVIDERS: bool = True
     # Storage review of a persistent session: by default it runs once, when the session

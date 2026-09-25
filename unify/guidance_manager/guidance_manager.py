@@ -8,7 +8,7 @@ from typing import Any, Dict, FrozenSet, List, Optional
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
 from ..common.stale_reason import StaleReason, merge_stale_reasons
-from ..common.text_search import rank_by_text
+from ..common.semantic_search import embed_ahead, rank_rows
 from ..common.tool_outcome import ToolOutcome
 from .base import BaseGuidanceManager
 from .builtins import ensure_seeded
@@ -215,6 +215,7 @@ class GuidanceManager(BaseGuidanceManager):
                 db.now_iso(),
             ),
         )
+        embed_ahead([g.title, g.content])
         return {
             "outcome": "guidance created successfully",
             "details": {"guidance_id": int(cursor.lastrowid)},
@@ -261,6 +262,9 @@ class GuidanceManager(BaseGuidanceManager):
                 )
             ]
         self._update_row(guidance_id, updates)
+        embed_ahead(
+            [str(updates[field]) for field in ("title", "content") if field in updates],
+        )
         return {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}}
 
     @staticmethod
@@ -338,9 +342,14 @@ class GuidanceManager(BaseGuidanceManager):
         references: Optional[Dict[str, str]] = None,
         k: int = 10,
     ) -> List[Guidance]:
-        rows = rank_by_text(
-            self._rows(self._scope()),
-            references,
+        candidates = self._rows(self._scope())
+        rows = rank_rows(
+            candidates,
+            [
+                (str(text), [str(row.get(field) or "") for row in candidates])
+                for field, text in (references or {}).items()
+            ],
+            word_references=references,
             limit=k,
             id_field="guidance_id",
             backfill=True,

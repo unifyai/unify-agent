@@ -325,24 +325,23 @@ class BaseFunctionManager(BaseStateManager):
         _also_return_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Search for functions whose name, docstring or metadata contain the
-        words of a query.
+        Search for functions by semantic similarity to a natural‑language query.
 
-        Matching is case-insensitive on whole words and their prefixes
-        (``parse`` also finds ``parser``), so describe the function in the
-        words its name and docstring would use rather than as a full
-        sentence. Results are ranked like memory, not just like an index:
-        the word match dominates, and a function's *standing* — how often and
-        how recently it has actually been used, judged against its own
-        usage rhythm — acts as the tiebreaker. Functions whose standing has
-        fully lapsed drop out of results entirely (they still exist and
-        still run; ``filter_functions``/``list_functions`` always see the
-        whole store, and ``include_dormant=True`` brings them back here).
-        Freshly stored functions surface normally: creation counts as a
-        first use.
+        A function is compared by the meaning of its name, signature and
+        docstring, so describe what you need done in your own words: a
+        paraphrase or synonym finds a function whose docstring words it
+        differently. Results are ranked like memory, not just like an
+        index: semantic similarity dominates, and a function's *standing* —
+        how often and how recently it has actually been used, judged against
+        its own usage rhythm — acts as the tiebreaker. Functions whose
+        standing has fully lapsed drop out of results entirely (they still
+        exist and still run; ``filter_functions``/``list_functions`` always
+        see the whole store, and ``include_dormant=True`` brings them back
+        here). Freshly stored functions surface normally: creation counts as
+        a first use.
 
         Every result carries the ranking components in the open:
-        ``_similarity`` (fraction of query words found, 0–1), ``_standing`` (usage-based
+        ``_similarity`` (semantic match, 0–1), ``_standing`` (usage-based
         memory strength, 0–1 — recency against the function's own rhythm ×
         log-saturating call count), and ``_retrieval_score`` (the combined
         rank, ``similarity × (floor + (1−floor) × standing)``), beside the
@@ -358,9 +357,9 @@ class BaseFunctionManager(BaseStateManager):
         Parameters
         ----------
         query : str, default ``""``
-            Words describing the desired function(s). An empty query is
-            allowed (soft models sometimes omit it during discovery) and
-            returns a broad sample of the catalogue rather than failing.
+            Natural‑language text describing the desired function(s). An empty
+            query is allowed (soft models sometimes omit it during discovery)
+            and returns a broad sample of the catalogue rather than failing.
         n : int, default ``5``
             Number of similar results to return.
         include_implementations : bool, default ``True``
@@ -387,7 +386,7 @@ class BaseFunctionManager(BaseStateManager):
         Returns
         -------
         list[dict[str, Any]] | list[Callable[..., Any]] | dict[str, Any]
-            - When ``_return_callable=False``: up to ``n`` results, best match first.
+            - When ``_return_callable=False``: up to ``n`` results ordered by similarity.
               Each element SHOULD include the fields of the ``Function`` model.
               When ``include_implementations=False``, the ``implementation`` field
               is omitted.

@@ -1,8 +1,8 @@
 """Plain word matching over rows fetched from the store.
 
-The skill libraries hold tens to hundreds of entries, so a search fetches
-every candidate row with SQL and ranks it here by how many query tokens it
-contains. Nothing heavier earns its place.
+Skill search ranks by meaning (:mod:`unify.common.semantic_search`); this is
+the ranking it falls back to when texts cannot be embedded, ordering the
+candidate rows by how many query tokens each contains.
 """
 
 from __future__ import annotations
@@ -82,13 +82,13 @@ def rank_by_text(
     )
 
     scored: list[tuple[int, int, int, dict[str, Any]]] = []
-    rest: list[tuple[Any, int, dict[str, Any]]] = []
+    rest: list[dict[str, Any]] = []
     for order, row in enumerate(rows):
         matched, hits = text_match(row, references) if references else (0, 0)
         if matched:
             scored.append((matched, hits, order, row))
         else:
-            rest.append((row.get(id_field) if id_field else None, order, row))
+            rest.append(row)
     scored.sort(key=lambda item: (-item[0], -item[1], item[2]))
 
     ranked: list[dict[str, Any]] = []
@@ -96,17 +96,31 @@ def rank_by_text(
         row[SIMILARITY_FIELD] = matched / total_tokens
         ranked.append(row)
     if backfill and len(ranked) < limit:
-        rest.sort(
-            key=lambda item: (
-                item[0] is None,
-                -item[0] if isinstance(item[0], int) else 0,
-                item[1],
-            ),
-        )
-        for _recency, _order, row in rest:
+        for row in newest_first(rest, id_field):
             row[SIMILARITY_FIELD] = 0.0
             ranked.append(row)
     return ranked[:limit]
 
 
-__all__ = ["SIMILARITY_FIELD", "query_tokens", "rank_by_text", "text_match"]
+def newest_first(
+    rows: Sequence[dict[str, Any]],
+    id_field: str | None,
+) -> list[dict[str, Any]]:
+    """``rows`` by descending integer ``id_field``, rows without one last,
+    ties in input order: the tail a search backfills its window with."""
+
+    def key(item: tuple[int, dict[str, Any]]) -> tuple[bool, int, int]:
+        index, row = item
+        value = row.get(id_field) if id_field else None
+        return (value is None, -value if isinstance(value, int) else 0, index)
+
+    return [row for _index, row in sorted(enumerate(rows), key=key)]
+
+
+__all__ = [
+    "SIMILARITY_FIELD",
+    "newest_first",
+    "query_tokens",
+    "rank_by_text",
+    "text_match",
+]

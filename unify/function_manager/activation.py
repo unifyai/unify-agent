@@ -26,7 +26,7 @@ come to mind. Three properties fall out, and they are the design:
 
 Every number lives in :class:`ActivationSettings` — a decision, never a
 call-site constant. Ranking caps the activation term (``similarity_floor``)
-so the query-word match dominates and standing acts as the tiebreaker;
+so semantic similarity dominates and standing acts as the tiebreaker;
 without the cap, usage-weighted retrieval feeds usage counts and an
 entrenched mediocre function shadows a better newcomer forever. The other
 half of that guard lives in the supersede path, which transfers the old
