@@ -1107,16 +1107,19 @@ class FunctionManager(BaseFunctionManager):
 
         results: Dict[str, str] = parse_errors
 
-        # Get existing functions for duplicate detection and dependency checking
+        # Get existing functions for duplicate detection and dependency checking.
+        # Read the whole store, not this instance's discovery scope: a function
+        # hidden by filter_scope or exclusions still owns its name and can
+        # still be called.
         try:
-            existing_functions = self.list_functions()
-            existing_names = set(existing_functions.keys())
+            existing_ids = self.list_function_name_to_ids()
+            existing_names = set(existing_ids)
             all_known_function_names = existing_names.union(temp_names)
         except Exception as e:
             logger.warning(
                 f"Failed to list existing functions for dependency check: {e}",
             )
-            existing_functions = {}
+            existing_ids = {}
             existing_names = set()
             all_known_function_names = temp_names
 
@@ -1188,7 +1191,7 @@ class FunctionManager(BaseFunctionManager):
                 prior = None
                 if name in existing_to_update:
                     prior = self._get_log_by_function_id(
-                        function_id=existing_functions[name]["function_id"],
+                        function_id=existing_ids[name],
                         raise_if_missing=True,
                     )
 
