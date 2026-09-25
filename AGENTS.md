@@ -814,262 +814,20 @@ git commit myfile.json -m "Add myfile"
 ### Reasoning
 Passing filenames to `git commit` bypasses the shared index for that specific commit operation, ensuring that Agent A only commits what it intends to, regardless of what Agent B has staged.
 
-## Rule: Push Only When Explicitly Asked
+## Rule: Push When the Work Lands
 
-Do **not** push commits unless the user explicitly asks you to. This includes all forms of pushing:
+Commit to `main` and push as the work lands, without waiting to be asked. An
+unpushed commit, or a branch nobody merges, is invisible to every other
+checkout and every other agent: a branch in `continual-arc-baselines` once
+drifted ten commits ahead of an untouched `main` before anyone noticed.
 
-- `git push`
-- `git push origin <branch>`
-- `git push --force` or `git push -f` (especially dangerous)
-- `git push --force-with-lease`
-
-### Reasoning
-Pushing affects shared remote state. The user must decide when and where to push. Force pushing is particularly dangerous as it rewrites remote history and can destroy other collaborators' work.
-
-### What To Do
-- Commit changes locally (following the explicit path commits rule above)
-- Inform the user that changes are committed and ready for them to push
-- If the user explicitly asks you to push, push to the **current branch** only (e.g., `git push origin HEAD`)
-- **Never** force push unless the user explicitly requests it and understands the consequences
-
-## Rule: Staging-First Promotion
-
-For repositories with a `staging` branch, **never open, retarget, auto-merge, or merge a feature/fix branch directly into `main` or `master`** unless the user explicitly says to bypass staging.
-
-Required flow:
-
-1. Land the change into `staging` first.
-2. Let the staging deployment/validation run.
-3. Promote with a `staging` -> `main`/`master` PR or merge.
-
-Before any PR creation, PR retarget, merge, or auto-merge command, verify and state the base/head:
-
-```bash
-gh pr view <number> --json baseRefName,headRefName
-```
-
-Allowed:
-
-- `feature-or-fix-branch` -> `staging`
-- `staging` -> `main`
-
-Forbidden unless explicitly approved by the user as a staging bypass:
-
-- `feature-or-fix-branch` -> `main`
-- `feature-or-fix-branch` -> `master`
-- enabling auto-merge on either forbidden pattern
-
-If a PR is already targeting `main`/`master` from a non-`staging` branch, stop before merging, disable auto-merge if it is enabled, and retarget/recreate the PR against `staging`.
-
-### Exception: `global-agent-rules` and `branding` have no `staging`
-
-Both repos retired the branch — `global-agent-rules` in `e9d3e9c` ("Drop the
-branch that was standing in for a check"), `branding` in August 2026. For each,
-`main` is the default and only branch, and is unprotected. Commit edits
-directly to `main`; staging-first does not apply, and neither does the
-`magic-marty` approval step, which exists to satisfy branch protection that
-these repos do not have.
-
-They are content repos consumed as submodules, not deployed services. A staging
-branch buys nothing when there is no environment to stage into: it only adds a
-promotion hop between writing a rule (or a brand spec) and the consuming repos
-being able to pin it.
-
-A stale clone still shows `origin/staging`, because a plain `git fetch` does
-not remove remote-tracking refs for deleted branches — and pushing that branch
-**recreates it on the remote** from stale content, while the usual "am I in
-sync?" check compares against the dead ref and cheerfully reports `0 0`. Run
-`git fetch --prune` (or `git ls-remote --heads origin`) before trusting any
-branch state there.
-
-After changing a rule, every consuming repo needs its submodule pointer bumped
-and `AGENTS.md` regenerated with
-`python3 .agents/global-rules/build_agents_md.py` — a pre-commit hook enforces
-freshness. The same applies to a `branding` edit: the consuming repo picks it
-up only when its `branding` pointer moves.
-
-## Rule: Agent PR Approval (`magic-marty`)
-
-`unifyai/*` repos enforce branch protection: every PR to `main` or `staging`
-requires at least one approving review from a Unify engineer **other than the
-author** (SOC 2 CC8.1 separation of duties). Detect the active author first:
-
-```bash
-gh api user --jq .login
-# or: gh auth status
-```
-
-When an agent authors a PR under that account, the approving review cannot come
-from the same account.
-
-The local `gh` CLI has two authenticated accounts:
-
-| Account | Role |
-|---|---|
-| `<author>` (from `gh api user --jq .login`) | Author — create PR, enable auto-merge, merge after approval |
-| `magic-marty` | Reviewer — approve only; satisfies the non-author review requirement |
-
-`magic-marty` is a GitHub service account (Security Lead accountable). Use it
-only for the approval step, not for authoring commits or opening PRs.
-
-### The org's machine accounts are not interchangeable
-
-`unifyai` has two, with deliberately different jobs. They are not a fallback
-for one another, and the names do not say which is which.
-
-| Account | Job | Access |
-|---|---|---|
-| `magic-marty` | **Approves PRs.** Nothing else. | Admin on the private repos |
-| `unify-dev-bot` | **CI automation** — clones private dependencies, dispatches cross-repo workflows, commits dependency bumps. Owns the `CLONE_TOKEN` secret. | Read on `brain`/`branding`, write where it must push |
-
-Never move CI credentials onto `magic-marty`. Its whole value is being a
-different principal from whoever authored the change — that is the separation
-of duties the branch protection exists to enforce. `CLONE_TOKEN` is shared by
-`unify`, `unillm` and `unify-deploy`, so putting it on an account that holds
-admin and can approve releases would mean one leaked CI secret could approve
-its own merge into `main`.
-
-Give `unify-dev-bot` the least access its job needs, and no more: an
-automation credential that can edit rulesets can switch off the release gates.
-It was dropped from admin to write on `unify-deploy` on 2026-08-14 for exactly
-that reason, after a check found nothing requiring admin — a repository
-dispatch, its only cross-repo write, needs write.
-
-`CLONE_TOKEN` is a classic PAT and has expired at least once, silently taking
-out private-dependency clones across three repos and self-host image
-publishing for ten days with nothing reporting it. If private clones start
-failing with `Repository not found` on a repo that plainly exists, suspect the
-token before the repo: GitHub answers 404 rather than 403 when a credential
-cannot see a private repository, so an expired, unauthorised, or
-wrong-account token looks exactly like a missing one.
-
-### `unify-dev-bot`'s credential already exists — find it before minting one
-
-The bot's PAT lives in **GCP Secret Manager as `DEVBOT_GITHUB_TOKEN`**: a
-classic PAT, `repo` scope, no expiry. Look there before hunting for the bot's
-*password*. On 2026-08-14 an engineer spent an afternoon on that hunt and
-minted a redundant second PAT while a working token sat in Secret Manager the
-whole time.
-
-**Read it from the right project.** The same secret name exists in three
-projects and one of them is dead:
-
-| Project | State |
-|---|---|
-| `gcp-project-saas` | **Live — the authoritative copy** |
-| `gcp-project-vms` | Live, byte-identical to the above |
-| `gcp-project-runtime` | **Dead — every version disabled** |
-
-Fetching the dead copy fails, and a script that does not check the exit status
-carries an empty string into `git clone` — which GitHub answers with
-`Repository not found`, the same 404-instead-of-403 as above. An empty secret
-and a missing repo are indistinguishable from the error alone. Confirm the
-project holds an enabled version before concluding a credential is broken:
-
-```bash
-gcloud secrets versions list DEVBOT_GITHUB_TOKEN --project=gcp-project-saas
-```
-
-**PATs are the old approach here — do not mint more.** GitHub exposes no API
-for creating a personal access token, so rotating one means signing into the
-web UI *as the account that owns it*. A token owned by a bot therefore needs
-the bot's password and 2FA; a token owned by a person makes that person the
-only one who can rotate it. Neither is acceptable, and sharing a login is not
-the way out of it — that is the practice being retired, not the fix.
-
-**A GitHub App is the direction.** An App has no login, no password and no
-2FA: it signs a JWT with a private key and exchanges it for an installation
-token that expires in an hour, scoped to chosen repositories and permissions.
-Rotation becomes a key swap that no one has to do at a browser, and a stolen
-token is worthless by the end of the hour.
-
-The self-hosted CI runner moves first, because its credential is a *personal*
-PAT expiring 2026-09-23; `CLONE_TOKEN`'s six consuming repos follow. Until
-then the tokens above are simply what exists — record them, and add none.
-
-### When this applies
-
-- Any `staging` → `main` release PR the agent opens under the active author account
-- Any feature/fix PR to `staging` or `main` the agent authored under the active author account
-- After `./staging_to_main.sh` or `gh pr merge --auto` — auto-merge stays
-  blocked at `REVIEW_REQUIRED` until `magic-marty` approves
-
-### Standard release flow (`staging` → `main`)
-
-```bash
-AUTHOR=$(gh api user --jq .login)
-
-# 1. Author — create PR and queue auto-merge
-gh pr create --base main --head staging \
-  --title "Release: staging → main" \
-  --body "Release PR from staging to main."
-gh pr merge <number> --auto --merge
-
-# 2. Approve as magic-marty, with a token scoped to this one command
-GH_TOKEN=$(gh auth token --user magic-marty) \
-  gh pr review <number> --repo unifyai/<repo> --approve \
-    -b "Release approval: staging CI green."
-
-# 3. Merge as author — auth was never switched, so this is already the author
-gh pr view <number> --repo unifyai/<repo> \
-  --json mergeStateStatus,reviewDecision
-```
-
-**Scope the token; do not `gh auth switch`.** The switch is global machine
-state, so while it is active any *other* session on the machine authors under
-`magic-marty` — and several sessions routinely run in parallel across
-worktrees. A `GH_TOKEN=...` prefix applies to the single command and cannot
-leak into anyone else's work, and it removes the "always switch back" step
-that is the failure mode when a run dies midway.
-
-If auto-merge does not fire, merge explicitly as the author:
-
-```bash
-gh pr merge <number> --repo unifyai/<repo> --merge
-```
-
-### Invariants
-
-- **Never self-approve.** The author account must not `gh pr review --approve` on a PR
-  it authored.
-- **Scope the reviewer token to the approval command** rather than switching
-  auth globally (see above). Nothing then needs switching back.
-- **Approvals are perishable.** `dismiss_stale_reviews_on_push` is on
-  estate-wide, so any commit landing after an approval silently dismisses it.
-  A PR then sits green-but-`BLOCKED`, which looks exactly like a slow check.
-  On a branch several sessions push to, wait for the head to be quiet before
-  approving at all, and re-read `reviewDecision` rather than trusting that an
-  earlier approval still stands.
-- **Verify base/head** before approving or merging (see Staging-First Promotion).
-- **Approval is `magic-marty`; merge is the author.** If `magic-marty` cannot
-  merge (e.g. unverified email), that is expected — only the approval must
-  come from `magic-marty`.
-
-### Batch promotions across repos
-
-For "merge staging into main in each repo" requests, repeat per repo in order:
-
-1. Author account — create PR + `--auto --merge`
-2. `magic-marty` — `--approve` on each open PR
-3. Author account — confirm `reviewDecision=APPROVED`, then let auto-merge complete
-
-## Rule: Cross-Repo Push Semantics
-
-When the user says "commit and push to all repos", "push across repos", or similar, interpret that as:
-
-- For each repo that has a `staging` branch locally or on origin: commit directly to `staging` and push `staging`.
-- For each repo without a `staging` branch: commit directly to `main` or `master` and push that branch.
-- Do not create feature branches or PRs unless the user explicitly asks for a PR workflow.
-- Do not merge a non-`staging` branch into `main`/`master` as part of a cross-repo push.
-
-Before committing or pushing in each repo, verify its integration branch:
-
-```bash
-git branch --list staging main master
-git branch -r --list origin/staging origin/main origin/master
-```
-
-If `staging` exists, use it. If it does not exist, use `main`/`master`.
+- Push the current branch only: `git push origin HEAD`.
+- If the push is rejected, `git pull --rebase`, re-read what you are about to
+  edit, and push again.
+- **Never** force-push unless the user explicitly asks for it and understands
+  that it rewrites history other people have pulled.
+- Start a branch only when a change genuinely has to sit apart from `main`,
+  and merge and delete it as soon as it lands.
 
 # Worktree Mode: Direct Commits, No Feature Branches
 
@@ -1102,7 +860,7 @@ The worktree already provides isolation. Creating additional branches defeats th
 # 2. Commit directly to the current branch (following git-commit-safety rules)
 git commit <specific-files> -m "Description of change"
 
-# 3. Only if the user explicitly asks you to push, push to the CURRENT branch
+# 3. Push the current branch (see git-commit-safety)
 git push origin HEAD
 ```
 
@@ -1310,15 +1068,12 @@ Unify keeps a private repo of **raw** agent transcripts at **`~/shared_context`*
 
 ## Design (important)
 
-- **Adjacent clone, not a submodule.** `shared_context` sits next to product
-  checkouts (`~/unify`, `~/orchestra`, `~/brain`, …). It is **not** nested under
-  any public or private product repo.
-- **Why:** `unify` (and other open repos) stay public; transcript data stays
+- **Adjacent clone, not a submodule.** `shared_context` sits next to the
+  product checkouts (`~/brain`, `~/unillm`, …). It is **not** nested under any
+  public or private product repo.
+- **Why:** public repos such as `unillm` stay public; transcript data stays
   private. Public cloners never need or see this tree. One clone serves agents
-  in **every** eng repo that pulls `unifyai/global-agent-rules`.
-- **Applies everywhere** this rule is loaded: `unify`, `orchestra`, `unisdk`,
-  `unillm`, `unify-deploy`, `console`, `brain`, `docs`, `landing-page`, and any
-  other repo that includes these global rules.
+  in **every** repo that pulls `unifyai/global-agent-rules`.
 
 ## When to load this
 
@@ -1387,9 +1142,8 @@ openai/<model-id>@openrouter      # openai/gpt-5.6-terra@openrouter
 Never `<model-id>@openai`. `@openrouter` resolves dynamically through the
 OpenRouter catalog; `@openai` is not registered and fails endpoint resolution.
 
-The Orchestra migration `2026-08-13-00-00_openrouter_model_endpoints.py`
-rewrites stored legacy assistant endpoints. Source, defaults, examples, and
-tests must use the canonical OpenRouter form directly.
+Source, defaults, examples, and tests use the canonical OpenRouter form
+directly.
 
 ## Hard rules
 
