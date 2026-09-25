@@ -11,7 +11,9 @@ no-test-info-in-production-code.md
 git-commit-safety.md
 worktree-direct-commits.md
 git-history-for-context.md
+knowledge-lives-in-the-repo.md
 shared-agent-context.md
+replying-to-the-team.md
 
 openrouter-only-llm-access.md
 

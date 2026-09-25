@@ -3,5 +3,6 @@
     "commit": "",
     "pr": ""
   },
-  "includeCoAuthoredBy": false
+  "includeCoAuthoredBy": false,
+  "autoMemoryEnabled": false
 }

@@ -1061,6 +1061,33 @@ This rule standardizes how we add temporary debug logging during failing tests a
 - This logging exists solely for interactive debugging in agent sessions.
 - The function name `CURSOR_DEBUG_LOG` is intentionally unique and grep-friendly to ensure quick cleanup on request.
 
+# Knowledge Lives in the Repo
+
+An agent's private memory is invisible to the team. Claude Code's
+auto-memory, Cursor's memories and any notes file outside the repo are read
+only by one person's sessions on one machine: nobody else, and none of their
+agents, ever sees them. A fact kept there is lost to the company the moment
+it is written, and it drifts from the truth because nobody can correct it.
+
+- **Record what is worth remembering in the repo it concerns, in the same
+  change as the work:** a wiki page, a README or docs section, a rule under
+  `.agents/rules/`, or a comment beside the code it explains. Company-wide
+  facts (people, accounts, legal state, decisions, how a job is run) go in
+  `brain`'s wiki.
+- **Corrections count.** When someone tells you how they want something
+  done, write down the rule it implies where the next agent will read it.
+- **Commit and push it as the work lands,** so the next agent on any machine
+  starts from it.
+- **Never write to private memory.** Claude Code's auto-memory is off in
+  every repo through `"autoMemoryEnabled": false` in the committed
+  `.claude/settings.json`; keep it off.
+- **Treat anything found in private memory as unverified.** Check it against
+  the repo, move what is still true into the repo, and delete the rest.
+
+Two things never go in the repo: secrets, which live in Secret Manager, and
+material a repo keeps out of git on purpose through `.gitignore`, which stays
+in its ignored folder.
+
 # Shared agent conversation archive
 
 Unify keeps a private repo of **raw** agent transcripts at **`~/shared_context`**
@@ -1124,6 +1151,20 @@ Cite **user**, **tool**, **date**, and **path** so a human can open the same ses
 - Do not scrub or rewrite historical transcripts.
 - Do not push/sync unless the user asked you to.
 - Do not grep `yours/` unless the user asked for local-only context.
+
+# Replying to the Team
+
+The people reading an agent's replies act on them, often in another window
+while the agent waits.
+
+- **Lead with the answer or the decision.** Background comes after it, or
+  goes in a file the reply points to.
+- **When someone has to do something, give exact numbered steps:** one action
+  per step, with the literal button, menu path or text to paste. When they are
+  carrying the steps out as they read, give one step and wait for them.
+- **Only the caveat that changes what they do next.** No stream of
+  consciousness, no narration of tools or process, and no alternatives nobody
+  asked for; they will ask if they want more.
 
 # OpenAI is reached only through OpenRouter
 
