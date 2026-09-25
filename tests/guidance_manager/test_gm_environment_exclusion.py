@@ -144,6 +144,24 @@ def test_resolve_prompt_guidance_by_id():
 
 
 @_handle_project
+def test_resolve_prompt_guidance_title_with_apostrophe():
+    """A title containing a single quote resolves like any other title."""
+    from unify.actor.environments.actor import _resolve_prompt_guidance
+
+    gm = GuidanceManager()
+    out = gm.add_guidance(
+        title="Client's Refund Policy",
+        content="Refund within 30 days",
+    )
+    guidance_id = out["details"]["guidance_id"]
+
+    text, resolved_ids = _resolve_prompt_guidance(["Client's Refund Policy"])
+    assert text is not None
+    assert "Refund within 30 days" in text
+    assert resolved_ids == frozenset({guidance_id})
+
+
+@_handle_project
 def test_resolve_prompt_guidance_mixed():
     from unify.actor.environments.actor import _resolve_prompt_guidance
 

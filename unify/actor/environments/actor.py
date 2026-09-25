@@ -154,7 +154,8 @@ def _resolve_prompt_guidance(
         if isinstance(identifier, int):
             rows = gm.filter(filter=f"guidance_id = {int(identifier)}", limit=1)
         else:
-            rows = gm.filter(filter=f"title = '{identifier}'", limit=1)
+            title = str(identifier).replace("'", "''")
+            rows = gm.filter(filter=f"title = '{title}'", limit=1)
         # Explicitly pinned guidance is injected with its complete content;
         # list reads only carry previews, so re-fetch each match in full.
         rows = [gm.get_guidance(guidance_id=g.guidance_id) for g in rows]
