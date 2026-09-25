@@ -67,22 +67,6 @@ def list_llms(provider: str | None = None) -> list[str]:
     return [endpoint for endpoint in endpoints if endpoint.endswith(suffix)]
 
 
-_MODEL_SELECTION_HEADING = "### Choosing A Model For `query_llm(...)`"
-
-
-def get_llm_model_selection_context() -> str:
-    """Return model-selection guidance for sandbox LLM calls.
-
-    Docstring-derived: the guidance lives in ``query_llm.__doc__`` (its
-    "Choosing A Model" section) so ``help(query_llm)`` inside any sandbox
-    teaches the same contract the prompt does. This helper slices that
-    section back out for callers that want it standalone.
-    """
-    doc = inspect.getdoc(query_llm) or ""
-    idx = doc.find(_MODEL_SELECTION_HEADING)
-    return doc[idx:].strip() if idx >= 0 else ""
-
-
 async def query_llm(
     prompt: str,
     *,
