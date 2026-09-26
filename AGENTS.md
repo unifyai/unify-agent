@@ -946,10 +946,9 @@ If direct code analysis and debug logging (`CURSOR_DEBUG_LOG`) aren't yielding a
 
 # Python Formatting & Pre-commit
 
-Every first-party Python repo (`orchestra`, `unify`, `unisdk`, `unillm`,
-`unify-deploy`, `docs`) enforces formatting with **black** (plus
-`isort`/`autoflake` where configured), and CI rejects unformatted code. A
-missing local hook or a drifting Black target/Python version is the single
+Every Python repo that includes this rule enforces formatting with **black**
+(plus `isort`/`autoflake` where configured), and CI rejects unformatted code.
+A missing local hook or a drifting Black target/Python version is the single
 most common avoidable CI failure. This rule keeps local and CI identical so
 it stops blocking us — for Cursor, Claude Code, Codex, and humans alike.
 
@@ -1034,12 +1033,11 @@ locked version:
 pre-commit run black --all-files          # or: uv run black .
 ```
 
-## Release gates
+## The hook is the gate
 
-`black` is a required status check on `staging → main` (ruleset and/or branch
-protection) for the Python repos. Direct pushes to `staging` stay open for
-the worktree workflow — the committed git hook is the staging-side gate.
-CI still runs `black` on every push so failures are visible immediately.
+Work lands on `main` by direct push, so the committed git hook is what keeps
+unformatted code off `main`. CI runs `black` on every push, which shows a
+slip at once, but only after it has landed.
 
 ## Why this matters
 
