@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from unify import db
 from unify.guidance_manager.builtins import (
+    ensure_seeded,
     load_snapshot,
     seed_builtin_guidance,
     stable_guidance_id,
@@ -40,7 +41,13 @@ _ENTRIES = {
 
 @pytest.fixture
 def test_entries():
-    """Seed the two test entries; restore the snapshot afterwards."""
+    """Seed the two test entries over the snapshot; restore it afterwards.
+
+    ``ensure_seeded()`` seeds the snapshot once per process, so running it
+    first stops a GuidanceManager constructed in the test from seeding the
+    snapshot over the test entries.
+    """
+    ensure_seeded()
     seed_builtin_guidance(entries=_ENTRIES)
     yield _ENTRIES
     seed_builtin_guidance()
