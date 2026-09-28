@@ -93,6 +93,37 @@ def _failure_text(exc: BaseException) -> str:
     return traceback.format_exc()
 
 
+def _unknown_arguments_refusal(
+    tool_name: str,
+    tool_schema: dict,
+    unknown: dict,
+) -> ToolInputError:
+    """Refuse a call that passed arguments *tool_name* has no parameter for.
+
+    The parameters listed are the ones the tool's schema shows the model, so a
+    misnamed argument can be matched to the name it was meant to be.
+    """
+    quoted = [repr(k) for k in unknown]
+    named = (
+        quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} or {quoted[-1]}"
+    )
+    params = ", ".join(tool_schema["function"]["parameters"]["properties"])
+    suggestion = (
+        f"Call {tool_name} again using only its own parameters: {params}."
+        if params
+        else f"Call {tool_name} again with no arguments."
+    )
+    return ToolInputError(
+        f"{tool_name} was not run: it has no parameter named {named}.",
+        suggestion=suggestion,
+    )
+
+
+async def _raise(exc: BaseException) -> None:
+    """Run as a tool call's task, so *exc* reaches the model as its result."""
+    raise exc
+
+
 def _record_failure(
     tracker: Any,
     *,
@@ -889,7 +920,10 @@ class ToolsData:
         filtered_extras = {
             k: v for k, v in extra_kwargs.items() if k in params or has_varkw
         }
-        allowed_call_args = _normalise_kwargs_for_bound_method(fn, call_args)
+        allowed_call_args, unknown_call_args = _normalise_kwargs_for_bound_method(
+            fn,
+            call_args,
+        )
         merged_kwargs = {**allowed_call_args, **filtered_extras}
 
         # Backfill advisory args advertised as required but safe to default
@@ -897,6 +931,19 @@ class ToolsData:
         # `required` signal without a model omission raising TypeError.
         merged_kwargs = apply_llm_soft_required_defaults(fn, merged_kwargs)
 
+        tool_schema = method_to_schema(fn, name)
+
+        # An argument the tool has no parameter for fails the call instead of
+        # being dropped. Dropped, it would leave the tool to run on its
+        # defaults and return a plausible result for a request the model never
+        # made, with nothing to tell the model its argument was ignored. The
+        # refusal names the tool's parameters, so the model can reissue the
+        # call; ToolInputError makes it a refusal, which ends the loop only
+        # when it repeats.
+        if unknown_call_args:
+            coro = _raise(
+                _unknown_arguments_refusal(name, tool_schema, unknown_call_args),
+            )
         # Argument binding for an async fn happens synchronously at coroutine
         # creation, so a model omitting a required argument raises TypeError
         # here — outside the task machinery that turns failures into tool
@@ -904,15 +951,11 @@ class ToolsData:
         # error and self-corrects instead of the whole trajectory dying. The
         # sync branch is already safe: asyncio.to_thread defers binding into
         # the task.
-        if asyncio.iscoroutinefunction(fn):
+        elif asyncio.iscoroutinefunction(fn):
             try:
                 coro = fn(**merged_kwargs)
             except TypeError as bind_exc:
-
-                async def _raise_binding_error(exc: TypeError = bind_exc):
-                    raise exc
-
-                coro = _raise_binding_error()
+                coro = _raise(bind_exc)
         else:
             coro = asyncio.to_thread(fn, **merged_kwargs)
 
@@ -936,9 +979,11 @@ class ToolsData:
             clar_down_queue=clar_down_q,
             notification_queue=progress_q,
             pause_event=pause_ev,
-            # Debug helpers for failure logging
-            tool_schema=method_to_schema(fn, name),
-            llm_arguments=allowed_call_args,
+            # Debug helpers for failure logging. The arguments keep any the
+            # tool has no parameter for: refusal tallies fingerprint them, and
+            # two calls that differ only there are different calls.
+            tool_schema=tool_schema,
+            llm_arguments={**allowed_call_args, **unknown_call_args},
             raw_arguments_json=args_json,
             # Track context opt-in for steering method context propagation
             context_opted_in=context_opted_in,

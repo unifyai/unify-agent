@@ -75,6 +75,7 @@ The loop handles:
 - **Context compression** — when the conversation exceeds the model's context window, the loop compresses and restarts transparently
 - **Dynamic tools** — tools that are generated at runtime based on the current state (e.g., per-action steering tools)
 - **Tool policies** — gating which tools are available at which step (used for discovery-first patterns)
+- **Refused calls** — a call that cannot run as written, such as one whose arguments are not valid JSON or name a parameter the tool does not have, never reaches the tool; the model reads what to change, and refusals end the loop only when they repeat
 - **Time awareness** — optional wall-clock context injected after each tool completion
 - **Prompt caching** — cooperative cache-control headers for providers that support it
 

@@ -216,8 +216,8 @@ def _turn_calling(tool_name: str) -> ChatCompletion:
 
 @pytest.mark.asyncio
 async def test_discovery_mutator_appends_calls_with_each_tools_parameter_names():
-    """The tool loop drops arguments a tool does not take, so an appended call
-    with a misnamed argument would run its search on the defaults."""
+    """The tool loop refuses a call carrying an argument its tool does not
+    take, so an appended call with a misnamed argument would fail its search."""
     gate = ("FunctionManager_search_functions", "GuidanceManager_search")
     actor = CodeActActor()
     try:

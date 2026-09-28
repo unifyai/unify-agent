@@ -523,94 +523,97 @@ async def _generate_with_preprocess_inner(
                     setattr(client, "system_message", original_system_message)
 
 
-def _normalise_kwargs_for_bound_method(bound_method, incoming_kw: dict) -> dict:
+def _normalise_kwargs_for_bound_method(
+    bound_method,
+    incoming_kw: dict,
+) -> tuple[dict, dict]:
     """Normalise kwargs for a bound method: expand nested kwargs, drop noise keys,
-    map common aliases when there is a single public param, and filter unknown keys
-    unless **kwargs is accepted."""
-    try:
-        import inspect as _inspect
+    map common aliases when there is a single public param, and coerce string
+    values to annotated types.
 
-        sig = _inspect.signature(bound_method)
-        params = sig.parameters
-        has_varkw = any(
-            p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
+    Returns ``(accepted, unknown)``: the kwargs the method takes, and the ones
+    it has no parameter for. ``unknown`` is always empty for a method that
+    accepts ``**kwargs``. Nothing is dropped silently here; each caller decides
+    what an unknown name means for it.
+    """
+    import inspect as _inspect
 
-        kw = dict(incoming_kw or {})
+    params = _inspect.signature(bound_method).parameters
+    has_varkw = any(p.kind == _inspect.Parameter.VAR_KEYWORD for p in params.values())
 
-        # 1) Expand nested {"kwargs": {...}}
-        if "kwargs" in kw and isinstance(kw["kwargs"], dict):
-            nested_kw = kw.pop("kwargs")
-            for k, v in nested_kw.items():
-                kw.setdefault(k, v)
+    kw = dict(incoming_kw or {})
 
-        # 2) Drop common placeholder noise keys when empty
-        for _noise in ("a", "kw"):
-            if _noise in kw and (kw[_noise] is None or kw[_noise] == ""):
-                kw.pop(_noise, None)
+    # 1) Expand nested {"kwargs": {...}}
+    if "kwargs" in kw and isinstance(kw["kwargs"], dict):
+        nested_kw = kw.pop("kwargs")
+        for k, v in nested_kw.items():
+            kw.setdefault(k, v)
 
-        # 3) If exactly one public param, accept common aliases
-        public_params = [n for n in params if n != "self"]
-        if len(public_params) == 1 and public_params[0] not in kw:
-            for alias in (
-                "content",
-                "message",
-                "text",
-                "prompt",
-                "guidance",
-                "instruction",
-                "question",
-                "query",
-            ):
-                if alias in kw:
-                    kw[public_params[0]] = kw.pop(alias)
-                    break
+    # 2) Drop common placeholder noise keys when empty
+    for _noise in ("a", "kw"):
+        if _noise in kw and (kw[_noise] is None or kw[_noise] == ""):
+            kw.pop(_noise, None)
 
-        # 4) Filter unknown keys unless **kwargs is accepted
-        if not has_varkw:
-            kw = {k: v for k, v in kw.items() if k in params}
+    # 3) If exactly one public param, accept common aliases
+    public_params = [n for n in params if n != "self"]
+    if len(public_params) == 1 and public_params[0] not in kw:
+        for alias in (
+            "content",
+            "message",
+            "text",
+            "prompt",
+            "guidance",
+            "instruction",
+            "question",
+            "query",
+        ):
+            if alias in kw:
+                kw[public_params[0]] = kw.pop(alias)
+                break
 
-        # 5) Coerce string values to annotated int/float/bool/dict types
-        #    (best-effort): LLMs often pass every argument as a string.
-        #    Annotations may be real types or strings (under
-        #    `from __future__ import annotations`), so both forms are checked.
-        import json as _json
+    # 4) Set aside the keys the method has no parameter for, unless it
+    #    accepts **kwargs
+    unknown = {} if has_varkw else {k: kw.pop(k) for k in list(kw) if k not in params}
 
-        for param_name, param in params.items():
-            if param_name not in kw or param_name == "self":
-                continue
-            annotation = param.annotation
-            if annotation is _inspect.Parameter.empty:
-                continue
-            val = kw[param_name]
-            try:
-                ann_str = annotation if isinstance(annotation, str) else ""
-                origin = getattr(annotation, "__origin__", None)
+    # 5) Coerce string values to annotated int/float/bool/dict types
+    #    (best-effort): LLMs often pass every argument as a string.
+    #    Annotations may be real types or strings (under
+    #    `from __future__ import annotations`), so both forms are checked.
+    import json as _json
 
-                is_int = annotation is int or ann_str == "int"
-                is_float = annotation is float or ann_str == "float"
-                is_bool = annotation is bool or ann_str == "bool"
-                is_dict = (
-                    annotation is dict
-                    or ann_str == "dict"
-                    or ann_str.startswith("Dict[")
-                    or (origin is not None and origin is dict)
-                )
+    for param_name, param in params.items():
+        if param_name not in kw or param_name == "self":
+            continue
+        annotation = param.annotation
+        if annotation is _inspect.Parameter.empty:
+            continue
+        val = kw[param_name]
+        try:
+            ann_str = annotation if isinstance(annotation, str) else ""
+            origin = getattr(annotation, "__origin__", None)
 
-                if is_int and isinstance(val, str):
-                    kw[param_name] = int(val)
-                elif is_float and isinstance(val, str):
-                    kw[param_name] = float(val)
-                elif is_bool and isinstance(val, str):
-                    kw[param_name] = val.lower() in ("true", "1", "yes")
-                elif is_dict and isinstance(val, str):
-                    kw[param_name] = _json.loads(val)
-            except (ValueError, _json.JSONDecodeError):
-                pass
+            is_int = annotation is int or ann_str == "int"
+            is_float = annotation is float or ann_str == "float"
+            is_bool = annotation is bool or ann_str == "bool"
+            is_dict = (
+                annotation is dict
+                or ann_str == "dict"
+                or ann_str.startswith("Dict[")
+                or (origin is not None and origin is dict)
+            )
 
-        return kw
-    except Exception:
-        return dict(incoming_kw or {})
+            if is_int and isinstance(val, str):
+                kw[param_name] = int(val)
+            elif is_float and isinstance(val, str):
+                kw[param_name] = float(val)
+            elif is_bool and isinstance(val, str):
+                kw[param_name] = val.lower() in ("true", "1", "yes")
+            elif is_dict and isinstance(val, str):
+                kw[param_name] = _json.loads(val)
+        except (ValueError, _json.JSONDecodeError):
+            pass
+
+    return kw, unknown
 
 
 def apply_llm_soft_required_defaults(bound_method, kwargs: dict) -> dict:
@@ -653,6 +656,14 @@ async def forward_handle_call(
     method rejects them, retries positionally with the first available key
     from fallback_positional_keys (e.g. reason/content), and finally with no
     arguments at all.
+
+    Keys the method has no parameter for are dropped, where a base tool call
+    carrying one is refused. The loop assembles these kwargs itself, to the
+    base steering contract (a stop reason, an interjection's continuation
+    context), and forwards them to handles whose methods may take fewer; no
+    model wrote them, so there is nobody to tell. The one payload a model
+    does write, steer's ``action="call"``, is bound against the method's
+    signature before it is forwarded here.
     """
     try:
         bound = getattr(handle, method_name)
@@ -661,7 +672,10 @@ async def forward_handle_call(
 
     try:
         args = list(call_args or [])
-        normalised = _normalise_kwargs_for_bound_method(bound, kwargs or {})
+        normalised, _not_taken = _normalise_kwargs_for_bound_method(
+            bound,
+            kwargs or {},
+        )
         return await maybe_await(bound(*args, **normalised))
     except TypeError:
         # Fallbacks: positional-only, then kwargs-only, then single-key
