@@ -4410,6 +4410,7 @@ dependencies = [
     { name = "docling" },
     { name = "en-core-web-sm" },
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "jsonschema" },
     { name = "numpy" },
     { name = "openai" },
@@ -4425,6 +4426,8 @@ dependencies = [
     { name = "requests" },
     { name = "spacy" },
     { name = "tiktoken" },
+    { name = "torch" },
+    { name = "transformers" },
     { name = "unillm" },
 ]
 
@@ -4457,6 +4460,7 @@ requires-dist = [
     { name = "docling", specifier = ">=2.82.0" },
     { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "huggingface-hub", specifier = ">=1.16.1" },
     { name = "jsonschema", specifier = ">=4.20" },
     { name = "numpy", specifier = ">=2.3.4" },
     { name = "openai", specifier = ">=1.0.0" },
@@ -4472,6 +4476,8 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "spacy", specifier = ">=3.8.7" },
     { name = "tiktoken", specifier = ">=0.11.0" },
+    { name = "torch", specifier = ">=2.13.0" },
+    { name = "transformers", specifier = ">=5.17.0" },
     { name = "unillm", editable = "../unillm" },
 ]
 

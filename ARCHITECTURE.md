@@ -277,7 +277,7 @@ The ConversationManager uses a `Debouncer` that coalesces rapid-fire events (new
 
 The views `all_functions` (with an `is_primitive` column) and `all_guidance` (`is_builtin`) union each catalogue with its seeded rows, so one clause addresses both populations while the assistant's own ids stay small and auto-incrementing. List and dict columns hold JSON text and are queried with `json_each`.
 
-Managers write plain SQL through `db.execute`, `db.query` and `db.query_one`; `db.transaction()` nests, with inner uses joining the outermost transaction. Every filter the model writes (`FunctionManager_filter_functions`, `GuidanceManager_filter`, a nested actor's `discovery_scope` / `guidance_scope`) and every manager's `filter_scope` is a SQL `WHERE` clause over one of the views. They are composed with `AND` and run through `db.query_readonly`, whose authorizer refuses anything other than a read, so a clause can only read. A clause SQLite rejects comes back to the model as an `invalid_filter` tool error naming the columns it may use. Skill search fetches the candidate rows with SQL and ranks them in Python by plain word match (`unify/common/text_search.py`).
+Managers write plain SQL through `db.execute`, `db.query` and `db.query_one`; `db.transaction()` nests, with inner uses joining the outermost transaction. Every filter the model writes (`FunctionManager_filter_functions`, `GuidanceManager_filter`, a nested actor's `discovery_scope` / `guidance_scope`) and every manager's `filter_scope` is a SQL `WHERE` clause over one of the views. They are composed with `AND` and run through `db.query_readonly`, whose authorizer refuses anything other than a read, so a clause can only read. A clause SQLite rejects comes back to the model as an `invalid_filter` tool error naming the columns it may use. Skill search fetches the candidate rows with SQL and ranks them in Python by the cosine similarity of their embeddings to the query (`unify/common/semantic_search.py`). The vectors come from `unify/common/embeddings.py`, through OpenRouter (`openai/text-embedding-3-small`) or in process (`BAAI/bge-small-en-v1.5`, with `UNIFY_LOCAL_EMBEDDINGS`), and are cached per model and text in `<UNIFY_HOME>/embeddings.sqlite`, so only text never embedded before reaches a model.
 
 `db.clear()` empties the assistant's own tables and restarts their id sequences, leaving the seeded catalogues in place; the test fixtures call it before every test.
 
@@ -366,10 +366,12 @@ Tests fall on a spectrum between **symbolic** (infrastructure-focused: does stee
 
 ## System dependencies
 
-Unify persists state in its own SQLite file and makes LLM calls through **UniLLM** (a caching/tracing/normalization layer in a sibling repo).
+Unify persists state in its own SQLite file and makes LLM calls through **UniLLM** (a caching/tracing/normalization layer in a sibling repo). Skill search embeds text through OpenRouter, or in process with `UNIFY_LOCAL_EMBEDDINGS`, and caches the vectors in a second SQLite file.
 
 ```
 Unify ──► unify.db ──► <UNIFY_HOME>/store.sqlite
+  │
+  ├─────► embeddings ──► <UNIFY_HOME>/embeddings.sqlite, then OpenRouter or a local model
   │
   └─────► UniLLM ──► OpenRouter / Anthropic / DeepSeek
 ```

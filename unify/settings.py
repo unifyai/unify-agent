@@ -77,6 +77,15 @@ class ProductionSettings(BaseSettings):
     UNIFY_TURN_STORAGE_REVIEWS: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Skill Search
+    # ─────────────────────────────────────────────────────────────────────────
+    # Embed skills for semantic search with BAAI/bge-small-en-v1.5 in process
+    # instead of openai/text-embedding-3-small through OpenRouter. It needs no
+    # network once its weights (134 MB) are downloaded, but reads only English
+    # and the first 512 tokens of each text.
+    UNIFY_LOCAL_EMBEDDINGS: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
     # ─────────────────────────────────────────────────────────────────────────
     # Name of the project holding the builtins catalogues (function primitives
@@ -116,6 +125,7 @@ class ProductionSettings(BaseSettings):
         "PYTEST_LOG_TO_FILE",
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_TURN_STORAGE_REVIEWS",
+        "UNIFY_LOCAL_EMBEDDINGS",
         mode="before",
     )
     @classmethod

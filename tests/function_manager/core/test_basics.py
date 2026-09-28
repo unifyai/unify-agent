@@ -516,6 +516,30 @@ def test_search_functions_include_implementations():
     assert "name" in user_funcs[0]  # Other fields still present
 
 
+@_handle_project
+def test_search_functions_matches_meaning_not_words():
+    """A query that shares no words with a function's name or docstring finds it."""
+    fm = _FM()
+    fm.add_functions(
+        implementations=[
+            "def celsius_to_fahrenheit(celsius: float) -> float:\n"
+            '    """Convert a temperature from Celsius to Fahrenheit."""\n'
+            "    return celsius * 9 / 5 + 32\n",
+            "def send_invoice_email(customer_email: str, invoice_path: str) -> None:\n"
+            '    """Email an invoice PDF to a customer."""\n'
+            "    return None\n",
+            "def resize_image(path: str, width: int, height: int) -> str:\n"
+            '    """Scale an image file to the given dimensions and save it."""\n'
+            "    return path\n",
+        ],
+    )
+
+    hits = fm.search_functions(query="mail a bill to a client", n=3)
+
+    assert [h["name"] for h in hits][0] == "send_invoice_email"
+    assert hits[0]["_similarity"] > hits[1]["_similarity"] >= hits[2]["_similarity"]
+
+
 # --------------------------------------------------------------------------- #
 #  8.  clear                                                                  #
 # --------------------------------------------------------------------------- #

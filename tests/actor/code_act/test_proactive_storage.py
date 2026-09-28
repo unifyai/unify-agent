@@ -41,7 +41,7 @@ class _TrackingGuidanceManager:
         self.add_calls: list[dict] = []
 
     def search(self, references=None, k=10):
-        """Search for guidance entries whose text contains the words of a query."""
+        """Search for guidance entries by semantic similarity to reference text."""
         return []
 
     def filter(self, filter=None, offset=0, limit=100):

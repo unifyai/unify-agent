@@ -325,24 +325,23 @@ class BaseFunctionManager(BaseStateManager):
         _also_return_metadata: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Search for functions whose name, docstring or metadata contain the
-        words of a query.
+        Search for functions by semantic similarity to a natural-language
+        query.
 
-        Matching is case-insensitive on whole words and their prefixes
-        (``parse`` also finds ``parser``), so describe the function in the
-        words its name and docstring would use rather than as a full
-        sentence. Results are ranked like memory, not just like an index:
-        the word match dominates, and a function's *standing* — how often and
-        how recently it has actually been used, judged against its own
-        usage rhythm — acts as the tiebreaker. Functions whose standing has
-        fully lapsed drop out of results entirely (they still exist and
-        still run; ``filter_functions``/``list_functions`` always see the
-        whole store, and ``include_dormant=True`` brings them back here).
-        Freshly stored functions surface normally: creation counts as a
-        first use.
+        The query is compared by meaning with each function's name and
+        docstring, so describe what the function should do in your own
+        words; they need not appear in its docstring. Results are ranked
+        like memory, not just like an index: similarity dominates, and a
+        function's *standing* — how often and how recently it has actually
+        been used, judged against its own usage rhythm — acts as the
+        tiebreaker. Functions whose standing has fully lapsed drop out of
+        results entirely (they still exist and still run;
+        ``filter_functions``/``list_functions`` always see the whole store,
+        and ``include_dormant=True`` brings them back here). Freshly stored
+        functions surface normally: creation counts as a first use.
 
         Every result carries the ranking components in the open:
-        ``_similarity`` (fraction of query words found, 0–1), ``_standing`` (usage-based
+        ``_similarity`` (semantic match, 0–1), ``_standing`` (usage-based
         memory strength, 0–1 — recency against the function's own rhythm ×
         log-saturating call count), and ``_retrieval_score`` (the combined
         rank, ``similarity × (floor + (1−floor) × standing)``), beside the
@@ -358,9 +357,10 @@ class BaseFunctionManager(BaseStateManager):
         Parameters
         ----------
         query : str, default ``""``
-            Words describing the desired function(s). An empty query is
-            allowed (soft models sometimes omit it during discovery) and
-            returns a broad sample of the catalogue rather than failing.
+            Natural-language description of the desired function(s). An
+            empty query is allowed (soft models sometimes omit it during
+            discovery) and returns a broad sample of the catalogue rather
+            than failing.
         n : int, default ``5``
             Number of similar results to return.
         include_implementations : bool, default ``True``

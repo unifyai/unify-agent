@@ -25,7 +25,7 @@ from typing import (
 )
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
-from ..common.text_search import SIMILARITY_FIELD, rank_by_text
+from ..common.semantic_search import SIMILARITY_FIELD, rank_by_similarity
 from .activation import (
     ActivationSettings,
     activation,
@@ -144,8 +144,8 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-# The fields a search query's words are looked for in, per function row.
-SEARCHED_FUNCTION_FIELDS = ("name", "docstring", "metadata")
+# The fields a search query is compared with, per function row.
+SEARCHED_FUNCTION_FIELDS = ("name", "docstring")
 
 
 class _LineageTrackedFunction:
@@ -861,10 +861,9 @@ class FunctionManager(BaseFunctionManager):
         n: int,
         include_dormant: bool,
     ) -> List[Dict[str, Any]]:
-        """Order search results by word match × standing; drop the lapsed.
+        """Order search results by similarity × standing; drop the lapsed.
 
-        The match dominates (the activation term is capped in settings) and
-        backfilled rows — which matched nothing — keep their tail position.
+        Similarity dominates (the activation term is capped in settings).
         Primitives never drop out of scope: platform surface is not memory.
         Each surviving row is annotated with the components — ``_similarity``,
         ``_standing``, ``_retrieval_score`` — so the querying model sees WHY
@@ -2091,7 +2090,7 @@ class FunctionManager(BaseFunctionManager):
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
 
-    # 5. Text Search ---------------------------------------------------- #
+    # 5. Semantic Search ------------------------------------------------ #
     @functools.wraps(BaseFunctionManager.search_functions, updated=())
     def search_functions(
         self,
@@ -2111,8 +2110,8 @@ class FunctionManager(BaseFunctionManager):
             raise ValueError("_namespace required when _return_callable=True")
 
         # Soft models sometimes call search with ``{}`` / empty query during
-        # discovery; an empty query has nothing to match, so return a plain
-        # catalogue sample instead.
+        # discovery; an empty query has nothing to compare with, so return a
+        # plain catalogue sample instead.
         if not str(query or "").strip():
             return self.filter_functions(
                 filter=None,
@@ -2125,7 +2124,7 @@ class FunctionManager(BaseFunctionManager):
             )
 
         # Overfetch so the activation pass has candidates to rank and drop:
-        # the text-match cut to `limit` happens before standing is known, and
+        # the similarity cut to `limit` happens before standing is known, and
         # a scope-filtered result set must still be able to fill n slots.
         activation_settings = self.activation_settings
         fetch_limit = (
@@ -2136,12 +2135,11 @@ class FunctionManager(BaseFunctionManager):
             if activation_settings.enabled
             else n
         )
-        results = rank_by_text(
+        results = rank_by_similarity(
             self._rows(self._discovery_scope()),
             {field: query for field in SEARCHED_FUNCTION_FIELDS},
             limit=fetch_limit,
             id_field="function_id",
-            backfill=True,
         )
         results = self._activation_rank(
             results,

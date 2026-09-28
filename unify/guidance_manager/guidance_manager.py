@@ -8,7 +8,7 @@ from typing import Any, Dict, FrozenSet, List, Optional
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
 from ..common.stale_reason import StaleReason, merge_stale_reasons
-from ..common.text_search import rank_by_text
+from ..common.semantic_search import rank_by_similarity
 from ..common.tool_outcome import ToolOutcome
 from .base import BaseGuidanceManager
 from .builtins import ensure_seeded
@@ -338,12 +338,11 @@ class GuidanceManager(BaseGuidanceManager):
         references: Optional[Dict[str, str]] = None,
         k: int = 10,
     ) -> List[Guidance]:
-        rows = rank_by_text(
+        rows = rank_by_similarity(
             self._rows(self._scope()),
             references,
             limit=k,
             id_field="guidance_id",
-            backfill=True,
         )
         return [self._with_content_preview(Guidance(**row)) for row in rows]
 

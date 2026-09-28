@@ -65,7 +65,7 @@ To measure the actor on its own, without the conversation loop above it, hand it
 
 Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent; the conversation loop is what unify adds on top.
 
-Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `/help` inside the chat lists the few slash commands (attach a file, quit); `unify --debug` streams the runtime logs to the terminal.
+Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLite store, the embeddings cache, the workspace environment, the `workspace/` directory the actor reads and writes files in, and the runtime logs. Delete the directory and you have a fresh assistant. `/help` inside the chat lists the few slash commands (attach a file, quit); `unify --debug` streams the runtime logs to the terminal.
 
 <details>
 <summary>Configuration</summary>
@@ -78,6 +78,7 @@ Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLit
 | `UNIFY_MODEL`, `UNIFY_REASONING_EFFORT` | The default model (a unillm `model@provider` endpoint) and effort |
 | `UNIFY_HOME` | Where the store, environment and workspace live (default `~/.unify`) |
 | `UNIFY_STORE_PATH` | An explicit path for the SQLite store |
+| `UNIFY_LOCAL_EMBEDDINGS` | Embed skills for search in process with `BAAI/bge-small-en-v1.5` instead of `openai/text-embedding-3-small` through OpenRouter |
 | `UNILLM_CACHE` | Cache LLM responses locally; later runs replay identical calls |
 | `ASSISTANT_FIRST_NAME`, `USER_FIRST_NAME`, … | Optional identity for the assistant and its user |
 
@@ -171,7 +172,7 @@ Two libraries the actor consults before reaching for raw code:
 - **Functions**: executable Python with a docstring and pip dependencies, run in-process with dependencies ensured in the workspace environment.
 - **Guidance**: procedural how-to prose (walkthroughs, multi-step strategies), linked to the functions it composes.
 
-Search is a plain word match over names, docstrings, titles and content: the libraries are small enough that nothing heavier earns its place. Skills in the [Agent Skills](https://agentskills.io) format import as guidance through `scripts/skill_migration`.
+Search is semantic: a function's name and docstring, or a procedure's title and content, is embedded once, the vector is cached in `~/.unify/embeddings.sqlite`, and every query is ranked by cosine similarity on this machine. The vectors come from `openai/text-embedding-3-small` through OpenRouter, or from `BAAI/bge-small-en-v1.5` in process when `UNIFY_LOCAL_EMBEDDINGS` is set. Skills in the [Agent Skills](https://agentskills.io) format import as guidance through `scripts/skill_migration`.
 
 ### The local store
 

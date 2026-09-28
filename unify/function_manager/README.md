@@ -315,8 +315,8 @@ fm.add_functions(implementations=["async def foo(): pass"])
 # List functions
 fm.list_functions(include_implementations=False)
 
-# Search by the words in a function's name, docstring or metadata
-fm.search_functions(query="csv summary", n=5)
+# Search by meaning over each function's name and docstring
+fm.search_functions(query="summarise a spreadsheet", n=5)
 
 # Delete
 fm.delete_function(function_id=1)

@@ -284,10 +284,10 @@ def compose_guidance_content(
 ) -> str:
     """Compose the guidance ``content`` string for a parsed skill.
 
-    The skill ``description`` is folded into the body so it is part of the
-    searchable content (GuidanceManager retrieval matches query words
-    against ``content``). Bundled scripts are optionally inlined and a
-    provenance footer records where the skill came from.
+    The skill ``description`` opens the body, where semantic search reads
+    it: GuidanceManager retrieval embeds the start of ``content``. Bundled
+    scripts are optionally inlined and a provenance footer records where the
+    skill came from.
     """
     sections: List[str] = []
     if skill.description:

@@ -31,6 +31,10 @@ dependencies = [
     "pillow>=11.3.0",
     "polars>=1.39.3",
     "jsonschema>=4.20",
+    # Local embeddings (UNIFY_LOCAL_EMBEDDINGS)
+    "torch>=2.13.0",
+    "transformers>=5.17.0",
+    "huggingface-hub>=1.16.1",
 ]
 
 [dependency-groups]

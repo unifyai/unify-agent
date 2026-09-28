@@ -139,7 +139,7 @@ def test_default_library_surfaces_through_guidance_manager():
         assert len(full.content) > GUIDANCE_PREVIEW_CHARS
 
 
-def test_default_library_text_search():
+def test_default_library_semantic_search():
     gm = GuidanceManager()
 
     results = gm.search(
@@ -154,6 +154,13 @@ def test_default_library_text_search():
     )
     assert multi and multi[0].title == "[anthropic] pdf"
     assert all(row.is_builtin for row in multi)
+
+    # Apart from "a", no word of this query appears in the entry it finds.
+    paraphrase = gm.search(
+        references={"content": "a looping moving picture for our workplace messenger"},
+        k=3,
+    )
+    assert paraphrase and paraphrase[0].title == "[anthropic] slack-gif-creator"
 
 
 def test_get_guidance_resolves_own_and_builtin_entries(test_entries):

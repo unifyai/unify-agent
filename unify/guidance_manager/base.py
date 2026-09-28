@@ -39,7 +39,7 @@ class BaseGuidanceManager(BaseStateManager, metaclass=SingletonABCMeta):
         references: Optional[Dict[str, str]] = None,
         k: int = 10,
     ) -> List["Guidance"]:
-        """Search for guidance entries whose text contains the words of a query.
+        """Search for guidance entries by semantic similarity to reference text.
 
         Guidance entries contain procedural how-to information: step-by-step
         instructions, operating procedures, software walkthroughs, and
@@ -57,20 +57,18 @@ class BaseGuidanceManager(BaseStateManager, metaclass=SingletonABCMeta):
         Parameters
         ----------
         references : Dict[str, str] | None, default None
-            Mapping of field name (``title`` or ``content``) to the query
-            text to look for in that field. Matching is case-insensitive
-            on whole words and their prefixes, so ``deploy`` also finds
-            ``deploying``; describe the task in the words its procedure
-            would use rather than as a full sentence.
+            Mapping of field name (``title`` or ``content``) to the text
+            that field is compared with by meaning, so a task described in
+            any words finds the procedure for it. With several fields, an
+            entry ranks by its average similarity across them.
         k : int, default 10
             Maximum number of results to return. Must be <= 1000.
 
         Returns
         -------
         List[Guidance]
-            Up to *k* rows ranked by how many distinct query words they
-            contain, backfilled with the newest remaining entries when
-            fewer than *k* match.
+            Up to *k* rows, most similar first; the newest entries when no
+            reference text is given.
         """
         raise NotImplementedError
 
