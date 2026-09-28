@@ -244,6 +244,41 @@ async def test_read_only_session_zero_branches_off_the_bound_sandbox():
 
 
 @pytest.mark.asyncio
+@_handle_project
+async def test_inspect_state_session_zero_is_the_bound_sandbox():
+    """Session 0 is the per-call sandbox for inspect_state, as it is for execution.
+
+    The session list_sessions reports as 0 can be inspected by that id, and
+    reads the same state as inspecting with no selector.
+    """
+    actor = CodeActActor(environments=[])
+    tools = actor.get_tools("act")
+    execute_code = tools["execute_code"]
+    list_sessions = tools["list_sessions"]
+    inspect_state = tools["inspect_state"]
+    sandbox = PythonExecutionSession(environments={})
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        seeded = await execute_code(
+            thought="Seed the session.",
+            code="total = 8",
+        )
+        assert seeded.error is None
+
+        listed = await list_sessions()
+        assert [s["session_id"] for s in listed["sessions"]] == [0]
+
+        by_id = await inspect_state(session_id=0)
+        assert by_id == await inspect_state()
+        assert by_id["session"]["session_id"] == 0
+        assert "total" in by_id["state"]["variables"]
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
+
+
+@pytest.mark.asyncio
 async def test_session_executor_isolation_between_python_sessions():
     ex = SessionExecutor(
         environments={},

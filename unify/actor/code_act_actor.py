@@ -3719,8 +3719,8 @@ class CodeActActor(BaseCodeActActor):
             """
             detail = (detail or "summary").strip()
 
-            # Resolve session.
-            resolved: SessionKey | None = None
+            # Resolve session; with no selector, session 0.
+            resolved: SessionKey | None = 0
             if session_name:
                 resolved = self._resolve_session_name(session_name)
                 if resolved is None:
@@ -3731,55 +3731,10 @@ class CodeActActor(BaseCodeActActor):
             elif session_id is not None:
                 resolved = int(session_id)
 
-            # Default: current sandbox.
-            if resolved is None:
-                try:
-                    sb = _CURRENT_SANDBOX.get()
-                except Exception as e:
-                    return {
-                        "error": f"No sandbox bound: {type(e).__name__}",
-                        "error_type": "internal",
-                    }
-
-                names: list[str] = []
-                full_map: dict[str, str] = {}
-                for k, v in sb.global_state.items():
-                    if not isinstance(k, str) or k.startswith("_"):
-                        continue
-                    if callable(v) or isinstance(v, type):
-                        continue
-                    names.append(k)
-                    if detail == "full":
-                        try:
-                            s = repr(v)
-                            if len(s) > 500:
-                                s = s[:500] + "..."
-                        except Exception:
-                            s = f"<{type(v).__name__}>"
-                        full_map[k] = s
-
-                names = sorted(names)
-                state_obj: dict[str, Any]
-                if detail == "full":
-                    state_obj = {"variables": full_map, "functions": []}
-                else:
-                    state_obj = {"variables": names, "functions": []}
-
-                return {
-                    "session": {
-                        "session_id": 0,
-                        "session_name": self._get_session_name(session_id=0),
-                    },
-                    "state": state_obj,
-                }
-
-            sid = resolved
-            sb = self._session_executor._python_sessions.get(
-                int(sid),
-            )  # pylint: disable=protected-access
+            sb = self._session_executor.python_session(session_id=resolved)
             if sb is None:
                 return {
-                    "error": f"Session {sid} not found",
+                    "error": f"Session {resolved} not found",
                     "error_type": "validation",
                 }
             names: list[str] = []
@@ -3805,8 +3760,8 @@ class CodeActActor(BaseCodeActActor):
             }
             return {
                 "session": {
-                    "session_id": int(sid),
-                    "session_name": self._get_session_name(session_id=int(sid)),
+                    "session_id": resolved,
+                    "session_name": self._get_session_name(session_id=resolved),
                 },
                 "state": state_obj,
             }

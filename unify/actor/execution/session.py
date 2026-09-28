@@ -795,11 +795,13 @@ class SessionExecutor:
         """
         return _CURRENT_SANDBOX.get(None) if session_id == 0 else None
 
+    def python_session(self, *, session_id: int) -> PythonExecutionSession | None:
+        """The session ``session_id`` names, bound or executor-managed, if any."""
+        bound = self._bound_sandbox(session_id)
+        return bound if bound is not None else self._python_sessions.get(session_id)
+
     def has_python_session(self, *, session_id: int) -> bool:
-        return (
-            self._bound_sandbox(session_id) is not None
-            or session_id in self._python_sessions
-        )
+        return self.python_session(session_id=session_id) is not None
 
     def list_in_process_python_sessions(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -949,7 +951,7 @@ class SessionExecutor:
 
         if state_mode == "read_only":
             # Create a throwaway sandbox seeded with current state.
-            base = bound if bound is not None else self._python_sessions.get(key)
+            base = self.python_session(session_id=key)
             if base is None:
                 raise ValueError(
                     f"Session {key} not found for read_only execution",
