@@ -128,6 +128,8 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
 
         self._steps_taken = 0
         self._step_lock = threading.Lock()
+        # Interjections received so far, which the result reports as applied.
+        self._guidance: list[str] = []
         # Track remaining time (freezes while paused)
         self._remaining_duration: float | None = duration
         self._last_started_at: float | None = None
@@ -164,7 +166,7 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
     def clarification_down_q(self) -> Optional[asyncio.Queue[str]]:
         return self._clarification_down_q
 
-    def _run_actions(self, request: str) -> None:
+    def _run_actions(self) -> None:
         try:
             while True:
                 if self._requests_clarification:
@@ -205,14 +207,16 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
                     and (time.monotonic() - self._last_started_at)
                     >= self._remaining_duration
                 ):
-                    msg = (
-                        f"Completed '{request}' after {self._duration}\u2009s duration."
+                    self._complete(
+                        self._completion_message(
+                            f"after {self._duration}\u2009s duration",
+                        ),
                     )
-                    self._complete(msg)
                     return
                 if self._steps is not None and self._steps_taken >= (self._steps or 0):
-                    msg = f"Completed '{request}' in {self._steps} steps."
-                    self._complete(msg)
+                    self._complete(
+                        self._completion_message(f"in {self._steps} steps"),
+                    )
                     return
                 self._pause_event.wait()
                 time.sleep(0.1)
@@ -230,7 +234,6 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
         self._last_started_at = time.monotonic()
         self._action_thread = threading.Thread(
             target=self._run_actions,
-            args=(self._request,),
             daemon=True,
         )
         self._action_thread.start()
@@ -255,6 +258,19 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
 
             self._monitor_thread = threading.Thread(target=_monitor, daemon=True)
             self._monitor_thread.start()
+
+    def _completion_message(self, how: str) -> str:
+        """The result of finishing the request *how*, with the guidance applied.
+
+        A real actor folds an interjection into the work it is doing, so its
+        result reflects the correction; reporting only the original request
+        would read as if the correction had been ignored.
+        """
+        message = f"Completed '{self._request}' {how}."
+        if self._guidance:
+            applied = "; ".join(f"'{g}'" for g in self._guidance)
+            message += f" Guidance applied: {applied}"
+        return message
 
     def _complete(self, message: str) -> None:
         if not self._done_event.is_set():
@@ -286,9 +302,7 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
             with self._step_lock:
                 self._steps_taken += 1
             if self._steps is not None and self._steps_taken >= self._steps:
-                self._complete(
-                    f"Completed '{self._request}' in {self._steps} steps.",
-                )
+                self._complete(self._completion_message(f"in {self._steps} steps"))
             # Emit steps remaining after each user-visible interaction that consumes a step
             try:
                 if self._steps is not None:
@@ -370,6 +384,11 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
     ) -> None:
         if not self._request:
             raise Exception("No actions are currently being performed.")
+        # Read before the step: a step that finishes the action clears it.
+        request = self._request
+        # Recorded before the step, so a step that finishes the action
+        # reports this interjection among the guidance it applied.
+        self._guidance.append(str(message))
         self.simulate_step()
 
         # Human-facing interject log (lineage-aligned)
@@ -385,7 +404,7 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
             pass
 
         # Compose prompt (kept consistent with previous behaviour)
-        prompt = f"Current simulated actions:\n{self._request}\n\n"
+        prompt = f"Current simulated actions:\n{request}\n\n"
         # Unified LLM roundtrip (includes timing, gated body, and optional dumps)
         try:
             _sys = getattr(self._llm, "system_message", None)
@@ -443,9 +462,13 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
         Returns:
             A SteerableToolHandle whose result() returns the answer string.
         """
-        if not self._request:
-            raise Exception("No actions are currently being performed.")
-        self.simulate_step()
+        if self._done_event.is_set():
+            # A finished action still answers for what it did, as a real
+            # one answers a follow-up about its completed run.
+            subject = f"You have finished simulating these actions:\n{self._result_str}"
+        else:
+            subject = f"You are working on simulating these actions:\n{self._request}"
+            self.simulate_step()
         # Build a concise child label consistent with simulated scheduler
         try:
             q_label = SimulatedLineage.question_label(self._log_label)
@@ -456,10 +479,7 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
         except Exception:
             pass
 
-        prompt = (
-            f"You are working on simulating these actions:\n{self._request}\n\n"
-            f"User asks: {question}"
-        )
+        prompt = f"{subject}\n\nUser asks: {question}"
         try:
             _sys = getattr(self._llm, "system_message", None)
         except Exception:
@@ -491,7 +511,7 @@ class SimulatedActorHandle(BaseActorHandle, SimulatedHandleMixin):
             msg = (
                 result
                 if result is not None
-                else f"Completed '{self._request}' (triggered)."
+                else self._completion_message("(triggered)")
             )
             self._complete(msg)
         # Delegate to the mixin to open the shared gate.

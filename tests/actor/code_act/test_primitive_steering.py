@@ -53,8 +53,9 @@ TOOL_RESULT_WAIT = ACTOR_TIMEOUT
 # in-test assertions are what fail rather than pytest killing the test first.
 TEST_TIMEOUT = RESULT_WAIT + 90.0
 
-# Wall-clock life of each simulated sub-actor: long enough to be steered
-# mid-flight, short enough that the outer loop finishes promptly.
+# Wall-clock life of a simulated sub-actor that finishes on its own: long
+# enough for the test's own steering calls to reach it mid-flight, short
+# enough that the outer loop finishes promptly.
 SUB_ACTOR_DURATION = 3.0
 
 
@@ -63,13 +64,22 @@ SUB_ACTOR_DURATION = 3.0
 # ────────────────────────────────────────────────────────────────────────────
 
 
-def _simulate_sub_actors(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Back ``primitives.actor.act`` with a SimulatedActor per call."""
+def _simulate_sub_actors(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    steps: int | None = None,
+    duration: float | None = SUB_ACTOR_DURATION,
+) -> list[str]:
+    """Back ``primitives.actor.act`` with a SimulatedActor per call.
+
+    Each sub-actor finishes after ``steps`` steering calls (interject, ask,
+    pause, resume) or ``duration`` seconds, whichever comes first.
+    """
     requests: list[str] = []
 
     async def _impl(request: str, **kwargs):
         requests.append(request)
-        return await SimulatedActor(duration=SUB_ACTOR_DURATION).act(
+        return await SimulatedActor(steps=steps, duration=duration).act(
             request,
             clarification_enabled=False,
         )
@@ -168,7 +178,12 @@ async def test_execute_function_primitive_steering(monkeypatch):
 @pytest.mark.timeout(TEST_TIMEOUT)
 async def test_execute_code_mode_selection_realistic_steerable_intent(monkeypatch):
     """Natural request that implies mid-flight control should return a handle."""
-    _simulate_sub_actors(monkeypatch)
+    # The request promises a refinement while the sub-actor is underway, so
+    # the sub-actor must still be running when it arrives, however long the
+    # model takes to forward it: it finishes on the first steering it gets.
+    # Anchoring completion to that tool call rather than to a clock racing
+    # the model's turns also puts it in the same place on every replay.
+    requests = _simulate_sub_actors(monkeypatch, steps=1, duration=None)
     actor = CodeActActor(
         environments=[ActorEnvironment()],
         timeout=ACTOR_TIMEOUT,
@@ -200,10 +215,18 @@ async def test_execute_code_mode_selection_realistic_steerable_intent(monkeypatc
             "without awaiting .result() for steerable user intent.\n"
             f"Snippets:\n{chr(10).join(snippets)}"
         )
+        assert requests, (
+            "Expected execute_code to launch the sub-actor, not only name it.\n"
+            f"Snippets:\n{chr(10).join(snippets)}"
+        )
 
         await handle.interject("Also cover the Munich office.")
         result = await asyncio.wait_for(handle.result(), timeout=RESULT_WAIT)
         assert result is not None, "Expected a non-None result from the actor"
+        assert len(requests) == 1, (
+            "Expected the refinement to reach the running sub-actor rather than "
+            f"a relaunch; sub-actors launched: {requests}"
+        )
     finally:
         try:
             if handle is not None and not handle.done():
