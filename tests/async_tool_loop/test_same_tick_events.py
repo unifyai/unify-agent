@@ -1,16 +1,23 @@
-"""An LLM step that finishes in the same wake-up as other events wins the race.
+"""Events that land in the same tick of the tool loop's waits.
 
-Section D races the in-flight step against tool completions, interjections,
-clarifications and notifications. When the loop wakes with the step already
-answered and one of those alongside it, the stateful client has already
-inserted the reply into the transcript, so the reply must be processed: the
-other events are handled as if they arrived just after it, never in its place.
+The loop waits on tool completions, interjections, clarifications and
+notifications in two places: section A while no LLM step is in flight, and
+section D, which races them against the in-flight step. Several can land in
+one wake-up, and a cached replay, where a hit resolves within milliseconds,
+makes such ties common.
 
-The step is scripted in place of the provider behind ``client.generate``, and
+When the step has already answered, the stateful client has inserted the reply
+into the transcript, so the reply must be processed: the other events are
+handled as if they arrived just after it, never in its place. When an event
+supersedes the step instead, or section A observes the tick, nothing that
+landed in it is dropped, and the next request is the same whichever of the two
+sections observed it.
+
+Each step is scripted in place of the provider behind ``client.generate``, and
 each reply is inserted at the transcript index captured at dispatch, as the
-stateful client does. The same-tick event is raised from inside the step, so
-the loop's waiter has taken it before the loop wakes to the finished step. No
-LLM calls.
+stateful client does. An event meant to land during a step is raised from
+inside it, so the loop's waiter has taken it before the loop wakes. No LLM
+calls.
 """
 
 from __future__ import annotations
@@ -284,6 +291,139 @@ async def test_reply_runs_before_an_event_that_lands_alongside_it(
     )
     assert reply_at < event_at, "the event must be handled after the reply"
     assert _unanswered_calls(last_prompt) == []
+
+
+async def _request_after_tick(
+    llm_config,
+    events: tuple[str, str],
+    *,
+    during_step: bool,
+) -> list[dict]:
+    """Land both *events* in one tick and return the next answered request.
+
+    With *during_step* the tick lands while section D races a step, which the
+    events supersede; otherwise it lands while section A waits on the tools.
+    The interjection that grants the raced step is left out of the returned
+    request, so the two runs compare message for message.
+    """
+    client = new_llm_client(**llm_config)
+    client.set_system_message("This turn is fully scripted by the test.")
+
+    gate, gated_tool = make_gated_async_tool("slow-done")
+    running: dict[str, asyncio.Task] = {}
+    channels: dict[str, asyncio.Queue] = {}
+
+    async def slow_tool() -> str:
+        running["slow"] = asyncio.current_task()
+        return await gated_tool()
+
+    async def listener(
+        _interject_queue: asyncio.Queue | None = None,
+        _notification_up_q: asyncio.Queue | None = None,
+        _clarification_up_q: asyncio.Queue | None = None,
+        _clarification_down_q: asyncio.Queue | None = None,
+    ) -> str:
+        channels["notification"] = _notification_up_q
+        channels["clarification"] = _clarification_up_q
+        return await _interject_queue.get()
+
+    async def land_tick() -> None:
+        # Queued events are raised before the tool is released, so each
+        # waiter has taken its event by the time the tool's completion wakes
+        # the loop.
+        for event in events:
+            if event == "interjection":
+                await handle.interject(_SAME_TICK_EVIDENCE[event])
+            elif event == "notification":
+                channels[event].put_nowait({"message": _SAME_TICK_EVIDENCE[event]})
+            elif event == "clarification":
+                channels[event].put_nowait(_SAME_TICK_EVIDENCE[event])
+        if "tool_result" in events:
+            gate.set()
+            await running["slow"]
+
+    async def start_both() -> dict:
+        return _calls(
+            _tool_call("call_slow", "slow_tool", {}),
+            _tool_call("call_listener", "listener", {}),
+        )
+
+    async def land_tick_and_hang() -> dict:
+        await land_tick()
+        await asyncio.Event().wait()  # the tick supersedes this step
+        raise AssertionError("a superseded step is cancelled")
+
+    async def finish() -> dict:
+        return _text("done")
+
+    steps = _ScriptedSteps(
+        client,
+        (
+            [start_both, land_tick_and_hang, finish]
+            if during_step
+            else [start_both, finish]
+        ),
+    )
+    client.generate = steps
+
+    handle = start_async_tool_loop(
+        client=client,
+        message="start",
+        tools={"slow_tool": slow_tool, "listener": listener},
+        max_steps=20,
+        timeout=30,
+    )
+    await _wait_for_tool_request(client, "listener")
+
+    async def _listener_started() -> bool:
+        return "notification" in channels
+
+    # Nothing yields between scheduling the tools and section A's wait, so a
+    # tool's first step runs only once the loop is waiting there.
+    await _wait_for_condition(_listener_started, poll=0.01, timeout=10.0)
+    if during_step:
+        await handle.interject("continue")
+    else:
+        await land_tick()
+
+    assert await asyncio.wait_for(handle.result(), timeout=30) == "done"
+    assert len(steps.prompts) == (3 if during_step else 2)
+    return [
+        m
+        for m in steps.prompts[-1]
+        if not (m.get("_interjection") and m.get("content") == "continue")
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "events",
+    [
+        ("tool_result", "notification"),
+        ("tool_result", "interjection"),
+        ("tool_result", "clarification"),
+        ("interjection", "notification"),
+        ("interjection", "clarification"),
+        ("clarification", "notification"),
+    ],
+    ids="+".join,
+)
+async def test_a_tick_is_taken_in_whole_and_the_same_by_either_wait(
+    llm_config,
+    events: tuple[str, str],
+) -> None:
+    """Both events of a tick reach the next request, which is the same
+    whether section A observed the tick or section D, superseding a step."""
+    seen_by_tool_wait = await _request_after_tick(llm_config, events, during_step=False)
+    seen_by_llm_race = await _request_after_tick(llm_config, events, during_step=True)
+
+    for event in events:
+        assert any(
+            _SAME_TICK_EVIDENCE[event] in str(m.get("content"))
+            for m in seen_by_tool_wait
+        ), f"the {event} was dropped"
+    assert seen_by_llm_race == seen_by_tool_wait
 
 
 def test_requeue_at_front_keeps_the_queue_order() -> None:

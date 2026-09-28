@@ -1389,6 +1389,63 @@ async def async_tool_loop_inner(
                     },
                 )
 
+    async def _ingest_tick(
+        done: Set[asyncio.Task],
+        interject_w: asyncio.Task,
+        clar_waiters: Dict[asyncio.Task, asyncio.Task],
+        notif_waiters: Dict[asyncio.Task, asyncio.Task],
+    ) -> Tuple[bool, bool]:
+        """Take in what one wake-up brought, other than a stop and the LLM's
+        own answer. Section A's wait and a race that section D lets supersede
+        the LLM step both use it, so the transcript does not depend on which
+        of the two observed the tick, and nothing a waiter took off a queue is
+        dropped.
+
+        An interjection goes back on its queue for the drain. Clarifications,
+        then notifications, each in call_id order, are delivered and earn the
+        model a turn. Finished tools are ingested in call_id order, unless an
+        interjection or a clarification came with them: the loop then goes
+        back to the top first, and section C's sweep ingests them there.
+
+        Returns ``(needs_turn, restart)``: whether the model is owed a turn,
+        and whether the caller must go back to the top of the loop.
+        """
+
+        def _source_call_id(item: Tuple[asyncio.Task, asyncio.Task]) -> str:
+            return tools_data.info[item[1]].call_id
+
+        if interject_w in done:
+            await interject_queue.put(interject_w.result())
+        needs_turn = False
+        for waiters, deliver in (
+            (clar_waiters, _handle_clarification),
+            (notif_waiters, _handle_notification),
+        ):
+            for waiter, src in sorted(
+                (item for item in waiters.items() if item[0] in done),
+                key=_source_call_id,
+            ):
+                await deliver(src, waiter.result())
+                needs_turn = True
+        if interject_w in done or done & clar_waiters.keys():
+            return needs_turn, True
+        finished = done & tools_data.pending
+        if finished:
+            logger.debug(
+                f"⏱️ [ToolLoop] {len(finished)} tool task(s) completed, "
+                f"{len(tools_data.pending) - len(finished)} still pending",
+            )
+        for task in _sort_completed_tasks_by_call_id(finished, tools_data):
+            if await tools_data.process_completed_task(
+                task=task,
+                consecutive_failures=consecutive_failures,
+                outer_handle_container=outer_handle_container,
+                assistant_meta=assistant_meta,
+                msg_dispatcher=_msg_dispatcher,
+            ):
+                needs_turn = True
+        return needs_turn, False
+
     # True whenever the LLM must get an immediate turn before the loop waits
     # again (user interjection, clarification answer, etc.).
     llm_turn_required = False
@@ -1946,60 +2003,23 @@ async def async_tool_loop_inner(
                         aux.cancel()
                         await asyncio.gather(aux, return_exceptions=True)
 
-                if interject_w in done:
-                    # Re-queued so the drain at the top handles it.
-                    await interject_queue.put(interject_w.result())
-                    continue  # → loop, will be processed in 0.
+                # Cancellation wins. A stop queues its mirrored stop before it
+                # sets the cancel event, and the mirror is the only propagation
+                # path to children, so when the mirror was taken alongside the
+                # stop it is re-queued below, and the loop ends once the drain
+                # has dispatched it.
+                if cancel_waiter in done and interject_w not in done:
+                    raise asyncio.CancelledError
 
-                if cancel_waiter in done:
-                    # Cancellation wins; the mirrored stop is the only
-                    # propagation path to children.
-                    raise asyncio.CancelledError  # cancellation wins
-
-                # A clarification request from a child gets the assistant an
-                # immediate turn; notifications from the same tick are
-                # ingested first.
-                if done & clar_waiters.keys():
-                    for cw in done & clar_waiters.keys():
-                        await _handle_clarification(clar_waiters[cw], cw.result())
-
-                    if done & notif_waiters.keys():
-                        for pw in done & notif_waiters.keys():
-                            await _handle_notification(notif_waiters[pw], pw.result())
-
-                    llm_turn_required = True
-                    continue
-
-                # A progress notification also earns an immediate LLM turn.
-                if done & notif_waiters.keys():
-                    for pw in done & notif_waiters.keys():
-                        await _handle_notification(notif_waiters[pw], pw.result())
-                    llm_turn_required = True
-
-                needs_turn = False
-                # Helper waiters are excluded; only real tool tasks complete.
-                _completed_tools = done & tools_data.pending
-                if _completed_tools:
-                    logger.debug(
-                        f"⏱️ [ToolLoop] {len(_completed_tools)} tool task(s) completed, "
-                        f"{len(tools_data.pending) - len(_completed_tools)} still pending",
-                    )
-                for task in _sort_completed_tasks_by_call_id(
-                    _completed_tools,
-                    tools_data,
-                ):
-                    if await tools_data.process_completed_task(
-                        task=task,
-                        consecutive_failures=consecutive_failures,
-                        outer_handle_container=outer_handle_container,
-                        assistant_meta=assistant_meta,
-                        msg_dispatcher=_msg_dispatcher,
-                    ):
-                        needs_turn = True
-
+                needs_turn, restart = await _ingest_tick(
+                    done,
+                    interject_w,
+                    clar_waiters,
+                    notif_waiters,
+                )
                 if needs_turn:
                     llm_turn_required = True
-                if tools_data.pending:
+                if restart or tools_data.pending:
                     continue  # jump to top-of-loop
 
             # ── B. Wait for remaining tools before asking the LLM again,
@@ -2527,41 +2547,72 @@ async def async_tool_loop_inner(
                     else:
                         done = {llm_task} | (done & pending_snapshot)
 
-                # A tool finished before the LLM answered.
-                if done & pending_snapshot:
-                    logger.debug(
-                        f"⏱️ [ToolLoop] tool(s) finished during LLM race: "
-                        f"{len(done & pending_snapshot)} completed",
-                    )
-                    if not interrupt_llm_on_tool_completion:
-                        # Patient mode: the reasoning step already sent its
-                        # prompt to the provider, which bills it whether or not
-                        # the answer is collected, so discarding it to re-ask
-                        # with the tool result costs a whole step and buys only
-                        # latency. Let it finish and be used instead.
-                        #
-                        # The results still have to be ingested here: leaving the
-                        # task pending makes section F read it as work in flight,
-                        # and ``cancel_pending_tasks`` drops it without
-                        # processing, losing the very result this branch fired
-                        # for. ``deferred_llm_turn`` then guarantees a further
-                        # turn, so the model always sees these results before it
-                        # can conclude; it reasons one step behind, never without.
-                        #
-                        # Order matters. The step is awaited first so its own
-                        # assistant message can be captured, because ingesting a
-                        # result whose placeholder is no longer at the tail
-                        # appends a synthetic assistant/tool status pair, and the
-                        # loop would otherwise mistake that pair's tool message
-                        # for this step's turn.
-                        deferred_llm_turn = True
+                _finished = done & pending_snapshot
+                _interjection = interject_w.result() if interject_w in done else None
+                _patient_interjection = isinstance(_interjection, dict) and not (
+                    _interjection.get("trigger_immediate_llm_turn", True)
+                )
+
+                # A tool result (outside patient mode), an immediate
+                # interjection, a clarification or a notification supersedes
+                # the step. It is cancelled, so the next one starts with the
+                # event in context, and the tick is taken in exactly as
+                # section A takes in the same tick, everything that came with
+                # the event included.
+                if (
+                    (_finished and interrupt_llm_on_tool_completion)
+                    or (interject_w in done and not _patient_interjection)
+                    or done & clar_waiters2.keys()
+                    or done & notif_waiters2.keys()
+                ):
+                    if _finished:
+                        logger.debug(
+                            f"⏱️ [ToolLoop] tool(s) finished during LLM race: "
+                            f"{len(_finished)} completed",
+                        )
+                    if not llm_task.done():
+                        llm_task.cancel()
                         await asyncio.gather(llm_task, return_exceptions=True)
+                    needs_turn, _ = await _ingest_tick(
+                        done,
+                        interject_w,
+                        clar_waiters2,
+                        notif_waiters2,
+                    )
+                    if needs_turn:
+                        llm_turn_required = True
+                    continue
+
+                # Nothing superseded the step, so it finishes and is used, and
+                # the model is owed exactly one further turn after it. A patient
+                # interjection goes back on its queue for the drain.
+                #
+                # Patient mode lets the step finish over a tool result too: the
+                # step already sent its prompt to the provider, which bills it
+                # whether or not the answer is collected, so discarding it to
+                # re-ask with the tool result costs a whole step and buys only
+                # latency. The results still have to be ingested here: leaving
+                # the task pending makes section F read it as work in flight,
+                # and ``cancel_pending_tasks`` drops it without processing,
+                # losing the very result that landed. ``deferred_llm_turn``
+                # then guarantees a further turn, so the model always sees these
+                # results before it can conclude; it reasons one step behind,
+                # never without.
+                #
+                # Order matters. The step is awaited first so its own assistant
+                # message can be captured, because ingesting a result whose
+                # placeholder is no longer at the tail appends a synthetic
+                # assistant/tool status pair, and the loop would otherwise
+                # mistake that pair's tool message for this step's turn.
+                if _finished or interject_w in done:
+                    deferred_llm_turn = True
+                    await asyncio.gather(llm_task, return_exceptions=True)
+                    if interject_w in done:
+                        await interject_queue.put(_interjection)
+                    if _finished:
                         _patient_asst_msg = client.messages[-1]
-                        completed_snapshot = {
-                            task for task in pending_snapshot if task.done()
-                        }
                         for task in _sort_completed_tasks_by_call_id(
-                            completed_snapshot,
+                            {task for task in pending_snapshot if task.done()},
                             tools_data,
                         ):
                             await tools_data.process_completed_task(
@@ -2571,96 +2622,13 @@ async def async_tool_loop_inner(
                                 assistant_meta=assistant_meta,
                                 msg_dispatcher=_msg_dispatcher,
                             )
-                    else:
-                        # Cancel the half-finished reasoning step, then handle
-                        # each newly-finished task exactly as branch A does.
-                        if not llm_task.done():
-                            llm_task.cancel()
-                        for aux in (interject_w, cancel_waiter):
-                            if aux not in done and not aux.done():
-                                aux.cancel()
-                        await asyncio.gather(
-                            llm_task,
-                            interject_w,
-                            cancel_waiter,
-                            return_exceptions=True,
-                        )
-                        needs_turn = False
-                        for task in _sort_completed_tasks_by_call_id(
-                            done & pending_snapshot,
-                            tools_data,
-                        ):
-                            if await tools_data.process_completed_task(
-                                task=task,
-                                consecutive_failures=consecutive_failures,
-                                outer_handle_container=outer_handle_container,
-                                assistant_meta=assistant_meta,
-                                msg_dispatcher=_msg_dispatcher,
-                            ):
-                                needs_turn = True
-
-                        if needs_turn:  # assistant speaks only if needed
-                            llm_turn_required = True
-                        continue
-
-                # The user interjected. Immediate unless the interjection
-                # itself says otherwise.
-                if interject_w in done:
-                    _payload = None
-                    try:
-                        _payload = interject_w.result()
-                    except Exception:
-                        _payload = None
-                    _immediate = True
-                    try:
-                        if isinstance(_payload, dict):
-                            _immediate = bool(
-                                _payload.get("trigger_immediate_llm_turn", True),
-                            )
-                    except Exception:
-                        _immediate = True
-                    # Re-queued for the main drain path.
-                    await interject_queue.put(_payload)
-                    if _immediate:
-                        if not llm_task.done():
-                            llm_task.cancel()
-                            await asyncio.gather(llm_task, return_exceptions=True)
-                        continue  # top of loop
-                    # Patient: let the in-flight LLM call finish and schedule
-                    # exactly one subsequent LLM turn after it.
-                    deferred_llm_turn = True
-                    if not llm_task.done():
-                        await asyncio.gather(llm_task, return_exceptions=True)
-
-                # A clarification bubbled up while the LLM was thinking:
-                # cancel the step, surface the request, restart so the next
-                # assistant turn can ingest it.
-                if done & set(clar_waiters2.keys()):
-                    if not llm_task.done():
-                        llm_task.cancel()
-                        await asyncio.gather(llm_task, return_exceptions=True)
-                    for cw in done & set(clar_waiters2.keys()):
-                        await _handle_clarification(clar_waiters2[cw], cw.result())
-                    llm_turn_required = True
-                    continue
-
-                # Likewise for a notification.
-                if done & set(notif_waiters2.keys()):
-                    if not llm_task.done():
-                        llm_task.cancel()
-                        await asyncio.gather(llm_task, return_exceptions=True)
-                    for pw in done & set(notif_waiters2.keys()):
-                        await _handle_notification(notif_waiters2[pw], pw.result())
-                    llm_turn_required = True
-                    continue
 
                 # Cancellation only escalates when the flag is actually set.
-                if cancel_waiter in done:
-                    if cancel_event.is_set():
-                        if not llm_task.done():
-                            llm_task.cancel()
-                            await asyncio.gather(llm_task, return_exceptions=True)
-                        raise asyncio.CancelledError
+                if cancel_waiter in done and cancel_event.is_set():
+                    if not llm_task.done():
+                        llm_task.cancel()
+                        await asyncio.gather(llm_task, return_exceptions=True)
+                    raise asyncio.CancelledError
 
                 # The LLM finished.
                 if llm_task.cancelled():
