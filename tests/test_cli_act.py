@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
+import pty
 import sys
 from types import SimpleNamespace
 
@@ -63,6 +65,7 @@ class _FakeHandle:
     def __init__(self) -> None:
         self.answers: list[tuple[str, str]] = []
         self.interjections: list[str] = []
+        self.interjected = asyncio.Event()
         self.stopped: str | None = None
 
     async def answer_clarification(self, call_id: str, answer: str) -> None:
@@ -70,6 +73,7 @@ class _FakeHandle:
 
     async def interject(self, message: str) -> None:
         self.interjections.append(message)
+        self.interjected.set()
 
     async def stop(self, reason: str | None = None) -> None:
         self.stopped = reason
@@ -98,10 +102,35 @@ async def test_typed_lines_answer_pending_questions_else_steer(monkeypatch):
     assert handle.stopped == SESSION_ENDED
 
 
+@pytest.mark.asyncio
+async def test_reading_a_terminal_leaves_it_blocking(monkeypatch):
+    """A terminal's stdin, stdout and stderr are one open file. Were reading
+    stdin to make it non-blocking, any write the terminal could not take at
+    once would fail with BlockingIOError instead of waiting for it."""
+    controller, terminal = pty.openpty()
+    monkeypatch.setattr(sys, "stdin", os.fdopen(terminal, "r"))
+    session = Act(SimpleNamespace(persist=True, quiet=True, jsonl=False))
+    handle = _FakeHandle()
+    session._handle = handle
+
+    reader = asyncio.create_task(session._read_lines())
+    os.write(controller, b"a follow-up\n")
+    await asyncio.wait_for(handle.interjected.wait(), timeout=5)
+    assert os.get_blocking(terminal)
+
+    os.write(controller, b"/quit\n")
+    await asyncio.wait_for(reader, timeout=5)
+    os.close(controller)
+
+
 @pytest.mark.llm_call
 @pytest.mark.asyncio
-async def test_act_runs_one_request_and_prints_the_result(capsys):
+async def test_act_runs_one_request_and_prints_the_result(capsys, monkeypatch):
     """The direct mode answers a request without any conversation loop."""
+    # Whether stdin is a terminal decides whether the actor may ask
+    # questions, and so the tools the model is offered: pin it rather than
+    # inherit the runner's.
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
     args = _parse_args(
         ["act", "--no-store", "--quiet", "Reply with exactly the single word: pong"],
     )

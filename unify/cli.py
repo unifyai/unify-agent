@@ -18,12 +18,14 @@ Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import asyncio
 import os
 import shutil
 import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -346,6 +348,34 @@ class Chat:
         return False
 
 
+@contextlib.contextmanager
+def _stdin_reader() -> Iterator[asyncio.StreamReader]:
+    """Stream stdin into a reader on the running loop, leaving stdin blocking.
+
+    A pipe transport would switch stdin to non-blocking, and a terminal's
+    stdin, stdout and stderr are one open file: every write the terminal
+    could not take at once would then fail with BlockingIOError. Reading
+    only once the descriptor is readable never blocks the loop.
+    """
+    loop = asyncio.get_running_loop()
+    fd = sys.stdin.fileno()
+    reader = asyncio.StreamReader()
+
+    def feed() -> None:
+        data = os.read(fd, 65536)
+        if data:
+            reader.feed_data(data)
+        else:
+            loop.remove_reader(fd)
+            reader.feed_eof()
+
+    loop.add_reader(fd, feed)
+    try:
+        yield reader
+    finally:
+        loop.remove_reader(fd)
+
+
 class Act:
     """One actor driven from the terminal, with no conversation loop above it."""
 
@@ -447,54 +477,49 @@ class Act:
 
     async def _read_lines(self) -> None:
         """Route typed lines: answer a pending question, else steer the actor."""
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        await loop.connect_read_pipe(
-            lambda: asyncio.StreamReaderProtocol(reader),
-            sys.stdin,
-        )
-        while not self._closing.is_set():
-            raw = await reader.readline()
-            if not raw:
-                if self._args.persist:
+        with _stdin_reader() as reader:
+            while not self._closing.is_set():
+                raw = await reader.readline()
+                if not raw:
+                    if self._args.persist:
+                        from unify.actor.code_act_actor import SESSION_ENDED
+
+                        await self._handle.stop(SESSION_ENDED)
+                    return
+                line = raw.decode(errors="replace").strip()
+                if not line:
+                    continue
+                if self._args.jsonl:
+                    try:
+                        item = json.loads(line)
+                    except ValueError:
+                        self._progress(
+                            f"ignored a stdin line that is not JSON: {line[:80]!r}",
+                        )
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("quit"):
+                        line = "/quit"
+                    else:
+                        message = item.get("message")
+                        if not isinstance(message, str) or not message:
+                            continue
+                        line = message
+                if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
+                    self._progress("session ended; reviewing the work for storage")
                     await self._handle.stop(SESSION_ENDED)
-                return
-            line = raw.decode(errors="replace").strip()
-            if not line:
-                continue
-            if self._args.jsonl:
-                try:
-                    item = json.loads(line)
-                except ValueError:
-                    self._progress(
-                        f"ignored a stdin line that is not JSON: {line[:80]!r}",
+                    return
+                if not self._pending_clarifications.empty():
+                    clar = await self._pending_clarifications.get()
+                    await self._handle.answer_clarification(
+                        str(clar.get("call_id") or ""),
+                        line,
                     )
                     continue
-                if not isinstance(item, dict):
-                    continue
-                if item.get("quit"):
-                    line = "/quit"
-                else:
-                    message = item.get("message")
-                    if not isinstance(message, str) or not message:
-                        continue
-                    line = message
-            if line in {"/quit", "/exit", "/q"}:
-                from unify.actor.code_act_actor import SESSION_ENDED
-
-                self._progress("session ended; reviewing the work for storage")
-                await self._handle.stop(SESSION_ENDED)
-                return
-            if not self._pending_clarifications.empty():
-                clar = await self._pending_clarifications.get()
-                await self._handle.answer_clarification(
-                    str(clar.get("call_id") or ""),
-                    line,
-                )
-                continue
-            await self._handle.interject(line)
+                await self._handle.interject(line)
 
     # ── run ──────────────────────────────────────────────────────────────
 
