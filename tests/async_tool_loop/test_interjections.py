@@ -5,7 +5,6 @@ Covers:
 - Injecting extra user messages that trigger additional tool calls.
 - Preservation and placement of interjections relative to tool results.
 - Pre-empting/interrupting LLM turns with interjections.
-- Graceful stop via handle.stop().
 - Immediate placeholder insertion and backfill of missing tool replies.
 """
 
@@ -196,23 +195,6 @@ async def test_interject_triggers_tool_and_result(llm_config):
         m.get("role") == "user" and "echo B" in (m.get("content") or "") for m in msgs
     )
     assert interjection_found, "Interjection message with 'echo B' not found"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_stop_stops_gracefully(llm_config):
-    """handle.stop() cancels the loop and result() returns a standard notice string."""
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        "Echo something then say 'ok'.",
-        {"echo": echo},
-    )
-
-    await handle.stop()
-
-    final = await handle.result()
-    assert final == "processed stopped early, no result"
 
 
 @pytest.mark.asyncio

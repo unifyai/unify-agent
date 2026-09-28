@@ -239,6 +239,14 @@ class LoopLogger:
 
     def begin_thinking(self) -> None:
         self._thinking_emitted = False
+        self.flush_deferred()
+
+    def flush_deferred(self) -> None:
+        """Emit the lines held back until the first LLM thinking line.
+
+        A loop that ends before its first LLM step never reaches that line,
+        so the loop also calls this on the way out.
+        """
         if not self._first_llm_logged:
             self._first_llm_logged = True
             for p, m in self._defer_after_first_llm:
@@ -1853,6 +1861,14 @@ async def async_tool_loop_inner(
                             },
                         )
 
+            # stop() queues its mirror before setting cancel_event, and the
+            # drain above empties the queue, so a set event means the mirror
+            # has been processed (each child's steer(stop) recorded and
+            # forwarded). The loop ends here: any further turn would be sent
+            # only to be thrown away.
+            if cancel_event.is_set():
+                raise asyncio.CancelledError
+
             # ── A. Wait for a tool completion, cancellation, interjection,
             #       clarification or notification ────────────────────────
             # Skipped entirely when the model already needs to speak.
@@ -2340,6 +2356,12 @@ async def async_tool_loop_inner(
             ]
 
             # ── D. Ask the LLM what to do next ───────────────────────────
+            # A stop that landed while this turn was being built left its
+            # mirror queued. Back to the drain, which records the mirror and
+            # ends the loop, rather than dispatching a turn only to cancel it.
+            if cancel_event.is_set():
+                continue
+
             logger.debug(
                 f"[setup +{_setup_elapsed()}] ready for LLM call (step={runtime_state.step_index}, {len(tmp_tools)} tools)",
             )
@@ -4302,5 +4324,8 @@ async def async_tool_loop_inner(
         await tools_data.cancel_pending_tasks()
         raise
     finally:
+        # A loop stopped before its first LLM step still logs its stop.
+        if log_steps:
+            logger.flush_deferred()
         with suppress(Exception):
             TOOL_LOOP_LINEAGE.reset(_token)
