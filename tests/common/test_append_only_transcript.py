@@ -146,28 +146,35 @@ async def test_watermark_advances_monotonically_on_pre_copy_length():
 
 
 @pytest.mark.asyncio
-async def test_watermark_advances_even_when_dispatch_is_cancelled():
+async def test_unanswered_dispatch_rolls_the_watermark_back():
     client = _FakeClient([{"role": "user", "content": "hi"}])
     started = asyncio.Event()
-    release = asyncio.Event()
 
-    async def slow_generate(**kwargs):
+    async def hanging_generate(**kwargs):
         started.set()
-        await release.wait()
-        return "ok"
+        await asyncio.Event().wait()
 
-    client.generate = slow_generate
+    client.generate = hanging_generate
 
     task = asyncio.create_task(generate_with_preprocess(client, None))
     await started.wait()
+    # Set before the await point, so nothing edits what the in-flight
+    # request carries...
+    assert client._sent_watermark == 1
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    # ...and undone when the request is cancelled without an answer.
+    assert client._sent_watermark == 0
+    assert client._sent_watermark_hash is None
 
-    # The watermark was set synchronously before the await point, so a
-    # cancelled/interrupted dispatch still advances it — the provider may
-    # have cached the prefix of a stream that never finished.
-    assert client._sent_watermark == 1
+    async def failing_generate(**kwargs):
+        raise RuntimeError("provider error")
+
+    client.generate = failing_generate
+    with pytest.raises(RuntimeError, match="provider error"):
+        await generate_with_preprocess(client, None)
+    assert client._sent_watermark == 0
 
 
 @pytest.mark.asyncio
@@ -926,46 +933,19 @@ async def test_patient_mode_ordering_does_not_violate_watermark():
 
 # ---------------------------------------------------------------------------
 # 13. Interrupt-mode dispatch race: a tool completes *while* an LLM request
-#     for the next turn is already in flight — the loop cancels that request
-#     (loop.py's `llm_task.cancel()` branch) and re-dispatches with the fresh
-#     result. The cancelled dispatch must still have advanced the watermark
-#     (cancellation ≠ rollback — see the cancellation test in this file), so
-#     the re-dispatch's integrity check compares against the *cancelled*
-#     dispatch's baseline, not a stale earlier one.
+#     for the next turn is already in flight, so the loop cancels that
+#     request (loop.py's `llm_task.cancel()` branch) and re-dispatches with
+#     the fresh result. The unanswered request leaves nothing behind: the
+#     result lands in its placeholder and the re-dispatch sends exactly what
+#     it would have had the tool finished before any dispatch. A cached
+#     replay, whose tools finish milliseconds earlier or later than the
+#     recording's did, then reproduces the recorded request either way.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_interrupt_mode_dispatch_race_survives_cancelled_then_redispatched():
-    client = _FakeClient([{"role": "user", "content": "start"}])
-    dispatcher = _FakeMsgDispatcher(client)
-    tools_data = ToolsData(tools={}, client=client, logger=_FakeLogger())
-    tools_data._visibility_guidance_injected = True
-    assistant_meta = {}
-
-    release = asyncio.Event()
-
-    async def slow_generate(**kwargs):
-        await release.wait()
-        return "late answer"
-
-    client.generate = slow_generate
-
-    # Turn 1: dispatch the "reasoning step" as a background task, exactly as
-    # interrupt mode does (loop.py: `llm_task = asyncio.create_task(...)`).
-    llm_task = asyncio.create_task(generate_with_preprocess(client, None))
-    await asyncio.sleep(0)  # let it reach the await point inside slow_generate
-    assert client._sent_watermark == 1  # advanced synchronously before the await
-
-    # A tool finishes mid-flight — interrupt mode cancels the half-finished
-    # reasoning step rather than let it use stale context.
-    llm_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await llm_task
-    release.set()  # let the cancelled coroutine's generate() unblock/exit cleanly
-
-    # Ingest the tool's result — this is new content appended above the
-    # (cancelled-but-still-advanced) watermark, always legal to splice.
+async def _request_after_tool_completes(*, superseded_dispatch: bool) -> list[str]:
+    """The turn a finished tool earns, serialized, optionally with a dispatch
+    in flight when the tool finished."""
     asst_msg = {
         "role": "assistant",
         "content": None,
@@ -973,13 +953,22 @@ async def test_interrupt_mode_dispatch_race_survives_cancelled_then_redispatched
             {
                 "id": "c1",
                 "type": "function",
-                "function": {"name": "fast_tool", "arguments": "{}"},
+                "function": {"name": "mytool", "arguments": "{}"},
             },
         ],
     }
-    client.messages.append(asst_msg)
-    task = asyncio.create_task(asyncio.sleep(0, result="fast result"))
-    info = _make_metadata(assistant_msg=asst_msg)
+    client = _FakeClient([{"role": "user", "content": "start"}, asst_msg])
+    dispatcher = _FakeMsgDispatcher(client)
+    tools_data = ToolsData(tools={}, client=client, logger=_FakeLogger())
+    assistant_meta = {}
+    finish = asyncio.Event()
+
+    async def mytool():
+        await finish.wait()
+        return "the result"
+
+    task = asyncio.create_task(mytool())
+    info = _make_metadata(assistant_msg=asst_msg, notification_queue=asyncio.Queue())
     tools_data.save_task(task, info)
     await ensure_placeholders_for_pending(
         tools_data=tools_data,
@@ -987,7 +976,29 @@ async def test_interrupt_mode_dispatch_race_survives_cancelled_then_redispatched
         client=client,
         msg_dispatcher=dispatcher,
     )
+    await tools_data.record_progress(info, "c1", "starting…", dispatcher)
+
+    if superseded_dispatch:
+        in_flight = asyncio.Event()
+
+        async def hanging_generate(**kwargs):
+            in_flight.set()
+            await asyncio.Event().wait()
+
+        client.generate = hanging_generate
+        llm_task = asyncio.create_task(generate_with_preprocess(client, None))
+        await in_flight.wait()
+
+    # The tool reports progress just before it returns: the completion drains
+    # that notification into the progress message the request carried.
+    info.notification_queue.put_nowait({"message": "almost done"})
+    finish.set()
     await task
+    if superseded_dispatch:
+        llm_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await llm_task
+
     tracker = _LoopToolFailureTracker(3, ToolLoopRuntimeState())
     await tools_data.process_completed_task(
         task=task,
@@ -997,11 +1008,24 @@ async def test_interrupt_mode_dispatch_race_survives_cancelled_then_redispatched
         msg_dispatcher=dispatcher,
     )
 
-    # Re-dispatch (the fresh turn interrupt mode issues after cancelling) —
-    # must not raise: the cancelled dispatch's baseline must have accounted
-    # for everything genuinely below the mark at that point.
+    captured: list[list[str]] = []
+
     async def fake_generate(**kwargs):
+        captured.append(_serialize_request(client.messages))
         return "ok"
 
     client.generate = fake_generate
     await generate_with_preprocess(client, None)
+    return captured[0]
+
+
+@pytest.mark.asyncio
+async def test_superseded_dispatch_leaves_the_next_request_unchanged():
+    direct = await _request_after_tool_completes(superseded_dispatch=False)
+    superseded = await _request_after_tool_completes(superseded_dispatch=True)
+
+    assert superseded == direct
+    assert not any("check_status_" in m for m in superseded)
+    progress = [m for m in superseded if "[progress c1]" in m]
+    assert len(progress) == 1 and "almost done" in progress[0]
+    assert any("the result" in m for m in superseded)

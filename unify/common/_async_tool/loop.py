@@ -1991,6 +1991,31 @@ async def async_tool_loop_inner(
             # Rebuilt fresh every turn so concurrency changes (tasks
             # finishing, stopping, …) are reflected in what the LLM sees.
 
+            # Yield so just-scheduled tool tasks can run (especially those
+            # that immediately return a SteerableToolHandle, so dynamic
+            # helpers are generated with the handle's docstrings), then ingest
+            # every task that has finished, in call_id order. The whole turn
+            # is built from this one view of what is pending: a result that
+            # has landed in the transcript no longer forces
+            # tool_choice="required", so the request does not depend on
+            # whether a tool finished just before or just after this point.
+            logger.debug(f"[setup +{_setup_elapsed()}] yielding (asyncio.sleep(0))")
+            await asyncio.sleep(0)
+            logger.debug(f"[setup +{_setup_elapsed()}] resumed after yield")
+
+            for task in _sort_completed_tasks_by_call_id(
+                {t for t in tools_data.pending if t.done()},
+                tools_data,
+            ):
+                with suppress(Exception):
+                    await tools_data.process_completed_task(
+                        task=task,
+                        consecutive_failures=consecutive_failures,
+                        outer_handle_container=outer_handle_container,
+                        assistant_meta=assistant_meta,
+                        msg_dispatcher=_msg_dispatcher,
+                    )
+
             # Tool policy and tool subset for this turn. Eager policies (e.g.
             # discovery-first gates) keep the model on a narrow required
             # subset; tracking that keeps compress_context out of the schema
@@ -2248,24 +2273,6 @@ async def async_tool_loop_inner(
                         },
                     },
                 )
-
-            # Yield so just-scheduled tool tasks can run (especially those
-            # that immediately return a SteerableToolHandle), so dynamic
-            # helpers are generated with the handle's docstrings.
-            logger.debug(f"[setup +{_setup_elapsed()}] yielding (asyncio.sleep(0))")
-            await asyncio.sleep(0)
-            logger.debug(f"[setup +{_setup_elapsed()}] resumed after yield")
-
-            for task in list(tools_data.pending):
-                if task.done():
-                    with suppress(Exception):
-                        await tools_data.process_completed_task(
-                            task=task,
-                            consecutive_failures=consecutive_failures,
-                            outer_handle_container=outer_handle_container,
-                            assistant_meta=assistant_meta,
-                            msg_dispatcher=_msg_dispatcher,
-                        )
 
             dynamic_tool_factory = DynamicToolFactory(tools_data)
             dynamic_tool_factory.generate()
@@ -2586,8 +2593,10 @@ async def async_tool_loop_inner(
                     # turn with updated context, so no entry was ever
                     # recorded. Mirror that outcome: discard the step and fall
                     # back to the tool-wait block, which grants a fresh turn
-                    # once the superseding event lands. With nothing in flight
-                    # the miss is genuinely fatal and propagates.
+                    # once the superseding event lands. The unanswered
+                    # dispatch left the transcript as it found it, so that
+                    # turn is the one the live run recorded. With nothing in
+                    # flight the miss is genuinely fatal and propagates.
                     if _is_cache_miss_error(llm_task.exception()) and (
                         tools_data.pending
                     ):

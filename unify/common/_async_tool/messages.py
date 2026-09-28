@@ -409,21 +409,19 @@ async def generate_with_preprocess(
     # be) included in a dispatched request and must never be mutated again.
     # Set here — the one place both llm_task dispatch sites funnel through —
     # on the pre-copy length, since the deep copy taken below is what gets
-    # serialized. Monotonic, and advanced *before* the request goes out so a
-    # cancelled/interrupted dispatch still counts: the provider may have
-    # cached the prefix of a stream that never finished.
+    # serialized, and advanced *before* the request goes out, so nothing can
+    # edit what an in-flight request carries.
     prev_watermark = getattr(client, "_sent_watermark", 0)
+    prev_hash = getattr(client, "_sent_watermark_hash", None)
     _checks_on = _invariant_checks_enabled()
-    if _checks_on:
+    if _checks_on and prev_hash is not None:
         # The below-watermark slice must be byte-identical to what was hashed
         # at the last dispatch, unless a sanctioned escape-hatch splice
         # re-baselined it in between (_rebaseline_watermark_hash).
-        prev_hash = getattr(client, "_sent_watermark_hash", None)
-        if prev_hash is not None:
-            assert _hash_msgs_slice(client.messages[:prev_watermark]) == prev_hash, (
-                "Append-only transcript invariant violated: a message below "
-                "the sent watermark was mutated between dispatches."
-            )
+        assert _hash_msgs_slice(client.messages[:prev_watermark]) == prev_hash, (
+            "Append-only transcript invariant violated: a message below "
+            "the sent watermark was mutated between dispatches."
+        )
     pre_copy_len = len(client.messages)
     client._sent_watermark = max(prev_watermark, pre_copy_len)
     if _checks_on:
@@ -444,6 +442,20 @@ async def generate_with_preprocess(
             preprocess_msgs,
             **gen_kwargs,
         )
+    except BaseException:
+        # A dispatch that ends without a response — cancelled because a tool
+        # result or steering event superseded it, a read-only cache miss, a
+        # provider error — adds nothing to the transcript, so it is undone
+        # as if it had never been sent. Were its tail left frozen, the next
+        # request would depend on whether the superseding event landed just
+        # before this dispatch (a result is written into its placeholder) or
+        # just after it (the result arrives as a check_status pair): a few
+        # milliseconds of tool latency that a cached replay cannot reproduce.
+        # The price is whatever prefix the provider cached for that
+        # unanswered tail.
+        client._sent_watermark = prev_watermark
+        client._sent_watermark_hash = prev_hash
+        raise
     finally:
         client._llm_inflight_since = None
 
