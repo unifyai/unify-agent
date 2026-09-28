@@ -145,9 +145,11 @@ def _discovery_tools_for_prefix(
     return family
 
 
+# Keys must be the tool's own parameter names: the tool loop silently drops
+# arguments a tool does not take, so a misnamed one runs on its defaults.
 _DISCOVERY_PREFERRED_ARGS: dict[str, dict[str, Any]] = {
     "FunctionManager_search_functions": {"query": "relevant functions", "n": 5},
-    "GuidanceManager_search": {"query": "relevant guidance", "n": 5},
+    "GuidanceManager_search": {"references": {"content": "relevant guidance"}, "k": 5},
 }
 
 

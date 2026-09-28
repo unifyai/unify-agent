@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+from openai.types.chat import ChatCompletion
+from openai.types.chat.chat_completion import Choice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion_message_tool_call import (
+    ChatCompletionMessageToolCall,
+    Function,
+)
+from unillm.clients.completion_mutator import CompletionMutatorContext
+
 from unify.actor.code_act_actor import (
+    CodeActActor,
+    _build_discovery_parallel_mutator,
     _default_tool_policy,
     _discovery_preferred_for_schema,
     _is_discovery_gate_schema,
 )
+from unify.common.llm_helpers import method_to_schema
 
 
 def _identity_filter(tools):
@@ -176,5 +191,58 @@ def test_discovery_preferred_for_schema_orders_families():
         "FunctionManager_search_functions",
         "GuidanceManager_search",
     ]
-    assert dict(preferred)["FunctionManager_search_functions"]["query"]
-    assert dict(preferred)["GuidanceManager_search"]["query"]
+
+
+def _turn_calling(tool_name: str) -> ChatCompletion:
+    """A discovery turn in which the model called only ``tool_name``."""
+    call = ChatCompletionMessageToolCall(
+        id="call_0",
+        type="function",
+        function=Function(name=tool_name, arguments="{}"),
+    )
+    message = ChatCompletionMessage(
+        role="assistant",
+        content=None,
+        tool_calls=[call],
+    )
+    return ChatCompletion(
+        id="turn",
+        choices=[Choice(index=0, message=message, finish_reason="tool_calls")],
+        created=0,
+        model="test",
+        object="chat.completion",
+    )
+
+
+@pytest.mark.asyncio
+async def test_discovery_mutator_appends_calls_with_each_tools_parameter_names():
+    """The tool loop drops arguments a tool does not take, so an appended call
+    with a misnamed argument would run its search on the defaults."""
+    gate = ("FunctionManager_search_functions", "GuidanceManager_search")
+    actor = CodeActActor()
+    try:
+        tools = actor.get_tools("act")
+        schemas = {
+            name: method_to_schema(getattr(tools[name], "fn", tools[name]), name)
+            for name in gate
+        }
+        context = CompletionMutatorContext(
+            provider="openrouter",
+            original_tool_choice="required",
+            request_kw={"tools": list(schemas.values())},
+        )
+        mutator = _build_discovery_parallel_mutator()
+
+        appended = {}
+        for called in gate:
+            turn = mutator(_turn_calling(called), context)
+            for call in turn.choices[0].message.tool_calls[1:]:
+                function = call["function"]
+                appended[function["name"]] = json.loads(function["arguments"])
+
+        assert set(appended) == set(gate)
+        for name, args in appended.items():
+            params = schemas[name]["function"]["parameters"]["properties"]
+            assert args and set(args) <= set(params), (name, args, sorted(params))
+    finally:
+        await actor.close()
