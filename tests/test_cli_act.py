@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from unify.actor.code_act_actor import SESSION_ENDED
 from unify.cli import Act, _parse_args
 
 pytestmark = pytest.mark.no_unify_context
@@ -60,7 +61,7 @@ async def test_typed_lines_answer_pending_questions_else_steer(monkeypatch):
     is an interjection into the running actor, and /quit stops it."""
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
-    session = Act(SimpleNamespace(persist=True, quiet=True))
+    session = Act(SimpleNamespace(persist=True, quiet=True, jsonl=False))
     handle = _FakeHandle()
     session._handle = handle
     await session._pending_clarifications.put({"call_id": "c1", "question": "which?"})
@@ -74,7 +75,7 @@ async def test_typed_lines_answer_pending_questions_else_steer(monkeypatch):
 
     assert handle.answers == [("c1", "the second one")]
     assert handle.interjections == ["also skip the header row"]
-    assert handle.stopped == "session closed"
+    assert handle.stopped == SESSION_ENDED
 
 
 @pytest.mark.llm_call
