@@ -67,13 +67,14 @@ tmux_cmd() {
 declare -a CREATED_SESSION_IDS=()
 
 # ---- Inline pass/fail reporting ----
-# Track which sessions we've already reported completion for (newline-separated list)
-REPORTED_COMPLETIONS=""
+# Track which sessions we've already reported completion for (":$0:$3:")
+REPORTED_COMPLETIONS=":"
 
-# Check if a session ID has been reported
+# Check if a session ID has been reported. The match takes the delimiters on
+# both sides: a bare substring test counts "$1" as reported once "$10" is.
 _is_reported() {
   local sid="$1"
-  [[ "$REPORTED_COMPLETIONS" == *"${sid}"* ]]
+  [[ "$REPORTED_COMPLETIONS" == *":${sid}:"* ]]
 }
 
 # Mark a session ID as reported
