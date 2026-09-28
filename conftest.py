@@ -46,10 +46,12 @@ if "UNILLM_CACHE_DIR" not in os.environ:
 
 # Every pytest process owns its own store, so sessions running side by side
 # (one tmux session per test under parallel_run.sh) never share tables and
-# nothing touches the real ``~/.unify``. The embeddings cache is the one file
-# shared across processes: embeddings are keyed by (model, text) and cost
-# real compute, so reusing them between sessions is pure gain. Set before
-# anything imports ``unify.db``, which opens the store lazily on first use.
+# nothing touches the real ``~/.unify``. The process home only covers what
+# runs outside a test: each test gets a home of its own from ``unify_home``
+# in tests/conftest.py. The embeddings cache is the one file shared across
+# processes: embeddings are keyed by (model, text) and cost real compute, so
+# reusing them between sessions is pure gain. Set before anything imports
+# ``unify.db``, which opens the store lazily on first use.
 import tempfile
 
 _TEST_TMP = Path(tempfile.gettempdir())

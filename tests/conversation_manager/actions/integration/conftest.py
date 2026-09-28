@@ -14,7 +14,7 @@ import os
 os.environ["UNIFY_PRETEST_CONTEXT_CREATE"] = "true"
 
 from pathlib import Path
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator
 
 import pytest
 import pytest_asyncio
@@ -45,44 +45,6 @@ def pytest_configure(config) -> None:
 
     # Ensure NEW marker comparisons are stable in tests.
     os.environ.setdefault("UNIFY_INCREMENTING_TIMESTAMPS", "true")
-
-
-@pytest.fixture(autouse=True)
-def _isolate_local_workspace_home(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[str]:
-    """Give each CM↔CodeAct integration test its own local workspace root.
-
-    ``parallel_run.sh`` runs these tests concurrently. A shared workspace
-    would let one test's outbound files be overwritten or removed by another
-    mid-flight.
-
-    Hash the node id so the same test always gets the same path (stable
-    LLM cache keys that embed the workspace root), matching the actor
-    suite's isolation fixture.
-
-    After switching the root, clear manager singletons and create the
-    directory the actor prompt embeds via ``get_local_root()``.
-    """
-    import hashlib
-    import shutil
-    import tempfile
-    from pathlib import Path
-
-    from unify.workspace import get_local_root
-    from unify.manager_registry import ManagerRegistry
-    from unify.settings import SETTINGS
-
-    suffix = hashlib.md5(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    test_home = os.path.join(tempfile.gettempdir(), f"unity_test_home_{suffix}")
-    os.makedirs(test_home, exist_ok=True)
-    monkeypatch.setenv("UNIFY_LOCAL_ROOT", test_home)
-    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", test_home)
-    ManagerRegistry.clear()
-    Path(get_local_root()).mkdir(parents=True, exist_ok=True)
-    yield test_home
-    shutil.rmtree(test_home, ignore_errors=True)
 
 
 @pytest_asyncio.fixture(autouse=True)

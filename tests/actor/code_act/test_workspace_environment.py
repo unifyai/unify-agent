@@ -34,17 +34,15 @@ def _forget_absent_package() -> None:
 
 
 @pytest.fixture
-def workspace_home(tmp_path, monkeypatch):
-    """A fresh ``UNIFY_HOME`` whose environment does not exist yet.
+def workspace_home(unify_home, monkeypatch):
+    """The test's own ``UNIFY_HOME``, whose environment does not exist yet.
 
     ``sys.path`` is restored on exit, so an environment activated by one
     test is not still importable in the next.
     """
-    home = tmp_path / "home"
-    monkeypatch.setenv("UNIFY_HOME", str(home))
     monkeypatch.setattr(sys, "path", list(sys.path))
     _forget_absent_package()
-    yield home
+    yield unify_home
     _forget_absent_package()
 
 

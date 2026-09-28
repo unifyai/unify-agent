@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import functools
-import hashlib
-import os
 import re
-import shutil
-import tempfile
 
 from typing import Any
 
@@ -57,30 +53,3 @@ def _sanitize_sandbox_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
         return original_write(self, _ADDR_RE.sub(" at 0x...", obj))
 
     monkeypatch.setattr(StreamLike, "write", _sanitized_write)
-
-
-@pytest.fixture(autouse=True)
-def _isolate_local_root(request, monkeypatch):
-    """Give each test its own deterministic HOME directory.
-
-    Prevents filesystem leakage between tests — even when tests run
-    concurrently in separate processes (parallel_run.sh) or sequentially
-    in the same process.
-
-    ``get_local_root()`` resolves under ``UNIFY_HOME``, so changing HOME
-    is sufficient to isolate all filesystem paths that flow through it
-    (prompts, LocalFileSystemAdapter, the workspace environment, etc.).
-
-    The path is derived from the test's node ID via a stable hash, so
-    the same test always gets the same directory.  This keeps LLM cache
-    keys stable across re-runs of the same test.
-    """
-    suffix = hashlib.md5(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    test_home = os.path.join(tempfile.gettempdir(), f"unity_test_home_{suffix}")
-    os.makedirs(test_home, exist_ok=True)
-
-    monkeypatch.setenv("HOME", test_home)
-
-    yield test_home
-
-    shutil.rmtree(test_home, ignore_errors=True)

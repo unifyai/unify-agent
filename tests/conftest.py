@@ -16,16 +16,21 @@ Sections:
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import logging
 import os
 import random
 import re
+import shutil
+import tempfile
 
 import pytest
 from unify import db
 from pytest_metadata.plugin import metadata_key
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 # --------------------------------------------------------------------------- #
 # 1. Early logging guard                                                      #
@@ -35,6 +40,7 @@ _root_logger_early = logging.getLogger()
 if not _root_logger_early.handlers:
     _root_logger_early.addHandler(logging.NullHandler())
 
+from tests.helpers import _lock_file_nb
 from tests.settings import SETTINGS
 
 # Diagnostic switch for the async tool loop's sent-watermark append-only
@@ -330,12 +336,12 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_unconfigure(config):
     """Restore HOME (and HF_HOME if we set it).
 
-    `/tmp/unity_test_home` is deliberately left in place: the path is
-    shared by every parallel pytest session ``parallel_run.sh`` spawns
-    (deterministic so LLM cache keys embedding the workspace root stay
-    stable), so wiping it here would pull files out from under sessions
+    The test HOME (``unity_test_home`` in the system temp directory) is
+    deliberately left in place: every parallel pytest session
+    ``parallel_run.sh`` spawns shares it, along with the embeddings cache
+    inside it, so wiping it here would pull files out from under sessions
     still running. It accumulates only for the life of the CI runner;
-    locally, ``rm -rf /tmp/unity_test_home`` gives a clean slate.
+    locally, deleting it gives a clean slate.
     """
     if _original_home is None:
         os.environ.pop("HOME", None)
@@ -391,22 +397,14 @@ def pytest_configure(config):
     )
 
     # ------------------------------------------------------------------
-    # Isolate HOME so that tests never touch the real home directory.
-    # get_local_root() resolves under the home directory, and the process
-    # cwd is set to the same path at startup.  By pointing HOME at a temp
-    # dir we keep Attachments/, .env, snapshots, etc. sandboxed.
-    #
-    # The path is deterministic (not random) so that CodeActActor system
-    # prompts — which embed the resolved workspace path — produce
-    # stable LLM cache keys across pytest sessions.  Actual test file
-    # isolation is handled by pytest's tmp_path fixture, not HOME.
+    # Isolate HOME so that tests never touch the real home directory
+    # (dotfiles, ~/.cache, the default ~/.unify). The path is fixed, not
+    # random, so nothing derived from HOME varies between sessions. The
+    # workspace the actor's system prompt embeds resolves under
+    # UNIFY_HOME, not HOME; ``unify_home`` below gives each test its own.
     # ------------------------------------------------------------------
-    import tempfile
-
     global _original_home
     _original_home = os.environ.get("HOME")
-    if _original_home:
-        os.environ["UNIFY_REAL_HOME"] = _original_home
     test_home = os.path.join(tempfile.gettempdir(), "unity_test_home")
     os.makedirs(test_home, exist_ok=True)
     os.environ["HOME"] = test_home
@@ -466,6 +464,42 @@ def pytest_configure(config):
     except Exception:
         # Never fail configuration due to logging hygiene adjustments.
         pass
+
+
+@pytest.fixture(autouse=True)
+def unify_home(request, monkeypatch):
+    """Point ``UNIFY_HOME`` at a home of the test's own, named by its node id.
+
+    The actor's system prompt embeds the workspace path under the home, and
+    the package installer's output names the environment under it, so the
+    path must be the same on every run for recorded LLM responses to replay.
+    The test holds a lock on its home while it runs: a concurrent run of the
+    same test (``--repeat``, another checkout) takes the next free slot
+    instead of sharing the directory. The home starts empty and is removed
+    afterwards.
+    """
+    homes = Path(tempfile.gettempdir()) / "unity_test_homes"
+    homes.mkdir(exist_ok=True)
+    digest = hashlib.md5(request.node.nodeid.encode()).hexdigest()[:12]
+    for slot in itertools.count():
+        home = homes / (digest if slot == 0 else f"{digest}-{slot}")
+        lock = open(f"{home}.lock", "w")
+        try:
+            _lock_file_nb(lock)
+            break
+        except BlockingIOError:
+            lock.close()
+    shutil.rmtree(home, ignore_errors=True)
+    home.mkdir()
+    monkeypatch.setenv("UNIFY_HOME", str(home))
+    cwd = os.getcwd()
+    yield home
+    # The conversation loop and ``unify act`` chdir into the workspace.
+    os.chdir(cwd)
+    shutil.rmtree(home, ignore_errors=True)
+    # The lock file stays: were it deleted, a run still holding the old file
+    # and a run creating a new one could both take this home.
+    lock.close()
 
 
 def pytest_runtest_setup(item):

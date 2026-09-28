@@ -214,6 +214,15 @@ parallel_run --env UNIFY_STORE_PATH=/tmp/shared.sqlite tests/guidance_manager/
 A bare `pytest` invocation (no runner) gets a per-process store under the
 system temp directory, removed when the process exits.
 
+Each test also gets a home of its own (`UNIFY_HOME`, which holds the actor's
+`workspace/` and the workspace environment) at `unity_test_homes/<hash of the
+node id>` in the system temp directory, emptied before the test and removed
+after it. The actor's system prompt embeds the workspace path, so the path
+depends only on the test, never on the process, and a rerun replays its
+recorded LLM responses. A run of the same test that starts while another
+holds that home (`--repeat`, another checkout) gets `<hash>-1` instead and
+records afresh.
+
 ---
 
 ## Common Workflows
