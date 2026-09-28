@@ -10,7 +10,8 @@ in the working directory.
 
 from typing import Any
 
-from pydantic import Field, SecretStr, field_validator
+import unillm
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from unify.actor.settings import ActorSettings
@@ -62,13 +63,9 @@ class ProductionSettings(BaseSettings):
     # restore unbounded iteration.
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # LLM Provider Credentials
-    # ─────────────────────────────────────────────────────────────────────────
-    ANTHROPIC_API_KEY: SecretStr = SecretStr("")
-    DEEPSEEK_API_KEY: SecretStr = SecretStr("")
-    # OpenRouter — used for ``*@openrouter`` endpoints (the default model).
-    OPENROUTER_API_KEY: SecretStr = SecretStr("")
+    # Fail init when unillm holds no provider key. The keys live only in
+    # unillm's settings, which read them from the environment, ``.env`` and, on
+    # a machine with the team's service-account key, Google Secret Manager.
     UNIFY_VALIDATE_LLM_PROVIDERS: bool = True
     # Storage review of a persistent session: by default it runs once, when the session
     # ends, over the whole trajectory. Set true to also review at every completed turn
@@ -139,23 +136,21 @@ class ProductionSettings(BaseSettings):
     )
 
     def validate_llm_providers(self) -> None:
-        """Validate that the runtime has some way to reach an LLM provider.
+        """Validate that unillm holds a key it can reach an LLM provider with.
+
+        unillm calls Anthropic models directly and every other model through
+        OpenRouter, so those two keys are the only ones that serve a call.
 
         Raises:
-            RuntimeError: If no provider credential is available.
+            RuntimeError: If unillm resolved neither key.
         """
         if not self.UNIFY_VALIDATE_LLM_PROVIDERS:
             return
-        available = {
-            "ANTHROPIC_API_KEY": self.ANTHROPIC_API_KEY,
-            "DEEPSEEK_API_KEY": self.DEEPSEEK_API_KEY,
-            "OPENROUTER_API_KEY": self.OPENROUTER_API_KEY,
-        }
-        if not any(available.values()):
+        keys = (unillm.SETTINGS.OPENROUTER_API_KEY, unillm.SETTINGS.ANTHROPIC_API_KEY)
+        if not any(key.get_secret_value() for key in keys):
             raise RuntimeError(
                 "At least one LLM provider credential is required. "
-                "Set OPENROUTER_API_KEY, ANTHROPIC_API_KEY, "
-                "and/or DEEPSEEK_API_KEY.",
+                "Set OPENROUTER_API_KEY and/or ANTHROPIC_API_KEY.",
             )
 
 

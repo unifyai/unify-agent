@@ -33,7 +33,7 @@ unify shares the stance of [Prime Agent](https://github.com/PrimeIntellect-ai/pr
 
 ## Install
 
-**Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/), and one LLM provider key (OpenRouter, Anthropic, or DeepSeek; OpenAI models are reached through OpenRouter). macOS, Linux, or WSL2.
+**Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/), and one LLM provider key (OpenRouter or Anthropic; OpenAI, DeepSeek and every other provider's models are reached through OpenRouter). macOS, Linux, or WSL2.
 
 `unify` and its LLM client `unillm` are sibling checkouts linked by an editable install:
 
@@ -74,7 +74,7 @@ Everything the assistant keeps lives under `~/.unify/` (`UNIFY_HOME`): the SQLit
 
 | Variable | Purpose |
 |---|---|
-| `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` | At least one provider key |
+| `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` | At least one provider key |
 | `UNIFY_MODEL`, `UNIFY_REASONING_EFFORT` | The default model (a unillm `model@provider` endpoint) and effort |
 | `UNIFY_HOME` | Where the store, environment and workspace live (default `~/.unify`) |
 | `UNIFY_STORE_PATH` | An explicit path for the SQLite store |

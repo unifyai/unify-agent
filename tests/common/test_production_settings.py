@@ -1,13 +1,34 @@
 """
 Tests for ProductionSettings LLM provider validation.
 
-Verifies that unify.init() hard-fails when LLM provider credentials are missing
-and UNIFY_VALIDATE_LLM_PROVIDERS is enabled (the default).
+Verifies that unify.init() hard-fails when unillm resolved no key that serves
+an LLM call and UNIFY_VALIDATE_LLM_PROVIDERS is enabled (the default).
 """
 
 import pytest
+from pydantic import SecretStr
+from unillm.settings import PROVIDER_KEYS
+from unillm.settings import SETTINGS as UNILLM_SETTINGS
 
 from unify.settings import ProductionSettings
+
+
+@pytest.fixture
+def resolved_keys(monkeypatch, tmp_path):
+    """Stand in for a machine whose keys reach unillm from Secret Manager.
+
+    No provider key is in the environment or in a ``.env``, and unillm holds
+    exactly the keys passed, with every other key it resolves left empty.
+    """
+    monkeypatch.chdir(tmp_path)
+    for name in PROVIDER_KEYS:
+        monkeypatch.delenv(name, raising=False)
+
+    def resolve(**keys: str) -> None:
+        for name in PROVIDER_KEYS:
+            monkeypatch.setattr(UNILLM_SETTINGS, name, SecretStr(keys.get(name, "")))
+
+    return resolve
 
 
 class TestLLMProviderValidation:
@@ -20,90 +41,49 @@ class TestLLMProviderValidation:
         effort = ProductionSettings.model_fields["UNIFY_REASONING_EFFORT"]
         assert effort.default == "high"
 
-    def test_validation_fails_when_all_credentials_missing(self, monkeypatch):
-        """Validation raises RuntimeError when no credentials are set."""
-        monkeypatch.delenv("UNILLM_LLM_GATEWAY_URL", raising=False)
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="",
-            ANTHROPIC_API_KEY="",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="",
-        )
+    def test_validation_fails_when_no_credential_resolved(self, resolved_keys):
+        """Validation raises RuntimeError when unillm resolved no key."""
+        resolved_keys()
+        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
         with pytest.raises(RuntimeError) as exc_info:
             settings.validate_llm_providers()
 
         error_msg = str(exc_info.value)
         assert "At least one LLM provider credential is required" in error_msg
 
-    def test_validation_passes_when_one_credential_provided(self):
-        """Validation succeeds when at least one credential is set."""
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="",
-            ANTHROPIC_API_KEY="sk-ant-test",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="",
-        )
+    def test_validation_passes_when_openrouter_credential_resolved(
+        self,
+        resolved_keys,
+    ):
+        """An OpenRouter key serves the default model and every non-Anthropic one."""
+        resolved_keys(OPENROUTER_API_KEY="sk-or-test")
+        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
         settings.validate_llm_providers()
 
-    def test_validation_rejects_openai_only_credentials(self, monkeypatch):
-        """OpenAI chat models route via OpenRouter, so its key grants no access."""
-        monkeypatch.delenv("UNILLM_LLM_GATEWAY_URL", raising=False)
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="sk-test",
-            ANTHROPIC_API_KEY="",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="",
+    def test_validation_passes_when_anthropic_credential_resolved(
+        self,
+        resolved_keys,
+    ):
+        """An Anthropic key serves the Anthropic models, which unillm calls directly."""
+        resolved_keys(ANTHROPIC_API_KEY="sk-ant-test")
+        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
+        settings.validate_llm_providers()
+
+    def test_validation_rejects_keys_no_call_uses(self, resolved_keys):
+        """unillm resolves the management and Together keys but sends neither."""
+        resolved_keys(
+            OPENROUTER_MANAGEMENT_API_KEY="sk-test",
+            TOGETHER_API_KEY="sk-test",
         )
+        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=True)
         with pytest.raises(RuntimeError):
             settings.validate_llm_providers()
 
-    def test_validation_passes_when_openrouter_credential_provided(self):
-        """Validation accepts OpenRouter for *@openrouter platform defaults."""
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="",
-            ANTHROPIC_API_KEY="",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="sk-or-test",
-        )
-        settings.validate_llm_providers()
-
-    def test_validation_passes_when_deepseek_credential_provided(self):
-        """Validation accepts the default model provider credential."""
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="",
-            ANTHROPIC_API_KEY="",
-            DEEPSEEK_API_KEY="sk-test",
-            OPENROUTER_API_KEY="",
-        )
-        settings.validate_llm_providers()
-
-    def test_validation_passes_when_all_credentials_provided(self):
-        """Validation succeeds when all credentials are set."""
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=True,
-            OPENAI_API_KEY="sk-test-openai",
-            ANTHROPIC_API_KEY="sk-ant-test",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="sk-or-test",
-        )
-        # Should not raise
-        settings.validate_llm_providers()
-
-    def test_validation_skipped_when_disabled(self):
+    def test_validation_skipped_when_disabled(self, resolved_keys):
         """Validation is skipped when UNIFY_VALIDATE_LLM_PROVIDERS=False."""
-        settings = ProductionSettings(
-            UNIFY_VALIDATE_LLM_PROVIDERS=False,
-            OPENAI_API_KEY="",
-            ANTHROPIC_API_KEY="",
-            DEEPSEEK_API_KEY="",
-            OPENROUTER_API_KEY="",
-        )
-        # Should not raise even with empty credentials
+        resolved_keys()
+        settings = ProductionSettings(UNIFY_VALIDATE_LLM_PROVIDERS=False)
+        # Should not raise even with no key resolved
         settings.validate_llm_providers()
 
     def test_validation_enabled_by_default(self):
