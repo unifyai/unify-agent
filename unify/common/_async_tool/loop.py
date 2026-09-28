@@ -1114,30 +1114,10 @@ async def async_tool_loop_inner(
         except Exception:
             inject_only = False
 
-        # Banner-deferral sentinels carry no tool acks.
-        base_name = ""
-        try:
-            base_name = str(method or "").lower().strip()
-        except Exception:
-            base_name = ""
-        if base_name == "_banner_after_first_llm":
-            text = ""
-            prefix = ""
-            try:
-                text = str((payload or {}).get("text") or "")
-                prefix = str((payload or {}).get("prefix") or "")
-            except Exception:
-                text, prefix = "", ""
-            if text:
-                try:
-                    logger.defer_after_first_llm(text, prefix=prefix)
-                except Exception:
-                    pass
-            return
+        base = str(method or "").lower().strip()
 
-        # The stop log (and any chained banner) is deferred until after the
-        # first LLM thinking line.
-        if base_name == "stop":
+        # The stop log is deferred until after the first LLM thinking line.
+        if base == "stop":
             reason_txt = ""
             try:
                 r = payload.get("reason")
@@ -1153,15 +1133,6 @@ async def async_tool_loop_inner(
                 )
             except Exception:
                 pass
-            try:
-                banner = payload.get("_after_first_llm_banner")
-                if isinstance(banner, dict):
-                    btxt = str(banner.get("text") or "")
-                    bpf = str(banner.get("prefix") or "")
-                    if btxt:
-                        logger.defer_after_first_llm(btxt, prefix=bpf)
-            except Exception:
-                pass
 
         targets: list[Tuple[asyncio.Task, ToolCallMetadata]] = _select_steering_targets(
             method,
@@ -1169,8 +1140,6 @@ async def async_tool_loop_inner(
         )
         if not targets:
             return
-
-        base = str(method or "").lower().strip()
 
         def _steer_payload_for(base_action: str) -> Optional[str]:
             if base_action == "interject":
@@ -1578,8 +1547,15 @@ async def async_tool_loop_inner(
                             assistant_meta=assistant_meta,
                             msg_dispatcher=_msg_dispatcher,
                         )
+                    # stop() un-pauses before it queues its mirror, so a
+                    # stopped loop leaves the gate like a resumed one: the
+                    # drain records the mirror and the check after it ends
+                    # the loop.
+                    if pause_event.is_set():
+                        continue
                     if cancel_event.is_set():
-                        # The mirrored stop has already reached children.
+                        # Paused again after stop(): the set cancel_event
+                        # would end every further wait at once.
                         raise asyncio.CancelledError
                     continue  # remain paused: do not allow the LLM to speak while paused
                 else:
@@ -1625,10 +1601,10 @@ async def async_tool_loop_inner(
                     )
 
                     if pause_event.is_set():
-                        continue  # back to main loop, un-paused
+                        continue  # resumed or stopped, as above
 
                     if cancel_event.is_set():
-                        # The mirrored stop has already reached children.
+                        # Paused again after stop(), as above.
                         raise asyncio.CancelledError
                     continue  # top-of-loop, still paused
 
@@ -4192,11 +4168,18 @@ async def async_tool_loop_inner(
                         p.cancel()
                         await asyncio.gather(p, return_exceptions=True)
 
+                    # stop() queues its mirror before it sets cancel_event,
+                    # so the waiter may already have taken it. Whatever the
+                    # waiter took goes back to the head of the queue, where
+                    # the drain records the mirror and the check after the
+                    # drain ends the loop.
                     if cancel_event.is_set():
-                        raise asyncio.CancelledError
-
-                    if interject_waiter not in done:
-                        continue
+                        if interject_waiter in done:
+                            _requeue_at_front(
+                                interject_queue,
+                                interject_waiter.result(),
+                            )
+                        break
 
                     interjection = interject_waiter.result()
 
