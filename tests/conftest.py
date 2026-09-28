@@ -289,16 +289,28 @@ def pytest_sessionstart(session):
     unify.init()
 
 
+def _parallel_run_result_file(kind: str) -> str | None:
+    """The temp file parallel_run.sh reads this session's ``kind`` result from.
+
+    None outside a parallel_run.sh session. The name carries the tmux socket
+    as well as the session id: every tmux server numbers its sessions from
+    $0, and each terminal running parallel_run.sh has a server of its own.
+    """
+    socket = os.environ.get("UNIFY_TEST_SOCKET")
+    session_id = os.environ.get("UNIFY_TMUX_SESSION_ID")
+    if not (socket and session_id):
+        return None
+    return f"/tmp/parallel_run_{kind}_{socket}_{session_id}.txt"
+
+
 def pytest_sessionfinish(session, exitstatus):
     # Write cache stats to a temp file for parallel_run.sh to consume
-    # The file is keyed by UNIFY_TMUX_SESSION_ID env var (set by parallel_run.sh)
     try:
         import unillm
 
         stats = unillm.get_cache_stats()
-        session_id = os.environ.get("UNIFY_TMUX_SESSION_ID", "")
-        if session_id:
-            stats_file = f"/tmp/parallel_run_cache_{session_id}.txt"
+        stats_file = _parallel_run_result_file("cache")
+        if stats_file:
             with open(stats_file, "w") as f:
                 f.write(f"{stats.hits}|{stats.canonical_hits}|{stats.misses}\n")
     except Exception:
@@ -306,10 +318,9 @@ def pytest_sessionfinish(session, exitstatus):
 
     # Write LLM provider cost to a temp file for parallel_run.sh to consume
     try:
-        session_id = os.environ.get("UNIFY_TMUX_SESSION_ID", "")
-        if session_id:
+        cost_file = _parallel_run_result_file("cost")
+        if cost_file:
             total_cost = sum(cost for _, cost in _session_costs)
-            cost_file = f"/tmp/parallel_run_cost_{session_id}.txt"
             with open(cost_file, "w") as f:
                 f.write(f"{total_cost:.6g}\n")
     except Exception:
@@ -351,11 +362,10 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     # that ran nothing — and a summary that calls those the same thing hides
     # coverage silently disappearing.
     try:
-        session_id = os.environ.get("UNIFY_TMUX_SESSION_ID", "")
-        if session_id:
+        outcome_file = _parallel_run_result_file("outcome")
+        if outcome_file:
             passed = len(terminalreporter.stats.get("passed", []))
             skipped = len(terminalreporter.stats.get("skipped", []))
-            outcome_file = f"/tmp/parallel_run_outcome_{session_id}.txt"
             with open(outcome_file, "w") as f:
                 f.write(f"{passed}|{skipped}\n")
     except Exception:

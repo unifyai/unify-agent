@@ -30,8 +30,16 @@ HANG_FIXTURES_DIR = Path(__file__).parent / "hang_fixtures"
 # Likewise separate: fixtures that open their store and report their
 # environment, used only by the store-plumbing and --no-cache coverage.
 STORE_FIXTURES_DIR = Path(__file__).parent / "store_fixtures"
+# Likewise separate: fixtures whose results the runner reports back, some of
+# which hold their session open, used only by the result-reporting coverage.
+REPORT_FIXTURES_DIR = Path(__file__).parent / "report_fixtures"
 PYTEST_LOGS_DIR = REPO_ROOT / "logs" / "pytest"
-_FIXTURE_TREES = (FIXTURES_DIR, HANG_FIXTURES_DIR, STORE_FIXTURES_DIR)
+_FIXTURE_TREES = (
+    FIXTURES_DIR,
+    HANG_FIXTURES_DIR,
+    STORE_FIXTURES_DIR,
+    REPORT_FIXTURES_DIR,
+)
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -335,16 +343,17 @@ def clean_tmux_sessions():
 class ParallelRunner:
     """Helper class to run parallel_run.sh with various arguments."""
 
-    def __init__(self):
+    def __init__(self, socket_name: Optional[str] = None):
         self.script_path = SCRIPT_PATH
         self.fixtures_dir = FIXTURES_DIR
         self.hang_fixtures_dir = HANG_FIXTURES_DIR
         self.store_fixtures_dir = STORE_FIXTURES_DIR
+        self.report_fixtures_dir = REPORT_FIXTURES_DIR
         self.repo_root = REPO_ROOT
         self._created_sessions: List[tuple[str, str]] = []  # (socket, session_name)
         # Generate a unique socket name for this runner instance so all runs
         # within the same test use the same socket (enables collision detection)
-        self._socket_name = f"unity_test_{os.getpid()}"
+        self._socket_name = socket_name or f"unity_test_{os.getpid()}"
 
     def run(
         self,
@@ -570,6 +579,11 @@ class ParallelRunner:
         path = self.store_fixtures_dir.joinpath(*parts)
         return str(path.relative_to(self.repo_root))
 
+    def report_fixture_path(self, *parts: str) -> str:
+        """Get the path to a result-reporting fixture relative to repo root."""
+        path = self.report_fixtures_dir.joinpath(*parts)
+        return str(path.relative_to(self.repo_root))
+
     @staticmethod
     def session_env_reports(
         result: RunResult,
@@ -629,6 +643,14 @@ class ParallelRunner:
 def runner(clean_tmux_sessions):
     """Fixture providing a ParallelRunner instance."""
     r = ParallelRunner()
+    yield r
+    r.cleanup()
+
+
+@pytest.fixture
+def second_runner(clean_tmux_sessions):
+    """A ParallelRunner on a socket of its own, for runs that overlap ``runner``'s."""
+    r = ParallelRunner(socket_name=f"unity_test_{os.getpid()}_second")
     yield r
     r.cleanup()
 

@@ -29,6 +29,12 @@ ulimit -n 8192 2>/dev/null || true
 
 TMUX_SOCKET="$UNIFY_TMUX_SOCKET"
 
+# A runner started inside another run's session (the runner's own tests, or
+# the shell a failed session leaves open) inherits that session's id. Nothing
+# this process starts outside tmux is a session, so its pytest collection must
+# not write result files under that id; each session exports its own.
+unset UNIFY_TMUX_SESSION_ID
+
 # Resolve repo root (parent of this script's directory)
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 
@@ -85,7 +91,9 @@ _mark_reported() {
 
 # Record one finished session's duration, cache stats and cost for the
 # end-of-run sorted output. The per-session temp files are written by
-# tests/conftest.py, keyed on the tmux session id.
+# tests/conftest.py, keyed on the socket and the tmux session id: every tmux
+# server numbers its sessions from $0, so the id alone is shared by
+# overlapping runs from different terminals.
 _record_session_result() {
   local sid="$1" status="$2" base="$3"
   [[ -n "${START_TIMES_FILE:-}" && -f "$START_TIMES_FILE" ]] || return 0
@@ -93,16 +101,17 @@ _record_session_result() {
   start_time=$(grep "^$sid " "$START_TIMES_FILE" 2>/dev/null | cut -d' ' -f2)
   [[ -n "$start_time" ]] || return 0
   local duration=$(( $(date +%s) - start_time ))
+  local key="${TMUX_SOCKET}_${sid}"
 
   local hits=0 canonical=0 misses=0
-  local stats_file="/tmp/parallel_run_cache_${sid}.txt"
+  local stats_file="/tmp/parallel_run_cache_${key}.txt"
   if [[ -f "$stats_file" ]]; then
     IFS='|' read -r hits canonical misses < "$stats_file" 2>/dev/null || true
     rm -f "$stats_file"
   fi
 
   local cost="0"
-  local cost_file="/tmp/parallel_run_cost_${sid}.txt"
+  local cost_file="/tmp/parallel_run_cost_${key}.txt"
   if [[ -f "$cost_file" ]]; then
     cost=$(tr -d '[:space:]' < "$cost_file" 2>/dev/null || echo 0)
     rm -f "$cost_file"
@@ -111,7 +120,7 @@ _record_session_result() {
   # pytest exits 0 when every test skips, so a green session may have run
   # nothing. Report those as skipped rather than passed.
   local outcome_passed outcome_skipped
-  local outcome_file="/tmp/parallel_run_outcome_${sid}.txt"
+  local outcome_file="/tmp/parallel_run_outcome_${key}.txt"
   if [[ -f "$outcome_file" ]]; then
     IFS='|' read -r outcome_passed outcome_skipped < "$outcome_file" 2>/dev/null || true
     rm -f "$outcome_file"
@@ -189,7 +198,7 @@ trap '_cleanup_sessions TERM; exit 143' TERM
 # files to this script explicitly. Excluding them by name keeps a directory
 # sweep from spawning, say, the hang fixture that exists only to be killed by
 # --session-timeout.
-EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures store_fixtures )
+EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures store_fixtures report_fixtures )
 
 # Parse arguments
 # Returns: 0=success, 1=help requested, 2=error

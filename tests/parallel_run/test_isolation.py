@@ -5,6 +5,7 @@ Verifies:
 - Each run uses an isolated tmux socket
 - Socket name is derived from TTY
 - Sessions are isolated between different sockets
+- Session results are isolated between runs on different sockets
 - Helper scripts work with isolation
 """
 
@@ -12,6 +13,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 from tests.parallel_run.conftest import (
     TESTS_DIR,
@@ -94,6 +97,52 @@ class TestSocketIsolation:
         assert (
             result.socket == custom_socket
         ), f"Expected socket {custom_socket}, got {result.socket}"
+
+
+class TestResultIsolation:
+    """Each run reads back only its own sessions' results."""
+
+    def test_overlapping_runs_report_their_own_outcomes(
+        self,
+        runner,
+        second_runner,
+        tmp_path,
+    ):
+        """A session's results survive another run's session with the same id.
+
+        Every tmux server numbers its sessions from $0, so each run's only
+        session is $0. The skip-only session holds its pytest open after
+        writing its results until the other run, on another socket, has
+        finished; each run must still report its own session's outcome.
+        """
+        wrote = tmp_path / "wrote"
+        release = tmp_path / "release"
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            skip_run = pool.submit(
+                runner.run,
+                "--env",
+                f"REPORT_FIXTURE_WROTE={wrote}",
+                "--env",
+                f"REPORT_FIXTURE_RELEASE={release}",
+                runner.report_fixture_path("test_always_skip.py"),
+            )
+            try:
+                while not wrote.exists() and not skip_run.done():
+                    time.sleep(0.05)
+                assert wrote.exists(), "the skip-only session never wrote its results"
+                passed = second_runner.run(
+                    second_runner.fixture_path("test_single_test.py"),
+                )
+            finally:
+                release.touch()
+            skipped = skip_run.result()
+
+        assert passed.exit_code == 0, passed.stdout + passed.stderr
+        assert "PASSED (1 tests)" in passed.stdout, passed.stdout
+        assert "SKIPPED (" not in passed.stdout, passed.stdout
+        assert skipped.exit_code == 0, skipped.stdout + skipped.stderr
+        assert "SKIPPED (1 tests" in skipped.stdout, skipped.stdout
+        assert "PASSED (" not in skipped.stdout, skipped.stdout
 
 
 class TestHelperScripts:
