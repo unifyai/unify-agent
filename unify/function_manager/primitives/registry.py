@@ -409,6 +409,22 @@ class ToolSurfaceRegistry:
             return "..."
 
     @staticmethod
+    def _format_method_heading(
+        cls: Optional[Type],
+        method_name: str,
+        qualified_name: str,
+    ) -> str:
+        """*qualified_name* with the method's compact signature, as a prompt shows it.
+
+        A coroutine method reads ``async def``, so the call is awaited rather
+        than its coroutine taken for the return value.
+        """
+        method = ToolSurfaceRegistry._resolve_base_method(cls, method_name)
+        prefix = "async def " if inspect.iscoroutinefunction(method) else ""
+        signature = ToolSurfaceRegistry._format_method_signature(cls, method_name)
+        return f"{prefix}{qualified_name}{signature}"
+
+    @staticmethod
     def _extract_method_docstring(cls: Optional[Type], method_name: str) -> str:
         """Extract the full docstring for a method from the Base* class.
 

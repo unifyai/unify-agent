@@ -659,23 +659,25 @@ class ActorEnvironment(BaseEnvironment):
             return filtered_docs
 
         registry = get_registry()
-        sig_str = registry._format_method_signature(
-            _ActorRunner,
-            "act",
-        )
         full_doc = inspect.getdoc(_ActorRunner.act) or ""
         filtered_doc = registry._filter_internal_params_from_docstring(full_doc)
 
         fq_prefix = f"{self.NAMESPACE}.{self.MANAGER_ALIAS}"
+        heading = registry._format_method_heading(
+            _ActorRunner,
+            "act",
+            f"{fq_prefix}.act",
+        )
         lines = [
             f"### `{fq_prefix}` — Actor Delegation\n",
-            "The one `primitives.*` surface. Calls return a "
-            "`SteerableToolHandle`: make it the last expression of "
-            "`execute_code` (or call it via `execute_function`) so the outer "
-            "loop can steer it — `await handle.result()` only when the code "
-            "itself composes on the result.\n",
+            "The one `primitives.*` surface. Awaiting a call returns a "
+            f"`SteerableToolHandle` (`handle = await {fq_prefix}.act(...)`): "
+            "make the handle the last expression of `execute_code` (or call it "
+            "via `execute_function`) so the outer loop can steer it — "
+            "`await handle.result()` only when the code itself composes on the "
+            "result.\n",
         ]
-        lines.append(f"**`{fq_prefix}.act{sig_str}`**")
+        lines.append(f"**`{heading}`**")
         if filtered_doc:
             for doc_line in filtered_doc.splitlines():
                 lines.append(f"  {doc_line}")

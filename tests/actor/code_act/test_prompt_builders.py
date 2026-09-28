@@ -171,6 +171,36 @@ def test_code_act_prompt_includes_reasoning_helper_decision_guidance():
 
 
 @pytest.mark.timeout(30)
+def test_code_act_prompt_shows_the_actor_primitive_is_awaited():
+    """Calling ``primitives.actor.act`` yields a coroutine, not a handle, so
+    every place the prompt shows the call shows it awaited."""
+    actor = CodeActActor()
+    prompt = build_code_act_prompt(
+        environments=_real_envs_mixed(),
+        tools=dict(actor.get_tools("act")),
+    )
+
+    assert "`await primitives.actor.act(...)` spawns a sub-actor" in prompt
+    assert "(`handle = await primitives.actor.act(...)`)" in prompt
+    assert "**`async def primitives.actor.act(request" in prompt
+
+
+@pytest.mark.timeout(30)
+def test_code_act_prompt_bounds_a_handle_by_its_work():
+    """A handle finishing is the outcome, not something to hold off by
+    pausing it or relaunching the work."""
+    actor = CodeActActor()
+    prompt = build_code_act_prompt(
+        environments=_real_envs_mixed(),
+        tools=dict(actor.get_tools("act")),
+    )
+
+    assert "**Handle lifetime:**" in prompt
+    assert "its completion is the outcome to report" in prompt
+    assert "relaunch finished work to keep it open for corrections" in prompt
+
+
+@pytest.mark.timeout(30)
 def test_code_act_prompt_includes_compressed_reasoning_contracts():
     """The semantic-vs-deterministic teaching renders as compact prose."""
     actor = CodeActActor()

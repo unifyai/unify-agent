@@ -68,15 +68,15 @@ def test_actor_env_allowed_methods_filters_tools_and_prompt():
     assert set(kept.get_tools()) == {_ACTOR_ACT}
     kept_context = kept.get_prompt_context()
     assert "#### `primitives.actor`" in kept_context
-    assert "**`.act(" in kept_context
+    assert "**`async def primitives.actor.act(" in kept_context
 
     dropped = ActorEnvironment(allowed_methods={"primitives.actor.nonexistent"})
     assert dropped.get_tools() == {}
-    assert "**`.act(" not in dropped.get_prompt_context()
+    assert "primitives.actor.act(" not in dropped.get_prompt_context()
 
     unfiltered = ActorEnvironment()
     assert unfiltered.allowed_methods is None
-    assert "**`primitives.actor.act(" in unfiltered.get_prompt_context()
+    assert "**`async def primitives.actor.act(" in unfiltered.get_prompt_context()
 
 
 # ────────────────────────────────────────────────────────────────────────────

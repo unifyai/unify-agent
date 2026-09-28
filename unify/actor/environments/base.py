@@ -91,10 +91,14 @@ def build_filtered_method_docs(
             lines.append(f"*{spec.domain}* — {spec.description}")
 
         for method_name in sorted(allowed_aliases[alias]):
-            sig_str = registry._format_method_signature(mgr_cls, method_name)
+            heading = registry._format_method_heading(
+                mgr_cls,
+                method_name,
+                f"{namespace}.{alias}.{method_name}",
+            )
             full_doc = registry._extract_method_docstring(mgr_cls, method_name)
             compact_doc = registry._extract_summary_and_params(full_doc)
-            lines.append(f"\n**`.{method_name}{sig_str}`**")
+            lines.append(f"\n**`{heading}`**")
             if compact_doc:
                 for doc_line in compact_doc.splitlines():
                     lines.append(f"  {doc_line}")

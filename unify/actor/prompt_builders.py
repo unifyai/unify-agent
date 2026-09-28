@@ -116,6 +116,10 @@ _TOOL_SELECTION = textwrap.dedent("""
       adopted when it is the **last expression** — never consume a handle
       inside a code block (print it, await-and-discard it) when the loop
       needs steering.
+    - **Handle lifetime:** an adopted handle is steerable while its work
+      runs, and its completion is the outcome to report — never pause a
+      handle or relaunch finished work to keep it open for corrections
+      that have not arrived.
     - Procedures are **not** primitives — use the GuidanceManager JSON
       tools (`GuidanceManager_search`, `GuidanceManager_add_guidance`, …)
       directly.
@@ -250,7 +254,7 @@ def _build_sandbox_environment_section() -> str:
 
         | Global | What it is |
         |--------|------------|
-        | `primitives` | `primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |
+        | `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |
         | `display` | `display(obj)` emits rich output — use it over `print(...)` for images; whatever you `display()` comes back as visual input next turn — inspect it directly, no separate vision/observe call |
         | `query_llm` / `list_llms` | Semantic LLM calls from code (doctrine below); full contract `help(query_llm)`, endpoints `list_llms()` |
         | `run_coro_sync` | Drives a coroutine factory from a sync façade under the already-running loop |

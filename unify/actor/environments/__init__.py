@@ -68,15 +68,16 @@ def create_env(namespace: str, instance: Any) -> BaseEnvironment:
                 attr = getattr(instance, name, None)
                 if not callable(attr):
                     continue
-                sig_str = _registry._format_method_signature(
+                heading = _registry._format_method_heading(
                     type(instance),
                     name,
+                    f"{namespace}.{name}",
                 )
                 full_doc = inspect.getdoc(attr) or ""
                 filtered_doc = _registry._filter_internal_params_from_docstring(
                     full_doc,
                 )
-                lines.append(f"\n**`{namespace}.{name}{sig_str}`**")
+                lines.append(f"\n**`{heading}`**")
                 if filtered_doc:
                     for doc_line in filtered_doc.splitlines():
                         lines.append(f"  {doc_line}")
