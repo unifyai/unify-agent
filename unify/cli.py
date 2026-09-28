@@ -61,16 +61,28 @@ goes to stderr.
 """
 
 
-def _add_common_options(parser: argparse.ArgumentParser) -> None:
+def _add_common_options(
+    parser: argparse.ArgumentParser,
+    *,
+    subcommand: bool = False,
+) -> None:
+    """Add the options accepted both before and after the subcommand.
+
+    argparse copies everything a subcommand's parser holds over what the
+    top-level parser parsed, defaults included, so a subcommand's copies
+    default to SUPPRESS: they set nothing unless given after the subcommand.
+    """
     parser.add_argument(
         "--home",
         metavar="DIR",
+        default=argparse.SUPPRESS if subcommand else None,
         help="where the store, workspace and logs live "
         "(default: UNIFY_HOME or ~/.unify)",
     )
     parser.add_argument(
         "--debug",
         action="store_true",
+        default=argparse.SUPPRESS if subcommand else False,
         help="stream runtime logs to the terminal as well as the log files",
     )
 
@@ -84,7 +96,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     commands = parser.add_subparsers(dest="command")
 
     chat = commands.add_parser("chat", help="chat with the assistant (the default)")
-    _add_common_options(chat)
+    _add_common_options(chat, subcommand=True)
 
     act = commands.add_parser(
         "act",
@@ -92,7 +104,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         description=ACT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_common_options(act)
+    _add_common_options(act, subcommand=True)
     act.add_argument(
         "request",
         nargs="?",

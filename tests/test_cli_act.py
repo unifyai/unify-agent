@@ -20,6 +20,26 @@ def test_no_command_is_chat():
     assert _parse_args(["--debug"]).debug is True
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--home", "/elsewhere", "--debug", "act", "hi"],
+        ["act", "--home", "/elsewhere", "--debug", "hi"],
+        ["--home", "/elsewhere", "--debug", "chat"],
+        ["chat", "--home", "/elsewhere", "--debug"],
+    ],
+)
+def test_common_options_parse_before_or_after_the_subcommand(argv):
+    args = _parse_args(argv)
+    assert (args.home, args.debug) == ("/elsewhere", True)
+
+
+@pytest.mark.parametrize("argv", [["chat"], ["act", "hi"]])
+def test_common_options_default_under_a_subcommand(argv):
+    args = _parse_args(argv)
+    assert (args.home, args.debug) == (None, False)
+
+
 def test_act_flags_parse():
     args = _parse_args(
         [
