@@ -188,6 +188,38 @@ def test_filter_scope_does_not_affect_writes():
     assert "hello_world" in fm_all.list_functions()
 
 
+@_handle_project
+def test_scoped_add_records_dependency_on_hidden_function():
+    """A call to a stored function outside the scope is still a dependency."""
+    _FM().add_functions(implementations=_PY_HELLO)
+    fm_scoped = _FM(filter_scope="name <> 'hello_world'")
+
+    fm_scoped.add_functions(
+        implementations="def greet():\n    return hello_world()\n",
+    )
+
+    greet = _FM()._get_function_data_by_name(name="greet")
+    assert greet is not None
+    assert greet["depends_on"] == ["hello_world"]
+
+
+@_handle_project
+def test_scoped_overwrite_updates_hidden_function():
+    """overwrite=True updates a same-named function the scope hides."""
+    fm_all = _FM()
+    fm_all.add_functions(implementations=_PY_HELLO)
+    hello_id = fm_all.list_function_name_to_ids()["hello_world"]
+    fm_scoped = _FM(exclude_compositional_ids={hello_id})
+
+    result = fm_scoped.add_functions(
+        implementations='def hello_world():\n    """Greets"""\n    return "hi"\n',
+        overwrite=True,
+    )
+
+    assert result == {"hello_world": "updated"}
+    assert fm_all.list_functions()["hello_world"]["docstring"] == "Greets"
+
+
 # --------------------------------------------------------------------------- #
 #  Two differently-scoped instances see disjoint subsets                        #
 # --------------------------------------------------------------------------- #
