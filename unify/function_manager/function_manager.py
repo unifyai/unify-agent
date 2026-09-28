@@ -507,7 +507,12 @@ class FunctionManager(BaseFunctionManager):
 
     @property
     def exclude_compositional_ids(self) -> Optional[FrozenSet[int]]:
-        """Stored function IDs excluded from every read of the ``functions`` table."""
+        """Stored function IDs hidden from discovery.
+
+        ``list_functions``, ``filter_functions``, ``search_functions`` and
+        ``get_precondition`` skip them; exact lookups by name or ID, which
+        resolve references and run functions, still find them.
+        """
         return self._exclude_compositional_ids
 
     @exclude_compositional_ids.setter

@@ -26,7 +26,9 @@ class FunctionStoreEnvironment(BaseEnvironment):
     Promotes specific stored functions from "discoverable via search" to
     "prompt-injected and directly callable in the sandbox".  The tagged
     ``function_id`` values are automatically excluded from FunctionManager
-    search/list/filter results by the CodeActActor's exclusion wiring.
+    search/list/filter results by the CodeActActor's exclusion wiring, so
+    the environment reads its own functions by exact name or ID, which
+    discovery scoping does not touch.
 
     Parameters
     ----------
@@ -66,7 +68,8 @@ class FunctionStoreEnvironment(BaseEnvironment):
         self._requested_names = list(function_names) if function_names else []
         self._requested_ids = list(function_ids) if function_ids else []
 
-        # Fetch metadata once at construction time (cheap, no callables).
+        # Fetch the records once at construction time, so the prompt documents
+        # exactly what every sandbox runs.
         self._func_metadata: List[Dict[str, Any]] = self._resolve_metadata()
 
         # Placeholder instance — callables are resolved lazily in get_sandbox_instance.
@@ -78,33 +81,19 @@ class FunctionStoreEnvironment(BaseEnvironment):
         )
 
     def _resolve_metadata(self) -> List[Dict[str, Any]]:
-        """Fetch function metadata from the FunctionManager by name or ID."""
-        rows: List[Dict[str, Any]] = []
+        """Fetch the requested stored functions by exact name or ID.
 
-        if self._requested_names:
-            name_clauses = [f"name == '{n}'" for n in self._requested_names]
-            name_filter = " or ".join(name_clauses)
-            rows.extend(
-                self._function_manager.filter_functions(
-                    filter=name_filter,
-                    include_implementations=False,
-                ),
-            )
-
-        if self._requested_ids:
-            id_clauses = [f"function_id == {i}" for i in self._requested_ids]
-            id_filter = " or ".join(id_clauses)
-            hits = self._function_manager.filter_functions(
-                filter=id_filter,
-                include_implementations=False,
-            )
-            # Deduplicate against already-fetched rows.
-            existing_ids = {r.get("function_id") for r in rows}
-            for h in hits:
-                if h.get("function_id") not in existing_ids:
-                    rows.append(h)
-
-        return rows
+        Discovery reads (search, filter, list) cannot serve here: the actor
+        hides every function this environment documents from them.
+        """
+        fm = self._function_manager
+        found = [fm._get_function_data_by_name(name=n) for n in self._requested_names]
+        found += [
+            fm._get_log_by_function_id(function_id=i, raise_if_missing=False)
+            for i in self._requested_ids
+        ]
+        by_id = {row["function_id"]: row for row in found if row is not None}
+        return [by_id[function_id] for function_id in sorted(by_id)]
 
     @property
     def namespace(self) -> str:
@@ -120,34 +109,14 @@ class FunctionStoreEnvironment(BaseEnvironment):
         Each function becomes an attribute on the returned object, callable
         as ``await namespace.function_name(...)``.
         """
-        ns_dict: Dict[str, Any] = {}
-
-        # Build filter to fetch all functions with callables.
-        names = [row["name"] for row in self._func_metadata if row.get("name")]
-        if not names:
-            return SimpleNamespace()
-
-        name_clauses = [f"name == '{n}'" for n in names]
-        name_filter = " or ".join(name_clauses)
-
-        result = self._function_manager.filter_functions(
-            filter=name_filter,
-            _return_callable=True,
-            _namespace=ns_dict,
-            _also_return_metadata=True,
+        callables = self._function_manager._inject_callables_for_functions(
+            self._func_metadata,
+            namespace={},
         )
-
-        callables_list = result.get("callables", []) if isinstance(result, dict) else []
-
-        # Build a SimpleNamespace from the injected callables.
-        sandbox_ns = SimpleNamespace()
-        for fn in callables_list:
-            fn_name = getattr(fn, "__name__", None)
-            if fn_name:
-                setattr(sandbox_ns, fn_name, fn)
+        sandbox_ns = SimpleNamespace(**{fn.__name__: fn for fn in callables})
 
         # Optionally wrap for clarification queue injection.
-        if getattr(self, "_clarification_up_q", None) is not None:
+        if self._clarification_up_q is not None:
             return _ClarificationQueueInjector(
                 target=sandbox_ns,
                 clarification_up_q=self._clarification_up_q,
@@ -202,16 +171,9 @@ class FunctionStoreEnvironment(BaseEnvironment):
             argspec = row.get("argspec", "(...)")
             docstring = row.get("docstring", "")
 
-            header_parts = []
-            fid = row.get("function_id")
-            if fid is not None:
-                header_parts.append(f"function_id: {fid}")
-            if row.get("is_primitive"):
-                header_parts.append("primitive")
-            header_tag = f" [{', '.join(header_parts)}]" if header_parts else ""
-
             lines.append(
-                f"\n**`{self.namespace}.{name}{argspec}`**{header_tag}",
+                f"\n**`{self.namespace}.{name}{argspec}`**"
+                f" [function_id: {row['function_id']}]",
             )
             if docstring:
                 for doc_line in docstring.splitlines():

@@ -276,13 +276,17 @@ def test_build_envs_from_db_bare_names_use_function_store():
     from unify.actor.environments.actor import _build_environments_from_db
 
     fm = _make_mock_fm({"alpha": {}, "beta": {}})
-    fm.filter_functions.return_value = [
-        {"function_id": 1, "name": "alpha", "docstring": "Alpha."},
-    ]
+    fm._get_function_data_by_name.return_value = {
+        "function_id": 1,
+        "name": "alpha",
+        "docstring": "Alpha.",
+    }
     envs = _build_environments_from_db(["alpha"], fm)
 
     assert len(envs) == 1
     assert isinstance(envs[0], FunctionStoreEnvironment)
+    fm._get_function_data_by_name.assert_called_once_with(name="alpha")
+    assert set(envs[0].get_tools()) == {"functions.alpha"}
 
 
 def test_build_envs_from_db_skips_foreign_dotted_names():

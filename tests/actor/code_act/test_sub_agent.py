@@ -600,6 +600,57 @@ async def test_child_with_sub_agents_spawns_through_the_actor_primitive(monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Symbolic test — a stored prompt function is callable in the child's sandbox
+# ---------------------------------------------------------------------------
+
+_DOUBLING_FUNCTION = (
+    "async def double(x: int) -> int:\n"
+    '    """Double the input."""\n'
+    "    return x * 2\n"
+)
+_TRIPLING_FUNCTION = (
+    "async def triple(x: int) -> int:\n"
+    '    """Triple the input."""\n'
+    "    return x * 3\n"
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@_handle_project
+async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
+    """A stored function named in prompt_functions is documented in the
+    child's prompt and left out of its discovery, and the child's code can
+    still call it."""
+    from unify.function_manager.function_manager import FunctionManager
+
+    FunctionManager(include_primitives=False).add_functions(
+        implementations=[_DOUBLING_FUNCTION, _TRIPLING_FUNCTION],
+    )
+    child = _build_child(can_spawn_sub_agents=False, prompt_functions=["double"])
+    tools = child.get_tools("act")
+
+    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
+    assert "**`functions.double(x: int) -> int`**" in prompt
+    assert list(child.function_manager.list_functions()) == ["triple"]
+    filtered = child.function_manager.filter_functions()
+    assert [row["name"] for row in filtered] == ["triple"]
+
+    sandbox = PythonExecutionSession(environments=child.environments)
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        coded = await tools["execute_code"](
+            thought="Doubling with the prompt-injected function.",
+            code="await functions.double(21)",
+        )
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+
+    assert _result_error(coded) is None
+    assert coded.result == 42
+
+
+# ---------------------------------------------------------------------------
 # Eval test — end-to-end actor execution
 # ---------------------------------------------------------------------------
 
