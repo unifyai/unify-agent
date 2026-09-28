@@ -250,7 +250,12 @@ async def test_stop_nested_loop_calls_stop(llm_config, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_interject_nested_handle(llm_config):
+@pytest.mark.parametrize(
+    "tool_reads_corrections",
+    [False, True],
+    ids=["plain_tool", "tool_with_own_interject_queue"],
+)
+async def test_interject_nested_handle(llm_config, tool_reads_corrections):
     """
     Verify that the outer loop can correctly interject the inner loop.
 
@@ -261,6 +266,10 @@ async def test_interject_nested_handle(llm_config):
     4. Outer loop uses steer(action="interject") to forward to nested loop
     5. Nested loop receives the interjection and includes it in its final response
     6. Gate is released, inner tool completes, and the result flows back up
+
+    A tool may take its own ``_interject_queue`` for corrections to its body
+    while it runs, as ``execute_code`` does. Once it has returned the handle,
+    the forwarded interjection must still reach the handle.
     """
 
     # Gate to control when the inner tool completes
@@ -274,8 +283,7 @@ async def test_interject_nested_handle(llm_config):
     gated_task.__name__ = "gated_task"
     gated_task.__qualname__ = "gated_task"
 
-    # Outer tool: launches nested loop and returns its handle
-    async def outer_tool() -> AsyncToolLoopHandle:
+    async def _start_nested_loop() -> AsyncToolLoopHandle:
         inner_client = new_llm_client(**llm_config)
         inner_client.set_system_message(
             "Call `gated_task` and wait for it. "
@@ -287,6 +295,19 @@ async def test_interject_nested_handle(llm_config):
             message="start",
             tools={"gated_task": gated_task},
         )
+
+    # Outer tool: launches nested loop and returns its handle
+    if tool_reads_corrections:
+
+        async def outer_tool(
+            _interject_queue: asyncio.Queue | None = None,
+        ) -> AsyncToolLoopHandle:
+            return await _start_nested_loop()
+
+    else:
+
+        async def outer_tool() -> AsyncToolLoopHandle:
+            return await _start_nested_loop()
 
     outer_tool.__name__ = "outer_tool"
     outer_tool.__qualname__ = "outer_tool"
@@ -351,12 +372,15 @@ async def test_interject_nested_handle(llm_config):
     #    outer_tool's completion result (check_status tool message).
     #    We check the tool result rather than the final LLM text because
     #    GPT-5.2 non-deterministically returns an empty final response
-    #    instead of echoing the inner loop's output.
+    #    instead of echoing the inner loop's output. steer's own
+    #    acknowledgement quotes the payload whether or not it arrived, so it
+    #    is no evidence.
     outer_tool_result = next(
         (
             m.get("content", "")
             for m in msgs
             if m.get("role") == "tool"
+            and m.get("tool_call_id") != interject_call["id"]
             and "hello world" in str(m.get("content", "")).lower()
         ),
         None,

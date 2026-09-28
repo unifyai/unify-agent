@@ -1386,6 +1386,10 @@ class ToolsData:
             info,
             handle=child_handle,
             is_interjectable=hasattr(child_handle, "interject"),
+            # The tool has returned, so the private queue its body read
+            # corrections from has no reader left: an interjection has to
+            # reach the adopted handle through its own interject().
+            interject_queue=None,
             tool_reply_msg=ph,
             clar_up_queue=h_up_q,
             clar_down_queue=h_down_q,
@@ -1482,6 +1486,8 @@ class ToolsData:
                 call_id=synth_call_id,
                 handle=handle,
                 is_interjectable=hasattr(handle, "interject"),
+                # As in adopt_nested: the parent tool's queue died with it.
+                interject_queue=None,
                 tool_reply_msg=ph,
                 clar_up_queue=h_up_q,
                 clar_down_queue=h_down_q,
