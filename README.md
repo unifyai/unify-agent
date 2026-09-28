@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unifyai/unify/main/assets/brand/unify-readme-banner-dark.png">
-    <img src="https://raw.githubusercontent.com/unifyai/unify/main/assets/brand/unify-readme-banner-light.png" alt="unify" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/unifyai/unify-agent/main/assets/brand/unify-readme-banner-dark.png">
+    <img src="https://raw.githubusercontent.com/unifyai/unify-agent/main/assets/brand/unify-readme-banner-light.png" alt="unify" width="100%">
   </picture>
 </p>
 
