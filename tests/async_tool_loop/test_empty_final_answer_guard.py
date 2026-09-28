@@ -14,6 +14,10 @@ Both are exercised with a fully scripted fake in place of
    instead of returning it verbatim; and when no substantive content exists
    anywhere, it must retry with a nudge before failing loudly, never
    returning a silent empty result.
+
+In persist mode an empty turn is not finalized at all, but it still ends in
+the wait state, and the response notification that marks it is sent with
+empty content rather than withheld.
 """
 
 from __future__ import annotations
@@ -729,3 +733,61 @@ async def test_quota_pruning_notice_between_answer_and_empty_recovers(
 
     final = await asyncio.wait_for(handle.result(), timeout=30)
     assert final == "The answer is 42."
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@_handle_project
+async def test_persist_empty_turn_still_surfaces_a_response(
+    llm_config,
+    monkeypatch,
+) -> None:
+    """In persist mode the response notification marks the wait state, so a
+    turn that returns no content and no tool calls (what a model with nothing
+    to say sends after a message that asks for nothing) surfaces an empty
+    response rather than nothing. A driver waiting for the turn's response,
+    such as ``unify act --jsonl``, would otherwise wait forever. The loop stays
+    in its wait state and answers the next interjection as usual."""
+    client = new_llm_client(**llm_config)
+    client.set_system_message("This turn is fully scripted by the test.")
+
+    from unify.common._async_tool import loop as _loop
+
+    turn_queue: asyncio.Queue = asyncio.Queue()
+
+    async def _fake_gwp(_client, _preprocess_msgs, **gen_kwargs):
+        next_msg = await turn_queue.get()
+        _client.messages.append(next_msg)
+        return {"ok": True}
+
+    monkeypatch.setattr(_loop, "generate_with_preprocess", _fake_gwp, raising=True)
+
+    handle = start_async_tool_loop(
+        client=client,
+        message="start",
+        tools={},
+        persist=True,
+        max_steps=40,
+        timeout=30,
+    )
+
+    async def _next_response() -> dict:
+        while True:
+            notif = await asyncio.wait_for(handle.next_notification(), timeout=10)
+            if isinstance(notif, dict) and notif.get("type") == "response":
+                return notif
+
+    await turn_queue.put(_final_msg("ready"))
+    assert (await _next_response())["content"] == "ready"
+
+    await handle.interject("Your submission was CORRECT.")
+    await turn_queue.put({"role": "assistant", "content": None, "tool_calls": None})
+    assert (await _next_response())["content"] == ""
+    assert not handle.done()
+
+    await handle.interject("Reply with the word done.")
+    await turn_queue.put(_final_msg("done"))
+    assert (await _next_response())["content"] == "done"
+
+    await handle.stop()
+    await asyncio.wait_for(handle.result(), timeout=30)

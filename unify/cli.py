@@ -55,7 +55,9 @@ With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines) or {"quit": true}; each stdout line is
 {"type": "result" | "response" | "question" | "storage" | "ended", ...}.
-Progress still goes to stderr.
+With --persist every turn ends in one "response" line as the actor starts
+waiting, its content empty when the turn produced no text. Progress still
+goes to stderr.
 """
 
 

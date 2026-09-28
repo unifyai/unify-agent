@@ -3992,10 +3992,11 @@ async def async_tool_loop_inner(
             # turn. Multi-handle and the plain return both read final_content
             # after this point, so it is resolved once here. Persist mode is
             # exempt because it never finalizes here: an empty turn surfaces
-            # nothing and re-enters the persist wait, and with response_format
-            # the turn's answer is the response-tool payload rather than text,
-            # so the nudge/loud-fail below would inject spurious turns and then
-            # end a loop that only an explicit stop may end.
+            # an empty response and re-enters the persist wait, and with
+            # response_format the turn's answer is the response-tool payload
+            # rather than text, so the nudge/loud-fail below would inject
+            # spurious turns and then end a loop that only an explicit stop
+            # may end.
             if final_content is None and not persist:
                 _substantive_content = None
                 for _hist_msg in reversed(client.messages):
@@ -4073,7 +4074,11 @@ async def async_tool_loop_inner(
             if persist:
                 # The turn-complete response reaches the outer handle so the
                 # ConversationManager can tell "response (awaiting input)"
-                # from in-progress "notification" events.
+                # from in-progress "notification" events. It marks the wait
+                # state, so it is sent even when the turn produced no text: a
+                # model with nothing to say after a message that asks for
+                # nothing returns empty content, and a driver waiting for the
+                # response (`unify act --jsonl`) would otherwise wait forever.
                 _response_to_surface = (
                     _persist_response_content
                     if _persist_response_content is not None
@@ -4083,13 +4088,12 @@ async def async_tool_loop_inner(
                 if (
                     _outer is not None
                     and hasattr(_outer, "_notification_q")
-                    and _response_to_surface
                     and not _suppress_persist_response
                 ):
                     await _outer._notification_q.put(
                         {
                             "type": "response",
-                            "content": _response_to_surface,
+                            "content": _response_to_surface or "",
                         },
                     )
                 _persist_response_content = None
