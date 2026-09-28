@@ -557,6 +557,7 @@ class TestCompressAndRebuild:
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_returns_compressed_messages(llm_config):
     messages = [
@@ -595,6 +596,7 @@ async def test_compress_returns_compressed_messages(llm_config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_output_length_matches_input(llm_config):
     messages = [
@@ -614,6 +616,7 @@ async def test_compress_output_length_matches_input(llm_config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_compacts_tool_call_messages(llm_config):
     messages = [
@@ -646,6 +649,7 @@ async def test_compress_compacts_tool_call_messages(llm_config):
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_preserves_image_placeholders(llm_config):
     """An image the conversation still depends on keeps its ``[img:N]`` tag.
@@ -706,6 +710,7 @@ _VERBOSE_TRACEBACK = (
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_compacts_verbose_errors(llm_config):
     error_content = json.dumps({"error": _VERBOSE_TRACEBACK})
@@ -766,6 +771,7 @@ async def test_compress_compacts_verbose_errors(llm_config):
 class TestMultiPassCompression:
     """Symbolic tests for the multi-pass compression interface."""
 
+    @pytest.mark.llm_call
     def test_result_count_includes_prior_and_new(self):
         """compress_messages with prior_entries returns prior + new entries."""
         import asyncio
@@ -862,6 +868,7 @@ _VERBOSE_PRIOR_TOOL_RESULT = json.dumps(
 
 
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_compress_multi_pass_recompresses_prior(llm_config):
     """Multi-pass compression can further compress verbose prior entries."""
@@ -1166,6 +1173,7 @@ def _accumulate_entries(
 
 @pytest.mark.eval
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_multi_pass_double_further_compresses_prior(llm_config):
     """Pass 2 further compresses verbose entries that survived pass 1.
@@ -1210,6 +1218,7 @@ async def test_multi_pass_double_further_compresses_prior(llm_config):
 
 @pytest.mark.eval
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_multi_pass_double_with_raw_archives(llm_config):
     """Pass 2 with raw_archives can inspect originals via get_raw.
@@ -1250,6 +1259,7 @@ async def test_multi_pass_double_with_raw_archives(llm_config):
 
 @pytest.mark.eval
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_multi_pass_triple_accumulates_correctly(llm_config):
     """Three sequential passes accumulate and compress all entries.
@@ -1558,6 +1568,7 @@ def _build_image_conversation() -> tuple[list[dict], dict[int, dict]]:
 
 @pytest.mark.eval
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_image_aware_compression_keeps_relevant(llm_config):
     """The compression LLM should keep [img:0] (still relevant) and may remove [img:1] (bug fixed)."""
@@ -1575,6 +1586,7 @@ async def test_image_aware_compression_keeps_relevant(llm_config):
 
 @pytest.mark.eval
 @pytest.mark.asyncio
+@pytest.mark.llm_call
 @_handle_project
 async def test_image_aware_multi_pass_accumulates(llm_config):
     """Multi-pass image compression: pass 2 sees surviving images from pass 1 plus new ones."""
