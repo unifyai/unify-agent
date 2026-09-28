@@ -785,8 +785,21 @@ class SessionExecutor:
     def _new_session(self) -> PythonExecutionSession:
         return PythonExecutionSession(environments=self._environments)
 
+    @staticmethod
+    def _bound_sandbox(session_id: int | None) -> PythonExecutionSession | None:
+        """The running ``act()`` call's sandbox, if ``session_id`` names it.
+
+        Session 0 names that sandbox in every state mode whenever one is
+        bound. With none bound, session 0 is an ordinary executor-managed
+        session.
+        """
+        return _CURRENT_SANDBOX.get(None) if session_id == 0 else None
+
     def has_python_session(self, *, session_id: int) -> bool:
-        return session_id in self._python_sessions
+        return (
+            self._bound_sandbox(session_id) is not None
+            or session_id in self._python_sessions
+        )
 
     def list_in_process_python_sessions(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -855,32 +868,23 @@ class SessionExecutor:
         ) -> Dict[str, Any]:
             return await sb.execute(code, timeout=self._timeout)
 
-        # Special-case: session 0 is the *current bound sandbox* when present.
-        if state_mode == "stateful" and session_id == 0:
-            # Only a missing binding falls through to the executor-managed
-            # session 0; a failure while executing in the bound sandbox
-            # must stay loud rather than silently re-running the cell in
-            # a fresh session.
-            try:
-                sb0 = _CURRENT_SANDBOX.get()
-            except LookupError:
-                sb0 = None
-            if sb0 is not None:
-                self._inject_fm_globals(sb0)
-                _se_log.debug(
-                    f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox (session 0), executing",
-                )
-                res = await _execute_in_python_session(sb0)
-                _se_log.debug(
-                    f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox done",
-                )
-                return {
-                    **res,
-                    "state_mode": state_mode,
-                    "session_id": 0,
-                    "session_created": False,
-                    "duration_ms": _duration_ms(),
-                }
+        bound = self._bound_sandbox(session_id)
+        if state_mode == "stateful" and bound is not None:
+            self._inject_fm_globals(bound)
+            _se_log.debug(
+                f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox (session 0), executing",
+            )
+            res = await _execute_in_python_session(bound)
+            _se_log.debug(
+                f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox done",
+            )
+            return {
+                **res,
+                "state_mode": state_mode,
+                "session_id": 0,
+                "session_created": False,
+                "duration_ms": _duration_ms(),
+            }
         # Stateless: fresh in-process sandbox per call.
         if state_mode == "stateless":
             _se_log.debug(
@@ -945,11 +949,11 @@ class SessionExecutor:
 
         if state_mode == "read_only":
             # Create a throwaway sandbox seeded with current state.
-            if key not in self._python_sessions:
+            base = bound if bound is not None else self._python_sessions.get(key)
+            if base is None:
                 raise ValueError(
                     f"Session {key} not found for read_only execution",
                 )
-            base = self._python_sessions[key]
             sb = self._new_session()
             try:
                 # Shallow copy globals to allow read access while avoiding persistence.

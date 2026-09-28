@@ -1,7 +1,11 @@
 import pytest
 
+from tests.helpers import _handle_project
+from unify.actor.code_act_actor import CodeActActor
 from unify.actor.execution import (
+    PythonExecutionSession,
     SessionExecutor,
+    _CURRENT_SANDBOX,
     _validate_execution_params,
     parts_to_text,
 )
@@ -198,6 +202,45 @@ async def test_session_executor_python_read_only_does_not_mutate_state():
         assert "1" in parts_to_text(r2["stdout"])
     finally:
         await ex.close()
+
+
+@pytest.mark.asyncio
+@_handle_project
+async def test_read_only_session_zero_branches_off_the_bound_sandbox():
+    """Session 0 is the per-call sandbox for read_only, as it is for stateful.
+
+    A read_only cell on session 0 reads what stateful cells left there, and
+    nothing it assigns persists.
+    """
+    actor = CodeActActor(environments=[])
+    execute_code = actor.get_tools("act")["execute_code"]
+    sandbox = PythonExecutionSession(environments={})
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        seeded = await execute_code(
+            thought="Seed the session.",
+            code="prices = [3, 5]\ntotal = sum(prices)",
+            state_mode="stateful",
+            session_id=0,
+        )
+        assert seeded.error is None
+
+        what_if = await execute_code(
+            thought="Try a variant without keeping it.",
+            code="total = total * 10\ndraft = 'discarded'\nprint(total)",
+            state_mode="read_only",
+            session_id=0,
+        )
+        assert what_if.error is None
+        assert what_if.session_id == 0
+        assert parts_to_text(what_if.stdout).strip() == "80"
+
+        assert sandbox.global_state["total"] == 8
+        assert "draft" not in sandbox.global_state
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
 
 
 @pytest.mark.asyncio
