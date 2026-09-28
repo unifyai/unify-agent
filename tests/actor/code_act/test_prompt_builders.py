@@ -245,8 +245,9 @@ def test_discovery_first_guidance_separates_search_from_execution_choice():
     )
 
     assert "Discovery index scope" in prompt
-    # Primitives are searchable now; only prompt-documented callables
-    # (computer methods, prompt-injected functions/guidance) stay out.
+    # Search covers the primitive catalogue, minus what the prompt documents
+    # (the actor primitive, prompt-injected functions/guidance) and what the
+    # actor's environments do not provide.
     assert "the built-in `primitives.*` catalogue" in prompt
     assert "they never appear in search" in prompt
     assert "Search is a discovery step" in prompt

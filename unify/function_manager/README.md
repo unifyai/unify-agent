@@ -155,7 +155,7 @@ These are always available (from `create_execution_globals()`):
 | **Modules** | `asyncio`, `re`, `json`, `datetime`, `collections`, `statistics`, `functools` |
 | **Typing** | `typing`, `Any`, `Callable`, `Dict`, `List`, `Optional`, `Tuple`, `Set`, `Union`, `Literal` |
 | **Pydantic** | `pydantic`, `BaseModel`, `Field` |
-| **Primitives** | `primitives` – lazy access to the primitive namespaces |
+| **Primitives** | `primitives` – the namespaces the actor's environments provide (`primitives.actor` only for an actor that may spawn sub-actors); any other refuses and says why |
 | **Steerable** | `SteerableToolHandle` |
 
 #### Injected by Actor at Runtime

@@ -7,6 +7,8 @@ a secure sandbox environment with appropriate restrictions.
 
 import asyncio
 
+import pytest
+
 from unify.function_manager.execution_env import (
     create_base_globals,
     create_execution_globals,
@@ -162,13 +164,12 @@ def test_execution_globals():
         assert key in execution
         assert execution[key] is base[key]
 
-    # Should include the primitives object
-    assert "primitives" in execution
-
-    # Primitives object should provide lazy access to the actor namespace only
+    # A sandbox's primitives come only from its environments, so the default
+    # object exposes no namespace and refuses the actor one, saying why.
     primitives = execution["primitives"]
-    assert hasattr(primitives, "actor")
-    assert callable(primitives.actor.act)
+    assert primitives.primitive_scope.scoped_managers == frozenset()
+    with pytest.raises(AttributeError, match="started without Actor Delegation"):
+        primitives.actor
     assert not hasattr(primitives, "files")
 
 

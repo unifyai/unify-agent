@@ -218,6 +218,8 @@ The Actor implements a **gating policy**: until the LLM has queried both `Functi
 
 `ToolSurfaceRegistry` is the single source of truth for what the sandbox exposes under `primitives`: the method surface of each namespace (today `primitives.actor`, the nested-actor entry point), its tool schemas, the prompt context that describes it, and the sandbox's global state — all from one declaration.
 
+Which namespaces a given actor gets is its `PrimitiveScope`, and only its environments grant one: the sandbox holds exactly the primitives they inject, its prompt documents only those, and its FunctionManager's discovery never surfaces any other. `primitives.actor.act(..., can_spawn_sub_agents=False)`, the default, builds a child with no `ActorEnvironment` and a FunctionManager scoped to no primitives, so its search, `execute_function`, code and stored functions all refuse `primitives.actor` with the reason.
+
 ### Storage review
 
 **Files:** `unify/actor/code_act_actor.py` (`_start_storage_check_loop`)

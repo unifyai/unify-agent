@@ -33,10 +33,27 @@ def test_mixed_valid_invalid_raises():
         PrimitiveScope(scoped_managers=frozenset({"actor", "not_a_manager"}))
 
 
-def test_empty_scope_raises():
-    """Empty scope raises ValueError."""
-    with pytest.raises(ValueError, match="must be non-empty"):
-        PrimitiveScope(scoped_managers=frozenset())
+def test_empty_scope_exposes_nothing():
+    """An empty scope is valid: a runtime granted no primitives."""
+    scope = PrimitiveScope.none()
+    assert scope == PrimitiveScope(scoped_managers=frozenset())
+    assert scope.scoped_managers == frozenset()
+    assert not scope.includes("actor")
+    assert scope.scope_key == ""
+
+
+def test_out_of_scope_namespace_is_refused_with_its_reason():
+    """Reaching a namespace outside the scope names what the runtime lacks."""
+    from unify.function_manager.primitives import Primitives
+
+    primitives = Primitives(primitive_scope=PrimitiveScope.none())
+    with pytest.raises(AttributeError) as refused:
+        primitives.actor
+    assert str(refused.value) == (
+        "primitives.actor is not available to this actor: it was started "
+        "without Actor Delegation (Spawn focused sub-actors for isolated "
+        "multi-step sub-tasks). Complete the task with the tools this actor has."
+    )
 
 
 def test_scope_key_single_manager():

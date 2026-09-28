@@ -222,15 +222,33 @@ _EXECUTION_RULES = textwrap.dedent("""
 """).strip()
 
 
-def _build_sandbox_environment_section() -> str:
+# Sandbox Environment lines that exist only where an environment injects
+# primitives: an actor without them cannot spawn a sub-actor, so its prompt
+# must not offer one.
+_PRIMITIVES_GLOBAL_ROW = "| `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |\n"
+
+_SUB_ACTOR_DIAL = textwrap.dedent("""
+    - Plain code -> `query_llm(...)` -> a sub-agent
+      (`primitives.actor.act`) is a dial, not a mode switch: take
+      the lowest notch that preserves the judgment. Exact logic is
+      plain code; a bounded judgment is one `query_llm(...)` call
+      nested in your control flow; reserve a sub-agent for
+      sub-tasks whose plan must be discovered at runtime.
+""").lstrip()
+
+
+def _build_sandbox_environment_section(*, has_primitives: bool) -> str:
     """One table of the actually injected sandbox globals + query_llm doctrine.
 
     The globals table mirrors ``create_execution_globals()``
     (``unify/function_manager/execution_env.py``) plus the per-execution
     ``display`` injection (``unify/actor/execution/session.py``) — if a
-    global is added or removed there, update the table. Full contracts
-    live in the callables' docstrings behind ``help(...)``; signatures
-    are introspected so this block never drifts from the callables.
+    global is added or removed there, update the table. ``primitives``
+    and the sub-agent notch of the query_llm dial appear only when
+    *has_primitives*, i.e. an environment injects primitives; otherwise
+    the sandbox's ``primitives`` exposes nothing. Full contracts live in
+    the callables' docstrings behind ``help(...)``; signatures are
+    introspected so this block never drifts from the callables.
     """
     import inspect as _inspect
 
@@ -242,7 +260,9 @@ def _build_sandbox_environment_section() -> str:
     )
     list_signature = f"def {list_llms.__name__}{_inspect.signature(list_llms)}"
 
-    return textwrap.dedent(f"""
+    # Dedented before formatting, so an optional block is spliced in at
+    # column 0 and leaves no gap when absent.
+    template = textwrap.dedent("""
         ### Sandbox Environment
 
         Python in `execute_code` and stored functions runs with the
@@ -254,8 +274,7 @@ def _build_sandbox_environment_section() -> str:
 
         | Global | What it is |
         |--------|------------|
-        | `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |
-        | `display` | `display(obj)` emits rich output — use it over `print(...)` for images; whatever you `display()` comes back as visual input next turn — inspect it directly, no separate vision/observe call |
+        {primitives_row}| `display` | `display(obj)` emits rich output — use it over `print(...)` for images; whatever you `display()` comes back as visual input next turn — inspect it directly, no separate vision/observe call |
         | `query_llm` / `list_llms` | Semantic LLM calls from code (doctrine below); full contract `help(query_llm)`, endpoints `list_llms()` |
         | `run_coro_sync` | Drives a coroutine factory from a sync façade under the already-running loop |
         | `unillm` | Advanced direct LLM usage beyond `query_llm` |
@@ -291,17 +310,17 @@ def _build_sandbox_environment_section() -> str:
           Put all the evidence the judgment needs in the prompt; hold
           running state in Python variables, never in the model — there
           is no session between calls.
-        - Plain code -> `query_llm(...)` -> a sub-agent
-          (`primitives.actor.act`) is a dial, not a mode switch: take
-          the lowest notch that preserves the judgment. Exact logic is
-          plain code; a bounded judgment is one `query_llm(...)` call
-          nested in your control flow; reserve a sub-agent for
-          sub-tasks whose plan must be discovered at runtime.
-        - Pass a Pydantic `response_format=` (and `temperature=0.0`) when
+        {sub_actor_dial}- Pass a Pydantic `response_format=` (and `temperature=0.0`) when
           downstream Python branches on the result; images via
           `images=[...]`. For reuse, keep the query_llm(...) call
           inside the stored function and choose `model=` deliberately.
-    """).strip()
+    """)
+    return template.format(
+        primitives_row=_PRIMITIVES_GLOBAL_ROW if has_primitives else "",
+        query_signature=query_signature,
+        list_signature=list_signature,
+        sub_actor_dial=_SUB_ACTOR_DIAL if has_primitives else "",
+    ).strip()
 
 
 _INCREMENTAL_EXECUTION = textwrap.dedent("""
@@ -557,7 +576,11 @@ def build_code_act_prompt(
 
         parts.append(_TOOLS_SECTION)
 
-        parts.append(_build_sandbox_environment_section())
+        parts.append(
+            _build_sandbox_environment_section(
+                has_primitives="primitives" in environments,
+            ),
+        )
         parts.append(_TOOL_SELECTION)
         parts.append(_PYTHON_FIRST)
         parts.append(_EXECUTION_RULES)

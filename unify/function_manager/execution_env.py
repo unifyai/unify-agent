@@ -7,7 +7,7 @@ compositional functions with:
 - Common standard library modules (asyncio, re, json, datetime, collections)
 - Typing module and common type hints
 - Pydantic support (if available)
-- Access to primitives (``primitives.actor``)
+- The ``primitives`` root, filled only by the sandbox's environments
 - Steerable handle infrastructure (for functions that return steerable handles)
 """
 
@@ -208,20 +208,18 @@ def create_base_globals() -> Dict[str, Any]:
 
 def create_execution_globals() -> Dict[str, Any]:
     """
-    Creates execution globals for running stored functions.
+    Creates the globals of an actor's execution sandbox.
 
     Extends create_base_globals() with:
-    - The `primitives` object for lazy access to all primitive operations
+    - A `primitives` object exposing no namespace. The sandbox holds exactly
+      the primitives its environments inject, which replace this object; a
+      sandbox with none refuses `primitives.<namespace>` and says why.
     - Steerable handle infrastructure for functions that return handles
       (SteerableToolHandle)
     - The `unillm` module for advanced direct LLM usage
     - The `query_llm` helper for focused one-shot LLM queries
     - The `run_coro_sync` helper for sync façades that must drive async work
       under an already-running event loop (offline Jobs / actor sandboxes)
-
-    All primitive imports and instantiations are lazy - only the primitives
-    actually used by a function are loaded, so a function pays only for the
-    managers it touches.
 
     Steerable Functions
     -------------------
@@ -235,10 +233,9 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict = create_base_globals()
 
     # Import Primitives here to avoid circular imports at module load time
-    from unify.function_manager.primitives import Primitives, default_runtime_scope
+    from unify.function_manager.primitives import Primitives, PrimitiveScope
 
-    # Inject the primitives instance - all access is lazy
-    globals_dict["primitives"] = Primitives(primitive_scope=default_runtime_scope())
+    globals_dict["primitives"] = Primitives(primitive_scope=PrimitiveScope.none())
 
     # Steerable handle type - allows compositional functions to return handles
     # that the execution layer can detect and wire up for steering operations.

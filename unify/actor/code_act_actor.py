@@ -51,6 +51,7 @@ from unify.common.act_llm_profiles import (
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager.base import BaseFunctionManager
+from unify.function_manager.primitives.registry import get_registry
 from unify.actor.prompt_builders import build_code_act_prompt
 from unify.events.manager_event_logging import log_manager_call
 from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
@@ -299,7 +300,7 @@ def _default_tool_policy(
         Whether the base tool set contains any ``GuidanceManager_*`` tools.
     filter_tools:
         The static-filter callable (``_filter_tools``) that enforces
-        ``can_compose`` / ``can_store`` / ``can_spawn_sub_agents``.
+        ``can_compose`` / ``can_store``.
     """
 
     def _policy(
@@ -2346,29 +2347,36 @@ class CodeActActor(BaseCodeActActor):
         self._base_guidelines = guidelines
 
         # Collect function_ids from all environments, split by context, and set
-        # them on the FunctionManager via setters. This prevents overlap between
-        # prompt-injected environment tools and FunctionManager-discoverable
-        # functions. We update in-place rather than replacing the FM instance so
-        # that callers who pass a custom FM (e.g., SimulatedFunctionManager) keep
-        # their instance intact.
+        # the discovery exclusions on the FunctionManager via setters. A stored
+        # function an environment documents in the prompt is excluded so it
+        # does not appear twice. A primitive stays discoverable only where an
+        # environment provides it without documenting it: the sandbox holds
+        # exactly the primitives its environments inject, so any other one
+        # cannot be called from this actor. We update in-place rather than
+        # replacing the FM instance so that callers who pass a custom FM (e.g.,
+        # SimulatedFunctionManager) keep their instance intact.
         if self.function_manager is not None:
-            _excl_primitive: set[int] = set()
+            _searchable_primitive: set[int] = set()
             _excl_compositional: set[int] = set()
             for env in self.environments.values():
-                # The exclusion deduplicates search results against what the
-                # prompt documents. When an environment declares
-                # `prompt_documented_names`, only that subset is excluded —
-                # undocumented callables must stay searchable.
+                # When an environment declares `prompt_documented_names`, only
+                # that subset is documented — undocumented callables must stay
+                # searchable.
                 _documented = getattr(env, "prompt_documented_names", None)
                 for tool_name, tool_meta in env.get_tools().items():
-                    if tool_meta.function_id is not None:
-                        if _documented is not None and tool_name not in _documented:
-                            continue
+                    if tool_meta.function_id is None:
+                        continue
+                    if _documented is not None and tool_name not in _documented:
                         if tool_meta.function_context == "primitive":
-                            _excl_primitive.add(tool_meta.function_id)
-                        elif tool_meta.function_context == "compositional":
-                            _excl_compositional.add(tool_meta.function_id)
+                            _searchable_primitive.add(tool_meta.function_id)
+                        continue
+                    if tool_meta.function_context == "compositional":
+                        _excl_compositional.add(tool_meta.function_id)
 
+            _excl_primitive = {
+                int(row["function_id"])
+                for row in get_registry().collect_primitives().values()
+            } - _searchable_primitive
             if _excl_primitive:
                 self.function_manager.exclude_primitive_ids = frozenset(
                     _excl_primitive,
@@ -4169,8 +4177,7 @@ class CodeActActor(BaseCodeActActor):
 
         # Tool policy controls which tools are visible per turn, and whether a
         # tool call is required.  The static _filter_tools (can_compose,
-        # can_store, can_spawn_sub_agents) is always applied regardless of
-        # the dynamic policy.
+        # can_store) is always applied regardless of the dynamic policy.
         if self.tool_policy is None:
             # No dynamic policy -- only static filtering on every turn.
             def _static_only_policy(step: int, tools: Dict[str, Any]):

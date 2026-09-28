@@ -25,9 +25,10 @@ from unify.actor.environments.base import (
     build_filtered_method_docs,
 )
 from unify.function_manager.primitives.registry import get_registry
-from unify.function_manager.primitives.scope import default_runtime_scope
+from unify.function_manager.primitives.scope import PrimitiveScope
 
 if TYPE_CHECKING:
+    from unify.actor.code_act_actor import CodeActActor
     from unify.common.async_tool_loop import SteerableToolHandle
     from unify.function_manager.function_manager import FunctionManager
     from unify.guidance_manager.guidance_manager import GuidanceManager
@@ -87,18 +88,20 @@ def _resolve_parent_environments(
 
 def _build_scoped_fm(
     discovery_scope: str | None,
+    primitive_scope: PrimitiveScope,
 ) -> "FunctionManager":
-    """Build a fresh FunctionManager with an optional discovery clause.
+    """Build a fresh FunctionManager for an inner actor.
 
-    Constructs a FunctionManager with the canonical role-gated primitive scope.
-    If *discovery_scope* is provided it is applied as the ``filter_scope``
-    so the inner actor's search/list/filter results are restricted
-    accordingly.
+    *primitive_scope* holds the primitives the inner actor is granted; the
+    FunctionManager neither surfaces nor injects any other, so a stored
+    function that calls one outside it is refused rather than run. If
+    *discovery_scope* is provided it is applied as the ``filter_scope`` so
+    the inner actor's search/list/filter results are restricted accordingly.
     """
     from unify.function_manager.function_manager import FunctionManager as _FM
 
     return _FM(
-        primitive_scope=default_runtime_scope(),
+        primitive_scope=primitive_scope,
         filter_scope=discovery_scope,
         include_primitives=True,
     )
@@ -239,6 +242,99 @@ def _build_environments_from_db(
 
 
 # ---------------------------------------------------------------------------
+# Inner actor construction
+# ---------------------------------------------------------------------------
+
+
+def _build_inner_actor(
+    *,
+    guidelines: str | None,
+    prompt_guidance: list[str | int] | None,
+    guidance_scope: str | None,
+    prompt_functions: list[str] | None,
+    discovery_scope: str | None,
+    timeout: float | None,
+    can_compose: bool,
+    can_store: bool,
+    can_spawn_sub_agents: bool,
+) -> tuple["CodeActActor", str | None]:
+    """Construct the actor a ``primitives.actor.act`` call runs.
+
+    Returns the actor and the guidelines its ``act`` receives. Everything the
+    actor may use derives from these arguments, never from the caller.
+    ``can_spawn_sub_agents`` is the only grant of ``primitives.actor``:
+    without it the actor's FunctionManager neither surfaces nor injects the
+    primitive and no ``ActorEnvironment`` puts it in the sandbox, so search,
+    ``execute_function`` and code all refuse it.
+    """
+    from unify.actor.code_act_actor import CodeActActor
+
+    if can_spawn_sub_agents:
+        primitive_scope = PrimitiveScope.single(ActorEnvironment.MANAGER_ALIAS)
+    else:
+        named_primitives = [
+            pattern
+            for pattern in prompt_functions or []
+            if pattern.split(".")[0] == ActorEnvironment.NAMESPACE
+        ]
+        if named_primitives:
+            raise ValueError(
+                f"prompt_functions names {named_primitives}, but "
+                "can_spawn_sub_agents is False, so the actor may not spawn "
+                "sub-actors. Pass can_spawn_sub_agents=True to grant "
+                "primitives.actor, or leave it out of prompt_functions.",
+            )
+        primitive_scope = PrimitiveScope.none()
+
+    # Build a fresh FM scoped by discovery_scope (no parent inheritance).
+    inner_fm = _build_scoped_fm(discovery_scope, primitive_scope)
+
+    # Resolve prompt_functions: first check parent environments for
+    # custom namespaces (e.g. create_env-based services), then resolve
+    # the remainder against the FunctionManager DB.
+    forwarded_envs, db_prompt_functions = _resolve_parent_environments(
+        prompt_functions,
+    )
+    inner_envs = _build_environments_from_db(db_prompt_functions, inner_fm)
+    inner_envs.extend(forwarded_envs)
+
+    # Optionally allow nested actor spawning (skip if prompt_functions
+    # already resolved an ActorEnvironment to avoid duplicates).
+    if can_spawn_sub_agents and not any(
+        isinstance(e, ActorEnvironment) for e in inner_envs
+    ):
+        inner_envs.append(ActorEnvironment())
+
+    # Resolve prompt_guidance entries and merge with guidelines.
+    guidance_text, resolved_guidance_ids = _resolve_prompt_guidance(
+        prompt_guidance,
+    )
+    effective_guidelines = guidelines or ""
+    if guidance_text:
+        effective_guidelines = (
+            f"{guidance_text}\n\n{effective_guidelines}".strip() or None
+        )
+    else:
+        effective_guidelines = effective_guidelines or None
+
+    # Build a scoped GuidanceManager for subagent discovery.
+    inner_gm = _build_scoped_gm(guidance_scope)
+    if resolved_guidance_ids:
+        inner_gm.exclude_ids = resolved_guidance_ids
+
+    inner_actor = CodeActActor(
+        environments=inner_envs,
+        function_manager=inner_fm,
+        guidance_manager=inner_gm,
+        can_compose=bool(can_compose),
+        can_store=bool(can_store),
+        timeout=timeout if timeout is not None else 1000,
+        prompt_caching=["system", "tools", "messages"],
+    )
+    return inner_actor, effective_guidelines
+
+
+# ---------------------------------------------------------------------------
 # Actor runner (injected into the sandbox as ``actor``)
 # ---------------------------------------------------------------------------
 
@@ -246,8 +342,9 @@ def _build_environments_from_db(
 class _ActorRunner:
     """Runtime object accessible as ``primitives.actor`` in the sandbox.
 
-    Fully stateless: constructs its own FunctionManager from defaults.
-    No ambient ContextVars required — can be called in total isolation.
+    Fully stateless: constructs its own FunctionManager from the call's
+    parameters. No ambient ContextVars required — can be called in total
+    isolation.
 
     Statelessness is load-bearing: stored compositional functions that call
     ``primitives.actor.act(...)`` are executed via
@@ -476,60 +573,22 @@ class _ActorRunner:
             mid-flight steering (stop, pause, resume, interject).  The
             final string result is surfaced when the actor completes.
         """
-        from unify.actor.code_act_actor import CodeActActor
         from unify.actor.execution import _PARENT_CHAT_CONTEXT
-
-        effective_timeout = timeout if timeout is not None else 1000
 
         # Pick up parent chat context if running inside a CodeActActor
         # sandbox.  Gracefully degrades to None in standalone usage.
         _parent_chat_context = _PARENT_CHAT_CONTEXT.get(None)
 
-        # Build a fresh FM scoped by discovery_scope (no parent inheritance).
-        inner_fm = _build_scoped_fm(discovery_scope)
-
-        # Resolve prompt_functions: first check parent environments for
-        # custom namespaces (e.g. create_env-based services), then resolve
-        # the remainder against the FunctionManager DB.
-        forwarded_envs, db_prompt_functions = _resolve_parent_environments(
-            prompt_functions,
-        )
-        inner_envs = _build_environments_from_db(db_prompt_functions, inner_fm)
-        inner_envs.extend(forwarded_envs)
-
-        # Optionally allow nested actor spawning (skip if prompt_functions
-        # already resolved an ActorEnvironment to avoid duplicates).
-        if can_spawn_sub_agents and not any(
-            isinstance(e, ActorEnvironment) for e in inner_envs
-        ):
-            inner_envs.append(ActorEnvironment())
-
-        # Resolve prompt_guidance entries and merge with guidelines.
-        guidance_text, resolved_guidance_ids = _resolve_prompt_guidance(
-            prompt_guidance,
-        )
-        effective_guidelines = guidelines or ""
-        if guidance_text:
-            effective_guidelines = (
-                f"{guidance_text}\n\n{effective_guidelines}".strip() or None
-            )
-        else:
-            effective_guidelines = effective_guidelines or None
-
-        # Build a scoped GuidanceManager for subagent discovery.
-        inner_gm = _build_scoped_gm(guidance_scope)
-        if resolved_guidance_ids:
-            inner_gm.exclude_ids = resolved_guidance_ids
-
-        # Create inner CodeActActor.
-        inner_actor = CodeActActor(
-            environments=inner_envs,
-            function_manager=inner_fm,
-            guidance_manager=inner_gm,
-            can_compose=bool(can_compose),
-            can_store=bool(can_store),
-            timeout=effective_timeout,
-            prompt_caching=["system", "tools", "messages"],
+        inner_actor, effective_guidelines = _build_inner_actor(
+            guidelines=guidelines,
+            prompt_guidance=prompt_guidance,
+            guidance_scope=guidance_scope,
+            prompt_functions=prompt_functions,
+            discovery_scope=discovery_scope,
+            timeout=timeout,
+            can_compose=can_compose,
+            can_store=can_store,
+            can_spawn_sub_agents=can_spawn_sub_agents,
         )
 
         handle = await inner_actor.act(

@@ -66,21 +66,22 @@ class Primitives:
         """
         Get or create a manager instance by alias.
 
-        Raises AttributeError if alias is not in scope.
+        Raises AttributeError, saying why, if alias is not in scope.
         """
+        spec = _MANAGER_BY_ALIAS.get(alias)
+        if spec is None:
+            raise AttributeError(f"No ManagerSpec for alias: {alias}")
+
         if alias not in self._primitive_scope.scoped_managers:
-            available = sorted(self._primitive_scope.scoped_managers)
             raise AttributeError(
-                f"primitives.{alias} is not available in this scope. "
-                f"Available managers: {available}",
+                f"primitives.{alias} is not available to this actor: it was "
+                f"started without {spec.domain} ({spec.description}). "
+                "Complete the task with the tools this actor has.",
             )
 
         if alias in self._managers:
             return self._managers[alias]
 
-        spec = _MANAGER_BY_ALIAS.get(alias)
-        if spec is None:
-            raise AttributeError(f"No ManagerSpec for alias: {alias}")
         cls = get_registry()._load_manager_class(spec.primitive_class_path)
         if cls is None:
             raise AttributeError(

@@ -28,8 +28,9 @@ class PrimitiveScope:
     Attributes
     ----------
     scoped_managers : frozenset[str]
-        Set of namespace aliases to expose. Must be non-empty and contain only
-        valid aliases from VALID_MANAGER_ALIASES.
+        Set of namespace aliases to expose, each a valid alias from
+        VALID_MANAGER_ALIASES. Empty for a runtime granted no primitives,
+        such as an actor that may not spawn sub-actors.
 
     Examples
     --------
@@ -40,9 +41,6 @@ class PrimitiveScope:
 
     def __post_init__(self) -> None:
         """Validate scoped_managers."""
-        if not self.scoped_managers:
-            raise ValueError("scoped_managers must be non-empty")
-
         invalid = self.scoped_managers - VALID_MANAGER_ALIASES
         if invalid:
             raise ValueError(
@@ -72,6 +70,11 @@ class PrimitiveScope:
     def single(cls, manager_alias: str) -> "PrimitiveScope":
         """Create a scope with a single namespace exposed."""
         return cls(scoped_managers=frozenset({manager_alias}))
+
+    @classmethod
+    def none(cls) -> "PrimitiveScope":
+        """Create a scope that exposes no namespace."""
+        return cls(scoped_managers=frozenset())
 
 
 _DEFAULT_RUNTIME_SCOPE = PrimitiveScope(scoped_managers=VALID_MANAGER_ALIASES)
