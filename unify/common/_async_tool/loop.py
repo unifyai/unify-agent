@@ -198,6 +198,17 @@ def _sort_completed_tasks_by_call_id(
     )
 
 
+def _requeue_at_front(queue: asyncio.Queue, item: Any) -> None:
+    """Put *item*, just taken off *queue*, back at its head, ahead of anything
+    queued after it, so the next reader sees the queue in its original order."""
+    behind = []
+    while not queue.empty():
+        behind.append(queue.get_nowait())
+    queue.put_nowait(item)
+    for later in behind:
+        queue.put_nowait(later)
+
+
 class LoopLogger:
     def __init__(self, cfg: LoopConfig, log_steps: bool | str) -> None:
         self._label = cfg.label
@@ -2425,6 +2436,7 @@ async def async_tool_loop_inner(
 
                 # Only the auxiliary waiters are cancelled here. llm_task is
                 # deliberately left alone: each branch below decides.
+                # - LLM already answered → the reply wins (see below)
                 # - Tool finished → cancel (needs new context), unless
                 #   ``interrupt_llm_on_tool_completion`` is False
                 # - Immediate interjection → cancel (user wants a response now)
@@ -2446,6 +2458,52 @@ async def async_tool_loop_inner(
                     *notif_waiters2.keys(),
                     return_exceptions=True,
                 )
+
+                # The LLM answered in the same wake-up as other events. The
+                # stateful client has already inserted the reply into the
+                # transcript at the index captured at dispatch, so superseding
+                # it would leave it to the unreplied-entry repair, which runs
+                # only base tools and never takes a text reply as the answer.
+                # A cached hit resolves within milliseconds, so in a replay a
+                # tool finishing inside that window is plausible. The reply
+                # wins: every event that would have superseded it is handed
+                # back as if it had arrived just after. Finished tools stay
+                # pending for section A or section C's sweep to ingest, an
+                # interjection is re-queued for the drain, and a clarification
+                # or notification goes back to the front of its tool's queue.
+                # Patient mode never lets a tool result supersede the step, so
+                # its branch below still ingests the result as the step lands.
+                # A stop requested in the same wake-up still wins, and a step
+                # that failed or was cancelled is superseded as before.
+                if (
+                    llm_task in done
+                    and len(done) > 1
+                    and not llm_task.cancelled()
+                    and llm_task.exception() is None
+                    and not (cancel_waiter in done and cancel_event.is_set())
+                ):
+                    logger.debug(
+                        f"⏱️ [ToolLoop] LLM answered in the same wake-up as "
+                        f"{len(done) - 1} other event(s); the reply goes first",
+                    )
+                    if interject_w in done:
+                        await interject_queue.put(interject_w.result())
+                    for cw, src in clar_waiters2.items():
+                        if cw in done:
+                            _requeue_at_front(
+                                tools_data.info[src].clar_up_queue,
+                                cw.result(),
+                            )
+                    for pw, src in notif_waiters2.items():
+                        if pw in done:
+                            _requeue_at_front(
+                                tools_data.info[src].notification_queue,
+                                pw.result(),
+                            )
+                    if interrupt_llm_on_tool_completion:
+                        done = {llm_task}
+                    else:
+                        done = {llm_task} | (done & pending_snapshot)
 
                 # A tool finished before the LLM answered.
                 if done & pending_snapshot:
@@ -2608,16 +2666,6 @@ async def async_tool_loop_inner(
                         raise Exception(
                             f"LLM call failed: {type(e).__name__}: {e}",
                         ) from e
-
-                    if done & set(clar_waiters2.keys()):
-                        for cw in done & set(clar_waiters2.keys()):
-                            await _handle_clarification(clar_waiters2[cw], cw.result())
-                        llm_turn_required = True
-
-                    if done & set(notif_waiters2.keys()):
-                        for pw in done & set(notif_waiters2.keys()):
-                            await _handle_notification(notif_waiters2[pw], pw.result())
-                        llm_turn_required = True
 
                 _full_completion = llm_task.result()
 
