@@ -141,6 +141,17 @@ class ProductionSettings(BaseSettings):
     # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
     # the stored function. Empty adds as shipped.
     UNIFY_STORE_DEDUPE: str = ""
+    # ``ramp``: keep a trust record per stored function (probation, trusted,
+    # quarantined) in function_trust. Every reuse is evidence: a call that
+    # returns is a pass, one that raises quarantines the function, which is
+    # then left out of the searches that load functions and listed to the
+    # next storage review as needing repair. A function is trusted after 3
+    # passes over 2 distinct inputs (5 over 3 if it can change anything); a
+    # changed source or callee puts it back on probation. With
+    # UNIFY_STORE_VERIFY set, a reuse is also re-checked in a fresh world
+    # with probability 1/2^k after k clean uses
+    # (unify/function_manager/store_trust.py). Empty keeps no record.
+    UNIFY_STORE_TRUST: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -216,6 +227,14 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "warn"):
             raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_STORE_TRUST", mode="before")
+    @classmethod
+    def parse_store_trust(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "ramp"):
+            raise ValueError(f"UNIFY_STORE_TRUST must be empty or 'ramp', not {v!r}")
         return value
 
     model_config = SettingsConfigDict(

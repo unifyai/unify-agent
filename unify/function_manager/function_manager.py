@@ -192,6 +192,7 @@ class _LineageTrackedFunction:
         wrapped_callable: Callable[..., Any],
         function_name: str,
         on_call: Optional[Callable[[], None]] = None,
+        observer: Optional[Any] = None,
     ):
         self._wrapped = wrapped_callable
         self._function_name = function_name
@@ -199,6 +200,9 @@ class _LineageTrackedFunction:
         # already passes through, and its __getattr__ delegation keeps proxy
         # identity intact, which is why the trace records here.
         self._on_call = on_call
+        # UNIFY_STORE_TRUST: records whether each call returned or raised
+        # (store_trust.CallObserver); None while the switch is off.
+        self._observer = observer
 
         # Preserve introspection attributes.
         self.__name__ = function_name
@@ -219,6 +223,13 @@ class _LineageTrackedFunction:
         from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE
         from unify.common.hierarchical_logger import log_boundary_event
 
+        observer = self._observer
+        arguments = (
+            observer.before(self._wrapped, args, kwargs)
+            if observer is not None
+            else None
+        )
+
         suffix = token_hex(2)
 
         parent = TOOL_LOOP_LINEAGE.get([])
@@ -234,8 +245,10 @@ class _LineageTrackedFunction:
         token_call = TOOL_LOOP_LINEAGE.set(hierarchy)
         try:
             result = self._wrapped(*args, **kwargs)
-        except Exception:
+        except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
+            if observer is not None:
+                observer.after(arguments, exc)
             raise
         finally:
             # For async results we only needed the lineage during coroutine construction.
@@ -251,12 +264,21 @@ class _LineageTrackedFunction:
             async def _await_and_finalize():
                 token_run = TOOL_LOOP_LINEAGE.set(hierarchy)
                 try:
-                    return await result
+                    value = await result
+                except Exception as exc:
+                    if observer is not None:
+                        observer.after(arguments, exc)
+                    raise
                 finally:
                     TOOL_LOOP_LINEAGE.reset(token_run)
+                if observer is not None:
+                    observer.after(arguments, None)
+                return value
 
             return _await_and_finalize()
 
+        if observer is not None:
+            observer.after(arguments, None)
         return result
 
 
@@ -324,6 +346,11 @@ class _InProcessFunctionProxy:
         self._func_data = func_data
         self._namespace = namespace
         self._raw_callable = raw_callable
+        # UNIFY_STORE_TRUST: records the stateful calls, which run the raw
+        # callable directly; the other modes go through execute_function.
+        from .store_trust import CallObserver
+
+        self._observer = CallObserver.for_function(function_manager, func_data)
 
         # Copy key attributes from raw callable for introspection
         self.__name__ = str(func_data.get("name") or "unknown")
@@ -350,9 +377,21 @@ class _InProcessFunctionProxy:
         if state_mode == "stateful":
             # Execute directly using the raw callable in the shared namespace.
             # This is the existing behavior - state naturally persists in the namespace.
-            result = self._raw_callable(*args, **kwargs)
-            if asyncio.iscoroutine(result):
-                result = await result
+            observer = self._observer
+            if observer is None:
+                result = self._raw_callable(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return result
+            arguments = observer.before(self._raw_callable, args, kwargs)
+            try:
+                result = self._raw_callable(*args, **kwargs)
+                if asyncio.iscoroutine(result):
+                    result = await result
+            except Exception as exc:
+                observer.after(arguments, exc)
+                raise
+            observer.after(arguments, None)
             return result
 
         # For stateless and read_only, use execute_function with appropriate
@@ -974,10 +1013,13 @@ class FunctionManager(BaseFunctionManager):
         """
         if isinstance(raw, _LineageTrackedFunction):
             return raw
+        from .store_trust import CallObserver
+
         return _LineageTrackedFunction(
             raw,
             str(func_data.get("name")),
             on_call=lambda: self._note_function_use(func_data),
+            observer=CallObserver.for_function(self, func_data),
         )
 
     # ------------------------------------------------------------------ #
@@ -1322,6 +1364,17 @@ class FunctionManager(BaseFunctionManager):
                     name = log_id_to_name.get(log_id)
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
+
+        # UNIFY_STORE_TRUST: an overwrite (a patch included) starts the
+        # function's trust over on probation.
+        from . import store_trust
+
+        if store_trust.enabled():
+            store_trust.reset(
+                log_id
+                for log_id in log_ids_to_update
+                if results.get(log_id_to_name.get(log_id, "")) == "updated"
+            )
 
         # Check for errors and raise if requested
         if raise_on_error:
@@ -2955,8 +3008,23 @@ class FunctionManager(BaseFunctionManager):
         if not isinstance(implementation, str) or not implementation.strip():
             raise ValueError(f"Function '{function_name}' has no implementation")
 
-        environment.ensure(func_data.get("dependencies") or [])
-        return await self._execute_python_function(
+        # UNIFY_STORE_TRUST: an install that fails or a run that reports an
+        # error is a failed reuse; None while the switch is off.
+        from .store_trust import CallObserver
+
+        observer = CallObserver.for_function(self, func_data)
+        arguments = (
+            observer.before(None, (), call_kwargs or {})
+            if observer is not None
+            else None
+        )
+        try:
+            environment.ensure(func_data.get("dependencies") or [])
+        except Exception as exc:
+            if observer is not None:
+                observer.after(arguments, exc)
+            raise
+        outcome = await self._execute_python_function(
             implementation=implementation,
             call_kwargs=call_kwargs or {},
             state_mode=state_mode,
@@ -2964,6 +3032,9 @@ class FunctionManager(BaseFunctionManager):
             extra_namespaces=ns,
             _parent_chat_context=_parent_chat_context,
         )
+        if observer is not None:
+            observer.after(arguments, outcome.get("error"))
+        return outcome
 
     # ------------------------------------------------------------------ #
     #  Primitive Execution Helpers                                       #

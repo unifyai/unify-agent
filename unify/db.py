@@ -7,7 +7,9 @@ from the code (read together through the ``all_functions`` view), the user's
 (read together through ``all_guidance``), and the chat ``messages``.
 With ``UNIFY_FUNCTION_PATCH`` on, ``function_history`` and
 ``guidance_history`` keep each row as it was before an overwrite; nothing
-removes their rows, :func:`clear` included.
+removes their rows, :func:`clear` included. With ``UNIFY_STORE_TRUST``
+on, ``function_trust`` holds one trust record per stored function; deleting
+the function deletes it.
 
 Managers issue SQL through :func:`execute`, :func:`query` and
 :func:`query_one`. Clauses written by the model run through
@@ -103,6 +105,21 @@ CREATE TABLE IF NOT EXISTS guidance_history (
     previous TEXT NOT NULL,
     reason TEXT NOT NULL,
     replaced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS function_trust (
+    function_id INTEGER PRIMARY KEY
+        REFERENCES functions(function_id) ON DELETE CASCADE,
+    state TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    dependency_hash TEXT NOT NULL,
+    effect_class TEXT NOT NULL,
+    passes INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    input_hashes TEXT NOT NULL DEFAULT '[]',
+    distinct_inputs INTEGER NOT NULL DEFAULT 0,
+    clean_uses INTEGER NOT NULL DEFAULT 0,
+    last_failure TEXT,
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
