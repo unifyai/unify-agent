@@ -638,6 +638,32 @@ def _storage_environment_note() -> str:
     return "### This environment\n\n" + " ".join(parts) + "\n\n"
 
 
+def _function_patch_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
+
+
+def _storage_update_first_note() -> str:
+    """The review's update-before-add order, while ``UNIFY_FUNCTION_PATCH`` is on; else empty."""
+    if not _function_patch_enabled():
+        return ""
+    return (
+        "### Update before you add\n\n"
+        "When the trajectory shows a stored entry that was wrong, incomplete "
+        "or failed, change the library in this order: (1) patch the entry the "
+        "trajectory used (`FunctionManager_patch_function` / "
+        "`GuidanceManager_patch_guidance`); (2) otherwise patch a broader "
+        "existing entry that should cover the case; (3) only then add a new "
+        "one. A patch replaces one exact excerpt: read the entry's current "
+        "text first and copy `old` exactly — it must occur once — and say "
+        "`why`. The entry keeps its id, precondition, dependencies and links, "
+        "a patched function is checked like any function you add, and the "
+        "replaced version is kept in history. Rewrite a whole function with "
+        "`overwrite=True` only when most of it changes.\n\n"
+    )
+
+
 _STORAGE_TWO_STORES = (
     "## Two Stores\n\n"
     "### Function Store — the *what*\n\n"
@@ -1031,6 +1057,17 @@ def _build_storage_tools(
 
     if store_verify.enabled():
         storage_methods.append(fm.check_function)
+    # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by one exact
+    # excerpt; off, the tools are as shipped. Simulated managers have none.
+    if _function_patch_enabled():
+        storage_methods.extend(
+            method
+            for method in (
+                getattr(fm, "patch_function", None),
+                getattr(gm, "patch_guidance", None),
+            )
+            if method is not None
+        )
 
     tools: Dict[str, Callable] = {
         **methods_to_tool_dict(
@@ -1422,6 +1459,7 @@ def _start_storage_check_loop(
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
         f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{_STORAGE_RECURRING_DELIVERABLE}"
         f"{instructions}"
@@ -1552,6 +1590,7 @@ def _start_proactive_storage_loop(
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
         f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
         "\n\n"
@@ -3149,6 +3188,16 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
+            if _function_patch_enabled() and hasattr(fm, "patch_function"):
+                tools.update(
+                    methods_to_tool_dict(
+                        ToolSpec(
+                            fn=fm.patch_function,
+                            display_label="Patching a stored function",
+                        ),
+                        include_class_name=True,
+                    ),
+                )
 
         # FunctionManager read tools (search/filter/list) use custom wrappers
         # that inject callables into the sandbox. All other FM/GM tools below
@@ -3182,6 +3231,16 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
+            if _function_patch_enabled() and hasattr(gm, "patch_guidance"):
+                tools.update(
+                    methods_to_tool_dict(
+                        ToolSpec(
+                            fn=gm.patch_guidance,
+                            display_label="Patching saved guidance",
+                        ),
+                        include_class_name=True,
+                    ),
+                )
 
         # ── Proactive skill storage tool ──────────────────────────────
         if self.function_manager and self.guidance_manager:
@@ -4212,6 +4271,8 @@ class CodeActActor(BaseCodeActActor):
             "FunctionManager_delete_function",
             "FunctionManager_reconcile_dependencies",
             "GuidanceManager_reconcile_dependencies",
+            "FunctionManager_patch_function",
+            "GuidanceManager_patch_guidance",
         }
         # Admission-gated sessions also lose the direct guidance writes that
         # can_store=False leaves in place: nothing is written in-session.
