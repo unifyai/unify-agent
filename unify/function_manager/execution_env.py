@@ -48,6 +48,16 @@ Used by ``detect_third_party_imports`` to distinguish between packages that
 must be recorded as dependencies and packages that the runtime already supplies.
 """
 
+SANDBOX_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "display",
+        "request_clarification",
+    },
+)
+"""Globals the actor's sandbox binds per execution, beyond
+``create_execution_globals()`` (``unify/actor/execution/session.py`` and
+``unify/actor/environments/base.py``). A stored function may use them."""
+
 
 def environment_modules() -> frozenset[str]:
     """``ENVIRONMENT_MODULES`` plus the modules a registered environment supplies."""

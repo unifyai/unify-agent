@@ -83,13 +83,19 @@ class ProductionSettings(BaseSettings):
     UNIFY_LOCAL_EMBEDDINGS: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Environment Namespaces
+    # Environment Namespaces and the Storage Check
     # ─────────────────────────────────────────────────────────────────────────
     # ``package.module:factory`` entries, comma-separated: factories that
     # register the environment's own callable surface as ``primitives.<name>``
     # namespaces at start-up (unify/function_manager/primitives/environment.py).
     # Empty registers nothing.
     UNIFY_ENV_NAMESPACES: str = ""
+    # ``resolve``: before a function is stored, every name and every
+    # ``primitives.*`` reference in it must resolve against the sandbox's
+    # globals and the registered namespaces, and it must load as a search
+    # would load it; otherwise ``add_functions`` refuses it and says why.
+    # Empty stores without the check.
+    UNIFY_STORE_CHECK: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -137,6 +143,14 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
+
+    @field_validator("UNIFY_STORE_CHECK", mode="before")
+    @classmethod
+    def parse_store_check(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "resolve"):
+            raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

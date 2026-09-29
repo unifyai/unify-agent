@@ -33,7 +33,12 @@ from .activation import (
     merged_usage,
     rank_score,
 )
-from .execution_env import create_base_globals, environment_modules
+from .execution_env import (
+    SANDBOX_RUNTIME_NAMES,
+    create_base_globals,
+    create_execution_globals,
+    environment_modules,
+)
 from .steering import (
     DEFAULT_TOOL_NAMESPACES,
     ExecutionStopped,
@@ -1182,6 +1187,17 @@ class FunctionManager(BaseFunctionManager):
 
                 all_calls = self._collect_function_calls(node)
                 self._validate_function_calls(name, all_calls)
+                if self._store_check_enabled():
+                    self._store_check(
+                        name=name,
+                        node=node,
+                        source=source,
+                        depends_on=dependencies_list,
+                        requirements=requirements,
+                        third_party_imports=tp_imports,
+                        stored_functions=all_known_function_names,
+                        same_batch=temp_names,
+                    )
                 namespace = create_base_globals()
                 exec(source, namespace)
                 fn_obj = namespace[name]
@@ -1275,6 +1291,84 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(f"Failed to add function(s): {error_details}")
 
         return results
+
+    # ------------------------------------------------------------------ #
+    #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _store_check_enabled() -> bool:
+        from unify.settings import SETTINGS
+
+        return SETTINGS.UNIFY_STORE_CHECK == "resolve"
+
+    def _store_check(
+        self,
+        *,
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+        source: str,
+        depends_on: List[str],
+        requirements: List[str],
+        third_party_imports: Set[str],
+        stored_functions: Set[str],
+        same_batch: Set[str],
+    ) -> None:
+        """Refuse a function whose names do not resolve, or that does not load.
+
+        The static part (``store_check.unresolved``) resolves every global name
+        and every ``primitives.*`` reference against a fresh sandbox's globals
+        and the namespaces in this manager's scope. Then the function is loaded
+        exactly as a search loads it (declared dependencies installed, stored
+        callees injected, the ``def`` executed) into a scratch namespace that is
+        thrown away. The raised ``ValueError`` names what failed; the storage
+        review reads it as the tool's error.
+        """
+        from . import store_check
+
+        sandbox_globals = create_execution_globals()
+        for runtime_name in SANDBOX_RUNTIME_NAMES:
+            sandbox_globals.setdefault(runtime_name, None)
+        namespaces = {
+            alias: self._registry.primitive_methods(manager_alias=alias)
+            for alias in sorted(self._primitive_scope.scoped_managers)
+        }
+        problems = store_check.unresolved(
+            source=source,
+            node=node,
+            name=name,
+            sandbox_globals=sandbox_globals,
+            stored_functions=stored_functions,
+            namespaces=namespaces,
+            environment_modules=environment_modules(),
+            pip_supplied=third_party_imports if requirements else (),
+        )
+        if problems:
+            raise ValueError(
+                f"'{name}' was not stored, because it would fail where it runs: "
+                + "; ".join(problems)
+                + ". Fix the function and add it again.",
+            )
+        scratch = create_execution_globals()
+        entry = {
+            "name": name,
+            "implementation": source,
+            "dependencies": requirements,
+            # Callees added in the same call are not stored yet; they are
+            # checked on their own.
+            "depends_on": [d for d in depends_on if d not in same_batch],
+        }
+        try:
+            self._inject_dependencies(entry, namespace=scratch, visited={name})
+            self._create_in_process_callable(entry, namespace=scratch)
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}"
+            if requirements:
+                detail += f" (its declared dependencies: {requirements})"
+            raise ValueError(
+                f"'{name}' was not stored, because it does not load the way a "
+                f"search loads it: {detail}. Fix the function and add it again.",
+            ) from exc
 
     # ------------------------------------------------------------------ #
     #  Callable return + dependency injection                             #

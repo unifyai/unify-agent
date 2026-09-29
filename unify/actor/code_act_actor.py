@@ -583,12 +583,14 @@ _STORAGE_WHAT_CAN_BE_STORED = (
 
 
 def _storage_environment_note() -> str:
-    """The storage review's note on the environment's namespaces.
+    """The storage review's note on the environment's namespaces and the storage check.
 
-    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``),
-    so the doctrine is otherwise the shipped text.
+    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``)
+    or the storage check is on (``UNIFY_STORE_CHECK=resolve``), so the doctrine
+    is otherwise the shipped text.
     """
     from unify.function_manager.primitives.environment import environment_surface
+    from unify.settings import SETTINGS
 
     surface = environment_surface()
     parts: list[str] = []
@@ -611,6 +613,14 @@ def _storage_environment_note() -> str:
                 f"Modules it supplies ({listed}) are importable wherever a "
                 "stored function runs; never declare them as `dependencies`.",
             )
+    if SETTINGS.UNIFY_STORE_CHECK == "resolve":
+        parts.append(
+            "`FunctionManager_add_functions` checks each function before "
+            "storing it: every name it reads and every `primitives.*` "
+            "reference must exist where it will run, and it must load. A "
+            "function that fails is not stored, and the error names what "
+            "failed; fix the function and add it again.",
+        )
     if not parts:
         return ""
     return "### This environment\n\n" + " ".join(parts) + "\n\n"
