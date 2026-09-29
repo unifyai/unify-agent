@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from unify.actor.environments.base import BaseEnvironment
 
     from .shell import BashSession
+    from .worker import PythonWorker
 
 # Handles spawned by manager primitives during an in-process sandbox
 # ``execute`` call.  When the LLM fire-and-forgets a steerable handle
@@ -408,6 +409,10 @@ class PythonExecutionSession:
         # Expose sandbox metadata to user code (best-effort; callers may ignore).
         self.global_state["__sandbox_id__"] = self.id
 
+        # UNIFY_WORKSPACE_PYTHON=worker: cells run in this child process and
+        # ``global_state`` holds only what the harness provides them.
+        self._worker: Optional["PythonWorker"] = None
+
         if environments:
             for namespace, env in environments.items():
                 try:
@@ -431,6 +436,9 @@ class PythonExecutionSession:
         - This method is safe to call multiple times.
         """
         try:
+            if self._worker is not None:
+                worker, self._worker = self._worker, None
+                await worker.close()
             sys.modules.pop(self._module_name, None)
             self.global_state.clear()
         except Exception as e:
@@ -442,7 +450,26 @@ class PythonExecutionSession:
             except Exception:
                 pass
 
-    async def execute(self, code: str, *, timeout: float | None = None) -> dict:
+    def _python_worker(self) -> Optional["PythonWorker"]:
+        """This session's sandboxed worker, when ``UNIFY_WORKSPACE_PYTHON=worker``."""
+        from unify import sandbox
+
+        from . import worker as worker_mod
+
+        if not worker_mod.enabled():
+            return None
+        sandbox.require_bwrap()
+        if self._worker is None:
+            self._worker = worker_mod.PythonWorker()
+        return self._worker
+
+    async def execute(
+        self,
+        code: str,
+        *,
+        timeout: float | None = None,
+        scratch: bool = False,
+    ) -> dict:
         """
         Executes a string of Python code within the sandbox's stateful environment.
 
@@ -455,6 +482,10 @@ class PythonExecutionSession:
             stderr: list[OutputPart] - structured error output parts
             result: Any - return value of the last expression
             error: str | None - traceback if an exception occurred
+
+        ``scratch`` (worker sessions only) runs the cell against a shallow copy
+        of the worker's namespace and discards it, which is what
+        ``state_mode="read_only"`` means there.
         """
         queued_at = time.perf_counter()
         async with self._execution_lock:
@@ -465,17 +496,25 @@ class PythonExecutionSession:
                     self.id,
                     lock_wait_ms,
                 )
-            return await self._execute_exclusively(code, timeout=timeout)
+            return await self._execute_exclusively(
+                code,
+                timeout=timeout,
+                scratch=scratch,
+            )
 
     async def _execute_exclusively(
         self,
         code: str,
         *,
         timeout: float | None,
+        scratch: bool = False,
     ) -> dict:
         """Run one cell in the sandbox; the caller holds ``_execution_lock``."""
+        from .worker import KILLED_NOTE, WorkerCellError
+
         result = None
         error = None
+        worker = self._python_worker()
 
         with capture_sandbox_output() as (stdout_parts, stderr_parts, display_fn):
             # Inject display function into globals
@@ -684,6 +723,24 @@ class PythonExecutionSession:
                 spawned_handles: list[Any] = []
                 spawned_token = _SANDBOX_SPAWNED_HANDLES.set(spawned_handles)
 
+                async def _exec_wrapped(wrapped: str) -> Any:
+                    """Define ``__exec_wrapper`` from *wrapped* and await it."""
+                    if worker is not None:
+                        return await worker.run_cell(
+                            wrapped,
+                            self.global_state,
+                            timeout=timeout,
+                            scratch=scratch,
+                            stdout=stdout_parts,
+                            stderr=stderr_parts,
+                            display=display_fn,
+                        )
+                    exec(wrapped, self.global_state)
+                    execution = self.global_state["__exec_wrapper"]()
+                    if timeout is None:
+                        return await execution
+                    return await asyncio.wait_for(execution, timeout=timeout)
+
                 async def _run_once(body: str) -> Any:
                     """Compile and run one attempt at this block."""
                     source = body
@@ -694,23 +751,11 @@ class PythonExecutionSession:
                                 tool_namespaces=set(DEFAULT_TOOL_NAMESPACES),
                             ),
                         )
-                    exec(_wrap_for_execution(source), self.global_state)
-                    execution = self.global_state["__exec_wrapper"]()
-                    if timeout is None:
-                        return await execution
-                    return await asyncio.wait_for(execution, timeout=timeout)
+                    return await _exec_wrapped(_wrap_for_execution(source))
 
                 try:
                     if steering is None:
-                        exec(async_code, self.global_state)
-                        execution = self.global_state["__exec_wrapper"]()
-                        if timeout is None:
-                            result = await execution
-                        else:
-                            result = await asyncio.wait_for(
-                                execution,
-                                timeout=timeout,
-                            )
+                        result = await _exec_wrapped(async_code)
                     else:
                         # A correction rewrites `code` and re-runs; already
                         # completed dispatches replay from the session cache
@@ -736,6 +781,10 @@ class PythonExecutionSession:
                 result = stopped.outcome
             except asyncio.TimeoutError:
                 error = f"Python execution timed out after {timeout}s"
+                if worker is not None:
+                    error += KILLED_NOTE
+            except WorkerCellError as failed:
+                error = failed.traceback
             except Exception:
                 error = traceback.format_exc()
             finally:
@@ -947,14 +996,23 @@ class SessionExecutor:
 
         async def _execute_in_python_session(
             sb: PythonExecutionSession,
+            scratch: bool = False,
         ) -> Dict[str, Any]:
             from unify import sandbox
 
             if not sandbox.enabled():
                 return await sb.execute(code, timeout=self._timeout)
-            # The cell itself still runs in this process; what it starts
-            # through subprocess, os.system or asyncio runs in the sandbox.
+            # In process, the cell runs here and what it starts through
+            # subprocess, os.system or asyncio runs in the sandbox; in a worker
+            # the cell is confined whole and this confines what the harness
+            # objects it calls start.
             with sandbox.confined_subprocesses(sandbox.build_policy()):
+                if scratch:
+                    return await sb.execute(
+                        code,
+                        timeout=self._timeout,
+                        scratch=True,
+                    )
                 return await sb.execute(code, timeout=self._timeout)
 
         bound = self._bound_sandbox(session_id)
@@ -1043,6 +1101,20 @@ class SessionExecutor:
                 raise ValueError(
                     f"Session {key} not found for read_only execution",
                 )
+            from .worker import enabled as _worker_enabled
+
+            if _worker_enabled():
+                # The session's variables live in its worker: the cell runs
+                # there against a copy of its namespace.
+                self._inject_fm_globals(base)
+                res = await _execute_in_python_session(base, scratch=True)
+                return {
+                    **res,
+                    "state_mode": state_mode,
+                    "session_id": session_id,
+                    "session_created": False,
+                    "duration_ms": _duration_ms(),
+                }
             sb = self._new_session()
             try:
                 # Shallow copy globals to allow read access while avoiding persistence.

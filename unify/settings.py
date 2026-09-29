@@ -191,8 +191,15 @@ class ProductionSettings(BaseSettings):
     # state, credential directories and .env files hidden, credential-named
     # variables removed, no network (unify/sandbox.py). Without bubblewrap
     # those commands are refused, never run unconfined. Python cells
-    # themselves still run in this process. Empty: none of this exists.
+    # themselves still run in this process unless UNIFY_WORKSPACE_PYTHON says
+    # otherwise. Empty: none of this exists.
     UNIFY_WORKSPACE: str = ""
+    # ``worker`` (with ``sandboxed``): each Python session runs its cells in a
+    # persistent child process inside the same bubblewrap policy, and reaches
+    # ``primitives``, steering and the other harness objects only through a
+    # proxy the harness serves (unify/actor/execution/worker.py). Empty: Python
+    # cells run by ``exec`` in this process.
+    UNIFY_WORKSPACE_PYTHON: str = ""
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
     # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
     # Empty: no network at all.
@@ -303,6 +310,16 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "proxy"):
             raise ValueError(
                 f"UNIFY_WORKSPACE_NETWORK must be empty or 'proxy', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_WORKSPACE_PYTHON", mode="before")
+    @classmethod
+    def parse_workspace_python(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "worker"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE_PYTHON must be empty or 'worker', not {v!r}",
             )
         return value
 
