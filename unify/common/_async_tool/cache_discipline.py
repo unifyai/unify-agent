@@ -12,6 +12,9 @@ fixed:
   not allow (a discovery gate, a context-full turn, a read-only library) is
   refused at call time with the rule that masks it, instead of being removed
   from the list ("mask, don't remove").
+* **Sent messages are never edited.** Reasoning payloads are not shed when a
+  persistent session parks, and a storage review's compaction note no
+  longer shortens the turns it covered.
 
 The helpers here hold that policy so the loop itself only asks two questions
 per turn: what to advertise, and whether a call is allowed. With the switch

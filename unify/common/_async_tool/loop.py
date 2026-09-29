@@ -1688,7 +1688,9 @@ async def async_tool_loop_inner(
                             )
                             or 0,
                         )
-                        if _n > 0:
+                        # UNIFY_CACHE_DISCIPLINE: sent messages are never
+                        # edited, so the reviewed span keeps its bytes.
+                        if _n > 0 and not _discipline:
                             compact_reviewed_messages(client, _n)
                     except Exception:
                         pass
@@ -4237,9 +4239,12 @@ async def async_tool_loop_inner(
                 # re-billed bulk from here on. Shed them now rather than
                 # waiting for a storage review to cover the span — reviews
                 # lag turns, and the lag is paid on every call in between.
+                # UNIFY_CACHE_DISCIPLINE keeps them: shedding rewrites every
+                # sent assistant message, so the next call starts cold.
                 try:
                     _shed = 0
-                    for _m in client.messages or []:
+                    _shed_from = [] if _discipline else client.messages or []
+                    for _m in _shed_from:
                         if isinstance(_m, dict) and _m.get("role") == "assistant":
                             _shed += strip_reasoning_payloads(_m)
                     if _shed:
@@ -4327,7 +4332,7 @@ async def async_tool_loop_inner(
                                 )
                                 or 0,
                             )
-                            if _n > 0:
+                            if _n > 0 and not _discipline:
                                 compact_reviewed_messages(client, _n)
                         except Exception:
                             pass

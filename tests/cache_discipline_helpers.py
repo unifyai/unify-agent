@@ -60,6 +60,10 @@ def completion(
     }
     if reasoning is not None:
         message["reasoning_content"] = reasoning
+        message["reasoning_details"] = [
+            {"type": "reasoning.encrypted", "data": reasoning * 20},
+        ]
+        message["provider_specific_fields"] = {"reasoning_signature": reasoning}
     return ChatCompletion.model_validate(
         {
             "id": "cmpl-test",
@@ -314,10 +318,60 @@ async def scenario_interrupt() -> tuple[str, dict, list[dict]]:
     return result, counter, provider.requests
 
 
+PERSIST_REPLIES = (
+    lambda: completion(
+        calls=[("execute_code", {"code": "x" * 1200})],
+        reasoning="thinking about the first request",
+    ),
+    lambda: completion(content="first done", reasoning="wrapping up"),
+    lambda: completion(content="second done"),
+)
+
+
+async def _next_response(handle) -> dict:
+    while True:
+        notification = await asyncio.wait_for(handle.next_notification(), 30)
+        if isinstance(notification, dict) and notification.get("type") == "response":
+            return notification
+
+
+async def scenario_persist() -> tuple[str, dict, list[dict]]:
+    """A persistent session: a turn, a storage-review compaction note, a turn.
+
+    Between the turns the session parks (where reasoning payloads used to be
+    shed) and receives the ``_compact_transcript`` sentinel a completed turn
+    review sends (which used to compact the reviewed span in place).
+    """
+    from unify.common.async_tool_loop import start_async_tool_loop
+
+    counter: dict = {}
+    tools = make_tools(counter)
+    client = new_client()
+    with scripted(PERSIST_REPLIES) as provider:
+        handle = start_async_tool_loop(
+            client,
+            "First request.",
+            {"execute_code": tools["execute_code"]},
+            log_steps=False,
+            timeout=60,
+            persist=True,
+        )
+        first = await _next_response(handle)
+        handle._queue.put_nowait(
+            {"_compact_transcript": {"reviewed_messages": len(client.messages)}},
+        )
+        await handle.interject("Second request.")
+        second = await _next_response(handle)
+        await handle.stop()
+        await asyncio.wait_for(handle.result(), 30)
+    return f"{first['content']}|{second['content']}", counter, provider.requests
+
+
 SCENARIOS = {
     "gate": scenario_gate,
     "threshold": scenario_threshold,
     "interrupt": scenario_interrupt,
+    "persist": scenario_persist,
 }
 
 
