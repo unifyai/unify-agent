@@ -6,7 +6,10 @@ request is recorded exactly as unillm would send it and nothing leaves the
 process. The scenarios use only APIs that exist upstream, so the requests a
 scenario sends with every switch off can be recorded on the upstream commit
 and replayed here as the equivalence baseline (``cache_discipline_golden.json``,
-written by ``python -m tests.cache_discipline_helpers --record``).
+written by ``python -m tests.cache_discipline_helpers --record``). The actor's
+own first request is pinned the same way (``actor_switches_off_golden.json``,
+the :func:`actor_recording` of :func:`scenario_actor` run under pytest on the
+upstream commit).
 """
 
 from __future__ import annotations
@@ -512,6 +515,29 @@ def session_requests(requests: list[dict]) -> list[dict]:
     """The requests of the conversation that sent the first one."""
     system = requests[0]["messages"][0]
     return [r for r in requests if r["messages"][:1] == [system]]
+
+
+ACTOR_GOLDEN = Path(__file__).with_name("actor_switches_off_golden.json")
+
+
+def actor_recording(requests: list[dict]) -> dict:
+    """The actor scenario's first request and advertised tools, as compared.
+
+    The system prompt names the workspace under ``UNIFY_HOME``, which every
+    test gets its own of, so that path is written as ``$UNIFY_HOME``. The
+    later requests depend on which search result arrives first and are not
+    kept.
+    """
+    home = os.environ.get("UNIFY_HOME") or ""
+
+    def _norm(text: str) -> str:
+        return text.replace(home, "$UNIFY_HOME") if home else text
+
+    session = session_requests(requests)
+    return {
+        "first_request": {k: _norm(v) for k, v in request_bytes(session[0]).items()},
+        "advertised_tools": _norm(request_bytes(session[1])["tools"]),
+    }
 
 
 SCENARIOS = {
