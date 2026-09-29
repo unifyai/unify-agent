@@ -418,6 +418,71 @@ async def test_compaction_is_recorded_and_the_new_context_points_at_the_file(
 
 
 @pytest.mark.asyncio
+async def test_a_compression_fork_is_recorded_and_its_summary_points_at_the_file(
+    monkeypatch,
+    provider,
+):
+    """Under ``UNIFY_CACHE_DISCIPLINE`` the summary comes from a fork of the
+    conversation instead of the compactor, and the transcript still gets the
+    history before it, a compaction line and the pointer."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    p = provider(
+        {
+            # The root conversation; the fork asking for the summary carries
+            # its system prompt too.
+            "": [
+                completion(content="thinking", calls=[("lookup", {})]),
+                completion(calls=[("compress_context", {})]),
+                completion(content="Summary: the fact is 7."),
+                completion(content="after compaction"),
+            ],
+        },
+    )
+
+    def lookup() -> str:
+        """Return a fact."""
+        return "the fact is 7"
+
+    client = llm(ROOT_PROMPT)
+    handle = start_async_tool_loop(
+        client,
+        "find the fact",
+        {"lookup": lookup},
+        loop_id="RootAgent.act",
+    )
+    assert await handle.result() == "after compaction"
+    session = client._unify_transcript
+    pointer = session.pointer_line()
+
+    # The summary the session restarts from ends with the pointer.
+    assert not any(pointer in json.dumps(r) for r in p.requests[:-1])
+    user = [m for m in p.requests[-1]["messages"] if m["role"] == "user"]
+    assert user[-1]["content"].startswith("## Compressed Prior Context\n")
+    assert "Summary: the fact is 7." in user[-1]["content"]
+    assert user[-1]["content"].endswith("\n\n" + pointer)
+
+    end_all_sessions()
+    lines = read_lines(session.path)
+    kinds = [ln["type"] for ln in lines]
+    compaction = lines[kinds.index("compaction")]
+    before = "\n".join(json.dumps(ln) for ln in lines[: kinds.index("compaction")])
+    assert "the fact is 7" in before and "find the fact" in before
+    assert compaction["pass"] == 1 and compaction["archived_messages"] >= 4
+    assert pointer in json.dumps(compaction["context"])
+    after = lines[kinds.index("compaction") + 1 :]
+    assert any(
+        ln["type"] == "message" and ln["message"].get("content") == "after compaction"
+        for ln in after
+    )
+    assert kinds.count("session_start") == 1
+    index = {line["session"]: line for line in index_lines()}
+    assert index[session.id]["compactions"] == 1
+    # No compactor loop ran.
+    assert not [ln for ln in index.values() if ln["origin"] == "compress_messages"]
+
+
+@pytest.mark.asyncio
 async def test_compaction_without_the_switch_adds_no_pointer(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", False)
 

@@ -20,6 +20,7 @@ from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
 from .llm_client import fork_llm_client, new_llm_client
 from ._async_tool import cache_discipline as _cache_discipline
+from unify import transcripts
 from ._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from ._async_tool.event_bus_util import to_event_bus
 from ..events.types.tool_loop import ToolLoopKind
@@ -1031,17 +1032,27 @@ class AsyncToolLoopHandle(SteerableToolHandle):
             )
             return None
         self._compression.count += 1
+        history = self._client.messages or []
         system = [
-            m
-            for m in (self._client.messages or [])[:1]
-            if isinstance(m, dict) and m.get("role") == "system"
+            m for m in history[:1] if isinstance(m, dict) and m.get("role") == "system"
         ]
-        # TODO(lane-e): once the archived transcript has a stable location,
-        # name it here so the model can read back what the summary left out.
         restart_message = (
             f"{_COMPRESSED_HEADER}{summary}\n\n"
             "Context was compressed. Continue from where you left off."
         )
+        # UNIFY_TRANSCRIPTS: the history the summary replaces goes to disk
+        # first, and the summary names the file, so the model can read back
+        # what it left out.
+        session = transcripts.session_for_messages(self._client.messages)
+        if session is not None:
+            session.sync()
+            restart_message += "\n\n" + session.pointer_line()
+            transcripts.record_compaction(
+                session,
+                archived=len(history),
+                pass_number=self._compression.count,
+                context=[*system, {"role": "user", "content": restart_message}],
+            )
         return system, dict(cfg["tools"]), restart_message
 
     def get_history(self) -> list[dict]:
