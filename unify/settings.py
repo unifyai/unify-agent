@@ -172,6 +172,16 @@ class ProductionSettings(BaseSettings):
     UNIFY_REVIEW_FORK: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Session Transcripts
+    # ─────────────────────────────────────────────────────────────────────────
+    # Append every agent conversation (actor, sub-agents, storage review,
+    # compressor) as JSON lines to ``<UNIFY_HOME>/transcripts/<session>.jsonl``
+    # and one line per ended session to ``transcripts/index.jsonl``; after a
+    # context compression the compressed context points at the file
+    # (unify/transcripts.py). Off: nothing is written.
+    UNIFY_TRANSCRIPTS: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
     # ─────────────────────────────────────────────────────────────────────────
     # Name of the project holding the builtins catalogues (function primitives
@@ -217,6 +227,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
+        "UNIFY_TRANSCRIPTS",
         mode="before",
     )
     @classmethod
