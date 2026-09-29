@@ -33,7 +33,7 @@ from .activation import (
     merged_usage,
     rank_score,
 )
-from .execution_env import ENVIRONMENT_MODULES, create_base_globals
+from .execution_env import create_base_globals, environment_modules
 from .steering import (
     DEFAULT_TOOL_NAMESPACES,
     ExecutionStopped,
@@ -1166,7 +1166,7 @@ class FunctionManager(BaseFunctionManager):
 
                 tp_imports = detect_third_party_imports(
                     node,
-                    environment_modules=ENVIRONMENT_MODULES,
+                    environment_modules=environment_modules(),
                 )
                 if tp_imports and not requirements:
                     raise ValueError(
@@ -2409,6 +2409,12 @@ class FunctionManager(BaseFunctionManager):
                         globals_dict[key] = value
         else:  # stateless
             globals_dict = create_base_globals()
+
+        # Globals a registered environment binds, as the sandbox has them.
+        from .primitives.environment import environment_globals
+
+        for env_name, env_value in environment_globals().items():
+            globals_dict.setdefault(env_name, env_value)
 
         # Inject all extra namespaces into globals (always, since they may
         # change between calls).

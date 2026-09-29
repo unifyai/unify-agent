@@ -48,6 +48,15 @@ def init() -> None:  # noqa: D401 – imperative name
     with startup_timing(LOGGER, "unify.init.open_store", f"path={db.store_path()}"):
         db.connect()
 
+    if _SETTINGS.UNIFY_ENV_NAMESPACES.strip():
+        # An environment that cannot register its namespaces stops start-up.
+        from unify.function_manager.primitives.environment import (
+            load_environment_namespaces,
+        )
+
+        with startup_timing(LOGGER, "unify.init.environment_namespaces"):
+            load_environment_namespaces()
+
     from .events.llm_event_hook import install_llm_event_hook
 
     with startup_timing(LOGGER, "unify.init.install_llm_event_hook"):

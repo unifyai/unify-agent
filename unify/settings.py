@@ -83,6 +83,15 @@ class ProductionSettings(BaseSettings):
     UNIFY_LOCAL_EMBEDDINGS: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Environment Namespaces
+    # ─────────────────────────────────────────────────────────────────────────
+    # ``package.module:factory`` entries, comma-separated: factories that
+    # register the environment's own callable surface as ``primitives.<name>``
+    # namespaces at start-up (unify/function_manager/primitives/environment.py).
+    # Empty registers nothing.
+    UNIFY_ENV_NAMESPACES: str = ""
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
     # ─────────────────────────────────────────────────────────────────────────
     # Name of the project holding the builtins catalogues (function primitives
