@@ -26,7 +26,8 @@ from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
 from unify.common.context_dump import make_messages_safe_for_context_dump
-from unify import environment
+from unify import environment, sandbox
+from unify.actor.workspace_tools import workspace_tools as _workspace_tools
 from unify.actor.execution import (
     ExecutionResult,
     PythonExecutionSession,
@@ -3093,6 +3094,7 @@ class CodeActActor(BaseCodeActActor):
             _interject_queue: asyncio.Queue | None = None,
             _pause_event: asyncio.Event | None = None,
             _parent_chat_context: list[dict] | None = None,
+            _language: str = "python",
         ) -> Any:
             """
             Execute arbitrary Python code in a specified state mode.
@@ -3237,11 +3239,17 @@ class CodeActActor(BaseCodeActActor):
                         notification_q=notification_q,
                         pause_event=_pause_event,
                     ) as _steering:
+                        # Only UNIFY_WORKSPACE=sandboxed routes another
+                        # language here (see _workspace_tools).
+                        _lang_kw = (
+                            {"language": _language} if _language != "python" else {}
+                        )
                         try:
                             out = await self._session_executor.execute(
                                 code=code,
                                 state_mode=state_mode,  # type: ignore[arg-type]
                                 session_id=session_id,
+                                **_lang_kw,
                             )
                         except Exception as e:
                             exec_exc = e
@@ -3341,6 +3349,8 @@ class CodeActActor(BaseCodeActActor):
                 display_label="Installing Python packages",
             ),
         }
+        if sandbox.enabled():
+            tools.update(_workspace_tools(execute_code))
 
         # FunctionManager read tools: thin wrappers that inject callables
         # into the sandbox and return only metadata to the LLM. Docstrings

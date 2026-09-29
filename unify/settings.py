@@ -184,14 +184,14 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
     # ─────────────────────────────────────────────────────────────────────────
-    # ``sandboxed``: the execution sessions run bash cells (a persistent bash
-    # session), and bash cells and every subprocess a Python cell starts run
-    # inside bubblewrap: ``/`` read-only, only the workspace and a private /tmp
-    # writable, Unify's state, credential directories and .env files hidden,
-    # credential-named variables removed, no network (unify/sandbox.py).
-    # Without bubblewrap those commands are refused, never run unconfined.
-    # Python cells themselves still run in this process. Empty: none of this
-    # exists.
+    # ``sandboxed``: execute_code also takes ``language="bash"`` (a persistent
+    # bash session), the actor gets ``read_file`` and ``grep``, and bash cells
+    # and every subprocess a Python cell starts run inside bubblewrap: ``/``
+    # read-only, only the workspace and a private /tmp writable, Unify's
+    # state, credential directories and .env files hidden, credential-named
+    # variables removed, no network (unify/sandbox.py). Without bubblewrap
+    # those commands are refused, never run unconfined. Python cells
+    # themselves still run in this process. Empty: none of this exists.
     UNIFY_WORKSPACE: str = ""
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
     # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
