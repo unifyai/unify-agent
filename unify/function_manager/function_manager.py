@@ -1302,6 +1302,21 @@ class FunctionManager(BaseFunctionManager):
 
         return SETTINGS.UNIFY_STORE_CHECK == "resolve"
 
+    @staticmethod
+    def _skip_unloadable() -> Optional[List[Dict[str, str]]]:
+        """A list to collect unloadable rows in, when UNIFY_SEARCH_SKIP_UNLOADABLE is on."""
+        from unify.settings import SETTINGS
+
+        return [] if SETTINGS.UNIFY_SEARCH_SKIP_UNLOADABLE else None
+
+    @staticmethod
+    def _unloadable_warning(skipped: List[Dict[str, str]]) -> str:
+        listed = "; ".join(f"{row['name']}: {row['error']}" for row in skipped)
+        return (
+            f"Left out {len(skipped)} stored function(s) that cannot be loaded, "
+            f"so they are not callable here: {listed}"
+        )
+
     def _store_check(
         self,
         *,
@@ -1675,6 +1690,7 @@ class FunctionManager(BaseFunctionManager):
         func_rows: List[Dict[str, Any]],
         *,
         namespace: Dict[str, Any],
+        skipped: Optional[List[Dict[str, str]]] = None,
     ) -> List[Callable[..., Any]]:
         """Convert function records into callables and return proxies to caller.
 
@@ -1685,8 +1701,36 @@ class FunctionManager(BaseFunctionManager):
         For primitives, the callable is resolved from the live runtime registry
         via ``get_primitive_callable``. Primitives are NOT injected into the
         namespace (they are already accessible via the ``primitives`` object).
+
+        With ``skipped`` (a list), a row that fails to load is left out of the
+        returned callables and recorded there as ``{"name", "error"}`` instead
+        of failing every row; the caller drops it from what it returns.
         """
-        callables: List[Callable[..., Any]] = []
+        if skipped is not None:
+            callables: List[Callable[..., Any]] = []
+            for func_data in func_rows:
+                try:
+                    callables += self._inject_callables_for_functions(
+                        [func_data],
+                        namespace=namespace,
+                    )
+                except Exception as exc:
+                    skipped.append(
+                        {
+                            "name": str(func_data.get("name")),
+                            "error": f"{type(exc).__name__}: {exc}"[:500],
+                        },
+                    )
+                    logger.warning(
+                        "Left the stored function %r out of the result: it "
+                        "cannot be loaded (%s: %s)",
+                        func_data.get("name"),
+                        type(exc).__name__,
+                        exc,
+                    )
+            return callables
+
+        callables = []
         visited: Set[str] = set()
 
         for func_data in func_rows:
@@ -1847,10 +1891,18 @@ class FunctionManager(BaseFunctionManager):
             return metadata
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             func_rows,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            func_rows = [row for row in func_rows if row.get("name") not in unloadable]
+            for name in unloadable:
+                metadata.pop(name, None)
+            metadata["(unloadable functions)"] = self._unloadable_warning(skipped)  # type: ignore[assignment]
         callables_map = {
             row["name"]: cb
             for row, cb in zip(func_rows, callables_list)
@@ -2175,16 +2227,26 @@ class FunctionManager(BaseFunctionManager):
             return rows
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             rows,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            rows = [row for row in rows if row.get("name") not in unloadable]
         if _also_return_metadata:
             metadata_rows = rows
             if not include_implementations:
                 metadata_rows = [
                     {k: v for k, v in row.items() if k != "implementation"}
                     for row in rows
+                ]
+            if skipped:
+                metadata_rows = [
+                    *metadata_rows,
+                    {"warning": self._unloadable_warning(skipped)},
                 ]
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
@@ -2256,10 +2318,15 @@ class FunctionManager(BaseFunctionManager):
             return compact_results
 
         assert _namespace is not None  # validated above
+        skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             results,
             namespace=_namespace,
+            skipped=skipped,
         )
+        if skipped:
+            unloadable = {row["name"] for row in skipped}
+            results = [row for row in results if row.get("name") not in unloadable]
 
         if _also_return_metadata:
             metadata_rows = self._compact_function_search_rows(results)
@@ -2267,6 +2334,8 @@ class FunctionManager(BaseFunctionManager):
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:
                         compact["implementation"] = full["implementation"]
+            if skipped:
+                metadata_rows.append({"warning": self._unloadable_warning(skipped)})
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
 
         return callables_list  # type: ignore[return-value]

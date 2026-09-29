@@ -81,6 +81,10 @@ class ProductionSettings(BaseSettings):
     # network once its weights (134 MB) are downloaded, but reads only English
     # and the first 512 tokens of each text.
     UNIFY_LOCAL_EMBEDDINGS: bool = False
+    # Leave a stored function that cannot be loaded out of a search, list or
+    # filter that loads its results, naming it in a warning, instead of
+    # failing the whole result.
+    UNIFY_SEARCH_SKIP_UNLOADABLE: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Namespaces and the Storage Check
@@ -138,6 +142,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
+        "UNIFY_SEARCH_SKIP_UNLOADABLE",
         mode="before",
     )
     @classmethod
