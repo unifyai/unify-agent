@@ -209,7 +209,14 @@ def _build_discovery_parallel_mutator() -> Any:
 
     def _mutator(completion: Any, context: CompletionMutatorContext) -> Any:
         if context.original_tool_choice != "required":
-            return completion
+            # A forced turn sent as "auto" by UNIFY_TOOL_CHOICE_FALLBACK still
+            # gets its missing discovery families.
+            from unify.common.tool_choice_fallback import (
+                forced_tool_choice_in_fallback,
+            )
+
+            if forced_tool_choice_in_fallback() != "required":
+                return completion
         tool_names = _tool_names_from_openai_tools(context.request_kw.get("tools"))
         if not _is_discovery_gate_schema(tool_names):
             return completion

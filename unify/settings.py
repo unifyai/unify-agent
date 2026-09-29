@@ -117,6 +117,14 @@ class ProductionSettings(BaseSettings):
     # details and credentials (unify/function_manager/store_verify.py). Needs
     # UNIFY_STORE_ADMISSION. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
+    # When a provider refuses a forced tool choice ("required", "any" or one
+    # named tool) with HTTP 400 because the model does not support it, retry
+    # that call once with tool_choice "auto" and an instruction to make the
+    # required call first (re-prompting once if the reply makes none), and
+    # send later forced calls to that model this way for the rest of the
+    # process (unify/common/tool_choice_fallback.py). Off: the error
+    # propagates as shipped.
+    UNIFY_TOOL_CHOICE_FALLBACK: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -160,6 +168,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
+        "UNIFY_TOOL_CHOICE_FALLBACK",
         mode="before",
     )
     @classmethod

@@ -152,6 +152,11 @@ def _build_llm_client(
         client.set_on_log_file_pending(pending_log.on_pending_path)
         client._pending_thinking_log = pending_log
 
+    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
+        from unify.common.tool_choice_fallback import install_tool_choice_fallback
+
+        install_tool_choice_fallback(client)
+
     return client
 
 
