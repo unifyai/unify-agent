@@ -1315,6 +1315,107 @@ class FunctionManager(BaseFunctionManager):
         return results
 
     # ------------------------------------------------------------------ #
+    #  Patch in place (UNIFY_FUNCTION_PATCH)                              #
+    # ------------------------------------------------------------------ #
+
+    def patch_function(
+        self,
+        *,
+        name: str,
+        old: str,
+        new: str,
+        why: str,
+    ) -> Dict[str, Any]:
+        """Fix a stored function in place by replacing one exact excerpt of its source.
+
+        Prefer this to adding a near-duplicate or rewriting the whole
+        function. Read the current source first (search or filter with
+        implementations), copy the lines to change exactly as they appear, and
+        replace only those. ``old`` must occur exactly once in the current
+        source; otherwise nothing changes and the reply says how many times it
+        occurs, with an excerpt. The patched function keeps its name, id,
+        precondition, dependencies and guidance links, is checked exactly like
+        a function passed to ``FunctionManager_add_functions``, and the
+        version it replaces is kept in history with ``why``.
+
+        Args:
+            name: The stored function's exact name.
+            old: The exact text to replace, with enough surrounding text to
+                occur only once. Whitespace and indentation count.
+            new: The replacement text. The result must still be one function
+                named ``name``.
+            why: One sentence on what was wrong or missing; kept with the
+                replaced version.
+
+        Returns:
+            ``{"name", "status": "patched", "function_id"}``, or
+            ``{"name", "error"}`` saying why nothing was changed.
+        """
+        from unify.common.exact_patch import PatchRefused, apply_once
+
+        def refused(message: str) -> Dict[str, Any]:
+            return {"name": name, "error": message}
+
+        if not _function_patch_enabled():
+            return refused(
+                "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
+            )
+        if not str(why or "").strip():
+            return refused("say `why` the function needs this patch")
+        rows = self._rows(self._compositional_scope("name = ?"), (name,), limit=1)
+        if not rows:
+            return refused(
+                f"no stored function is named {name!r}; patch only a function "
+                f"that search or filter returned, by its exact name",
+            )
+        row = rows[0]
+        try:
+            patched = apply_once(
+                row["implementation"],
+                old,
+                new,
+                what=f"the source of {name!r}",
+            )
+        except PatchRefused as exc:
+            return refused(str(exc))
+        try:
+            patched_name = self._parse_implementation(patched)[0]
+        except ValueError as exc:
+            return refused(
+                f"the patched source is not one function, so nothing was "
+                f"changed: {exc}",
+            )
+        if patched_name != name:
+            return refused(
+                f"the patch renames the function to {patched_name!r}, so nothing "
+                f"was changed; a patch keeps the name",
+            )
+        preconditions = (
+            {name: row["precondition"]} if row.get("precondition") is not None else None
+        )
+        token = _OVERWRITE_REASON.set(str(why).strip())
+        try:
+            result = self.add_functions(
+                implementations=[patched],
+                preconditions=preconditions,
+                overwrite=True,
+                raise_on_error=False,
+                dependencies=list(row.get("dependencies") or []),
+            )
+        finally:
+            _OVERWRITE_REASON.reset(token)
+        status = str(result.get(name, "error: not stored"))
+        if status == "updated":
+            return {
+                "name": name,
+                "status": "patched",
+                "function_id": int(row["function_id"]),
+            }
+        return refused(
+            status[len("error: ") :] if status.startswith("error: ") else status,
+        )
+
+    # ------------------------------------------------------------------ #
     #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #
     # ------------------------------------------------------------------ #
 

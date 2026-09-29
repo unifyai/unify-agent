@@ -4,7 +4,7 @@ import functools
 import logging
 import sqlite3
 from contextvars import ContextVar
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 from unify import db
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
@@ -350,6 +350,97 @@ class GuidanceManager(BaseGuidanceManager):
                 db.now_iso(),
             ),
         )
+
+    def patch_guidance(
+        self,
+        *,
+        id_or_title: Union[int, str],
+        old: str,
+        new: str,
+        why: str,
+    ) -> ToolOutcome:
+        """Fix a stored guidance entry in place by replacing one exact excerpt of its content.
+
+        Prefer this to adding a second entry or rewriting the whole entry.
+        Read the current content first (``get_guidance``), copy the text to
+        change exactly as it appears, and replace only that. ``old`` must
+        occur exactly once in the content; otherwise nothing changes and the
+        error says how many times it occurs, with an excerpt. The entry keeps
+        its id, title and ``function_ids``, and the version it replaces is
+        kept in history with ``why``. Built-in entries cannot be patched.
+
+        Args:
+            id_or_title: The entry's ``guidance_id``, or its exact title.
+            old: The exact text to replace, with enough surrounding text to
+                occur only once. Whitespace counts.
+            new: The replacement text.
+            why: One sentence on what was wrong or missing; kept with the
+                replaced version.
+
+        Returns:
+            ``{"outcome": "guidance patched", "details": {"guidance_id"}}``.
+
+        Raises:
+            ValueError: Nothing was changed; the message says why.
+        """
+        from unify.common.exact_patch import PatchRefused, apply_once
+
+        if not _patch_enabled():
+            raise ValueError(
+                "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
+            )
+        if not str(why or "").strip():
+            raise ValueError("say `why` the entry needs this patch")
+        row = self._stored_entry(id_or_title)
+        guidance_id = int(row["guidance_id"])
+        try:
+            patched = apply_once(
+                row["content"],
+                old,
+                new,
+                what=f"the content of guidance {guidance_id}",
+            )
+        except PatchRefused as exc:
+            raise ValueError(str(exc)) from None
+        token = _UPDATE_REASON.set(str(why).strip())
+        try:
+            self.update_guidance(guidance_id=guidance_id, content=patched)
+        finally:
+            _UPDATE_REASON.reset(token)
+        return {"outcome": "guidance patched", "details": {"guidance_id": guidance_id}}
+
+    def _stored_entry(self, id_or_title: Union[int, str]) -> Dict[str, Any]:
+        """The stored entry named by id (or a string of digits) or by exact title."""
+        if isinstance(id_or_title, bool) or not isinstance(id_or_title, (int, str)):
+            raise ValueError("id_or_title must be a guidance_id or a title")
+        text = str(id_or_title).strip()
+        if isinstance(id_or_title, int) or text.isdigit():
+            guidance_id = int(text)
+            self._raise_if_builtin(guidance_id, "patched")
+            row = self._own_row(guidance_id)
+            if row is not None:
+                return row
+            if isinstance(id_or_title, int):
+                raise ValueError(f"No guidance found with guidance_id {guidance_id}.")
+        matches = db.query(
+            "SELECT guidance_id FROM guidance WHERE title = ? ORDER BY guidance_id",
+            (text,),
+        )
+        if len(matches) > 1:
+            ids = ", ".join(str(m["guidance_id"]) for m in matches)
+            raise ValueError(
+                f"{len(matches)} stored entries are titled {text!r} "
+                f"(guidance_ids {ids}); patch one by its guidance_id.",
+            )
+        if matches:
+            return self._own_row(int(matches[0]["guidance_id"]))
+        builtin = db.query_one(
+            "SELECT guidance_id FROM builtin_guidance WHERE title = ?",
+            (text,),
+        )
+        if builtin is not None:
+            self._raise_if_builtin(int(builtin["guidance_id"]), "patched")
+        raise ValueError(f"No stored guidance is titled {text!r}.")
 
     @functools.wraps(BaseGuidanceManager.delete_guidance, updated=())
     def delete_guidance(
