@@ -2,6 +2,7 @@ import ast
 import asyncio
 import builtins
 import concurrent.futures
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import inspect
 import functools
@@ -151,6 +152,21 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 # The fields a search query is compared with, per function row.
 SEARCHED_FUNCTION_FIELDS = ("name", "docstring")
+
+# UNIFY_FUNCTION_PATCH: the reason ``function_history`` records for an
+# overwrite. ``patch_function`` sets it around its ``add_functions`` call; a
+# plain ``add_functions(overwrite=True)`` records the default.
+_OVERWRITE_REASON: ContextVar[Optional[str]] = ContextVar(
+    "function_overwrite_reason",
+    default=None,
+)
+DEFAULT_OVERWRITE_REASON = "overwritten with add_functions(overwrite=True)"
+
+
+def _function_patch_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
 
 
 class _LineageTrackedFunction:
@@ -1274,7 +1290,11 @@ class FunctionManager(BaseFunctionManager):
             try:
                 with db.transaction():
                     for function_id, entry in zip(log_ids_to_update, entries_to_update):
-                        self._update_function(function_id, entry)
+                        self._update_function(
+                            function_id,
+                            entry,
+                            reason=_OVERWRITE_REASON.get() or DEFAULT_OVERWRITE_REASON,
+                        )
             except Exception as e:
                 logger.error(
                     f"Failed to batch update function logs: {e}",
@@ -1664,12 +1684,49 @@ class FunctionManager(BaseFunctionManager):
         return int(cursor.lastrowid)
 
     @staticmethod
-    def _update_function(function_id: int, changes: Dict[str, Any]) -> None:
+    def _update_function(
+        function_id: int,
+        changes: Dict[str, Any],
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Apply ``changes`` to one stored function.
+
+        ``reason`` marks an overwrite of the function itself (not a refresh of
+        its stale reasons); with ``UNIFY_FUNCTION_PATCH`` on, the row as it was
+        is first appended to ``function_history`` with that reason. Callers
+        run this inside their transaction, so both writes land or neither.
+        """
+        if reason is not None and _function_patch_enabled():
+            FunctionManager._record_function_history(function_id, reason)
         values = _encode_function_values(changes)
         assignments = ", ".join(f"{column} = ?" for column in values)
         db.execute(
             f"UPDATE functions SET {assignments} WHERE function_id = ?",
             [*values.values(), int(function_id)],
+        )
+
+    @staticmethod
+    def _record_function_history(function_id: int, reason: str) -> None:
+        """Append the stored row of ``function_id``, as it is now, to ``function_history``."""
+        row = db.query_one(
+            "SELECT * FROM functions WHERE function_id = ?",
+            (int(function_id),),
+        )
+        if row is None:
+            return
+        previous = db.decode(dict(row), db.FUNCTION_JSON_COLUMNS)
+        db.execute(
+            "INSERT INTO function_history"
+            " (function_id, name, previous, reason, replaced_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                int(function_id),
+                previous["name"],
+                db.dumps(previous),
+                str(reason),
+                db.now_iso(),
+            ),
         )
 
     def _create_in_process_callable(

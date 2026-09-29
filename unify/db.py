@@ -5,6 +5,9 @@ keeps: stored ``functions`` and the read-only ``primitives`` catalogue seeded
 from the code (read together through the ``all_functions`` view), the user's
 ``guidance`` and the ``builtin_guidance`` seeded from the committed snapshot
 (read together through ``all_guidance``), and the chat ``messages``.
+With ``UNIFY_FUNCTION_PATCH`` on, ``function_history`` and
+``guidance_history`` keep each row as it was before an overwrite; nothing
+removes their rows, :func:`clear` included.
 
 Managers issue SQL through :func:`execute`, :func:`query` and
 :func:`query_one`. Clauses written by the model run through
@@ -85,6 +88,22 @@ CREATE VIEW IF NOT EXISTS all_guidance AS
     FROM guidance
     UNION ALL
     SELECT guidance_id, title, content, '[]', '[]', 1 FROM builtin_guidance;
+CREATE TABLE IF NOT EXISTS function_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    previous TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guidance_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guidance_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    previous TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT NOT NULL,
@@ -94,7 +113,8 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 """
 
-# Tables that hold the user's own rows; the seeded catalogues are not listed.
+# Tables that hold the user's own rows; the seeded catalogues are not listed,
+# nor the history tables, which are append-only.
 USER_TABLES = ("functions", "guidance", "messages")
 
 FUNCTION_COLUMNS = (

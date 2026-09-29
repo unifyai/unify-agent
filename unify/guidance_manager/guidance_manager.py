@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import logging
 import sqlite3
+from contextvars import ContextVar
 from typing import Any, Dict, FrozenSet, List, Optional
 
 from unify import db
@@ -23,6 +24,21 @@ logger = logging.getLogger(__name__)
 GUIDANCE_PREVIEW_CHARS = 2000
 
 _SELECT = f"SELECT {', '.join(db.GUIDANCE_COLUMNS)} FROM all_guidance"
+
+# UNIFY_FUNCTION_PATCH: the reason ``guidance_history`` records for an update.
+# ``patch_guidance`` sets it around its ``update_guidance`` call; a plain
+# ``update_guidance`` records the default.
+_UPDATE_REASON: ContextVar[Optional[str]] = ContextVar(
+    "guidance_update_reason",
+    default=None,
+)
+DEFAULT_UPDATE_REASON = "updated with update_guidance"
+
+
+def _patch_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
 
 
 def _stored_only_without_reference(references: Optional[Dict[str, str]]) -> bool:
@@ -279,19 +295,60 @@ class GuidanceManager(BaseGuidanceManager):
                     preserve_historical=False,
                 )
             ]
-        self._update_row(guidance_id, updates)
+        self._update_row(
+            guidance_id,
+            updates,
+            reason=_UPDATE_REASON.get() or DEFAULT_UPDATE_REASON,
+        )
         return {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}}
 
     @staticmethod
-    def _update_row(guidance_id: int, updates: Dict[str, Any]) -> None:
+    def _update_row(
+        guidance_id: int,
+        updates: Dict[str, Any],
+        *,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Apply ``updates`` to one stored guidance entry.
+
+        ``reason`` marks an edit of the entry (not a refresh of its stale
+        reasons); with ``UNIFY_FUNCTION_PATCH`` on, the row as it was is first
+        appended to ``guidance_history`` with that reason, in one transaction.
+        """
         assignments = ", ".join(f"{column} = ?" for column in updates)
         values = [
             db.dumps(value) if column in db.GUIDANCE_JSON_COLUMNS else value
             for column, value in updates.items()
         ]
+        sql = f"UPDATE guidance SET {assignments} WHERE guidance_id = ?"
+        if reason is not None and _patch_enabled():
+            with db.transaction():
+                GuidanceManager._record_guidance_history(guidance_id, reason)
+                db.execute(sql, [*values, int(guidance_id)])
+            return
+        db.execute(sql, [*values, int(guidance_id)])
+
+    @staticmethod
+    def _record_guidance_history(guidance_id: int, reason: str) -> None:
+        """Append the stored row of ``guidance_id``, as it is now, to ``guidance_history``."""
+        row = db.query_one(
+            "SELECT * FROM guidance WHERE guidance_id = ?",
+            (int(guidance_id),),
+        )
+        if row is None:
+            return
+        previous = db.decode(dict(row), db.GUIDANCE_JSON_COLUMNS)
         db.execute(
-            f"UPDATE guidance SET {assignments} WHERE guidance_id = ?",
-            [*values, int(guidance_id)],
+            "INSERT INTO guidance_history"
+            " (guidance_id, title, previous, reason, replaced_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                int(guidance_id),
+                previous["title"],
+                db.dumps(previous),
+                str(reason),
+                db.now_iso(),
+            ),
         )
 
     @functools.wraps(BaseGuidanceManager.delete_guidance, updated=())

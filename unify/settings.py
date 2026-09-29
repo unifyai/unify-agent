@@ -130,6 +130,13 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
+    # Offer FunctionManager_patch_function and GuidanceManager_patch_guidance,
+    # which replace one exact excerpt of a stored entry in place (the patched
+    # function is stored through add_functions, so its checks still apply),
+    # and keep the previous version of every overwritten function or guidance
+    # entry in function_history / guidance_history. Off: no patch tools and
+    # nothing is written to history.
+    UNIFY_FUNCTION_PATCH: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -174,6 +181,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_FUNCTION_PATCH",
         mode="before",
     )
     @classmethod
