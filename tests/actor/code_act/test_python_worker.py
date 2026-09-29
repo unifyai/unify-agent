@@ -16,6 +16,7 @@ import sqlite3
 import pytest
 from pydantic import BaseModel
 
+from tests.helpers import _handle_project
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
     STATE_SECRET,
     TOKEN_VALUE,
@@ -531,6 +532,49 @@ async def test_steering_probes_and_memoisation_reach_the_worker(worker_world):
             _, res = await run(ex, "await primitives.files.search('z')")
         assert res["result"] == {"status": "stopped", "reason": "enough"}
         assert not any(c[1] == "z" for c in calls)
+    finally:
+        await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@_handle_project
+async def test_inspect_state_reads_the_workers_variables(worker_world):
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.actor.execution import _CURRENT_SANDBOX, PythonExecutionSession
+
+    actor = CodeActActor(environments=[])
+    tools = actor.get_tools("act")
+    sandbox_session = PythonExecutionSession(environments={})
+    token = _CURRENT_SANDBOX.set(sandbox_session)
+    try:
+        # Before any cell there is no worker and nothing to list.
+        empty = await tools["inspect_state"]()
+        assert empty["state"]["variables"] == []
+        seeded = await tools["execute_code"](
+            thought="Seed the session.",
+            code="import os\ncolour = 'teal'\ntotal = 8\nos.getpid()",
+        )
+        assert seeded.error is None and seeded.result != HARNESS_PID
+        names = await tools["inspect_state"]()
+        assert names["state"]["variables"] == ["colour", "total"]
+        full = await tools["inspect_state"](detail="full")
+        assert full["state"]["variables"] == {"colour": "'teal'", "total": "8"}
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox_session.close()
+        await actor.close()
+
+
+@pytest.mark.asyncio
+async def test_inspect_state_without_the_worker_reads_the_namespace(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    ex, _ = executor_with_fakes()
+    try:
+        await run(ex, "colour = 'teal'")
+        sb = ex.python_session(session_id=0)
+        assert await sb.worker_variables() is None
+        assert sb.global_state["colour"] == "teal"
     finally:
         await ex.close()
 

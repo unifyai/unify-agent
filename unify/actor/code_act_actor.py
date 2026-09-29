@@ -4214,7 +4214,13 @@ class CodeActActor(BaseCodeActActor):
                 }
             names: list[str] = []
             full_map: dict[str, str] = {}
-            for k, v in sb.global_state.items():
+            # UNIFY_WORKSPACE_PYTHON=worker: the variables live in the worker.
+            worker_variables = getattr(sb, "worker_variables", None)
+            in_worker = await worker_variables() if worker_variables else None
+            if in_worker is not None:
+                names, full_map = list(in_worker), dict(in_worker)
+            items = sb.global_state.items() if in_worker is None else ()
+            for k, v in items:
                 if not isinstance(k, str) or k.startswith("_"):
                     continue
                 if callable(v) or isinstance(v, type):

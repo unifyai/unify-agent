@@ -752,6 +752,15 @@ class PythonWorker:
                 else:
                     into.append(ImagePart(mime="image/png", data=data))
 
+    async def variables(self) -> Dict[str, str]:
+        """The worker's own variables (name -> short repr), for ``inspect_state``."""
+        if not self.is_running:
+            return {}
+        cid = next(self._ids)
+        await self._send({"op": "variables", "id": cid})
+        done = await asyncio.wait_for(self._serve_until_done(cid, {}), timeout=30)
+        return dict(done.get("variables") or {})
+
 
 def _no_refs(value: Any, where: str) -> Any:
     raise BoundaryRefusal(f"{where} is not plain data")

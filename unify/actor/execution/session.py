@@ -463,6 +463,18 @@ class PythonExecutionSession:
             self._worker = worker_mod.PythonWorker()
         return self._worker
 
+    async def worker_variables(self) -> Optional[Dict[str, str]]:
+        """The worker's variables (name -> short repr); None when cells run in
+        process. Waits for a running cell, like another cell would."""
+        from . import worker as worker_mod
+
+        if not worker_mod.enabled():
+            return None
+        if self._worker is None:
+            return {}
+        async with self._execution_lock:
+            return await self._worker.variables()
+
     async def execute(
         self,
         code: str,

@@ -775,12 +775,26 @@ class Worker:
             self.ns[name] = obj
             self.installed[name] = obj
 
+    def variables(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for name, value in self.ns.items():
+            if not isinstance(name, str) or name.startswith("_"):
+                continue
+            if name in self.installed or callable(value) or inspect.ismodule(value):
+                continue
+            out[name] = short_repr(value)
+        return out
+
     # -- cells -----------------------------------------------------------------
     def handle(self, msg: dict) -> None:
         op = msg.get("op")
         if op == "exec":
             assert self.loop is not None
             self.loop.create_task(self.run_cell(msg))
+        elif op == "variables":
+            self.send(
+                {"op": "done", "id": msg.get("id"), "variables": self.variables()},
+            )
 
     async def run_cell(self, msg: dict) -> None:
         cid = msg.get("id")
