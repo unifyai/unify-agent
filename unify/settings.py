@@ -182,6 +182,24 @@ class ProductionSettings(BaseSettings):
     UNIFY_TRANSCRIPTS: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Workspace Sandbox
+    # ─────────────────────────────────────────────────────────────────────────
+    # ``sandboxed``: the execution sessions run bash cells (a persistent bash
+    # session), and bash cells and every subprocess a Python cell starts run
+    # inside bubblewrap: ``/`` read-only, only the workspace and a private /tmp
+    # writable, Unify's state, credential directories and .env files hidden,
+    # credential-named variables removed, no network (unify/sandbox.py).
+    # Without bubblewrap those commands are refused, never run unconfined.
+    # Python cells themselves still run in this process. Empty: none of this
+    # exists.
+    UNIFY_WORKSPACE: str = ""
+    # ``proxy``: the sandbox's only network is one loopback port forwarded to
+    # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
+    # Empty: no network at all.
+    UNIFY_WORKSPACE_NETWORK: str = ""
+    UNIFY_WORKSPACE_PROXY_PORT: int = 0
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
     # ─────────────────────────────────────────────────────────────────────────
     # Name of the project holding the builtins catalogues (function primitives
@@ -266,6 +284,26 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "ramp"):
             raise ValueError(f"UNIFY_STORE_TRUST must be empty or 'ramp', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_WORKSPACE", mode="before")
+    @classmethod
+    def parse_workspace(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "sandboxed"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE must be empty or 'sandboxed', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
+    @classmethod
+    def parse_workspace_network(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "proxy"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE_NETWORK must be empty or 'proxy', not {v!r}",
+            )
         return value
 
     model_config = SettingsConfigDict(

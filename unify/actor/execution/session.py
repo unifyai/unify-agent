@@ -46,6 +46,8 @@ from .types import TextPart
 if TYPE_CHECKING:
     from unify.actor.environments.base import BaseEnvironment
 
+    from .shell import BashSession
+
 # Handles spawned by manager primitives during an in-process sandbox
 # ``execute`` call.  When the LLM fire-and-forgets a steerable handle
 # (awaits the call that *returns* the handle but never ``await
@@ -772,6 +774,9 @@ class SessionExecutor:
 
         self._python_sessions: Dict[int, PythonExecutionSession] = {}
         self._python_session_meta: Dict[int, dict[str, str]] = {}
+        # Persistent bash sessions (UNIFY_WORKSPACE=sandboxed), keyed like the
+        # Python ones.
+        self._shell_sessions: Dict[int, "BashSession"] = {}
 
         self._fm_globals: Dict[str, Any] = {}
 
@@ -821,8 +826,11 @@ class SessionExecutor:
         key = int(session_id)
         sb = self._python_sessions.pop(key, None)
         self._python_session_meta.pop(key, None)
+        shell = self._shell_sessions.pop(key, None)
+        if shell is not None:
+            await shell.close()
         if sb is None:
-            return False
+            return shell is not None
         try:
             await sb.close()
         except Exception:
@@ -837,6 +845,71 @@ class SessionExecutor:
                 pass
         self._python_sessions.clear()
         self._python_session_meta.clear()
+        for shell in list(self._shell_sessions.values()):
+            await shell.close()
+        self._shell_sessions.clear()
+
+    async def _execute_shell(
+        self,
+        *,
+        code: str,
+        state_mode: StateMode,
+        session_id: int | None,
+    ) -> Dict[str, Any]:
+        """Run a bash cell inside the workspace sandbox."""
+        from unify import sandbox
+        from .shell import DEFAULT_SHELL_TIMEOUT_S, BashSession
+
+        if not sandbox.enabled():
+            raise ToolInputError(
+                "language='bash' needs UNIFY_WORKSPACE=sandboxed.",
+                suggestion="Run shell commands from Python with subprocess.",
+                received={"language": "bash"},
+            )
+        if state_mode == "read_only":
+            _refuse(
+                message="state_mode='read_only' applies to Python sessions only.",
+                suggestion="Use state_mode='stateful' or 'stateless' for bash.",
+                state_mode=state_mode,
+                session_id=session_id,
+                session_name=None,
+            )
+        sandbox.require_bwrap()
+        policy = sandbox.build_policy()
+        timeout = self._timeout or DEFAULT_SHELL_TIMEOUT_S
+        started = time.perf_counter()
+        created = False
+        if state_mode == "stateless":
+            shell = BashSession(policy=policy)
+            try:
+                res = await shell.execute(code, timeout=timeout)
+            finally:
+                await shell.close()
+            session_id = None
+        else:
+            key = int(session_id or 0)
+            shell = self._shell_sessions.get(key)
+            if shell is None:
+                shell = self._shell_sessions[key] = BashSession(policy=policy)
+                created = True
+            res = await shell.execute(code, timeout=timeout)
+            session_id = key
+        output, error = res["output"], res["error"]
+        note = sandbox.annotate_refusals(output, policy)
+        if note and error:
+            error = f"{error}\n{note}"
+        elif note:
+            output = f"{output}\n[{note}]"
+        return {
+            "stdout": [TextPart(text=output)] if output else [],
+            "stderr": [],
+            "result": res["exit_code"],
+            "error": error,
+            "state_mode": state_mode,
+            "session_id": session_id,
+            "session_created": created,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+        }
 
     async def execute(
         self,
@@ -844,7 +917,14 @@ class SessionExecutor:
         code: str,
         state_mode: StateMode,
         session_id: int | None,
+        language: str = "python",
     ) -> Dict[str, Any]:
+        if language == "bash":
+            return await self._execute_shell(
+                code=code,
+                state_mode=state_mode,
+                session_id=session_id,
+            )
         import time as _se_time
         import logging as _se_logging
 
@@ -868,7 +948,14 @@ class SessionExecutor:
         async def _execute_in_python_session(
             sb: PythonExecutionSession,
         ) -> Dict[str, Any]:
-            return await sb.execute(code, timeout=self._timeout)
+            from unify import sandbox
+
+            if not sandbox.enabled():
+                return await sb.execute(code, timeout=self._timeout)
+            # The cell itself still runs in this process; what it starts
+            # through subprocess, os.system or asyncio runs in the sandbox.
+            with sandbox.confined_subprocesses(sandbox.build_policy()):
+                return await sb.execute(code, timeout=self._timeout)
 
         bound = self._bound_sandbox(session_id)
         if state_mode == "stateful" and bound is not None:
