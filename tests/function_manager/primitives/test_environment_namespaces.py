@@ -2,7 +2,8 @@
 
 A registered namespace must be treated like ``primitives.actor`` everywhere:
 the scope, the sandbox's ``primitives`` object, the seeded primitive rows,
-``depends_on`` and injection of a stored function that calls it. With nothing
+``depends_on`` and injection of a stored function that calls it, the actor's
+environments and prompt, and the storage review's doctrine. With nothing
 registered (``UNIFY_ENV_NAMESPACES`` unset) every one of those is as shipped.
 No model is called.
 """
@@ -242,6 +243,104 @@ def test_stored_function_records_and_gets_the_namespace(weather):
         {"city": "Oslo", "temp_c": 21},
         {"city": "Rome", "temp_c": 21},
     ]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# The actor: its environments, prompt and the storage review's doctrine
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_actor_environment_lists_the_namespaces(weather):
+    from unify.actor.environments import (
+        ActorEnvironment,
+        EnvironmentNamespacesEnvironment,
+        registered_environments,
+    )
+    from unify.actor.environments.base import _CompositeEnvironment
+
+    envs = registered_environments()
+    assert len(envs) == 1 and isinstance(envs[0], EnvironmentNamespacesEnvironment)
+    tools = envs[0].get_tools()
+    assert tools["primitives.weather.forecast"].is_impure is False
+    assert tools["primitives.weather.set_alert"].is_impure is True
+    assert envs[0].prompt_documented_names == frozenset()
+    context = envs[0].get_prompt_context()
+    assert "| `primitives.weather` | 3 (1 / 1 / 1) | A weather service |" in context
+    assert "`weather_client`" in context and "`json`" in context
+
+    merged = _CompositeEnvironment([ActorEnvironment(), *envs])
+    assert merged.get_instance().primitive_scope.scoped_managers == {"actor", "weather"}
+    assert "primitives.actor.act" in merged.get_tools()
+    # The actor's inline docs are excluded from search as before; the
+    # environment's methods stay searchable.
+    assert "primitives.weather.forecast" not in merged.prompt_documented_names
+    assert (
+        "The one `primitives.*` surface." not in ActorEnvironment().get_prompt_context()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@_handle_project
+async def test_child_without_sub_agents_keeps_the_namespaces(weather):
+    """A child that may not spawn still works in its parent's environment: it
+    holds and calls the namespaces, and is offered no sub-actor."""
+    from unify.actor.environments.actor import _build_inner_actor
+    from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+    from unify.actor.prompt_builders import build_code_act_prompt
+
+    child, _guidelines = _build_inner_actor(
+        guidelines=None,
+        prompt_guidance=None,
+        guidance_scope=None,
+        prompt_functions=["primitives.weather.forecast"],
+        discovery_scope=None,
+        timeout=30,
+        can_compose=True,
+        can_store=False,
+        can_spawn_sub_agents=False,
+    )
+    assert child.function_manager._primitive_scope.scoped_managers == {"weather"}
+    tools = child.get_tools("act")
+    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
+    assert "`primitives.weather`" in prompt
+    assert "primitives.actor" not in prompt
+
+    sandbox = PythonExecutionSession(environments=child.environments)
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        await tools["execute_code"](
+            thought="Checking the forecast.",
+            code="primitives.weather.forecast(city='Oslo')",
+        )
+        refused = await tools["execute_code"](
+            thought="Delegating to a sub-actor.",
+            code="await primitives.actor.act(request='What is 2 + 2?')",
+        )
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+    assert CALLS == [("forecast", {"city": "Oslo"})]
+    error = refused.get("error") if isinstance(refused, dict) else refused.error
+    assert "primitives.actor is not available to this actor" in (error or "")
+
+
+def test_actor_prompt_and_review_doctrine_unchanged_when_nothing_registered():
+    from unify.actor.code_act_actor import _storage_environment_note
+    from unify.actor.environments import ActorEnvironment, registered_environments
+
+    clear_environment_namespaces()
+    assert registered_environments() == []
+    assert _storage_environment_note() == ""
+    assert "The one `primitives.*` surface." in ActorEnvironment().get_prompt_context()
+
+
+def test_review_doctrine_names_the_namespaces(weather):
+    from unify.actor.code_act_actor import _storage_environment_note
+
+    note = _storage_environment_note()
+    assert "`primitives.weather`" in note
+    assert "`weather_client`" in note
+    assert "never declare them as `dependencies`" in note
 
 
 # ────────────────────────────────────────────────────────────────────────────

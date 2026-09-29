@@ -581,6 +581,41 @@ _STORAGE_WHAT_CAN_BE_STORED = (
     "pinned as loosely as the trajectory justifies.\n\n"
 )
 
+
+def _storage_environment_note() -> str:
+    """The storage review's note on the environment's namespaces.
+
+    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``),
+    so the doctrine is otherwise the shipped text.
+    """
+    from unify.function_manager.primitives.environment import environment_surface
+
+    surface = environment_surface()
+    parts: list[str] = []
+    if surface is not None and surface.namespaces:
+        names = ", ".join(f"`primitives.{n.name}`" for n in surface.namespaces)
+        parts.append(
+            "This environment registered its own namespaces beside "
+            f"`primitives.actor`: {names}. Code calls them exactly so "
+            "(`primitives.<namespace>.<method>(...)`), and a stored function "
+            "that does is recorded and injected like `primitives.actor`: it "
+            "needs no import and no dependency for them. No other "
+            "`primitives.*` name exists.",
+        )
+        if surface.globals:
+            listed = ", ".join(f"`{g}`" for g in sorted(surface.globals))
+            parts.append(f"The environment also binds the sandbox globals {listed}.")
+        if surface.modules:
+            listed = ", ".join(f"`{m}`" for m in sorted(surface.modules))
+            parts.append(
+                f"Modules it supplies ({listed}) are importable wherever a "
+                "stored function runs; never declare them as `dependencies`.",
+            )
+    if not parts:
+        return ""
+    return "### This environment\n\n" + " ".join(parts) + "\n\n"
+
+
 _STORAGE_TWO_STORES = (
     "## Two Stores\n\n"
     "### Function Store — the *what*\n\n"
@@ -1316,6 +1351,7 @@ def _start_storage_check_loop(
     system_prompt = (
         f"{role_line}"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{_STORAGE_RECURRING_DELIVERABLE}"
@@ -1445,6 +1481,7 @@ def _start_proactive_storage_loop(
         "requested skill(s) for future reuse. Often nothing is worth "
         "storing — that is perfectly fine.\n\n"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
