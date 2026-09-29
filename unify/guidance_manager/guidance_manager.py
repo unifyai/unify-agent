@@ -25,6 +25,25 @@ GUIDANCE_PREVIEW_CHARS = 2000
 _SELECT = f"SELECT {', '.join(db.GUIDANCE_COLUMNS)} FROM all_guidance"
 
 
+def _stored_only_without_reference(references: Optional[Dict[str, str]]) -> bool:
+    """True when ``UNIFY_GUIDANCE_EMPTY_QUERY=stored`` and no reference text is given.
+
+    Without reference text every row is unscored and ordered newest first by
+    id. Built-in ids are hashes (up to 2**31) while stored ids count up from 1,
+    so the built-in catalogue would fill every slot ahead of the stored
+    entries; under the switch such a search reads only the stored entries.
+    """
+    from unify.settings import SETTINGS
+
+    if SETTINGS.UNIFY_GUIDANCE_EMPTY_QUERY != "stored":
+        return False
+    if not references:
+        return True
+    if not isinstance(references, dict):
+        return False
+    return not any(str(text or "").strip() for text in references.values())
+
+
 class GuidanceManager(BaseGuidanceManager):
     """Guidance stored in the ``guidance`` table, read alongside the builtins."""
 
@@ -338,8 +357,11 @@ class GuidanceManager(BaseGuidanceManager):
         references: Optional[Dict[str, str]] = None,
         k: int = 10,
     ) -> List[Guidance]:
+        caller_filter = None
+        if _stored_only_without_reference(references):
+            caller_filter = "is_builtin = 0"
         rows = rank_by_similarity(
-            self._rows(self._scope()),
+            self._rows(self._scope(caller_filter)),
             references,
             limit=k,
             id_field="guidance_id",

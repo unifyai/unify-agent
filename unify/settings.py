@@ -125,6 +125,11 @@ class ProductionSettings(BaseSettings):
     # process (unify/common/tool_choice_fallback.py). Off: the error
     # propagates as shipped.
     UNIFY_TOOL_CHOICE_FALLBACK: bool = False
+    # ``stored``: a guidance search without reference text returns the stored
+    # guidance entries, newest first, instead of the built-in catalogue (whose
+    # hash-derived ids otherwise sort ahead of every stored entry). Empty
+    # searches as shipped.
+    UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -181,6 +186,16 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "resolve"):
             raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
+    @classmethod
+    def parse_guidance_empty_query(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "stored"):
+            raise ValueError(
+                f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
+            )
         return value
 
     model_config = SettingsConfigDict(
