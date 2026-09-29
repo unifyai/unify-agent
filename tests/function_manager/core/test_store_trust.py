@@ -490,10 +490,15 @@ async def test_a_proxy_call_is_recorded(trust_on):
 
 
 async def _scenario(fm: FunctionManager) -> list:
-    """Every call path, a failure on each, and an overwrite; what the caller sees."""
+    """Every call path, a failure on each, and an overwrite; what the caller sees.
+
+    Everything is loaded before the first failure: a later loaded read leaves
+    a quarantined function out, by design (tested below).
+    """
     seen: list = []
     fm.add_functions(implementations=[DOUBLE, DIVIDE, ASYNC_HALVE])
     ns = _load(fm)
+    proxies = fm.list_functions(_return_callable=True, _namespace={})
     seen.append(type(ns["double"]).__name__)
     seen += [ns["double"](1), ns["double"](x=2), await ns["halve"](3)]
     try:
@@ -505,7 +510,6 @@ async def _scenario(fm: FunctionManager) -> list:
         call_kwargs={"a": 1, "b": 0},
     )
     seen.append((out["result"], out["error"].strip().splitlines()[-1]))
-    proxies = fm.list_functions(_return_callable=True, _namespace={})
     seen.append(await proxies["divide"](4, 2))
     seen.append(fm.add_functions(implementations=[DIVIDE], overwrite=True))
     seen.append(sorted(fm.list_functions()))
@@ -534,3 +538,127 @@ async def test_switch_off_records_nothing_and_calls_behave_the_same(monkeypatch)
         _id(fm, "double"),
         _id(fm, "halve"),
     ]
+
+
+# --------------------------------------------------------------------------- #
+#  Quarantine hides a function from the reads that load it                     #
+# --------------------------------------------------------------------------- #
+
+
+def _bag_of_words(texts: list[str]):
+    import hashlib
+    import re
+
+    import numpy as np
+
+    vectors = np.zeros((len(texts), 256), dtype=np.float32)
+    for row, text in enumerate(texts):
+        for word in re.findall(r"[a-z0-9]+", text.lower()):
+            vectors[row, int(hashlib.sha256(word.encode()).hexdigest(), 16) % 256] += 1
+        vectors[row, 0] += 1e-3  # never a zero vector
+    return vectors
+
+
+@pytest.fixture
+def local_vectors(monkeypatch):
+    from unify.common import embeddings
+    from unify.common.embeddings import Embedder
+
+    monkeypatch.setattr(
+        embeddings,
+        "embedder",
+        lambda: Embedder("tests-bag-of-words/256", _bag_of_words),
+    )
+
+
+def _loaded_reads(fm: FunctionManager) -> dict:
+    """What the actor's list, filter and search tools return, and what they load."""
+    out = {}
+    for read, kwargs in (
+        ("list", {}),
+        ("filter", {}),
+        ("search", {"query": "divide or double numbers", "n": 5}),
+    ):
+        namespace: dict = {}
+        method = getattr(fm, f"{read}_functions")
+        result = method(
+            _return_callable=True,
+            _namespace=namespace,
+            _also_return_metadata=True,
+            **kwargs,
+        )
+        callables = result["callables"]
+        names = sorted(
+            (
+                callables
+                if isinstance(callables, dict)
+                else [c.__name__ for c in callables]
+            ),
+        )
+        metadata = result["metadata"]
+        if isinstance(metadata, dict):
+            warnings = [v for k, v in metadata.items() if k.startswith("(")]
+            rows = sorted(k for k in metadata if not k.startswith("("))
+        else:
+            warnings = [r["warning"] for r in metadata if "warning" in r]
+            rows = sorted(r["name"] for r in metadata if "name" in r)
+        out[read] = {
+            "callables": names,
+            "rows": rows,
+            "warnings": warnings,
+            "loaded": sorted(k for k in ("double", "divide") if k in namespace),
+        }
+    return out
+
+
+@_handle_project
+def test_a_quarantined_function_is_left_out_of_loaded_reads_and_named(
+    trust_on,
+    local_vectors,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    _quarantine_divide(fm)
+    for read, seen in _loaded_reads(fm).items():
+        assert seen["callables"] == seen["rows"] == seen["loaded"] == ["double"], read
+        assert seen["warnings"] == [
+            "Left out 1 stored function(s) that raised when last reused and wait "
+            "for repair, so they are not callable here: divide (last failure: "
+            "ZeroDivisionError: division by zero)",
+        ], read
+    # it stays in the store, and the reads that return rows (the review's) show it
+    assert "divide" in fm.list_functions()
+    assert "divide" in [r["name"] for r in fm.filter_functions()]
+    assert "divide" in [
+        r["name"] for r in fm.search_functions(query="divide numbers", n=5)
+    ]
+
+
+@_handle_project
+def test_a_repaired_function_is_loaded_again(trust_on, local_vectors):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    _quarantine_divide(fm)
+    fixed = DIVIDE.replace("return a / b", "return a / b if b else 0.0")
+    fm.add_functions(implementations=[fixed], overwrite=True)
+    for read, seen in _loaded_reads(fm).items():
+        assert seen["callables"] == ["divide", "double"], read
+        assert seen["warnings"] == [], read
+
+
+@_handle_project
+def test_switch_off_loads_a_quarantined_function_as_shipped(
+    monkeypatch,
+    local_vectors,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    _quarantine_divide(fm)
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "")
+    with_record = _loaded_reads(fm)
+    db.execute("DELETE FROM function_trust")
+    assert _loaded_reads(fm) == with_record
+    for read, seen in with_record.items():
+        assert seen["callables"] == ["divide", "double"], read
+        assert seen["warnings"] == [], read

@@ -1563,6 +1563,27 @@ class FunctionManager(BaseFunctionManager):
         return [] if SETTINGS.UNIFY_SEARCH_SKIP_UNLOADABLE else None
 
     @staticmethod
+    def _drop_quarantined(
+        rows: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Set[str], Optional[str]]:
+        """Rows without the quarantined functions (UNIFY_STORE_TRUST), their names and the warning.
+
+        Only a read that loads functions into a namespace drops them; the
+        rows as they came, no names and no warning while the switch is off.
+        """
+        from . import store_trust
+
+        if not store_trust.enabled():
+            return rows, set(), None
+        hidden = store_trust.quarantined(rows)
+        if not hidden:
+            return rows, set(), None
+        warning = store_trust.hidden_warning(hidden)
+        logger.warning(warning)
+        kept = [row for row in rows if row.get("name") not in hidden]
+        return kept, set(hidden), warning
+
+    @staticmethod
     def _unloadable_warning(skipped: List[Dict[str, str]]) -> str:
         listed = "; ".join(f"{row['name']}: {row['error']}" for row in skipped)
         return (
@@ -2436,6 +2457,9 @@ class FunctionManager(BaseFunctionManager):
             return metadata
 
         assert _namespace is not None  # validated above
+        func_rows, quarantined, quarantine_warning = self._drop_quarantined(func_rows)
+        for name in quarantined:
+            metadata.pop(name, None)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             func_rows,
@@ -2448,6 +2472,8 @@ class FunctionManager(BaseFunctionManager):
             for name in unloadable:
                 metadata.pop(name, None)
             metadata["(unloadable functions)"] = self._unloadable_warning(skipped)  # type: ignore[assignment]
+        if quarantine_warning:
+            metadata["(quarantined functions)"] = quarantine_warning  # type: ignore[assignment]
         callables_map = {
             row["name"]: cb
             for row, cb in zip(func_rows, callables_list)
@@ -2772,6 +2798,7 @@ class FunctionManager(BaseFunctionManager):
             return rows
 
         assert _namespace is not None  # validated above
+        rows, _, quarantine_warning = self._drop_quarantined(rows)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             rows,
@@ -2793,6 +2820,8 @@ class FunctionManager(BaseFunctionManager):
                     *metadata_rows,
                     {"warning": self._unloadable_warning(skipped)},
                 ]
+            if quarantine_warning:
+                metadata_rows = [*metadata_rows, {"warning": quarantine_warning}]
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
 
@@ -2863,6 +2892,7 @@ class FunctionManager(BaseFunctionManager):
             return compact_results
 
         assert _namespace is not None  # validated above
+        results, _, quarantine_warning = self._drop_quarantined(results)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             results,
@@ -2881,6 +2911,8 @@ class FunctionManager(BaseFunctionManager):
                         compact["implementation"] = full["implementation"]
             if skipped:
                 metadata_rows.append({"warning": self._unloadable_warning(skipped)})
+            if quarantine_warning:
+                metadata_rows.append({"warning": quarantine_warning})
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
 
         return callables_list  # type: ignore[return-value]

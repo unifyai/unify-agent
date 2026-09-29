@@ -14,11 +14,15 @@ This switch keeps a trust record per stored function in ``function_trust`` and u
   environment method it can reach, directly or through the stored functions it calls, is labelled other
   than ``read``) after 3 passes over 2 distinct inputs, one that can change anything after 5 over 3;
 - **demotion**: any failure quarantines the function until its source or the source of a function it calls
-  changes, or it is overwritten, which puts it back on probation with its counts cleared.
+  changes, or it is overwritten, which puts it back on probation with its counts cleared;
+- **quarantine**: a quarantined function is left out of the searches, lists and filters that load functions into the sandbox, with a
+  warning naming it and its last failure, the way ``UNIFY_SEARCH_SKIP_UNLOADABLE`` leaves out a row that
+  cannot load. It stays in the store, and the reads that return rows only (the storage review's) still
+  show it, so it can be repaired.
 
 Evidence is recorded only for the stored version: a call of code loaded before the stored source changed
-says nothing about the current one and is ignored. With the switch unset nothing here is imported by the
-call paths and nothing is written.
+says nothing about the current one and is ignored. With the switch unset no observer is attached, nothing
+is written or hidden, and every call path is the shipped one.
 """
 
 from __future__ import annotations
@@ -322,6 +326,46 @@ def reset(function_ids: Iterable[int]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Quarantine
+# ---------------------------------------------------------------------------
+
+
+def quarantined(rows: Iterable[Mapping[str, Any]]) -> dict[str, Trust]:
+    """The quarantined functions among ``rows`` (function rows), by name, for their stored versions."""
+    ids = sorted(
+        {
+            int(row["function_id"])
+            for row in rows
+            if not row.get("is_primitive") and row.get("function_id") is not None
+        },
+    )
+    if not ids:
+        return {}
+    marked = db.query(
+        "SELECT function_id FROM function_trust WHERE state = ?"
+        f" AND function_id IN ({', '.join('?' for _ in ids)})",
+        [QUARANTINED, *ids],
+    )
+    found: dict[str, Trust] = {}
+    for row in marked:
+        current = trust(int(row["function_id"]))
+        if current is not None and current.state == QUARANTINED:
+            found[current.name] = current
+    return found
+
+
+def hidden_warning(hidden: Mapping[str, Trust]) -> str:
+    """The warning a loaded search, list or filter carries for the quarantined functions it left out."""
+    listed = "; ".join(
+        f"{name} (last failure: {hidden[name].last_failure})" for name in sorted(hidden)
+    )
+    return (
+        f"Left out {len(hidden)} stored function(s) that raised when last reused and "
+        f"wait for repair, so they are not callable here: {listed}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Observing calls
 # ---------------------------------------------------------------------------
 
@@ -401,7 +445,9 @@ __all__ = [
     "bind_arguments",
     "enabled",
     "failure_reason",
+    "hidden_warning",
     "input_hash",
+    "quarantined",
     "record",
     "reset",
     "trust",
