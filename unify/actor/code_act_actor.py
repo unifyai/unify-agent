@@ -1292,6 +1292,12 @@ def _build_storage_tools(
 # then reads the trajectory as one finished piece of work, not as an interrupted one.
 SESSION_ENDED = "session ended"
 
+# What a persistent session's result() returns when it is ended by a stop
+# (unify/common/async_tool_loop.py), and what the review reads under
+# UNIFY_OUTCOME when the agent's last reply had no text.
+_STOPPED_NOTICE = "processed stopped early, no result"
+_EMPTY_REPLY = "(the agent's last reply had no text)"
+
 # The largest admission verdict read; anything bigger is not a verdict.
 _STORE_ADMISSION_MAX_BYTES = 65536
 
@@ -1303,6 +1309,31 @@ def _store_admission_path() -> str:
     return str(SETTINGS.UNIFY_STORE_ADMISSION or "").strip()
 
 
+def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
+    """The admission verdict object at *path*, or ``None`` and why there is none."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(_STORE_ADMISSION_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None, f"no admission verdict at {path}"
+    except OSError as exc:
+        return None, f"admission verdict unreadable: {type(exc).__name__}: {exc}"
+    if len(raw) > _STORE_ADMISSION_MAX_BYTES:
+        return None, "admission verdict larger than 64 KiB"
+    try:
+        verdict = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"admission verdict is not JSON: {type(exc).__name__}"
+    if not isinstance(verdict, dict):
+        return None, "admission verdict is not a JSON object"
+    return verdict, ""
+
+
+def _admission_why(verdict: dict) -> str:
+    why = verdict.get("reason")
+    return f" ({str(why)[:200]})" if why else ""
+
+
 def _read_store_admission(path: str) -> tuple[bool, str]:
     """Whether an external check of the session's outcome admits its review.
 
@@ -1311,36 +1342,30 @@ def _read_store_admission(path: str) -> tuple[bool, str]:
     not an object, or has any other ``admit`` -- does not admit (fail-closed).
     Returns ``(admitted, reason)``; the reason names what was found.
     """
-    try:
-        with open(path, "rb") as fh:
-            raw = fh.read(_STORE_ADMISSION_MAX_BYTES + 1)
-    except FileNotFoundError:
-        return False, f"no admission verdict at {path}"
-    except OSError as exc:
-        return False, f"admission verdict unreadable: {type(exc).__name__}: {exc}"
-    if len(raw) > _STORE_ADMISSION_MAX_BYTES:
-        return False, "admission verdict larger than 64 KiB"
-    try:
-        verdict = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        return False, f"admission verdict is not JSON: {type(exc).__name__}"
-    if not isinstance(verdict, dict):
-        return False, "admission verdict is not a JSON object"
-    why = verdict.get("reason")
-    why = f" ({str(why)[:200]})" if why else ""
+    verdict, failure = _load_store_admission(path)
+    if verdict is None:
+        return False, failure
+    why = _admission_why(verdict)
     if verdict.get("admit") is True:
         return True, f"admitted{why}"
     return False, f"not admitted{why}"
 
 
-def _storage_review_outcome_note() -> str:
-    """Hook for the session's checked outcome in a forked storage review.
+def _storage_review_outcome_note(
+    outcome: Optional[dict] = None,
+    *,
+    lessons: bool = False,
+) -> str:
+    """The storage review's section on the session's checked outcome.
 
-    An outcome channel (whether the environment judged the task a success,
-    and why) will fill this in; until then it returns ``""`` and the forked
-    review sees only the conversation and its final result.
+    Filled from the outcome the environment posted (``UNIFY_OUTCOME``,
+    :mod:`unify.outcome`) and, for a review of a failed run that may record
+    only lessons (``UNIFY_REVIEW_FAILED=lessons``), the rule for it. Empty
+    when there is neither, so the review is then the shipped text.
     """
-    return ""
+    from unify import outcome as outcome_mod
+
+    return outcome_mod.render(outcome, lessons=lessons)
 
 
 _REVIEW_FORK_ROLE = (
@@ -1435,6 +1460,7 @@ def _start_storage_review_fork(
     tools: Dict[str, Callable],
     message: str,
     parent_lineage: list[str] | None,
+    mask_rules: Optional[Dict[str, str]] = None,
 ) -> "AsyncToolLoopHandle":
     """Start the storage review as a fork of the session's conversation.
 
@@ -1459,11 +1485,17 @@ def _start_storage_review_fork(
     # calls; the review's variant over the task's tools is not in the list.
     review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
 
+    opts: dict = {"mask_rule": _REVIEW_FORK_MASK_RULE}
+    if mask_rules:
+        # A lessons-only review: the function writes the list advertises are
+        # refused with their own rule, not the fork's.
+        opts["mask_rules"] = dict(mask_rules)
+
     def _review_policy(step: int, visible: Dict[str, Any]):
         return (
             first_choice if step == 0 else "auto",
             visible,
-            {"mask_rule": _REVIEW_FORK_MASK_RULE},
+            dict(opts),
         )
 
     return start_async_tool_loop(
@@ -1494,8 +1526,15 @@ def _start_storage_check_loop(
     proactive_summaries: list[str] | None = None,
     live_session: bool = False,
     fork_source: dict | None = None,
+    outcome: dict | None = None,
+    lessons: bool = False,
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
+
+    *outcome* is the session's checked outcome (``UNIFY_OUTCOME``), shown in
+    its own section before the final result. With *lessons* the run failed
+    and the review may record only lessons: the function writes are not
+    offered (refused by rule in a fork) and the prompt says why.
 
     With *fork_source* (see :func:`_review_fork_source`) the review is a fork
     of the session's own conversation, and the rulebook arrives as one
@@ -1527,6 +1566,14 @@ def _start_storage_check_loop(
         ask_tools=ask_tools,
         completed_tool_metadata=completed_tool_metadata,
     )
+    lesson_rules: Dict[str, str] = {}
+    if lessons:
+        from unify import outcome as outcome_mod
+
+        for name in outcome_mod.LESSON_REFUSED_TOOLS:
+            tools.pop(name, None)
+            lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
+    outcome_note = _storage_review_outcome_note(outcome, lessons=lessons)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -1706,11 +1753,12 @@ def _start_storage_check_loop(
                 f"{stop_context_section}"
                 f"{proactive_storage_section}"
                 f"{_storage_needs_repair_note()}"
-                f"{_storage_review_outcome_note()}"
+                f"{outcome_note}"
                 f"{result_header}"
                 f"{original_result}"
             ),
             parent_lineage=parent_lineage,
+            mask_rules=lesson_rules or None,
         )
 
     # Static doctrine first, volatile trajectory last: every storage loop
@@ -1734,6 +1782,7 @@ def _start_storage_check_loop(
         f"{_storage_needs_repair_note()}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
+        f"{outcome_note}"
         f"{result_header}"
         f"{original_result}"
     )
@@ -1941,6 +1990,19 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._latest_turn_response: str = ""
         self._reviewed_tool_msg_count: int = 0
 
+        # UNIFY_OUTCOME: the environment's checked outcome for this session,
+        # posted under ``outcome_session_id`` (unify/outcome.py), and the
+        # agent's replies it is read against. Off, none of this is touched.
+        self.outcome_session_id: Optional[str] = None
+        self._outcome: Optional[dict] = None
+        self._last_reply: Optional[str] = None
+        self._reply_at_outcome: Optional[str] = None
+        from unify import outcome as outcome_mod
+
+        if outcome_mod.enabled():
+            self.outcome_session_id = uuid.uuid4().hex
+            outcome_mod.register(self.outcome_session_id, self)
+
         # Start the two-phase lifecycle manager.
         self._lifecycle_task = asyncio.create_task(self._run_lifecycle())
 
@@ -1984,6 +2046,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         try:
             while True:
                 notif = await source.next_notification()
+                if (
+                    self.outcome_session_id is not None
+                    and isinstance(notif, dict)
+                    and notif.get("type") == "response"
+                ):
+                    self._last_reply = str(notif.get("content") or "")
                 await self._notification_q.put(notif)
                 if (
                     self._turn_reviews_enabled
@@ -1995,6 +2063,46 @@ class _StorageCheckHandle(SteerableToolHandle):
             pass
         except Exception:
             pass
+
+    def receive_outcome(self, outcome: dict) -> None:
+        """Take the session's checked outcome (see :func:`unify.outcome.post`).
+
+        The agent's latest reply is kept with it: an environment posts the
+        outcome once the task is over and before any closing message, so that
+        reply is the one the task ended on, and the review reads it as the
+        final result. The latest outcome wins; once the session has ended it
+        is too late and the outcome is refused.
+        """
+        from unify import outcome as outcome_mod
+
+        if self._task_done_event.is_set():
+            raise outcome_mod.OutcomeError(
+                "the session has already ended; its review has started",
+            )
+        self._outcome = dict(outcome)
+        self._reply_at_outcome = self._last_reply
+        logger.info(
+            "StorageCheck outcome received: solved="
+            f"{outcome.get('solved')} score={outcome.get('score')} "
+            f"source={outcome.get('source')}",
+        )
+
+    def _review_final_result(self) -> str:
+        """The "Final Result" the storage review reads.
+
+        As shipped it is the session's result, which for a persistent
+        session ended by a stop is the loop's stop notice. With
+        ``UNIFY_OUTCOME`` it is the agent's last reply before the outcome
+        arrived, or, with no outcome, its last reply in place of that notice.
+        """
+        result = str(self._original_result)
+        if self.outcome_session_id is None:
+            return result
+        if self._reply_at_outcome is not None:
+            return self._reply_at_outcome or _EMPTY_REPLY
+        if result == _STOPPED_NOTICE and self._last_reply is not None:
+            return self._last_reply or _EMPTY_REPLY
+        return result
 
     def _note_turn_boundary(self, latest_response: str) -> None:
         """Schedule a mid-session storage review for a completed turn.
@@ -2318,9 +2426,24 @@ class _StorageCheckHandle(SteerableToolHandle):
             # With an admission file configured, the review runs only when an
             # external check of the session's outcome admits it, read now that
             # the session has ended; anything else skips it.
+            # UNIFY_REVIEW_FAILED=lessons adds one admitting verdict,
+            # ``{"admit": "lessons"}``, and a failed checked outcome
+            # (UNIFY_OUTCOME) without an admission file: both review the run
+            # for lessons only, with no function writes.
+            from unify import outcome as outcome_mod
+
+            lessons_mode = outcome_mod.review_failed_mode() == "lessons"
+            lessons = False
             admission_path = _store_admission_path()
             if admission_path:
                 admitted, admission_reason = _read_store_admission(admission_path)
+                if not admitted and lessons_mode:
+                    verdict, _failure = _load_store_admission(admission_path)
+                    if verdict is not None and verdict.get("admit") == "lessons":
+                        admitted, lessons = True, True
+                        admission_reason = (
+                            f"admitted for failure lessons{_admission_why(verdict)}"
+                        )
                 if not admitted:
                     logger.info(f"StorageCheck skipped: {admission_reason}")
                     await self._notification_q.put(
@@ -2331,6 +2454,17 @@ class _StorageCheckHandle(SteerableToolHandle):
                     )
                     return
                 logger.info(f"StorageCheck {admission_reason}")
+            if (
+                lessons_mode
+                and self._outcome is not None
+                and self._outcome.get("solved") is False
+            ):
+                lessons = True
+            if lessons:
+                logger.info(
+                    "StorageCheck reviewing a failed run for lessons only: "
+                    "function writes refused",
+                )
 
             self._phase = "storage"
 
@@ -2395,11 +2529,13 @@ class _StorageCheckHandle(SteerableToolHandle):
                     ask_tools=ask_tools,
                     completed_tool_metadata=completed_tool_metadata,
                     actor=self._actor,
-                    original_result=str(self._original_result),
+                    original_result=self._review_final_result(),
                     parent_lineage=_sc_parent_lineage,
                     stop_reason=self._stop_reason,
                     proactive_summaries=proactive_summaries or None,
                     fork_source=fork_source,
+                    outcome=self._outcome,
+                    lessons=lessons,
                 )
 
                 if storage_handle is None:

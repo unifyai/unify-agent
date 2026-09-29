@@ -307,5 +307,5 @@ def test_the_review_falls_back_and_says_why(switches, case, reason):
         assert reason in why
 
 
-def test_the_outcome_hook_adds_nothing_yet():
+def test_the_outcome_hook_adds_nothing_without_an_outcome():
     assert caa._storage_review_outcome_note() == ""

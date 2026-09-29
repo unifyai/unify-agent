@@ -170,6 +170,20 @@ class ProductionSettings(BaseSettings):
     # history changed since its last request, the review runs as shipped and
     # the log says why. Off: as shipped.
     UNIFY_REVIEW_FORK: bool = False
+    # Take the session's checked outcome from the environment (unify/outcome.py:
+    # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
+    # ``unify act --jsonl``), held in memory, never in a file. The storage review
+    # then reads it in a section marked as the checker's verdict, not the
+    # agent's, and its "Final Result" is the agent's last reply before the
+    # outcome arrived instead of the stop notice of a persistent session.
+    # Off: no outcome is taken and the review is as shipped.
+    UNIFY_OUTCOME: bool = False
+    # ``lessons``: a run whose outcome says it failed (``solved`` false, with
+    # UNIFY_OUTCOME), or whose admission verdict is ``{"admit": "lessons"}``,
+    # is reviewed with function writes refused and guidance writes allowed,
+    # to record what went wrong. An admission verdict of false still skips the
+    # review. Empty: failed runs are reviewed, or skipped, as shipped.
+    UNIFY_REVIEW_FAILED: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Session Transcripts
@@ -253,6 +267,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_TRANSCRIPTS",
+        "UNIFY_OUTCOME",
         mode="before",
     )
     @classmethod
@@ -265,6 +280,16 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "resolve"):
             raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_REVIEW_FAILED", mode="before")
+    @classmethod
+    def parse_review_failed(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "lessons"):
+            raise ValueError(
+                f"UNIFY_REVIEW_FAILED must be empty or 'lessons', not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
