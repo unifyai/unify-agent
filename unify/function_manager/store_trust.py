@@ -18,7 +18,7 @@ This switch keeps a trust record per stored function in ``function_trust`` and u
 - **quarantine**: a quarantined function is left out of the searches, lists and filters that load functions into the sandbox, with a
   warning naming it and its last failure, the way ``UNIFY_SEARCH_SKIP_UNLOADABLE`` leaves out a row that
   cannot load. It stays in the store, and the reads that return rows only (the storage review's) still
-  show it, so it can be repaired;
+  show it, so it can be repaired; the next storage review's prompt lists it as needing repair;
 - **re-checks**: with a ``store_verify`` verifier (``UNIFY_STORE_VERIFY``), a reuse of a function on
   probation or trusted is preceded, with probability ``1/2**k`` after ``k`` consecutive clean uses (``k``
   capped at 6), by a run in a fresh world, drawn from a seeded RNG and taken from the same per-process run
@@ -37,7 +37,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Any, Iterable, List, Mapping, Optional, Sequence
 
 from unify import db
 
@@ -64,6 +64,9 @@ MAX_BACKOFF = 6
 
 RECHECK_RESERVE = 2
 """Run checks of the process's ``store_verify`` budget a re-check never takes: the storage review's."""
+
+MAX_REPAIR_LISTED = 10
+"""Quarantined functions the storage review's note lists by name."""
 
 _rng: random.Random = random.Random(0)
 _POSITIONAL = re.compile(r"^_\d+$")
@@ -472,6 +475,45 @@ def hidden_warning(hidden: Mapping[str, Trust]) -> str:
     )
 
 
+def needs_repair() -> List[Trust]:
+    """Every function quarantined in its stored version, most recently updated first."""
+    marked = db.query(
+        "SELECT function_id FROM function_trust WHERE state = ?"
+        " ORDER BY updated_at DESC, function_id",
+        (QUARANTINED,),
+    )
+    found = []
+    for row in marked:
+        current = trust(int(row["function_id"]))
+        if current is not None and current.state == QUARANTINED:
+            found.append(current)
+    return found
+
+
+def needs_repair_note() -> str:
+    """The storage review's list of quarantined functions; empty while the switch is off or none is."""
+    if not enabled():
+        return ""
+    broken = needs_repair()
+    if not broken:
+        return ""
+    lines = [
+        f"- `{t.name}`: {t.failures} failure(s) after {t.passes} pass(es); "
+        f"last failure: {t.last_failure}"
+        for t in broken[:MAX_REPAIR_LISTED]
+    ]
+    if len(broken) > MAX_REPAIR_LISTED:
+        lines.append(f"- and {len(broken) - MAX_REPAIR_LISTED} more")
+    return (
+        "## Needs Repair\n\n"
+        "These stored functions raised when they were last reused, so the "
+        "session's searches leave them out until they change. Repair one when "
+        "the trajectory or its failure shows the fix (patch or overwrite it; a "
+        "changed function starts again on probation), delete it if it cannot "
+        "work, or leave it:\n" + "\n".join(lines) + "\n\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Observing calls
 # ---------------------------------------------------------------------------
@@ -560,6 +602,8 @@ __all__ = [
     "failure_reason",
     "hidden_warning",
     "maybe_recheck",
+    "needs_repair",
+    "needs_repair_note",
     "input_hash",
     "quarantined",
     "recheck_probability",

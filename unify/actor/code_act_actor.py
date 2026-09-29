@@ -644,6 +644,13 @@ def _function_patch_enabled() -> bool:
     return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
 
 
+def _storage_needs_repair_note() -> str:
+    """Quarantined functions for the review to repair (``UNIFY_STORE_TRUST``); else empty."""
+    from unify.function_manager import store_trust
+
+    return store_trust.needs_repair_note()
+
+
 def _storage_update_first_note() -> str:
     """The review's update-before-add order, while ``UNIFY_FUNCTION_PATCH`` is on; else empty."""
     if not _function_patch_enabled():
@@ -1469,6 +1476,7 @@ def _start_storage_check_loop(
         f"{inner_storage_section}"
         f"{completed_tools_section}"
         f"{proactive_storage_section}"
+        f"{_storage_needs_repair_note()}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
         f"{result_header}"
