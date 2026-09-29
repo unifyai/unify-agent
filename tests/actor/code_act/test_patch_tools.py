@@ -128,6 +128,7 @@ async def _act_tools(monkeypatch, **act_kwargs) -> set:
 
     def fake_loop(client, message, tools, **kwargs):
         captured["tools"] = dict(tools)
+        captured["policy"] = kwargs.get("tool_policy")
         handle = MagicMock()
         handle.result = AsyncMock(return_value="done")
         handle.next_notification = AsyncMock(
@@ -183,3 +184,22 @@ async def test_an_admission_gated_actor_cannot_patch(patch_on, monkeypatch, tmp_
     assert not PATCH_TOOLS & set(captured["tools"])
     # The review that runs once the run is admitted still gets them.
     assert PATCH_TOOLS <= _storage_tool_names()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_under_cache_discipline_a_gated_actor_lists_the_patch_tools_masked(
+    patch_on,
+    monkeypatch,
+    tmp_path,
+):
+    """The session's one tool list keeps them; admission refuses a call by rule."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", str(tmp_path / "v.json"))
+    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    captured = await _act_tools(monkeypatch, can_store=True)
+    assert PATCH_TOOLS <= set(captured["tools"])
+    searched = ["FunctionManager_search_functions", "GuidanceManager_search"]
+    _mode, visible, opts = captured["policy"](5, dict(captured["tools"]), searched)
+    assert not PATCH_TOOLS & set(visible)
+    for name in PATCH_TOOLS:
+        assert opts["mask_rules"][name] == code_act_actor._ADMISSION_MASK_RULE

@@ -217,7 +217,16 @@ def _build_discovery_parallel_mutator() -> Any:
 
             if forced_tool_choice_in_fallback() != "required":
                 return completion
-        tool_names = _tool_names_from_openai_tools(context.request_kw.get("tools"))
+        # UNIFY_CACHE_DISCIPLINE sends the session's whole tool list on every
+        # turn; the tools the turn allows then say whether it is a gate turn.
+        from unify.common._async_tool.cache_discipline import turn_available_tools
+
+        available = turn_available_tools()
+        tool_names = (
+            sorted(available)
+            if available is not None
+            else _tool_names_from_openai_tools(context.request_kw.get("tools"))
+        )
         if not _is_discovery_gate_schema(tool_names):
             return completion
 
@@ -335,10 +344,72 @@ def _default_tool_policy(
             gated.update(_discovery_tools_for_prefix(filtered, "GuidanceManager_"))
 
         if gated:
-            return "required", gated, {"eager": True}
+            opts: dict = {"eager": True}
+            # Under UNIFY_CACHE_DISCIPLINE the other tools stay in the request
+            # and a call to one is refused with this rule.
+            from unify.common._async_tool import cache_discipline
+
+            if cache_discipline.enabled():
+                required = ", ".join(f"`{name}`" for name in gated)
+                opts["mask_rule"] = (
+                    f"the libraries are searched first -- call {required} "
+                    "before any other tool"
+                )
+            return "required", gated, opts
         return "auto", filtered
 
     return _policy
+
+
+_ADMISSION_MASK_RULE = (
+    "the function and guidance libraries are read-only during this task; "
+    "what is worth keeping is stored after the task, once its outcome has "
+    "been checked"
+)
+
+
+def _with_mask_rules(
+    policy: ToolPolicyFn,
+    rules: Dict[str, str],
+) -> ToolPolicyFn:
+    """Wrap *policy* so its result names *rules* for the tools it withholds.
+
+    Used only under UNIFY_CACHE_DISCIPLINE, where a withheld tool stays in the
+    request and the loop refuses a call to it with its rule.
+    """
+    try:
+        _positional = sum(
+            1
+            for p in inspect.signature(policy).parameters.values()
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        )
+    except (TypeError, ValueError):
+        _positional = 2
+
+    def _masked(step: int, tools: Dict[str, Any], called_tools: list[str]):
+        result = (
+            policy(step, tools, called_tools)
+            if _positional >= 3
+            else policy(step, tools)
+        )
+        opts: dict = {}
+        if len(result) >= 3:
+            opts = (
+                dict(result[2])
+                if isinstance(result[2], dict)
+                else {"eager": bool(result[2])}
+            )
+        merged = dict(opts.get("mask_rules") or {})
+        for name, rule in rules.items():
+            merged.setdefault(name, rule)
+        opts["mask_rules"] = merged
+        return result[0], result[1], opts
+
+    return _masked
 
 
 # ---------------------------------------------------------------------------
@@ -4290,7 +4361,11 @@ class CodeActActor(BaseCodeActActor):
             "GuidanceManager_delete_guidance",
         }
 
-        def _filter_tools(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
+        def _filter_tools(
+            tool_dict: Dict[str, Any],
+            *,
+            withhold_admission: bool = True,
+        ) -> Dict[str, Any]:
             """Apply static per-call filters (can_compose, can_store)."""
             out = dict(tool_dict)
             if not effective_can_compose:
@@ -4301,12 +4376,13 @@ class CodeActActor(BaseCodeActActor):
             if not effective_can_store:
                 for name in _store_only_tools:
                     out.pop(name, None)
-            if admission_gated:
+            if admission_gated and withhold_admission:
                 for name in _admission_withheld_tools:
                     out.pop(name, None)
             return out
 
-        base_tools = _filter_tools(self.get_tools("act"))
+        _act_tools = self.get_tools("act")
+        base_tools = _filter_tools(_act_tools)
 
         # When execute_code is masked (can_compose=False), strip any
         # execute_code references from execute_function's docstring so the
@@ -4443,6 +4519,23 @@ class CodeActActor(BaseCodeActActor):
             client.generate = _generate_with_discovery_mutator  # type: ignore[method-assign]
 
         tools = dict(base_tools)
+
+        # UNIFY_CACHE_DISCIPLINE: the tool list is fixed per session, so the
+        # library writes admission withholds stay in it, masked: a call to one
+        # is refused with the rule, and the review that forks this session
+        # after an admitted outcome has them in the same list.
+        from unify.common._async_tool import cache_discipline
+
+        if admission_gated and cache_discipline.enabled():
+            for name, tool in _filter_tools(
+                _act_tools,
+                withhold_admission=False,
+            ).items():
+                tools.setdefault(name, tool)
+            tool_policy = _with_mask_rules(
+                tool_policy,
+                {name: _ADMISSION_MASK_RULE for name in _admission_withheld_tools},
+            )
 
         # Build event bus callbacks for clarification and notification tools
         # (the loop creates the tools; we just provide the event hooks).

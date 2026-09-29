@@ -152,6 +152,15 @@ class ProductionSettings(BaseSettings):
     # with probability 1/2^k after k clean uses
     # (unify/function_manager/store_trust.py). Empty keeps no record.
     UNIFY_STORE_TRUST: str = ""
+    # Keep every tool loop's requests a growing, byte-stable prefix, so the
+    # provider's prompt cache is reused call after call: the tool list is
+    # computed once per session and a tool the phase does not allow is
+    # refused by rule instead of removed; messages already sent are never
+    # edited; compression asks for its summary as a fork of the conversation;
+    # a per-session cache affinity key is passed when the LLM client takes
+    # one; and each call logs how much of its input came from the cache
+    # (unify/common/_async_tool/cache_discipline.py). Off: as shipped.
+    UNIFY_CACHE_DISCIPLINE: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -197,6 +206,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_FUNCTION_PATCH",
+        "UNIFY_CACHE_DISCIPLINE",
         mode="before",
     )
     @classmethod
