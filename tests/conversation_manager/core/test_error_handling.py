@@ -160,6 +160,7 @@ class TestStateRecovery:
     """Tests for state recovery from abnormal event sequences."""
 
     @pytest.mark.asyncio
+    @pytest.mark.llm_call
     async def test_duplicate_message_received(self, initialized_cm):
         """Duplicate message events should be handled (added to thread twice)."""
         cm = initialized_cm
@@ -177,6 +178,7 @@ class TestStateRecovery:
         assert len(matching) == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.llm_call
     async def test_actor_result_for_nonexistent_action(self, initialized_cm):
         """ActorResult for an action not in in_flight_actions should not crash."""
         cm = initialized_cm

@@ -130,6 +130,7 @@ class TestBrainMessagesGrowth:
     """Tests for brain message growth during LLM runs."""
 
     @pytest.mark.asyncio
+    @pytest.mark.llm_call
     async def test_brain_messages_grow_by_two_per_llm_run(self, initialized_cm):
         """Each LLM run adds 2 messages: input + assistant response."""
         initial_len = len(initialized_cm.cm.brain_messages)
@@ -144,6 +145,7 @@ class TestBrainMessagesGrowth:
         assert new_len == initial_len + 2
 
     @pytest.mark.asyncio
+    @pytest.mark.llm_call
     async def test_brain_messages_format(self, initialized_cm):
         """Brain messages have correct format."""
         event = UnifyMessageReceived(
