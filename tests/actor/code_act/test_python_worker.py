@@ -276,6 +276,39 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
 
 @needs_bwrap
 @pytest.mark.asyncio
+async def test_proxy_mode_gives_the_worker_only_the_proxy_port(
+    worker_world,
+    monkeypatch,
+):
+    proxy, proxy_port = serve(b"from proxy\n")
+    other, other_port = serve(b"other service\n")
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "proxy")
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", proxy_port)
+    connect = (
+        "import socket\n"
+        "try:\n"
+        "    s = socket.create_connection(('127.0.0.1', {port}), timeout=5)\n"
+        "    print('got', s.recv(64).decode().strip())\n"
+        "except OSError as e:\n"
+        "    print('refused:', type(e).__name__)"
+    )
+    ex, _ = executor_with_fakes()
+    try:
+        out, res = await run(ex, connect.format(port=proxy_port))
+        assert out == "got from proxy\n", res["error"]
+        out, _ = await run(ex, connect.format(port=other_port))
+        assert out.startswith("refused:")
+        # The channel to the harness still works through the forwarder.
+        _, res = await run(ex, "(await primitives.files.search('p', limit=1))['hits']")
+        assert res["result"] == ["p-0"]
+    finally:
+        proxy.close()
+        other.close()
+        await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
 async def test_primitives_run_in_the_harness_through_the_proxy(worker_world):
     ex, calls = executor_with_fakes()
     try:
@@ -506,6 +539,7 @@ async def test_output_display_and_clarification_cross(worker_world):
 async def test_steering_probes_and_memoisation_reach_the_worker(worker_world):
     from unify.function_manager.steering import (
         InterruptionRequest,
+        Patch,
         SteeringSession,
         use_session,
     )
@@ -532,6 +566,20 @@ async def test_steering_probes_and_memoisation_reach_the_worker(worker_world):
             _, res = await run(ex, "await primitives.files.search('z')")
         assert res["result"] == {"status": "stopped", "reason": "enough"}
         assert not any(c[1] == "z" for c in calls)
+        # A correction raised by a probe in the worker unwinds the cell there,
+        # is spliced here, and the patched cell runs again in the worker.
+        patching = SteeringSession()
+        patching.interruption = InterruptionRequest(
+            reason="use the new step",
+            patches=[Patch("step", "async def step():\n    return 'patched'\n")],
+        )
+        with use_session(patching):
+            _, res = await run(
+                ex,
+                "async def step():\n    return 'original'\nawait step()",
+            )
+        assert res["error"] is None, res["error"]
+        assert res["result"] == "patched" and patching.retries == 1
     finally:
         await ex.close()
 
