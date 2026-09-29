@@ -81,6 +81,9 @@ class ProductionSettings(BaseSettings):
     # network once its weights (134 MB) are downloaded, but reads only English
     # and the first 512 tokens of each text.
     UNIFY_LOCAL_EMBEDDINGS: bool = False
+    # The endpoint OpenRouter-style embedding requests are posted to, for
+    # example a proxy that tracks their cost. Empty posts to openrouter.ai.
+    UNIFY_EMBED_URL: str = ""
     # Leave a stored function that cannot be loaded out of a search, list or
     # filter that loads its results, naming it in a warning, instead of
     # failing the whole result.
