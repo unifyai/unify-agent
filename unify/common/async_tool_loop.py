@@ -18,13 +18,15 @@ from typing import (
 from ..logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
-from .llm_client import new_llm_client
+from .llm_client import fork_llm_client, new_llm_client
+from ._async_tool import cache_discipline as _cache_discipline
 from ._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from ._async_tool.event_bus_util import to_event_bus
 from ..events.types.tool_loop import ToolLoopKind
 from ._async_tool.loop import ToolLoopRuntimeState, async_tool_loop_inner
 from ._async_tool.propagation_mode import ChatContextPropagation
 from ._async_tool.context_compression import (
+    _COMPRESSED_HEADER,
     _COMPRESSION_SIGNAL,
     CompressionState,
     compress_and_rebuild,
@@ -892,15 +894,26 @@ class AsyncToolLoopHandle(SteerableToolHandle):
             )
 
         n_archived = len(self._client.messages)
-        result = await compress_and_rebuild(
-            self._compression,
-            self._client.messages,
-            self._client.endpoint,
-            dict(cfg["tools"]),
+        forked = (
+            await self._summarise_as_fork(cfg) if _cache_discipline.enabled() else None
         )
+        if forked is not None:
+            restart_messages, restart_tools, restart_message = forked
+            self._client._messages = restart_messages
+        else:
+            result = await compress_and_rebuild(
+                self._compression,
+                self._client.messages,
+                self._client.endpoint,
+                dict(cfg["tools"]),
+            )
+            self._client._messages = result.system_msgs
+            self._client._system_message = None
+            restart_tools = result.tools
+            restart_message = (
+                "Context was compressed. Continue from where you left off."
+            )
 
-        self._client._messages = result.system_msgs
-        self._client._system_message = None
         # A compression rebuild is a deliberate full-cache sacrifice: the
         # transcript it replaces no longer exists, so nothing in the new one
         # was ever dispatched. Reset explicitly rather than relying on the
@@ -908,7 +921,7 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         self._client._sent_watermark = 0
         self._client._sent_watermark_hash = None
         self._runtime_state.message_count_offset += n_archived - len(
-            result.system_msgs,
+            self._client._messages,
         )
 
         outer_handle_container: list = [None]
@@ -927,8 +940,8 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         async def _loop_wrapper():
             return await async_tool_loop_inner(
                 self._client,
-                "Context was compressed. Continue from where you left off.",
-                result.tools,
+                restart_message,
+                restart_tools,
                 lineage=_lineage,
                 interject_queue=self._queue,
                 cancel_event=self._cancel_event,
@@ -954,6 +967,81 @@ class AsyncToolLoopHandle(SteerableToolHandle):
             f"Context compressed (pass #{self._compression.count}), "
             f"archived {n_archived} messages, new loop started.",
         )
+
+    async def _summarise_as_fork(
+        self,
+        cfg: dict,
+    ) -> Optional[tuple[list[dict], dict, str]]:
+        """Under UNIFY_CACHE_DISCIPLINE, compress by forking the conversation.
+
+        The summary request is the last request this loop sent, unchanged,
+        plus one appended instruction, so the provider serves everything but
+        that instruction from its cache. A forced tool choice is sent as
+        ``auto``, since the reply has to be text. The session then restarts
+        from its own system prompt and the summary, with the same tools, so
+        the fixed tool list and the system prompt stay a cached prefix.
+
+        Returns ``(messages, tools, first_message)`` for the restart, or
+        ``None`` -- and logs why -- when there is no recorded request or the
+        fork yields no summary; the caller then compresses as shipped.
+        """
+        label = getattr(self, "_log_label", None) or self._loop_id
+        last = _cache_discipline.last_sent_request(self._client)
+        if last is None or not last.get("messages"):
+            LOGGER.info(
+                f"[{label}] compression fork skipped: no request was recorded; "
+                "compressing as shipped",
+            )
+            return None
+        request: dict[str, Any] = {
+            "messages": [
+                *last["messages"],
+                {
+                    "role": "user",
+                    "content": _cache_discipline.COMPRESSION_FORK_INSTRUCTION,
+                },
+            ],
+            "stateful": False,
+            "return_full_completion": True,
+        }
+        if last.get("tools"):
+            tool_choice = last.get("tool_choice")
+            if _cache_discipline.is_forced_tool_choice(tool_choice):
+                tool_choice = "auto"
+            request["tools"] = last["tools"]
+            request["tool_choice"] = tool_choice
+        if cfg.get("prompt_caching") is not None:
+            request["prompt_caching"] = cfg["prompt_caching"]
+        try:
+            fork = fork_llm_client(self._client, origin="compress_context")
+            completion = await fork.generate(**request)
+            content = completion.choices[0].message.content
+        except Exception as exc:
+            LOGGER.warning(
+                f"[{label}] compression fork failed ({type(exc).__name__}: "
+                f"{exc}); compressing as shipped",
+            )
+            return None
+        summary = _cache_discipline.completion_text(content)
+        if not summary:
+            LOGGER.info(
+                f"[{label}] compression fork returned no summary text; "
+                "compressing as shipped",
+            )
+            return None
+        self._compression.count += 1
+        system = [
+            m
+            for m in (self._client.messages or [])[:1]
+            if isinstance(m, dict) and m.get("role") == "system"
+        ]
+        # TODO(lane-e): once the archived transcript has a stable location,
+        # name it here so the model can read back what the summary left out.
+        restart_message = (
+            f"{_COMPRESSED_HEADER}{summary}\n\n"
+            "Context was compressed. Continue from where you left off."
+        )
+        return system, dict(cfg["tools"]), restart_message
 
     def get_history(self) -> list[dict]:
         """The full LLM conversation history including assistant reasoning,

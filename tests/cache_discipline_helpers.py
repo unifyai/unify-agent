@@ -92,7 +92,10 @@ class Provider:
     async def __call__(self, *, shared_session=None, client=None, **kw):
         self.requests.append(
             copy.deepcopy(
-                {k: kw.get(k) for k in ("messages", "tools", "tool_choice")},
+                {
+                    k: kw.get(k)
+                    for k in ("messages", "tools", "tool_choice", "reasoning_effort")
+                },
             ),
         )
         if not self.replies:
@@ -107,18 +110,24 @@ class Provider:
 def scripted(replies) -> Iterator[Provider]:
     """Install a :class:`Provider` as unillm's transport for the block."""
     import unillm.clients.uni_llm as uni_llm
+    from unillm.settings import SETTINGS as unillm_settings
 
     global _CALL_SEQ
     _CALL_SEQ = itertools.count()
     provider = Provider(replies)
     original = uni_llm._acompletion_with_transient_retry
     old_cache = os.environ.get("UNILLM_CACHE")
+    old_default = unillm_settings.UNILLM_CACHE
     uni_llm._acompletion_with_transient_retry = provider
+    # Clients built inside the scenario (a compactor loop, say) take their
+    # cache mode from unillm's settings; none of them may read a recording.
     os.environ["UNILLM_CACHE"] = "false"
+    unillm_settings.UNILLM_CACHE = False
     try:
         yield provider
     finally:
         uni_llm._acompletion_with_transient_retry = original
+        unillm_settings.UNILLM_CACHE = old_default
         if old_cache is None:
             os.environ.pop("UNILLM_CACHE", None)
         else:
@@ -367,11 +376,40 @@ async def scenario_persist() -> tuple[str, dict, list[dict]]:
     return f"{first['content']}|{second['content']}", counter, provider.requests
 
 
+SUMMARY = "Summary: ran the big code call; next, answer done."
+
+COMPRESS_REPLIES = (
+    lambda: completion(
+        calls=[("execute_code", {"code": "big"})],
+        prompt_tokens=900_000,
+    ),
+    lambda: completion(calls=[("compress_context", {})]),
+    # the summary (a fork) or the compactor's closing reply (as shipped)
+    lambda: completion(content=SUMMARY),
+    lambda: completion(content="done"),
+)
+
+
+async def scenario_compress(replies=COMPRESS_REPLIES) -> tuple[str, dict, list[dict]]:
+    """A context-full turn that compresses, then the answer after the restart."""
+    counter: dict = {}
+    tools = make_tools(counter)
+    with scripted(replies) as provider:
+        result = await _run(
+            new_client(),
+            {"execute_code": tools["execute_code"]},
+            "Do the task.",
+            interrupt_llm_with_interjections=False,
+        )
+    return result, counter, provider.requests
+
+
 SCENARIOS = {
     "gate": scenario_gate,
     "threshold": scenario_threshold,
     "interrupt": scenario_interrupt,
     "persist": scenario_persist,
+    "compress": scenario_compress,
 }
 
 

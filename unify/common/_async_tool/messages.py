@@ -460,13 +460,55 @@ async def generate_with_preprocess(
         client._llm_inflight_since = None
 
 
+_NOT_RECORDED = object()
+
+
+def _record_sent_request(
+    client: Any,
+    patched: Optional[list[dict]],
+    gen_kwargs: dict,
+) -> Any:
+    """Under UNIFY_CACHE_DISCIPLINE, keep what this dispatch sends.
+
+    *patched* is the preprocessed list about to be sent; ``None`` means the
+    client's own transcript, to which ``generate`` prepends the system
+    prompt when no system message is present. Returns what to restore if
+    the dispatch ends without a response (``_NOT_RECORDED`` when off).
+    """
+    from . import cache_discipline
+
+    if not cache_discipline.records_requests():
+        return _NOT_RECORDED
+    if patched is None:
+        patched = list(getattr(client, "messages", None) or [])
+        system = getattr(client, "system_message", None)
+        if system is not None and not any(
+            isinstance(m, dict) and m.get("role") == "system" for m in patched
+        ):
+            patched = [{"role": "system", "content": system}] + patched
+    return cache_discipline.record_sent_request(client, patched, gen_kwargs)
+
+
+def _restore_sent_request(client: Any, previous: Any) -> None:
+    if previous is _NOT_RECORDED:
+        return
+    from . import cache_discipline
+
+    cache_discipline.restore_sent_request(client, previous)
+
+
 async def _generate_with_preprocess_inner(
     client: unillm.AsyncUnify,
     preprocess_msgs: Optional[Callable[[list[dict]], list[dict]]],
     **gen_kwargs,
 ):
     if preprocess_msgs is None:
-        return await maybe_await(client.generate(**gen_kwargs))
+        _previous = _record_sent_request(client, None, gen_kwargs)
+        try:
+            return await maybe_await(client.generate(**gen_kwargs))
+        except BaseException:
+            _restore_sent_request(client, _previous)
+            raise
 
     original_msgs = client.messages  # reference to canonical log
     msgs_copy = copy.deepcopy(original_msgs)
@@ -517,10 +559,15 @@ async def _generate_with_preprocess_inner(
         else suppress()
     )
 
+    _previous = _record_sent_request(client, patched, gen_kwargs)
     with preserve_ctx:
         setattr(client, target_attr, patched)
         try:
-            result = await maybe_await(client.generate(**gen_kwargs))
+            try:
+                result = await maybe_await(client.generate(**gen_kwargs))
+            except BaseException:
+                _restore_sent_request(client, _previous)
+                raise
 
             # Copy whatever the LLM produced back into the canonical log.
             current_msgs = getattr(client, target_attr)

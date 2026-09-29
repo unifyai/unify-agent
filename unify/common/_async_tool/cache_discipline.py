@@ -15,6 +15,10 @@ fixed:
 * **Sent messages are never edited.** Reasoning payloads are not shed when a
   persistent session parks, and a storage review's compaction note no
   longer shortens the turns it covered.
+* **Compression is a fork.** The summary is asked for with the last request
+  sent, unchanged, plus one appended instruction, so it is served from the
+  cache; the session then continues from the summary under the same system
+  prompt and tool list.
 
 The helpers here hold that policy so the loop itself only asks two questions
 per turn: what to advertise, and whether a call is allowed. With the switch
@@ -23,6 +27,7 @@ off none of them is consulted.
 
 from __future__ import annotations
 
+import copy
 import contextvars
 from typing import Any, Iterable, Optional
 
@@ -148,3 +153,75 @@ def masked_tool_refusal(
         "tool that is not allowed yet is refused rather than removed. "
         f"Available now: {listed}."
     )
+
+
+# ── the last request a client sent ─────────────────────────────────────────
+
+_LAST_SENT = "_unify_last_sent_request"
+
+
+def records_requests() -> bool:
+    """Whether dispatches keep a copy of what they send (for a later fork)."""
+    return enabled()
+
+
+def record_sent_request(client: Any, messages: list, gen_kwargs: dict) -> Any:
+    """Keep what one dispatch sends: its messages, tools and tool choice.
+
+    Only these three are kept -- never the call's other keyword arguments,
+    which may carry credentials. Returns the record it replaced, so a
+    dispatch that ends without a response can put it back.
+    """
+    previous = getattr(client, _LAST_SENT, None)
+    setattr(
+        client,
+        _LAST_SENT,
+        {
+            "messages": copy.deepcopy(list(messages)),
+            "tools": copy.deepcopy(gen_kwargs.get("tools")),
+            "tool_choice": copy.deepcopy(gen_kwargs.get("tool_choice")),
+        },
+    )
+    return previous
+
+
+def restore_sent_request(client: Any, previous: Any) -> None:
+    setattr(client, _LAST_SENT, previous)
+
+
+def last_sent_request(client: Any) -> Optional[dict]:
+    """The last request *client* sent through the tool loop, if recorded."""
+    record = getattr(client, _LAST_SENT, None)
+    return record if isinstance(record, dict) else None
+
+
+def is_forced_tool_choice(tool_choice: Any) -> bool:
+    if isinstance(tool_choice, str):
+        return tool_choice.strip().lower() in ("required", "any")
+    return isinstance(tool_choice, dict)
+
+
+COMPRESSION_FORK_INSTRUCTION = (
+    "Context compression: the conversation above is about to be replaced by "
+    "the summary you write now, and you will continue the task from that "
+    "summary alone. Write it as plain text; do not call any tool. Include: "
+    "the task and every requirement, correction or preference the user gave, "
+    "verbatim where the wording matters; what has been done and what was "
+    "found, with the exact names, ids, paths and values the rest of the task "
+    "needs (stored functions and guidance used included); what failed and "
+    "why; the current state; and the next steps. Leave out tool output that "
+    "is no longer needed."
+)
+
+
+def completion_text(content: Any) -> str:
+    """The visible text of a reply's content (a string or content parts)."""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text") or "")
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+    return ""

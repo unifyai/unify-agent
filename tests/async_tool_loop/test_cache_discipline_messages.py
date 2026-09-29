@@ -30,6 +30,10 @@ def _as_bytes(messages: list[dict]) -> list[str]:
 async def test_on_each_request_extends_the_previous_one(monkeypatch, scenario):
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     _result, _counter, requests = await h.SCENARIOS[scenario]()
+    if scenario == "compress":
+        # The session restarts from its summary after the third request; the
+        # restart is checked in test_cache_discipline_compression.py.
+        requests = requests[:3]
     for before, after in zip(requests, requests[1:]):
         sent = _as_bytes(before["messages"])
         assert _as_bytes(after["messages"])[: len(sent)] == sent
