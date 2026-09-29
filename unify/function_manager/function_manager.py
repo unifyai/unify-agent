@@ -1827,33 +1827,10 @@ class FunctionManager(BaseFunctionManager):
             )
             out["run_checks_left"] = 0
             return out
-        entry = {
-            "name": name,
-            "implementation": source,
-            "dependencies": [],
-            "depends_on": depends_on,
-        }
-        fm = self
-
-        def loader(
-            primitives: Any,
-            extra_globals: Optional[Dict[str, Any]] = None,
-        ) -> Callable[..., Any]:
-            scratch = create_execution_globals()
-            for env_name, env_value in dict(extra_globals or {}).items():
-                scratch[env_name] = env_value
-            scratch["primitives"] = primitives
-            fm._inject_dependencies(dict(entry), namespace=scratch, visited={name})
-            fm._create_in_process_callable(dict(entry), namespace=scratch)
-            return scratch[name]
-
-        candidate = store_verify.Candidate(
+        candidate = self._verify_candidate(
             name=name,
             source=source,
-            signature=self._signature_of(source, name),
-            depends_on=tuple(depends_on),
-            effects=tuple(self._candidate_effects(depends_on)),
-            loader=loader,
+            depends_on=depends_on,
         )
         try:
             verdict = store_verify.Verdict.coerce(
@@ -1886,6 +1863,47 @@ class FunctionManager(BaseFunctionManager):
                 "failed on the held-out task; it will not be stored in this form"
             )
         return out
+
+    def _verify_candidate(
+        self,
+        *,
+        name: str,
+        source: str,
+        depends_on: List[str],
+        dependencies: Sequence[str] = (),
+    ) -> Any:
+        """The ``store_verify.Candidate`` a verifier runs: ``source`` loaded as a search loads it, into a
+        scratch namespace whose ``primitives`` the verifier supplies."""
+        from . import store_verify
+
+        entry = {
+            "name": name,
+            "implementation": source,
+            "dependencies": list(dependencies),
+            "depends_on": list(depends_on),
+        }
+        fm = self
+
+        def loader(
+            primitives: Any,
+            extra_globals: Optional[Dict[str, Any]] = None,
+        ) -> Callable[..., Any]:
+            scratch = create_execution_globals()
+            for env_name, env_value in dict(extra_globals or {}).items():
+                scratch[env_name] = env_value
+            scratch["primitives"] = primitives
+            fm._inject_dependencies(dict(entry), namespace=scratch, visited={name})
+            fm._create_in_process_callable(dict(entry), namespace=scratch)
+            return scratch[name]
+
+        return store_verify.Candidate(
+            name=name,
+            source=source,
+            signature=self._signature_of(source, name),
+            depends_on=tuple(depends_on),
+            effects=tuple(self._candidate_effects(list(depends_on))),
+            loader=loader,
+        )
 
     @staticmethod
     def _signature_of(source: str, name: str) -> str:

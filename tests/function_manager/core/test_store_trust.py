@@ -662,3 +662,260 @@ def test_switch_off_loads_a_quarantined_function_as_shipped(
     for read, seen in with_record.items():
         assert seen["callables"] == ["divide", "double"], read
         assert seen["warnings"] == [], read
+
+
+# --------------------------------------------------------------------------- #
+#  Re-checks in a fresh world, on a backoff                                    #
+# --------------------------------------------------------------------------- #
+
+
+class RecordingRng:
+    """A seeded ``random.Random`` that remembers every draw."""
+
+    def __init__(self, seed=None, values=None):
+        import random
+
+        self._random = random.Random(seed)
+        self._values = list(values or [])
+        self.draws: list[float] = []
+
+    def random(self) -> float:
+        value = self._values.pop(0) if self._values else self._random.random()
+        self.draws.append(value)
+        return value
+
+
+class FreshWorldVerifier:
+    """Runs a candidate against its own fake phone, as an environment's fresh copy would."""
+
+    def __init__(self):
+        self.available = True
+        self.outcome = True
+        self.raises = False
+        self.runs: list[dict] = []
+
+    def held_out(self, name):
+        return {
+            "available": self.available,
+            "reason": "" if self.available else "no sibling task",
+            "credential_params": ["access_token"],
+        }
+
+    def run(self, candidate, call_kwargs):
+        if self.raises:
+            raise RuntimeError("the world could not be copied")
+        fn = candidate.load(SimpleNamespace(phone=FakePhone()), None)
+        value = fn(**call_kwargs)
+        self.runs.append(
+            {"name": candidate.name, "kwargs": dict(call_kwargs), "value": value},
+        )
+        return {"ok": self.outcome, "reason": "" if self.outcome else "wrong outcome"}
+
+
+@pytest.fixture
+def rng():
+    recording = RecordingRng(seed=7)
+    previous = store_trust.set_rng(recording)
+    yield recording
+    store_trust.set_rng(previous)
+
+
+@pytest.fixture
+def enable_verify(monkeypatch, tmp_path):
+    """Set UNIFY_STORE_VERIFY (after the test stored its functions: the gate would refuse them)."""
+    import sys
+    import types
+
+    from unify.function_manager import store_verify
+
+    verifier = FreshWorldVerifier()
+
+    def enable() -> FreshWorldVerifier:
+        module = types.ModuleType("fresh_world_verifier")
+        module.make = lambda: verifier
+        monkeypatch.setitem(sys.modules, "fresh_world_verifier", module)
+        monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", str(tmp_path / "v.json"))
+        monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "fresh_world_verifier:make")
+        store_verify.reset()
+        return verifier
+
+    yield enable
+    store_verify.reset()
+
+
+def test_the_recheck_probability_halves_per_clean_use_and_stops_at_1_in_64():
+    assert [store_trust.recheck_probability(k) for k in range(9)] == [
+        1.0,
+        0.5,
+        0.25,
+        0.125,
+        0.0625,
+        0.03125,
+        0.015625,
+        0.015625,
+        0.015625,
+    ]
+
+
+@_handle_project
+def test_the_first_reuse_is_always_rechecked_and_a_pass_counts(
+    trust_on,
+    rng,
+    enable_verify,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    rng._values = [0.999]  # k = 0: due whatever the draw
+    assert _load(fm)["double"](5) == 10
+    assert verifier.runs == [{"name": "double", "kwargs": {"x": 5}, "value": 10}]
+    t = _trust(fm, "double")
+    # the check and the call itself: two passes over one input
+    assert (t.passes, t.distinct_inputs, t.clean_uses) == (2, 1, 2)
+
+
+@_handle_project
+def test_a_recheck_is_due_exactly_when_the_draw_is_under_1_over_2_to_the_k(
+    trust_on,
+    rng,
+    enable_verify,
+    monkeypatch,
+):
+    from unify.function_manager import store_verify
+
+    monkeypatch.setattr(store_verify, "MAX_RUN_CHECKS", 1000)
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    double = _load(fm)["double"]
+    expected_checks = 0
+    for x in range(40):
+        k = _trust(fm, "double").clean_uses
+        before = len(rng.draws)
+        double(x)
+        assert len(rng.draws) == before + 1  # one draw per reuse
+        due = rng.draws[-1] < 0.5 ** min(k, 6)
+        expected_checks += due
+        assert len(verifier.runs) == expected_checks, (x, k, rng.draws[-1])
+    # the seed gives both outcomes, and the backoff makes checks rare
+    assert 2 <= expected_checks < 10
+
+
+@_handle_project
+def test_a_failed_recheck_quarantines_but_the_call_still_runs(
+    trust_on,
+    rng,
+    enable_verify,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    verifier.outcome = False
+    assert _load(fm)["double"](2) == 4
+    t = _trust(fm, "double")
+    assert (t.state, t.failures, t.passes) == ("quarantined", 1, 1)
+    assert t.last_failure == "fresh-world check failed: wrong outcome"
+
+
+@_handle_project
+def test_a_quarantined_function_is_not_rechecked(trust_on, rng, enable_verify):
+    fm = _FM()
+    fm.add_functions(implementations=[DIVIDE])
+    divide = _load(fm)["divide"]  # loaded before the quarantine, so still callable
+    with pytest.raises(ZeroDivisionError):
+        divide(1, 0)
+    verifier = enable_verify()
+    assert divide(4, 2) == 2.0
+    assert rng.draws == [] and verifier.runs == []
+
+
+@_handle_project
+def test_rechecks_never_take_the_reviews_last_two_run_checks(
+    trust_on,
+    rng,
+    enable_verify,
+):
+    from unify.function_manager import store_verify
+
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    assert store_verify.run_checks_left() == 4
+    store_verify.take_run_check()  # the review used one: 3 left
+    rng._values = [0.0] * 5  # every draw says due
+    double = _load(fm)["double"]
+    for x in range(5):
+        double(x)
+    assert len(verifier.runs) == 1
+    assert store_verify.run_checks_left() == store_trust.RECHECK_RESERVE == 2
+
+
+@_handle_project
+def test_no_verifier_means_in_task_evidence_only(trust_on, rng, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "")
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    double = _load(fm)["double"]
+    for x in range(3):
+        double(x)
+    assert rng.draws == []
+    assert _trust(fm, "double").passes == 3
+
+
+@_handle_project
+def test_no_held_out_task_means_no_check_and_no_budget_spent(
+    trust_on,
+    rng,
+    enable_verify,
+):
+    from unify.function_manager import store_verify
+
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    verifier.available = False
+    _load(fm)["double"](1)
+    assert verifier.runs == [] and store_verify.run_checks_left() == 4
+    assert _trust(fm, "double").passes == 1
+
+
+@_handle_project
+def test_credentials_are_not_passed_to_the_fresh_world(
+    trust_on,
+    rng,
+    enable_verify,
+    phone_env,
+):
+    source = (
+        "def lookup_as(number: str, access_token: str = None) -> list:\n"
+        "    return primitives.phone.search_text_messages(phone_number=number)\n"
+    )
+    fm = _FM()
+    fm.add_functions(implementations=[source])
+    verifier = enable_verify()
+    _load(fm)["lookup_as"]("555", access_token="session-token")
+    assert verifier.runs[0]["kwargs"] == {"number": "555"}
+
+
+@_handle_project
+def test_a_verifier_that_raises_records_nothing(trust_on, rng, enable_verify):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    verifier.raises = True
+    assert _load(fm)["double"](1) == 2
+    t = _trust(fm, "double")
+    assert (t.state, t.passes, t.failures) == ("probation", 1, 0)
+
+
+@_handle_project
+def test_a_verifier_recheck_method_is_preferred_to_run(trust_on, rng, enable_verify):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    verifier = enable_verify()
+    seen = []
+    verifier.recheck = lambda candidate, call_kwargs: (
+        seen.append((candidate.name, call_kwargs)) or {"ok": True}
+    )
+    _load(fm)["double"](3)
+    assert seen == [("double", {"x": 3})] and verifier.runs == []

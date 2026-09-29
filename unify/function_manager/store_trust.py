@@ -18,7 +18,11 @@ This switch keeps a trust record per stored function in ``function_trust`` and u
 - **quarantine**: a quarantined function is left out of the searches, lists and filters that load functions into the sandbox, with a
   warning naming it and its last failure, the way ``UNIFY_SEARCH_SKIP_UNLOADABLE`` leaves out a row that
   cannot load. It stays in the store, and the reads that return rows only (the storage review's) still
-  show it, so it can be repaired.
+  show it, so it can be repaired;
+- **re-checks**: with a ``store_verify`` verifier (``UNIFY_STORE_VERIFY``), a reuse of a function on
+  probation or trusted is preceded, with probability ``1/2**k`` after ``k`` consecutive clean uses (``k``
+  capped at 6), by a run in a fresh world, drawn from a seeded RNG and taken from the same per-process run
+  check budget as the review's checks, never its last two. Without a verifier only in-task evidence counts.
 
 Evidence is recorded only for the stored version: a call of code loaded before the stored source changed
 says nothing about the current one and is ignored. With the switch unset no observer is attached, nothing
@@ -30,6 +34,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -52,6 +58,15 @@ REASON_LIMIT = 300
 
 MAX_INPUT_HASHES = 32
 """Distinct input hashes kept per function; enough to tell 1, 2 and 3 apart with room to spare."""
+
+MAX_BACKOFF = 6
+"""Clean uses after which the re-check probability stops halving (1/64)."""
+
+RECHECK_RESERVE = 2
+"""Run checks of the process's ``store_verify`` budget a re-check never takes: the storage review's."""
+
+_rng: random.Random = random.Random(0)
+_POSITIONAL = re.compile(r"^_\d+$")
 
 
 def enabled() -> bool:
@@ -326,6 +341,98 @@ def reset(function_ids: Iterable[int]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Re-checks in a fresh world
+# ---------------------------------------------------------------------------
+
+
+def set_rng(rng: random.Random) -> random.Random:
+    """Use ``rng`` for the re-check draws; returns the one it replaces (tests)."""
+    global _rng
+    previous, _rng = _rng, rng
+    return previous
+
+
+def recheck_probability(clean_uses: int) -> float:
+    """``1 / 2**k`` for ``k`` consecutive clean uses, ``k`` capped at :data:`MAX_BACKOFF`."""
+    return 0.5 ** min(max(int(clean_uses), 0), MAX_BACKOFF)
+
+
+def maybe_recheck(
+    function_manager: Any,
+    func_data: Mapping[str, Any],
+    arguments: Mapping[str, Any],
+) -> Optional[Any]:
+    """Before a reuse, run the function once in a fresh world when a re-check is due; the verdict or ``None``.
+
+    Only with a ``store_verify`` verifier (``UNIFY_STORE_VERIFY``), for a function on probation or trusted
+    in its stored version. A re-check is due with probability :func:`recheck_probability` of its clean
+    uses (one draw from the seeded RNG); it then needs a held-out task, and a run check from the
+    process's budget beyond :data:`RECHECK_RESERVE`. The verifier's ``recheck(candidate, call_kwargs)``
+    runs it if the verifier has one, else its ``run``; the call's arguments are passed without the
+    environment's credential parameters. The verdict is recorded like a reuse (a failure quarantines);
+    a verifier that raises records nothing.
+    """
+    from . import store_verify
+
+    if not store_verify.enabled():
+        return None
+    function_id = int(func_data["function_id"])
+    name = str(func_data.get("name"))
+    source = str(func_data.get("implementation") or "")
+    current = trust(function_id)
+    if current is None or current.state == QUARANTINED:
+        return None
+    if sha256(source) != current.source_hash:
+        return None
+    if _rng.random() >= recheck_probability(current.clean_uses):
+        return None
+    if any(_POSITIONAL.match(key) for key in arguments):
+        return None
+    if store_verify.run_checks_left() <= RECHECK_RESERVE:
+        return None
+    try:
+        verifier = store_verify.verifier()
+    except store_verify.StoreVerifyError as exc:
+        logger.info("No fresh-world check for %r: %s", name, exc)
+        return None
+    held = store_verify.held_out(name)
+    if not held.available or store_verify.take_run_check() is None:
+        return None
+    withheld = set(held.credential_params)
+    call_kwargs = {k: v for k, v in arguments.items() if k not in withheld}
+    candidate = function_manager._verify_candidate(
+        name=name,
+        source=source,
+        depends_on=list(func_data.get("depends_on") or []),
+        dependencies=list(func_data.get("dependencies") or []),
+    )
+    runner = getattr(verifier, "recheck", None)
+    if not callable(runner):
+        runner = verifier.run
+    try:
+        verdict = store_verify.Verdict.coerce(runner(candidate, call_kwargs))
+    except Exception as exc:  # noqa: BLE001 - the verifier's fault, not the function's
+        logger.warning(
+            "The fresh-world check of %r did not run: %s: %s",
+            name,
+            type(exc).__name__,
+            str(exc)[:300],
+        )
+        return None
+    record(
+        function_id,
+        running_source=source,
+        arguments=arguments,
+        error=(
+            None
+            if verdict.ok
+            else f"fresh-world check failed: {verdict.reason or 'no reason given'}"
+        ),
+    )
+    return verdict
+
+
+# ---------------------------------------------------------------------------
 # Quarantine
 # ---------------------------------------------------------------------------
 
@@ -389,6 +496,7 @@ class CallObserver:
 
     def __init__(self, function_manager: Any, func_data: Mapping[str, Any]):
         self._fm = function_manager
+        self._func_data = dict(func_data)
         self._function_id = int(func_data["function_id"])
         self._name = str(func_data.get("name"))
         self._source = func_data.get("implementation")
@@ -408,11 +516,16 @@ class CallObserver:
         return cls(function_manager, func_data)
 
     def before(self, fn: Any, args: Sequence[Any], kwargs: Mapping[str, Any]) -> dict:
-        """The call's bound arguments."""
+        """The call's bound arguments, after a fresh-world re-check if one is due."""
         try:
-            return bind_arguments(fn, args, kwargs)
+            arguments = bind_arguments(fn, args, kwargs)
         except Exception:  # noqa: BLE001 - observing must never break a call
-            return dict(kwargs)
+            arguments = dict(kwargs)
+        try:
+            maybe_recheck(self._fm, self._func_data, arguments)
+        except Exception as exc:  # noqa: BLE001 - observing must never break a call
+            logger.warning("The re-check of %r was skipped: %s", self._name, exc)
+        return arguments
 
     def after(self, arguments: Mapping[str, Any], error: Any = None) -> None:
         """Record the call: returned (``error`` is ``None``) or raised. A call stopped by steering is not
@@ -446,9 +559,12 @@ __all__ = [
     "enabled",
     "failure_reason",
     "hidden_warning",
+    "maybe_recheck",
     "input_hash",
     "quarantined",
+    "recheck_probability",
     "record",
     "reset",
+    "set_rng",
     "trust",
 ]
