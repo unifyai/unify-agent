@@ -1164,6 +1164,10 @@ class FunctionManager(BaseFunctionManager):
         entries_to_update: List[Dict[str, Any]] = []
         log_ids_to_update: List[int] = []
         log_id_to_name: Dict[int, str] = {}
+        # UNIFY_STORE_DEDUPE=warn: stored sources, read once, and the warnings
+        # for new functions that nearly copy one of them.
+        stored_sources: Optional[Dict[str, str]] = None
+        dedupe_warnings: Dict[str, str] = {}
 
         # Sandbox namespace roots whose dotted calls should be recorded in
         # depends_on (e.g. "primitives.actor.act" → depends_on includes
@@ -1260,6 +1264,16 @@ class FunctionManager(BaseFunctionManager):
                     self._stamp_new_function_usage(entry_data, name)
                     entries_to_create.append(entry_data)
                     results[name] = "added"
+                    if self._store_dedupe_enabled():
+                        if stored_sources is None:
+                            stored_sources = self._stored_sources()
+                        warning = self._near_duplicate_warning(
+                            name,
+                            source,
+                            stored_sources,
+                        )
+                        if warning:
+                            dedupe_warnings[name] = warning
             except ValueError as e:
                 results[name] = f"error: {e}"
             except Exception as e:
@@ -1284,6 +1298,10 @@ class FunctionManager(BaseFunctionManager):
                     name = entry["name"]
                     if results.get(name) == "added":
                         results[name] = f"error: Failed to create log - {e}"
+
+        for name, warning in dedupe_warnings.items():
+            if results.get(name) == "added":
+                results[name] = f"added; warning: {warning}"
 
         # Batch update existing functions
         if log_ids_to_update and entries_to_update:
@@ -1313,6 +1331,65 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(f"Failed to add function(s): {error_details}")
 
         return results
+
+    # ------------------------------------------------------------------ #
+    #  Near-duplicate warning (UNIFY_STORE_DEDUPE=warn)                   #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _store_dedupe_enabled() -> bool:
+        from unify.settings import SETTINGS
+
+        return SETTINGS.UNIFY_STORE_DEDUPE == "warn"
+
+    def _stored_sources(self) -> Dict[str, str]:
+        """The source of each stored function in this manager's scope, by name."""
+        return {
+            row["name"]: row["implementation"]
+            for row in self._rows(self._compositional_scope())
+            if row.get("implementation")
+        }
+
+    @staticmethod
+    def _near_duplicate_warning(
+        name: str,
+        source: str,
+        stored_sources: Dict[str, str],
+    ) -> Optional[str]:
+        """A warning naming the stored function ``source`` nearly copies, or ``None``."""
+        from .near_duplicates import NEAR_DUPLICATE_JACCARD, code_tokens, jaccard
+
+        tokens = code_tokens(source)
+        best_name, best_score = None, 0.0
+        for other, other_source in stored_sources.items():
+            if other == name:
+                continue
+            score = jaccard(tokens, code_tokens(other_source))
+            if score > best_score:
+                best_name, best_score = other, score
+        if best_name is None or best_score < NEAR_DUPLICATE_JACCARD:
+            return None
+        lines = stored_sources[best_name].strip("\n").splitlines()
+        excerpt = "\n".join(line[:120] for line in lines[:4])
+        if len(lines) > 4:
+            excerpt += "\n    ..."
+        if _function_patch_enabled():
+            instead = (
+                f"fix '{best_name}' with FunctionManager_patch_function instead "
+                f"and delete '{name}'"
+            )
+        else:
+            instead = (
+                f"update '{best_name}' with FunctionManager_add_functions "
+                f"(overwrite=True) instead and delete '{name}'"
+            )
+        return (
+            f"'{name}' is nearly identical to the stored function '{best_name}' "
+            f"(code similarity {best_score:.2f} with names, docstrings and type "
+            f"hints ignored). '{best_name}' begins:\n{excerpt}\nIf '{name}' is a "
+            f"fix or variant of it, {instead}; keep both only if they do "
+            f"different things."
+        )
 
     # ------------------------------------------------------------------ #
     #  Patch in place (UNIFY_FUNCTION_PATCH)                              #

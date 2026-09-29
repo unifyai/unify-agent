@@ -137,6 +137,10 @@ class ProductionSettings(BaseSettings):
     # entry in function_history / guidance_history. Off: no patch tools and
     # nothing is written to history.
     UNIFY_FUNCTION_PATCH: bool = False
+    # ``warn``: adding a new function whose normalised code nearly matches a
+    # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
+    # the stored function. Empty adds as shipped.
+    UNIFY_STORE_DEDUPE: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -204,6 +208,14 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
             )
+        return value
+
+    @field_validator("UNIFY_STORE_DEDUPE", mode="before")
+    @classmethod
+    def parse_store_dedupe(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "warn"):
+            raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
         return value
 
     model_config = SettingsConfigDict(
