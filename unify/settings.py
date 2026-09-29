@@ -110,6 +110,13 @@ class ProductionSettings(BaseSettings):
     # withheld and turn-level reviews are off, so the libraries change only
     # through an admitted review. Empty reviews every session as shipped.
     UNIFY_STORE_ADMISSION: str = ""
+    # ``package.module:factory``: a verifier for the storage review. A
+    # function is stored only after its exact source has passed a run on a
+    # held-out task of the same kind (FunctionManager_check_function, offered
+    # to the review only while this is set) and static checks against request
+    # details and credentials (unify/function_manager/store_verify.py). Needs
+    # UNIFY_STORE_ADMISSION. Empty stores without the check.
+    UNIFY_STORE_VERIFY: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue

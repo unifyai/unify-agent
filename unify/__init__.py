@@ -57,6 +57,14 @@ def init() -> None:  # noqa: D401 – imperative name
         with startup_timing(LOGGER, "unify.init.environment_namespaces"):
             load_environment_namespaces()
 
+    if str(getattr(_SETTINGS, "UNIFY_STORE_VERIFY", "") or "").strip():
+        # A verifier that cannot be loaded (or one set without store
+        # admission) stops start-up.
+        from unify.function_manager.store_verify import verifier
+
+        with startup_timing(LOGGER, "unify.init.store_verify"):
+            verifier()
+
     from .events.llm_event_hook import install_llm_event_hook
 
     with startup_timing(LOGGER, "unify.init.install_llm_event_hook"):

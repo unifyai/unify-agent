@@ -585,8 +585,9 @@ _STORAGE_WHAT_CAN_BE_STORED = (
 def _storage_environment_note() -> str:
     """The storage review's note on the environment's namespaces and the storage check.
 
-    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``)
-    or the storage check is on (``UNIFY_STORE_CHECK=resolve``), so the doctrine
+    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``),
+    the storage check is on (``UNIFY_STORE_CHECK=resolve``) or functions are
+    verified before they are stored (``UNIFY_STORE_VERIFY``), so the doctrine
     is otherwise the shipped text.
     """
     from unify.function_manager.primitives.environment import environment_surface
@@ -621,6 +622,10 @@ def _storage_environment_note() -> str:
             "function that fails is not stored, and the error names what "
             "failed; fix the function and add it again.",
         )
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        parts.append(store_verify.doctrine())
     if not parts:
         return ""
     return "### This environment\n\n" + " ".join(parts) + "\n\n"
@@ -1012,6 +1017,13 @@ def _build_storage_tools(
         gm.delete_guidance,
         gm.reconcile_dependencies,
     ]
+
+    # UNIFY_STORE_VERIFY: the review checks a function on a held-out task
+    # before add_functions will store it; unset, the tools are as shipped.
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        storage_methods.append(fm.check_function)
 
     tools: Dict[str, Callable] = {
         **methods_to_tool_dict(

@@ -1198,6 +1198,8 @@ class FunctionManager(BaseFunctionManager):
                         stored_functions=all_known_function_names,
                         same_batch=temp_names,
                     )
+                if self._store_verify_enabled():
+                    self._store_verify_gate(name=name, node=node, source=source)
                 namespace = create_base_globals()
                 exec(source, namespace)
                 fn_obj = namespace[name]
@@ -1384,6 +1386,261 @@ class FunctionManager(BaseFunctionManager):
                 f"'{name}' was not stored, because it does not load the way a "
                 f"search loads it: {detail}. Fix the function and add it again.",
             ) from exc
+
+    # ------------------------------------------------------------------ #
+    #  Verify before store (UNIFY_STORE_VERIFY=module:factory)            #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _store_verify_enabled() -> bool:
+        from unify.settings import SETTINGS
+
+        return bool(str(getattr(SETTINGS, "UNIFY_STORE_VERIFY", "") or "").strip())
+
+    def _store_verify_gate(
+        self,
+        *,
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+        source: str,
+    ) -> None:
+        """Refuse a function whose exact source has not passed on a held-out task.
+
+        The refusal names why: no held-out task is available (nothing new is
+        stored then), the static checks' problems, or that no run of this exact
+        source has passed yet. The storage review reads the raised
+        ``ValueError`` as the tool's error.
+        """
+        from . import store_verify
+
+        if store_verify.passed(store_verify.source_sha256(source)) is not None:
+            return
+        held = store_verify.held_out(name)
+        if not held.available:
+            why = (
+                f"no held-out task is available ({held.reason or 'no reason given'}), "
+                f"so nothing new is stored now"
+            )
+        else:
+            problems = store_verify.static_problems(node, held)
+            why = (
+                "; ".join(problems)
+                if problems
+                else (
+                    "this exact source has no passing run yet; run it with "
+                    "FunctionManager_check_function and call_kwargs first"
+                )
+            )
+        raise ValueError(
+            f"'{name}' was not stored, because it has not passed on a held-out task: {why}.",
+        )
+
+    def check_function(
+        self,
+        *,
+        implementation: str,
+        call_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Check a function on a held-out task before storing it.
+
+        A function is stored only once its exact source has passed this check.
+        Without ``call_kwargs``: the static checks run (a literal that is a
+        detail of this session's request, which a sibling request states
+        differently, must become a parameter; no credential, token or global
+        state may be kept; a credential parameter must default to None) and the
+        held-out task's request is returned, so the arguments it needs can be
+        chosen. With ``call_kwargs``: the static checks, then the function runs
+        with those keyword arguments on a fresh copy of the held-out task's
+        world, and the environment's own check judges the outcome; a pass lets
+        ``FunctionManager_add_functions`` store that exact source. Run checks
+        are limited per review.
+
+        Args:
+            implementation: The function's full source (one top-level ``def``),
+                exactly as it will be passed to ``FunctionManager_add_functions``.
+            call_kwargs: The keyword arguments for the run on the held-out task,
+                taken from the held-out request; never a credential.
+
+        Returns:
+            The static problems, the held-out request, and (for a run) whether
+            it passed, why, and the check's counts.
+        """
+        from . import store_verify
+
+        if not self._store_verify_enabled():
+            return {
+                "error": "no held-out check is configured here (UNIFY_STORE_VERIFY is not set)",
+            }
+        try:
+            name, _tree, node, source = self._parse_implementation(implementation)
+        except ValueError as exc:
+            return {
+                "error": f"the implementation does not parse as one function: {exc}",
+            }
+        out: Dict[str, Any] = {"name": name}
+        try:
+            held = store_verify.held_out(name)
+        except store_verify.StoreVerifyError as exc:
+            return {**out, "error": str(exc)}
+        if not held.available:
+            return {
+                **out,
+                "available": False,
+                "reason": held.reason,
+                "result": "no held-out task is available, so nothing new can be stored now",
+            }
+        out["available"] = True
+        out["held_out_request"] = held.held_out_text
+        if held.credential_params:
+            out["credential_parameters"] = sorted(held.credential_params)
+        problems = store_verify.static_problems(node, held)
+        all_names = set(self.list_functions()) | {name}
+        try:
+            depends_on = sorted(
+                collect_dependencies_from_function_node(
+                    node,
+                    all_names,
+                    environment_namespaces=frozenset({"primitives"}),
+                ),
+            )
+        except Exception as exc:
+            problems.append(
+                f"its dependencies cannot be read: {type(exc).__name__}: {exc}",
+            )
+            depends_on = []
+        if self._store_check_enabled():
+            try:
+                self._store_check(
+                    name=name,
+                    node=node,
+                    source=source,
+                    depends_on=depends_on,
+                    requirements=[],
+                    third_party_imports=set(),
+                    stored_functions=all_names,
+                    same_batch={name},
+                )
+            except ValueError as exc:
+                problems.append(str(exc))
+        out["static_problems"] = problems
+        out["run_checks_left"] = store_verify.run_checks_left()
+        if problems:
+            out["result"] = (
+                "refused by the static checks; fix the function and check it again"
+            )
+            return out
+        if call_kwargs is None:
+            out["result"] = (
+                "the static checks passed; now run it on the held-out task with "
+                "the call_kwargs its request needs"
+            )
+            return out
+        if not isinstance(call_kwargs, dict) or not all(
+            isinstance(k, str) for k in call_kwargs
+        ):
+            out["result"] = "call_kwargs must be an object of keyword arguments"
+            return out
+        credentials = sorted(set(call_kwargs) & set(held.credential_params))
+        if credentials:
+            out["result"] = (
+                f"call_kwargs may not carry credentials ({', '.join(credentials)}): "
+                f"the function must log in itself"
+            )
+            return out
+        used = store_verify.take_run_check()
+        if used is None:
+            out["result"] = (
+                f"the run checks of this review are used up ({store_verify.MAX_RUN_CHECKS}); "
+                f"nothing more can be checked now"
+            )
+            out["run_checks_left"] = 0
+            return out
+        entry = {
+            "name": name,
+            "implementation": source,
+            "dependencies": [],
+            "depends_on": depends_on,
+        }
+        fm = self
+
+        def loader(
+            primitives: Any,
+            extra_globals: Optional[Dict[str, Any]] = None,
+        ) -> Callable[..., Any]:
+            scratch = create_execution_globals()
+            for env_name, env_value in dict(extra_globals or {}).items():
+                scratch[env_name] = env_value
+            scratch["primitives"] = primitives
+            fm._inject_dependencies(dict(entry), namespace=scratch, visited={name})
+            fm._create_in_process_callable(dict(entry), namespace=scratch)
+            return scratch[name]
+
+        candidate = store_verify.Candidate(
+            name=name,
+            source=source,
+            signature=self._signature_of(source, name),
+            depends_on=tuple(depends_on),
+            effects=tuple(self._candidate_effects(depends_on)),
+            loader=loader,
+        )
+        try:
+            verdict = store_verify.Verdict.coerce(
+                store_verify.verifier().run(candidate, dict(call_kwargs)),
+            )
+        except Exception as exc:
+            verdict = store_verify.Verdict(
+                False,
+                f"the check failed: {type(exc).__name__}: {str(exc)[:300]}",
+            )
+        out["run_checks_left"] = store_verify.run_checks_left()
+        out["passed"] = verdict.ok
+        out["reason"] = verdict.reason
+        out["details"] = dict(verdict.details)
+        if verdict.ok:
+            store_verify.record_pass(
+                candidate.sha256,
+                {
+                    "name": name,
+                    "call_kwargs": sorted(call_kwargs),
+                    "check": used,
+                    "reason": verdict.reason,
+                },
+            )
+            out["result"] = (
+                "passed: FunctionManager_add_functions will now store this exact source"
+            )
+        else:
+            out["result"] = (
+                "failed on the held-out task; it will not be stored in this form"
+            )
+        return out
+
+    @staticmethod
+    def _signature_of(source: str, name: str) -> str:
+        try:
+            namespace = create_base_globals()
+            exec(compile(source, "<check signature>", "exec"), namespace)
+            return str(inspect.signature(namespace[name]))
+        except Exception:
+            return "(...)"
+
+    @staticmethod
+    def _candidate_effects(depends_on: List[str]) -> List[str]:
+        """The effect labels of the environment methods a function names (``primitives.<ns>.<method>``)."""
+        from .primitives.environment import environment_namespace
+
+        effects: Set[str] = set()
+        for dep in depends_on:
+            parts = dep.split(".")
+            if len(parts) < 3 or parts[0] != "primitives":
+                continue
+            namespace = environment_namespace(parts[1])
+            method = namespace.method(parts[2]) if namespace is not None else None
+            if method is not None:
+                effects.add(method.effect)
+            elif parts[1] == "actor":
+                effects.add("write")
+        return sorted(effects)
 
     # ------------------------------------------------------------------ #
     #  Callable return + dependency injection                             #
