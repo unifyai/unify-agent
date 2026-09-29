@@ -154,3 +154,24 @@ async def test_on_the_actor_offers_bash_read_file_and_grep(world):
         json.dumps(read), json.dumps(found)
     finally:
         await actor.close()
+
+
+# ── under UNIFY_CACHE_DISCIPLINE ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_fixed_tool_list_has_the_workspace_tools_from_the_first_call(
+    monkeypatch,
+):
+    """The session's one tool list already holds them on the gate turn."""
+    from tests import cache_discipline_helpers as h
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
+    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    _result, _, requests = await h.scenario_actor()
+    session = h.session_requests(requests)
+    assert len(session) >= 2
+    first = {t["function"]["name"]: t for t in session[0]["tools"]}
+    assert {"read_file", "grep", "execute_code"} <= set(first)
+    assert "language" in first["execute_code"]["function"]["parameters"]["properties"]
+    assert len({h.request_bytes(r)["tools"] for r in session}) == 1

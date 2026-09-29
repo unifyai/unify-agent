@@ -476,6 +476,44 @@ async def scenario_review(replies=REVIEW_REPLIES, *, actor=None, tools=None):
     return (summaries[0] if summaries else None), {}, provider.requests
 
 
+ACTOR_REPLIES = (
+    lambda: completion(
+        calls=[
+            ("FunctionManager_search_functions", {"query": "list files"}),
+            ("GuidanceManager_search", {"k": 3}),
+        ],
+    ),
+    # the answer, however many turns the searches' results take to arrive,
+    # and the storage review after it
+    *([lambda: completion(content="done")] * 8),
+)
+
+
+async def scenario_actor(replies=ACTOR_REPLIES):
+    """``CodeActActor.act`` on a fresh actor, as a caller runs it.
+
+    Its first request carries the discovery gate's tools and the actor's
+    system prompt; the request after the gate carries every tool the actor
+    advertises. The storage review's requests follow the session's.
+    """
+    from unify.actor.code_act_actor import CodeActActor
+
+    actor = CodeActActor()
+    try:
+        with scripted(replies) as provider:
+            handle = await actor.act("List the files in the workspace.", persist=False)
+            result = await asyncio.wait_for(handle.result(), 60)
+    finally:
+        await actor.close()
+    return result, {}, provider.requests
+
+
+def session_requests(requests: list[dict]) -> list[dict]:
+    """The requests of the conversation that sent the first one."""
+    system = requests[0]["messages"][0]
+    return [r for r in requests if r["messages"][:1] == [system]]
+
+
 SCENARIOS = {
     "gate": scenario_gate,
     "threshold": scenario_threshold,
