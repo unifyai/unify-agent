@@ -103,6 +103,13 @@ class ProductionSettings(BaseSettings):
     # would load it; otherwise ``add_functions`` refuses it and says why.
     # Empty stores without the check.
     UNIFY_STORE_CHECK: str = ""
+    # Path of a JSON file in which an external check of the session's outcome
+    # admits (``{"admit": true}``) the review that runs when a session ends.
+    # A missing, unreadable or malformed file, or any other ``admit``, skips
+    # that review. While set, the session's own library write tools are
+    # withheld and turn-level reviews are off, so the libraries change only
+    # through an admitted review. Empty reviews every session as shipped.
+    UNIFY_STORE_ADMISSION: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue

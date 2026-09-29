@@ -381,6 +381,15 @@ _STORAGE_DEFERRED_NOTICE = textwrap.dedent("""
     `compress_context`.
 """).strip()
 
+_LIBRARY_READ_ONLY_NOTICE = textwrap.dedent("""
+    ### Library Writes
+
+    In this session the function and guidance libraries are read-only: the
+    tools that write to them are not available. When the session ends, a
+    review may add to the libraries, but only if an external check of the
+    session's outcome admits it.
+""").strip()
+
 _STORAGE_SESSION_NOTICE = textwrap.dedent("""
     ### Skill Storage
 
@@ -545,6 +554,7 @@ def build_code_act_prompt(
     guidelines: Optional[str] = None,
     discovery_first_policy: bool = False,
     persist: bool = False,
+    library_read_only: bool = False,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -566,6 +576,10 @@ def build_code_act_prompt(
         the session to execute stored functions on repeat requests for the
         same deliverable. When ``False`` (one-shot act), the notice keeps
         the post-result consolidation description.
+    library_read_only:
+        When ``True`` (an admission-gated session), states that the
+        libraries cannot be written during the session and that a review
+        after it runs only when an external check admits it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -609,6 +623,9 @@ def build_code_act_prompt(
             parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
+
+        if library_read_only and (has_fm_tools or has_gm_tools):
+            parts.append(_LIBRARY_READ_ONLY_NOTICE)
 
         if can_store:
             # A persistent session's consolidation runs per completed turn,

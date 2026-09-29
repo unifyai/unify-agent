@@ -1156,6 +1156,46 @@ def _build_storage_tools(
 # then reads the trajectory as one finished piece of work, not as an interrupted one.
 SESSION_ENDED = "session ended"
 
+# The largest admission verdict read; anything bigger is not a verdict.
+_STORE_ADMISSION_MAX_BYTES = 65536
+
+
+def _store_admission_path() -> str:
+    """The verdict file named by ``UNIFY_STORE_ADMISSION``; empty when unset."""
+    from unify.settings import SETTINGS
+
+    return str(SETTINGS.UNIFY_STORE_ADMISSION or "").strip()
+
+
+def _read_store_admission(path: str) -> tuple[bool, str]:
+    """Whether an external check of the session's outcome admits its review.
+
+    The file must hold a JSON object whose ``admit`` is ``true``. Every other
+    state -- no file, one that cannot be read, is too large, is not JSON, is
+    not an object, or has any other ``admit`` -- does not admit (fail-closed).
+    Returns ``(admitted, reason)``; the reason names what was found.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(_STORE_ADMISSION_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return False, f"no admission verdict at {path}"
+    except OSError as exc:
+        return False, f"admission verdict unreadable: {type(exc).__name__}: {exc}"
+    if len(raw) > _STORE_ADMISSION_MAX_BYTES:
+        return False, "admission verdict larger than 64 KiB"
+    try:
+        verdict = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return False, f"admission verdict is not JSON: {type(exc).__name__}"
+    if not isinstance(verdict, dict):
+        return False, "admission verdict is not a JSON object"
+    why = verdict.get("reason")
+    why = f" ({str(why)[:200]})" if why else ""
+    if verdict.get("admit") is True:
+        return True, f"admitted{why}"
+    return False, f"not admitted{why}"
+
 
 def _start_storage_check_loop(
     *,
@@ -1953,6 +1993,23 @@ class _StorageCheckHandle(SteerableToolHandle):
             # work up to that point was real.
             if self._task_failure is not None:
                 return
+
+            # With an admission file configured, the review runs only when an
+            # external check of the session's outcome admits it, read now that
+            # the session has ended; anything else skips it.
+            admission_path = _store_admission_path()
+            if admission_path:
+                admitted, admission_reason = _read_store_admission(admission_path)
+                if not admitted:
+                    logger.info(f"StorageCheck skipped: {admission_reason}")
+                    await self._notification_q.put(
+                        {
+                            "type": "storage_review_skipped",
+                            "message": admission_reason,
+                        },
+                    )
+                    return
+                logger.info(f"StorageCheck {admission_reason}")
 
             self._phase = "storage"
 
@@ -3970,6 +4027,9 @@ class CodeActActor(BaseCodeActActor):
             self.can_compose if can_compose is None else bool(can_compose)
         )
         effective_can_store = self.can_store if can_store is None else bool(can_store)
+        # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
+        # and it runs only when an external check of the outcome admits it.
+        admission_gated = effective_can_store and bool(_store_admission_path())
         act_llm_profile = resolve_act_llm_profile(llm_profile)
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
@@ -4134,6 +4194,13 @@ class CodeActActor(BaseCodeActActor):
             "FunctionManager_reconcile_dependencies",
             "GuidanceManager_reconcile_dependencies",
         }
+        # Admission-gated sessions also lose the direct guidance writes that
+        # can_store=False leaves in place: nothing is written in-session.
+        _admission_withheld_tools = _store_only_tools | {
+            "GuidanceManager_add_guidance",
+            "GuidanceManager_update_guidance",
+            "GuidanceManager_delete_guidance",
+        }
 
         def _filter_tools(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
             """Apply static per-call filters (can_compose, can_store)."""
@@ -4145,6 +4212,9 @@ class CodeActActor(BaseCodeActActor):
                     out.pop(name, None)
             if not effective_can_store:
                 for name in _store_only_tools:
+                    out.pop(name, None)
+            if admission_gated:
+                for name in _admission_withheld_tools:
                     out.pop(name, None)
             return out
 
@@ -4212,10 +4282,13 @@ class CodeActActor(BaseCodeActActor):
         system_prompt = build_code_act_prompt(
             environments=sandbox_envs,
             tools=base_tools,
-            can_store=effective_can_store,
+            # An admission-gated session has no in-session storage tools to
+            # describe; it is told the libraries are read-only instead.
+            can_store=effective_can_store and not admission_gated,
             guidelines=effective_guidelines,
             discovery_first_policy=self.tool_policy is _USE_DEFAULT,
             persist=bool(persist),
+            **({"library_read_only": True} if admission_gated else {}),
         )
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
@@ -4366,7 +4439,9 @@ class CodeActActor(BaseCodeActActor):
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(
-                    ["store_skills"] if effective_can_store else None
+                    ["store_skills"]
+                    if effective_can_store and not admission_gated
+                    else None
                 ),
                 clarification_queues=_clar_queues,
                 on_clarification_request=_on_clar_req,
@@ -4407,6 +4482,7 @@ class CodeActActor(BaseCodeActActor):
                 meter=run_meter,
                 turn_reviews_enabled=(
                     effective_can_store
+                    and not admission_gated
                     and bool(persist)
                     and bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
                 ),
