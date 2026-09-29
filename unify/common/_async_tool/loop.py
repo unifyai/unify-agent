@@ -424,6 +424,7 @@ async def async_tool_loop_inner(
     on_clarification_answer: Optional[Callable[[str], Any]] = None,
     on_notify: Optional[Callable[[str], Any]] = None,
     runtime_state: Optional[ToolLoopRuntimeState] = None,
+    fixed_tools_schema: Optional[list[dict]] = None,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -534,6 +535,13 @@ async def async_tool_loop_inner(
         the conversation and refreshed after each tool completion, giving the
         LLM wall-clock time and tool execution durations. If ``False`` the
         time-context table is omitted and no tool timing is tracked.
+
+    fixed_tools_schema : ``list[dict] | None``
+        Under ``UNIFY_CACHE_DISCIPLINE``, the exact tool list to send on every
+        call instead of one built from ``tools`` -- a fork sends its parent's
+        list so its requests extend the parent's. A listed tool this loop
+        does not implement is refused when called. Ignored with the switch
+        off.
 
     Returns
     -------
@@ -2374,6 +2382,13 @@ async def async_tool_loop_inner(
                 _turn_available = frozenset(
                     _cache_discipline.schema_names(tmp_tools),
                 )
+                if (
+                    runtime_state.session_tools_schema is None
+                    and fixed_tools_schema is not None
+                ):
+                    runtime_state.session_tools_schema = copy.deepcopy(
+                        list(fixed_tools_schema),
+                    )
                 if runtime_state.session_tools_schema is None:
                     runtime_state.session_tools_schema = (
                         _cache_discipline.build_session_schema(

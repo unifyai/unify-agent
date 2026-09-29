@@ -170,9 +170,16 @@ def masked_tool_refusal(
 _LAST_SENT = "_unify_last_sent_request"
 
 
+def review_fork_enabled() -> bool:
+    """Whether ``UNIFY_REVIEW_FORK`` is on."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_REVIEW_FORK", False))
+
+
 def records_requests() -> bool:
     """Whether dispatches keep a copy of what they send (for a later fork)."""
-    return enabled()
+    return enabled() or review_fork_enabled()
 
 
 def record_sent_request(client: Any, messages: list, gen_kwargs: dict) -> Any:

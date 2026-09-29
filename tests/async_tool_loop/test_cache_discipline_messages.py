@@ -26,7 +26,7 @@ def _as_bytes(messages: list[dict]) -> list[str]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", sorted(h.SCENARIOS))
+@pytest.mark.parametrize("scenario", h.ONE_SESSION)
 async def test_on_each_request_extends_the_previous_one(monkeypatch, scenario):
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     _result, _counter, requests = await h.SCENARIOS[scenario]()

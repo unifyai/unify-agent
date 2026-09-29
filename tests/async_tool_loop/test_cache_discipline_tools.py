@@ -58,7 +58,7 @@ async def test_off_every_request_is_byte_identical_to_upstream(discipline, scena
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", sorted(h.SCENARIOS))
+@pytest.mark.parametrize("scenario", h.ONE_SESSION)
 async def test_on_the_tool_list_is_identical_on_every_call(discipline, scenario):
     discipline(True)
     _result, _counter, requests = await h.SCENARIOS[scenario]()

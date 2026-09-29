@@ -1120,6 +1120,7 @@ def start_async_tool_loop(
     on_clarification_request: Optional[Callable[[str], Any]] = None,
     on_clarification_answer: Optional[Callable[[str], Any]] = None,
     on_notify: Optional[Callable[[str], Any]] = None,
+    fixed_tools_schema: Optional[list[dict]] = None,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for
@@ -1258,6 +1259,7 @@ def start_async_tool_loop(
                 on_clarification_request=on_clarification_request,
                 on_clarification_answer=on_clarification_answer,
                 on_notify=on_notify,
+                fixed_tools_schema=fixed_tools_schema,
                 runtime_state=runtime_state,
             )
         except asyncio.CancelledError:
@@ -1343,6 +1345,7 @@ def start_async_tool_loop(
         "on_clarification_answer": on_clarification_answer,
         "on_notify": on_notify,
         "runtime_state": runtime_state,
+        "fixed_tools_schema": fixed_tools_schema,
     }
 
     with suppress(Exception):

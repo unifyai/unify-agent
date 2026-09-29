@@ -404,13 +404,89 @@ async def scenario_compress(replies=COMPRESS_REPLIES) -> tuple[str, dict, list[d
     return result, counter, provider.requests
 
 
+REVIEW_REPLIES = (
+    # the session
+    lambda: completion(calls=[("FunctionManager_list_functions", {})]),
+    lambda: completion(content="Listed the stored functions; there are none."),
+    # its storage review
+    lambda: completion(content="Nothing worth storing."),
+)
+
+
+def session_tools(actor) -> dict[str, Callable]:
+    """The library tools the actor and its review share, and a code runner.
+
+    The library tools are the managers' own methods, named as the actor and
+    the review name them, so the session's tool list carries the exact
+    schemas the review would build.
+    """
+    from unify.common.llm_helpers import methods_to_tool_dict
+
+    fm, gm = actor.function_manager, actor.guidance_manager
+    tools = methods_to_tool_dict(
+        fm.list_functions,
+        fm.add_functions,
+        gm.filter,
+        gm.add_guidance,
+        include_class_name=True,
+    )
+    tools["execute_code"] = make_tools({})["execute_code"]
+    return tools
+
+
+async def scenario_review(replies=REVIEW_REPLIES, *, actor=None, tools=None):
+    """A session on the actor's own tools, then the storage review after it.
+
+    The session runs through ``_StorageCheckHandle`` exactly as ``act``
+    wraps it, so the review starts from the session's real client and
+    transcript. Returns the review's summary as the result.
+    """
+    from unify.actor.code_act_actor import CodeActActor, _StorageCheckHandle
+    from unify.common.async_tool_loop import start_async_tool_loop
+
+    own_actor = actor is None
+    actor = actor or CodeActActor()
+    try:
+        tools = tools if tools is not None else session_tools(actor)
+        with scripted(replies) as provider:
+            inner = start_async_tool_loop(
+                new_client("You are a scripted actor."),
+                "List the stored functions.",
+                tools,
+                loop_id="CodeActActor.act",
+                log_steps=False,
+                timeout=60,
+                interrupt_llm_with_interjections=False,
+            )
+            handle = _StorageCheckHandle(inner=inner, actor=actor)
+            summaries = []
+            await asyncio.wait_for(handle.result(), 60)
+            while True:
+                notification = await asyncio.wait_for(handle.next_notification(), 60)
+                if notification.get("type") in (
+                    "storage_review_complete",
+                    "storage_review_skipped",
+                ):
+                    summaries.append(notification.get("message"))
+                    break
+            await asyncio.wait_for(handle._lifecycle_task, 60)
+    finally:
+        if own_actor:
+            await actor.close()
+    return (summaries[0] if summaries else None), {}, provider.requests
+
+
 SCENARIOS = {
     "gate": scenario_gate,
     "threshold": scenario_threshold,
     "interrupt": scenario_interrupt,
     "persist": scenario_persist,
     "compress": scenario_compress,
+    "review": scenario_review,
 }
+
+# Scenarios whose requests all belong to one conversation.
+ONE_SESSION = ("gate", "threshold", "interrupt", "persist", "compress")
 
 
 async def record_all() -> dict:

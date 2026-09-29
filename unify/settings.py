@@ -161,6 +161,15 @@ class ProductionSettings(BaseSettings):
     # one; and each call logs how much of its input came from the cache
     # (unify/common/_async_tool/cache_discipline.py). Off: as shipped.
     UNIFY_CACHE_DISCIPLINE: bool = False
+    # Run the storage review that follows a session as a fork of the session's
+    # own conversation: its request is the actor's system prompt, messages,
+    # last tools and tool choice, plus one user message with the review
+    # rulebook, so it is served from the cache the actor built. Tools outside
+    # the library are refused. Needs UNIFY_CACHE_DISCIPLINE (for the fixed
+    # tool list); without it, or when the session was compressed or its
+    # history changed since its last request, the review runs as shipped and
+    # the log says why. Off: as shipped.
+    UNIFY_REVIEW_FORK: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -207,6 +216,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_CACHE_DISCIPLINE",
+        "UNIFY_REVIEW_FORK",
         mode="before",
     )
     @classmethod

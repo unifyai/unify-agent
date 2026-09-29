@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 import traceback
+import types
 import uuid
 import weakref
 from secrets import token_hex as _token_hex
@@ -42,7 +43,7 @@ from unify.common.async_tool_loop import (
     start_async_tool_loop,
 )
 from unify.events.event_bus import EVENT_BUS, Event
-from unify.common.llm_client import new_llm_client
+from unify.common.llm_client import fork_llm_client, new_llm_client
 from unify.common.llm_meter import RunMeter, current_run_meter, new_run_meter
 from unify.common.act_llm_profiles import (
     CURRENT_ACT_LLM_PROFILE,
@@ -1331,6 +1332,155 @@ def _read_store_admission(path: str) -> tuple[bool, str]:
     return False, f"not admitted{why}"
 
 
+def _storage_review_outcome_note() -> str:
+    """Hook for the session's checked outcome in a forked storage review.
+
+    An outcome channel (whether the environment judged the task a success,
+    and why) will fill this in; until then it returns ``""`` and the forked
+    review sees only the conversation and its final result.
+    """
+    return ""
+
+
+_REVIEW_FORK_ROLE = (
+    "## Storage Review\n\n"
+    "The task above is over. You now act as a skill librarian: review this "
+    "conversation -- what was asked, what was done and what came of it (it is "
+    "the trajectory the rules below refer to) -- and decide whether anything "
+    "is worth persisting for future reuse. Often nothing is -- that is "
+    "perfectly fine.\n\n"
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+
+_REVIEW_FORK_MASK_RULE = (
+    "the storage review can call only the function and guidance library "
+    "tools; the task's other tools are not available to it"
+)
+
+
+def _review_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+) -> tuple[Optional[dict], Optional[str]]:
+    """What a forked storage review continues from, or why it cannot fork.
+
+    Returns ``(source, None)`` for a fork, ``(None, reason)`` when
+    ``UNIFY_REVIEW_FORK`` is on but the review has to run as shipped, and
+    ``(None, None)`` when the switch is off. The fork needs the fixed tool
+    list of ``UNIFY_CACHE_DISCIPLINE`` and the session's last request as
+    recorded; it is refused when the session was compressed, when its
+    history no longer starts with that request (something rewrote it), or
+    when it ends with unanswered tool calls, which the review loop would try
+    to run with its own tools.
+    """
+    from unify.common._async_tool import cache_discipline
+    from unify.common._async_tool.messages import find_unreplied_assistant_entries
+
+    if not cache_discipline.review_fork_enabled():
+        return None, None
+    if not cache_discipline.enabled():
+        return None, (
+            "UNIFY_REVIEW_FORK needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
+            "list the fork reuses"
+        )
+    client = getattr(inner, "_client", None)
+    if client is None:
+        return None, "the session has no LLM client"
+    if getattr(getattr(inner, "_compression", None), "count", 0):
+        return None, "the session's history was compressed"
+    last = cache_discipline.last_sent_request(client)
+    if last is None or not last.get("messages"):
+        return None, "the session recorded no request"
+    if not last.get("tools"):
+        return None, "the session's last request carried no tools"
+
+    raw = copy.deepcopy(list(getattr(client, "messages", None) or []))
+    as_sent = raw
+    preprocess = getattr(actor, "_preprocess_msgs", None)
+    if preprocess is not None:
+        try:
+            as_sent = preprocess(copy.deepcopy(raw)) or as_sent
+        except Exception:
+            return None, "the session's message preprocessor failed on its history"
+    system = getattr(client, "system_message", None)
+    if system and not (as_sent and as_sent[0].get("role") == "system"):
+        as_sent = [{"role": "system", "content": system}, *as_sent]
+    sent = last["messages"]
+
+    def _bytes(messages: list) -> list[str]:
+        return [json.dumps(m, default=str) for m in messages]
+
+    if _bytes(as_sent[: len(sent)]) != _bytes(sent):
+        return None, "the session's history changed after its last request"
+    if find_unreplied_assistant_entries(types.SimpleNamespace(messages=raw)):
+        return None, "the session ended with unanswered tool calls"
+    return (
+        {
+            "client": client,
+            "messages": raw,
+            "tools": last["tools"],
+            "tool_choice": last.get("tool_choice"),
+        },
+        None,
+    )
+
+
+def _start_storage_review_fork(
+    *,
+    fork_source: dict,
+    actor: "CodeActActor",
+    tools: Dict[str, Callable],
+    message: str,
+    parent_lineage: list[str] | None,
+) -> "AsyncToolLoopHandle":
+    """Start the storage review as a fork of the session's conversation.
+
+    Its first request is the session's system prompt, messages, last tools
+    and tool choice -- as the session sent them -- plus *message*, so the
+    provider serves all but that message from the session's cache. The loop
+    adds nothing else: no runtime-context header, no parent context, no
+    compression. Library tools the list advertises run as the review's own;
+    everything else in the list is refused by rule.
+    """
+    from unify.common._async_tool.propagation_mode import ChatContextPropagation
+
+    client = fork_llm_client(
+        fork_source["client"],
+        origin="StorageCheck",
+        purpose="planning",
+        messages=fork_source["messages"],
+    )
+    first_choice = fork_source.get("tool_choice")
+    first_choice = first_choice if isinstance(first_choice, str) else "auto"
+    # The list's ask_about_completed_tool is the loop's own, over the review's
+    # calls; the review's variant over the task's tools is not in the list.
+    review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
+
+    def _review_policy(step: int, visible: Dict[str, Any]):
+        return (
+            first_choice if step == 0 else "auto",
+            visible,
+            {"mask_rule": _REVIEW_FORK_MASK_RULE},
+        )
+
+    return start_async_tool_loop(
+        client=client,
+        message=message,
+        tools=review_tools,
+        loop_id="StorageCheck(CodeActActor.act)",
+        parent_lineage=parent_lineage,
+        tool_policy=_review_policy,
+        propagate_chat_context=ChatContextPropagation.NEVER,
+        caller_description="",
+        preprocess_msgs=getattr(actor, "_preprocess_msgs", None),
+        prompt_caching=getattr(actor, "_prompt_caching", None),
+        enable_compression=False,
+        fixed_tools_schema=fork_source["tools"],
+    )
+
+
 def _start_storage_check_loop(
     *,
     trajectory: list[dict],
@@ -1342,8 +1492,14 @@ def _start_storage_check_loop(
     stop_reason: str | None = None,
     proactive_summaries: list[str] | None = None,
     live_session: bool = False,
+    fork_source: dict | None = None,
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
+
+    With *fork_source* (see :func:`_review_fork_source`) the review is a fork
+    of the session's own conversation, and the rulebook arrives as one
+    appended user message instead of a system prompt around a trajectory
+    dump.
 
     With ``live_session=True`` the trajectory belongs to a persistent
     session that is still running: the review covers the turns completed
@@ -1528,6 +1684,33 @@ def _start_storage_check_loop(
     result_header = (
         "## Latest Turn Response\n\n" if live_session else "## Final Result\n\n"
     )
+
+    if fork_source is not None:
+        # The conversation is the trajectory. The completed-tool and inner
+        # storage sections name tools the fork's list does not carry.
+        return _start_storage_review_fork(
+            fork_source=fork_source,
+            actor=actor,
+            tools=tools,
+            message=(
+                f"{_REVIEW_FORK_ROLE}"
+                f"{_STORAGE_WHAT_CAN_BE_STORED}"
+                f"{_storage_environment_note()}"
+                f"{_STORAGE_TWO_STORES}"
+                f"{_storage_update_first_note()}"
+                f"{_STORAGE_SUB_AGENT_PATTERNS}"
+                f"{_STORAGE_RECURRING_DELIVERABLE}"
+                f"{instructions}"
+                "\n\n"
+                f"{stop_context_section}"
+                f"{proactive_storage_section}"
+                f"{_storage_needs_repair_note()}"
+                f"{_storage_review_outcome_note()}"
+                f"{result_header}"
+                f"{original_result}"
+            ),
+            parent_lineage=parent_lineage,
+        )
 
     # Static doctrine first, volatile trajectory last: every storage loop
     # shares the same byte-identical prefix (role + doctrine + instructions),
@@ -2194,6 +2377,18 @@ class _StorageCheckHandle(SteerableToolHandle):
                 except Exception:
                     pass
 
+                # UNIFY_REVIEW_FORK: continue the session's own conversation
+                # when it can be continued exactly; otherwise say why not.
+                fork_source, fork_skipped = _review_fork_source(
+                    self._inner,
+                    self._actor,
+                )
+                if fork_skipped:
+                    logger.info(
+                        f"StorageCheck fork skipped: {fork_skipped}; running "
+                        "the standalone review",
+                    )
+
                 storage_handle = _start_storage_check_loop(
                     trajectory=trajectory,
                     ask_tools=ask_tools,
@@ -2203,6 +2398,7 @@ class _StorageCheckHandle(SteerableToolHandle):
                     parent_lineage=_sc_parent_lineage,
                     stop_reason=self._stop_reason,
                     proactive_summaries=proactive_summaries or None,
+                    fork_source=fork_source,
                 )
 
                 if storage_handle is None:
