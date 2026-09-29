@@ -605,6 +605,8 @@ async def async_tool_loop_inner(
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
     _discipline = _cache_discipline.enabled()
+    if _discipline:
+        _cache_discipline.ensure_cache_affinity(client)
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -2776,6 +2778,14 @@ async def async_tool_loop_inner(
                             0.7,
                             _max_input_tokens,
                         )
+
+            if _discipline:
+                with suppress(Exception):
+                    _cache_discipline.log_cache_use(
+                        client,
+                        _full_completion,
+                        label=cfg.label,
+                    )
 
             # The activity timeout catches hung tools, not slow inference
             # (providers have their own timeouts), so an LLM response resets it.

@@ -1015,6 +1015,7 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         try:
             fork = fork_llm_client(self._client, origin="compress_context")
             completion = await fork.generate(**request)
+            _cache_discipline.log_cache_use(fork, completion, label=label)
             content = completion.choices[0].message.content
         except Exception as exc:
             LOGGER.warning(

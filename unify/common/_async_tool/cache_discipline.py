@@ -19,6 +19,13 @@ fixed:
   sent, unchanged, plus one appended instruction, so it is served from the
   cache; the session then continues from the summary under the same system
   prompt and tool list.
+* **One cache per session.** A client whose unillm takes a cache affinity
+  key gets one per session, so its requests reach the replica holding its
+  prefix; a fork shares its parent's key. Without the key the client is
+  left as it is.
+* **Measured.** Each call logs how many of its input tokens the provider
+  served from the cache, and the running share for the session. A reply
+  that does not report cached tokens is counted as unknown, not as zero.
 
 The helpers here hold that policy so the loop itself only asks two questions
 per turn: what to advertise, and whether a call is allowed. With the switch
@@ -29,7 +36,10 @@ from __future__ import annotations
 
 import copy
 import contextvars
+import uuid
 from typing import Any, Iterable, Optional
+
+from ...logger import LOGGER
 
 # The tool names a turn allows, set by the loop around each dispatch while the
 # switch is on. A completion mutator that reads the request's tool list to
@@ -225,3 +235,77 @@ def completion_text(content: Any) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         ).strip()
     return ""
+
+
+# ── cache affinity and the cache-hit metric ────────────────────────────────
+
+
+def ensure_cache_affinity(client: Any) -> Optional[str]:
+    """Give *client* a per-session cache affinity key when its unillm takes one.
+
+    A key the client already has (a fork's, inherited from its parent) is
+    kept. Returns the key, or ``None`` for a unillm without the feature.
+    """
+    if not hasattr(client, "set_cache_affinity"):
+        return None
+    key = getattr(client, "cache_affinity", None)
+    if key is None:
+        key = uuid.uuid4().hex
+        client.set_cache_affinity(key)
+    return key
+
+
+_CACHE_STATS = "_unify_cache_stats"
+
+
+def _field(obj: Any, name: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def cache_usage(completion: Any) -> tuple[Optional[int], Optional[int]]:
+    """``(input tokens, of which cached)`` from a reply's usage; ``None`` if unreported."""
+    usage = _field(completion, "usage")
+    prompt = _field(usage, "prompt_tokens")
+    cached = _field(_field(usage, "prompt_tokens_details"), "cached_tokens")
+    prompt = int(prompt) if isinstance(prompt, (int, float)) else None
+    cached = int(cached) if isinstance(cached, (int, float)) else None
+    return prompt, cached
+
+
+def cache_stats(client: Any) -> Optional[dict]:
+    """The session's running cache totals, or ``None`` before its first call."""
+    stats = getattr(client, _CACHE_STATS, None)
+    return dict(stats) if isinstance(stats, dict) else None
+
+
+def _share(cached: int, total: int) -> str:
+    return f"{100 * cached / total:.1f}%" if total else "n/a"
+
+
+def log_cache_use(client: Any, completion: Any, *, label: str = "") -> None:
+    """Add one reply's cache use to the session's totals and log both."""
+    prompt, cached = cache_usage(completion)
+    stats = getattr(client, _CACHE_STATS, None)
+    if not isinstance(stats, dict):
+        stats = {"calls": 0, "input_tokens": 0, "cached_tokens": 0, "unknown": 0}
+    stats["calls"] += 1
+    if prompt is None or cached is None:
+        stats["unknown"] += 1
+        this_call = "cached tokens not reported"
+    else:
+        stats["input_tokens"] += prompt
+        stats["cached_tokens"] += cached
+        this_call = f"{cached}/{prompt} input tokens cached ({_share(cached, prompt)})"
+    setattr(client, _CACHE_STATS, stats)
+    known = stats["calls"] - stats["unknown"]
+    unknown = f", {stats['unknown']} unreported" if stats["unknown"] else ""
+    LOGGER.info(
+        f"🗄️ [{label}] cache: {this_call}; session "
+        f"{stats['cached_tokens']}/{stats['input_tokens']} "
+        f"({_share(stats['cached_tokens'], stats['input_tokens'])}) over "
+        f"{known} call(s){unknown}",
+    )
