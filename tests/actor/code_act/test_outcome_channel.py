@@ -343,6 +343,26 @@ async def test_lessons_standalone_offers_no_function_writes_and_keeps_guidance(
     assert outcome_mod.LESSONS_HEADER in text
 
 
+@pytest.mark.asyncio
+async def test_lessons_refuse_the_function_patch_tool_too(switches, monkeypatch):
+    switches(outcome=True, review_failed="lessons")
+    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
+    captured: dict = {}
+    real = caa.start_async_tool_loop
+
+    def spy(*args, **kwargs):
+        if kwargs.get("loop_id") == "StorageCheck(CodeActActor.act)":
+            captured["tools"] = sorted(kwargs["tools"])
+        return real(*args, **kwargs)
+
+    with patch.object(caa, "start_async_tool_loop", spy):
+        _note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
+    assert "FunctionManager_patch_function" not in captured["tools"]
+    assert "GuidanceManager_patch_guidance" in captured["tools"]
+    names = {t["function"]["name"] for t in requests[3]["tools"]}
+    assert "FunctionManager_patch_function" not in names
+
+
 LESSON_FORK_REVIEW = (
     lambda: h.completion(
         calls=[

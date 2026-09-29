@@ -50,6 +50,7 @@ LESSON_REFUSED_TOOLS = (
     "FunctionManager_delete_function",
     "FunctionManager_reconcile_dependencies",
     "FunctionManager_check_function",
+    "FunctionManager_patch_function",
 )
 LESSON_MASK_RULE = (
     "this review covers a run that failed its check, so it records lessons "
