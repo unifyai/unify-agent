@@ -6,10 +6,13 @@ session. In a Stage 1 AppWorld cell, 4 of the task actor's 12 calls of stored
 functions went through this tool, all 4 raised (two 401s from a placeholder
 token such as ``"{{access_token}}"``, a ValueError, a TypeError), and none was
 recorded, so the functions stayed on probation. With the switch on, a call
-through the tool that reports an error (or whose install fails) quarantines
-the function, and one that returns is a pass counted with its arguments. A
-call a correction reached while it ran is not evidence. With the switch off
-nothing is recorded and the tool returns exactly what it returns as shipped.
+through the tool that reports an error (or whose install fails) is a failure
+-- failures on two distinct inputs quarantine the function -- and one that
+returns is a pass counted with its arguments. A failure the caller caused (a
+placeholder token, arguments that do not fit the signature) is not held
+against the function, and the tool's reply says so. A call a correction
+reached while it ran is not evidence. With the switch off nothing is recorded
+and the tool returns exactly what it returns as shipped.
 Functions run in-process through the actor's own session executor; no model
 is called.
 """
@@ -41,6 +44,7 @@ LOGIN = (
 PLACEHOLDER_ERROR = (
     "PermissionError: 401 Unauthorized: '{{access_token}}' is not a token"
 )
+BAD_TOKEN_ERROR = "PermissionError: 401 Unauthorized: 'expired-1' is not a token"
 
 
 @pytest.fixture
@@ -94,25 +98,84 @@ class _Actor:
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_a_failed_call_through_the_tool_quarantines_the_function(trust_on):
+async def test_failures_through_the_tool_on_two_inputs_quarantine_the_function(
+    trust_on,
+):
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[LOGIN, DIVIDE])
     actor = _Actor(fm)
     try:
-        out = await actor.call("fetch_profile", access_token="{{access_token}}")
+        out = await actor.call("fetch_profile", access_token="expired-1")
+        # the model still sees the error, reported rather than raised, as shipped
+        assert _result(out) is None
+        assert _last_line(_error(out)) == BAD_TOKEN_ERROR
+        t = _trust(fm, "fetch_profile")
+        # one failure can be a bad input: still on probation
+        assert (t.state, t.passes, t.failures, t.clean_uses) == ("probation", 0, 1, 0)
+        assert t.last_failure == BAD_TOKEN_ERROR
+        await actor.call("fetch_profile", access_token="expired-2")
     finally:
         await actor.close()
-    # the model still sees the error, reported rather than raised, as shipped
-    assert _result(out) is None
-    assert _last_line(_error(out)) == PLACEHOLDER_ERROR
     t = _trust(fm, "fetch_profile")
-    assert (t.state, t.passes, t.failures, t.clean_uses) == ("quarantined", 0, 1, 0)
-    assert t.last_failure == PLACEHOLDER_ERROR
+    assert (t.state, t.failures) == ("quarantined", 2)
     assert [r["function_id"] for r in _rows()] == [t.function_id]
     # and the quarantine takes effect: the next loaded read leaves it out
     namespace: dict = {}
     fm.list_functions(_return_callable=True, _namespace=namespace)
     assert "fetch_profile" not in namespace and "divide" in namespace
+
+
+async def _off_and_on(monkeypatch, function_name: str, **call_kwargs) -> tuple:
+    """The tool's reply to one call with the switch off, then on (a fresh store each)."""
+    replies = []
+    for switch in ("", "ramp"):
+        db.clear()
+        monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", switch)
+        fm = FunctionManager(include_primitives=False)
+        fm.add_functions(implementations=[LOGIN, DIVIDE])
+        actor = _Actor(fm)
+        try:
+            replies.append(await actor.call(function_name, **call_kwargs))
+        finally:
+            await actor.close()
+    return replies[0], replies[1]
+
+
+@_handle_project
+@pytest.mark.asyncio
+async def test_a_placeholder_token_is_not_held_against_the_function(monkeypatch):
+    """The Stage 1 case: the model passed "{{access_token}}" and the login returned 401."""
+    off, on = await _off_and_on(
+        monkeypatch,
+        "fetch_profile",
+        access_token="{{access_token}}",
+    )
+    assert _rows() == []
+    assert _last_line(_error(off)) == PLACEHOLDER_ERROR
+    # the reply is the shipped one plus a note telling the model what to fix
+    assert _error(on) == (
+        f"{_error(off).rstrip()}\n\n"
+        "Not counted against the stored function `fetch_profile`: "
+        "`access_token` was given an unfilled placeholder instead of a real "
+        "value; pass the actual value from your session.\n"
+    )
+    assert _result(on) == _result(off) is None
+
+
+@_handle_project
+@pytest.mark.asyncio
+async def test_arguments_that_do_not_fit_are_not_held_against_the_function(
+    monkeypatch,
+):
+    off, on = await _off_and_on(monkeypatch, "divide", a=1, denominator=2)
+    assert _rows() == []
+    assert "TypeError" in _error(off)
+    assert _error(on) == (
+        f"{_error(off).rstrip()}\n\n"
+        "Not counted against the stored function `divide`: the arguments do "
+        "not fit the signature of `divide(a, b)`: missing a required "
+        "argument: 'b'.\n"
+    )
 
 
 @_handle_project
@@ -138,16 +201,19 @@ async def test_a_call_through_the_tool_that_returns_is_a_pass(trust_on):
         await actor.call("divide", a=8, b=2)
         t = _trust(fm, "divide")
         assert (t.state, t.passes, t.distinct_inputs) == ("trusted", 3, 2)
-        # a failure through the tool demotes even a trusted function
+        # a failure through the tool demotes a trusted function, a second
+        # on another input quarantines it
         out = await actor.call("divide", a=1, b=0)
         assert _last_line(_error(out)) == "ZeroDivisionError: division by zero"
         t = _trust(fm, "divide")
         assert (t.state, t.passes, t.failures, t.last_failure) == (
-            "quarantined",
+            "probation",
             3,
             1,
             "ZeroDivisionError: division by zero",
         )
+        await actor.call("divide", a=2, b=0)
+        assert _trust(fm, "divide").state == "quarantined"
     finally:
         await actor.close()
 
@@ -178,7 +244,7 @@ async def test_a_failed_install_through_the_tool_is_a_failed_reuse(
     finally:
         await actor.close()
     t = _trust(fm, "divide")
-    assert (t.state, t.passes, t.failures) == ("quarantined", 0, 1)
+    assert (t.state, t.passes, t.failures) == ("probation", 0, 1)
     assert t.last_failure.startswith("RuntimeError: uv pip install failed")
 
 
@@ -237,12 +303,12 @@ async def test_a_repair_after_tool_failures_keeps_their_history(trust_on):
     fm.add_functions(implementations=[LOGIN])
     actor = _Actor(fm)
     try:
-        for token in ("{{access_token}}", "$access_token", "<token>"):
+        for token in ("expired-1", "expired-2", "expired-3"):
             await actor.call("fetch_profile", access_token=token)
         t = _trust(fm, "fetch_profile")
         assert (t.state, t.failures) == ("quarantined", 3)
         assert t.last_failure == (
-            "PermissionError: 401 Unauthorized: '<token>' is not a token"
+            "PermissionError: 401 Unauthorized: 'expired-3' is not a token"
         )
 
         repaired = LOGIN.replace("isalnum()", "strip()")
@@ -259,7 +325,7 @@ async def test_a_repair_after_tool_failures_keeps_their_history(trust_on):
         )
         assert (t.failures, t.last_failure) == (
             3,
-            "PermissionError: 401 Unauthorized: '<token>' is not a token",
+            "PermissionError: 401 Unauthorized: 'expired-3' is not a token",
         )
         assert t.source_hash == store_trust.sha256(repaired)
         assert store_trust.needs_repair() == []  # no longer waiting for repair
@@ -269,13 +335,22 @@ async def test_a_repair_after_tool_failures_keeps_their_history(trust_on):
         assert _result(out) == {"user": "ada"}
         t = _trust(fm, "fetch_profile")
         assert (t.state, t.passes, t.failures) == ("probation", 1, 3)
-        # a new failure adds to the history, and the review's note shows all of it
+        # new failures add to the history; the new version counts its own
+        # failing inputs, and the review's note shows the whole history
         await actor.call("fetch_profile", access_token="   ")
+        assert (
+            _trust(fm, "fetch_profile").state,
+            _trust(fm, "fetch_profile").failures,
+        ) == (
+            "probation",
+            4,
+        )
+        await actor.call("fetch_profile", access_token=" ")
     finally:
         await actor.close()
     t = _trust(fm, "fetch_profile")
-    assert (t.state, t.passes, t.failures) == ("quarantined", 1, 4)
-    assert "`fetch_profile`: 4 failure(s) after 1 pass(es)" in (
+    assert (t.state, t.passes, t.failures) == ("quarantined", 1, 5)
+    assert "`fetch_profile`: 5 failure(s) after 1 pass(es)" in (
         store_trust.needs_repair_note()
     )
 
@@ -294,7 +369,7 @@ async def _scenario(fm: FunctionManager) -> list:
         for name, kwargs in (
             ("divide", {"a": 6, "b": 3}),
             ("divide", {"a": 1, "b": 0}),
-            ("fetch_profile", {"access_token": "{{access_token}}"}),
+            ("fetch_profile", {"access_token": "expired-1"}),
             ("fetch_profile", {"access_token": "tok123"}),
             ("divide", {"a": 8, "b": 2}),
         ):
@@ -316,7 +391,7 @@ async def test_switch_off_records_nothing_and_the_tool_returns_the_same(
     off = await _scenario(FunctionManager(include_primitives=False))
     assert _rows() == []
     assert off[1][2] == "ZeroDivisionError: division by zero"
-    assert off[2][2] == PLACEHOLDER_ERROR
+    assert off[2][2] == BAD_TOKEN_ERROR
 
     db.clear()
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
@@ -324,6 +399,7 @@ async def test_switch_off_records_nothing_and_the_tool_returns_the_same(
     on = await _scenario(fm)
     assert on == off
     divide, profile = _trust(fm, "divide"), _trust(fm, "fetch_profile")
-    # divide was repaired: probation with its failure kept; fetch_profile untouched
+    # divide was repaired: probation with its failure kept; fetch_profile
+    # failed once, on one input, and stays on probation
     assert (divide.state, divide.passes, divide.failures) == ("probation", 0, 1)
-    assert (profile.state, profile.passes, profile.failures) == ("quarantined", 1, 1)
+    assert (profile.state, profile.passes, profile.failures) == ("probation", 1, 1)

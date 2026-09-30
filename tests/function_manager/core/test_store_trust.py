@@ -5,9 +5,13 @@ past AppWorld runs 14 of 36 calls to a stored function raised, and each one
 stayed in the library looking like a function that works. With the switch on,
 every reuse is evidence. A call through the sandbox boundary, a proxy or
 ``execute_function`` that returns is a pass, counted with the hash of its
-arguments; one that raises quarantines the function. A function that only
-reads is trusted after 3 passes over 2 distinct inputs, one that can change
-anything (directly or through a stored function it calls) after 5 over 3. An
+arguments; failures on 2 distinct inputs quarantine the function (one, if the
+call had no arguments or the fresh-world verifier found it), and a trusted
+function's first failure only demotes it. A failure the caller caused (the
+arguments do not fit the signature, or a credential parameter holds an
+unfilled placeholder) is not recorded. A function that only reads is trusted
+after 3 passes over 2 distinct inputs, one that can change anything (directly
+or through a stored function it calls) after 5 over 3. An
 overwrite, a patch or a change to a function it calls puts it back on
 probation with its passes cleared and its failure history kept. With the
 switch off nothing is recorded and every call behaves as shipped. Functions
@@ -241,22 +245,166 @@ def test_an_unknown_primitive_counts_as_a_change(trust_on):
 
 
 @_handle_project
-def test_any_failure_quarantines_even_a_trusted_function(trust_on):
+def test_one_failure_leaves_a_function_on_probation_and_two_inputs_quarantine(
+    trust_on,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[DIVIDE])
+    divide = _load(fm)["divide"]
+    with pytest.raises(ZeroDivisionError):  # the caller still sees the error
+        divide(1, 0)
+    t = _trust(fm, "divide")
+    assert (t.state, t.passes, t.failures, t.clean_uses) == ("probation", 0, 1, 0)
+    assert t.last_failure == "ZeroDivisionError: division by zero"
+    # the same input again is not a second input
+    with pytest.raises(ZeroDivisionError):
+        divide(a=1, b=0)
+    assert (_trust(fm, "divide").state, _trust(fm, "divide").failures) == (
+        "probation",
+        2,
+    )
+    # a function that failed is not promoted, however often it then passes
+    for a in (1, 2, 3, 4):
+        divide(a, 1)
+    assert _trust(fm, "divide").state == "probation"
+    with pytest.raises(ZeroDivisionError):
+        divide(2, 0)
+    t = _trust(fm, "divide")
+    assert (t.state, t.passes, t.failures) == ("quarantined", 4, 3)
+    assert store_trust.QUARANTINE_FAILING_INPUTS == 2
+    # later passes are counted but do not lift the quarantine
+    divide(5, 1)
+    t = _trust(fm, "divide")
+    assert (t.state, t.passes) == ("quarantined", 5)
+
+
+@_handle_project
+def test_a_trusted_function_is_demoted_first_and_quarantined_on_another_input(
+    trust_on,
+):
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     divide = _load(fm)["divide"]
     for a in (1, 2, 3):
         divide(a, 1)
     assert _trust(fm, "divide").state == "trusted"
-    with pytest.raises(ZeroDivisionError):  # the caller still sees the error
+    with pytest.raises(ZeroDivisionError):
         divide(1, 0)
     t = _trust(fm, "divide")
-    assert (t.state, t.passes, t.failures, t.clean_uses) == ("quarantined", 3, 1, 0)
-    assert t.last_failure == "ZeroDivisionError: division by zero"
-    # later passes are counted but do not lift the quarantine
-    divide(4, 1)
+    assert (t.state, t.passes, t.failures, t.clean_uses) == ("probation", 3, 1, 0)
+    # passes do not restore trust: it has failed in this version
+    divide(4, 1), divide(5, 1)
+    assert _trust(fm, "divide").state == "probation"
+    with pytest.raises(ZeroDivisionError):
+        divide(1, 0)  # the same input: still on probation
+    assert _trust(fm, "divide").state == "probation"
+    with pytest.raises(ZeroDivisionError):
+        divide(9, 0)
     t = _trust(fm, "divide")
-    assert (t.state, t.passes) == ("quarantined", 4)
+    assert (t.state, t.failures) == ("quarantined", 3)
+
+
+@_handle_project
+def test_a_call_with_no_arguments_quarantines_on_its_first_failure(trust_on):
+    fm = _FM()
+    fm.add_functions(implementations=[HALT.replace("Stopped", "RuntimeError")])
+    with pytest.raises(RuntimeError):
+        _load(fm)["halt"]()
+    t = _trust(fm, "halt")
+    assert (t.state, t.failures) == ("quarantined", 1)
+
+
+# --------------------------------------------------------------------------- #
+#  Caller faults                                                               #
+# --------------------------------------------------------------------------- #
+
+LOGIN_AS = (
+    "def login_as(user: str, access_token: str) -> str:\n"
+    "    if not access_token.startswith('tok-'):\n"
+    "        raise PermissionError('401 Unauthorized')\n"
+    "    return user\n"
+)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "{{access_token}}",
+        "${ACCESS_TOKEN}",
+        "$access_token",
+        "<token>",
+        "<your access token>",
+        "YOUR_ACCESS_TOKEN",
+        "%TOKEN%",
+        "access_token",
+        "placeholder",
+        "xxx",
+    ],
+)
+@_handle_project
+def test_a_placeholder_credential_is_the_callers_fault(trust_on, token):
+    fm = _FM()
+    fm.add_functions(implementations=[LOGIN_AS])
+    login_as = _load(fm)["login_as"]
+    with pytest.raises(PermissionError):  # the caller still sees the error
+        login_as("ada", access_token=token)
+    with pytest.raises(PermissionError):
+        login_as("bob", token)
+    assert _rows() == []
+
+
+@_handle_project
+def test_a_real_looking_credential_failure_is_the_functions(trust_on):
+    fm = _FM()
+    fm.add_functions(implementations=[LOGIN_AS])
+    login_as = _load(fm)["login_as"]
+    for token in ("$uperman1", "expired-9"):  # "$..." names no credential
+        with pytest.raises(PermissionError):
+            login_as("ada", token)
+    t = _trust(fm, "login_as")
+    assert (t.state, t.failures) == ("quarantined", 2)
+
+
+def test_placeholders_are_judged_only_for_credential_parameters():
+    judge = store_trust.looks_like_placeholder
+    assert judge("api_key", "${API_KEY}") and judge("password", "<password>")
+    assert judge("client_secret", "{{secret}}") and judge("authorization", "***")
+    assert not judge("user", "{{name}}")  # not a credential parameter
+    assert not judge("access_token", "eyJhbGciOi.payload.sig")
+    assert not judge("password", "<abc>")  # names no credential
+    assert not judge("access_token", "") and not judge("access_token", 42)
+
+
+@_handle_project
+@pytest.mark.asyncio
+async def test_arguments_that_do_not_fit_the_signature_are_the_callers_fault(
+    trust_on,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[DIVIDE])
+    divide = _load(fm)["divide"]
+    with pytest.raises(TypeError):
+        divide(1)
+    with pytest.raises(TypeError):
+        divide(1, 2, c=3)
+    out = await fm.execute_function(
+        function_name="divide",
+        call_kwargs={"a": 1, "denominator": 2},
+    )
+    assert "TypeError" in out["error"]
+    assert _rows() == []
+    # a TypeError inside the body is the function's own
+    with pytest.raises(TypeError):
+        divide("x", 2)
+    assert _trust(fm, "divide").failures == 1
+
+
+def test_the_signature_is_read_from_the_source_without_running_it():
+    source = "def f(a, /, b, c=print('never'), *args, d, e=2, **kwargs):\n    pass\n"
+    signature = store_trust.source_signature(source, "f")
+    assert str(signature) == "(a, /, b, c=..., *args, d, e=..., **kwargs)"
+    assert store_trust.source_signature(source, "g") is None
+    assert store_trust.source_signature("def f(:", "f") is None
 
 
 @_handle_project
@@ -288,7 +436,8 @@ def test_an_async_function_is_recorded_when_awaited(trust_on):
     with pytest.raises(TypeError):
         asyncio.run(fail())
     t = _trust(fm, "halve")
-    assert t.state == "quarantined" and t.last_failure.startswith("TypeError: ")
+    assert (t.state, t.failures) == ("probation", 1)
+    assert t.last_failure.startswith("TypeError: ")
 
 
 @_handle_project
@@ -302,8 +451,9 @@ def test_a_callee_that_raises_quarantines_its_caller_too(trust_on, phone_env):
         raise PermissionError("401 Unauthorized")
 
     ns["primitives"].phone.delete_text_message = broken
-    with pytest.raises(PermissionError):
-        ns["purge_all"]([1])
+    for ids in ([1], [2]):
+        with pytest.raises(PermissionError):
+            ns["purge_all"](ids)
     for name in ("purge", "purge_all"):
         t = _trust(fm, name)
         assert (t.state, t.last_failure) == (
@@ -330,8 +480,9 @@ def _quarantine_divide(fm: FunctionManager) -> None:
     fm.add_functions(implementations=[DIVIDE])
     divide = _load(fm)["divide"]
     divide(1, 1)
-    with pytest.raises(ZeroDivisionError):
-        divide(1, 0)
+    for a in (1, 2):
+        with pytest.raises(ZeroDivisionError):
+            divide(a, 0)
     assert _trust(fm, "divide").state == "quarantined"
 
 
@@ -351,12 +502,12 @@ def test_an_overwrite_puts_the_function_back_on_probation(trust_on):
         0,
         0,
     )
-    assert (t.failures, t.last_failure) == (1, "ZeroDivisionError: division by zero")
-    assert t.input_hashes == ()
+    assert (t.failures, t.last_failure) == (2, "ZeroDivisionError: division by zero")
+    assert t.input_hashes == () and t.failure_hashes == ()
     assert t.source_hash == store_trust.sha256(fixed)
     assert _load(fm)["divide"](1, 0) == 0.0
     t = _trust(fm, "divide")
-    assert (t.state, t.passes, t.failures) == ("probation", 1, 1)
+    assert (t.state, t.passes, t.failures) == ("probation", 1, 2)
 
 
 @_handle_project
@@ -379,13 +530,18 @@ def test_every_failure_before_an_overwrite_stays_on_record(trust_on):
     # a later overwrite keeps it again; the history is only ever added to
     fm.add_functions(implementations=[LOUD], overwrite=True)
     assert (_trust(fm, "loud").state, _trust(fm, "loud").failures) == ("probation", 3)
+    # the new version starts counting its failing inputs afresh
+    loud = _load(fm)["loud"]
     with pytest.raises(RuntimeError):
-        _load(fm)["loud"](4)
+        loud(4)
+    assert (_trust(fm, "loud").state, _trust(fm, "loud").failures) == ("probation", 4)
+    with pytest.raises(RuntimeError):
+        loud(5)
     t = _trust(fm, "loud")
     assert (t.state, t.failures, t.last_failure) == (
         "quarantined",
-        4,
-        "RuntimeError: xxxx",
+        5,
+        "RuntimeError: xxxxx",
     )
 
 
@@ -431,15 +587,16 @@ def test_a_changed_callee_puts_its_callers_back_on_probation(trust_on, phone_env
     fm.add_functions(implementations=[PURGE])
     fm.add_functions(implementations=[PURGE_ALL])
     ns = _load(fm)
-    with pytest.raises(TypeError):
-        ns["purge_all"](None)  # purge_all's own failure: len(None)
+    for ids in (None, 5):
+        with pytest.raises(TypeError):
+            ns["purge_all"](ids)  # purge_all's own failure: len(None)
     assert _trust(fm, "purge_all").state == "quarantined"
     assert _trust(fm, "purge").state == "probation"
     changed = PURGE.replace("return 'deleted'", "return 'gone'")
     fm.add_functions(implementations=[changed], overwrite=True)
     t = _trust(fm, "purge_all")
-    # back on probation, its own failure still on record
-    assert (t.state, t.passes, t.failures) == ("probation", 0, 1)
+    # back on probation, its own failures still on record
+    assert (t.state, t.passes, t.failures) == ("probation", 0, 2)
     assert t.last_failure.startswith("TypeError: ")
     # the restart is written, not only reported
     row = db.query_one(
@@ -447,7 +604,7 @@ def test_a_changed_callee_puts_its_callers_back_on_probation(trust_on, phone_env
         " WHERE function_id = ?",
         (_id(fm, "purge_all"),),
     )
-    assert (row["state"], row["failures"]) == ("probation", 1)
+    assert (row["state"], row["failures"]) == ("probation", 2)
     assert row["last_failure"] == t.last_failure
 
 
@@ -498,6 +655,11 @@ async def test_execute_function_records_passes_and_failures(trust_on):
         call_kwargs={"a": 4, "b": 0},
     )
     assert "ZeroDivisionError" in out["error"]  # reported, not raised, as shipped
+    assert (_trust(fm, "divide").state, _trust(fm, "divide").failures) == (
+        "probation",
+        1,
+    )
+    await fm.execute_function(function_name="divide", call_kwargs={"a": 5, "b": 0})
     t = _trust(fm, "divide")
     assert (t.state, t.last_failure) == (
         "quarantined",
@@ -533,7 +695,7 @@ async def test_a_proxy_call_is_recorded(trust_on):
     with pytest.raises(ZeroDivisionError):
         await proxies["divide"](a=1, b=0)
     t = _trust(fm, "divide")
-    assert (t.passes, t.failures, t.state) == (1, 1, "quarantined")
+    assert (t.passes, t.failures, t.state) == (1, 1, "probation")
 
 
 # --------------------------------------------------------------------------- #
@@ -869,8 +1031,20 @@ def test_a_failed_recheck_quarantines_but_the_call_still_runs(
     verifier.outcome = False
     assert _load(fm)["double"](2) == 4
     t = _trust(fm, "double")
+    # one failure, but the verifier's: quarantined at once
     assert (t.state, t.failures, t.passes) == ("quarantined", 1, 1)
     assert t.last_failure == "fresh-world check failed: wrong outcome"
+
+
+@_handle_project
+def test_a_placeholder_call_is_not_rechecked(trust_on, rng, enable_verify):
+    source = LOGIN_AS.replace("login_as", "lookup_as")
+    fm = _FM()
+    fm.add_functions(implementations=[source])
+    verifier = enable_verify()
+    with pytest.raises(PermissionError):
+        _load(fm)["lookup_as"]("ada", "{{access_token}}")
+    assert rng.draws == [] and verifier.runs == [] and _rows() == []
 
 
 @_handle_project
@@ -878,8 +1052,10 @@ def test_a_quarantined_function_is_not_rechecked(trust_on, rng, enable_verify):
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     divide = _load(fm)["divide"]  # loaded before the quarantine, so still callable
-    with pytest.raises(ZeroDivisionError):
-        divide(1, 0)
+    for a in (1, 2):
+        with pytest.raises(ZeroDivisionError):
+            divide(a, 0)
+    assert _trust(fm, "divide").state == "quarantined"
     verifier = enable_verify()
     assert divide(4, 2) == 2.0
     assert rng.draws == [] and verifier.runs == []
@@ -975,3 +1151,41 @@ def test_a_verifier_recheck_method_is_preferred_to_run(trust_on, rng, enable_ver
     )
     _load(fm)["double"](3)
     assert seen == [("double", {"x": 3})] and verifier.runs == []
+
+
+def test_a_store_created_before_failing_inputs_were_kept_gains_the_column(
+    monkeypatch,
+    tmp_path,
+):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    old = sqlite3.connect(path)
+    old.execute(
+        "CREATE TABLE function_trust (function_id INTEGER PRIMARY KEY,"
+        " state TEXT NOT NULL, source_hash TEXT NOT NULL,"
+        " dependency_hash TEXT NOT NULL, effect_class TEXT NOT NULL,"
+        " passes INTEGER NOT NULL DEFAULT 0, failures INTEGER NOT NULL DEFAULT 0,"
+        " input_hashes TEXT NOT NULL DEFAULT '[]',"
+        " distinct_inputs INTEGER NOT NULL DEFAULT 0,"
+        " clean_uses INTEGER NOT NULL DEFAULT 0, last_failure TEXT,"
+        " updated_at TEXT NOT NULL)",
+    )
+    old.execute(
+        "INSERT INTO function_trust (function_id, state, source_hash,"
+        " dependency_hash, effect_class, failures, updated_at)"
+        " VALUES (7, 'quarantined', 's', 'd', 'read_only', 1, 'then')",
+    )
+    old.commit()
+    old.close()
+    monkeypatch.setenv("UNIFY_STORE_PATH", str(path))
+    db.reset_store()
+    try:
+        row = db.query_one("SELECT * FROM function_trust WHERE function_id = 7")
+        assert (row["state"], row["failures"], row["failure_hashes"]) == (
+            "quarantined",
+            1,
+            "[]",
+        )
+    finally:
+        db.reset_store()

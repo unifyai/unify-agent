@@ -63,8 +63,9 @@ def _quarantine(fm: FunctionManager) -> None:
     fm.list_functions(_return_callable=True, _namespace=namespace)
     namespace["double"](1)
     namespace["divide"](1, 1)
-    with pytest.raises(ZeroDivisionError):
-        namespace["divide"](1, 0)
+    for a in (1, 2):  # failures on two inputs quarantine
+        with pytest.raises(ZeroDivisionError):
+            namespace["divide"](a, 0)
 
 
 @_handle_project
@@ -85,7 +86,7 @@ def test_the_review_lists_quarantined_functions_only_while_on(monkeypatch):
         "the trajectory or its failure shows the fix (patch or overwrite it; a "
         "changed function starts again on probation), delete it if it cannot "
         "work, or leave it:\n"
-        "- `divide`: 1 failure(s) after 1 pass(es); last failure: "
+        "- `divide`: 2 failure(s) after 1 pass(es); last failure: "
         "ZeroDivisionError: division by zero\n\n"
     )
     post_run, proactive = _review_prompts()

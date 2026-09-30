@@ -3071,8 +3071,10 @@ class FunctionManager(BaseFunctionManager):
         try:
             environment.ensure(func_data.get("dependencies") or [])
         except Exception as exc:
+            # The function's own install failed, whatever the arguments: a
+            # plain dict carries no caller fault.
             if observer is not None:
-                observer.after(arguments, exc)
+                observer.after(dict(arguments), exc)
             raise
         outcome = await self._execute_python_function(
             implementation=implementation,

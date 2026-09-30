@@ -15,11 +15,23 @@ This switch keeps a trust record per stored function in ``function_trust`` and u
   or a re-run of patched code) is not evidence;
 - **promotion**: at the thresholds legacy Unify used, by effect class -- a function that only reads (no
   environment method it can reach, directly or through the stored functions it calls, is labelled other
-  than ``read``) after 3 passes over 2 distinct inputs, one that can change anything after 5 over 3;
-- **demotion**: any failure quarantines the function until its source or the source of a function it calls
-  changes, or it is overwritten, which puts it back on probation with its passes, distinct inputs and clean
-  uses cleared. The failure count and last failure are kept across versions, so a record shows that an
-  earlier version failed and why (``passes`` counts the stored version only, ``failures`` every version);
+  than ``read``) after 3 passes over 2 distinct inputs, one that can change anything after 5 over 3 -- and
+  only while the version has not failed: a function that failed once, or was demoted, stays on probation
+  until it changes;
+- **caller faults**: a failure the caller caused says nothing about the function and is not recorded:
+  arguments that do not fit the function's signature (checked against its stored source before the call),
+  and an unfilled placeholder such as ``"{{access_token}}"``, ``"${API_KEY}"``, ``"$token"`` or
+  ``"<password>"`` passed for a parameter whose name marks it as a credential (it contains ``token``,
+  ``key``, ``secret``, ``password``, ``auth`` or ``credential``);
+- **demotion**: a function on probation is quarantined once it has failed on
+  :data:`QUARANTINE_FAILING_INPUTS` distinct inputs (one failure can be a bad input), or on its first failure
+  when the call had no arguments (there is no input to blame). A trusted function goes back to probation on
+  its first failure and is quarantined on a second one on another input. One failure the fresh-world
+  verifier confirms quarantines either. A quarantined function stays so until its source or the source of
+  a function it calls changes, or it is overwritten, which puts it back on probation with its passes,
+  distinct inputs, failing inputs and clean uses cleared. The failure count and last failure are kept
+  across versions, so a record shows that an earlier version failed and why (``passes`` counts the stored
+  version only, ``failures`` every version);
 - **quarantine**: a quarantined function is left out of the searches, lists and filters that load functions into the sandbox, with a
   warning naming it and its last failure, the way ``UNIFY_SEARCH_SKIP_UNLOADABLE`` leaves out a row that
   cannot load. It stays in the store, and the reads that return rows only (the storage review's) still
@@ -37,6 +49,7 @@ is written or hidden, and every call path is the shipped one.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import random
@@ -60,6 +73,11 @@ PROMOTION = {READ_ONLY: (3, 2), CHANGES: (5, 3)}
 
 REASON_LIMIT = 300
 """Characters of a failure's ``Type: message`` that are kept."""
+
+QUARANTINE_FAILING_INPUTS = 2
+"""Distinct inputs a function on probation fails on before it is quarantined; a trusted function's first
+failure only demotes it. A failure the fresh-world verifier confirms quarantines at once, and so does,
+on probation, a failure of a call with no arguments."""
 
 MAX_INPUT_HASHES = 32
 """Distinct input hashes kept per function; enough to tell 1, 2 and 3 apart with room to spare."""
@@ -104,6 +122,8 @@ class Trust:
     clean_uses: int = 0
     last_failure: Optional[str] = None
     input_hashes: tuple[str, ...] = field(default=(), repr=False)
+    failure_hashes: tuple[str, ...] = field(default=(), repr=False)
+    """Inputs this version has failed on (in-task failures; cleared when the record restarts)."""
 
 
 @dataclass(frozen=True)
@@ -213,6 +233,7 @@ def _fresh(stored: _Stored) -> Trust:
 
 def _from_row(row: Mapping[str, Any], stored: _Stored) -> Trust:
     hashes = tuple(db.loads(row["input_hashes"]) or ())
+    failing = tuple(db.loads(row["failure_hashes"]) or ())
     return Trust(
         function_id=stored.function_id,
         name=stored.name,
@@ -226,6 +247,7 @@ def _from_row(row: Mapping[str, Any], stored: _Stored) -> Trust:
         clean_uses=int(row["clean_uses"]),
         last_failure=row["last_failure"],
         input_hashes=hashes,
+        failure_hashes=failing,
     )
 
 
@@ -233,8 +255,8 @@ def _write(trust: Trust) -> None:
     db.execute(
         "INSERT OR REPLACE INTO function_trust (function_id, state, source_hash,"
         " dependency_hash, effect_class, passes, failures, input_hashes,"
-        " distinct_inputs, clean_uses, last_failure, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " distinct_inputs, clean_uses, last_failure, failure_hashes, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             trust.function_id,
             trust.state,
@@ -247,6 +269,7 @@ def _write(trust: Trust) -> None:
             trust.distinct_inputs,
             trust.clean_uses,
             trust.last_failure,
+            db.dumps(list(trust.failure_hashes)),
             db.now_iso(),
         ),
     )
@@ -255,7 +278,8 @@ def _write(trust: Trust) -> None:
 def _restarted(row: Mapping[str, Any], stored: _Stored) -> Trust:
     """A record on probation for the stored version that keeps the failure history of ``row``.
 
-    Passes, distinct inputs and clean uses belonged to the code that earned them and are cleared; the
+    Passes, distinct inputs, failing inputs and clean uses belonged to the code that earned them and are
+    cleared; the
     failure count and last failure are carried over, so a later needs-repair note or an analysis of the
     records can still see that an earlier version failed, and why.
     """
@@ -304,8 +328,10 @@ def record(
     running_source: Optional[str],
     arguments: Mapping[str, Any],
     error: Any = None,
+    verified: bool = False,
 ) -> Optional[Trust]:
-    """Record one reuse: a pass when ``error`` is ``None``, else a failure that quarantines the function.
+    """Record one reuse: a pass when ``error`` is ``None``, else a failure (see the module's demotion rule;
+    ``verified`` marks a failure the fresh-world verifier found, which quarantines at once).
 
     ``running_source`` is the source of the code that ran; when it is not the stored source (the function
     changed after it was loaded) nothing is recorded and ``None`` is returned.
@@ -326,8 +352,14 @@ def record(
             passes = current.passes + 1
             distinct = current.distinct_inputs + int(new_input)
             state = current.state
+            failing = current.failure_hashes
             need_passes, need_inputs = PROMOTION[stored.effect_class]
-            if state == PROBATION and passes >= need_passes and distinct >= need_inputs:
+            if (
+                state == PROBATION
+                and not failing
+                and passes >= need_passes
+                and distinct >= need_inputs
+            ):
                 state = TRUSTED
             updated = replace(
                 current,
@@ -336,18 +368,40 @@ def record(
                 distinct_inputs=distinct,
                 clean_uses=current.clean_uses + 1,
                 input_hashes=hashes,
+                failure_hashes=failing,
             )
         else:
+            digest = input_hash(arguments)
+            failing = current.failure_hashes
+            if digest not in failing:
+                failing = (failing + (digest,))[-MAX_INPUT_HASHES:]
+            if current.state == QUARANTINED or verified:
+                state = QUARANTINED
+            elif current.state == TRUSTED:
+                state = (
+                    PROBATION  # trusted is never failing: promotion needs no failure
+                )
+            elif len(failing) >= QUARANTINE_FAILING_INPUTS or not arguments:
+                state = QUARANTINED
+            else:
+                state = PROBATION
             updated = replace(
                 current,
-                state=QUARANTINED,
+                state=state,
                 failures=current.failures + 1,
                 clean_uses=0,
                 last_failure=failure_reason(error),
+                failure_hashes=failing,
             )
-            if current.state != QUARANTINED:
+            if current.state != QUARANTINED and state == QUARANTINED:
                 logger.warning(
                     "Quarantined the stored function %r: %s",
+                    stored.name,
+                    updated.last_failure,
+                )
+            elif current.state != state:
+                logger.info(
+                    "The stored function %r is back on probation: %s",
                     stored.name,
                     updated.last_failure,
                 )
@@ -414,7 +468,8 @@ def maybe_recheck(
     uses (one draw from the seeded RNG); it then needs a held-out task, and a run check from the
     process's budget beyond :data:`RECHECK_RESERVE`. The verifier's ``recheck(candidate, call_kwargs)``
     runs it if the verifier has one, else its ``run``; the call's arguments are passed without the
-    environment's credential parameters. The verdict is recorded like a reuse (a failure quarantines);
+    environment's credential parameters. The verdict is recorded like a reuse, and a failure quarantines
+    at once;
     a verifier that raises records nothing.
     """
     from . import store_verify
@@ -473,6 +528,7 @@ def maybe_recheck(
             if verdict.ok
             else f"fresh-world check failed: {verdict.reason or 'no reason given'}"
         ),
+        verified=True,
     )
     return verdict
 
@@ -563,8 +619,6 @@ def needs_repair_note() -> str:
 
 def bind_arguments(fn: Any, args: Sequence[Any], kwargs: Mapping[str, Any]) -> dict:
     """The call's arguments by parameter name; positional ones as ``_0``, ``_1``... when they cannot be bound."""
-    import inspect
-
     if fn is not None:
         try:
             return dict(inspect.signature(fn).bind_partial(*args, **kwargs).arguments)
@@ -573,6 +627,152 @@ def bind_arguments(fn: Any, args: Sequence[Any], kwargs: Mapping[str, Any]) -> d
     bound = {f"_{i}": value for i, value in enumerate(args)}
     bound.update(kwargs)
     return bound
+
+
+_CREDENTIAL_NAME = re.compile(
+    r"token|key|secret|passw(?:or)?d|auth|credential",
+    re.IGNORECASE,
+)
+_TEMPLATE = re.compile(r"^(?:\{\{.*\}\}|\$\{.*\})$", re.DOTALL)
+"""``{{access_token}}``, ``${API_KEY}``: a template that was never filled, whatever it names."""
+_NAMED_SLOT = re.compile(
+    r"^(?:\$([A-Za-z_][\w.]*)|%([A-Za-z_]\w*)%|<([^<>]+)>|(your[\s_-][\w\s-]*))$",
+    re.IGNORECASE,
+)
+"""``$access_token``, ``%TOKEN%``, ``<api key>``, ``YOUR_PASSWORD``: a slot, when what it names is a credential."""
+_PLACEHOLDER_WORD = re.compile(
+    r"^(?:placeholder|redacted|changeme|undefined|null|none|todo|x{3,}|\.{3}|\*{3,})$",
+    re.IGNORECASE,
+)
+
+
+class _Default:
+    """Stands in for a default value :func:`source_signature` does not evaluate."""
+
+    def __repr__(self) -> str:
+        return "..."
+
+
+_HAS_DEFAULT = _Default()
+
+
+def looks_like_placeholder(parameter: str, value: Any) -> bool:
+    """Whether ``value``, passed for ``parameter``, is an unfilled stand-in for a credential.
+
+    Only a parameter whose name marks it as a credential is judged, and only a string that is an unfilled
+    template (``{{x}}``, ``${x}``), a slot naming a credential (``$access_token``, ``%TOKEN%``,
+    ``<api key>``, ``YOUR_PASSWORD``), a placeholder word (``placeholder``, ``redacted``, ``xxx``...), or
+    the parameter's own name. A real secret that merely starts with ``$`` is not a slot unless what
+    follows names a credential.
+    """
+    if not isinstance(value, str) or not _CREDENTIAL_NAME.search(str(parameter)):
+        return False
+    text = value.strip().strip("\"'").strip()
+    if not text:
+        return False
+    if _TEMPLATE.match(text) or _PLACEHOLDER_WORD.match(text):
+        return True
+    if text.lower() == str(parameter).lower():
+        return True
+    slot = _NAMED_SLOT.match(text)
+    return bool(slot) and bool(
+        _CREDENTIAL_NAME.search(next(g for g in slot.groups() if g is not None)),
+    )
+
+
+def source_signature(source: Any, name: str) -> Optional[inspect.Signature]:
+    """The signature of the function ``name`` defined in ``source``, read without running it (defaults
+    stand in as markers); ``None`` when the source does not define it."""
+    import ast
+
+    try:
+        tree = ast.parse(str(source or ""))
+    except SyntaxError:
+        return None
+    node = next(
+        (
+            n
+            for n in tree.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        ),
+        None,
+    )
+    if node is None:
+        return None
+    Parameter = inspect.Parameter
+    spec = node.args
+    positional = [*spec.posonlyargs, *spec.args]
+    first_default = len(positional) - len(spec.defaults)
+    params = [
+        Parameter(
+            arg.arg,
+            (
+                Parameter.POSITIONAL_ONLY
+                if i < len(spec.posonlyargs)
+                else Parameter.POSITIONAL_OR_KEYWORD
+            ),
+            default=_HAS_DEFAULT if i >= first_default else Parameter.empty,
+        )
+        for i, arg in enumerate(positional)
+    ]
+    if spec.vararg is not None:
+        params.append(Parameter(spec.vararg.arg, Parameter.VAR_POSITIONAL))
+    params += [
+        Parameter(
+            arg.arg,
+            Parameter.KEYWORD_ONLY,
+            default=Parameter.empty if default is None else _HAS_DEFAULT,
+        )
+        for arg, default in zip(spec.kwonlyargs, spec.kw_defaults)
+    ]
+    if spec.kwarg is not None:
+        params.append(Parameter(spec.kwarg.arg, Parameter.VAR_KEYWORD))
+    try:
+        return inspect.Signature(params)
+    except ValueError:
+        return None
+
+
+def caller_fault(
+    signature: Optional[inspect.Signature],
+    name: str,
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any],
+) -> Optional[str]:
+    """Why a failure of this call would be the caller's, not the function's; ``None`` when it would not.
+
+    The arguments must bind to the function's signature, and no credential parameter may hold a
+    placeholder (:func:`looks_like_placeholder`).
+    """
+    if signature is None:
+        named = dict(kwargs)
+    else:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError as exc:
+            return (
+                f"the arguments do not fit the signature of `{name}{signature}`: {exc}"
+            )
+        named = {}
+        for param, value in bound.arguments.items():
+            kind = signature.parameters[param].kind
+            if kind is inspect.Parameter.VAR_KEYWORD and isinstance(value, Mapping):
+                named.update(value)
+            else:
+                named[param] = value
+    for param, value in named.items():
+        if looks_like_placeholder(param, value):
+            return (
+                f"`{param}` was given an unfilled placeholder instead of a real value; "
+                f"pass the actual value from your session"
+            )
+    return None
+
+
+class ObservedCall(dict):
+    """A call's bound arguments, and why a failure of it would be the caller's fault (``caller_fault``)."""
+
+    caller_fault: Optional[str] = None
 
 
 class CallObserver:
@@ -599,12 +799,29 @@ class CallObserver:
             return None
         return cls(function_manager, func_data)
 
-    def before(self, fn: Any, args: Sequence[Any], kwargs: Mapping[str, Any]) -> dict:
-        """The call's bound arguments, after a fresh-world re-check if one is due."""
+    def before(
+        self,
+        fn: Any,
+        args: Sequence[Any],
+        kwargs: Mapping[str, Any],
+    ) -> ObservedCall:
+        """The call's bound arguments, after a fresh-world re-check if one is due; with ``caller_fault``
+        set (and no re-check) when a failure would be the caller's fault."""
         try:
-            arguments = bind_arguments(fn, args, kwargs)
+            arguments = ObservedCall(bind_arguments(fn, args, kwargs))
         except Exception:  # noqa: BLE001 - observing must never break a call
-            arguments = dict(kwargs)
+            arguments = ObservedCall(kwargs)
+        try:
+            arguments.caller_fault = caller_fault(
+                source_signature(self._source, self._name),
+                self._name,
+                args,
+                kwargs,
+            )
+        except Exception:  # noqa: BLE001 - observing must never break a call
+            arguments.caller_fault = None
+        if arguments.caller_fault is not None:
+            return arguments
         try:
             maybe_recheck(self._fm, self._func_data, arguments)
         except Exception as exc:  # noqa: BLE001 - observing must never break a call
@@ -613,10 +830,18 @@ class CallObserver:
 
     def after(self, arguments: Mapping[str, Any], error: Any = None) -> None:
         """Record the call: returned (``error`` is ``None``) or raised. A call stopped by steering is not
-        evidence either way."""
+        evidence either way, and neither is a failure that was the caller's fault."""
         from .steering import ExecutionStopped
 
         if isinstance(error, ExecutionStopped):
+            return
+        fault = getattr(arguments, "caller_fault", None)
+        if error is not None and fault is not None:
+            logger.info(
+                "Not counted against the stored function %r: %s",
+                self._name,
+                fault,
+            )
             return
         try:
             record(
@@ -632,6 +857,8 @@ class CallObserver:
 __all__ = [
     "CHANGES",
     "CallObserver",
+    "ObservedCall",
+    "QUARANTINE_FAILING_INPUTS",
     "PROBATION",
     "PROMOTION",
     "QUARANTINED",
@@ -640,6 +867,9 @@ __all__ = [
     "TRUSTED",
     "Trust",
     "bind_arguments",
+    "caller_fault",
+    "looks_like_placeholder",
+    "source_signature",
     "enabled",
     "failure_reason",
     "hidden_warning",

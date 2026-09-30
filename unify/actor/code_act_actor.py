@@ -3997,8 +3997,10 @@ class CodeActActor(BaseCodeActActor):
                             list(function_data["dependencies"]),
                         )
                     except Exception as exc:
+                        # The function's own install failed, whatever the
+                        # arguments: a plain dict carries no caller fault.
                         if trust_observer is not None:
-                            trust_observer.after(trust_arguments, exc)
+                            trust_observer.after(dict(trust_arguments), exc)
                         raise
 
                 # The synthesized-call path prepends the raw implementation
@@ -4183,10 +4185,19 @@ class CodeActActor(BaseCodeActActor):
                     if trust_observer is not None and not (
                         _ef_steering is not None and _ef_steering.messages
                     ):
-                        trust_observer.after(
-                            trust_arguments,
-                            exec_exc if exec_exc is not None else out.get("error"),
+                        trust_error = (
+                            exec_exc if exec_exc is not None else out.get("error")
                         )
+                        trust_observer.after(trust_arguments, trust_error)
+                        # A failure the caller caused is not held against the
+                        # function; the reply says so, and what to fix.
+                        trust_fault = getattr(trust_arguments, "caller_fault", None)
+                        if trust_error and trust_fault and out.get("error"):
+                            out["error"] = (
+                                f"{str(out['error']).rstrip()}\n\n"
+                                f"Not counted against the stored function "
+                                f"`{function_name}`: {trust_fault}.\n"
+                            )
 
                     # Enrich with session name.
                     if out.get("session_id") is not None:

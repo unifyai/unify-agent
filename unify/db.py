@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS function_trust (
     distinct_inputs INTEGER NOT NULL DEFAULT 0,
     clean_uses INTEGER NOT NULL DEFAULT 0,
     last_failure TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    failure_hashes TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,6 +250,18 @@ class _Connection:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        _add_missing_columns(self.conn)
+
+
+_ADDED_COLUMNS = (("function_trust", "failure_hashes", "TEXT NOT NULL DEFAULT '[]'"),)
+"""Columns added to a table after it first shipped: a store created earlier gets them on open."""
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, declaration in _ADDED_COLUMNS:
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 _STATE: _Connection | None = None
