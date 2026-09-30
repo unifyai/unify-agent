@@ -25,6 +25,7 @@ from typing import (
     Union,
 )
 from unify import db
+from ..common.exact_patch import PatchEdit
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
 from ..common.semantic_search import SIMILARITY_FIELD, rank_by_similarity
 from .activation import (
@@ -1452,36 +1453,59 @@ class FunctionManager(BaseFunctionManager):
         self,
         *,
         name: str,
-        old: str,
-        new: str,
+        old: Optional[str] = None,
+        new: Optional[str] = None,
         why: str,
+        edits: Optional[List[PatchEdit]] = None,
+        replace_all: bool = False,
+        old_string: Optional[str] = None,
+        new_string: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Fix a stored function in place by replacing one exact excerpt of its source.
+        """Fix a stored function in place by replacing excerpts of its source.
 
         Prefer this to adding a near-duplicate or rewriting the whole
         function. Read the current source first (search or filter with
-        implementations), copy the lines to change exactly as they appear, and
-        replace only those. ``old`` must occur exactly once in the current
-        source; otherwise nothing changes and the reply says how many times it
-        occurs, with an excerpt. The patched function keeps its name, id,
-        precondition, dependencies and guidance links, is checked exactly like
-        a function passed to ``FunctionManager_add_functions``, and the
-        version it replaces is kept in history with ``why``.
+        implementations) and copy the lines to change as they appear. Give one
+        change as ``old``/``new``, or several as ``edits``: they apply in
+        order, each to the source as the edits before it left it, and all or
+        none are stored. Each ``old`` must occur exactly once (unless
+        ``replace_all``); if it is not found exactly, differences in line
+        endings, trailing spaces, indentation (``new`` is re-indented to match)
+        and runs of spaces are tolerated while the match stays unique.
+        Otherwise nothing changes and the reply shows the closest text or
+        every occurrence. The patched source must parse and still be one
+        function named ``name``; it keeps its id, precondition, dependencies
+        and guidance links, is checked exactly like a function passed to
+        ``FunctionManager_add_functions``, and the version it replaces is kept
+        in history with ``why``.
 
         Args:
             name: The stored function's exact name.
-            old: The exact text to replace, with enough surrounding text to
-                occur only once. Whitespace and indentation count.
-            new: The replacement text. The result must still be one function
-                named ``name``.
+            old: The text to replace, with enough surrounding text to occur
+                only once.
+            new: The replacement text (an empty string deletes ``old``).
             why: One sentence on what was wrong or missing; kept with the
                 replaced version.
+            edits: Several changes in one call, instead of ``old``/``new``:
+                ``[{"old", "new", "replace_all"?}, ...]``.
+            replace_all: With ``old``/``new``, replace every occurrence of
+                ``old`` instead of exactly one.
+            old_string: Another name for ``old``.
+            new_string: Another name for ``new``.
 
         Returns:
-            ``{"name", "status": "patched", "function_id"}``, or
-            ``{"name", "error"}`` saying why nothing was changed.
+            ``{"name", "status": "patched", "function_id", "edits"}``, where
+            ``edits`` gives, per edit, how it matched (``exact``,
+            ``trailing_whitespace``, ``indentation`` or
+            ``collapsed_whitespace``) and how many occurrences it replaced;
+            or ``{"name", "error"}`` saying why nothing was changed.
         """
-        from unify.common.exact_patch import PatchRefused, apply_once
+        from unify.common.exact_patch import (
+            PatchRefused,
+            apply_edits,
+            collect_edits,
+            syntax_refusal,
+        )
 
         def refused(message: str) -> Dict[str, Any]:
             return {"name": name, "error": message}
@@ -1492,6 +1516,17 @@ class FunctionManager(BaseFunctionManager):
             )
         if not str(why or "").strip():
             return refused("say `why` the function needs this patch")
+        try:
+            wanted = collect_edits(
+                old=old,
+                new=new,
+                edits=edits,
+                replace_all=replace_all,
+                old_string=old_string,
+                new_string=new_string,
+            )
+        except PatchRefused as exc:
+            return refused(str(exc))
         rows = self._rows(self._compositional_scope("name = ?"), (name,), limit=1)
         if not rows:
             return refused(
@@ -1500,14 +1535,19 @@ class FunctionManager(BaseFunctionManager):
             )
         row = rows[0]
         try:
-            patched = apply_once(
+            patched, report = apply_edits(
                 row["implementation"],
-                old,
-                new,
+                wanted,
                 what=f"the source of {name!r}",
             )
         except PatchRefused as exc:
             return refused(str(exc))
+        problem = syntax_refusal(patched)
+        if problem is not None:
+            return refused(
+                f"the patched source is not one function that parses, so "
+                f"nothing was changed: {problem}",
+            )
         try:
             patched_name = self._parse_implementation(patched)[0]
         except ValueError as exc:
@@ -1540,6 +1580,7 @@ class FunctionManager(BaseFunctionManager):
                 "name": name,
                 "status": "patched",
                 "function_id": int(row["function_id"]),
+                "edits": report,
             }
         return refused(
             status[len("error: ") :] if status.startswith("error: ") else status,

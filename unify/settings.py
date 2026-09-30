@@ -133,7 +133,9 @@ class ProductionSettings(BaseSettings):
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
     # Offer FunctionManager_patch_function and GuidanceManager_patch_guidance,
-    # which replace one exact excerpt of a stored entry in place (the patched
+    # which replace excerpts of a stored entry in place -- one edit or an
+    # ordered, all-or-nothing batch, each matched exactly or, failing that,
+    # with whitespace differences tolerated while it stays unique (the patched
     # function is stored through add_functions, so its checks still apply),
     # and keep the previous version of every overwritten function or guidance
     # entry in function_history / guidance_history. Off: no patch tools and

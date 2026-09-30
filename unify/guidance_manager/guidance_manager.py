@@ -7,6 +7,7 @@ from contextvars import ContextVar
 from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 from unify import db
+from ..common.exact_patch import PatchEdit
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
 from ..common.stale_reason import StaleReason, merge_stale_reasons
 from ..common.semantic_search import rank_by_similarity
@@ -355,35 +356,53 @@ class GuidanceManager(BaseGuidanceManager):
         self,
         *,
         id_or_title: Union[int, str],
-        old: str,
-        new: str,
+        old: Optional[str] = None,
+        new: Optional[str] = None,
         why: str,
+        edits: Optional[List[PatchEdit]] = None,
+        replace_all: bool = False,
+        old_string: Optional[str] = None,
+        new_string: Optional[str] = None,
     ) -> ToolOutcome:
-        """Fix a stored guidance entry in place by replacing one exact excerpt of its content.
+        """Fix a stored guidance entry in place by replacing excerpts of its content.
 
         Prefer this to adding a second entry or rewriting the whole entry.
-        Read the current content first (``get_guidance``), copy the text to
-        change exactly as it appears, and replace only that. ``old`` must
-        occur exactly once in the content; otherwise nothing changes and the
-        error says how many times it occurs, with an excerpt. The entry keeps
-        its id, title and ``function_ids``, and the version it replaces is
-        kept in history with ``why``. Built-in entries cannot be patched.
+        Read the current content first (``get_guidance``) and copy the text to
+        change as it appears. Give one change as ``old``/``new``, or several
+        as ``edits``: they apply in order, each to the content as the edits
+        before it left it, and all or none are stored. Each ``old`` must occur
+        exactly once (unless ``replace_all``); if it is not found exactly,
+        differences in line endings, trailing spaces, indentation and runs of
+        spaces are tolerated while the match stays unique. Otherwise nothing
+        changes and the error shows the closest text or every occurrence. The
+        entry keeps its id, title and ``function_ids``, and the version it
+        replaces is kept in history with ``why``. Built-in entries cannot be
+        patched.
 
         Args:
             id_or_title: The entry's ``guidance_id``, or its exact title.
-            old: The exact text to replace, with enough surrounding text to
-                occur only once. Whitespace counts.
-            new: The replacement text.
+            old: The text to replace, with enough surrounding text to occur
+                only once.
+            new: The replacement text (an empty string deletes ``old``).
             why: One sentence on what was wrong or missing; kept with the
                 replaced version.
+            edits: Several changes in one call, instead of ``old``/``new``:
+                ``[{"old", "new", "replace_all"?}, ...]``.
+            replace_all: With ``old``/``new``, replace every occurrence of
+                ``old`` instead of exactly one.
+            old_string: Another name for ``old``.
+            new_string: Another name for ``new``.
 
         Returns:
-            ``{"outcome": "guidance patched", "details": {"guidance_id"}}``.
+            ``{"outcome": "guidance patched", "details": {"guidance_id",
+            "edits"}}``, where ``edits`` gives, per edit, how it matched
+            (``exact``, ``trailing_whitespace``, ``indentation`` or
+            ``collapsed_whitespace``) and how many occurrences it replaced.
 
         Raises:
             ValueError: Nothing was changed; the message says why.
         """
-        from unify.common.exact_patch import PatchRefused, apply_once
+        from unify.common.exact_patch import PatchRefused, apply_edits, collect_edits
 
         if not _patch_enabled():
             raise ValueError(
@@ -391,13 +410,23 @@ class GuidanceManager(BaseGuidanceManager):
             )
         if not str(why or "").strip():
             raise ValueError("say `why` the entry needs this patch")
+        try:
+            wanted = collect_edits(
+                old=old,
+                new=new,
+                edits=edits,
+                replace_all=replace_all,
+                old_string=old_string,
+                new_string=new_string,
+            )
+        except PatchRefused as exc:
+            raise ValueError(str(exc)) from None
         row = self._stored_entry(id_or_title)
         guidance_id = int(row["guidance_id"])
         try:
-            patched = apply_once(
+            patched, report = apply_edits(
                 row["content"],
-                old,
-                new,
+                wanted,
                 what=f"the content of guidance {guidance_id}",
             )
         except PatchRefused as exc:
@@ -407,7 +436,10 @@ class GuidanceManager(BaseGuidanceManager):
             self.update_guidance(guidance_id=guidance_id, content=patched)
         finally:
             _UPDATE_REASON.reset(token)
-        return {"outcome": "guidance patched", "details": {"guidance_id": guidance_id}}
+        return {
+            "outcome": "guidance patched",
+            "details": {"guidance_id": guidance_id, "edits": report},
+        }
 
     def _stored_entry(self, id_or_title: Union[int, str]) -> Dict[str, Any]:
         """The stored entry named by id (or a string of digits) or by exact title."""

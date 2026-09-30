@@ -1,14 +1,16 @@
-"""Symbolic: ``UNIFY_FUNCTION_PATCH`` fixes a stored function by one exact excerpt.
+"""Symbolic: ``UNIFY_FUNCTION_PATCH`` fixes a stored function by replacing excerpts.
 
 As shipped a stored function changes only by resending its whole source with
 ``add_functions(overwrite=True)``, which also resets its precondition and
 dependencies to whatever that call passes. ``patch_function(name, old, new,
-why)`` replaces ``old`` -- which must occur exactly once in the current
-source -- keeps the precondition and dependencies, and stores the result
+why)`` -- or ``edits=[{old, new}, ...]`` for several changes, applied in
+order and all or none -- replaces each ``old``, which must match once (the
+matching ladder is tested in ``tests/common/test_patch_ladder.py``), keeps
+the precondition and dependencies, checks the result parses, and stores it
 through ``add_functions(overwrite=True)``, so the store check and the verify
 gate apply unchanged. The replaced version goes to ``function_history`` with
-``why``. With the switch off the method refuses and changes nothing. No model
-is called.
+``why``, one row per call. With the switch off the method refuses and
+changes nothing. No model is called.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ import pytest
 
 from tests.helpers import _handle_project
 from unify import db
-from unify.common.exact_patch import PatchRefused, apply_once, occurrences
 from unify.function_manager.function_manager import (
     DEFAULT_OVERWRITE_REASON,
     FunctionManager,
@@ -65,58 +66,6 @@ def patch_on(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-#  The exact-excerpt rule                                                      #
-# --------------------------------------------------------------------------- #
-
-
-def test_one_occurrence_is_replaced():
-    assert apply_once("a = 1\nb = 2\n", "b = 2", "b = 3", what="x") == "a = 1\nb = 3\n"
-    assert apply_once("keep\ndrop\n", "drop\n", "", what="x") == "keep\n"
-
-
-def test_zero_occurrences_are_refused_with_the_closest_line():
-    with pytest.raises(PatchRefused) as exc:
-        apply_once(SRC, "total += row['amt']", "x", what="the source of 'f'")
-    message = str(exc.value)
-    assert message.startswith("`old` occurs 0 times in the source of 'f'")
-    assert "nothing was changed" in message
-    assert "The closest line is 5:" in message
-    assert "   5 |         total += row['amount']" in message
-    assert "whitespace is ignored" not in message
-
-
-def test_zero_occurrences_say_when_only_whitespace_differs():
-    with pytest.raises(PatchRefused, match="occurs 0 times") as exc:
-        apply_once(SRC, "total  +=  row['amount']", "x", what="w")
-    assert "It does match when whitespace is ignored" in str(exc.value)
-
-
-def test_several_occurrences_are_refused_with_where_they_are():
-    text = "x = 1\ny = 2\nx = 1\nz = 3\nx = 1\nx = 1\n"
-    with pytest.raises(PatchRefused) as exc:
-        apply_once(text, "x = 1", "x = 9", what="t")
-    message = str(exc.value)
-    assert message.startswith("`old` occurs 4 times in t (at lines 1, 3, 5, …)")
-    assert "   3 | x = 1" in message
-    assert message.count("----") == 2  # three excerpts at most
-
-
-def test_overlapping_occurrences_count():
-    assert occurrences("aaa", "aa") == [0, 1]
-    with pytest.raises(PatchRefused, match="occurs 2 times"):
-        apply_once("aaa", "aa", "b", what="t")
-
-
-@pytest.mark.parametrize(
-    "old, new, match",
-    [("", "x", "non-empty"), ("same", "same", "nothing to change")],
-)
-def test_empty_or_no_op_patches_are_refused(old, new, match):
-    with pytest.raises(PatchRefused, match=match):
-        apply_once("same text", old, new, what="t")
-
-
-# --------------------------------------------------------------------------- #
 #  patch_function                                                              #
 # --------------------------------------------------------------------------- #
 
@@ -138,6 +87,7 @@ def test_a_unique_excerpt_is_patched_in_place_with_history(patch_on):
         "name": "total_minor",
         "status": "patched",
         "function_id": before["function_id"],
+        "edits": [{"match": "exact", "replaced": 1}],
     }
     after = _stored("total_minor")
     assert after["function_id"] == before["function_id"]
@@ -269,7 +219,19 @@ def test_the_verify_gate_sees_the_patched_source(patch_on, monkeypatch):
             {"old": "def total_minor(", "new": "def grand_total("},
             "renames the function to 'grand_total'",
         ),
-        ({"old": "    return total\n", "new": "  return total\n"}, "not one function"),
+        (
+            {"old": "    return total\n", "new": "  return total\n"},
+            "not one function that parses, so nothing was changed: line 6: "
+            "unindent does not match",
+        ),
+        (
+            {"old": "def total_minor(", "new": "x = 1\ndef total_minor("},
+            "not one function, so nothing was changed",
+        ),
+        (
+            {"old": None, "new": None, "edits": [{"old": "total = 0"}]},
+            "`new` is missing",
+        ),
     ],
 )
 def test_other_refusals_change_nothing(patch_on, kwargs, match):
@@ -310,3 +272,239 @@ def test_a_patch_reason_differs_from_a_plain_overwrite(patch_on):
     fm.add_functions(implementations=SRC, overwrite=True)
     reasons = [row["reason"] for row in _history_since(mark)]
     assert reasons == ["w1", DEFAULT_OVERWRITE_REASON]
+
+
+# --------------------------------------------------------------------------- #
+#  Batches, the matching ladder and the argument aliases                       #
+# --------------------------------------------------------------------------- #
+
+
+@_handle_project
+def test_a_batch_is_stored_once_with_one_history_row(patch_on):
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    before = _stored("total_minor")
+    mark = _history_mark()
+    out = fm.patch_function(
+        name="total_minor",
+        why="skip rows without an amount and report in whole units",
+        edits=[
+            {
+                "old": "        total += row['amount']\n",
+                "new": "        total += row.get('amount', 0)\n",
+            },
+            {"old": "row.get('amount', 0)", "new": "int(row.get('amount', 0))"},
+            {"old": "    return total\n", "new": "    return total // 100\n"},
+        ],
+    )
+    assert out == {
+        "name": "total_minor",
+        "status": "patched",
+        "function_id": before["function_id"],
+        "edits": [{"match": "exact", "replaced": 1}] * 3,
+    }
+    after = _stored("total_minor")["implementation"]
+    assert after == SRC.replace(
+        "row['amount']",
+        "int(row.get('amount', 0))",
+    ).replace("return total", "return total // 100")
+    rows = _history_since(mark)
+    assert len(rows) == 1
+    assert rows[0]["previous"]["implementation"] == SRC
+    assert rows[0]["reason"] == "skip rows without an amount and report in whole units"
+    namespace: dict = {}
+    exec(after, namespace)
+    assert namespace["total_minor"]([{"amount": 250}, {}]) == 2
+
+
+@_handle_project
+def test_when_edit_two_of_three_fails_nothing_is_stored(patch_on):
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    mark = _history_mark()
+    out = fm.patch_function(
+        name="total_minor",
+        why="w",
+        edits=[
+            {"old": "total = 0", "new": "total = 1"},
+            {"old": "row['amt']", "new": "row['amount']"},
+            {"old": "return total", "new": "return -total"},
+        ],
+    )
+    assert out["error"].startswith(
+        "Edit 2 of 3 (matched in the text as edit 1 left it; no edit was kept): "
+        "`old` occurs 0 times in the source of 'total_minor'",
+    )
+    assert "The closest text is line 5" in out["error"]
+    assert _stored("total_minor")["implementation"] == SRC
+    assert _history_since(mark) == []
+
+
+@_handle_project
+def test_a_batch_whose_result_does_not_parse_is_refused(patch_on):
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    mark = _history_mark()
+    out = fm.patch_function(
+        name="total_minor",
+        why="w",
+        edits=[
+            {"old": "    for row in rows:\n", "new": "    for row in rows\n"},
+            {"old": "total = 0", "new": "total = 1"},
+        ],
+    )
+    assert out["error"].startswith(
+        "the patched source is not one function that parses, so nothing was "
+        "changed: line 4:",
+    )
+    assert "   4 |     for row in rows" in out["error"]
+    assert _stored("total_minor")["implementation"] == SRC
+    assert _history_since(mark) == []
+
+
+@_handle_project
+def test_the_stage_one_whitespace_miss_now_patches(patch_on):
+    """The one failed Stage 1 patch: `old` copied with the wrong indentation."""
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    out = fm.patch_function(
+        name="total_minor",
+        # Copied without its indentation, as a model quoting the lines does.
+        old="for row in rows:\n    total += row['amount']\n",
+        new="for row in rows:\n    if row.get('amount') is None:\n        continue\n    total += row['amount']\n",
+        why="rows without an amount raised KeyError",
+    )
+    assert out["status"] == "patched"
+    assert out["edits"] == [{"match": "indentation", "replaced": 1}]
+    after = _stored("total_minor")["implementation"]
+    assert after == SRC.replace(
+        "    for row in rows:\n",
+        "    for row in rows:\n"
+        "        if row.get('amount') is None:\n"
+        "            continue\n",
+    )
+    namespace: dict = {}
+    exec(after, namespace)
+    assert namespace["total_minor"]([{"amount": 2}, {}]) == 2
+
+
+PICK = (
+    "def pick(rows: list) -> list:\n"
+    '    """Keep the truthy rows, twice over when there are any."""\n'
+    "    out = []\n"
+    "    for row in rows:\n"
+    "        if row:\n"
+    "            out.append(row)\n"
+    "    for row in rows:\n"
+    "    \tif row:\n"
+    "            out.append(row)\n"
+    "    return out\n"
+)
+
+
+@_handle_project
+@pytest.mark.parametrize(
+    "old, when, lines",
+    [
+        # Two whole-line blocks once indentation is taken relative.
+        (
+            "if row:\n    out.append(row)",
+            "when indentation is compared relative to the block",
+            "5-6, 8-9",
+        ),
+        # Two blocks once runs of spaces and tabs count as one.
+        (
+            "if row:\n out.append(row)",
+            "when runs of spaces and tabs count as one",
+            "5-6, 8-9",
+        ),
+    ],
+)
+def test_an_ambiguous_fuzzy_match_is_never_applied(patch_on, old, when, lines):
+    fm = _FM()
+    fm.add_functions(implementations=PICK)
+    mark = _history_mark()
+    out = fm.patch_function(name="pick", old=old, new="pass", why="w")
+    assert (
+        f"`old` occurs 2 times in the source of 'pick' {when} (at lines {lines})"
+        in out["error"]
+    )
+    assert "set `replace_all`" in out["error"]
+    assert _stored("pick")["implementation"] == PICK
+    assert _history_since(mark) == []
+
+
+@_handle_project
+def test_replace_all_and_the_edit_tool_argument_names(patch_on):
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    mark = _history_mark()
+    out = fm.patch_function(
+        name="total_minor",
+        old_string="row",
+        new_string="item",
+        replace_all=True,
+        why="name the loop variable after what it holds",
+    )
+    assert out["edits"] == [{"match": "exact", "replaced": 5}]
+    after = _stored("total_minor")["implementation"]
+    assert after == SRC.replace("row", "item")
+    assert len(_history_since(mark)) == 1
+    out = fm.patch_function(
+        name="total_minor",
+        why="w",
+        edits=[{"old_string": "total = 0", "new_string": "total = 1"}],
+    )
+    assert out["edits"] == [{"match": "exact", "replaced": 1}]
+    # Renaming every "total" would rename the function: refused as a rename.
+    out = fm.patch_function(
+        name="total_minor",
+        old="total",
+        new="acc",
+        replace_all=True,
+        why="w",
+    )
+    assert "renames the function to 'acc_minor'" in out["error"]
+
+
+@_handle_project
+def test_with_the_switch_off_a_batch_is_refused_too(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
+    fm = _FM()
+    fm.add_functions(implementations=SRC)
+    mark = _history_mark()
+    out = fm.patch_function(
+        name="total_minor",
+        why="w",
+        edits=[{"old": "total = 0", "new": "total = 1"}],
+    )
+    assert out == {
+        "name": "total_minor",
+        "error": "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
+    }
+    assert _stored("total_minor")["implementation"] == SRC
+    assert _history_since(mark) == []
+
+
+def test_the_tool_schema_offers_old_new_or_a_batch_of_edits():
+    from unify.common.llm_helpers import method_to_schema
+
+    schema = method_to_schema(_FM().patch_function)["function"]
+    params = schema["parameters"]
+    assert list(params["properties"]) == [
+        "name",
+        "old",
+        "new",
+        "why",
+        "edits",
+        "replace_all",
+        "old_string",
+        "new_string",
+    ]
+    assert params["required"] == ["name", "why"]
+    item = params["properties"]["edits"]["items"]
+    assert item["type"] == "object"
+    assert set(item["properties"]) == {"old", "new", "replace_all"}
+    assert item["required"] == ["old", "new"]
+    assert params["properties"]["replace_all"] == {"type": "boolean"}
+    assert "several as ``edits``" in schema["description"]

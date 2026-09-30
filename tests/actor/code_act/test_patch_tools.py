@@ -3,6 +3,7 @@
 With the switch on, ``FunctionManager_patch_function`` and
 ``GuidanceManager_patch_guidance`` join the actor's tools and the storage
 review's tools, and the review's prompt gains the update-before-add order.
+The note describes batching an entry's changes as `edits` in one call.
 They are store-only tools: an actor that cannot store, or whose writes are
 withheld until the environment admits the run, does not get them. Off, the
 tool sets and both review prompts are exactly as shipped. No model is called:
@@ -102,6 +103,9 @@ def test_the_update_first_order_is_in_both_review_prompts_only_while_on(
     assert note.startswith("### Update before you add")
     for tool in PATCH_TOOLS:
         assert f"`{tool}`" in note
+    # Several changes to one entry go in one call, applied all or none.
+    assert "in one call as `edits`" in note
+    assert "all or none" in note
     on = _review_prompts()
     for before, after in zip(off, on):
         assert "Update before you add" not in before

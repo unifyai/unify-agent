@@ -735,9 +735,11 @@ def _storage_update_first_note() -> str:
         "trajectory used (`FunctionManager_patch_function` / "
         "`GuidanceManager_patch_guidance`); (2) otherwise patch a broader "
         "existing entry that should cover the case; (3) only then add a new "
-        "one. A patch replaces one exact excerpt: read the entry's current "
-        "text first and copy `old` exactly — it must occur once — and say "
-        "`why`. The entry keeps its id, precondition, dependencies and links, "
+        "one. A patch replaces excerpts of the entry: read its current text "
+        "first, copy each `old` with enough context to occur once, and say "
+        "`why`. Make several changes to one entry in one call as `edits` "
+        "(`[{old, new}, ...]`, applied in order, all or none). The entry "
+        "keeps its id, precondition, dependencies and links, "
         "a patched function is checked like any function you add, and the "
         "replaced version is kept in history. Rewrite a whole function with "
         "`overwrite=True` only when most of it changes.\n\n"
@@ -1137,8 +1139,8 @@ def _build_storage_tools(
 
     if store_verify.enabled():
         storage_methods.append(fm.check_function)
-    # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by one exact
-    # excerpt; off, the tools are as shipped. Simulated managers have none.
+    # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by replacing
+    # excerpts; off, the tools are as shipped. Simulated managers have none.
     if _function_patch_enabled():
         storage_methods.extend(
             method
