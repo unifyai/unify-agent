@@ -19,10 +19,12 @@ fixed:
   sent, unchanged, plus one appended instruction, so it is served from the
   cache; the session then continues from the summary under the same system
   prompt and tool list.
-* **One cache per session.** A client whose unillm takes a cache affinity
-  key gets one per session, so its requests reach the replica holding its
-  prefix; a fork shares its parent's key. Without the key the client is
-  left as it is.
+* **One cache per prefix.** A client whose unillm takes a cache affinity
+  key gets one derived from its model, system prompt and fixed tool list
+  (``UNIFY_CACHE_AFFINITY_SCOPE``: or one per session, or one per run), so
+  a new session reaches the replica an earlier session with the same prefix
+  cached it on; a fork shares its parent's key. Without the key the client
+  is left as it is.
 * **Measured.** Each call logs how many of its input tokens the provider
   served from the cache, and the running share for the session. A reply
   that does not report cached tokens is counted as unknown, not as zero.
@@ -36,6 +38,8 @@ from __future__ import annotations
 
 import copy
 import contextvars
+import hashlib
+import json
 import uuid
 from typing import Any, Iterable, Optional
 
@@ -247,18 +251,88 @@ def completion_text(content: Any) -> str:
 # ── cache affinity and the cache-hit metric ────────────────────────────────
 
 
-def ensure_cache_affinity(client: Any) -> Optional[str]:
-    """Give *client* a per-session cache affinity key when its unillm takes one.
+def affinity_scope() -> str:
+    """``UNIFY_CACHE_AFFINITY_SCOPE``: ``prefix``, ``session`` or ``run``."""
+    from unify.settings import SETTINGS
 
-    A key the client already has (a fork's, inherited from its parent) is
-    kept. Returns the key, or ``None`` for a unillm without the feature.
+    scope = str(getattr(SETTINGS, "UNIFY_CACHE_AFFINITY_SCOPE", "") or "prefix")
+    return scope if scope in ("prefix", "session", "run") else "prefix"
+
+
+_RUN_AFFINITY: Optional[str] = None
+
+
+def run_affinity_key() -> str:
+    """The key every session of this process shares under the ``run`` scope."""
+    global _RUN_AFFINITY
+    if _RUN_AFFINITY is None:
+        _RUN_AFFINITY = uuid.uuid4().hex
+    return _RUN_AFFINITY
+
+
+def prefix_affinity_key(
+    model: Any,
+    system_message: Any,
+    tools: Optional[list],
+) -> str:
+    """A key for the prefix every request of a session starts with.
+
+    Providers cache tools, system prompt and messages in that order, so two
+    sessions with the same model, system prompt and tool list share their
+    leading tokens whatever their first user message is. The key is a hash
+    of those three, serialised canonically, so it is the same in every
+    process and for every session that shares them -- and it names nothing
+    about the conversation that follows.
+    """
+    blob = json.dumps(
+        {"model": model, "system": system_message, "tools": tools or []},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
+
+
+def _client_attr(client: Any, name: str) -> Any:
+    try:
+        return getattr(client, name, None)
+    except Exception:  # a client property that cannot answer
+        return None
+
+
+def ensure_cache_affinity(
+    client: Any,
+    tools: Optional[list] = None,
+) -> Optional[str]:
+    """Give *client* a cache affinity key when its unillm takes one.
+
+    The key follows ``UNIFY_CACHE_AFFINITY_SCOPE``: under ``prefix`` it is
+    :func:`prefix_affinity_key` of the client's model and system prompt and
+    *tools* (the session's fixed list), so sessions that share that prefix
+    are sent to the same replica; under ``session`` a new random key; under
+    ``run`` the process's key. A key the client already has (a fork's,
+    inherited from its parent) is kept. Returns the key, or ``None`` for a
+    unillm without the feature.
     """
     if not hasattr(client, "set_cache_affinity"):
         return None
     key = getattr(client, "cache_affinity", None)
-    if key is None:
+    if key is not None:
+        return key
+    scope = affinity_scope()
+    if scope == "session":
         key = uuid.uuid4().hex
-        client.set_cache_affinity(key)
+    elif scope == "run":
+        key = run_affinity_key()
+    else:
+        key = prefix_affinity_key(
+            _client_attr(client, "endpoint"),
+            _client_attr(client, "system_message"),
+            tools,
+        )
+    client.set_cache_affinity(key)
+    LOGGER.info(f"🗄️ cache affinity: {scope} key {key[:12]}")
     return key
 
 

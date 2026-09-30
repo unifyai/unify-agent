@@ -157,10 +157,17 @@ class ProductionSettings(BaseSettings):
     # computed once per session and a tool the phase does not allow is
     # refused by rule instead of removed; messages already sent are never
     # edited; compression asks for its summary as a fork of the conversation;
-    # a per-session cache affinity key is passed when the LLM client takes
-    # one; and each call logs how much of its input came from the cache
-    # (unify/common/_async_tool/cache_discipline.py). Off: as shipped.
+    # a cache affinity key (UNIFY_CACHE_AFFINITY_SCOPE) is passed when the
+    # LLM client takes one; and each call logs how much of its input came
+    # from the cache (unify/common/_async_tool/cache_discipline.py). Off: as
+    # shipped.
     UNIFY_CACHE_DISCIPLINE: bool = False
+    # What the cache affinity key of UNIFY_CACHE_DISCIPLINE is shared by:
+    # ``prefix`` (the default), every session whose model, system prompt and
+    # tool list are the same, so a new session reaches the replica an earlier
+    # one cached that prefix on; ``session``, one key per session; ``run``,
+    # one key for every session of this process. Ignored with the switch off.
+    UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -283,6 +290,17 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "resolve"):
             raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_CACHE_AFFINITY_SCOPE", mode="before")
+    @classmethod
+    def parse_cache_affinity_scope(cls, v: Any) -> str:
+        value = str(v or "").strip().lower() or "prefix"
+        if value not in ("prefix", "session", "run"):
+            raise ValueError(
+                "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session' or "
+                f"'run', not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_REVIEW_FAILED", mode="before")

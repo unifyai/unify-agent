@@ -151,6 +151,27 @@ async def test_the_fork_keeps_the_sessions_effort_under_the_review_origin(
 
 
 @pytest.mark.asyncio
+async def test_the_fork_is_sent_to_its_sessions_cache_under_the_prefix_key(
+    monkeypatch,
+    switches,
+):
+    switches(discipline=True, fork=True)
+    sets = h.install_affinity_api(monkeypatch)
+    _summary, requests, forks, _counter = await _forked_review(monkeypatch)
+    parent, fork = forks[0]["parent"], forks[0]["client"]
+    assert parent.cache_affinity == cd.prefix_affinity_key(
+        h.MODEL,
+        "You are a scripted actor.",
+        requests[0]["tools"],
+    )
+    assert fork.cache_affinity == parent.cache_affinity
+    # The session's key is set before its first request; the fork's is
+    # inherited, never derived anew.
+    assert sets[0] == (parent.cache_affinity, 0)
+    assert all(key == parent.cache_affinity for key, _n in sets)
+
+
+@pytest.mark.asyncio
 async def test_a_task_tool_is_refused_in_the_review_and_the_list_stays(
     monkeypatch,
     switches,

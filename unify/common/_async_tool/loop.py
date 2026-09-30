@@ -613,8 +613,6 @@ async def async_tool_loop_inner(
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
     _discipline = _cache_discipline.enabled()
-    if _discipline:
-        _cache_discipline.ensure_cache_affinity(client)
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -2409,6 +2407,10 @@ async def async_tool_loop_inner(
                         )
                     )
                 tmp_tools = runtime_state.session_tools_schema
+                # Set once, before the first request: the key names the
+                # prefix (model, system prompt, this fixed list) unless a
+                # key is already set, as a fork's is.
+                _cache_discipline.ensure_cache_affinity(client, tmp_tools)
                 _session_tool_names = frozenset(
                     _cache_discipline.schema_names(tmp_tools),
                 )

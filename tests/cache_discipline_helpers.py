@@ -109,6 +109,9 @@ class Provider:
         return reply() if callable(reply) else reply
 
 
+_ACTIVE_PROVIDER: list[Optional[Provider]] = [None]
+
+
 @contextlib.contextmanager
 def scripted(replies) -> Iterator[Provider]:
     """Install a :class:`Provider` as unillm's transport for the block."""
@@ -118,6 +121,7 @@ def scripted(replies) -> Iterator[Provider]:
     global _CALL_SEQ
     _CALL_SEQ = itertools.count()
     provider = Provider(replies)
+    _ACTIVE_PROVIDER[0] = provider
     original = uni_llm._acompletion_with_transient_retry
     old_cache = os.environ.get("UNILLM_CACHE")
     old_default = unillm_settings.UNILLM_CACHE
@@ -129,6 +133,7 @@ def scripted(replies) -> Iterator[Provider]:
     try:
         yield provider
     finally:
+        _ACTIVE_PROVIDER[0] = None
         uni_llm._acompletion_with_transient_retry = original
         unillm_settings.UNILLM_CACHE = old_default
         if old_cache is None:
@@ -179,6 +184,39 @@ def new_client(system: str = "You are a scripted test agent."):
     client = new_llm_client(MODEL, cache=False, reasoning_effort="low")
     client.set_system_message(system)
     return client
+
+
+def install_affinity_api(monkeypatch) -> list[tuple[str, int]]:
+    """Give unillm's async client the ``cache_affinity`` API of harness-cache.
+
+    Returns a list that each ``set_cache_affinity`` call appends its key to,
+    with the number of requests the scripted provider had then received
+    (``-1`` outside :func:`scripted`), so a test can tell a key set before
+    the first request from one set later.
+    """
+    import unillm
+
+    sets: list[tuple[str, int]] = []
+
+    def set_cache_affinity(self, value):
+        provider = _ACTIVE_PROVIDER[0]
+        sets.append((value, len(provider.requests) if provider else -1))
+        self._cache_affinity_key = value
+        return self
+
+    monkeypatch.setattr(
+        unillm.AsyncUnify,
+        "set_cache_affinity",
+        set_cache_affinity,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        unillm.AsyncUnify,
+        "cache_affinity",
+        property(lambda self: getattr(self, "_cache_affinity_key", None)),
+        raising=False,
+    )
+    return sets
 
 
 # ── tools ────────────────────────────────────────────────────────────────
