@@ -1380,6 +1380,12 @@ _REVIEW_FORK_ROLE = (
     "writes that were read-only during the task are available to you now.\n\n"
 )
 
+_LATE_SESSION_MESSAGE_REFUSAL = (
+    "The session has ended, so this message was not delivered: it would have "
+    "reached the storage review, which does not take the session's messages. "
+    "Start a new session to continue."
+)
+
 _REVIEW_FORK_MASK_RULE = (
     "the storage review can call only the function and guidance library "
     "tools; the task's other tools are not available to it"
@@ -1960,10 +1966,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         actor: "CodeActActor",
         meter: Optional[RunMeter] = None,
         turn_reviews_enabled: bool = False,
+        persist: bool = False,
     ) -> None:
         self._inner = inner
         self._actor = actor
         self._meter = meter
+        self._persist = bool(persist)
         self._notification_q: asyncio.Queue[dict] = asyncio.Queue()
         self._task_done_event = asyncio.Event()
         self._completion_event = asyncio.Event()
@@ -2681,6 +2689,20 @@ class _StorageCheckHandle(SteerableToolHandle):
         _parent_chat_context_cont: list[dict] | None = None,
         **kwargs,
     ) -> None:
+        if self._refuses_late_session_message():
+            logger.info(
+                "Interjection not delivered: the persistent session's task "
+                "loop has ended, so the message has no session to go to, and "
+                "the storage review does not take the session's messages "
+                f"({len(message)} chars)",
+            )
+            await self._notification_q.put(
+                {
+                    "type": "interjection_refused",
+                    "message": _LATE_SESSION_MESSAGE_REFUSAL,
+                },
+            )
+            return None
         handle = self._active_handle
         if handle is not None:
             return await handle.interject(
@@ -2688,6 +2710,25 @@ class _StorageCheckHandle(SteerableToolHandle):
                 _parent_chat_context_cont=_parent_chat_context_cont,
                 **kwargs,
             )
+
+    def _refuses_late_session_message(self) -> bool:
+        """Whether an interjection arrives after a persistent session ended.
+
+        A persistent session takes each follow-up as its next request. Once
+        its task loop has ended (at a step or time limit, or by a stop), a
+        follow-up has no session to go to, and forwarded to the storage
+        review it is read there as a user interjection the review must
+        answer. With ``UNIFY_REVIEW_FORK`` it is refused instead; off, it
+        is forwarded as shipped. A handle that was not persistent keeps the
+        shipped routing, where an interjection steers the review.
+        """
+        from unify.common._async_tool import cache_discipline
+
+        return (
+            self._persist
+            and self._task_done_event.is_set()
+            and cache_discipline.review_fork_enabled()
+        )
 
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
@@ -5015,6 +5056,7 @@ class CodeActActor(BaseCodeActActor):
                     and bool(persist)
                     and bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
                 ),
+                persist=bool(persist),
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not

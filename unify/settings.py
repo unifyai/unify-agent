@@ -168,7 +168,10 @@ class ProductionSettings(BaseSettings):
     # the library are refused. Needs UNIFY_CACHE_DISCIPLINE (for the fixed
     # tool list); without it, or when the session was compressed or its
     # history changed since its last request, the review runs as shipped and
-    # the log says why. Off: as shipped.
+    # the log says why. With it, a message sent to a persistent session after
+    # its task loop ended on its own (a step limit, say) is refused rather than
+    # read by the review, forked or not, as an interjection to answer.
+    # Off: as shipped.
     UNIFY_REVIEW_FORK: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
