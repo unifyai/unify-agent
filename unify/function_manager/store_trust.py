@@ -7,9 +7,12 @@ package that would not install), and the function stayed in the library looking 
 This switch keeps a trust record per stored function in ``function_trust`` and updates it on every reuse:
 
 - **states**: ``probation`` (new, changed, or not yet seen enough), ``trusted`` and ``quarantined``;
-- **evidence**: a call through the sandbox boundary, a proxy or ``execute_function`` that returns is a pass,
-  one that raises is a failure (exception type and message, truncated). Passes are counted with the sha256
-  of the call's arguments, so the record knows over how many distinct inputs the function has worked;
+- **evidence**: a call through the sandbox boundary, a proxy, ``FunctionManager.execute_function`` or the
+  actor's ``execute_function`` tool that returns is a pass, one that raises (or, on the two
+  ``execute_function`` paths, reports an error) is a failure (exception type and message, truncated). Passes
+  are counted with the sha256 of the call's arguments, so the record knows over how many distinct inputs
+  the function has worked. A call through the tool that a steering correction reached while it ran (a stop,
+  or a re-run of patched code) is not evidence;
 - **promotion**: at the thresholds legacy Unify used, by effect class -- a function that only reads (no
   environment method it can reach, directly or through the stored functions it calls, is labelled other
   than ``read``) after 3 passes over 2 distinct inputs, one that can change anything after 5 over 3;

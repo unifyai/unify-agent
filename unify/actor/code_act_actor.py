@@ -3962,16 +3962,44 @@ class CodeActActor(BaseCodeActActor):
                     )
                     if callable(get_stored_primitive):
                         function_data = get_stored_primitive(name=function_name)
+
+                # UNIFY_STORE_TRUST: the synthesized call below runs the raw
+                # implementation, not the boundary-wrapped callable that
+                # records reuse, so this path observes the call itself, as
+                # FunctionManager.execute_function does: an install that
+                # fails or a run that reports an error is a failed reuse.
+                # None for primitives and while the switch is off.
+                trust_observer = None
+                trust_arguments = None
+                if isinstance(function_data, dict):
+                    from unify.function_manager.store_trust import CallObserver
+
+                    trust_observer = CallObserver.for_function(
+                        self.function_manager,
+                        function_data,
+                    )
+                    if trust_observer is not None:
+                        trust_arguments = trust_observer.before(
+                            None,
+                            (),
+                            call_kwargs,
+                        )
+
                 if isinstance(function_data, dict) and function_data.get(
                     "dependencies",
                 ):
                     # The synthesized call runs the stored implementation
                     # in the sandbox, so its packages must be importable
                     # before the cell starts.
-                    await asyncio.to_thread(
-                        environment.ensure,
-                        list(function_data["dependencies"]),
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            environment.ensure,
+                            list(function_data["dependencies"]),
+                        )
+                    except Exception as exc:
+                        if trust_observer is not None:
+                            trust_observer.after(trust_arguments, exc)
+                        raise
 
                 # The synthesized-call path prepends the raw implementation
                 # and runs it in the sandbox, shadowing any boundary-wrapped
@@ -4148,6 +4176,17 @@ class CodeActActor(BaseCodeActActor):
                                 }
                         finally:
                             _PARENT_CHAT_CONTEXT.reset(_pcc_token)
+
+                    # UNIFY_STORE_TRUST: a call a correction reached while it
+                    # ran (stopped, or re-run with patched code) says nothing
+                    # about the stored version and is not recorded.
+                    if trust_observer is not None and not (
+                        _ef_steering is not None and _ef_steering.messages
+                    ):
+                        trust_observer.after(
+                            trust_arguments,
+                            exec_exc if exec_exc is not None else out.get("error"),
+                        )
 
                     # Enrich with session name.
                     if out.get("session_id") is not None:
