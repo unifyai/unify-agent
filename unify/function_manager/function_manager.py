@@ -1366,7 +1366,7 @@ class FunctionManager(BaseFunctionManager):
                         results[name] = f"error: Failed to update log - {e}"
 
         # UNIFY_STORE_TRUST: an overwrite (a patch included) starts the
-        # function's trust over on probation.
+        # function's trust over on probation, keeping its failure history.
         from . import store_trust
 
         if store_trust.enabled():

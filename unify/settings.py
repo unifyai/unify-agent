@@ -149,7 +149,8 @@ class ProductionSettings(BaseSettings):
     # then left out of the searches that load functions and listed to the
     # next storage review as needing repair. A function is trusted after 3
     # passes over 2 distinct inputs (5 over 3 if it can change anything); a
-    # changed source or callee puts it back on probation. With
+    # changed source or callee, or an overwrite, puts it back on probation
+    # with its passes cleared and its failure history kept. With
     # UNIFY_STORE_VERIFY set, a reuse is also re-checked in a fresh world
     # with probability 1/2^k after k clean uses
     # (unify/function_manager/store_trust.py). Empty keeps no record.

@@ -14,7 +14,9 @@ This switch keeps a trust record per stored function in ``function_trust`` and u
   environment method it can reach, directly or through the stored functions it calls, is labelled other
   than ``read``) after 3 passes over 2 distinct inputs, one that can change anything after 5 over 3;
 - **demotion**: any failure quarantines the function until its source or the source of a function it calls
-  changes, or it is overwritten, which puts it back on probation with its counts cleared;
+  changes, or it is overwritten, which puts it back on probation with its passes, distinct inputs and clean
+  uses cleared. The failure count and last failure are kept across versions, so a record shows that an
+  earlier version failed and why (``passes`` counts the stored version only, ``failures`` every version);
 - **quarantine**: a quarantined function is left out of the searches, lists and filters that load functions into the sandbox, with a
   warning naming it and its last failure, the way ``UNIFY_SEARCH_SKIP_UNLOADABLE`` leaves out a row that
   cannot load. It stays in the store, and the reads that return rows only (the storage review's) still
@@ -247,6 +249,20 @@ def _write(trust: Trust) -> None:
     )
 
 
+def _restarted(row: Mapping[str, Any], stored: _Stored) -> Trust:
+    """A record on probation for the stored version that keeps the failure history of ``row``.
+
+    Passes, distinct inputs and clean uses belonged to the code that earned them and are cleared; the
+    failure count and last failure are carried over, so a later needs-repair note or an analysis of the
+    records can still see that an earlier version failed, and why.
+    """
+    return replace(
+        _fresh(stored),
+        failures=int(row["failures"]),
+        last_failure=row["last_failure"],
+    )
+
+
 def _current(stored: _Stored) -> tuple[Trust, bool]:
     """The record for the stored version and whether it had to be restarted (a changed source or callee)."""
     row = db.query_one(
@@ -259,7 +275,7 @@ def _current(stored: _Stored) -> tuple[Trust, bool]:
         row["source_hash"] != stored.source_hash
         or row["dependency_hash"] != stored.dependency_hash
     ):
-        return _fresh(stored), True
+        return _restarted(row, stored), True
     return _from_row(row, stored), False
 
 
@@ -337,10 +353,33 @@ def record(
 
 
 def reset(function_ids: Iterable[int]) -> None:
-    """Put functions back on probation with their counts cleared (an overwrite or a patch)."""
-    ids = [(int(fid),) for fid in function_ids]
-    if ids:
-        db.executemany("DELETE FROM function_trust WHERE function_id = ?", ids)
+    """Put functions back on probation for their stored versions (an overwrite or a patch).
+
+    Even an identical overwrite restarts probation, with passes, distinct inputs and clean uses cleared.
+    The failure history is kept (:func:`_restarted`): the overwrite that follows a failure is usually the
+    storage review's repair, and deleting the record there would leave a function that raised three times
+    looking like one never used. A record with no failure has nothing to keep and is deleted, which is the
+    same as a fresh record.
+    """
+    ids = sorted({int(fid) for fid in function_ids})
+    if not ids:
+        return
+    with db.transaction():
+        for function_id in ids:
+            row = db.query_one(
+                "SELECT * FROM function_trust WHERE function_id = ?",
+                (function_id,),
+            )
+            if row is None:
+                continue
+            stored = _stored(function_id) if int(row["failures"]) else None
+            if stored is None:
+                db.execute(
+                    "DELETE FROM function_trust WHERE function_id = ?",
+                    (function_id,),
+                )
+            else:
+                _write(_restarted(row, stored))
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,9 @@ arguments; one that raises quarantines the function. A function that only
 reads is trusted after 3 passes over 2 distinct inputs, one that can change
 anything (directly or through a stored function it calls) after 5 over 3. An
 overwrite, a patch or a change to a function it calls puts it back on
-probation. With the switch off nothing is recorded and every call behaves as
-shipped. Functions run in-process against fake ``primitives``; no model is
-called.
+probation with its passes cleared and its failure history kept. With the
+switch off nothing is recorded and every call behaves as shipped. Functions
+run in-process against fake ``primitives``; no model is called.
 """
 
 from __future__ import annotations
@@ -344,14 +344,62 @@ def test_an_overwrite_puts_the_function_back_on_probation(trust_on):
         "divide": "updated",
     }
     t = _trust(fm, "divide")
-    assert (t.state, t.passes, t.failures, t.last_failure) == (
+    # passes belong to the old code and are cleared; its failure is kept
+    assert (t.state, t.passes, t.distinct_inputs, t.clean_uses) == (
         "probation",
         0,
         0,
-        None,
+        0,
     )
+    assert (t.failures, t.last_failure) == (1, "ZeroDivisionError: division by zero")
+    assert t.input_hashes == ()
+    assert t.source_hash == store_trust.sha256(fixed)
     assert _load(fm)["divide"](1, 0) == 0.0
-    assert _trust(fm, "divide").passes == 1
+    t = _trust(fm, "divide")
+    assert (t.state, t.passes, t.failures) == ("probation", 1, 1)
+
+
+@_handle_project
+def test_every_failure_before_an_overwrite_stays_on_record(trust_on):
+    fm = _FM()
+    fm.add_functions(implementations=[LOUD])
+    loud = _load(fm)["loud"]
+    for n in (1, 2, 3):
+        with pytest.raises(RuntimeError):
+            loud(n)
+    quiet = LOUD.replace("raise RuntimeError('x' * n)", "return None")
+    fm.add_functions(implementations=[quiet], overwrite=True)
+    t = _trust(fm, "loud")
+    assert (t.state, t.passes, t.failures, t.last_failure) == (
+        "probation",
+        0,
+        3,
+        "RuntimeError: xxx",
+    )
+    # a later overwrite keeps it again; the history is only ever added to
+    fm.add_functions(implementations=[LOUD], overwrite=True)
+    assert (_trust(fm, "loud").state, _trust(fm, "loud").failures) == ("probation", 3)
+    with pytest.raises(RuntimeError):
+        _load(fm)["loud"](4)
+    t = _trust(fm, "loud")
+    assert (t.state, t.failures, t.last_failure) == (
+        "quarantined",
+        4,
+        "RuntimeError: xxxx",
+    )
+
+
+@_handle_project
+def test_an_overwrite_of_a_function_that_never_failed_leaves_no_record(trust_on):
+    fm = _FM()
+    fm.add_functions(implementations=[DOUBLE])
+    for x in (1, 2, 3):
+        _load(fm)["double"](x)
+    assert _trust(fm, "double").state == "trusted"
+    fm.add_functions(implementations=[DOUBLE], overwrite=True)
+    assert _rows() == []  # nothing to keep: the same as a fresh record
+    t = _trust(fm, "double")
+    assert (t.state, t.passes, t.failures) == ("probation", 0, 0)
 
 
 @_handle_project
@@ -390,13 +438,17 @@ def test_a_changed_callee_puts_its_callers_back_on_probation(trust_on, phone_env
     changed = PURGE.replace("return 'deleted'", "return 'gone'")
     fm.add_functions(implementations=[changed], overwrite=True)
     t = _trust(fm, "purge_all")
-    assert (t.state, t.failures) == ("probation", 0)
+    # back on probation, its own failure still on record
+    assert (t.state, t.passes, t.failures) == ("probation", 0, 1)
+    assert t.last_failure.startswith("TypeError: ")
     # the restart is written, not only reported
     row = db.query_one(
-        "SELECT state FROM function_trust WHERE function_id = ?",
+        "SELECT state, failures, last_failure FROM function_trust"
+        " WHERE function_id = ?",
         (_id(fm, "purge_all"),),
     )
-    assert row["state"] == "probation"
+    assert (row["state"], row["failures"]) == ("probation", 1)
+    assert row["last_failure"] == t.last_failure
 
 
 @_handle_project
@@ -533,11 +585,15 @@ async def test_switch_off_records_nothing_and_calls_behave_the_same(monkeypatch)
     fm = _FM()
     on = await _scenario(fm)
     assert on == off
-    # divide's record was cleared by the overwrite that ends the scenario
     assert [r["function_id"] for r in _rows()] == [
         _id(fm, "double"),
+        _id(fm, "divide"),
         _id(fm, "halve"),
     ]
+    # the overwrite that ends the scenario restarted divide, keeping its two
+    # failures (the raise and execute_function's error) but not its pass
+    t = _trust(fm, "divide")
+    assert (t.state, t.passes, t.failures) == ("probation", 0, 2)
 
 
 # --------------------------------------------------------------------------- #
