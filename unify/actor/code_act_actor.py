@@ -1309,6 +1309,36 @@ def _store_admission_path() -> str:
     return str(SETTINGS.UNIFY_STORE_ADMISSION or "").strip()
 
 
+# ``UNIFY_STORE_ADMISSION=never``: a frozen library. Writes are withheld as
+# for any admission-gated run, and no review is ever admitted, so no verdict
+# file is read.
+_STORE_ADMISSION_NEVER = "never"
+_STORE_ADMISSION_NEVER_REASON = (
+    "admission is never granted (UNIFY_STORE_ADMISSION=never: the library is "
+    "frozen for this run)"
+)
+
+
+def _store_admission_never(path: Optional[str] = None) -> bool:
+    """Whether ``UNIFY_STORE_ADMISSION`` says no review is ever admitted."""
+    value = _store_admission_path() if path is None else path
+    return value.strip().lower() == _STORE_ADMISSION_NEVER
+
+
+def _admitted_review_can_write_in_session_list() -> bool:
+    """Whether an admitted review may call writes from the session's tool list.
+
+    Only a forked review (``UNIFY_REVIEW_FORK``) continues the session's
+    request, tool list included; the standalone review brings its own tools.
+    Under ``UNIFY_STORE_ADMISSION=never`` no review runs at all. Otherwise
+    the writes admission withholds from the session are ones nothing sending
+    the session's list can ever call.
+    """
+    from unify.common._async_tool import cache_discipline
+
+    return cache_discipline.review_fork_enabled() and not _store_admission_never()
+
+
 def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
     """The admission verdict object at *path*, or ``None`` and why there is none."""
     try:
@@ -2443,6 +2473,15 @@ class _StorageCheckHandle(SteerableToolHandle):
             lessons_mode = outcome_mod.review_failed_mode() == "lessons"
             lessons = False
             admission_path = _store_admission_path()
+            if admission_path and _store_admission_never(admission_path):
+                logger.info(f"StorageCheck skipped: {_STORE_ADMISSION_NEVER_REASON}")
+                await self._notification_q.put(
+                    {
+                        "type": "storage_review_skipped",
+                        "message": _STORE_ADMISSION_NEVER_REASON,
+                    },
+                )
+                return
             if admission_path:
                 admitted, admission_reason = _read_store_admission(admission_path)
                 if not admitted and lessons_mode:
@@ -4909,13 +4948,21 @@ class CodeActActor(BaseCodeActActor):
 
         tools = dict(base_tools)
 
-        # UNIFY_CACHE_DISCIPLINE: the tool list is fixed per session, so the
+        # UNIFY_CACHE_DISCIPLINE: the tool list is fixed per session and holds
+        # the tools the session's requests can ever call. When the review that
+        # forks this session after an admitted outcome reuses the list, the
         # library writes admission withholds stay in it, masked: a call to one
-        # is refused with the rule, and the review that forks this session
-        # after an admitted outcome has them in the same list.
+        # is refused with the rule until the fork. Otherwise -- a frozen
+        # library, or a standalone review with its own tools -- nothing sending
+        # this list can call them, and they are left out (about 2.4k tokens a
+        # call on AppWorld) rather than listed and refused.
         from unify.common._async_tool import cache_discipline
 
-        if admission_gated and cache_discipline.enabled():
+        if (
+            admission_gated
+            and cache_discipline.enabled()
+            and _admitted_review_can_write_in_session_list()
+        ):
             for name, tool in _filter_tools(
                 _act_tools,
                 withhold_admission=False,

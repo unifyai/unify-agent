@@ -193,9 +193,10 @@ async def test_under_cache_discipline_a_gated_actor_lists_the_patch_tools_masked
     monkeypatch,
     tmp_path,
 ):
-    """The session's one tool list keeps them; admission refuses a call by rule."""
+    """The list the review fork reuses keeps them; admission refuses a call by rule."""
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", str(tmp_path / "v.json"))
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
     captured = await _act_tools(monkeypatch, can_store=True)
     assert PATCH_TOOLS <= set(captured["tools"])
     searched = ["FunctionManager_search_functions", "GuidanceManager_search"]
@@ -203,3 +204,20 @@ async def test_under_cache_discipline_a_gated_actor_lists_the_patch_tools_masked
     assert not PATCH_TOOLS & set(visible)
     for name in PATCH_TOOLS:
         assert opts["mask_rules"][name] == code_act_actor._ADMISSION_MASK_RULE
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_under_cache_discipline_a_gated_actor_without_a_fork_leaves_them_out(
+    patch_on,
+    monkeypatch,
+    tmp_path,
+):
+    """The standalone review brings its own tools, so the session never lists them."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", str(tmp_path / "v.json"))
+    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", False)
+    captured = await _act_tools(monkeypatch, can_store=True)
+    assert PATCH_TOOLS <= captured["registered"]
+    assert not PATCH_TOOLS & set(captured["tools"])
+    assert PATCH_TOOLS <= _storage_tool_names()

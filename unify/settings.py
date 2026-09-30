@@ -108,7 +108,9 @@ class ProductionSettings(BaseSettings):
     # A missing, unreadable or malformed file, or any other ``admit``, skips
     # that review. While set, the session's own library write tools are
     # withheld and turn-level reviews are off, so the libraries change only
-    # through an admitted review. Empty reviews every session as shipped.
+    # through an admitted review. ``never`` is a frozen library: writes are
+    # withheld the same way, no review is ever admitted and no file is read.
+    # Empty reviews every session as shipped.
     UNIFY_STORE_ADMISSION: str = ""
     # ``package.module:factory``: a verifier for the storage review. A
     # function is stored only after its exact source has passed a run on a
