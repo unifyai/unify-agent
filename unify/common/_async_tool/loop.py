@@ -65,6 +65,7 @@ from .tools_data import (
     compute_context_injection,
 )
 from .dynamic_tools_factory import DynamicToolFactory
+from . import cache_discipline as _cache_discipline
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
@@ -97,6 +98,9 @@ class ToolLoopRuntimeState:
     refusals_by_call: Dict[str, int] = field(default_factory=dict)
     refusals_by_complaint: Dict[str, int] = field(default_factory=dict)
     pending_stop_reason: Optional[str] = None
+    # UNIFY_CACHE_DISCIPLINE: the tool list this session advertises, fixed at
+    # its first call and kept across compression restarts.
+    session_tools_schema: Optional[list] = None
 
 
 def _parse_tool_policy_result(
@@ -420,6 +424,7 @@ async def async_tool_loop_inner(
     on_clarification_answer: Optional[Callable[[str], Any]] = None,
     on_notify: Optional[Callable[[str], Any]] = None,
     runtime_state: Optional[ToolLoopRuntimeState] = None,
+    fixed_tools_schema: Optional[list[dict]] = None,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -531,6 +536,13 @@ async def async_tool_loop_inner(
         LLM wall-clock time and tool execution durations. If ``False`` the
         time-context table is omitted and no tool timing is tracked.
 
+    fixed_tools_schema : ``list[dict] | None``
+        Under ``UNIFY_CACHE_DISCIPLINE``, the exact tool list to send on every
+        call instead of one built from ``tools`` -- a fork sends its parent's
+        list so its requests extend the parent's. A listed tool this loop
+        does not implement is refused when called. Ignored with the switch
+        off.
+
     Returns
     -------
     str
@@ -600,6 +612,7 @@ async def async_tool_loop_inner(
         )
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
+    _discipline = _cache_discipline.enabled()
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -1683,7 +1696,9 @@ async def async_tool_loop_inner(
                             )
                             or 0,
                         )
-                        if _n > 0:
+                        # UNIFY_CACHE_DISCIPLINE: sent messages are never
+                        # edited, so the reviewed span keeps its bytes.
+                        if _n > 0 and not _discipline:
                             compact_reviewed_messages(client, _n)
                     except Exception:
                         pass
@@ -2047,6 +2062,8 @@ async def async_tool_loop_inner(
                 f"[setup +{_setup_elapsed()}] tool policy eval (step={runtime_state.step_index})",
             )
             _policy_eager = False
+            _policy_mask_rules: Dict[str, str] = {}
+            _policy_mask_default: Optional[str] = None
             if tool_policy is not None:
                 _tools_snapshot = {n: s.fn for n, s in tools_data.normalized.items()}
                 try:
@@ -2066,6 +2083,10 @@ async def async_tool_loop_inner(
                             _policy_result,
                         )
                     )
+                    if _discipline:
+                        _policy_mask_rules, _policy_mask_default = (
+                            _cache_discipline.policy_mask_rules(_policy_result)
+                        )
                 except Exception as _e:  # never abort the loop on mis-behaving policies
                     logger.error(
                         f"tool_policy raised on turn {runtime_state.step_index}: {_e!r}",
@@ -2351,6 +2372,67 @@ async def async_tool_loop_inner(
                 for fn in dynamic_tools.values()
             ]
 
+            # UNIFY_CACHE_DISCIPLINE: what this turn assembled is what it
+            # allows; what it advertises is the session's fixed list. A call
+            # to anything outside the allowed set is refused below, with the
+            # rule that masks it, so the list never changes mid-session.
+            if _discipline:
+                _turn_available = frozenset(
+                    _cache_discipline.schema_names(tmp_tools),
+                )
+                if (
+                    runtime_state.session_tools_schema is None
+                    and fixed_tools_schema is not None
+                ):
+                    runtime_state.session_tools_schema = copy.deepcopy(
+                        list(fixed_tools_schema),
+                    )
+                if runtime_state.session_tools_schema is None:
+                    runtime_state.session_tools_schema = (
+                        _cache_discipline.build_session_schema(
+                            base_schemas={
+                                name: method_to_schema(
+                                    spec.fn,
+                                    name,
+                                    expose_context_control=(
+                                        propagate_chat_context
+                                        == ChatContextPropagation.LLM_DECIDES
+                                    ),
+                                    has_parent_context=bool(parent_chat_context),
+                                )
+                                for name, spec in tools_data.normalized.items()
+                            },
+                            compress_schema=_compress_schema,
+                            turn_schemas=tmp_tools,
+                        )
+                    )
+                tmp_tools = runtime_state.session_tools_schema
+                # Set once, before the first request: the key names the
+                # prefix (model, system prompt, this fixed list) unless a
+                # key is already set, as a fork's is.
+                _cache_discipline.ensure_cache_affinity(client, tmp_tools)
+                _session_tool_names = frozenset(
+                    _cache_discipline.schema_names(tmp_tools),
+                )
+                _turn_available = _turn_available & _session_tool_names
+                _turn_mask_rules = dict(_policy_mask_rules)
+                _turn_mask_default = _policy_mask_default
+                if _over_threshold and enable_compression:
+                    _turn_mask_rules = {}
+                    _turn_mask_default = (
+                        "the context window is nearly full; wait for the "
+                        "tools in flight to finish, then call `compress_context`"
+                        if _has_pending_tools
+                        else "the context window is nearly full, so "
+                        "`compress_context` has to be called now"
+                    )
+                elif _policy_eager:
+                    _turn_mask_rules.setdefault(
+                        "compress_context",
+                        "compression waits until this turn's required calls "
+                        "have been made",
+                    )
+
             # ── D. Ask the LLM what to do next ───────────────────────────
             # A stop that landed while this turn was being built left its
             # mirror queued. Back to the drain, which records the mirror and
@@ -2401,6 +2483,11 @@ async def async_tool_loop_inner(
                 # after this point, so they still land after the clear.
                 deferred_llm_turn = False
 
+                _available_token = (
+                    _cache_discipline.set_turn_available_tools(_turn_available)
+                    if _discipline
+                    else None
+                )
                 llm_task = asyncio.create_task(
                     generate_with_preprocess(
                         client,
@@ -2409,6 +2496,8 @@ async def async_tool_loop_inner(
                     ),
                     name="LLMGenerate",
                 )
+                if _available_token is not None:
+                    _cache_discipline.reset_turn_available_tools(_available_token)
                 interject_w = asyncio.create_task(
                     interject_queue.get(),
                     name="InterjectQueueGet",
@@ -2656,11 +2745,25 @@ async def async_tool_loop_inner(
                     # contains everything ingested so far.
                     deferred_llm_turn = False
 
-                    _full_completion = await generate_with_preprocess(
-                        client,
-                        _apply_reasoning_model_compat(_gen_kwargs, tool_choice_mode),
-                        **_gen_kwargs,
+                    _available_token = (
+                        _cache_discipline.set_turn_available_tools(_turn_available)
+                        if _discipline
+                        else None
                     )
+                    try:
+                        _full_completion = await generate_with_preprocess(
+                            client,
+                            _apply_reasoning_model_compat(
+                                _gen_kwargs,
+                                tool_choice_mode,
+                            ),
+                            **_gen_kwargs,
+                        )
+                    finally:
+                        if _available_token is not None:
+                            _cache_discipline.reset_turn_available_tools(
+                                _available_token,
+                            )
                     if log_steps:
                         logger.emit_thinking_fallback()
                 except Exception as e:
@@ -2692,6 +2795,14 @@ async def async_tool_loop_inner(
                             0.7,
                             _max_input_tokens,
                         )
+
+            if _discipline:
+                with suppress(Exception):
+                    _cache_discipline.log_cache_use(
+                        client,
+                        _full_completion,
+                        label=cfg.label,
+                    )
 
             # The activity timeout catches hung tools, not slow inference
             # (providers have their own timeouts), so an LLM response resets it.
@@ -2776,6 +2887,32 @@ async def async_tool_loop_inner(
 
                 for idx, call in enumerate(msg["tool_calls"]):  # capture index
                     name = call["function"]["name"]
+
+                    # UNIFY_CACHE_DISCIPLINE: the session's tool list is fixed,
+                    # so a tool this turn does not allow is refused here, by
+                    # rule, instead of having been left out of the request. A
+                    # refused call is not recorded as called: it must not
+                    # satisfy a policy gate.
+                    if _discipline and name not in _turn_available:
+                        tool_msg = create_tool_call_message(
+                            name=name,
+                            call_id=call["id"],
+                            content=_cache_discipline.masked_tool_refusal(
+                                name,
+                                advertised=_session_tool_names,
+                                available=_turn_available,
+                                rule=(_turn_mask_rules.get(name) or _turn_mask_default),
+                            ),
+                        )
+                        await insert_tool_message_after_assistant(
+                            assistant_meta,
+                            msg,
+                            tool_msg,
+                            client,
+                            _msg_dispatcher,
+                        )
+                        continue
+
                     runtime_state.called_tools.append(name)
 
                     # Arguments arrive as a JSON string or a dict. A model can
@@ -4129,9 +4266,12 @@ async def async_tool_loop_inner(
                 # re-billed bulk from here on. Shed them now rather than
                 # waiting for a storage review to cover the span — reviews
                 # lag turns, and the lag is paid on every call in between.
+                # UNIFY_CACHE_DISCIPLINE keeps them: shedding rewrites every
+                # sent assistant message, so the next call starts cold.
                 try:
                     _shed = 0
-                    for _m in client.messages or []:
+                    _shed_from = [] if _discipline else client.messages or []
+                    for _m in _shed_from:
                         if isinstance(_m, dict) and _m.get("role") == "assistant":
                             _shed += strip_reasoning_payloads(_m)
                     if _shed:
@@ -4219,7 +4359,7 @@ async def async_tool_loop_inner(
                                 )
                                 or 0,
                             )
-                            if _n > 0:
+                            if _n > 0 and not _discipline:
                                 compact_reviewed_messages(client, _n)
                         except Exception:
                             pass

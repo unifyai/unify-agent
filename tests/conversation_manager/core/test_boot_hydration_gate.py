@@ -119,6 +119,7 @@ class _ObservedGate(asyncio.Event):
 
 @pytest.mark.asyncio
 @_handle_project
+@pytest.mark.llm_call
 async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
     """An inbound that lands mid-boot renders only after hydration.
 
@@ -182,6 +183,7 @@ async def test_first_turn_after_wake_renders_hydrated_history(initialized_cm):
 
 @pytest.mark.asyncio
 @_handle_project
+@pytest.mark.llm_call
 async def test_held_turn_renders_eagerly_when_hydration_is_stuck(
     initialized_cm,
     monkeypatch,

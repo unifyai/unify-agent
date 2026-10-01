@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 import traceback
+import types
 import uuid
 import weakref
 from secrets import token_hex as _token_hex
@@ -25,7 +26,8 @@ from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
 from unify.common.context_dump import make_messages_safe_for_context_dump
-from unify import environment
+from unify import environment, sandbox
+from unify.actor.workspace_tools import workspace_tools as _workspace_tools
 from unify.actor.execution import (
     ExecutionResult,
     PythonExecutionSession,
@@ -42,7 +44,7 @@ from unify.common.async_tool_loop import (
     start_async_tool_loop,
 )
 from unify.events.event_bus import EVENT_BUS, Event
-from unify.common.llm_client import new_llm_client
+from unify.common.llm_client import fork_llm_client, new_llm_client
 from unify.common.llm_meter import RunMeter, current_run_meter, new_run_meter
 from unify.common.act_llm_profiles import (
     CURRENT_ACT_LLM_PROFILE,
@@ -209,8 +211,24 @@ def _build_discovery_parallel_mutator() -> Any:
 
     def _mutator(completion: Any, context: CompletionMutatorContext) -> Any:
         if context.original_tool_choice != "required":
-            return completion
-        tool_names = _tool_names_from_openai_tools(context.request_kw.get("tools"))
+            # A forced turn sent as "auto" by UNIFY_TOOL_CHOICE_FALLBACK still
+            # gets its missing discovery families.
+            from unify.common.tool_choice_fallback import (
+                forced_tool_choice_in_fallback,
+            )
+
+            if forced_tool_choice_in_fallback() != "required":
+                return completion
+        # UNIFY_CACHE_DISCIPLINE sends the session's whole tool list on every
+        # turn; the tools the turn allows then say whether it is a gate turn.
+        from unify.common._async_tool.cache_discipline import turn_available_tools
+
+        available = turn_available_tools()
+        tool_names = (
+            sorted(available)
+            if available is not None
+            else _tool_names_from_openai_tools(context.request_kw.get("tools"))
+        )
         if not _is_discovery_gate_schema(tool_names):
             return completion
 
@@ -328,10 +346,72 @@ def _default_tool_policy(
             gated.update(_discovery_tools_for_prefix(filtered, "GuidanceManager_"))
 
         if gated:
-            return "required", gated, {"eager": True}
+            opts: dict = {"eager": True}
+            # Under UNIFY_CACHE_DISCIPLINE the other tools stay in the request
+            # and a call to one is refused with this rule.
+            from unify.common._async_tool import cache_discipline
+
+            if cache_discipline.enabled():
+                required = ", ".join(f"`{name}`" for name in gated)
+                opts["mask_rule"] = (
+                    f"the libraries are searched first -- call {required} "
+                    "before any other tool"
+                )
+            return "required", gated, opts
         return "auto", filtered
 
     return _policy
+
+
+_ADMISSION_MASK_RULE = (
+    "the function and guidance libraries are read-only during this task; "
+    "what is worth keeping is stored after the task, once its outcome has "
+    "been checked"
+)
+
+
+def _with_mask_rules(
+    policy: ToolPolicyFn,
+    rules: Dict[str, str],
+) -> ToolPolicyFn:
+    """Wrap *policy* so its result names *rules* for the tools it withholds.
+
+    Used only under UNIFY_CACHE_DISCIPLINE, where a withheld tool stays in the
+    request and the loop refuses a call to it with its rule.
+    """
+    try:
+        _positional = sum(
+            1
+            for p in inspect.signature(policy).parameters.values()
+            if p.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        )
+    except (TypeError, ValueError):
+        _positional = 2
+
+    def _masked(step: int, tools: Dict[str, Any], called_tools: list[str]):
+        result = (
+            policy(step, tools, called_tools)
+            if _positional >= 3
+            else policy(step, tools)
+        )
+        opts: dict = {}
+        if len(result) >= 3:
+            opts = (
+                dict(result[2])
+                if isinstance(result[2], dict)
+                else {"eager": bool(result[2])}
+            )
+        merged = dict(opts.get("mask_rules") or {})
+        for name, rule in rules.items():
+            merged.setdefault(name, rule)
+        opts["mask_rules"] = merged
+        return result[0], result[1], opts
+
+    return _masked
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +660,91 @@ _STORAGE_WHAT_CAN_BE_STORED = (
     "it. Declare only the packages the function actually imports, "
     "pinned as loosely as the trajectory justifies.\n\n"
 )
+
+
+def _storage_environment_note() -> str:
+    """The storage review's note on the environment's namespaces and the storage check.
+
+    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``),
+    the storage check is on (``UNIFY_STORE_CHECK=resolve``) or functions are
+    verified before they are stored (``UNIFY_STORE_VERIFY``), so the doctrine
+    is otherwise the shipped text.
+    """
+    from unify.function_manager.primitives.environment import environment_surface
+    from unify.settings import SETTINGS
+
+    surface = environment_surface()
+    parts: list[str] = []
+    if surface is not None and surface.namespaces:
+        names = ", ".join(f"`primitives.{n.name}`" for n in surface.namespaces)
+        parts.append(
+            "This environment registered its own namespaces beside "
+            f"`primitives.actor`: {names}. Code calls them exactly so "
+            "(`primitives.<namespace>.<method>(...)`), and a stored function "
+            "that does is recorded and injected like `primitives.actor`: it "
+            "needs no import and no dependency for them. No other "
+            "`primitives.*` name exists.",
+        )
+        if surface.globals:
+            listed = ", ".join(f"`{g}`" for g in sorted(surface.globals))
+            parts.append(f"The environment also binds the sandbox globals {listed}.")
+        if surface.modules:
+            listed = ", ".join(f"`{m}`" for m in sorted(surface.modules))
+            parts.append(
+                f"Modules it supplies ({listed}) are importable wherever a "
+                "stored function runs; never declare them as `dependencies`.",
+            )
+    if SETTINGS.UNIFY_STORE_CHECK == "resolve":
+        parts.append(
+            "`FunctionManager_add_functions` checks each function before "
+            "storing it: every name it reads and every `primitives.*` "
+            "reference must exist where it will run, and it must load. A "
+            "function that fails is not stored, and the error names what "
+            "failed; fix the function and add it again.",
+        )
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        parts.append(store_verify.doctrine())
+    if not parts:
+        return ""
+    return "### This environment\n\n" + " ".join(parts) + "\n\n"
+
+
+def _function_patch_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
+
+
+def _storage_needs_repair_note() -> str:
+    """Quarantined functions for the review to repair (``UNIFY_STORE_TRUST``); else empty."""
+    from unify.function_manager import store_trust
+
+    return store_trust.needs_repair_note()
+
+
+def _storage_update_first_note() -> str:
+    """The review's update-before-add order, while ``UNIFY_FUNCTION_PATCH`` is on; else empty."""
+    if not _function_patch_enabled():
+        return ""
+    return (
+        "### Update before you add\n\n"
+        "When the trajectory shows a stored entry that was wrong, incomplete "
+        "or failed, change the library in this order: (1) patch the entry the "
+        "trajectory used (`FunctionManager_patch_function` / "
+        "`GuidanceManager_patch_guidance`); (2) otherwise patch a broader "
+        "existing entry that should cover the case; (3) only then add a new "
+        "one. A patch replaces excerpts of the entry: read its current text "
+        "first, copy each `old` with enough context to occur once, and say "
+        "`why`. Make several changes to one entry in one call as `edits` "
+        "(`[{old, new}, ...]`, applied in order, all or none). The entry "
+        "keeps its id, precondition, dependencies and links, "
+        "a patched function is checked like any function you add, and the "
+        "replaced version is kept in history. Rewrite a whole function with "
+        "`overwrite=True` only when most of it changes.\n\n"
+    )
+
 
 _STORAGE_TWO_STORES = (
     "## Two Stores\n\n"
@@ -968,6 +1133,24 @@ def _build_storage_tools(
         gm.reconcile_dependencies,
     ]
 
+    # UNIFY_STORE_VERIFY: the review checks a function on a held-out task
+    # before add_functions will store it; unset, the tools are as shipped.
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        storage_methods.append(fm.check_function)
+    # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by replacing
+    # excerpts; off, the tools are as shipped. Simulated managers have none.
+    if _function_patch_enabled():
+        storage_methods.extend(
+            method
+            for method in (
+                getattr(fm, "patch_function", None),
+                getattr(gm, "patch_guidance", None),
+            )
+            if method is not None
+        )
+
     tools: Dict[str, Callable] = {
         **methods_to_tool_dict(
             *storage_methods,
@@ -1111,6 +1294,263 @@ def _build_storage_tools(
 # then reads the trajectory as one finished piece of work, not as an interrupted one.
 SESSION_ENDED = "session ended"
 
+# What a persistent session's result() returns when it is ended by a stop
+# (unify/common/async_tool_loop.py), and what the review reads under
+# UNIFY_OUTCOME when the agent's last reply had no text.
+_STOPPED_NOTICE = "processed stopped early, no result"
+_EMPTY_REPLY = "(the agent's last reply had no text)"
+
+# The largest admission verdict read; anything bigger is not a verdict.
+_STORE_ADMISSION_MAX_BYTES = 65536
+
+
+def _store_admission_path() -> str:
+    """The verdict file named by ``UNIFY_STORE_ADMISSION``; empty when unset."""
+    from unify.settings import SETTINGS
+
+    return str(SETTINGS.UNIFY_STORE_ADMISSION or "").strip()
+
+
+# ``UNIFY_STORE_ADMISSION=never``: a frozen library. Writes are withheld as
+# for any admission-gated run, and no review is ever admitted, so no verdict
+# file is read.
+_STORE_ADMISSION_NEVER = "never"
+_STORE_ADMISSION_NEVER_REASON = (
+    "admission is never granted (UNIFY_STORE_ADMISSION=never: the library is "
+    "frozen for this run)"
+)
+
+
+def _store_admission_never(path: Optional[str] = None) -> bool:
+    """Whether ``UNIFY_STORE_ADMISSION`` says no review is ever admitted."""
+    value = _store_admission_path() if path is None else path
+    return value.strip().lower() == _STORE_ADMISSION_NEVER
+
+
+def _admitted_review_can_write_in_session_list() -> bool:
+    """Whether an admitted review may call writes from the session's tool list.
+
+    Only a forked review (``UNIFY_REVIEW_FORK``) continues the session's
+    request, tool list included; the standalone review brings its own tools.
+    Under ``UNIFY_STORE_ADMISSION=never`` no review runs at all. Otherwise
+    the writes admission withholds from the session are ones nothing sending
+    the session's list can ever call.
+    """
+    from unify.common._async_tool import cache_discipline
+
+    return cache_discipline.review_fork_enabled() and not _store_admission_never()
+
+
+def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
+    """The admission verdict object at *path*, or ``None`` and why there is none."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(_STORE_ADMISSION_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None, f"no admission verdict at {path}"
+    except OSError as exc:
+        return None, f"admission verdict unreadable: {type(exc).__name__}: {exc}"
+    if len(raw) > _STORE_ADMISSION_MAX_BYTES:
+        return None, "admission verdict larger than 64 KiB"
+    try:
+        verdict = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"admission verdict is not JSON: {type(exc).__name__}"
+    if not isinstance(verdict, dict):
+        return None, "admission verdict is not a JSON object"
+    return verdict, ""
+
+
+def _admission_why(verdict: dict) -> str:
+    why = verdict.get("reason")
+    return f" ({str(why)[:200]})" if why else ""
+
+
+def _read_store_admission(path: str) -> tuple[bool, str]:
+    """Whether an external check of the session's outcome admits its review.
+
+    The file must hold a JSON object whose ``admit`` is ``true``. Every other
+    state -- no file, one that cannot be read, is too large, is not JSON, is
+    not an object, or has any other ``admit`` -- does not admit (fail-closed).
+    Returns ``(admitted, reason)``; the reason names what was found.
+    """
+    verdict, failure = _load_store_admission(path)
+    if verdict is None:
+        return False, failure
+    why = _admission_why(verdict)
+    if verdict.get("admit") is True:
+        return True, f"admitted{why}"
+    return False, f"not admitted{why}"
+
+
+def _storage_review_outcome_note(
+    outcome: Optional[dict] = None,
+    *,
+    lessons: bool = False,
+) -> str:
+    """The storage review's section on the session's checked outcome.
+
+    Filled from the outcome the environment posted (``UNIFY_OUTCOME``,
+    :mod:`unify.outcome`) and, for a review of a failed run that may record
+    only lessons (``UNIFY_REVIEW_FAILED=lessons``), the rule for it. Empty
+    when there is neither, so the review is then the shipped text.
+    """
+    from unify import outcome as outcome_mod
+
+    return outcome_mod.render(outcome, lessons=lessons)
+
+
+_REVIEW_FORK_ROLE = (
+    "## Storage Review\n\n"
+    "The task above is over. You now act as a skill librarian: review this "
+    "conversation -- what was asked, what was done and what came of it (it is "
+    "the trajectory the rules below refer to) -- and decide whether anything "
+    "is worth persisting for future reuse. Often nothing is -- that is "
+    "perfectly fine.\n\n"
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+
+_LATE_SESSION_MESSAGE_REFUSAL = (
+    "The session has ended, so this message was not delivered: it would have "
+    "reached the storage review, which does not take the session's messages. "
+    "Start a new session to continue."
+)
+
+_REVIEW_FORK_MASK_RULE = (
+    "the storage review can call only the function and guidance library "
+    "tools; the task's other tools are not available to it"
+)
+
+
+def _review_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+) -> tuple[Optional[dict], Optional[str]]:
+    """What a forked storage review continues from, or why it cannot fork.
+
+    Returns ``(source, None)`` for a fork, ``(None, reason)`` when
+    ``UNIFY_REVIEW_FORK`` is on but the review has to run as shipped, and
+    ``(None, None)`` when the switch is off. The fork needs the fixed tool
+    list of ``UNIFY_CACHE_DISCIPLINE`` and the session's last request as
+    recorded; it is refused when the session was compressed, when its
+    history no longer starts with that request (something rewrote it), or
+    when it ends with unanswered tool calls, which the review loop would try
+    to run with its own tools.
+    """
+    from unify.common._async_tool import cache_discipline
+    from unify.common._async_tool.messages import find_unreplied_assistant_entries
+
+    if not cache_discipline.review_fork_enabled():
+        return None, None
+    if not cache_discipline.enabled():
+        return None, (
+            "UNIFY_REVIEW_FORK needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
+            "list the fork reuses"
+        )
+    client = getattr(inner, "_client", None)
+    if client is None:
+        return None, "the session has no LLM client"
+    if getattr(getattr(inner, "_compression", None), "count", 0):
+        return None, "the session's history was compressed"
+    last = cache_discipline.last_sent_request(client)
+    if last is None or not last.get("messages"):
+        return None, "the session recorded no request"
+    if not last.get("tools"):
+        return None, "the session's last request carried no tools"
+
+    raw = copy.deepcopy(list(getattr(client, "messages", None) or []))
+    as_sent = raw
+    preprocess = getattr(actor, "_preprocess_msgs", None)
+    if preprocess is not None:
+        try:
+            as_sent = preprocess(copy.deepcopy(raw)) or as_sent
+        except Exception:
+            return None, "the session's message preprocessor failed on its history"
+    system = getattr(client, "system_message", None)
+    if system and not (as_sent and as_sent[0].get("role") == "system"):
+        as_sent = [{"role": "system", "content": system}, *as_sent]
+    sent = last["messages"]
+
+    def _bytes(messages: list) -> list[str]:
+        return [json.dumps(m, default=str) for m in messages]
+
+    if _bytes(as_sent[: len(sent)]) != _bytes(sent):
+        return None, "the session's history changed after its last request"
+    if find_unreplied_assistant_entries(types.SimpleNamespace(messages=raw)):
+        return None, "the session ended with unanswered tool calls"
+    return (
+        {
+            "client": client,
+            "messages": raw,
+            "tools": last["tools"],
+            "tool_choice": last.get("tool_choice"),
+        },
+        None,
+    )
+
+
+def _start_storage_review_fork(
+    *,
+    fork_source: dict,
+    actor: "CodeActActor",
+    tools: Dict[str, Callable],
+    message: str,
+    parent_lineage: list[str] | None,
+    mask_rules: Optional[Dict[str, str]] = None,
+) -> "AsyncToolLoopHandle":
+    """Start the storage review as a fork of the session's conversation.
+
+    Its first request is the session's system prompt, messages, last tools
+    and tool choice -- as the session sent them -- plus *message*, so the
+    provider serves all but that message from the session's cache. The loop
+    adds nothing else: no runtime-context header, no parent context, no
+    compression. Library tools the list advertises run as the review's own;
+    everything else in the list is refused by rule.
+    """
+    from unify.common._async_tool.propagation_mode import ChatContextPropagation
+
+    client = fork_llm_client(
+        fork_source["client"],
+        origin="StorageCheck",
+        purpose="planning",
+        messages=fork_source["messages"],
+    )
+    first_choice = fork_source.get("tool_choice")
+    first_choice = first_choice if isinstance(first_choice, str) else "auto"
+    # The list's ask_about_completed_tool is the loop's own, over the review's
+    # calls; the review's variant over the task's tools is not in the list.
+    review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
+
+    opts: dict = {"mask_rule": _REVIEW_FORK_MASK_RULE}
+    if mask_rules:
+        # A lessons-only review: the function writes the list advertises are
+        # refused with their own rule, not the fork's.
+        opts["mask_rules"] = dict(mask_rules)
+
+    def _review_policy(step: int, visible: Dict[str, Any]):
+        return (
+            first_choice if step == 0 else "auto",
+            visible,
+            dict(opts),
+        )
+
+    return start_async_tool_loop(
+        client=client,
+        message=message,
+        tools=review_tools,
+        loop_id="StorageCheck(CodeActActor.act)",
+        parent_lineage=parent_lineage,
+        tool_policy=_review_policy,
+        propagate_chat_context=ChatContextPropagation.NEVER,
+        caller_description="",
+        preprocess_msgs=getattr(actor, "_preprocess_msgs", None),
+        prompt_caching=getattr(actor, "_prompt_caching", None),
+        enable_compression=False,
+        fixed_tools_schema=fork_source["tools"],
+    )
+
 
 def _start_storage_check_loop(
     *,
@@ -1123,8 +1563,21 @@ def _start_storage_check_loop(
     stop_reason: str | None = None,
     proactive_summaries: list[str] | None = None,
     live_session: bool = False,
+    fork_source: dict | None = None,
+    outcome: dict | None = None,
+    lessons: bool = False,
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
+
+    *outcome* is the session's checked outcome (``UNIFY_OUTCOME``), shown in
+    its own section before the final result. With *lessons* the run failed
+    and the review may record only lessons: the function writes are not
+    offered (refused by rule in a fork) and the prompt says why.
+
+    With *fork_source* (see :func:`_review_fork_source`) the review is a fork
+    of the session's own conversation, and the rulebook arrives as one
+    appended user message instead of a system prompt around a trajectory
+    dump.
 
     With ``live_session=True`` the trajectory belongs to a persistent
     session that is still running: the review covers the turns completed
@@ -1151,6 +1604,14 @@ def _start_storage_check_loop(
         ask_tools=ask_tools,
         completed_tool_metadata=completed_tool_metadata,
     )
+    lesson_rules: Dict[str, str] = {}
+    if lessons:
+        from unify import outcome as outcome_mod
+
+        for name in outcome_mod.LESSON_REFUSED_TOOLS:
+            tools.pop(name, None)
+            lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
+    outcome_note = _storage_review_outcome_note(outcome, lessons=lessons)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -1310,13 +1771,43 @@ def _start_storage_check_loop(
         "## Latest Turn Response\n\n" if live_session else "## Final Result\n\n"
     )
 
+    if fork_source is not None:
+        # The conversation is the trajectory. The completed-tool and inner
+        # storage sections name tools the fork's list does not carry.
+        return _start_storage_review_fork(
+            fork_source=fork_source,
+            actor=actor,
+            tools=tools,
+            message=(
+                f"{_REVIEW_FORK_ROLE}"
+                f"{_STORAGE_WHAT_CAN_BE_STORED}"
+                f"{_storage_environment_note()}"
+                f"{_STORAGE_TWO_STORES}"
+                f"{_storage_update_first_note()}"
+                f"{_STORAGE_SUB_AGENT_PATTERNS}"
+                f"{_STORAGE_RECURRING_DELIVERABLE}"
+                f"{instructions}"
+                "\n\n"
+                f"{stop_context_section}"
+                f"{proactive_storage_section}"
+                f"{_storage_needs_repair_note()}"
+                f"{outcome_note}"
+                f"{result_header}"
+                f"{original_result}"
+            ),
+            parent_lineage=parent_lineage,
+            mask_rules=lesson_rules or None,
+        )
+
     # Static doctrine first, volatile trajectory last: every storage loop
     # shares the same byte-identical prefix (role + doctrine + instructions),
     # so provider prompt caching only pays cold tokens for the per-run tail.
     system_prompt = (
         f"{role_line}"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{_STORAGE_RECURRING_DELIVERABLE}"
         f"{instructions}"
@@ -1326,8 +1817,10 @@ def _start_storage_check_loop(
         f"{inner_storage_section}"
         f"{completed_tools_section}"
         f"{proactive_storage_section}"
+        f"{_storage_needs_repair_note()}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
+        f"{outcome_note}"
         f"{result_header}"
         f"{original_result}"
     )
@@ -1445,7 +1938,9 @@ def _start_proactive_storage_loop(
         "requested skill(s) for future reuse. Often nothing is worth "
         "storing — that is perfectly fine.\n\n"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
         "\n\n"
@@ -1503,10 +1998,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         actor: "CodeActActor",
         meter: Optional[RunMeter] = None,
         turn_reviews_enabled: bool = False,
+        persist: bool = False,
     ) -> None:
         self._inner = inner
         self._actor = actor
         self._meter = meter
+        self._persist = bool(persist)
         self._notification_q: asyncio.Queue[dict] = asyncio.Queue()
         self._task_done_event = asyncio.Event()
         self._completion_event = asyncio.Event()
@@ -1532,6 +2029,19 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._turn_review_rerun: bool = False
         self._latest_turn_response: str = ""
         self._reviewed_tool_msg_count: int = 0
+
+        # UNIFY_OUTCOME: the environment's checked outcome for this session,
+        # posted under ``outcome_session_id`` (unify/outcome.py), and the
+        # agent's replies it is read against. Off, none of this is touched.
+        self.outcome_session_id: Optional[str] = None
+        self._outcome: Optional[dict] = None
+        self._last_reply: Optional[str] = None
+        self._reply_at_outcome: Optional[str] = None
+        from unify import outcome as outcome_mod
+
+        if outcome_mod.enabled():
+            self.outcome_session_id = uuid.uuid4().hex
+            outcome_mod.register(self.outcome_session_id, self)
 
         # Start the two-phase lifecycle manager.
         self._lifecycle_task = asyncio.create_task(self._run_lifecycle())
@@ -1576,6 +2086,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         try:
             while True:
                 notif = await source.next_notification()
+                if (
+                    self.outcome_session_id is not None
+                    and isinstance(notif, dict)
+                    and notif.get("type") == "response"
+                ):
+                    self._last_reply = str(notif.get("content") or "")
                 await self._notification_q.put(notif)
                 if (
                     self._turn_reviews_enabled
@@ -1587,6 +2103,46 @@ class _StorageCheckHandle(SteerableToolHandle):
             pass
         except Exception:
             pass
+
+    def receive_outcome(self, outcome: dict) -> None:
+        """Take the session's checked outcome (see :func:`unify.outcome.post`).
+
+        The agent's latest reply is kept with it: an environment posts the
+        outcome once the task is over and before any closing message, so that
+        reply is the one the task ended on, and the review reads it as the
+        final result. The latest outcome wins; once the session has ended it
+        is too late and the outcome is refused.
+        """
+        from unify import outcome as outcome_mod
+
+        if self._task_done_event.is_set():
+            raise outcome_mod.OutcomeError(
+                "the session has already ended; its review has started",
+            )
+        self._outcome = dict(outcome)
+        self._reply_at_outcome = self._last_reply
+        logger.info(
+            "StorageCheck outcome received: solved="
+            f"{outcome.get('solved')} score={outcome.get('score')} "
+            f"source={outcome.get('source')}",
+        )
+
+    def _review_final_result(self) -> str:
+        """The "Final Result" the storage review reads.
+
+        As shipped it is the session's result, which for a persistent
+        session ended by a stop is the loop's stop notice. With
+        ``UNIFY_OUTCOME`` it is the agent's last reply before the outcome
+        arrived, or, with no outcome, its last reply in place of that notice.
+        """
+        result = str(self._original_result)
+        if self.outcome_session_id is None:
+            return result
+        if self._reply_at_outcome is not None:
+            return self._reply_at_outcome or _EMPTY_REPLY
+        if result == _STOPPED_NOTICE and self._last_reply is not None:
+            return self._last_reply or _EMPTY_REPLY
+        return result
 
     def _note_turn_boundary(self, latest_response: str) -> None:
         """Schedule a mid-session storage review for a completed turn.
@@ -1907,6 +2463,58 @@ class _StorageCheckHandle(SteerableToolHandle):
             if self._task_failure is not None:
                 return
 
+            # With an admission file configured, the review runs only when an
+            # external check of the session's outcome admits it, read now that
+            # the session has ended; anything else skips it.
+            # UNIFY_REVIEW_FAILED=lessons adds one admitting verdict,
+            # ``{"admit": "lessons"}``, and a failed checked outcome
+            # (UNIFY_OUTCOME) without an admission file: both review the run
+            # for lessons only, with no function writes.
+            from unify import outcome as outcome_mod
+
+            lessons_mode = outcome_mod.review_failed_mode() == "lessons"
+            lessons = False
+            admission_path = _store_admission_path()
+            if admission_path and _store_admission_never(admission_path):
+                logger.info(f"StorageCheck skipped: {_STORE_ADMISSION_NEVER_REASON}")
+                await self._notification_q.put(
+                    {
+                        "type": "storage_review_skipped",
+                        "message": _STORE_ADMISSION_NEVER_REASON,
+                    },
+                )
+                return
+            if admission_path:
+                admitted, admission_reason = _read_store_admission(admission_path)
+                if not admitted and lessons_mode:
+                    verdict, _failure = _load_store_admission(admission_path)
+                    if verdict is not None and verdict.get("admit") == "lessons":
+                        admitted, lessons = True, True
+                        admission_reason = (
+                            f"admitted for failure lessons{_admission_why(verdict)}"
+                        )
+                if not admitted:
+                    logger.info(f"StorageCheck skipped: {admission_reason}")
+                    await self._notification_q.put(
+                        {
+                            "type": "storage_review_skipped",
+                            "message": admission_reason,
+                        },
+                    )
+                    return
+                logger.info(f"StorageCheck {admission_reason}")
+            if (
+                lessons_mode
+                and self._outcome is not None
+                and self._outcome.get("solved") is False
+            ):
+                lessons = True
+            if lessons:
+                logger.info(
+                    "StorageCheck reviewing a failed run for lessons only: "
+                    "function writes refused",
+                )
+
             self._phase = "storage"
 
             # A mid-session turn review still in flight finishes first: its
@@ -1953,15 +2561,30 @@ class _StorageCheckHandle(SteerableToolHandle):
                 except Exception:
                     pass
 
+                # UNIFY_REVIEW_FORK: continue the session's own conversation
+                # when it can be continued exactly; otherwise say why not.
+                fork_source, fork_skipped = _review_fork_source(
+                    self._inner,
+                    self._actor,
+                )
+                if fork_skipped:
+                    logger.info(
+                        f"StorageCheck fork skipped: {fork_skipped}; running "
+                        "the standalone review",
+                    )
+
                 storage_handle = _start_storage_check_loop(
                     trajectory=trajectory,
                     ask_tools=ask_tools,
                     completed_tool_metadata=completed_tool_metadata,
                     actor=self._actor,
-                    original_result=str(self._original_result),
+                    original_result=self._review_final_result(),
                     parent_lineage=_sc_parent_lineage,
                     stop_reason=self._stop_reason,
                     proactive_summaries=proactive_summaries or None,
+                    fork_source=fork_source,
+                    outcome=self._outcome,
+                    lessons=lessons,
                 )
 
                 if storage_handle is None:
@@ -2107,6 +2730,20 @@ class _StorageCheckHandle(SteerableToolHandle):
         _parent_chat_context_cont: list[dict] | None = None,
         **kwargs,
     ) -> None:
+        if self._refuses_late_session_message():
+            logger.info(
+                "Interjection not delivered: the persistent session's task "
+                "loop has ended, so the message has no session to go to, and "
+                "the storage review does not take the session's messages "
+                f"({len(message)} chars)",
+            )
+            await self._notification_q.put(
+                {
+                    "type": "interjection_refused",
+                    "message": _LATE_SESSION_MESSAGE_REFUSAL,
+                },
+            )
+            return None
         handle = self._active_handle
         if handle is not None:
             return await handle.interject(
@@ -2114,6 +2751,25 @@ class _StorageCheckHandle(SteerableToolHandle):
                 _parent_chat_context_cont=_parent_chat_context_cont,
                 **kwargs,
             )
+
+    def _refuses_late_session_message(self) -> bool:
+        """Whether an interjection arrives after a persistent session ended.
+
+        A persistent session takes each follow-up as its next request. Once
+        its task loop has ended (at a step or time limit, or by a stop), a
+        follow-up has no session to go to, and forwarded to the storage
+        review it is read there as a user interjection the review must
+        answer. With ``UNIFY_REVIEW_FORK`` it is refused instead; off, it
+        is forwarded as shipped. A handle that was not persistent keeps the
+        shipped routing, where an interjection steers the review.
+        """
+        from unify.common._async_tool import cache_discipline
+
+        return (
+            self._persist
+            and self._task_done_event.is_set()
+            and cache_discipline.review_fork_enabled()
+        )
 
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
@@ -2656,6 +3312,7 @@ class CodeActActor(BaseCodeActActor):
             _interject_queue: asyncio.Queue | None = None,
             _pause_event: asyncio.Event | None = None,
             _parent_chat_context: list[dict] | None = None,
+            _language: str = "python",
         ) -> Any:
             """
             Execute arbitrary Python code in a specified state mode.
@@ -2800,11 +3457,17 @@ class CodeActActor(BaseCodeActActor):
                         notification_q=notification_q,
                         pause_event=_pause_event,
                     ) as _steering:
+                        # Only UNIFY_WORKSPACE=sandboxed routes another
+                        # language here (see _workspace_tools).
+                        _lang_kw = (
+                            {"language": _language} if _language != "python" else {}
+                        )
                         try:
                             out = await self._session_executor.execute(
                                 code=code,
                                 state_mode=state_mode,  # type: ignore[arg-type]
                                 session_id=session_id,
+                                **_lang_kw,
                             )
                         except Exception as e:
                             exec_exc = e
@@ -2904,6 +3567,8 @@ class CodeActActor(BaseCodeActActor):
                 display_label="Installing Python packages",
             ),
         }
+        if sandbox.enabled():
+            tools.update(_workspace_tools(execute_code))
 
         # FunctionManager read tools: thin wrappers that inject callables
         # into the sandbox and return only metadata to the LLM. Docstrings
@@ -3026,6 +3691,16 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
+            if _function_patch_enabled() and hasattr(fm, "patch_function"):
+                tools.update(
+                    methods_to_tool_dict(
+                        ToolSpec(
+                            fn=fm.patch_function,
+                            display_label="Patching a stored function",
+                        ),
+                        include_class_name=True,
+                    ),
+                )
 
         # FunctionManager read tools (search/filter/list) use custom wrappers
         # that inject callables into the sandbox. All other FM/GM tools below
@@ -3059,6 +3734,16 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
+            if _function_patch_enabled() and hasattr(gm, "patch_guidance"):
+                tools.update(
+                    methods_to_tool_dict(
+                        ToolSpec(
+                            fn=gm.patch_guidance,
+                            display_label="Patching saved guidance",
+                        ),
+                        include_class_name=True,
+                    ),
+                )
 
         # ── Proactive skill storage tool ──────────────────────────────
         if self.function_manager and self.guidance_manager:
@@ -3279,16 +3964,46 @@ class CodeActActor(BaseCodeActActor):
                     )
                     if callable(get_stored_primitive):
                         function_data = get_stored_primitive(name=function_name)
+
+                # UNIFY_STORE_TRUST: the synthesized call below runs the raw
+                # implementation, not the boundary-wrapped callable that
+                # records reuse, so this path observes the call itself, as
+                # FunctionManager.execute_function does: an install that
+                # fails or a run that reports an error is a failed reuse.
+                # None for primitives and while the switch is off.
+                trust_observer = None
+                trust_arguments = None
+                if isinstance(function_data, dict):
+                    from unify.function_manager.store_trust import CallObserver
+
+                    trust_observer = CallObserver.for_function(
+                        self.function_manager,
+                        function_data,
+                    )
+                    if trust_observer is not None:
+                        trust_arguments = trust_observer.before(
+                            None,
+                            (),
+                            call_kwargs,
+                        )
+
                 if isinstance(function_data, dict) and function_data.get(
                     "dependencies",
                 ):
                     # The synthesized call runs the stored implementation
                     # in the sandbox, so its packages must be importable
                     # before the cell starts.
-                    await asyncio.to_thread(
-                        environment.ensure,
-                        list(function_data["dependencies"]),
-                    )
+                    try:
+                        await asyncio.to_thread(
+                            environment.ensure,
+                            list(function_data["dependencies"]),
+                        )
+                    except Exception as exc:
+                        # The function's own install failed, whatever the
+                        # arguments: a plain dict carries no caller fault.
+                        if trust_observer is not None:
+                            trust_observer.after(dict(trust_arguments), exc)
+                        raise
 
                 # The synthesized-call path prepends the raw implementation
                 # and runs it in the sandbox, shadowing any boundary-wrapped
@@ -3465,6 +4180,26 @@ class CodeActActor(BaseCodeActActor):
                                 }
                         finally:
                             _PARENT_CHAT_CONTEXT.reset(_pcc_token)
+
+                    # UNIFY_STORE_TRUST: a call a correction reached while it
+                    # ran (stopped, or re-run with patched code) says nothing
+                    # about the stored version and is not recorded.
+                    if trust_observer is not None and not (
+                        _ef_steering is not None and _ef_steering.messages
+                    ):
+                        trust_error = (
+                            exec_exc if exec_exc is not None else out.get("error")
+                        )
+                        trust_observer.after(trust_arguments, trust_error)
+                        # A failure the caller caused is not held against the
+                        # function; the reply says so, and what to fix.
+                        trust_fault = getattr(trust_arguments, "caller_fault", None)
+                        if trust_error and trust_fault and out.get("error"):
+                            out["error"] = (
+                                f"{str(out['error']).rstrip()}\n\n"
+                                f"Not counted against the stored function "
+                                f"`{function_name}`: {trust_fault}.\n"
+                            )
 
                     # Enrich with session name.
                     if out.get("session_id") is not None:
@@ -3747,7 +4482,13 @@ class CodeActActor(BaseCodeActActor):
                 }
             names: list[str] = []
             full_map: dict[str, str] = {}
-            for k, v in sb.global_state.items():
+            # UNIFY_WORKSPACE_PYTHON=worker: the variables live in the worker.
+            worker_variables = getattr(sb, "worker_variables", None)
+            in_worker = await worker_variables() if worker_variables else None
+            if in_worker is not None:
+                names, full_map = list(in_worker), dict(in_worker)
+            items = sb.global_state.items() if in_worker is None else ()
+            for k, v in items:
                 if not isinstance(k, str) or k.startswith("_"):
                     continue
                 if callable(v) or isinstance(v, type):
@@ -3923,6 +4664,9 @@ class CodeActActor(BaseCodeActActor):
             self.can_compose if can_compose is None else bool(can_compose)
         )
         effective_can_store = self.can_store if can_store is None else bool(can_store)
+        # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
+        # and it runs only when an external check of the outcome admits it.
+        admission_gated = effective_can_store and bool(_store_admission_path())
         act_llm_profile = resolve_act_llm_profile(llm_profile)
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
@@ -4086,9 +4830,22 @@ class CodeActActor(BaseCodeActActor):
             "FunctionManager_delete_function",
             "FunctionManager_reconcile_dependencies",
             "GuidanceManager_reconcile_dependencies",
+            "FunctionManager_patch_function",
+            "GuidanceManager_patch_guidance",
+        }
+        # Admission-gated sessions also lose the direct guidance writes that
+        # can_store=False leaves in place: nothing is written in-session.
+        _admission_withheld_tools = _store_only_tools | {
+            "GuidanceManager_add_guidance",
+            "GuidanceManager_update_guidance",
+            "GuidanceManager_delete_guidance",
         }
 
-        def _filter_tools(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
+        def _filter_tools(
+            tool_dict: Dict[str, Any],
+            *,
+            withhold_admission: bool = True,
+        ) -> Dict[str, Any]:
             """Apply static per-call filters (can_compose, can_store)."""
             out = dict(tool_dict)
             if not effective_can_compose:
@@ -4099,9 +4856,13 @@ class CodeActActor(BaseCodeActActor):
             if not effective_can_store:
                 for name in _store_only_tools:
                     out.pop(name, None)
+            if admission_gated and withhold_admission:
+                for name in _admission_withheld_tools:
+                    out.pop(name, None)
             return out
 
-        base_tools = _filter_tools(self.get_tools("act"))
+        _act_tools = self.get_tools("act")
+        base_tools = _filter_tools(_act_tools)
 
         # When execute_code is masked (can_compose=False), strip any
         # execute_code references from execute_function's docstring so the
@@ -4165,10 +4926,13 @@ class CodeActActor(BaseCodeActActor):
         system_prompt = build_code_act_prompt(
             environments=sandbox_envs,
             tools=base_tools,
-            can_store=effective_can_store,
+            # An admission-gated session has no in-session storage tools to
+            # describe; it is told the libraries are read-only instead.
+            can_store=effective_can_store and not admission_gated,
             guidelines=effective_guidelines,
             discovery_first_policy=self.tool_policy is _USE_DEFAULT,
             persist=bool(persist),
+            **({"library_read_only": True} if admission_gated else {}),
         )
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
@@ -4235,6 +4999,31 @@ class CodeActActor(BaseCodeActActor):
             client.generate = _generate_with_discovery_mutator  # type: ignore[method-assign]
 
         tools = dict(base_tools)
+
+        # UNIFY_CACHE_DISCIPLINE: the tool list is fixed per session and holds
+        # the tools the session's requests can ever call. When the review that
+        # forks this session after an admitted outcome reuses the list, the
+        # library writes admission withholds stay in it, masked: a call to one
+        # is refused with the rule until the fork. Otherwise -- a frozen
+        # library, or a standalone review with its own tools -- nothing sending
+        # this list can call them, and they are left out (about 2.4k tokens a
+        # call on AppWorld) rather than listed and refused.
+        from unify.common._async_tool import cache_discipline
+
+        if (
+            admission_gated
+            and cache_discipline.enabled()
+            and _admitted_review_can_write_in_session_list()
+        ):
+            for name, tool in _filter_tools(
+                _act_tools,
+                withhold_admission=False,
+            ).items():
+                tools.setdefault(name, tool)
+            tool_policy = _with_mask_rules(
+                tool_policy,
+                {name: _ADMISSION_MASK_RULE for name in _admission_withheld_tools},
+            )
 
         # Build event bus callbacks for clarification and notification tools
         # (the loop creates the tools; we just provide the event hooks).
@@ -4319,7 +5108,9 @@ class CodeActActor(BaseCodeActActor):
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(
-                    ["store_skills"] if effective_can_store else None
+                    ["store_skills"]
+                    if effective_can_store and not admission_gated
+                    else None
                 ),
                 clarification_queues=_clar_queues,
                 on_clarification_request=_on_clar_req,
@@ -4360,9 +5151,11 @@ class CodeActActor(BaseCodeActActor):
                 meter=run_meter,
                 turn_reviews_enabled=(
                     effective_can_store
+                    and not admission_gated
                     and bool(persist)
                     and bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
                 ),
+                persist=bool(persist),
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not

@@ -381,6 +381,15 @@ _STORAGE_DEFERRED_NOTICE = textwrap.dedent("""
     `compress_context`.
 """).strip()
 
+_LIBRARY_READ_ONLY_NOTICE = textwrap.dedent("""
+    ### Library Writes
+
+    In this session the function and guidance libraries are read-only: the
+    tools that write to them are not available. When the session ends, a
+    review may add to the libraries, but only if an external check of the
+    session's outcome admits it.
+""").strip()
+
 _STORAGE_SESSION_NOTICE = textwrap.dedent("""
     ### Skill Storage
 
@@ -518,6 +527,25 @@ def _build_code_act_rules_and_examples(
     return "\n\n---\n\n".join(p for p in parts if p and p.strip()).strip()
 
 
+def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> bool:
+    """Whether an environment puts the actor primitive in the sandbox.
+
+    Any environment in the ``primitives`` namespace does, except the one for
+    the namespaces an environment registered (``UNIFY_ENV_NAMESPACES``): an
+    actor holding only those may not spawn a sub-actor. With the switch off
+    this is ``"primitives" in environments``.
+    """
+    env = environments.get("primitives")
+    if env is None:
+        return False
+    from unify.actor.environments.environment_namespaces import (
+        EnvironmentNamespacesEnvironment,
+    )
+
+    members = getattr(env, "sub_environments", None) or [env]
+    return not all(isinstance(e, EnvironmentNamespacesEnvironment) for e in members)
+
+
 def build_code_act_prompt(
     *,
     environments: Mapping[str, "BaseEnvironment"],
@@ -526,6 +554,7 @@ def build_code_act_prompt(
     guidelines: Optional[str] = None,
     discovery_first_policy: bool = False,
     persist: bool = False,
+    library_read_only: bool = False,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -547,6 +576,10 @@ def build_code_act_prompt(
         the session to execute stored functions on repeat requests for the
         same deliverable. When ``False`` (one-shot act), the notice keeps
         the post-result consolidation description.
+    library_read_only:
+        When ``True`` (an admission-gated session), states that the
+        libraries cannot be written during the session and that a review
+        after it runs only when an external check admits it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -578,7 +611,7 @@ def build_code_act_prompt(
 
         parts.append(
             _build_sandbox_environment_section(
-                has_primitives="primitives" in environments,
+                has_primitives=_injects_actor_primitives(environments),
             ),
         )
         parts.append(_TOOL_SELECTION)
@@ -590,6 +623,9 @@ def build_code_act_prompt(
             parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
+
+        if library_read_only and (has_fm_tools or has_gm_tools):
+            parts.append(_LIBRARY_READ_ONLY_NOTICE)
 
         if can_store:
             # A persistent session's consolidation runs per completed turn,

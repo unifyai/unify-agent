@@ -268,6 +268,16 @@ def _build_inner_actor(
     ``execute_function`` and code all refuse it.
     """
     from unify.actor.code_act_actor import CodeActActor
+    from unify.actor.environments.environment_namespaces import (
+        EnvironmentNamespacesEnvironment,
+        registered_environments,
+    )
+    from unify.function_manager.primitives.environment import environment_aliases
+
+    # Namespaces the environment registered (UNIFY_ENV_NAMESPACES) are not a
+    # grant of primitives.actor: a sub-agent works in the same environment as
+    # its parent, so it always gets them. Empty with the switch off.
+    env_aliases = environment_aliases()
 
     if can_spawn_sub_agents:
         primitive_scope = PrimitiveScope.single(ActorEnvironment.MANAGER_ALIAS)
@@ -276,6 +286,7 @@ def _build_inner_actor(
             pattern
             for pattern in prompt_functions or []
             if pattern.split(".")[0] == ActorEnvironment.NAMESPACE
+            and ".".join(pattern.split(".")[1:2]) not in env_aliases
         ]
         if named_primitives:
             raise ValueError(
@@ -285,6 +296,10 @@ def _build_inner_actor(
                 "primitives.actor, or leave it out of prompt_functions.",
             )
         primitive_scope = PrimitiveScope.none()
+    if env_aliases:
+        primitive_scope = PrimitiveScope(
+            scoped_managers=primitive_scope.scoped_managers | env_aliases,
+        )
 
     # Build a fresh FM scoped by discovery_scope (no parent inheritance).
     inner_fm = _build_scoped_fm(discovery_scope, primitive_scope)
@@ -304,6 +319,10 @@ def _build_inner_actor(
         isinstance(e, ActorEnvironment) for e in inner_envs
     ):
         inner_envs.append(ActorEnvironment())
+
+    # The environment's own namespaces, when it registered any.
+    if not any(isinstance(e, EnvironmentNamespacesEnvironment) for e in inner_envs):
+        inner_envs.extend(registered_environments())
 
     # Resolve prompt_guidance entries and merge with guidelines.
     guidance_text, resolved_guidance_ids = _resolve_prompt_guidance(
@@ -727,9 +746,15 @@ class ActorEnvironment(BaseEnvironment):
             "act",
             f"{fq_prefix}.act",
         )
+        from unify.function_manager.primitives.environment import (
+            environment_aliases,
+        )
+
+        # With environment namespaces registered it is no longer the only one.
+        lead = "" if environment_aliases() else "The one `primitives.*` surface. "
         lines = [
             f"### `{fq_prefix}` — Actor Delegation\n",
-            "The one `primitives.*` surface. Awaiting a call returns a "
+            f"{lead}Awaiting a call returns a "
             f"`SteerableToolHandle` (`handle = await {fq_prefix}.act(...)`): "
             "make the handle the last expression of `execute_code` (or call it "
             "via `execute_function`) so the outer loop can steer it — "

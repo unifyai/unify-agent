@@ -48,6 +48,26 @@ Used by ``detect_third_party_imports`` to distinguish between packages that
 must be recorded as dependencies and packages that the runtime already supplies.
 """
 
+SANDBOX_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "display",
+        "request_clarification",
+    },
+)
+"""Globals the actor's sandbox binds per execution, beyond
+``create_execution_globals()`` (``unify/actor/execution/session.py`` and
+``unify/actor/environments/base.py``). A stored function may use them."""
+
+
+def environment_modules() -> frozenset[str]:
+    """``ENVIRONMENT_MODULES`` plus the modules a registered environment supplies."""
+    from unify.function_manager.primitives.environment import (
+        environment_modules as registered_modules,
+    )
+
+    registered = registered_modules()
+    return ENVIRONMENT_MODULES | registered if registered else ENVIRONMENT_MODULES
+
 
 def create_base_globals() -> Dict[str, Any]:
     """
@@ -248,6 +268,13 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict["list_llms"] = list_llms
     globals_dict["run_coro_sync"] = run_coro_sync
     globals_dict["unillm"] = unillm
+
+    # Globals a registered environment binds beside its namespaces; never in
+    # place of one of the above.
+    from unify.function_manager.primitives.environment import environment_globals
+
+    for name, value in environment_globals().items():
+        globals_dict.setdefault(name, value)
 
     return globals_dict
 

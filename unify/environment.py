@@ -24,6 +24,7 @@ from typing import Any, Dict, List
 from packaging.requirements import Requirement
 
 from unify.db import store_home
+from unify.sandbox import unconfined
 
 
 def environment_dir() -> Path:
@@ -64,12 +65,13 @@ def _create() -> Path:
     """Create the environment with the running interpreter and activate it."""
     if not environment_python().exists():
         environment_dir().parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["uv", "venv", "--python", sys.executable, str(environment_dir())],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        with unconfined():
+            subprocess.run(
+                ["uv", "venv", "--python", sys.executable, str(environment_dir())],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
     site_packages().mkdir(parents=True, exist_ok=True)
     return activate()
 
@@ -81,19 +83,22 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
     requested ``packages``.
     """
     _create()
-    result = subprocess.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(environment_python()),
-            *specifiers,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    # The harness installs a stored function's declared dependencies even when
+    # the function runs from a sandboxed cell (UNIFY_WORKSPACE).
+    with unconfined():
+        result = subprocess.run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(environment_python()),
+                *specifiers,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
     importlib.invalidate_caches()
     return {
         "success": result.returncode == 0,

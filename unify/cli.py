@@ -59,7 +59,10 @@ follow-up, which may span lines) or {"quit": true}; each stdout line is
 {"type": "result" | "response" | "question" | "storage" | "ended", ...}.
 With --persist every turn ends in one "response" line as the actor starts
 waiting, its content empty when the turn produced no text. Progress still
-goes to stderr.
+goes to stderr. With UNIFY_OUTCOME on, a stdin line {"outcome": {...}}
+gives the session its checked outcome for the storage review (see
+unify/outcome.py) and is answered with {"type": "outcome", "accepted": ...};
+with it off such a line is ignored.
 """
 
 
@@ -390,7 +393,7 @@ class Act:
 
     async def start(self) -> None:
         import unify
-        from unify.actor.environments import ActorEnvironment
+        from unify.actor.environments import ActorEnvironment, registered_environments
         from unify.manager_registry import ManagerRegistry
         from unify.session_details import SESSION_DETAILS
         from unify.workspace import get_local_root
@@ -404,7 +407,7 @@ class Act:
         os.chdir(local_root)
         self._actor = ManagerRegistry.get_actor(
             description="direct actor session",
-            environments=[ActorEnvironment()],
+            environments=[ActorEnvironment(), *registered_environments()],
         )
 
     async def close(self) -> None:
@@ -499,6 +502,9 @@ class Act:
                         continue
                     if not isinstance(item, dict):
                         continue
+                    if "outcome" in item and self._outcome_enabled():
+                        self._post_outcome(item.get("outcome"))
+                        continue
                     if item.get("quit"):
                         line = "/quit"
                     else:
@@ -520,6 +526,38 @@ class Act:
                     )
                     continue
                 await self._handle.interject(line)
+
+    @staticmethod
+    def _outcome_enabled() -> bool:
+        from unify import outcome as outcome_mod
+
+        return outcome_mod.enabled()
+
+    def _post_outcome(self, raw: object) -> None:
+        """Hand an ``{"outcome": ...}`` line to the session and answer it.
+
+        The outcome stays in this process (unify/outcome.py); the answer names
+        whether the session took it and, if not, why.
+        """
+        from unify import outcome as outcome_mod
+
+        session_id = getattr(self._handle, "outcome_session_id", None)
+        try:
+            if session_id is None:
+                raise outcome_mod.OutcomeError(
+                    "this session takes no outcome (it does not store)",
+                )
+            normalized = outcome_mod.post(session_id, raw)
+        except outcome_mod.OutcomeError as exc:
+            self._progress(f"outcome refused: {exc}")
+            self._emit(type="outcome", accepted=False, reason=str(exc))
+            return
+        self._emit(
+            type="outcome",
+            accepted=True,
+            solved=normalized["solved"],
+            checks=normalized["checks_total"],
+        )
 
     # ── run ──────────────────────────────────────────────────────────────
 

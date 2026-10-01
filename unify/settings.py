@@ -81,6 +81,159 @@ class ProductionSettings(BaseSettings):
     # network once its weights (134 MB) are downloaded, but reads only English
     # and the first 512 tokens of each text.
     UNIFY_LOCAL_EMBEDDINGS: bool = False
+    # The endpoint OpenRouter-style embedding requests are posted to, for
+    # example a proxy that tracks their cost. Empty posts to openrouter.ai.
+    UNIFY_EMBED_URL: str = ""
+    # Leave a stored function that cannot be loaded out of a search, list or
+    # filter that loads its results, naming it in a warning, instead of
+    # failing the whole result.
+    UNIFY_SEARCH_SKIP_UNLOADABLE: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Environment Namespaces and the Storage Check
+    # ─────────────────────────────────────────────────────────────────────────
+    # ``package.module:factory`` entries, comma-separated: factories that
+    # register the environment's own callable surface as ``primitives.<name>``
+    # namespaces at start-up (unify/function_manager/primitives/environment.py).
+    # Empty registers nothing.
+    UNIFY_ENV_NAMESPACES: str = ""
+    # ``resolve``: before a function is stored, every name and every
+    # ``primitives.*`` reference in it must resolve against the sandbox's
+    # globals and the registered namespaces, and it must load as a search
+    # would load it; otherwise ``add_functions`` refuses it and says why.
+    # Empty stores without the check.
+    UNIFY_STORE_CHECK: str = ""
+    # Path of a JSON file in which an external check of the session's outcome
+    # admits (``{"admit": true}``) the review that runs when a session ends.
+    # A missing, unreadable or malformed file, or any other ``admit``, skips
+    # that review. While set, the session's own library write tools are
+    # withheld and turn-level reviews are off, so the libraries change only
+    # through an admitted review. ``never`` is a frozen library: writes are
+    # withheld the same way, no review is ever admitted and no file is read.
+    # Empty reviews every session as shipped.
+    UNIFY_STORE_ADMISSION: str = ""
+    # ``package.module:factory``: a verifier for the storage review. A
+    # function is stored only after its exact source has passed a run on a
+    # held-out task of the same kind (FunctionManager_check_function, offered
+    # to the review only while this is set) and static checks against request
+    # details and credentials (unify/function_manager/store_verify.py). Needs
+    # UNIFY_STORE_ADMISSION. Empty stores without the check.
+    UNIFY_STORE_VERIFY: str = ""
+    # When a provider refuses a forced tool choice ("required", "any" or one
+    # named tool) with HTTP 400 because the model does not support it, retry
+    # that call once with tool_choice "auto" and an instruction to make the
+    # required call first (re-prompting once if the reply makes none), and
+    # send later forced calls to that model this way for the rest of the
+    # process (unify/common/tool_choice_fallback.py). Off: the error
+    # propagates as shipped.
+    UNIFY_TOOL_CHOICE_FALLBACK: bool = False
+    # ``stored``: a guidance search without reference text returns the stored
+    # guidance entries, newest first, instead of the built-in catalogue (whose
+    # hash-derived ids otherwise sort ahead of every stored entry). Empty
+    # searches as shipped.
+    UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
+    # Offer FunctionManager_patch_function and GuidanceManager_patch_guidance,
+    # which replace excerpts of a stored entry in place -- one edit or an
+    # ordered, all-or-nothing batch, each matched exactly or, failing that,
+    # with whitespace differences tolerated while it stays unique (the patched
+    # function is stored through add_functions, so its checks still apply),
+    # and keep the previous version of every overwritten function or guidance
+    # entry in function_history / guidance_history. Off: no patch tools and
+    # nothing is written to history.
+    UNIFY_FUNCTION_PATCH: bool = False
+    # ``warn``: adding a new function whose normalised code nearly matches a
+    # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
+    # the stored function. Empty adds as shipped.
+    UNIFY_STORE_DEDUPE: str = ""
+    # ``ramp``: keep a trust record per stored function (probation, trusted,
+    # quarantined) in function_trust. Every reuse is evidence: a call that
+    # returns is a pass, one that raises quarantines the function, which is
+    # then left out of the searches that load functions and listed to the
+    # next storage review as needing repair. A function is trusted after 3
+    # passes over 2 distinct inputs (5 over 3 if it can change anything); a
+    # changed source or callee, or an overwrite, puts it back on probation
+    # with its passes cleared and its failure history kept. With
+    # UNIFY_STORE_VERIFY set, a reuse is also re-checked in a fresh world
+    # with probability 1/2^k after k clean uses
+    # (unify/function_manager/store_trust.py). Empty keeps no record.
+    UNIFY_STORE_TRUST: str = ""
+    # Keep every tool loop's requests a growing, byte-stable prefix, so the
+    # provider's prompt cache is reused call after call: the tool list is
+    # computed once per session and a tool the phase does not allow is
+    # refused by rule instead of removed; messages already sent are never
+    # edited; compression asks for its summary as a fork of the conversation;
+    # a cache affinity key (UNIFY_CACHE_AFFINITY_SCOPE) is passed when the
+    # LLM client takes one; and each call logs how much of its input came
+    # from the cache (unify/common/_async_tool/cache_discipline.py). Off: as
+    # shipped.
+    UNIFY_CACHE_DISCIPLINE: bool = False
+    # What the cache affinity key of UNIFY_CACHE_DISCIPLINE is shared by:
+    # ``prefix`` (the default), every session whose model, system prompt and
+    # tool list are the same, so a new session reaches the replica an earlier
+    # one cached that prefix on; ``session``, one key per session; ``run``,
+    # one key for every session of this process. Ignored with the switch off.
+    UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
+    # Run the storage review that follows a session as a fork of the session's
+    # own conversation: its request is the actor's system prompt, messages,
+    # last tools and tool choice, plus one user message with the review
+    # rulebook, so it is served from the cache the actor built. Tools outside
+    # the library are refused. Needs UNIFY_CACHE_DISCIPLINE (for the fixed
+    # tool list); without it, or when the session was compressed or its
+    # history changed since its last request, the review runs as shipped and
+    # the log says why. With it, a message sent to a persistent session after
+    # its task loop ended on its own (a step limit, say) is refused rather than
+    # read by the review, forked or not, as an interjection to answer.
+    # Off: as shipped.
+    UNIFY_REVIEW_FORK: bool = False
+    # Take the session's checked outcome from the environment (unify/outcome.py:
+    # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
+    # ``unify act --jsonl``), held in memory, never in a file. The storage review
+    # then reads it in a section marked as the checker's verdict, not the
+    # agent's, and its "Final Result" is the agent's last reply before the
+    # outcome arrived instead of the stop notice of a persistent session.
+    # Off: no outcome is taken and the review is as shipped.
+    UNIFY_OUTCOME: bool = False
+    # ``lessons``: a run whose outcome says it failed (``solved`` false, with
+    # UNIFY_OUTCOME), or whose admission verdict is ``{"admit": "lessons"}``,
+    # is reviewed with function writes refused and guidance writes allowed,
+    # to record what went wrong. An admission verdict of false still skips the
+    # review. Empty: failed runs are reviewed, or skipped, as shipped.
+    UNIFY_REVIEW_FAILED: str = ""
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Session Transcripts
+    # ─────────────────────────────────────────────────────────────────────────
+    # Append every agent conversation (actor, sub-agents, storage review,
+    # compressor) as JSON lines to ``<UNIFY_HOME>/transcripts/<session>.jsonl``
+    # and one line per ended session to ``transcripts/index.jsonl``; after a
+    # context compression the compressed context points at the file
+    # (unify/transcripts.py). Off: nothing is written.
+    UNIFY_TRANSCRIPTS: bool = False
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Workspace Sandbox
+    # ─────────────────────────────────────────────────────────────────────────
+    # ``sandboxed``: execute_code also takes ``language="bash"`` (a persistent
+    # bash session), the actor gets ``read_file`` and ``grep``, and bash cells
+    # and every subprocess a Python cell starts run inside bubblewrap: ``/``
+    # read-only, only the workspace and a private /tmp writable, Unify's
+    # state, credential directories and .env files hidden, credential-named
+    # variables removed, no network (unify/sandbox.py). Without bubblewrap
+    # those commands are refused, never run unconfined. Python cells
+    # themselves still run in this process unless UNIFY_WORKSPACE_PYTHON says
+    # otherwise. Empty: none of this exists.
+    UNIFY_WORKSPACE: str = ""
+    # ``worker`` (with ``sandboxed``): each Python session runs its cells in a
+    # persistent child process inside the same bubblewrap policy, and reaches
+    # ``primitives``, steering and the other harness objects only through a
+    # proxy the harness serves (unify/actor/execution/worker.py). Empty: Python
+    # cells run by ``exec`` in this process.
+    UNIFY_WORKSPACE_PYTHON: str = ""
+    # ``proxy``: the sandbox's only network is one loopback port forwarded to
+    # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
+    # Empty: no network at all.
+    UNIFY_WORKSPACE_NETWORK: str = ""
+    UNIFY_WORKSPACE_PROXY_PORT: int = 0
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -123,11 +276,103 @@ class ProductionSettings(BaseSettings):
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
+        "UNIFY_SEARCH_SKIP_UNLOADABLE",
+        "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_FUNCTION_PATCH",
+        "UNIFY_CACHE_DISCIPLINE",
+        "UNIFY_REVIEW_FORK",
+        "UNIFY_TRANSCRIPTS",
+        "UNIFY_OUTCOME",
         mode="before",
     )
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
+
+    @field_validator("UNIFY_STORE_CHECK", mode="before")
+    @classmethod
+    def parse_store_check(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "resolve"):
+            raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_CACHE_AFFINITY_SCOPE", mode="before")
+    @classmethod
+    def parse_cache_affinity_scope(cls, v: Any) -> str:
+        value = str(v or "").strip().lower() or "prefix"
+        if value not in ("prefix", "session", "run"):
+            raise ValueError(
+                "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session' or "
+                f"'run', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REVIEW_FAILED", mode="before")
+    @classmethod
+    def parse_review_failed(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "lessons"):
+            raise ValueError(
+                f"UNIFY_REVIEW_FAILED must be empty or 'lessons', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
+    @classmethod
+    def parse_guidance_empty_query(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "stored"):
+            raise ValueError(
+                f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_STORE_DEDUPE", mode="before")
+    @classmethod
+    def parse_store_dedupe(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "warn"):
+            raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_STORE_TRUST", mode="before")
+    @classmethod
+    def parse_store_trust(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "ramp"):
+            raise ValueError(f"UNIFY_STORE_TRUST must be empty or 'ramp', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_WORKSPACE", mode="before")
+    @classmethod
+    def parse_workspace(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "sandboxed"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE must be empty or 'sandboxed', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
+    @classmethod
+    def parse_workspace_network(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "proxy"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE_NETWORK must be empty or 'proxy', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_WORKSPACE_PYTHON", mode="before")
+    @classmethod
+    def parse_workspace_python(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "worker"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE_PYTHON must be empty or 'worker', not {v!r}",
+            )
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

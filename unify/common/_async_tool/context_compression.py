@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import unillm
 from pydantic import BaseModel
+from unify import transcripts
 from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.function_manager.execution_env import create_base_globals
@@ -476,6 +477,11 @@ async def compress_and_rebuild(
     Returns the rebuilt system messages and augmented tools dict needed to
     start a new loop iteration.
     """
+    # With UNIFY_TRANSCRIPTS on, the session whose history this is gets
+    # everything not yet on disk before that history is replaced.
+    session = transcripts.session_for_messages(all_messages)
+    if session is not None:
+        session.sync()
     all_messages = copy.deepcopy(all_messages)
     state.raw_archives.append(all_messages)
     archive_base = sum(len(a) for a in state.raw_archives[:-1])
@@ -505,14 +511,16 @@ async def compress_and_rebuild(
         else None
     )
 
-    compressed = await compress_messages(
-        tagged_messages,
-        endpoint,
-        image_blocks=live_images,
-        prior_entries=state.entries or None,
-        raw_archives=state.raw_archives,
-        new_indices=new_msg_global_indices,
-    )
+    # The compressor's own loop is a child of the session it compacts.
+    with transcripts.as_current(session):
+        compressed = await compress_messages(
+            tagged_messages,
+            endpoint,
+            image_blocks=live_images,
+            prior_entries=state.entries or None,
+            raw_archives=state.raw_archives,
+            new_indices=new_msg_global_indices,
+        )
 
     if live_images:
         state.live_image_ids = compressed.surviving_image_ids
@@ -558,6 +566,8 @@ async def compress_and_rebuild(
         "retrieve the full original content. Pass `n` to "
         "retrieve a range of consecutive messages."
     )
+    if session is not None:
+        _instructions += "\n\n" + session.pointer_line()
 
     if state.live_image_ids:
         content_blocks: list[dict] = [
@@ -585,5 +595,11 @@ async def compress_and_rebuild(
     tools["unpack_messages"] = _make_archive_lookup_tool(state.raw_archives)
 
     state.count += 1
+    transcripts.record_compaction(
+        session,
+        archived=len(all_messages),
+        pass_number=state.count,
+        context=system_msgs,
+    )
 
     return RebuildResult(system_msgs=system_msgs, tools=tools)

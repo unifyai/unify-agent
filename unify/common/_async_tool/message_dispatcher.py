@@ -3,6 +3,8 @@ from .timeout_timer import TimeoutTimer
 from .event_bus_util import to_event_bus
 import unillm
 
+from unify import transcripts
+
 
 class LoopMessageDispatcher:
     """
@@ -19,6 +21,10 @@ class LoopMessageDispatcher:
         self._client = client
         self._cfg = cfg
         self._timer = timer
+        # One dispatcher per loop run, created inside the loop's task: the
+        # point at which the loop is bound to its client's transcript session
+        # (a no-op unless UNIFY_TRANSCRIPTS is on).
+        transcripts.attach(client, cfg)
 
     async def append_msgs(
         self,

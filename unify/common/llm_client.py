@@ -152,6 +152,11 @@ def _build_llm_client(
         client.set_on_log_file_pending(pending_log.on_pending_path)
         client._pending_thinking_log = pending_log
 
+    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
+        from unify.common.tool_choice_fallback import install_tool_choice_fallback
+
+        install_tool_choice_fallback(client)
+
     return client
 
 
@@ -193,6 +198,45 @@ def new_llm_client(
         kwargs=kwargs,
         purpose=purpose,
     )
+
+
+def fork_llm_client(
+    parent: "unillm.AsyncUnify | unillm.Unify",
+    *,
+    origin: str,
+    purpose: LLMPurpose | None = None,
+    messages: list[dict] | None = None,
+) -> "unillm.AsyncUnify | unillm.Unify":
+    """A client that continues *parent*'s conversation under another origin.
+
+    Built with unillm's ``copy()``: the same model, system prompt, output
+    ceiling and prompt-caching targets. ``copy()`` restores the reasoning
+    effort *parent* was built with, so the effort it runs with now is set
+    again, and a cache affinity key (when the installed unillm has one) is
+    carried over so the fork reaches the replica holding the parent's
+    prefix. The transcript is *messages*, deep-copied, when given, else a
+    copy of the parent's. Nothing done on the fork reaches the parent.
+    """
+    fork = parent.copy()
+    if messages is not None:
+        fork._messages = copy.deepcopy(list(messages))
+    effort = getattr(parent, "reasoning_effort", None)
+    if effort is not None:
+        fork.set_reasoning_effort(effort)
+    affinity = getattr(parent, "cache_affinity", None)
+    if affinity is not None and hasattr(fork, "set_cache_affinity"):
+        fork.set_cache_affinity(affinity)
+    origin = tag_origin_with_purpose(origin, purpose)
+    fork.set_origin(origin)
+    if origin:
+        pending_log = PendingThinkingLog(origin)
+        fork.set_on_log_file_pending(pending_log.on_pending_path)
+        fork._pending_thinking_log = pending_log
+    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
+        from unify.common.tool_choice_fallback import install_tool_choice_fallback
+
+        install_tool_choice_fallback(fork)
+    return fork
 
 
 def new_slow_brain_llm_client(
