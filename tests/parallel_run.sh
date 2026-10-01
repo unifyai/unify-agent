@@ -71,6 +71,8 @@ tmux_cmd() {
 # ---- Cleanup on interrupt ----
 # Track session IDs for cleanup on SIGINT/SIGTERM
 declare -a CREATED_SESSION_IDS=()
+declare -a CREATED_RESULT_PATHS=()
+declare -a CREATED_SESSION_NAMES=()
 
 # ---- Inline pass/fail reporting ----
 # Track which sessions we've already reported completion for (":$0:$3:")
@@ -138,30 +140,28 @@ report_completed_sessions() {
   # Guard against empty array (set -u treats empty array expansion as unbound)
   (( ${#CREATED_SESSION_IDS[@]} == 0 )) && return 0
 
-  for sid in "${CREATED_SESSION_IDS[@]}"; do
-    # Skip if already reported
+  local index sid receipt status base
+  for (( index=0; index<${#CREATED_SESSION_IDS[@]}; index++ )); do
+    sid="${CREATED_SESSION_IDS[$index]}"
     _is_reported "$sid" && continue
-
-    # Get current session name (may fail if session was killed)
-    local current_name
-    current_name=$(tmux_cmd display-message -p -t "$sid" "#{session_name}" 2>/dev/null || echo "")
-    [[ -z "$current_name" ]] && continue
-
-    # Check for completion (passed or failed prefix)
-    case "$current_name" in
-      "p ✅ "*)
-        local base="${current_name#p ✅ }"
-        echo "  - p ✅ $base"
-        _mark_reported "$sid"
-        _record_session_result "$sid" pass "$base"
-        ;;
-      "f ❌ "*)
-        local base="${current_name#f ❌ }"
-        echo "  - f ❌ $base"
-        _mark_reported "$sid"
-        _record_session_result "$sid" fail "$base"
-        ;;
-    esac
+    receipt="${CREATED_RESULT_PATHS[$index]}"
+    # The child publishes its exit receipt before it renames or closes the
+    # session. A missing session is not evidence of a successful test.
+    [[ -f "$receipt" && ! -L "$receipt" ]] || continue
+    status=$(cat "$receipt") || continue
+    if [[ ! "$status" =~ ^(0|[1-9][0-9]{0,2})$ ]] || (( status > 255 )); then
+      echo "Invalid exit receipt for $sid: $receipt" >&2
+      continue
+    fi
+    base="${CREATED_SESSION_NAMES[$index]}"
+    if (( status == 0 )); then
+      echo "  - p ✅ $base"
+      _record_session_result "$sid" pass "$base"
+    else
+      echo "  - f ❌ $base"
+      _record_session_result "$sid" fail "$base"
+    fi
+    _mark_reported "$sid"
   done
 }
 
@@ -491,6 +491,7 @@ run_cmd() {
   local target="$1"        # pytest target (file path or node id)
   local marker_arg="$2"    # optional marker filter (e.g., "-m eval")
   local session_name="$3"  # unique session name (names the session's store)
+  local result_path="$4"   # controller-owned occurrence, never derived from a node
   # Build the inner script first with safe %q for path/target, then quote the whole script with %q
   local inner
   local env_exports
@@ -546,7 +547,9 @@ run_cmd() {
   # where multiple sessions complete simultaneously or external agents interfere.
   # The session ID is captured BEFORE pytest runs and exported as UNIFY_TMUX_SESSION_ID
   # so pytest's conftest.py can write cache stats to a known temp file location.
-  inner=$(printf '%s; export UNIFY_TMUX_SESSION_ID=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_id}"); cd %q && %s; status=$?; sname=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_name}"); base="$sname"; case "$sname" in "p ✅ "*) base="${sname#p ✅ }" ;; "f ❌ "*) base="${sname#f ❌ }" ;; "r ⏳ "*) base="${sname#r ⏳ }" ;; esac; if [ $status -eq 0 ]; then pfx="p ✅"; else pfx="f ❌"; fi; LC_ALL=en_US.UTF-8 tmux -L %q rename-session -t "$sname" "$pfx $base" 2>/dev/null || true; if [ $status -eq 0 ]; then (sleep 10; LC_ALL=en_US.UTF-8 tmux -L %q kill-session -t "$UNIFY_TMUX_SESSION_ID" 2>/dev/null; if ! LC_ALL=en_US.UTF-8 tmux -L %q ls >/dev/null 2>&1; then LC_ALL=en_US.UTF-8 tmux -L %q kill-server 2>/dev/null || true; fi) >/dev/null 2>&1 & disown; echo "All tests passed. This tmux session will close in 10s..."; fi; echo; echo "pytest exited with code: $status"; echo "(You are now in a shell. Press Ctrl-D to close this window.)"; exec bash -l' "$env_exports" "$TMUX_SOCKET" "$REPO_ROOT" "$pytest_cmd" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET")
+  local receipt_cmd
+  receipt_cmd=$(printf '%q -B %q %q "$status"' "$VENV_PY" "$SCRIPT_DIR/_parallel_result.py" "$result_path")
+  inner=$(printf '%s; export UNIFY_TMUX_SESSION_ID=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_id}"); cd %q && %s; status=$?; if ! %s; then echo "Failed to publish test exit receipt" >&2; exit 125; fi; sname=$(LC_ALL=en_US.UTF-8 tmux -L %q display-message -p -t "$TMUX_PANE" "#{session_name}"); base="$sname"; case "$sname" in "p ✅ "*) base="${sname#p ✅ }" ;; "f ❌ "*) base="${sname#f ❌ }" ;; "r ⏳ "*) base="${sname#r ⏳ }" ;; esac; if [ $status -eq 0 ]; then pfx="p ✅"; else pfx="f ❌"; fi; LC_ALL=en_US.UTF-8 tmux -L %q rename-session -t "$sname" "$pfx $base" 2>/dev/null || true; if [ $status -eq 0 ]; then (sleep 10; LC_ALL=en_US.UTF-8 tmux -L %q kill-session -t "$UNIFY_TMUX_SESSION_ID" 2>/dev/null; if ! LC_ALL=en_US.UTF-8 tmux -L %q ls >/dev/null 2>&1; then LC_ALL=en_US.UTF-8 tmux -L %q kill-server 2>/dev/null || true; fi) >/dev/null 2>&1 & disown; echo "All tests passed. This tmux session will close in 10s..."; fi; echo; echo "pytest exited with code: $status"; echo "(You are now in a shell. Press Ctrl-D to close this window.)"; exec bash -l' "$env_exports" "$TMUX_SOCKET" "$REPO_ROOT" "$pytest_cmd" "$receipt_cmd" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET" "$TMUX_SOCKET")
   printf 'bash -c %q' "$inner"
 }
 
@@ -1050,6 +1053,12 @@ if (( RUNNER_OWNS_STORES )); then
   mkdir -p "$STORES_DIR"
 fi
 
+# Keep occurrence identities and terminal receipts after sessions and the
+# runner exit. Each invocation gets a private fresh directory, including
+# repeated runs using the same socket or log subdirectory.
+mkdir -p "$LOG_DIR"
+RESULTS_DIR=$(mktemp -d "$LOG_DIR/session-results.XXXXXX")
+
 # Print header before drip-feeding session creation
 echo "Creating ${#files[@]} tmux sessions..."
 
@@ -1072,7 +1081,12 @@ for target in "${files[@]}"; do
   # Note: Log directory is created lazily by conftest.py only when a log file is
   # actually written, avoiding empty directories when sessions fail/are interrupted.
   # Note: Log paths are auto-derived by conftest.py (semantic name + timestamp in socket subdir)
-  cmd="$(run_cmd "$target" "$MARKER_FILTER" "$session")"
+  occurrence=${#CREATED_SESSION_IDS[@]}
+  result_path="$RESULTS_DIR/$occurrence.exit"
+  original_session_name="$session"
+  printf '%s\n' "$target" > "$RESULTS_DIR/$occurrence.target"
+  printf '%s\n' "$session" > "$RESULTS_DIR/$occurrence.name"
+  cmd="$(run_cmd "$target" "$MARKER_FILTER" "$session" "$result_path")"
 
   # Capture session ID to track this specific run robustly
   sid=$(tmux_cmd new-session -d -P -F "#{session_id}" -s "$session" -n "$wname" "$cmd")
@@ -1091,6 +1105,9 @@ for target in "${files[@]}"; do
   session_ids+=( "$sid" )
   # Track for cleanup on interrupt (SIGINT/SIGTERM)
   CREATED_SESSION_IDS+=( "$sid" )
+  CREATED_RESULT_PATHS+=( "$result_path" )
+  CREATED_SESSION_NAMES+=( "$original_session_name" )
+  printf '%s\n' "$sid" > "$RESULTS_DIR/$occurrence.session"
 done
 
 # ---- Wait for all tests to complete ----
@@ -1164,7 +1181,18 @@ if (( timed_out )); then
 fi
 
 echo ""
-echo "All tests completed."
+incomplete_count=0
+for sid in "${session_ids[@]}"; do
+  if ! _is_reported "$sid"; then
+    ((incomplete_count++)) || true
+    echo "Missing terminal receipt for owned session $sid; outcome unknown." >&2
+  fi
+done
+if (( incomplete_count > 0 )); then
+  echo "Incomplete test accounting: $incomplete_count missing outcomes." >&2
+else
+  echo "All tests completed."
+fi
 
 # Collect failures
 declare -a failed_sessions=()
@@ -1294,7 +1322,10 @@ fi
 echo ""
 print_log_directories
 
-if (( fail_count > 0 || ${#failed_sessions[@]} > 0 )); then
+if (( incomplete_count > 0 || total_tests != ${#session_ids[@]} )); then
+  echo "Test accounting is incomplete; preserved receipts: $RESULTS_DIR" >&2
+  exit 2
+elif (( fail_count > 0 || ${#failed_sessions[@]} > 0 )); then
   exit 1
 else
   echo ""
