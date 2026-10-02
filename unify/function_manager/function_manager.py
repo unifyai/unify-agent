@@ -1100,16 +1100,22 @@ class FunctionManager(BaseFunctionManager):
     @staticmethod
     def _compact_function_search_rows(
         rows: List[Dict[str, Any]],
+        marker: Optional[task_origin.Marker] = None,
     ) -> List[Dict[str, Any]]:
-        """Return actor-facing discovery rows without large structured payloads."""
+        """Return actor-facing discovery rows without large structured payloads.
 
+        *marker* (``UNIFY_TRY_FIRST``) marks the rows stored from the current
+        task; it weighs requests over the whole library the rows came from.
+        """
+
+        marker = marker or task_origin.Marker(rows)
         compact_rows: list[dict[str, Any]] = []
         for row in rows:
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
-            # UNIFY_TRY_FIRST: origin hashes become ``same_task``.
-            task_origin.annotate(compact)
+            # UNIFY_TRY_FIRST: origin fields become ``same_task``.
+            marker.annotate(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
                 # results must not re-import what the actor prompt
@@ -2823,6 +2829,8 @@ class FunctionManager(BaseFunctionManager):
             ):
                 if key in ent:
                     data[key] = ent.get(key)
+            # UNIFY_TRY_FIRST: a result never shows where a function came from.
+            data = task_origin.strip(data)
             if include_implementations:
                 data["implementation"] = ent.get("implementation")
             metadata[name] = data
@@ -3162,6 +3170,8 @@ class FunctionManager(BaseFunctionManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.FUNCTION_COLUMNS).payload
+        # UNIFY_TRY_FIRST: a result never shows where a function came from.
+        rows = [task_origin.strip(row) for row in rows]
 
         from . import store_cases
 
@@ -3249,8 +3259,11 @@ class FunctionManager(BaseFunctionManager):
             if activation_settings.enabled
             else n
         )
+        library = self._rows(self._discovery_scope())
+        # UNIFY_TRY_FIRST: the whole library weighs the requests compared.
+        marker = task_origin.Marker(library)
         results = rank_by_similarity(
-            self._rows(self._discovery_scope()),
+            library,
             {field: query for field in SEARCHED_FUNCTION_FIELDS},
             limit=fetch_limit,
             id_field="function_id",
@@ -3264,7 +3277,7 @@ class FunctionManager(BaseFunctionManager):
         from . import store_cases
 
         if not _return_callable:
-            compact_results = self._compact_function_search_rows(results)
+            compact_results = self._compact_function_search_rows(results, marker)
             if include_implementations:
                 for compact, full in zip(compact_results, results, strict=True):
                     if "implementation" in full:
@@ -3285,7 +3298,7 @@ class FunctionManager(BaseFunctionManager):
             results = [row for row in results if row.get("name") not in unloadable]
 
         if _also_return_metadata:
-            metadata_rows = self._compact_function_search_rows(results)
+            metadata_rows = self._compact_function_search_rows(results, marker)
             if include_implementations:
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:

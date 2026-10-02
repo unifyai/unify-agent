@@ -536,7 +536,8 @@ _TRY_FIRST_NOTE = textwrap.dedent("""
     you have (worked examples, expected formats, earlier feedback). When
     it checks out, act on its result; pay for more information only when
     it does not. A search result marked `same_task` was stored from a
-    task whose request was identical to this one.
+    task whose request closely matches this one (instance data such as
+    numbers may differ); check that it fits before relying on it.
 """).strip()
 
 

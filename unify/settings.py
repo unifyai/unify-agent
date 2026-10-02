@@ -303,9 +303,13 @@ class ProductionSettings(BaseSettings):
     # costs something (a paid request, a scored submission, an irreversible
     # effect): run a stored function that matches the task on inputs it
     # already has and check the output against its evidence. A function
-    # stored during a task records a hash of the task's request in its
-    # metadata, and a search from a task with the same request marks it
-    # ``same_task: true``. Off: as shipped.
+    # stored during a task records the task's request in its metadata (a
+    # hash, and a copy of at most 4,000 characters, never shown in library
+    # results), and a search marks it ``same_task: true`` when the current
+    # request matches one it was stored from: the same text, or a weighted
+    # token overlap of at least 0.2 with numbers left out and tokens weighted
+    # by their rarity among the library's requests
+    # (unify/function_manager/task_origin.py). Off: as shipped.
     UNIFY_TRY_FIRST: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
