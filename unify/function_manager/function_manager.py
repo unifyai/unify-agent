@@ -588,6 +588,12 @@ class FunctionManager(BaseFunctionManager):
             not_in("function_id", self._exclude_compositional_ids),
         )
 
+    def _num_items(self) -> int:
+        """The number of stored functions in scope, primitives excluded."""
+        sql = "SELECT COUNT(*) AS n FROM all_functions"
+        sql += f" WHERE {self._compositional_scope()}"
+        return int(db.query_one(sql)["n"])
+
     def _discovery_scope(self, caller_filter: Optional[str] = None) -> str:
         """The clause selecting everything discovery may return: stored functions
         under ``filter_scope`` plus, when enabled, the scoped primitives."""

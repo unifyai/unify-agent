@@ -286,10 +286,60 @@ def _build_discovery_parallel_mutator() -> Any:
     return _mutator
 
 
+def _library_counts(
+    function_manager: Any,
+    guidance_manager: Any,
+) -> tuple[Optional[int], Optional[int]]:
+    """The stored functions and guidance entries in scope now.
+
+    Functions exclude primitives; guidance counts the built-in entries only
+    where ``UNIFY_BUILTIN_GUIDANCE`` shows them. A count a manager cannot
+    give (no manager, no counter, a failed read) is ``None``: unknown.
+    """
+
+    def _count(manager: Any) -> Optional[int]:
+        counter = getattr(manager, "_num_items", None) if manager else None
+        if not callable(counter):
+            return None
+        try:
+            return int(counter())
+        except Exception as exc:
+            logger.debug(f"library count unavailable: {type(exc).__name__}: {exc}")
+            return None
+
+    return _count(function_manager), _count(guidance_manager)
+
+
+def _library_snapshot_line(
+    counts: tuple[Optional[int], Optional[int]],
+    *,
+    has_fm_tools: bool,
+    has_gm_tools: bool,
+    discovery_gate: bool,
+) -> Optional[str]:
+    """``UNIFY_LIBRARY_SNAPSHOT``: one line giving the library's size at task start."""
+    functions, guidance = counts
+    parts: list[str] = []
+    if has_fm_tools and functions is not None:
+        parts.append(f"{functions} stored function{'' if functions == 1 else 's'}")
+    if has_gm_tools and guidance is not None:
+        parts.append(f"{guidance} guidance entr{'y' if guidance == 1 else 'ies'}")
+    if not parts:
+        return None
+    line = f"Library at task start: {', '.join(parts)}."
+    if discovery_gate and 0 in (
+        functions if has_fm_tools else None,
+        guidance if has_gm_tools else None,
+    ):
+        line += " An empty library is not searched first."
+    return line
+
+
 def _default_tool_policy(
     has_fm_tools: bool,
     has_gm_tools: bool,
     filter_tools: Callable[[Dict[str, Any]], Dict[str, Any]],
+    library_counts: Optional[Callable[[], tuple[Optional[int], Optional[int]]]] = None,
 ) -> ToolPolicyFn:
     """Build the default *discovery-first* tool policy.
 
@@ -319,6 +369,11 @@ def _default_tool_policy(
     filter_tools:
         The static-filter callable (``_filter_tools``) that enforces
         ``can_compose`` / ``can_store``.
+    library_counts:
+        Under ``UNIFY_LIBRARY_SNAPSHOT``, returns the stored function and
+        guidance counts (``None`` where unknown); it is read each time the
+        policy is evaluated, and a family whose library holds nothing is a
+        gate already satisfied, since a search of it can return nothing.
     """
 
     def _policy(
@@ -334,6 +389,11 @@ def _default_tool_policy(
         gm_satisfied = (not has_gm_tools) or any(
             t.startswith("GuidanceManager_") for t in called_tools
         )
+
+        if library_counts is not None and not (fm_satisfied and gm_satisfied):
+            functions, guidance = library_counts()
+            fm_satisfied = fm_satisfied or functions == 0
+            gm_satisfied = gm_satisfied or guidance == 0
 
         if fm_satisfied and gm_satisfied:
             return "auto", filtered
@@ -5099,6 +5159,8 @@ class CodeActActor(BaseCodeActActor):
             "\n\n".join(filter(None, [self._base_guidelines, guidelines])) or None
         )
 
+        from unify.settings import SETTINGS
+
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
         system_prompt = build_code_act_prompt(
             environments=sandbox_envs,
@@ -5111,6 +5173,7 @@ class CodeActActor(BaseCodeActActor):
             persist=bool(persist),
             **({"library_read_only": True} if admission_gated else {}),
         )
+        first_message_parts: list[str] = []
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
             f"({len(system_prompt)} chars, {len(base_tools)} tools)",
@@ -5139,6 +5202,17 @@ class CodeActActor(BaseCodeActActor):
                 _has_fm_tools,
                 _has_gm_tools,
                 _filter_tools,
+                **(
+                    {
+                        "library_counts": functools.partial(
+                            _library_counts,
+                            self.function_manager,
+                            self.guidance_manager,
+                        ),
+                    }
+                    if SETTINGS.UNIFY_LIBRARY_SNAPSHOT
+                    else {}
+                ),
             )
         else:
             # Custom caller-provided policy.  Wrap it so that _filter_tools
@@ -5161,6 +5235,22 @@ class CodeActActor(BaseCodeActActor):
         )
         if system_prompt:
             client.set_system_message(system_prompt)
+
+        # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
+        # libraries are at task start.
+        if SETTINGS.UNIFY_LIBRARY_SNAPSHOT:
+            snapshot = _library_snapshot_line(
+                _library_counts(self.function_manager, self.guidance_manager),
+                has_fm_tools=any(
+                    str(k).startswith("FunctionManager_") for k in base_tools
+                ),
+                has_gm_tools=any(
+                    str(k).startswith("GuidanceManager_") for k in base_tools
+                ),
+                discovery_gate=self.tool_policy is _USE_DEFAULT,
+            )
+            if snapshot:
+                first_message_parts.append(snapshot)
 
         # Soft/partial discovery hosts often serialize families under
         # tool_choice=required. Inject a Unify-local completion mutator that
@@ -5293,6 +5383,15 @@ class CodeActActor(BaseCodeActActor):
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
                 on_notify=_on_notify,
+                **(
+                    {
+                        "first_message_context": "\n\n".join(
+                            part for part in first_message_parts if part
+                        ),
+                    }
+                    if any(first_message_parts)
+                    else {}
+                ),
             )
         finally:
             current_run_meter.reset(meter_token)

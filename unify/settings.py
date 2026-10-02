@@ -179,6 +179,15 @@ class ProductionSettings(BaseSettings):
     # one cached that prefix on; ``session``, one key per session; ``run``,
     # one key for every session of this process. Ignored with the switch off.
     UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
+    # Tell the actor how large its libraries are and skip searching an empty
+    # one: the discovery-first gate counts the stored functions (primitives
+    # excluded) and the guidance entries in scope each time it is evaluated,
+    # and a library with none is treated as already searched, so with both
+    # empty the first turn is ``auto`` instead of a forced search. Only the
+    # tool choice changes: under UNIFY_CACHE_DISCIPLINE the tool list sent is
+    # the same. The session's first user message starts with one line giving
+    # both counts at task start. Off: as shipped.
+    UNIFY_LIBRARY_SNAPSHOT: bool = False
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -314,6 +323,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_CACHE_DISCIPLINE",
+        "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",

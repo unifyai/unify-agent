@@ -1132,6 +1132,7 @@ def start_async_tool_loop(
     on_clarification_answer: Optional[Callable[[str], Any]] = None,
     on_notify: Optional[Callable[[str], Any]] = None,
     fixed_tools_schema: Optional[list[dict]] = None,
+    first_message_context: Optional[str] = None,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for
@@ -1144,6 +1145,10 @@ def start_async_tool_loop(
           - False: no logging
           - True: log everything except system messages
           - "full": log everything including system messages
+
+    first_message_context : str | None, default None
+        Text that opens the loop's first user message, and the message that
+        restarts it after compression (see ``async_tool_loop_inner``).
 
     timeout : int | None, default None
         Activity-based timeout in seconds. When ``None`` (default), no
@@ -1271,6 +1276,7 @@ def start_async_tool_loop(
                 on_clarification_answer=on_clarification_answer,
                 on_notify=on_notify,
                 fixed_tools_schema=fixed_tools_schema,
+                first_message_context=first_message_context,
                 runtime_state=runtime_state,
             )
         except asyncio.CancelledError:
@@ -1357,6 +1363,7 @@ def start_async_tool_loop(
         "on_notify": on_notify,
         "runtime_state": runtime_state,
         "fixed_tools_schema": fixed_tools_schema,
+        "first_message_context": first_message_context,
     }
 
     with suppress(Exception):

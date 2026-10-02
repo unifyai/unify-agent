@@ -367,6 +367,23 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(rendered.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def with_first_message_context(msg: dict, context: str) -> dict:
+    """*msg* as a new message whose content opens with *context*.
+
+    Text content becomes ``context``, a rule, then the text; a list of
+    content blocks gets *context* as a leading text block. Any other content
+    is left as it is.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        content = f"{context}\n\n---\n\n{content}"
+    elif isinstance(content, list):
+        content = [{"type": "text", "text": context}, *content]
+    else:
+        return msg
+    return {**msg, "content": content}
+
+
 async def async_tool_loop_inner(
     client: unillm.AsyncUnify,
     message: str | dict | list[str | dict],
@@ -426,6 +443,7 @@ async def async_tool_loop_inner(
     on_notify: Optional[Callable[[str], Any]] = None,
     runtime_state: Optional[ToolLoopRuntimeState] = None,
     fixed_tools_schema: Optional[list[dict]] = None,
+    first_message_context: Optional[str] = None,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -543,6 +561,12 @@ async def async_tool_loop_inner(
         list so its requests extend the parent's. A listed tool this loop
         does not implement is refused when called. Ignored with the switch
         off.
+
+    first_message_context : ``str | None``
+        Text that opens the first user message of this loop (the request, or
+        the first user message of a seeded batch), separated from it by a
+        rule. A compressed session restarts with it again, since its first
+        message is then a new one. ``None`` sends the message as given.
 
     Returns
     -------
@@ -785,6 +809,15 @@ async def async_tool_loop_inner(
                 (m if isinstance(m, dict) else {"role": "user", "content": m})
                 for m in message
             ]
+
+        if first_message_context:
+            for index, msg in enumerate(seeded_batch):
+                if msg.get("role") == "user":
+                    seeded_batch[index] = with_first_message_context(
+                        msg,
+                        first_message_context,
+                    )
+                    break
 
         logger.debug(
             f"[setup +{_setup_elapsed()}] appending seeded batch ({len(seeded_batch)} msgs)",
@@ -1249,6 +1282,11 @@ async def async_tool_loop_inner(
             initial_user_msg = message
         else:
             initial_user_msg = {"role": "user", "content": message}
+        if first_message_context:
+            initial_user_msg = with_first_message_context(
+                initial_user_msg,
+                first_message_context,
+            )
         if time_ctx is not None and isinstance(initial_user_msg.get("content"), str):
             initial_user_msg["content"] = time_ctx.prefix_user_message(
                 initial_user_msg["content"],
