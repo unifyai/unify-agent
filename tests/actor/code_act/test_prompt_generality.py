@@ -58,11 +58,18 @@ SWITCH_SETS = {
         "UNIFY_REPLY_PROTOCOL_NOTE": True,
         "UNIFY_FUNCTION_PATCH": True,
         "UNIFY_STORE_CHECK": "resolve",
+        "UNIFY_TRY_FIRST": True,
+        "UNIFY_CODE_FIRST": True,
+        "UNIFY_FUNCTION_CASES": True,
     },
     "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
     "doctrine and note": {
         "UNIFY_CURATION_DOCTRINE": "compose",
         "UNIFY_REPLY_PROTOCOL_NOTE": True,
+    },
+    "try first and code first": {
+        "UNIFY_TRY_FIRST": True,
+        "UNIFY_CODE_FIRST": True,
     },
 }
 SWITCH_OFF = {
@@ -71,6 +78,9 @@ SWITCH_OFF = {
     "UNIFY_REPLY_PROTOCOL_NOTE": False,
     "UNIFY_FUNCTION_PATCH": False,
     "UNIFY_STORE_CHECK": "",
+    "UNIFY_TRY_FIRST": False,
+    "UNIFY_CODE_FIRST": False,
+    "UNIFY_FUNCTION_CASES": False,
 }
 
 PROMPT_MODES = {
@@ -78,6 +88,11 @@ PROMPT_MODES = {
     "persist": {"can_store": True, "persist": True},
     "read only": {"can_store": True, "library_read_only": True},
     "no store": {},
+    # UNIFY_PROMPT_CLOCK=message / UNIFY_CACHE_AFFINITY_SCOPE=static
+    "static": {"can_store": True, "session_sections": False},
+    # UNIFY_INLINE_CURATION
+    "inline on": {"can_store": True, "inline_curation": "on"},
+    "inline only": {"inline_curation": "only"},
 }
 
 
@@ -122,6 +137,88 @@ def _rulebook() -> dict[str, str]:
     )
     texts["_storage_base_instructions()"] = caa._storage_base_instructions()
     texts["_review_fork_role()"] = caa._review_fork_role()
+    texts["_INLINE_ONLY_REASON"] = caa._INLINE_ONLY_REASON
+    return texts
+
+
+def _session_texts(tools: dict) -> dict[str, str]:
+    """What the model reads outside the system prompt and the rulebook."""
+    from unify.common._async_tool.repeat_guard import RepeatGuard
+    from unify.function_manager import inline_curation, store_cases
+
+    guard = RepeatGuard()
+    guard.surfaced("the same reply")
+    guard.requester_said("That is not right.")
+    case = store_cases.Case(
+        case_id=1,
+        function_id=1,
+        kind="pass",
+        status="active",
+        source_hash="",
+        call={"args": [], "kwargs": {"x": 1}},
+        args_shown="x=1",
+        result={"shown": "2"},
+        error=None,
+        trace=(),
+        trace_complete=True,
+        session=None,
+        outcome=None,
+        retired_why=None,
+        recorded_at="",
+    )
+    replays = [
+        store_cases.Replay(case, status, "detail")
+        for status in (
+            store_cases.DIVERGED,
+            store_cases.INCONCLUSIVE,
+            store_cases.NOW_PASSES,
+            store_cases.STILL_FAILS,
+            store_cases.PRESERVED,
+        )
+    ]
+    try:
+        inline_curation.check_names(["def tmp():\n    return 1\n"])
+    except ValueError as exc:
+        naming = str(exc)
+    from unify.function_manager import instance_lint
+
+    tokens = instance_lint.tokens_of(
+        'Task id: case-7a4cf12e, titled "Weekly Sales Summary".',
+    )
+    lint_texts = {
+        "instance refusal (name)": instance_lint.refusal(
+            "mirror_7a4cf12e",
+            instance_lint.name_problem("mirror_7a4cf12e", tokens),
+        ),
+        "instance refusal (task id)": instance_lint.refusal(
+            "task_7a4cf12e_copy",
+            instance_lint.name_problem("task_7a4cf12e_copy", tokens),
+        ),
+        "instance warning": instance_lint.text_warning(
+            "its docstring",
+            "Learned on case-7a4cf12e.",
+            tokens,
+        ),
+    }
+    texts = {
+        "library snapshot": caa._library_snapshot_line(
+            (3, 0),
+            has_fm_tools=True,
+            has_gm_tools=True,
+            discovery_gate=True,
+        ),
+        "repeat guard": guard.check("the same reply"),
+        "case refusal": store_cases.refusal("f", replays),
+        "case report": store_cases.report("f", replays),
+        "naming refusal": naming,
+        "_TRY_FIRST_NOTE": pb._TRY_FIRST_NOTE,
+        "_CODE_FIRST": pb._CODE_FIRST,
+        "_INLINE_ONLY_BULLET": pb._INLINE_ONLY_BULLET,
+        "_inline_function_bullet()": pb._inline_function_bullet(tools),
+        **lint_texts,
+    }
+    assert all(texts.values()), [k for k, v in texts.items() if not v]
+    assert not any("because None" in v for v in texts.values())
     return texts
 
 
@@ -178,7 +275,7 @@ def test_the_actors_prompt_names_no_benchmark(switches, actor_tools, mode):
     assert _benchmark_words({f"prompt ({switches}, {mode})": prompt}) == []
 
 
-def test_the_actors_tool_schemas_name_no_benchmark(actor_tools):
+def test_the_actors_tool_schemas_name_no_benchmark(switches, actor_tools):
     from unify.common.llm_helpers import method_to_schema
 
     _actor, tools = actor_tools
@@ -188,6 +285,27 @@ def test_the_actors_tool_schemas_name_no_benchmark(actor_tools):
     }
     assert "execute_code" in schemas
     assert _benchmark_words(schemas) == []
+
+
+def test_what_the_session_adds_to_its_messages_names_no_benchmark(actor_tools):
+    _actor, tools = actor_tools
+    tools = {**tools, "FunctionManager_retire_case": None}
+    assert _benchmark_words(_session_texts(tools)) == []
+
+
+def test_the_switched_texts_are_in_the_prompt_they_lint(monkeypatch, actor_tools):
+    """The prompt scanned under "on" carries every switched section."""
+    for name, value in {**SWITCH_OFF, **SWITCH_SETS["on"]}.items():
+        monkeypatch.setattr(SETTINGS, name, value)
+    actor, tools = actor_tools
+    prompt = pb.build_code_act_prompt(
+        environments=actor.environments,
+        tools=tools,
+        can_store=True,
+        inline_curation="on",
+    )
+    for text in (pb._TRY_FIRST_NOTE, pb._CODE_FIRST, "**Functions, during the task**"):
+        assert text in prompt
 
 
 # ── the storage review ───────────────────────────────────────────────────

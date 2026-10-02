@@ -44,7 +44,52 @@ NEW_SWITCHES = {
     "UNIFY_REVIEW_MODEL": "",
     "UNIFY_WORKSPACE": "",
     "UNIFY_WORKSPACE_NETWORK": "",
+    "UNIFY_WORKSPACE_PYTHON": "",
+    "UNIFY_WORKSPACE_PROXY_PORT": 0,
+    "UNIFY_CACHE_AFFINITY_SCOPE": "prefix",
+    "UNIFY_OUTCOME": False,
+    "UNIFY_REVIEW_FAILED": "",
 }
+
+# The UNIFY_ settings of the commit the actor golden was recorded on
+# (35c8633c7); every other one is a lane's and belongs in NEW_SWITCHES.
+UPSTREAM_SETTINGS = frozenset(
+    {
+        "UNIFY_BUILTINS_PROJECT",
+        "UNIFY_EMBED_URL",
+        "UNIFY_ENV_NAMESPACES",
+        "UNIFY_GUIDANCE_EMPTY_QUERY",
+        "UNIFY_LOCAL_EMBEDDINGS",
+        "UNIFY_LOCAL_ROOT",
+        "UNIFY_LOG_DIR",
+        "UNIFY_MAX_OUTPUT_TOKENS",
+        "UNIFY_MAX_TOOL_LOOP_STEPS",
+        "UNIFY_MODEL",
+        "UNIFY_REASONING_EFFORT",
+        "UNIFY_SEARCH_SKIP_UNLOADABLE",
+        "UNIFY_STORE_ADMISSION",
+        "UNIFY_STORE_CHECK",
+        "UNIFY_STORE_VERIFY",
+        "UNIFY_TERMINAL_LOG",
+        "UNIFY_TERMINAL_LOG_LEVEL",
+        "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_TURN_STORAGE_REVIEWS",
+        "UNIFY_VALIDATE_LLM_PROVIDERS",
+    },
+)
+
+
+def test_every_lane_switch_is_here_at_its_default():
+    from unify.settings import ProductionSettings
+
+    fields = ProductionSettings.model_fields
+    added = {name for name in fields if name.startswith("UNIFY_")} - UPSTREAM_SETTINGS
+    assert sorted(added - set(NEW_SWITCHES)) == []
+    assert {
+        name: (fields[name].default, value)
+        for name, value in NEW_SWITCHES.items()
+        if fields[name].default != value
+    } == {}
 
 
 @pytest.fixture

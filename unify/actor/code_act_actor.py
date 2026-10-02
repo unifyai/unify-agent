@@ -5378,6 +5378,10 @@ class CodeActActor(BaseCodeActActor):
                 if clock_in_message
                 else build_code_act_prompt(**prompt_kwargs, session_sections=False)
             )
+        # What opens the session's first user message (first_message_context),
+        # in this order: the session sections (UNIFY_PROMPT_CLOCK=message: the
+        # clock, then the filesystem context), then the library's size
+        # (UNIFY_LIBRARY_SNAPSHOT), then a rule and the request.
         first_message_parts: list[str] = []
         if clock_in_message:
             first_message_parts.append(build_session_context(base_tools))

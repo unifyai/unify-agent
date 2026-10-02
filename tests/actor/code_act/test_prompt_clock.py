@@ -18,6 +18,7 @@ transport; the clock is frozen by ``static_now`` and set per session here.
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -106,6 +107,24 @@ async def test_on_the_clock_and_paths_open_the_first_user_message(
         assert request["messages"][0] == system_on
         assert _first_user(request) == first
     assert h.request_bytes(on[0])["tools"] == h.request_bytes(off[0])["tools"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_with_the_library_snapshot_the_clock_comes_first(switches, monkeypatch):
+    switches(clock="message")
+    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SNAPSHOT", True)
+    on = await _act()
+    context, task = _first_user(on[0]).split("\n\n---\n\n")
+    assert task == TASK
+    sections, snapshot = context.rsplit("\n\n", 1)
+    assert sections.startswith(CLOCK) and FILES in sections
+    assert re.fullmatch(
+        r"Library at task start: \d+ stored functions?, \d+ guidance entr(y|ies)\."
+        r"( An empty library is not searched first\.)?",
+        snapshot,
+    )
+    assert CLOCK not in on[0]["messages"][0]["content"]
 
 
 @pytest.mark.asyncio

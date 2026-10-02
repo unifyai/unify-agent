@@ -208,6 +208,42 @@ def test_on_a_patch_is_checked_like_any_write(lint):
 
 
 @_handle_project
+def test_on_with_recorded_cases_a_change_reports_both(lint, monkeypatch):
+    # UNIFY_FUNCTION_CASES reports the replay with the status; the warning
+    # comes after it, and a patch returns each under its own key.
+    lint(True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
+    fm = FunctionManager()
+    base = "def make_playlist(title: str) -> dict:\n    return {'title': title}\n"
+    fm.add_functions(implementations=[base])
+    namespace: dict = {}
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    assert namespace["make_playlist"]("road trip") == {"title": "road trip"}
+    documented = base.replace(
+        "-> dict:\n",
+        '-> dict:\n    """Learned on task-7a4cf12e."""\n',
+    )
+    status = _in_task(
+        ARC,
+        lambda: fm.add_functions(implementations=[documented], overwrite=True),
+    )["make_playlist"]
+    assert status.startswith("updated; cases: 1 recorded call(s) replayed unchanged")
+    assert "; warning: its docstring names 'task-7a4cf12e'" in status
+    patched = _in_task(
+        ARC,
+        lambda: fm.patch_function(
+            name="make_playlist",
+            old="Learned on",
+            new="Seen on",
+            why="wording",
+        ),
+    )
+    assert patched["status"] == "patched"
+    assert patched["cases"] == "cases: 1 recorded call(s) replayed unchanged"
+    assert "task-7a4cf12e" in patched["warning"]
+
+
+@_handle_project
 def test_off_the_same_functions_are_stored_as_shipped(lint):
     lint(False)
     named = "def solve_task_7a4cf12e(grid: list) -> list:\n    return grid\n"
