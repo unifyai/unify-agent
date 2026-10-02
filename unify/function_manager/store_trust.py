@@ -509,8 +509,12 @@ def maybe_recheck(
     runner = getattr(verifier, "recheck", None)
     if not callable(runner):
         runner = verifier.run
+    from . import store_cases
+
     try:
-        verdict = store_verify.Verdict.coerce(runner(candidate, call_kwargs))
+        # UNIFY_FUNCTION_CASES: a run in a fresh world is not a case.
+        with store_cases.quiet():
+            verdict = store_verify.Verdict.coerce(runner(candidate, call_kwargs))
     except Exception as exc:  # noqa: BLE001 - the verifier's fault, not the function's
         logger.warning(
             "The fresh-world check of %r did not run: %s: %s",

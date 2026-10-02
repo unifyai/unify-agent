@@ -9,7 +9,9 @@ With ``UNIFY_FUNCTION_PATCH`` on, ``function_history`` and
 ``guidance_history`` keep each row as it was before an overwrite; nothing
 removes their rows, :func:`clear` included. With ``UNIFY_STORE_TRUST``
 on, ``function_trust`` holds one trust record per stored function; deleting
-the function deletes it.
+the function deletes it. With ``UNIFY_FUNCTION_CASES`` on,
+``function_cases`` holds a few recorded calls per stored function; deleting
+the function deletes them too.
 
 Managers issue SQL through :func:`execute`, :func:`query` and
 :func:`query_one`. Clauses written by the model run through
@@ -122,6 +124,28 @@ CREATE TABLE IF NOT EXISTS function_trust (
     updated_at TEXT NOT NULL,
     failure_hashes TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS function_cases (
+    case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id INTEGER NOT NULL
+        REFERENCES functions(function_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    args_hash TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    call TEXT,
+    args_shown TEXT NOT NULL DEFAULT '',
+    result TEXT,
+    error TEXT,
+    trace TEXT NOT NULL DEFAULT '[]',
+    trace_complete INTEGER NOT NULL DEFAULT 1,
+    session TEXT,
+    outcome TEXT,
+    retired_why TEXT,
+    retired_at TEXT,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS function_cases_by_function
+    ON function_cases (function_id, status, kind);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT NOT NULL,

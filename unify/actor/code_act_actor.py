@@ -778,6 +778,12 @@ def _function_patch_enabled() -> bool:
     return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
 
 
+def _function_cases_enabled() -> bool:
+    from unify.function_manager import store_cases
+
+    return store_cases.enabled()
+
+
 def _storage_needs_repair_note() -> str:
     """Quarantined functions for the review to repair (``UNIFY_STORE_TRUST``); else empty."""
     from unify.function_manager import store_trust
@@ -1351,6 +1357,10 @@ def _build_storage_tools(
             )
             if method is not None
         )
+    # UNIFY_FUNCTION_CASES: the review can retire a recorded case that a
+    # change no longer reproduces; off, the tools are as shipped.
+    if _function_cases_enabled() and hasattr(fm, "retire_case"):
+        storage_methods.append(fm.retire_case)
 
     tools: Dict[str, Callable] = {
         **methods_to_tool_dict(
@@ -1855,7 +1865,10 @@ def _start_storage_check_loop(
     if lessons:
         from unify import outcome as outcome_mod
 
-        for name in outcome_mod.LESSON_REFUSED_TOOLS:
+        refused_tools = list(outcome_mod.LESSON_REFUSED_TOOLS)
+        if _function_cases_enabled():
+            refused_tools.append("FunctionManager_retire_case")
+        for name in refused_tools:
             tools.pop(name, None)
             lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
     outcome_note = _storage_review_outcome_note(outcome, lessons=lessons)
@@ -3985,6 +3998,16 @@ class CodeActActor(BaseCodeActActor):
                         include_class_name=True,
                     ),
                 )
+            if _function_cases_enabled() and hasattr(fm, "retire_case"):
+                tools.update(
+                    methods_to_tool_dict(
+                        ToolSpec(
+                            fn=fm.retire_case,
+                            display_label="Retiring a recorded case",
+                        ),
+                        include_class_name=True,
+                    ),
+                )
 
         # FunctionManager read tools (search/filter/list) use custom wrappers
         # that inject callables into the sandbox. All other FM/GM tools below
@@ -4270,6 +4293,20 @@ class CodeActActor(BaseCodeActActor):
                             (),
                             call_kwargs,
                         )
+                # UNIFY_FUNCTION_CASES: the same call, recorded as a case with
+                # the environment calls the cell makes; None while off.
+                from unify.function_manager import store_cases
+
+                case_recorder = (
+                    store_cases.CaseRecorder.for_function(function_data)
+                    if isinstance(function_data, dict)
+                    else None
+                )
+                case_pending = (
+                    case_recorder.begin((), call_kwargs)
+                    if case_recorder is not None
+                    else None
+                )
 
                 if isinstance(function_data, dict) and function_data.get(
                     "dependencies",
@@ -4439,11 +4476,12 @@ class CodeActActor(BaseCodeActActor):
                         _pcc_token = _PARENT_CHAT_CONTEXT.set(_parent_chat_context)
                         try:
                             try:
-                                out = await self._session_executor.execute(
-                                    code=code,
-                                    state_mode=state_mode,  # type: ignore[arg-type]
-                                    session_id=session_id,
-                                )
+                                with store_cases.tracing(case_pending):
+                                    out = await self._session_executor.execute(
+                                        code=code,
+                                        state_mode=state_mode,  # type: ignore[arg-type]
+                                        session_id=session_id,
+                                    )
                                 _ef_log.debug(
                                     f"⏱️ [execute_function +{_ef_ms()}] sandbox.execute done",
                                 )
@@ -4468,6 +4506,17 @@ class CodeActActor(BaseCodeActActor):
                     # UNIFY_STORE_TRUST: a call a correction reached while it
                     # ran (stopped, or re-run with patched code) says nothing
                     # about the stored version and is not recorded.
+                    # UNIFY_FUNCTION_CASES: likewise not a case.
+                    if case_recorder is not None and not (
+                        _ef_steering is not None and _ef_steering.messages
+                    ):
+                        case_recorder.end(
+                            case_pending,
+                            result=out.get("result"),
+                            error=(
+                                exec_exc if exec_exc is not None else out.get("error")
+                            ),
+                        )
                     if trust_observer is not None and not (
                         _ef_steering is not None and _ef_steering.messages
                     ):
@@ -5116,6 +5165,7 @@ class CodeActActor(BaseCodeActActor):
             "GuidanceManager_reconcile_dependencies",
             "FunctionManager_patch_function",
             "GuidanceManager_patch_guidance",
+            "FunctionManager_retire_case",
         }
         # Admission-gated sessions also lose the direct guidance writes that
         # can_store=False leaves in place: nothing is written in-session.

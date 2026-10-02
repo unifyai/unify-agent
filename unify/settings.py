@@ -151,6 +151,22 @@ class ProductionSettings(BaseSettings):
     # entry in function_history / guidance_history. Off: no patch tools and
     # nothing is written to history.
     UNIFY_FUNCTION_PATCH: bool = False
+    # Record each stored function's calls as cases in function_cases (its
+    # arguments, what it returned or raised, and the environment calls it
+    # made with their answers; the latest 3 that returned and 3 that raised,
+    # one per input), and before an overwrite or a patch stores a different
+    # source, replay the cases that returned against it with the recorded
+    # answers served in place of the environment (nothing reaches the
+    # environment, the network or a model). A change that makes another
+    # environment call, or returns or raises something else, is refused,
+    # naming the case: store the new behaviour under a new name, or retire
+    # the case with FunctionManager_retire_case, offered while this is on.
+    # A case that cannot be replayed faithfully (the clock, randomness, an
+    # unstubbed import) does not block and is reported. Search and filter
+    # results show up to two cases per function
+    # (unify/function_manager/store_cases.py). Off: nothing is recorded or
+    # replayed and every tool is as shipped.
+    UNIFY_FUNCTION_CASES: bool = False
     # ``warn``: adding a new function whose normalised code nearly matches a
     # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
     # the stored function. Empty adds as shipped.
@@ -378,6 +394,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REPEAT_GUARD",
         "UNIFY_TRY_FIRST",
         "UNIFY_FUNCTION_PATCH",
+        "UNIFY_FUNCTION_CASES",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",

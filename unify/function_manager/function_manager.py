@@ -194,6 +194,7 @@ class _LineageTrackedFunction:
         function_name: str,
         on_call: Optional[Callable[[], None]] = None,
         observer: Optional[Any] = None,
+        cases: Optional[Any] = None,
     ):
         self._wrapped = wrapped_callable
         self._function_name = function_name
@@ -204,6 +205,9 @@ class _LineageTrackedFunction:
         # UNIFY_STORE_TRUST: records whether each call returned or raised
         # (store_trust.CallObserver); None while the switch is off.
         self._observer = observer
+        # UNIFY_FUNCTION_CASES: records each call as a case
+        # (store_cases.CaseRecorder); None while the switch is off.
+        self._cases = cases
 
         # Preserve introspection attributes.
         self.__name__ = function_name
@@ -215,6 +219,12 @@ class _LineageTrackedFunction:
         return getattr(self._wrapped, name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        from . import store_cases
+
+        if store_cases.replaying():
+            # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
+            # replay records no usage, trust evidence or case.
+            return self._wrapped(*args, **kwargs)
         if self._on_call is not None:
             try:
                 self._on_call()
@@ -230,6 +240,8 @@ class _LineageTrackedFunction:
             if observer is not None
             else None
         )
+        cases = self._cases
+        case = cases.begin(args, kwargs) if cases is not None else None
 
         suffix = token_hex(2)
 
@@ -245,11 +257,14 @@ class _LineageTrackedFunction:
         # Ensure synchronous work at call-time (if any) happens under the lineage frame.
         token_call = TOOL_LOOP_LINEAGE.set(hierarchy)
         try:
-            result = self._wrapped(*args, **kwargs)
+            with store_cases.tracing(case):
+                result = self._wrapped(*args, **kwargs)
         except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
             if observer is not None:
                 observer.after(arguments, exc)
+            if cases is not None:
+                cases.end(case, error=exc)
             raise
         finally:
             # For async results we only needed the lineage during coroutine construction.
@@ -265,21 +280,28 @@ class _LineageTrackedFunction:
             async def _await_and_finalize():
                 token_run = TOOL_LOOP_LINEAGE.set(hierarchy)
                 try:
-                    value = await result
+                    with store_cases.tracing(case):
+                        value = await result
                 except Exception as exc:
                     if observer is not None:
                         observer.after(arguments, exc)
+                    if cases is not None:
+                        cases.end(case, error=exc)
                     raise
                 finally:
                     TOOL_LOOP_LINEAGE.reset(token_run)
                 if observer is not None:
                     observer.after(arguments, None)
+                if cases is not None:
+                    cases.end(case, result=value)
                 return value
 
             return _await_and_finalize()
 
         if observer is not None:
             observer.after(arguments, None)
+        if cases is not None:
+            cases.end(case, result=result)
         return result
 
 
@@ -349,9 +371,12 @@ class _InProcessFunctionProxy:
         self._raw_callable = raw_callable
         # UNIFY_STORE_TRUST: records the stateful calls, which run the raw
         # callable directly; the other modes go through execute_function.
+        from .store_cases import CaseRecorder
         from .store_trust import CallObserver
 
         self._observer = CallObserver.for_function(function_manager, func_data)
+        # UNIFY_FUNCTION_CASES: records the same calls as cases; None while off.
+        self._cases = CaseRecorder.for_function(func_data)
 
         # Copy key attributes from raw callable for introspection
         self.__name__ = str(func_data.get("name") or "unknown")
@@ -379,20 +404,35 @@ class _InProcessFunctionProxy:
             # Execute directly using the raw callable in the shared namespace.
             # This is the existing behavior - state naturally persists in the namespace.
             observer = self._observer
-            if observer is None:
+            cases = self._cases
+            if observer is None and cases is None:
                 result = self._raw_callable(*args, **kwargs)
                 if asyncio.iscoroutine(result):
                     result = await result
                 return result
-            arguments = observer.before(self._raw_callable, args, kwargs)
+            from . import store_cases
+
+            arguments = (
+                observer.before(self._raw_callable, args, kwargs)
+                if observer is not None
+                else None
+            )
+            case = cases.begin(args, kwargs) if cases is not None else None
             try:
-                result = self._raw_callable(*args, **kwargs)
-                if asyncio.iscoroutine(result):
-                    result = await result
+                with store_cases.tracing(case):
+                    result = self._raw_callable(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = await result
             except Exception as exc:
-                observer.after(arguments, exc)
+                if observer is not None:
+                    observer.after(arguments, exc)
+                if cases is not None:
+                    cases.end(case, error=exc)
                 raise
-            observer.after(arguments, None)
+            if observer is not None:
+                observer.after(arguments, None)
+            if cases is not None:
+                cases.end(case, result=result)
             return result
 
         # For stateless and read_only, use execute_function with appropriate
@@ -1020,6 +1060,7 @@ class FunctionManager(BaseFunctionManager):
         """
         if isinstance(raw, _LineageTrackedFunction):
             return raw
+        from .store_cases import CaseRecorder
         from .store_trust import CallObserver
 
         return _LineageTrackedFunction(
@@ -1027,6 +1068,7 @@ class FunctionManager(BaseFunctionManager):
             str(func_data.get("name")),
             on_call=lambda: self._note_function_use(func_data),
             observer=CallObserver.for_function(self, func_data),
+            cases=CaseRecorder.for_function(func_data),
         )
 
     # ------------------------------------------------------------------ #
@@ -1219,6 +1261,9 @@ class FunctionManager(BaseFunctionManager):
         # for new functions that nearly copy one of them.
         stored_sources: Optional[Dict[str, str]] = None
         dedupe_warnings: Dict[str, str] = {}
+        # UNIFY_FUNCTION_CASES: what replaying an updated function's recorded
+        # cases found, reported with its "updated" status.
+        case_reports: Dict[str, str] = {}
 
         # Sandbox namespace roots whose dotted calls should be recorded in
         # depends_on (e.g. "primitives.actor.act" → depends_on includes
@@ -1281,6 +1326,19 @@ class FunctionManager(BaseFunctionManager):
                         function_id=existing_functions[name]["function_id"],
                         raise_if_missing=True,
                     )
+                    if (
+                        self._function_cases_enabled()
+                        and prior.get("implementation") != source
+                    ):
+                        report = self._case_replay_gate(
+                            name=name,
+                            function_id=int(prior["function_id"]),
+                            source=source,
+                            depends_on=dependencies_list,
+                            dependencies=requirements,
+                        )
+                        if report:
+                            case_reports[name] = report
 
                 entry_data = {
                     "argspec": signature,
@@ -1385,6 +1443,10 @@ class FunctionManager(BaseFunctionManager):
                 for log_id in log_ids_to_update
                 if results.get(log_id_to_name.get(log_id, "")) == "updated"
             )
+
+        for name, report in case_reports.items():
+            if results.get(name) == "updated":
+                results[name] = f"updated; {report}"
 
         # Check for errors and raise if requested
         if raise_on_error:
@@ -1584,16 +1646,122 @@ class FunctionManager(BaseFunctionManager):
         finally:
             _OVERWRITE_REASON.reset(token)
         status = str(result.get(name, "error: not stored"))
-        if status == "updated":
-            return {
+        if status == "updated" or status.startswith("updated; "):
+            patched_result: Dict[str, Any] = {
                 "name": name,
                 "status": "patched",
                 "function_id": int(row["function_id"]),
                 "edits": report,
             }
+            if status != "updated":
+                # UNIFY_FUNCTION_CASES: what the replay of its cases found.
+                patched_result["cases"] = status[len("updated; ") :]
+            return patched_result
         return refused(
             status[len("error: ") :] if status.startswith("error: ") else status,
         )
+
+    # ------------------------------------------------------------------ #
+    #  Recorded cases (UNIFY_FUNCTION_CASES)                              #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _function_cases_enabled() -> bool:
+        from . import store_cases
+
+        return store_cases.enabled()
+
+    def _case_replay_gate(
+        self,
+        *,
+        name: str,
+        function_id: int,
+        source: str,
+        depends_on: List[str],
+        dependencies: List[str],
+    ) -> str:
+        """Replay the stored function's recorded cases against its new source.
+
+        Raises ``ValueError`` (the tool's error) naming the cases that now
+        behave differently; otherwise returns what the replay found, for the
+        result (empty when the function has no case).
+        """
+        from . import store_cases
+
+        replays = store_cases.replay(
+            self,
+            name=name,
+            function_id=function_id,
+            source=source,
+            depends_on=depends_on,
+            dependencies=dependencies,
+        )
+        refusal = store_cases.refusal(name, replays)
+        if refusal is not None:
+            raise ValueError(refusal)
+        return store_cases.report(name, replays)
+
+    def retire_case(
+        self,
+        *,
+        function_name: str,
+        case_id: int,
+        why: str,
+    ) -> Dict[str, Any]:
+        """Retire one recorded case of a stored function, so a change no longer has to reproduce it.
+
+        Every call of a stored function is recorded as a case (its arguments,
+        what it returned or raised, and the environment calls it made), and
+        an overwrite or patch that would behave differently on a case that
+        worked is refused, naming the case. Retire a case only when the
+        recorded behaviour was itself wrong (the trajectory or a check shows
+        it), never to push through a change of what the function is for:
+        that belongs under a new name. The case is kept, marked retired,
+        with ``why``.
+
+        Args:
+            function_name: The stored function's exact name.
+            case_id: The case's number, as a refusal or the ``cases`` field of
+                a search result shows it (``#12``).
+            why: One sentence on why the recorded behaviour was wrong.
+
+        Returns:
+            ``{"function_name", "case_id", "status": "retired"}``, or
+            ``{"function_name", "case_id", "error"}`` saying why nothing changed.
+        """
+        from . import store_cases
+
+        def refused(message: str) -> Dict[str, Any]:
+            return {
+                "function_name": function_name,
+                "case_id": case_id,
+                "error": message,
+            }
+
+        if not store_cases.enabled():
+            return refused(
+                "cases are not recorded here (UNIFY_FUNCTION_CASES is off)",
+            )
+        if not str(why or "").strip():
+            return refused("say `why` the recorded behaviour was wrong")
+        try:
+            wanted = int(case_id)
+        except (TypeError, ValueError):
+            return refused(f"case_id must be a case number, not {case_id!r}")
+        rows = self._rows(
+            self._compositional_scope("name = ?"),
+            (function_name,),
+            limit=1,
+        )
+        if not rows:
+            return refused(f"no stored function is named {function_name!r}")
+        retired = store_cases.retire(int(rows[0]["function_id"]), wanted, str(why))
+        if retired is None:
+            return refused(
+                f"{function_name!r} has no active case #{wanted}; its cases are "
+                f"listed in search results and in a refusal",
+            )
+        return {"function_name": function_name, "case_id": wanted, "status": "retired"}
 
     # ------------------------------------------------------------------ #
     #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #
@@ -1882,10 +2050,14 @@ class FunctionManager(BaseFunctionManager):
             source=source,
             depends_on=depends_on,
         )
+        from . import store_cases
+
         try:
-            verdict = store_verify.Verdict.coerce(
-                store_verify.verifier().run(candidate, dict(call_kwargs)),
-            )
+            # UNIFY_FUNCTION_CASES: a run in the held-out world is not a case.
+            with store_cases.quiet():
+                verdict = store_verify.Verdict.coerce(
+                    store_verify.verifier().run(candidate, dict(call_kwargs)),
+                )
         except Exception as exc:
             verdict = store_verify.Verdict(
                 False,
@@ -2939,13 +3111,16 @@ class FunctionManager(BaseFunctionManager):
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.FUNCTION_COLUMNS).payload
 
+        from . import store_cases
+
         if not _return_callable:
             if not include_implementations:
                 rows = [
                     {k: v for k, v in row.items() if k != "implementation"}
                     for row in rows
                 ]
-            return rows
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            return store_cases.with_summaries(rows)
 
         assert _namespace is not None  # validated above
         rows, _, quarantine_warning = self._drop_quarantined(rows)
@@ -2972,6 +3147,8 @@ class FunctionManager(BaseFunctionManager):
                 ]
             if quarantine_warning:
                 metadata_rows = [*metadata_rows, {"warning": quarantine_warning}]
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            store_cases.with_summaries(metadata_rows)
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
         return callables_list  # type: ignore[return-value]
 
@@ -3032,6 +3209,7 @@ class FunctionManager(BaseFunctionManager):
             include_dormant=include_dormant,
         )
         self._bump_search_hits(results)
+        from . import store_cases
 
         if not _return_callable:
             compact_results = self._compact_function_search_rows(results)
@@ -3039,7 +3217,8 @@ class FunctionManager(BaseFunctionManager):
                 for compact, full in zip(compact_results, results, strict=True):
                     if "implementation" in full:
                         compact["implementation"] = full["implementation"]
-            return compact_results
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            return store_cases.with_summaries(compact_results)
 
         assert _namespace is not None  # validated above
         results, _, quarantine_warning = self._drop_quarantined(results)
@@ -3059,6 +3238,8 @@ class FunctionManager(BaseFunctionManager):
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:
                         compact["implementation"] = full["implementation"]
+            # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
+            store_cases.with_summaries(metadata_rows)
             if skipped:
                 metadata_rows.append({"warning": self._unloadable_warning(skipped)})
             if quarantine_warning:
@@ -3200,6 +3381,11 @@ class FunctionManager(BaseFunctionManager):
             if observer is not None
             else None
         )
+        # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
+        from . import store_cases
+
+        cases = store_cases.CaseRecorder.for_function(func_data)
+        case = cases.begin((), call_kwargs or {}) if cases is not None else None
         try:
             environment.ensure(func_data.get("dependencies") or [])
         except Exception as exc:
@@ -3208,16 +3394,19 @@ class FunctionManager(BaseFunctionManager):
             if observer is not None:
                 observer.after(dict(arguments), exc)
             raise
-        outcome = await self._execute_python_function(
-            implementation=implementation,
-            call_kwargs=call_kwargs or {},
-            state_mode=state_mode,
-            session_id=session_id,
-            extra_namespaces=ns,
-            _parent_chat_context=_parent_chat_context,
-        )
+        with store_cases.tracing(case):
+            outcome = await self._execute_python_function(
+                implementation=implementation,
+                call_kwargs=call_kwargs or {},
+                state_mode=state_mode,
+                session_id=session_id,
+                extra_namespaces=ns,
+                _parent_chat_context=_parent_chat_context,
+            )
         if observer is not None:
             observer.after(arguments, outcome.get("error"))
+        if cases is not None:
+            cases.end(case, result=outcome.get("result"), error=outcome.get("error"))
         return outcome
 
     # ------------------------------------------------------------------ #

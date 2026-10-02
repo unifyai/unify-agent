@@ -170,14 +170,35 @@ class EnvironmentNamespaceObject:
 
 def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]:
     call = method.call
+    # UNIFY_FUNCTION_CASES: every environment call goes through here, so this
+    # is where a call made inside a stored function joins its recorded case;
+    # nothing is recording while the switch is off.
+    from unify.function_manager import store_cases
+
     if inspect.iscoroutinefunction(call):
 
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if store_cases.recording():
+                return await store_cases.observe_primitive_async(
+                    namespace,
+                    method.name,
+                    call,
+                    args,
+                    kwargs,
+                )
             return await call(*args, **kwargs)
 
     else:
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+            if store_cases.recording():
+                return store_cases.observe_primitive(
+                    namespace,
+                    method.name,
+                    call,
+                    args,
+                    kwargs,
+                )
             return call(*args, **kwargs)
 
     wrapper.__name__ = method.name
