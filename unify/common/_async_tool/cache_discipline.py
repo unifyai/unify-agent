@@ -252,11 +252,28 @@ def completion_text(content: Any) -> str:
 
 
 def affinity_scope() -> str:
-    """``UNIFY_CACHE_AFFINITY_SCOPE``: ``prefix``, ``session`` or ``run``."""
+    """``UNIFY_CACHE_AFFINITY_SCOPE``: ``prefix``, ``session``, ``run`` or ``static``."""
     from unify.settings import SETTINGS
 
     scope = str(getattr(SETTINGS, "UNIFY_CACHE_AFFINITY_SCOPE", "") or "prefix")
-    return scope if scope in ("prefix", "session", "run") else "prefix"
+    return scope if scope in ("prefix", "session", "run", "static") else "prefix"
+
+
+_STATIC_SYSTEM = "_unify_static_system_message"
+
+
+def set_static_system_message(client: Any, text: Optional[str]) -> None:
+    """Record *client*'s system prompt without its per-session sections.
+
+    The ``static`` affinity scope hashes this instead of the system prompt
+    sent, so sessions whose prompts differ only in those sections (a clock,
+    a workspace path) share a key. A client without one is keyed on the
+    system prompt it sends, as under ``prefix``.
+    """
+    try:
+        setattr(client, _STATIC_SYSTEM, text)
+    except Exception:  # a client that takes no attributes keeps the prefix key
+        pass
 
 
 _RUN_AFFINITY: Optional[str] = None
@@ -310,8 +327,11 @@ def ensure_cache_affinity(
     The key follows ``UNIFY_CACHE_AFFINITY_SCOPE``: under ``prefix`` it is
     :func:`prefix_affinity_key` of the client's model and system prompt and
     *tools* (the session's fixed list), so sessions that share that prefix
-    are sent to the same replica; under ``session`` a new random key; under
-    ``run`` the process's key. A key the client already has (a fork's,
+    are sent to the same replica; under ``static`` the same hash over the
+    system prompt recorded by :func:`set_static_system_message` (the one
+    sent when none was), so the per-session sections at its tail do not
+    change the key; under ``session`` a new random key; under ``run`` the
+    process's key. A key the client already has (a fork's,
     inherited from its parent) is kept. Returns the key, or ``None`` for a
     unillm without the feature.
     """
@@ -326,11 +346,12 @@ def ensure_cache_affinity(
     elif scope == "run":
         key = run_affinity_key()
     else:
-        key = prefix_affinity_key(
-            _client_attr(client, "endpoint"),
-            _client_attr(client, "system_message"),
-            tools,
-        )
+        system = None
+        if scope == "static":
+            system = _client_attr(client, _STATIC_SYSTEM)
+        if system is None:
+            system = _client_attr(client, "system_message")
+        key = prefix_affinity_key(_client_attr(client, "endpoint"), system, tools)
     client.set_cache_affinity(key)
     LOGGER.info(f"🗄️ cache affinity: {scope} key {key[:12]}")
     return key

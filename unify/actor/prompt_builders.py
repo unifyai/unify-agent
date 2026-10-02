@@ -535,6 +535,18 @@ def _build_clock_context() -> str:
     """).strip()
 
 
+def build_session_context(tools: Optional[Dict[str, Callable]] = None) -> str:
+    """The per-session sections of :func:`build_code_act_prompt`, sampled now.
+
+    The clock and the filesystem context, as the system prompt carries them
+    for an actor with ``execute_code``; empty for one without, whose prompt
+    has neither.
+    """
+    if not (tools and "execute_code" in tools):
+        return ""
+    return "\n\n".join([_build_clock_context(), _build_filesystem_context()])
+
+
 def _build_filesystem_context() -> str:
     pass
 
@@ -642,6 +654,7 @@ def build_code_act_prompt(
     discovery_first_policy: bool = False,
     persist: bool = False,
     library_read_only: bool = False,
+    session_sections: bool = True,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -667,6 +680,10 @@ def build_code_act_prompt(
         When ``True`` (an admission-gated session), states that the
         libraries cannot be written during the session and that a review
         after it runs only when an external check admits it.
+    session_sections:
+        When ``False``, the per-session sections (the clock and the
+        filesystem context, :func:`build_session_context`) are left out, so
+        the prompt is the same for every session of one configuration.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -723,8 +740,9 @@ def build_code_act_prompt(
             parts.append(_storage_notice(persist))
 
         # ── Per-assistant / dynamic tail ──
-        parts.append(_build_clock_context())
-        parts.append(_build_filesystem_context())
+        if session_sections:
+            parts.append(_build_clock_context())
+            parts.append(_build_filesystem_context())
 
         if rules_and_examples:
             parts.append(rules_and_examples)

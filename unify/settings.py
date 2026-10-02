@@ -177,7 +177,11 @@ class ProductionSettings(BaseSettings):
     # ``prefix`` (the default), every session whose model, system prompt and
     # tool list are the same, so a new session reaches the replica an earlier
     # one cached that prefix on; ``session``, one key per session; ``run``,
-    # one key for every session of this process. Ignored with the switch off.
+    # one key for every session of this process; ``static``, like ``prefix``
+    # but over the actor's system prompt without its per-session sections
+    # (the clock and the filesystem context), so sessions of one
+    # configuration share a key across minutes and workspaces. Ignored with
+    # the switch off.
     UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
     # Tell the actor how large its libraries are and skip searching an empty
     # one: the discovery-first gate counts the stored functions (primitives
@@ -188,6 +192,14 @@ class ProductionSettings(BaseSettings):
     # the same. The session's first user message starts with one line giving
     # both counts at task start. Off: as shipped.
     UNIFY_LIBRARY_SNAPSHOT: bool = False
+    # Where the actor's per-session prompt sections go: the clock (minute
+    # resolution) and the filesystem context (workspace paths). Empty: at the
+    # tail of the system prompt, as shipped, so the system prompt differs
+    # from minute to minute and workspace to workspace. ``message``: the same
+    # sections, sampled once per session, open the session's first user
+    # message (and the message that restarts a compressed session), so the
+    # system prompt is the same for every session of one configuration.
+    UNIFY_PROMPT_CLOCK: str = ""
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -347,10 +359,20 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_cache_affinity_scope(cls, v: Any) -> str:
         value = str(v or "").strip().lower() or "prefix"
-        if value not in ("prefix", "session", "run"):
+        if value not in ("prefix", "session", "run", "static"):
             raise ValueError(
-                "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session' or "
-                f"'run', not {v!r}",
+                "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session', 'run' "
+                f"or 'static', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
+    @classmethod
+    def parse_prompt_clock(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "message"):
+            raise ValueError(
+                f"UNIFY_PROMPT_CLOCK must be empty or 'message', not {v!r}",
             )
         return value
 

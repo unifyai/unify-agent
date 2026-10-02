@@ -54,7 +54,7 @@ from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager.base import BaseFunctionManager
 from unify.function_manager.primitives.registry import get_registry
-from unify.actor.prompt_builders import build_code_act_prompt
+from unify.actor.prompt_builders import build_code_act_prompt, build_session_context
 from unify.events.manager_event_logging import log_manager_call
 from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from unify.common.hierarchical_logger import log_boundary_event
@@ -5159,10 +5159,14 @@ class CodeActActor(BaseCodeActActor):
             "\n\n".join(filter(None, [self._base_guidelines, guidelines])) or None
         )
 
+        from unify.common._async_tool import cache_discipline
         from unify.settings import SETTINGS
 
+        # UNIFY_PROMPT_CLOCK=message: the clock and the filesystem context
+        # open the first user message instead of ending the system prompt.
+        clock_in_message = SETTINGS.UNIFY_PROMPT_CLOCK == "message"
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
-        system_prompt = build_code_act_prompt(
+        prompt_kwargs: Dict[str, Any] = dict(
             environments=sandbox_envs,
             tools=base_tools,
             # An admission-gated session has no in-session storage tools to
@@ -5173,7 +5177,23 @@ class CodeActActor(BaseCodeActActor):
             persist=bool(persist),
             **({"library_read_only": True} if admission_gated else {}),
         )
+        if clock_in_message:
+            prompt_kwargs["session_sections"] = False
+        system_prompt = build_code_act_prompt(**prompt_kwargs)
+        # UNIFY_CACHE_AFFINITY_SCOPE=static keys the session on the prompt
+        # without its per-session sections.
+        static_system_prompt: Optional[str] = None
+        if cache_discipline.enabled() and cache_discipline.affinity_scope() == (
+            "static"
+        ):
+            static_system_prompt = (
+                system_prompt
+                if clock_in_message
+                else build_code_act_prompt(**prompt_kwargs, session_sections=False)
+            )
         first_message_parts: list[str] = []
+        if clock_in_message:
+            first_message_parts.append(build_session_context(base_tools))
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
             f"({len(system_prompt)} chars, {len(base_tools)} tools)",
@@ -5235,6 +5255,8 @@ class CodeActActor(BaseCodeActActor):
         )
         if system_prompt:
             client.set_system_message(system_prompt)
+        if static_system_prompt is not None:
+            cache_discipline.set_static_system_message(client, static_system_prompt)
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.
@@ -5275,8 +5297,6 @@ class CodeActActor(BaseCodeActActor):
         # library, or a standalone review with its own tools -- nothing sending
         # this list can call them, and they are left out (about 2.4k tokens a
         # call on AppWorld) rather than listed and refused.
-        from unify.common._async_tool import cache_discipline
-
         if (
             admission_gated
             and cache_discipline.enabled()
