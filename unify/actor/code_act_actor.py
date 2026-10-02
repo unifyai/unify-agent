@@ -724,10 +724,93 @@ def _storage_needs_repair_note() -> str:
     return store_trust.needs_repair_note()
 
 
+def _review_framing_unified() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_REVIEW_FRAMING == "unified"
+
+
+def _curation_doctrine_compose() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_CURATION_DOCTRINE == "compose"
+
+
+def _review_opening_is_neutral() -> bool:
+    """Whether a review opens without "Often nothing is" (either switch on)."""
+    return _review_framing_unified() or _curation_doctrine_compose()
+
+
+# UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
+GUIDANCE_ENTRY_TARGET_CHARS = 2000
+
+_STORAGE_COMPOSE_DOCTRINE = (
+    "## Building The Library\n\n"
+    "A finished trajectory usually holds at least one reusable unit: a step "
+    "that ran successfully and that another task of the same kind would "
+    "perform again. Store it. A pass that changes nothing is right only "
+    "when nothing in the trajectory ran successfully or when everything "
+    "reusable is already in the library; say which in your summary.\n\n"
+    "- **Small units, composed.** Break the work into the smallest units "
+    "that each do one thing, and expose as parameters what varies between "
+    "tasks (inputs, names, thresholds, identifiers). When the trajectory "
+    "solved a whole procedure, also store a root function that calls the "
+    "stored units in order, so the next task runs the procedure in one "
+    "call. A unit already in the library is called, not copied.\n"
+    "- **Only what ran.** Store code the trajectory executed and whose "
+    "result it observed; a unit that worked inside a task that failed "
+    "overall still qualifies. Record an observed input and output in the "
+    "docstring.\n"
+    "- **Named for behaviour.** A name, signature and docstring describe "
+    "what the unit does for any caller. Values specific to one instance "
+    "(an id, a file name, a literal answer) are parameters or are left "
+    "out. Ask of each entry: would a different task of this kind call "
+    "this as it stands?\n"
+    "- **Never break what works.** A patch must keep the entry's behaviour "
+    "on the inputs it already handled: fix a defect, widen what it "
+    "accepts, or clarify it. When the behaviour itself must change, store "
+    "the new behaviour under a new name and retire the old entry (delete "
+    "it, or say in its docstring which entry replaces it), because callers "
+    "and guidance written against the old behaviour still expect it.\n"
+    f"- **Short guidance.** Keep a guidance entry under about "
+    f"{GUIDANCE_ENTRY_TARGET_CHARS:,} characters and to one subject. When "
+    "a lesson would grow an entry past that, or is about a different "
+    "subject, write a new focused entry and link it, rather than "
+    "appending. Do not add run-by-run narrative to an entry.\n"
+    "- **Cost.** Prefer units that replace several reasoning steps or tool "
+    "calls with one call; a unit the next task would not call is clutter."
+    "\n\n"
+)
+
+
+def _storage_compose_note() -> str:
+    """The compose doctrine (``UNIFY_CURATION_DOCTRINE=compose``); else empty."""
+    return _STORAGE_COMPOSE_DOCTRINE if _curation_doctrine_compose() else ""
+
+
 def _storage_update_first_note() -> str:
     """The review's update-before-add order, while ``UNIFY_FUNCTION_PATCH`` is on; else empty."""
     if not _function_patch_enabled():
         return ""
+    if _curation_doctrine_compose():
+        return (
+            "### Update before you add\n\n"
+            "When the trajectory shows a stored entry that was wrong, "
+            "incomplete or failed, (1) patch the entry the trajectory used "
+            "(`FunctionManager_patch_function` / "
+            "`GuidanceManager_patch_guidance`) when the fix keeps its "
+            "behaviour on the inputs it already handled; (2) otherwise add a "
+            "new focused entry, under a new name when the behaviour changes. "
+            "Do not move a fix into a broader entry the trajectory did not "
+            "use. A patch replaces excerpts of the entry: read its current "
+            "text first, copy each `old` with enough context to occur once, "
+            "and say `why`. Make several changes to one entry in one call as "
+            "`edits` (`[{old, new}, ...]`, applied in order, all or none). "
+            "The entry keeps its id, precondition, dependencies and links, a "
+            "patched function is checked like any function you add, and the "
+            "replaced version is kept in history. Rewrite a whole function "
+            "with `overwrite=True` only when most of it changes.\n\n"
+        )
     return (
         "### Update before you add\n\n"
         "When the trajectory shows a stored entry that was wrong, incomplete "
@@ -883,6 +966,30 @@ _STORAGE_RECURRING_DELIVERABLE = (
     "`function_id`, and calling convention — so the live session executes "
     "the stored function next time instead of re-deriving the procedure.\n\n"
 )
+
+_STORAGE_COMPOSE_STEP_3 = (
+    "3. Decide what would improve the library: new units and the root that "
+    "composes them, patches that keep existing behaviour, new names for "
+    "changed behaviour, and the retirement of entries they supersede. A "
+    "clean library is one whose every entry is small, general and correct, "
+    "not one with few entries. Add guidance when a composition is "
+    "genuinely non-obvious or when the requester specified a multi-phase "
+    "procedure with decision points, and factor any durable shared rule "
+    "into a single linked guidance entry per the Shared rules section.\n"
+)
+
+
+def _storage_base_instructions() -> str:
+    if not _curation_doctrine_compose():
+        return _STORAGE_BASE_INSTRUCTIONS
+    start = _STORAGE_BASE_INSTRUCTIONS.index("3. Decide")
+    end = _STORAGE_BASE_INSTRUCTIONS.index("4. **Delete")
+    return (
+        _STORAGE_BASE_INSTRUCTIONS[:start]
+        + _STORAGE_COMPOSE_STEP_3
+        + _STORAGE_BASE_INSTRUCTIONS[end:]
+    )
+
 
 _STORAGE_BASE_INSTRUCTIONS = (
     "## Instructions\n\n"
@@ -1412,6 +1519,39 @@ _REVIEW_FORK_ROLE = (
     "writes that were read-only during the task are available to you now.\n\n"
 )
 
+# UNIFY_REVIEW_FRAMING=unified: the fork is the agent's own curation step.
+_REVIEW_FORK_ROLE_UNIFIED = (
+    "## Curating The Library\n\n"
+    "The task above is finished. This is the curation step that follows "
+    "it: you did this work, so turn what it taught you into library "
+    "entries a future task can reuse. The conversation above -- what was "
+    "asked, what you did and what came of it -- is the trajectory the "
+    "rules below refer to.\n\n"
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+
+_REVIEW_CLOSING_UNIFIED = (
+    "\n\n## Now\n\n"
+    "Review the trajectory and store any reusable functions and "
+    "compositional guidance, following the rules above. Then reply with a "
+    "brief summary naming what changed (function names, guidance titles) "
+    "or, if nothing qualified, why."
+)
+
+
+def _review_fork_role() -> str:
+    if _review_framing_unified():
+        return _REVIEW_FORK_ROLE_UNIFIED
+    if _review_opening_is_neutral():
+        return _REVIEW_FORK_ROLE.replace(
+            " Often nothing is -- that is perfectly fine.",
+            "",
+        )
+    return _REVIEW_FORK_ROLE
+
+
 _LATE_SESSION_MESSAGE_REFUSAL = (
     "The session has ended, so this message was not delivered: it would have "
     "reached the storage review, which does not take the session's messages. "
@@ -1672,7 +1812,7 @@ def _start_storage_check_loop(
             "call — that the proactive passes may have missed.\n\n"
         )
 
-    instructions = _STORAGE_BASE_INSTRUCTIONS
+    instructions = _storage_base_instructions()
     if proactive_summaries:
         instructions = (
             "## Instructions\n\n"
@@ -1762,6 +1902,25 @@ def _start_storage_check_loop(
             "that is perfectly fine.\n\n"
         )
     )
+    if _review_framing_unified():
+        role_line = (
+            (
+                "You are the agent running the persistent interactive "
+                "session below, and you have just completed a request turn. "
+                "This is the curation step that follows it: turn what the "
+                "latest work taught you into library entries a future "
+                "request can reuse.\n\n"
+            )
+            if live_session
+            else (
+                "You are the agent that just completed the task below. This "
+                "is the curation step that follows it: turn what the work "
+                "taught you into library entries a future task can reuse."
+                "\n\n"
+            )
+        )
+    elif _review_opening_is_neutral():
+        role_line = role_line.replace(" Often nothing is — that is perfectly fine.", "")
     trajectory_header = (
         "## Session Trajectory So Far\n\n"
         if live_session
@@ -1779,10 +1938,11 @@ def _start_storage_check_loop(
             actor=actor,
             tools=tools,
             message=(
-                f"{_REVIEW_FORK_ROLE}"
+                f"{_review_fork_role()}"
                 f"{_STORAGE_WHAT_CAN_BE_STORED}"
                 f"{_storage_environment_note()}"
                 f"{_STORAGE_TWO_STORES}"
+                f"{_storage_compose_note()}"
                 f"{_storage_update_first_note()}"
                 f"{_STORAGE_SUB_AGENT_PATTERNS}"
                 f"{_STORAGE_RECURRING_DELIVERABLE}"
@@ -1794,6 +1954,7 @@ def _start_storage_check_loop(
                 f"{outcome_note}"
                 f"{result_header}"
                 f"{original_result}"
+                f"{_REVIEW_CLOSING_UNIFIED if _review_framing_unified() else ''}"
             ),
             parent_lineage=parent_lineage,
             mask_rules=lesson_rules or None,
@@ -1807,6 +1968,7 @@ def _start_storage_check_loop(
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
         f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_compose_note()}"
         f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{_STORAGE_RECURRING_DELIVERABLE}"
@@ -1931,15 +2093,30 @@ def _start_proactive_storage_loop(
 
     # Static doctrine first, volatile trajectory last — same prompt-cache
     # prefix as the post-run storage check.
-    system_prompt = (
+    proactive_role = (
         "You are a skill librarian. A CodeActActor is currently executing "
         "a task and has proactively requested skill storage. Your job is "
         "to review the execution trajectory so far and store the "
         "requested skill(s) for future reuse. Often nothing is worth "
         "storing — that is perfectly fine.\n\n"
+    )
+    if _review_framing_unified():
+        proactive_role = (
+            "You are the agent executing the task below, and you asked to "
+            "store skills before finishing it. This is that curation step: "
+            "store the requested skill(s) for future reuse.\n\n"
+        )
+    elif _review_opening_is_neutral():
+        proactive_role = proactive_role.replace(
+            " Often nothing is worth storing — that is perfectly fine.",
+            "",
+        )
+    system_prompt = (
+        f"{proactive_role}"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
         f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_compose_note()}"
         f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"

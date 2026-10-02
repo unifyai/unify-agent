@@ -428,6 +428,71 @@ _STORAGE_SESSION_NOTICE = textwrap.dedent("""
 """).strip()
 
 
+def _review_framing_unified() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_REVIEW_FRAMING == "unified"
+
+
+def _unified(text: str, old: str, new: str) -> str:
+    """``text`` with ``old`` replaced by ``new``; ``old`` must occur exactly once."""
+    if text.count(old) != 1:
+        raise ValueError(f"expected one occurrence of {old!r}")
+    return text.replace(old, new)
+
+
+# UNIFY_REVIEW_FRAMING=unified: the review that follows a task is the
+# agent's own curation step, not a separate process.
+_FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED = _unified(
+    _FUNCTION_AND_GUIDANCE_LIBRARY,
+    "- For skills discovered *during* execution, use `store_skills` —\n"
+    "  a dedicated review extracts functions and compositional guidance\n"
+    "  from the trajectory.",
+    "- Skills discovered *during* execution are stored by you in the\n"
+    "  curation step that follows the task, where you turn this\n"
+    "  trajectory into reusable functions and compositional guidance;\n"
+    "  `store_skills` runs that step early, mid-task.",
+)
+
+_STORAGE_DEFERRED_NOTICE_UNIFIED = _unified(
+    _STORAGE_DEFERRED_NOTICE,
+    "A\ndedicated skill-consolidation process also reviews your full trajectory\n"
+    "automatically after you return your result,",
+    "After you\nreturn your result you also curate the libraries from your full\n"
+    "trajectory yourself, in a curation step that follows the task,",
+)
+
+_STORAGE_SESSION_NOTICE_UNIFIED = _unified(
+    _STORAGE_SESSION_NOTICE,
+    "In this persistent session, a dedicated skill-consolidation process\n"
+    "reviews your trajectory automatically **after each completed turn**\n"
+    "(and again when the session ends). Do not call `store_skills` for\n"
+    "work a completed turn already contains — the automatic review covers\n"
+    "it.",
+    "In this persistent session, you curate the libraries from your\n"
+    "trajectory yourself **after each completed turn** (and again when the\n"
+    "session ends), in a curation step that follows the turn. Do not call\n"
+    "`store_skills` for work a completed turn already contains — that\n"
+    "curation step covers it.",
+)
+
+
+def _library_section() -> str:
+    if _review_framing_unified():
+        return _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
+    return _FUNCTION_AND_GUIDANCE_LIBRARY
+
+
+def _storage_notice(persist: bool) -> str:
+    if persist:
+        if _review_framing_unified():
+            return _STORAGE_SESSION_NOTICE_UNIFIED
+        return _STORAGE_SESSION_NOTICE
+    if _review_framing_unified():
+        return _STORAGE_DEFERRED_NOTICE_UNIFIED
+    return _STORAGE_DEFERRED_NOTICE
+
+
 def _build_clock_context() -> str:
     """State the assistant's current time so a plan never has to discover it.
 
@@ -620,7 +685,7 @@ def build_code_act_prompt(
         parts.append(_INCREMENTAL_EXECUTION)
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
+            parts.append(_library_section())
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 
@@ -631,9 +696,7 @@ def build_code_act_prompt(
             # A persistent session's consolidation runs per completed turn,
             # not after a final result the loop never produces — the notice
             # must describe the schedule the session actually gets.
-            parts.append(
-                _STORAGE_SESSION_NOTICE if persist else _STORAGE_DEFERRED_NOTICE,
-            )
+            parts.append(_storage_notice(persist))
 
         # ── Per-assistant / dynamic tail ──
         parts.append(_build_clock_context())
@@ -667,7 +730,7 @@ def build_code_act_prompt(
             )
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
+            parts.append(_library_section())
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 

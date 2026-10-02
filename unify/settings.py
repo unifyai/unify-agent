@@ -191,6 +191,22 @@ class ProductionSettings(BaseSettings):
     # read by the review, forked or not, as an interjection to answer.
     # Off: as shipped.
     UNIFY_REVIEW_FORK: bool = False
+    # ``unified``: the storage review is framed as the agent's own curation
+    # step after the task rather than a separate "skill librarian" (whose
+    # text opens with "Often nothing is"): the actor's prompt says it will
+    # curate the libraries from its trajectory when the task ends, a forked
+    # review is told the task is finished and this is that step, and it ends
+    # with the closing instruction the standalone review already gets. The
+    # rulebook is unchanged. Empty frames the review as shipped.
+    UNIFY_REVIEW_FRAMING: str = ""
+    # ``compose``: the storage rulebook asks for small, parametrised units
+    # composed into larger ones, stored only from code the trajectory ran,
+    # with names and signatures that describe behaviour; a patch must keep an
+    # entry's behaviour on the inputs it already handled (a behaviour change
+    # gets a new name and the old entry is retired), a guidance entry stays
+    # short and is split rather than grown, and the update-first order no
+    # longer sends a fix into a broader existing entry. Empty: as shipped.
+    UNIFY_CURATION_DOCTRINE: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -341,6 +357,26 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "warn"):
             raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_REVIEW_FRAMING", mode="before")
+    @classmethod
+    def parse_review_framing(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "unified"):
+            raise ValueError(
+                f"UNIFY_REVIEW_FRAMING must be empty or 'unified', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CURATION_DOCTRINE", mode="before")
+    @classmethod
+    def parse_curation_doctrine(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "compose"):
+            raise ValueError(
+                f"UNIFY_CURATION_DOCTRINE must be empty or 'compose', not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_STORE_TRUST", mode="before")
