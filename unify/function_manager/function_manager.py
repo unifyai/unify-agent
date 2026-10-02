@@ -37,7 +37,6 @@ from .activation import (
 )
 from .execution_env import (
     SANDBOX_RUNTIME_NAMES,
-    create_base_globals,
     create_execution_globals,
     environment_modules,
 )
@@ -1263,11 +1262,8 @@ class FunctionManager(BaseFunctionManager):
                     )
                 if self._store_verify_enabled():
                     self._store_verify_gate(name=name, node=node, source=source)
-                namespace = create_base_globals()
-                exec(source, namespace)
-                fn_obj = namespace[name]
-                signature = str(inspect.signature(fn_obj))
-                docstring = inspect.getdoc(fn_obj) or ""
+                signature = self._signature_from_node(node, name)
+                docstring = ast.get_docstring(node) or ""
                 precondition = preconditions.get(name)
 
                 prior = None
@@ -1948,12 +1944,94 @@ class FunctionManager(BaseFunctionManager):
 
     @staticmethod
     def _signature_of(source: str, name: str) -> str:
+        """Describe one function declaration without evaluating its source.
+
+        Defaults are literal values; annotations remain declared text.
+        Dynamic defaults, annotations or binding changes are unknown.
+        This metadata does not establish whether loading or calling is safe.
+        """
         try:
-            namespace = create_base_globals()
-            exec(compile(source, "<check signature>", "exec"), namespace)
-            return str(inspect.signature(namespace[name]))
-        except Exception:
+            tree = ast.parse(source)
+        except SyntaxError:
             return "(...)"
+        if len(tree.body) != 1:
+            return "(...)"
+        return FunctionManager._signature_from_node(tree.body[0], name)
+
+    @staticmethod
+    def _signature_from_node(node: ast.AST, name: str) -> str:
+        """Describe an already parsed declaration; never load its definition."""
+        if (
+            not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or node.name != name
+            or node.decorator_list
+            or node.type_params
+        ):
+            return "(...)"
+        args = node.args
+        parameters = args.posonlyargs + args.args + args.kwonlyargs
+        parameters += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        if len({arg.arg for arg in parameters}) != len(parameters):
+            return "(...)"
+        annotations = [arg.annotation for arg in parameters] + [node.returns]
+        annotation_nodes = (
+            ast.Name,
+            ast.Attribute,
+            ast.Subscript,
+            ast.Tuple,
+            ast.List,
+            ast.Constant,
+            ast.BinOp,
+            ast.BitOr,
+            ast.Load,
+        )
+        if any(
+            not isinstance(part, annotation_nodes)
+            for annotation in annotations
+            if annotation is not None
+            for part in ast.walk(annotation)
+        ):
+            return "(...)"
+
+        def parameter(arg: ast.arg, default: Optional[ast.expr] = None) -> str:
+            text = arg.arg
+            if arg.annotation is not None:
+                text += f": {ast.unparse(arg.annotation)}"
+            if default is not None:
+                # literal_eval decodes data nodes, never executes the source.
+                # Calls are unknown; set repr is not stable across processes.
+                if any(
+                    isinstance(part, (ast.Call, ast.Set)) for part in ast.walk(default)
+                ):
+                    raise ValueError("a default is not a literal")
+                value = ast.literal_eval(default)
+                text += (" = " if arg.annotation is not None else "=") + repr(value)
+            return text
+
+        positional = args.posonlyargs + args.args
+        defaults = [None] * (len(positional) - len(args.defaults)) + args.defaults
+        parts: List[str] = []
+        try:
+            for index, (arg, default) in enumerate(zip(positional, defaults), 1):
+                parts.append(parameter(arg, default))
+                if index == len(args.posonlyargs):
+                    parts.append("/")
+            if args.vararg is not None:
+                parts.append("*" + parameter(args.vararg))
+            elif args.kwonlyargs:
+                parts.append("*")
+            parts.extend(
+                parameter(arg, default)
+                for arg, default in zip(args.kwonlyargs, args.kw_defaults)
+            )
+            if args.kwarg is not None:
+                parts.append("**" + parameter(args.kwarg))
+        except (ValueError, TypeError):
+            return "(...)"
+        signature = f"({', '.join(parts)})"
+        if node.returns is not None:
+            signature += f" -> {ast.unparse(node.returns)}"
+        return signature
 
     @staticmethod
     def _candidate_effects(depends_on: List[str]) -> List[str]:

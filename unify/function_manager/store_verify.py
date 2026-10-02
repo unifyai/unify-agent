@@ -171,6 +171,10 @@ class Candidate:
     supplies, so every environment call the function makes reaches the held-out world instead of the session's.
     ``effects`` are the effect labels of the environment methods it names (``read``, ``write``,
     ``destructive``).
+    ``signature`` describes a source declaration without executing it. Defaults are literal
+    values and annotations are declared text, not resolved runtime types. ``(...)`` means the
+    declaration or a default/annotation is unsupported or unknown. It is not a runtime callable
+    or safety certificate.
     """
 
     name: str
