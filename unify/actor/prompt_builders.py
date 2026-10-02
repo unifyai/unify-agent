@@ -563,14 +563,110 @@ _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST = _with_try_first(
 )
 
 
-def _library_section() -> str:
+def _library_section(
+    inline_curation: str = "",
+    tools: Optional[Mapping[str, Callable]] = None,
+) -> str:
     if _review_framing_unified():
-        if _try_first_enabled():
-            return _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
-        return _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
-    if _try_first_enabled():
-        return _FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST
-    return _FUNCTION_AND_GUIDANCE_LIBRARY
+        text = (
+            _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
+            if _try_first_enabled()
+            else _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
+        )
+    else:
+        text = (
+            _FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST
+            if _try_first_enabled()
+            else _FUNCTION_AND_GUIDANCE_LIBRARY
+        )
+    if inline_curation:
+        text = _inline_library_section(text, inline_curation, tools or {})
+    return text
+
+
+# UNIFY_INLINE_CURATION: the actor writes verified units during the task.
+_FUNCTION_WRITES_BULLET = (
+    "- **Functions**: explicit user requests to add/update/delete functions\n"
+    "  use `FunctionManager_add_functions` (`overwrite=True` to update) or\n"
+    "  `FunctionManager_delete_function` directly.\n"
+)
+_REVIEW_BULLETS = (
+    # As shipped.
+    "- For skills discovered *during* execution, use `store_skills` —\n"
+    "  a dedicated review extracts functions and compositional guidance\n"
+    "  from the trajectory.",
+    # UNIFY_REVIEW_FRAMING=unified.
+    "- Skills discovered *during* execution are stored by you in the\n"
+    "  curation step that follows the task, where you turn this\n"
+    "  trajectory into reusable functions and compositional guidance;\n"
+    "  `store_skills` runs that step early, mid-task.",
+)
+_INLINE_ONLY_BULLET = (
+    "- Nothing reviews this trajectory for the libraries after the task:\n"
+    "  what is worth keeping, you store during it."
+)
+
+
+def _inline_function_bullet(tools: Mapping[str, Callable]) -> str:
+    patch = (
+        "`FunctionManager_patch_function`"
+        if "FunctionManager_patch_function" in tools
+        else "`FunctionManager_add_functions` with `overwrite=True`"
+    )
+    guidance_fix = (
+        "`GuidanceManager_patch_guidance`"
+        if "GuidanceManager_patch_guidance" in tools
+        else "`GuidanceManager_update_guidance`"
+    )
+    checks = "its names resolve and it loads"
+    if "FunctionManager_retire_case" in tools:
+        checks = (
+            "its names resolve, it loads, and an update still does what the "
+            "function did on its recorded calls"
+        )
+    functions = (
+        "**Functions, during the task**: once a reusable unit is verified — "
+        "it ran and you checked its result — store it with "
+        f"`FunctionManager_add_functions`; when a stored function fails, fix "
+        f"it with {patch}, keeping its behaviour on the inputs it already "
+        "handled (a change of behaviour is a new function with a new name). "
+        "Store only code that ran, under a name that says what it does "
+        "(snake_case, a verb and its object, e.g. `parse_invoice_dates`). "
+        f"Each write is refused, saying why, unless {checks}. Explicit user "
+        "requests to add/update/delete functions use the same tools "
+        "(`FunctionManager_delete_function` to delete)."
+    )
+    guidance = (
+        "**Guidance, during the task**: likewise, record a procedure you "
+        "verified with `GuidanceManager_add_guidance`, and correct an entry "
+        f"that misled you with {guidance_fix}."
+    )
+    return "".join(
+        textwrap.fill(
+            text,
+            width=72,
+            initial_indent="- ",
+            subsequent_indent="  ",
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        + "\n"
+        for text in (functions, guidance)
+    )
+
+
+def _inline_library_section(
+    text: str,
+    inline_curation: str,
+    tools: Mapping[str, Callable],
+) -> str:
+    text = _unified(text, _FUNCTION_WRITES_BULLET, _inline_function_bullet(tools))
+    if inline_curation == "only":
+        for bullet in _REVIEW_BULLETS:
+            if bullet in text:
+                text = _unified(text, bullet, _INLINE_ONLY_BULLET)
+                break
+    return text
 
 
 def _storage_notice(persist: bool) -> str:
@@ -723,6 +819,7 @@ def build_code_act_prompt(
     persist: bool = False,
     library_read_only: bool = False,
     session_sections: bool = True,
+    inline_curation: str = "",
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -752,6 +849,11 @@ def build_code_act_prompt(
         When ``False``, the per-session sections (the clock and the
         filesystem context, :func:`build_session_context`) are left out, so
         the prompt is the same for every session of one configuration.
+    inline_curation:
+        The session's effective ``UNIFY_INLINE_CURATION`` (``on`` or
+        ``only``; empty as shipped): the library section says the actor
+        stores and repairs verified units during the task, and with
+        ``only`` that no review follows it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -796,7 +898,7 @@ def build_code_act_prompt(
         parts.append(_INCREMENTAL_EXECUTION)
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_library_section())
+            parts.append(_library_section(inline_curation, tools))
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 
@@ -842,7 +944,7 @@ def build_code_act_prompt(
             )
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_library_section())
+            parts.append(_library_section(inline_curation, tools))
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 

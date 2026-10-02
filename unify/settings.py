@@ -167,6 +167,20 @@ class ProductionSettings(BaseSettings):
     # (unify/function_manager/store_cases.py). Off: nothing is recorded or
     # replayed and every tool is as shipped.
     UNIFY_FUNCTION_CASES: bool = False
+    # ``on``: the actor's prompt says that during the task it may store a
+    # unit it has verified (it ran and its result was checked) and repair a
+    # stored function that failed, keeping its behaviour on the inputs it
+    # handled (a behaviour change gets a new name); guidance likewise. Every
+    # function the actor itself adds must have a name that says what it does
+    # (snake_case, at least two words, one a real word that is no
+    # placeholder such as ``tmp`` or ``unused``) and passes the storage check
+    # of UNIFY_STORE_CHECK=resolve whether or not that is set; with
+    # UNIFY_FUNCTION_CASES its replay gate applies as usual. The post-task
+    # review still runs. ``only``: the same, and no review curates the
+    # libraries (none after the task or a turn, no ``store_skills``). Ignored,
+    # with a log line, while UNIFY_STORE_ADMISSION withholds the session's
+    # writes (unify/function_manager/inline_curation.py). Empty: as shipped.
+    UNIFY_INLINE_CURATION: str = ""
     # ``warn``: adding a new function whose normalised code nearly matches a
     # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
     # the stored function. Empty adds as shipped.
@@ -415,6 +429,18 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "resolve"):
             raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_INLINE_CURATION", mode="before")
+    @classmethod
+    def parse_inline_curation(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        # A boolean spelling is the plain on/off of the switch.
+        value = {"true": "on", "1": "on", "false": "", "0": ""}.get(value, value)
+        if value not in ("", "on", "only"):
+            raise ValueError(
+                f"UNIFY_INLINE_CURATION must be empty, 'on' or 'only', not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_CACHE_AFFINITY_SCOPE", mode="before")

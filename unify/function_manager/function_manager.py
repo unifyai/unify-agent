@@ -1771,7 +1771,13 @@ class FunctionManager(BaseFunctionManager):
     def _store_check_enabled() -> bool:
         from unify.settings import SETTINGS
 
-        return SETTINGS.UNIFY_STORE_CHECK == "resolve"
+        from . import inline_curation
+
+        # UNIFY_INLINE_CURATION: the actor's own writes are checked either way.
+        return (
+            SETTINGS.UNIFY_STORE_CHECK == "resolve"
+            or inline_curation.store_check_forced()
+        )
 
     @staticmethod
     def _skip_unloadable() -> Optional[List[Dict[str, str]]]:

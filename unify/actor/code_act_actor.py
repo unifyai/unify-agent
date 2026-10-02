@@ -1,6 +1,7 @@
 import asyncio
 import contextvars
 import copy
+import dataclasses
 import functools
 import inspect
 import json
@@ -52,6 +53,7 @@ from unify.common.act_llm_profiles import (
 )
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
+from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager
 from unify.function_manager import task_origin as _task_origin
 from unify.function_manager.primitives.registry import get_registry
@@ -770,6 +772,68 @@ def _storage_environment_note() -> str:
     if not parts:
         return ""
     return "### This environment\n\n" + " ".join(parts) + "\n\n"
+
+
+# UNIFY_INLINE_CURATION=only: the session's own writes are the only ones.
+_INLINE_ONLY_REASON = (
+    "no review curates the libraries (UNIFY_INLINE_CURATION=only: the "
+    "session stored what it kept during the task)"
+)
+
+
+def _inline_curation_mode(
+    *,
+    can_store: bool,
+    can_compose: bool,
+    admission_gated: bool,
+) -> str:
+    """The session's effective ``UNIFY_INLINE_CURATION``: ``on``, ``only`` or empty.
+
+    Empty while the switch is off, and when the session cannot write to the
+    libraries (``can_store``/``can_compose`` false) or ``UNIFY_STORE_ADMISSION``
+    withholds its writes, which the log says.
+    """
+    mode = inline_curation.mode()
+    if not mode:
+        return ""
+    if admission_gated:
+        logger.info(
+            f"UNIFY_INLINE_CURATION={mode} ignored: UNIFY_STORE_ADMISSION "
+            "withholds the session's library writes",
+        )
+        return ""
+    if not (can_store and can_compose):
+        logger.info(
+            f"UNIFY_INLINE_CURATION={mode} ignored: this session cannot write "
+            "to the libraries (can_store/can_compose is off)",
+        )
+        return ""
+    return mode
+
+
+def _guard_inline_writes(tools: Dict[str, Any]) -> Dict[str, Any]:
+    """*tools* with the session's function writes behind the inline guards.
+
+    ``FunctionManager_add_functions`` refuses names that do not describe
+    behaviour and both it and ``FunctionManager_patch_function`` run the
+    storage check (unify/function_manager/inline_curation.py). The wrappers
+    keep the wrapped method's name, signature and docstring, so the tool
+    schemas are unchanged. The review's tools are its own and stay as they are.
+    """
+    guards = {
+        "FunctionManager_add_functions": inline_curation.guard_add_functions,
+        "FunctionManager_patch_function": inline_curation.guard_patch_function,
+    }
+    out = dict(tools)
+    for name, guard in guards.items():
+        tool = out.get(name)
+        if tool is None:
+            continue
+        if isinstance(tool, ToolSpec):
+            out[name] = dataclasses.replace(tool, fn=guard(tool.fn))
+        else:
+            out[name] = guard(tool)
+    return out
 
 
 def _function_patch_enabled() -> bool:
@@ -2296,9 +2360,13 @@ class _StorageCheckHandle(SteerableToolHandle):
         meter: Optional[RunMeter] = None,
         turn_reviews_enabled: bool = False,
         persist: bool = False,
+        skip_review: Optional[str] = None,
     ) -> None:
         self._inner = inner
         self._actor = actor
+        # Why no review follows the task (UNIFY_INLINE_CURATION=only); None
+        # reviews as shipped.
+        self._skip_review = skip_review
         self._meter = meter
         self._persist = bool(persist)
         self._notification_q: asyncio.Queue[dict] = asyncio.Queue()
@@ -2758,6 +2826,13 @@ class _StorageCheckHandle(SteerableToolHandle):
             # that never completed. A deliberate stop still reviews, because the
             # work up to that point was real.
             if self._task_failure is not None:
+                return
+
+            if self._skip_review:
+                logger.info(f"StorageCheck skipped: {self._skip_review}")
+                await self._notification_q.put(
+                    {"type": "storage_review_skipped", "message": self._skip_review},
+                )
                 return
 
             # With an admission file configured, the review runs only when an
@@ -5000,6 +5075,14 @@ class CodeActActor(BaseCodeActActor):
         # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
         # and it runs only when an external check of the outcome admits it.
         admission_gated = effective_can_store and bool(_store_admission_path())
+        # UNIFY_INLINE_CURATION: the session's own writes during the task;
+        # "" as shipped.
+        inline_mode = _inline_curation_mode(
+            can_store=effective_can_store,
+            can_compose=effective_can_compose,
+            admission_gated=admission_gated,
+        )
+        inline_only = inline_mode == inline_curation.ONLY
         act_llm_profile = resolve_act_llm_profile(llm_profile)
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
@@ -5193,10 +5276,15 @@ class CodeActActor(BaseCodeActActor):
             if admission_gated and withhold_admission:
                 for name in _admission_withheld_tools:
                     out.pop(name, None)
+            if inline_only:
+                # No review curates the libraries; store_skills starts one.
+                out.pop("store_skills", None)
             return out
 
         _act_tools = self.get_tools("act")
         base_tools = _filter_tools(_act_tools)
+        if inline_mode:
+            base_tools = _guard_inline_writes(base_tools)
 
         # When execute_code is masked (can_compose=False), strip any
         # execute_code references from execute_function's docstring so the
@@ -5268,11 +5356,12 @@ class CodeActActor(BaseCodeActActor):
             tools=base_tools,
             # An admission-gated session has no in-session storage tools to
             # describe; it is told the libraries are read-only instead.
-            can_store=effective_can_store and not admission_gated,
+            can_store=effective_can_store and not admission_gated and not inline_only,
             guidelines=effective_guidelines,
             discovery_first_policy=self.tool_policy is _USE_DEFAULT,
             persist=bool(persist),
             **({"library_read_only": True} if admission_gated else {}),
+            **({"inline_curation": inline_mode} if inline_mode else {}),
         )
         if clock_in_message:
             prompt_kwargs["session_sections"] = False
@@ -5497,7 +5586,7 @@ class CodeActActor(BaseCodeActActor):
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(
                     ["store_skills"]
-                    if effective_can_store and not admission_gated
+                    if effective_can_store and not admission_gated and not inline_only
                     else None
                 ),
                 clarification_queues=_clar_queues,
@@ -5552,10 +5641,12 @@ class CodeActActor(BaseCodeActActor):
                 turn_reviews_enabled=(
                     effective_can_store
                     and not admission_gated
+                    and not inline_only
                     and bool(persist)
                     and bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
                 ),
                 persist=bool(persist),
+                **({"skip_review": _INLINE_ONLY_REASON} if inline_only else {}),
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not
