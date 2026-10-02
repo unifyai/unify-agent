@@ -299,6 +299,40 @@ def _extract_nested_handle(obj):
     return None, obj
 
 
+def _returned_handles_for_cleanup(value):
+    """Find handles in supported stored values without evaluating accessors.
+
+    Cycles and aliases are traversed once. Arbitrary iterables and computed
+    attributes are not part of the returned-resource ownership contract.
+    """
+    from pydantic import BaseModel
+    from unify.common.async_tool_loop import SteerableToolHandle
+
+    pending = [value]
+    visited = set()
+    handles = []
+    while pending:
+        node = pending.pop()
+        if id(node) in visited:
+            continue
+        visited.add(id(node))
+        node_type = type(node)
+        if issubclass(node_type, SteerableToolHandle):
+            handles.append(node)
+        elif issubclass(node_type, dict):
+            pending.extend(dict.values(node))
+        elif issubclass(node_type, list):
+            pending.extend(list.__iter__(node))
+        elif issubclass(node_type, tuple):
+            pending.extend(tuple.__iter__(node))
+        elif issubclass(node_type, BaseModel):
+            fields = inspect.getattr_static(node_type, "__pydantic_fields__", {})
+            stored = BaseModel.__dict__["__dict__"].__get__(node)
+            if type(fields) is dict and type(stored) is dict:
+                pending.extend(stored[name] for name in fields if name in stored)
+    return handles
+
+
 def compute_context_injection(
     *,
     args: dict,
@@ -747,20 +781,56 @@ class ToolsData:
         return sum(1 for _t, _inf in self.info.items() if _inf.name == task_name)
 
     async def cancel_pending_tasks(self):
-        for task in self.pending:
-            # Explicitly stop active handles because task.cancel() doesn't
-            # propagate to underlying threads (e.g. asyncio.to_thread).
-            info = self.info.get(task)
-            if info and info.handle and hasattr(info.handle, "stop"):
-                try:
-                    res = info.handle.stop("loop cancelled")
-                    if asyncio.iscoroutine(res):
-                        await res
-                except Exception:
-                    pass
+        pending = list(self.pending)
+        stopped = set()
+
+        async def stop_handle(handle):
+            result = handle.stop("loop cancelled")
+            if inspect.isawaitable(result):
+                await result
+
+        def stop_tasks():
+            handles = []
+            for task in pending:
+                info = self.info.get(task)
+                if info and info.handle is not None:
+                    handles.append(info.handle)
+                if task.done() and not task.cancelled() and task.exception() is None:
+                    try:
+                        handles.extend(_returned_handles_for_cleanup(task.result()))
+                    except Exception as exc:
+                        # Malformed returned data cannot abandon sibling cleanup.
+                        self._logger.error(
+                            f"Returned handle inspection failed: {type(exc).__name__}",
+                            prefix="⚠️",
+                        )
+            stops = []
+            for handle in handles:
+                if id(handle) in stopped:
+                    continue
+                stopped.add(id(handle))
+                stops.append(asyncio.create_task(stop_handle(handle)))
+            return stops
+
+        async def join_stops(stops):
+            for result in await asyncio.gather(*stops, return_exceptions=True):
+                if isinstance(result, BaseException):
+                    self._logger.error(
+                        f"Owned handle stop failed: {type(result).__name__}",
+                        prefix="⚠️",
+                    )
+
+        stops = stop_tasks()
+        for task in pending:
             task.cancel()
-        await asyncio.gather(*self.pending, return_exceptions=True)
-        self.pending.clear()
+        # Stop and cancel concurrently: an async stop can await its owned task.
+        # A child's stop failure must not cancel sibling cleanup operations.
+        await asyncio.gather(*pending, join_stops(stops), return_exceptions=True)
+        # A factory may catch cancellation and return a newly owned handle.
+        await join_stops(stop_tasks())
+        for task in pending:
+            self.pending.discard(task)
+            self.info.pop(task, None)
 
     def prune_over_quota_tool_calls(self, asst_msg: dict) -> None:
         """Remove, in place, the tool_calls of asst_msg that would exceed the
@@ -1018,6 +1088,29 @@ class ToolsData:
         assistant_meta.setdefault(id(asst_msg), {"results_count": 0})
 
     async def process_completed_task(
+        self,
+        task: asyncio.Task,
+        consecutive_failures: "_LoopToolFailureTracker",
+        outer_handle_container,
+        assistant_meta,
+        msg_dispatcher,
+    ) -> bool:
+        info = self.info[task]
+        try:
+            return await self._process_completed_task(
+                task,
+                consecutive_failures,
+                outer_handle_container,
+                assistant_meta,
+                msg_dispatcher,
+            )
+        except asyncio.CancelledError:
+            # Completion temporarily removes the factory from the pending set.
+            # Preserve ownership of its returned handles for loop cleanup.
+            self.save_task(task, info)
+            raise
+
+    async def _process_completed_task(
         self,
         task: asyncio.Task,
         consecutive_failures: "_LoopToolFailureTracker",
@@ -1348,12 +1441,25 @@ class ToolsData:
             )
 
         ph = info.tool_reply_msg
+        metadata = dataclasses.replace(
+            info,
+            handle=child_handle,
+            is_interjectable=hasattr(child_handle, "interject"),
+            interject_queue=None,
+            tool_reply_msg=ph,
+            clar_up_queue=h_up_q,
+            clar_down_queue=h_down_q,
+            notification_queue=info.notification_queue,
+        )
+        # Own the child before publishing anything that can suspend adoption.
+        self.save_task(nested_task, metadata)
         if ph is None:
             ph = create_tool_call_message(
                 name=info.name,
                 call_id=info.call_id,
                 content=placeholder_content,
             )
+            metadata.tool_reply_msg = ph
             await insert_tool_message_after_assistant(
                 assistant_meta,
                 info.assistant_msg,
@@ -1382,20 +1488,6 @@ class ToolsData:
             )
             await self.record_progress(info, info.call_id, pretty, msg_dispatcher)
 
-        metadata = dataclasses.replace(
-            info,
-            handle=child_handle,
-            is_interjectable=hasattr(child_handle, "interject"),
-            # The tool has returned, so the private queue its body read
-            # corrections from has no reader left: an interjection has to
-            # reach the adopted handle through its own interject().
-            interject_queue=None,
-            tool_reply_msg=ph,
-            clar_up_queue=h_up_q,
-            clar_down_queue=h_down_q,
-            notification_queue=info.notification_queue,
-        )
-        self.save_task(nested_task, metadata)
         if h_up_q is not None:
             self.clarification_channels[info.call_id] = (h_up_q, h_down_q)
         # Refresh dynamic helpers immediately, now that a handle is available.
