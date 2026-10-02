@@ -56,6 +56,7 @@ from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager
 from unify.function_manager import task_origin as _task_origin
+from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
 from unify.actor.prompt_builders import build_code_act_prompt, build_session_context
 from unify.events.manager_event_logging import log_manager_call
@@ -5570,6 +5571,10 @@ class CodeActActor(BaseCodeActActor):
         # task's key (set until the handle is built); a sub-agent, started
         # inside a keyed task, keeps the key of the task it works for.
         task_origin_token = _task_origin.enter(request)
+        # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
+        # review inherit the identifiers of this request (set until the handle
+        # is built); a sub-agent keeps those of the task it works for.
+        instance_token = _instance_lint.enter(request)
         try:
             handle = start_async_tool_loop(
                 client,
@@ -5604,6 +5609,7 @@ class CodeActActor(BaseCodeActActor):
                 ),
             )
         except BaseException:
+            _instance_lint.leave(instance_token)
             _task_origin.leave(task_origin_token)
             raise
         finally:
@@ -5653,6 +5659,7 @@ class CodeActActor(BaseCodeActActor):
             # be kept alive by this bookkeeping.
             self._live_storage_handles.add(handle)
 
+        _instance_lint.leave(instance_token)
         _task_origin.leave(task_origin_token)
         return handle
 

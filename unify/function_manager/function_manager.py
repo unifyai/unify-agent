@@ -1264,6 +1264,8 @@ class FunctionManager(BaseFunctionManager):
         # UNIFY_FUNCTION_CASES: what replaying an updated function's recorded
         # cases found, reported with its "updated" status.
         case_reports: Dict[str, str] = {}
+        # UNIFY_STORE_INSTANCE_LINT: docstrings that name this task instance.
+        instance_warnings: Dict[str, str] = {}
 
         # Sandbox namespace roots whose dotted calls should be recorded in
         # depends_on (e.g. "primitives.actor.act" → depends_on includes
@@ -1303,6 +1305,10 @@ class FunctionManager(BaseFunctionManager):
 
                 all_calls = self._collect_function_calls(node)
                 self._validate_function_calls(name, all_calls)
+                if self._instance_lint_enabled():
+                    warning = self._instance_lint(name, node)
+                    if warning:
+                        instance_warnings[name] = warning
                 if self._store_check_enabled():
                     self._store_check(
                         name=name,
@@ -1447,6 +1453,11 @@ class FunctionManager(BaseFunctionManager):
         for name, report in case_reports.items():
             if results.get(name) == "updated":
                 results[name] = f"updated; {report}"
+
+        for name, warning in instance_warnings.items():
+            status = results.get(name, "")
+            if status == "updated" or status.startswith(("updated; ", "added")):
+                results[name] = f"{status}; warning: {warning}"
 
         # Check for errors and raise if requested
         if raise_on_error:
@@ -1646,6 +1657,8 @@ class FunctionManager(BaseFunctionManager):
         finally:
             _OVERWRITE_REASON.reset(token)
         status = str(result.get(name, "error: not stored"))
+        # UNIFY_STORE_INSTANCE_LINT's warning comes last, after any case report.
+        status, _, warning = status.partition("; warning: ")
         if status == "updated" or status.startswith("updated; "):
             patched_result: Dict[str, Any] = {
                 "name": name,
@@ -1656,6 +1669,8 @@ class FunctionManager(BaseFunctionManager):
             if status != "updated":
                 # UNIFY_FUNCTION_CASES: what the replay of its cases found.
                 patched_result["cases"] = status[len("updated; ") :]
+            if warning:
+                patched_result["warning"] = warning
             return patched_result
         return refused(
             status[len("error: ") :] if status.startswith("error: ") else status,
@@ -1762,6 +1777,37 @@ class FunctionManager(BaseFunctionManager):
                 f"listed in search results and in a refusal",
             )
         return {"function_name": function_name, "case_id": wanted, "status": "retired"}
+
+    # ------------------------------------------------------------------ #
+    #  Instance identifiers (UNIFY_STORE_INSTANCE_LINT)                   #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _instance_lint_enabled() -> bool:
+        from . import instance_lint
+
+        return instance_lint.enabled()
+
+    @staticmethod
+    def _instance_lint(
+        name: str,
+        node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
+    ) -> Optional[str]:
+        """Refuse a function whose name or code carries this task's identifiers.
+
+        Raises ``ValueError`` naming the identifier for the name and the code
+        (literals and defaults); returns a warning when only the docstring
+        names one, and ``None`` when nothing does.
+        """
+        from . import instance_lint
+
+        problem = instance_lint.name_problem(name) or instance_lint.code_problem(node)
+        if problem:
+            raise ValueError(instance_lint.refusal(name, problem))
+        return instance_lint.text_warning(
+            "its docstring",
+            ast.get_docstring(node) or "",
+        )
 
     # ------------------------------------------------------------------ #
     #  Storage-time check (UNIFY_STORE_CHECK=resolve)                     #

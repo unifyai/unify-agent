@@ -42,6 +42,26 @@ def _patch_enabled() -> bool:
     return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
 
 
+def _instance_warning(title: Optional[str], content: Optional[str]) -> Optional[str]:
+    """``UNIFY_STORE_INSTANCE_LINT``: a warning when the entry names this task instance."""
+    from unify.function_manager import instance_lint
+
+    if not instance_lint.enabled():
+        return None
+    return instance_lint.join_warnings(
+        [
+            instance_lint.text_warning("its title", title or ""),
+            instance_lint.text_warning("its content", content or ""),
+        ],
+    )
+
+
+def _with_warning(outcome: Dict[str, Any], warning: Optional[str]) -> Dict[str, Any]:
+    if warning:
+        outcome["warning"] = warning
+    return outcome
+
+
 def _stored_only_without_reference(references: Optional[Dict[str, str]]) -> bool:
     """True when ``UNIFY_GUIDANCE_EMPTY_QUERY=stored`` and no reference text is given.
 
@@ -255,10 +275,13 @@ class GuidanceManager(BaseGuidanceManager):
                 db.now_iso(),
             ),
         )
-        return {
-            "outcome": "guidance created successfully",
-            "details": {"guidance_id": int(cursor.lastrowid)},
-        }
+        return _with_warning(
+            {
+                "outcome": "guidance created successfully",
+                "details": {"guidance_id": int(cursor.lastrowid)},
+            },
+            _instance_warning(g.title, g.content),
+        )
 
     @functools.wraps(BaseGuidanceManager.update_guidance, updated=())
     def update_guidance(
@@ -305,7 +328,10 @@ class GuidanceManager(BaseGuidanceManager):
             updates,
             reason=_UPDATE_REASON.get() or DEFAULT_UPDATE_REASON,
         )
-        return {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}}
+        return _with_warning(
+            {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}},
+            _instance_warning(title, content),
+        )
 
     @staticmethod
     def _update_row(
@@ -437,13 +463,16 @@ class GuidanceManager(BaseGuidanceManager):
             raise ValueError(str(exc)) from None
         token = _UPDATE_REASON.set(str(why).strip())
         try:
-            self.update_guidance(guidance_id=guidance_id, content=patched)
+            updated = self.update_guidance(guidance_id=guidance_id, content=patched)
         finally:
             _UPDATE_REASON.reset(token)
-        return {
-            "outcome": "guidance patched",
-            "details": {"guidance_id": guidance_id, "edits": report},
-        }
+        return _with_warning(
+            {
+                "outcome": "guidance patched",
+                "details": {"guidance_id": guidance_id, "edits": report},
+            },
+            updated.get("warning"),
+        )
 
     def _stored_entry(self, id_or_title: Union[int, str]) -> Dict[str, Any]:
         """The stored entry named by id (or a string of digits) or by exact title."""

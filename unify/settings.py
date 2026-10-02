@@ -107,6 +107,15 @@ class ProductionSettings(BaseSettings):
     # would load it; otherwise ``add_functions`` refuses it and says why.
     # Empty stores without the check.
     UNIFY_STORE_CHECK: str = ""
+    # On: a function or guidance entry is checked, before it is stored, for
+    # identifiers of the session's own task instance: id-like tokens (hex
+    # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
+    # titles taken from the session's first request, and task-alias or UUID
+    # shapes in any function name. ``add_functions`` refuses a function whose
+    # name or code (literals and defaults) carries one; a docstring or a
+    # guidance entry that names one is stored with a warning. Off stores
+    # without the check.
+    UNIFY_STORE_INSTANCE_LINT: bool = False
     # Path of a JSON file in which an external check of the session's outcome
     # admits (``{"admit": true}``) the review that runs when a session ends.
     # A missing, unreadable or malformed file, or any other ``admit``, skips
@@ -417,6 +426,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_CODE_FIRST",
+        "UNIFY_STORE_INSTANCE_LINT",
         mode="before",
     )
     @classmethod
