@@ -33,7 +33,17 @@ not run twice), so this switch records them and replays the record:
   (``FunctionManager_retire_case``). Inconclusive cases do not block and are reported with the result; cases
   that raised are re-run only when they made no environment call, and whether they now return is reported;
 - **visibility**: search and filter results carry a compact ``cases`` field (up to two cases, about
-  :data:`SUMMARY_LIMIT` characters per function), so the storage review sees what an entry is known to do.
+  :data:`SUMMARY_LIMIT` characters per function), so the storage review sees what an entry is known to do;
+- **redaction**: an environment may answer with a secret (a login's access token, a stored password). Before
+  anything is kept, each string held under a credential-named key or parameter
+  (:func:`~unify.function_manager.store_trust.credential_key`) in the function's arguments, an environment
+  call's arguments or answer, or the result, is replaced by a placeholder ``<redacted:...>``, a keyed
+  digest under a salt drawn per case; the same secret met elsewhere in the case (passed on as an argument
+  of another name, returned, inside a longer string) is replaced by the same placeholder. Digests are taken
+  over the redacted data, and a replay redacts what the new source does in the same way with the case's
+  salt, so a function that only passes a secret on replays unchanged; one that computes on the secret
+  itself (its length, a slice) sees the placeholder and may diverge. A value met before anything marks it
+  as a credential stays as recorded. Cases recorded before redaction (no salt) replay unredacted.
 
 With the switch off nothing is recorded, replayed or shown, no row is written and every call path is the
 shipped one.
@@ -49,11 +59,13 @@ import contextvars
 import copy
 import functools
 import hashlib
+import hmac
 import inspect
 import json
 import logging
 import math
 import re
+import secrets
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Mapping, Optional
@@ -170,6 +182,15 @@ UNSTUBBED_NAMES = frozenset(
 """Names whose use makes a replay inconclusive: replay serves only the recorded environment calls."""
 
 _ADDRESS = re.compile(r" at 0x[0-9a-fA-F]+")
+
+REDACTED = re.compile(r"<redacted:[0-9a-f]{16}>")
+"""A placeholder that stands for a credential value in a recorded case."""
+
+MIN_SECRET_CHARS = 4
+"""A credential value at least this long is also replaced where it recurs as a whole string."""
+
+MIN_INNER_SECRET_CHARS = 8
+"""A credential value at least this long is also replaced inside longer strings."""
 
 # The environment-call traces of the stored-function calls running in this context, outermost first.
 _ACTIVE: contextvars.ContextVar[tuple["_Trace", ...]] = contextvars.ContextVar(
@@ -324,6 +345,119 @@ def _shown_arguments(arguments: Mapping[str, Any], limit: int = REPR_LIMIT) -> s
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+class _Redactor:
+    """Replaces credential values in one case's recorded data with placeholders stable under its salt.
+
+    A string under a credential-named key or parameter becomes ``<redacted:digest>``, the digest an HMAC of
+    the value under :attr:`salt`; the values seen so far are remembered, so where one recurs (a whole string
+    of at least :data:`MIN_SECRET_CHARS`, or inside a string when it is at least
+    :data:`MIN_INNER_SECRET_CHARS`) it is replaced by the same placeholder. A placeholder is left as it is,
+    so redacting what a replay passes on gives what the recording kept. Without a salt (a case recorded
+    before redaction) nothing is replaced.
+    """
+
+    def __init__(self, salt: Optional[str]) -> None:
+        self.salt = salt or None
+        self._secrets: Dict[str, str] = {}
+
+    @classmethod
+    def fresh(cls) -> "_Redactor":
+        return cls(secrets.token_hex(16))
+
+    def placeholder(self, value: str) -> str:
+        if self.salt is None or REDACTED.fullmatch(value):
+            return value
+        known = self._secrets.get(value)
+        if known is not None:
+            return known
+        digest = hmac.new(
+            self.salt.encode("utf-8"),
+            value.encode("utf-8", "replace"),
+            hashlib.sha256,
+        ).hexdigest()[:16]
+        out = f"<redacted:{digest}>"
+        if len(value) >= MIN_SECRET_CHARS:
+            self._secrets[value] = out
+        return out
+
+    def _learn(self, data: Any, hidden: bool = False) -> None:
+        if isinstance(data, dict):
+            for key, item in data.items():
+                self._learn(item, hidden or _credential_key(key))
+        elif isinstance(data, list):
+            for item in data:
+                self._learn(item, hidden)
+        elif hidden and isinstance(data, str) and data:
+            self.placeholder(data)
+
+    def _apply(self, data: Any, hidden: bool = False) -> Any:
+        if isinstance(data, dict):
+            return {
+                key: self._apply(item, hidden or _credential_key(key))
+                for key, item in data.items()
+            }
+        if isinstance(data, list):
+            return [self._apply(item, hidden) for item in data]
+        if isinstance(data, str) and data:
+            return self.placeholder(data) if hidden else self.scrub(data)
+        return data
+
+    def redact(self, data: Any) -> Any:
+        """JSON ``data`` with its credential values replaced (all of them learned first)."""
+        if self.salt is None:
+            return data
+        self._learn(data)
+        return self._apply(data)
+
+    def scrub(self, text: str) -> str:
+        """``text`` with every credential value seen so far replaced by its placeholder."""
+        if self.salt is None or not self._secrets or not isinstance(text, str):
+            return text
+        whole = self._secrets.get(text)
+        if whole is not None:
+            return whole
+        inner = sorted(
+            (
+                s
+                for s in self._secrets
+                if len(s) >= MIN_INNER_SECRET_CHARS and s in text
+            ),
+            key=len,
+            reverse=True,
+        )
+        if not inner:
+            return text
+        pieces = re.split(f"({REDACTED.pattern})", text)
+        for index in range(0, len(pieces), 2):  # the odd pieces are placeholders
+            for secret in inner:
+                pieces[index] = pieces[index].replace(secret, self._secrets[secret])
+        return "".join(pieces)
+
+    def shown(self, arguments: Mapping[str, Any]) -> str:
+        """:func:`_shown_arguments` with the credential values seen so far replaced."""
+        return _shown_arguments(
+            {
+                key: self.scrub(value) if isinstance(value, str) else value
+                for key, value in arguments.items()
+            },
+        )
+
+    def short(self, value: Any, limit: int = REPR_LIMIT) -> str:
+        """:func:`_short` of ``value`` with the credential values seen so far replaced."""
+        return _short(self.scrub(_short(value, 10**9)), limit)
+
+
+@functools.lru_cache(maxsize=4096)
+def _credential_name(name: str) -> bool:
+    from .store_trust import credential_key
+
+    return credential_key(name)
+
+
+def _credential_key(name: Any) -> bool:
+    return _credential_name(str(name))
+
+
 @functools.lru_cache(maxsize=256)
 def _names_environment_globals(source: str, names: frozenset) -> bool:
     """Whether ``source`` reads one of the environment's extra globals, whose calls are not recorded."""
@@ -348,9 +482,10 @@ class _Trace:
     made where the recorder cannot see them.
     """
 
-    __slots__ = ("calls", "chars", "cut", "partial", "closed")
+    __slots__ = ("calls", "chars", "cut", "partial", "closed", "redactor")
 
-    def __init__(self) -> None:
+    def __init__(self, redactor: Optional[_Redactor] = None) -> None:
+        self.redactor = redactor if redactor is not None else _Redactor(None)
         self.calls: List[dict] = []
         self.chars = 0
         self.cut = False
@@ -386,13 +521,12 @@ def _call_key(
     call: Optional[Callable[..., Any]],
     args: Any,
     kwargs: Mapping[str, Any],
+    redactor: _Redactor,
 ) -> tuple[str, str]:
-    """The digest of an environment call's bound arguments, and how they read."""
+    """The digest of an environment call's bound arguments, redacted, and how they read."""
     arguments = _bound(call, args, kwargs)
-    return (
-        _sha256(_canonical(plain(arguments)[0])),
-        _shown_arguments(arguments),
-    )
+    data = redactor.redact(plain(arguments)[0])
+    return _sha256(_canonical(data)), redactor.shown(arguments)
 
 
 class _PrimitiveCall:
@@ -409,48 +543,68 @@ class _PrimitiveCall:
         *,
         is_async: bool,
     ) -> None:
-        digest, shown = _call_key(namespace, method, call, args, kwargs)
-        self.entry: dict = {
-            "call": f"{namespace}.{method}",
-            "args": digest,
-            "shown": shown,
-            "async": is_async,
-            "replayable": False,
-        }
-        self.traces = tuple(t for t in _ACTIVE.get() if t.open(self.entry))
+        # Traces that share a redactor (a stored function called inside
+        # another shares its caller's) share one entry.
+        groups: Dict[int, tuple[_Redactor, List[_Trace]]] = {}
+        for trace in _ACTIVE.get():
+            groups.setdefault(id(trace.redactor), (trace.redactor, []))[1].append(trace)
+        self.entries: List[tuple[_Redactor, dict, tuple]] = []
+        for redactor, traces in groups.values():
+            digest, shown = _call_key(namespace, method, call, args, kwargs, redactor)
+            entry: dict = {
+                "call": f"{namespace}.{method}",
+                "args": digest,
+                "shown": shown,
+                "async": is_async,
+                "replayable": False,
+            }
+            taken = tuple(t for t in traces if t.open(entry))
+            self.entries.append((redactor, entry, taken))
 
     def finish(self, *, result: Any = None, error: Optional[BaseException] = None):
-        entry = self.entry
+        for redactor, entry, traces in self.entries:
+            self._finish(redactor, entry, traces, result=result, error=error)
+
+    @staticmethod
+    def _finish(
+        redactor: _Redactor,
+        entry: dict,
+        traces: tuple,
+        *,
+        result: Any,
+        error: Optional[BaseException],
+    ) -> None:
         try:
             if error is not None:
                 if not isinstance(error, Exception):
-                    for trace in self.traces:
+                    for trace in traces:
                         trace.partial = True
                     return
                 entry["error"] = {
                     "type": type(error).__name__,
-                    "message": str(error)[:ERROR_LIMIT],
+                    "message": redactor.scrub(str(error))[:ERROR_LIMIT],
                 }
                 entry["replayable"] = True
                 chars = len(_canonical(entry))
             else:
                 data, exact = plain(result)
+                data = redactor.redact(data)
                 text = _canonical(data)
                 chars = len(text)
                 if exact and chars <= MAX_VALUE_CHARS:
                     entry["result"] = data
                     entry["replayable"] = True
                 else:
-                    entry["result_shown"] = _short(result)
+                    entry["result_shown"] = redactor.short(result)
                     chars = len(entry["result_shown"])
-            for trace in self.traces:
+            for trace in traces:
                 if not trace.grow(chars + len(entry["shown"]) + 100):
                     entry.pop("result", None)
                     entry["replayable"] = False
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.debug("An environment call was not recorded: %s", exc)
             entry["replayable"] = False
-            for trace in self.traces:
+            for trace in traces:
                 trace.partial = True
 
 
@@ -524,11 +678,32 @@ class Pending:
         else:
             named = _bound(None, args, kwargs)
         self.args_hash = input_hash(named)
-        self.args_shown = _shown_arguments(named)
-        call_data, exact = plain({"args": list(args), "kwargs": dict(kwargs)})
+        # A stored function called inside another shares its caller's redactor,
+        # so a secret the caller has seen is replaced in this case too.
+        self.redactor = (
+            next(
+                (t.redactor for t in reversed(_ACTIVE.get()) if t.redactor.salt),
+                None,
+            )
+            or _Redactor.fresh()
+        )
+        self.redactor.redact(plain(named)[0])  # learn the credential arguments
+        self.args_shown = self.redactor.shown(named)
+        raw, exact = plain({"args": list(args), "kwargs": dict(kwargs)})
+        call_data = {
+            "args": [
+                self.redactor.redact(item)
+                for item in self._redacted_positional(signature, raw["args"])
+            ],
+            "kwargs": self.redactor.redact(raw["kwargs"]),
+        }
         text = _canonical(call_data)
-        self.call = call_data if exact and len(text) <= MAX_VALUE_CHARS else None
-        self.trace = _Trace()
+        self.call = (
+            {**call_data, "salt": self.redactor.salt}
+            if exact and len(text) <= MAX_VALUE_CHARS
+            else None
+        )
+        self.trace = _Trace(self.redactor)
         from .primitives.environment import environment_globals
 
         if _names_environment_globals(
@@ -538,6 +713,31 @@ class Pending:
             # Calls made through such a global bypass the recorder, so the
             # trace may miss some: a replay that runs past it is inconclusive.
             self.trace.partial = True
+
+    def _redacted_positional(self, signature: Any, args: List[Any]) -> List[Any]:
+        """Positional ``args`` with the ones bound to a credential-named parameter replaced."""
+        if signature is None:
+            return args
+        names = [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        return [
+            (
+                self.redactor.placeholder(value)
+                if index < len(names)
+                and isinstance(value, str)
+                and value
+                and _credential_key(names[index])
+                else value
+            )
+            for index, value in enumerate(args)
+        ]
 
 
 class CaseRecorder:
@@ -631,19 +831,21 @@ def _store(
     from .store_trust import sha256
 
     kind = FAIL if error else PASS
+    redactor = pending.redactor
     if kind == PASS:
         data, exact = plain(result)
+        data = redactor.redact(data)
         result_json: Optional[str] = db.dumps(
             {
                 "digest": _sha256(_canonical(data)),
                 "exact": exact,
-                "shown": _short(data if exact else result),
+                "shown": _short(data) if exact else redactor.short(result),
             },
         )
         error_text = None
     else:
         result_json = None
-        error_text = _error_text(error)
+        error_text = redactor.scrub(_error_text(error))
     trace = pending.trace
     values = (
         sha256(recorder.source),
@@ -726,16 +928,21 @@ class Case:
     outcome: Optional[Any]
     retired_why: Optional[str]
     recorded_at: str
+    salt: Optional[str] = None
+    """The salt the case's credential values were redacted under; ``None`` for a case recorded before."""
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> "Case":
+        call = db.loads(row["call"])
+        salt = call.pop("salt", None) if isinstance(call, dict) else None
         return cls(
             case_id=int(row["case_id"]),
             function_id=int(row["function_id"]),
             kind=row["kind"],
             status=row["status"],
             source_hash=row["source_hash"],
-            call=db.loads(row["call"]),
+            call=call,
+            salt=salt,
             args_shown=row["args_shown"] or "",
             result=db.loads(row["result"]),
             error=row["error"],
@@ -892,6 +1099,8 @@ class _World:
 
         self.case = case
         self.calls = case.trace
+        # What the new source passes on is redacted as the recording was.
+        self.redactor = _Redactor(case.salt)
         self.position = 0
         self.verdict: Optional[tuple[str, str]] = None
         self.cancelled = False
@@ -913,7 +1122,7 @@ class _World:
         if self.cancelled:
             raise self.stop(INCONCLUSIVE, "the replay timed out")
         k = self.position
-        digest, shown = _call_key(namespace, method, call, args, kwargs)
+        digest, shown = _call_key(namespace, method, call, args, kwargs, self.redactor)
         now = f"primitives.{namespace}.{method}({shown})"
         if k >= len(self.calls):
             if not self.case.trace_complete:
@@ -1171,17 +1380,23 @@ def _replay_one(
         return Replay(case, *world.verdict)
     if how == "timeout":
         return Replay(case, INCONCLUSIVE, f"the replay took over {REPLAY_TIMEOUT_S:g}s")
+    redactor = world.redactor
     if case.kind == FAIL:
         if how == "raised":
-            return Replay(case, STILL_FAILS, _error_text(value))
-        return Replay(case, NOW_PASSES, f"now returns {_short(plain(value)[0])}")
+            return Replay(case, STILL_FAILS, redactor.scrub(_error_text(value)))
+        return Replay(
+            case,
+            NOW_PASSES,
+            f"now returns {_short(redactor.redact(plain(value)[0]))}",
+        )
     if how == "raised":
         if isinstance(value, _REPLAY_ARTEFACTS) or not isinstance(value, Exception):
             return Replay(case, INCONCLUSIVE, f"the replay raised {_error_text(value)}")
         return Replay(
             case,
             DIVERGED,
-            f"returned {(case.result or {}).get('shown', '?')} before; now raises {_error_text(value)}",
+            f"returned {(case.result or {}).get('shown', '?')} before; now raises "
+            f"{redactor.scrub(_error_text(value))}",
         )
     if world.position < len(world.calls):
         return Replay(
@@ -1193,10 +1408,11 @@ def _replay_one(
             f"({world.calls[world.position].get('shown', '')})",
         )
     data, exact = plain(value)
+    data = redactor.redact(data)
     recorded = case.result or {}
     if _sha256(_canonical(data)) == recorded.get("digest"):
         return Replay(case, PRESERVED)
-    shown = _short(data if exact else value)
+    shown = _short(data) if exact else redactor.short(value)
     if exact and recorded.get("exact"):
         return Replay(
             case,

@@ -637,6 +637,207 @@ def test_the_review_gets_the_retire_tool_only_while_on(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+#  Redaction                                                                   #
+# --------------------------------------------------------------------------- #
+
+TOKEN = "tok-5f1e9a7c2b8d4e60"  # pragma: allowlist secret
+PASSWORD = "hunter2-correct-horse"  # pragma: allowlist secret
+
+# Logs in, passes the token on under a credential name and inside a header,
+# and returns the token and the items.
+SYNC = (
+    "def sync(user: str, password: str) -> dict:\n"
+    "    login = primitives.accounts.login(username=user, password=password)\n"
+    "    token = login['access_token']\n"
+    "    items = primitives.accounts.list_items(access_token=token)\n"
+    "    primitives.accounts.ping(header='Bearer ' + token)\n"
+    "    return {'session': token, 'count': len(items), 'first': items[0]}\n"
+)
+SYNC_REWRITTEN = (
+    "def sync(user: str, password: str) -> dict:\n"
+    "    t = primitives.accounts.login(username=user, password=password)['access_token']\n"
+    "    found = list(primitives.accounts.list_items(access_token=t))\n"
+    "    primitives.accounts.ping(header=f'Bearer {t}')\n"
+    "    return {'first': found[0], 'count': len(found), 'session': t}\n"
+)
+SYNC_WRONG_TOKEN = SYNC.replace(
+    "list_items(access_token=token)",
+    "list_items(access_token=token[:-1])",
+)
+SYNC_COUNTS_AUTHORS = SYNC.replace(
+    "'count': len(items)",
+    "'count': len([i for i in items if i['author'] == user])",
+)
+
+
+class FakeAccounts:
+    def login(self, username: str, password: str):
+        CALLS.append(("login", {"username": username}))
+        assert password == PASSWORD
+        return {"access_token": TOKEN, "token_type": "Bearer"}
+
+    def list_items(self, access_token: str):
+        CALLS.append(("list_items", {}))
+        assert access_token == TOKEN
+        return [{"id": 7, "author": "ann"}, {"id": 8, "author": "bob"}]
+
+    def ping(self, header: str):
+        CALLS.append(("ping", {}))
+        assert header == f"Bearer {TOKEN}"
+        return {"ok": True}
+
+
+@pytest.fixture
+def accounts_env():
+    clear_environment_namespaces()
+    accounts = FakeAccounts()
+    methods = (
+        EnvironmentMethod(
+            name="login",
+            call=accounts.login,
+            effect="read",
+            signature="(username: str, password: str)",
+        ),
+        EnvironmentMethod(
+            name="list_items",
+            call=accounts.list_items,
+            effect="read",
+            signature="(access_token: str)",
+        ),
+        EnvironmentMethod(
+            name="ping",
+            call=accounts.ping,
+            effect="read",
+            signature="(header: str)",
+        ),
+    )
+    register_environment(
+        EnvironmentSurface(
+            namespaces=(EnvironmentNamespace(name="accounts", methods=methods),),
+        ),
+        source="tests:accounts",
+    )
+    from unify.function_manager import function_manager as fm_module
+
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+    CALLS.clear()
+    yield
+    clear_environment_namespaces()
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+
+
+def _load_accounts(fm: FunctionManager) -> dict:
+    namespace = {
+        "primitives": SimpleNamespace(accounts=namespace_object("accounts")),
+    }
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    return namespace
+
+
+def _stored_case_text() -> str:
+    rows = db.query("SELECT * FROM function_cases")
+    return "\n".join(str(dict(row)) for row in rows)
+
+
+def test_credential_keys_are_matched_word_by_word():
+    from unify.function_manager.store_trust import credential_key
+
+    for name in ("access_token", "apiKey", "X-Auth-Token", "Authorization", "password"):
+        assert credential_key(name), name
+    for name in ("author", "monkey", "keyword", "user", "header"):
+        assert not credential_key(name), name
+
+
+@_handle_project
+def test_secrets_in_answers_and_arguments_are_stored_as_placeholders(
+    cases_on,
+    accounts_env,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[SYNC])
+    out = _load_accounts(fm)["sync"]("ann", PASSWORD)
+    assert out["session"] == TOKEN  # the caller still gets the real value
+    (case,) = _cases(fm, "sync")
+    stored = _stored_case_text()
+    assert TOKEN not in stored and PASSWORD not in stored
+    login, items, ping = case.trace
+    token = login["result"]["access_token"]
+    assert store_cases.REDACTED.fullmatch(token)
+    # data under a key that only contains a credential word is kept
+    assert items["result"][0] == {"id": 7, "author": "ann"}
+    assert case.call["args"][0] == "ann"
+    assert store_cases.REDACTED.fullmatch(case.call["args"][1])
+    assert ping["shown"] == f"header='Bearer {token}'"
+    assert f"'session': '{token}'" in case.result["shown"]
+    # the same secret is one placeholder within a case, and another in the next
+    assert case.salt
+    _load_accounts(fm)["sync"]("ann", PASSWORD)
+    (again,) = _cases(fm, "sync")
+    assert again.trace[0]["result"]["access_token"] != token
+
+
+@_handle_project
+def test_a_function_that_passes_a_secret_on_still_replays(cases_on, accounts_env):
+    fm = _FM()
+    fm.add_functions(implementations=[SYNC])
+    _load_accounts(fm)["sync"]("ann", PASSWORD)
+    calls_before = list(CALLS)
+    out = fm.add_functions(implementations=[SYNC_REWRITTEN], overwrite=True)
+    assert out["sync"] == "updated; cases: 1 recorded call(s) replayed unchanged"
+    assert CALLS == calls_before
+
+
+@_handle_project
+def test_a_change_to_what_is_done_with_a_secret_is_still_refused(
+    cases_on,
+    accounts_env,
+):
+    fm = _FM()
+    fm.add_functions(implementations=[SYNC])
+    _load_accounts(fm)["sync"]("ann", PASSWORD)
+    out = fm.add_functions(
+        implementations=[SYNC_WRONG_TOKEN],
+        overwrite=True,
+        raise_on_error=False,
+    )["sync"]
+    assert "diverges at environment call 2" in out
+    assert "access_token=<withheld>" in out
+    assert TOKEN not in out and PASSWORD not in out
+    # data next to the secret is compared as recorded
+    out = fm.add_functions(
+        implementations=[SYNC_COUNTS_AUTHORS],
+        overwrite=True,
+        raise_on_error=False,
+    )["sync"]
+    assert "was not changed" in out and TOKEN not in out
+    assert _source("sync") == SYNC
+
+
+@_handle_project
+def test_a_case_recorded_before_redaction_replays_unredacted(
+    cases_on,
+    accounts_env,
+    monkeypatch,
+):
+    # as the first version of the switch stored cases: no salt, values in clear
+    monkeypatch.setattr(
+        store_cases._Redactor,
+        "fresh",
+        lambda: store_cases._Redactor(None),
+    )
+    fm = _FM()
+    fm.add_functions(implementations=[SYNC])
+    _load_accounts(fm)["sync"]("ann", PASSWORD)
+    (old,) = _cases(fm, "sync")
+    assert old.salt is None and old.call["args"][1] == PASSWORD
+    assert old.trace[0]["result"]["access_token"] == TOKEN
+    monkeypatch.undo()
+    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
+    out = fm.add_functions(implementations=[SYNC_REWRITTEN], overwrite=True)
+    assert out["sync"] == "updated; cases: 1 recorded call(s) replayed unchanged"
+
+
+# --------------------------------------------------------------------------- #
 #  Switch off                                                                  #
 # --------------------------------------------------------------------------- #
 

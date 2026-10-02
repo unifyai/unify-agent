@@ -637,6 +637,29 @@ _CREDENTIAL_NAME = re.compile(
     r"token|key|secret|passw(?:or)?d|auth|credential",
     re.IGNORECASE,
 )
+_CREDENTIAL_WORD = re.compile(
+    r"(?:\w*(?:token|secret|passw(?:or)?d|credential)"
+    r"|(?:api|access|auth|client|master|private|secret|session|signing)?key"
+    r"|auth(?:ori[sz]ation|entication)?)s?",
+    re.IGNORECASE,
+)
+_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def credential_key(name: Any) -> bool:
+    """Whether a key or parameter ``name`` marks the value it holds as a credential, word by word.
+
+    The words of :data:`_CREDENTIAL_NAME` (``token``, ``key``, ``secret``, ``password``, ``auth``,
+    ``credential``) as whole words of the name (split at separators and camel case, a plural allowed), plus
+    compounds ending in one (``accesstoken``, ``apikey``, ``Authorization``): ``access_token``, ``apiKey``
+    and ``X-Auth-Token`` match; ``author``, ``monkey`` and ``keyword``, which the substring rule for
+    shown arguments also withholds, do not. Values are replaced under these names in recorded data, where
+    a word that only contains one is usually data a function computes on.
+    """
+    words = _WORDS.findall(str(name))
+    return any(_CREDENTIAL_WORD.fullmatch(word) for word in words)
+
+
 _TEMPLATE = re.compile(r"^(?:\{\{.*\}\}|\$\{.*\})$", re.DOTALL)
 """``{{access_token}}``, ``${API_KEY}``: a template that was never filled, whatever it names."""
 _NAMED_SLOT = re.compile(
