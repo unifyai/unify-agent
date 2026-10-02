@@ -244,6 +244,13 @@ class ProductionSettings(BaseSettings):
     # (the provider has already billed it) and asks again. A sibling still
     # running when the window closes is raced as shipped. 0: as shipped.
     UNIFY_TOOL_BATCH_WAIT: float = 0.0
+    # In a persistent session, a turn's final reply identical (whitespace
+    # collapsed, JSON compared with sorted keys) to an earlier reply the
+    # requester has already answered is held back once: the loop appends a
+    # note quoting the requester's answer to it and the model takes another
+    # step, and sending the same reply again surfaces it. Replies that differ,
+    # and one-shot runs, are unaffected. Off: as shipped.
+    UNIFY_REPEAT_GUARD: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -351,6 +358,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_REPEAT_GUARD",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
