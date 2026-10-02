@@ -249,6 +249,33 @@ def _reply_protocol_note_enabled() -> bool:
     return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE)
 
 
+# UNIFY_CODE_FIRST: answer checkable tasks with a program checked on the evidence.
+_CODE_FIRST = textwrap.dedent("""
+    ### Solve With Code You Can Check
+
+    When a result can be computed or checked — transforming data, applying
+    a rule inferred from examples, querying or updating a system through
+    its API, planning steps whose effect you can verify — write a program
+    in `execute_code` that produces it, check it against every example or
+    known result you have, and answer with its output rather than with a
+    result worked out by hand. When a check fails, fix the program's logic
+    and re-run it (never hard-code the expected outputs); actions with side
+    effects still go step by step, as Incremental Execution says. Keep
+    judgment steps (classifying, wording, reading something ambiguous) as
+    `query_llm(...)` calls inside the program. A program that reproduced
+    the evidence can be stored and reused on the next similar task;
+    reasoning done only in text cannot. If one stored function or primitive
+    call is the whole task, call it as Tool Selection says; answer without
+    code only when the request is conversational or a single obvious step.
+""").strip()
+
+
+def _code_first_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_CODE_FIRST)
+
+
 _SUB_ACTOR_DIAL = textwrap.dedent("""
     - Plain code -> `query_llm(...)` -> a sub-agent
       (`primitives.actor.act`) is a dial, not a mode switch: take
@@ -764,6 +791,8 @@ def build_code_act_prompt(
         parts.append(_EXECUTION_RULES)
         if _reply_protocol_note_enabled():
             parts.append(_REPLY_PROTOCOL_NOTE)
+        if _code_first_enabled():
+            parts.append(_CODE_FIRST)
         parts.append(_INCREMENTAL_EXECUTION)
 
         if has_fm_tools or has_gm_tools:

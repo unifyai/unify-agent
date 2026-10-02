@@ -238,6 +238,15 @@ class ProductionSettings(BaseSettings):
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
     UNIFY_REPLY_PROTOCOL_NOTE: bool = False
+    # The actor's prompt asks it to solve a task whose result can be computed
+    # or checked by writing a program, checking it against every example or
+    # known result it has, and answering with the program's output instead of
+    # a result worked out in text, with judgment steps kept as query_llm
+    # calls inside the program, so that a solved task leaves a program the
+    # review can store. Conversational and single-step requests, and tasks one
+    # stored function or primitive call completes, are answered as before.
+    # Off: as shipped.
+    UNIFY_CODE_FIRST: bool = False
     # Seconds the tool loop keeps waiting for the rest of a batch of tool
     # calls once the first result owes the model a turn. Without it the turn
     # starts at once, and when a sibling lands during it the loop cancels it
@@ -376,6 +385,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_OUTCOME",
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
+        "UNIFY_CODE_FIRST",
         mode="before",
     )
     @classmethod
