@@ -20,6 +20,7 @@ import copy
 import itertools
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
@@ -186,24 +187,55 @@ def new_client(system: str = "You are a scripted test agent."):
     return client
 
 
-def install_affinity_api(monkeypatch) -> list[tuple[str, int]]:
-    """Give unillm's async client the ``cache_affinity`` API of harness-cache.
+def _affinity_owner():
+    """The class in unillm's async client that defines the affinity API, if any."""
+    import unillm
 
-    Returns a list that each ``set_cache_affinity`` call appends its key to,
-    with the number of requests the scripted provider had then received
-    (``-1`` outside :func:`scripted`), so a test can tell a key set before
-    the first request from one set later.
+    for cls in unillm.AsyncUnify.__mro__:
+        if "set_cache_affinity" in cls.__dict__:
+            return cls
+    return None
+
+
+def _called_from_unillm(depth: int = 2) -> bool:
+    caller = sys._getframe(depth).f_globals.get("__name__", "")
+    return caller == "unillm" or caller.startswith("unillm.")
+
+
+def install_affinity_api(monkeypatch) -> list[tuple[str, int]]:
+    """Record the ``cache_affinity`` keys unify sets on unillm's async client.
+
+    The ``harness-cache`` branch of unillm has the API (``set_cache_affinity``
+    and a ``cache_affinity`` property, stored as ``_cache_affinity`` and sent
+    with every request); ``main`` does not, and is given the same API here.
+    Where unillm has it, its own setter still runs, so the key reaches the
+    request exactly as unillm sends it.
+
+    Returns a list that each ``set_cache_affinity`` call made from outside
+    unillm appends its key to, with the number of requests the scripted
+    provider had then received (``-1`` outside :func:`scripted`), so a test
+    can tell a key set before the first request from one set later. unillm's
+    own calls (its constructor resets the key, ``copy()`` passes it on) are
+    not unify setting a key and are not recorded.
     """
     import unillm
 
     sets: list[tuple[str, int]] = []
+    owner = _affinity_owner()
+    original = owner.__dict__["set_cache_affinity"] if owner is not None else None
 
     def set_cache_affinity(self, value):
-        provider = _ACTIVE_PROVIDER[0]
-        sets.append((value, len(provider.requests) if provider else -1))
-        self._cache_affinity_key = value
+        if not _called_from_unillm():
+            provider = _ACTIVE_PROVIDER[0]
+            sets.append((value, len(provider.requests) if provider else -1))
+        if original is not None:
+            return original(self, value)
+        self._cache_affinity = value
         return self
 
+    if owner is not None:
+        monkeypatch.setattr(owner, "set_cache_affinity", set_cache_affinity)
+        return sets
     monkeypatch.setattr(
         unillm.AsyncUnify,
         "set_cache_affinity",
@@ -213,10 +245,34 @@ def install_affinity_api(monkeypatch) -> list[tuple[str, int]]:
     monkeypatch.setattr(
         unillm.AsyncUnify,
         "cache_affinity",
-        property(lambda self: getattr(self, "_cache_affinity_key", None)),
+        property(lambda self: getattr(self, "_cache_affinity", None)),
         raising=False,
     )
     return sets
+
+
+_AFFINITY_API = ("set_cache_affinity", "cache_affinity")
+
+
+def hide_affinity_api(monkeypatch) -> None:
+    """Make unillm's async client look like ``main``'s: no ``cache_affinity`` API.
+
+    Outside unillm the two names raise ``AttributeError``, as on a unillm
+    without them; unillm's own code (its constructor, ``copy()``) still
+    reaches them, so the client works and never holds a key.
+    """
+    import unillm
+
+    if _affinity_owner() is None:
+        return
+    lookup = unillm.AsyncUnify.__getattribute__
+
+    def __getattribute__(self, name):
+        if name in _AFFINITY_API and not _called_from_unillm():
+            raise AttributeError(name)
+        return lookup(self, name)
+
+    monkeypatch.setattr(unillm.AsyncUnify, "__getattribute__", __getattribute__)
 
 
 # ── tools ────────────────────────────────────────────────────────────────

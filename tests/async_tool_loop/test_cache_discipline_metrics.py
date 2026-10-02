@@ -23,7 +23,7 @@ from unify.settings import SETTINGS
 
 @pytest.fixture
 def affinity_client_class(monkeypatch):
-    """Give unillm's async client the ``cache_affinity`` API of harness-cache."""
+    """Record the ``cache_affinity`` keys set, with or without unillm's own API."""
     return h.install_affinity_api(monkeypatch)
 
 
@@ -206,6 +206,7 @@ async def test_off_no_key_is_set_even_where_unillm_takes_one(
 @pytest.mark.asyncio
 async def test_on_a_unillm_without_the_key_is_left_alone(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    h.hide_affinity_api(monkeypatch)  # as on unillm main, whichever is installed
     client = h.new_client()
     assert not hasattr(client, "set_cache_affinity")
     result, _requests = await _session(client)
