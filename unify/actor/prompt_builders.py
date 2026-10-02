@@ -499,9 +499,50 @@ _STORAGE_SESSION_NOTICE_UNIFIED = _unified(
 )
 
 
+# UNIFY_TRY_FIRST: free checks with stored functions before paid actions.
+_WRITING_TO_THE_LIBRARIES = "\n\n#### Writing to the libraries\n"
+_TRY_FIRST_NOTE = textwrap.dedent("""
+    **Free before paid.** Before an action that costs something (a paid
+    request, a submission that is scored, an irreversible effect), use
+    what is free first: run a stored function that matches the task on
+    inputs you already have, and check its output against the evidence
+    you have (worked examples, expected formats, earlier feedback). When
+    it checks out, act on its result; pay for more information only when
+    it does not. A search result marked `same_task` was stored from a
+    task whose request was identical to this one.
+""").strip()
+
+
+def _try_first_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_TRY_FIRST)
+
+
+def _with_try_first(text: str) -> str:
+    """``text`` with the try-first paragraph before its writing subsection."""
+    return _unified(
+        text,
+        _WRITING_TO_THE_LIBRARIES,
+        "\n\n" + _TRY_FIRST_NOTE + _WRITING_TO_THE_LIBRARIES,
+    )
+
+
+_FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST = _with_try_first(
+    _FUNCTION_AND_GUIDANCE_LIBRARY,
+)
+_FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST = _with_try_first(
+    _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED,
+)
+
+
 def _library_section() -> str:
     if _review_framing_unified():
+        if _try_first_enabled():
+            return _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
         return _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
+    if _try_first_enabled():
+        return _FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST
     return _FUNCTION_AND_GUIDANCE_LIBRARY
 
 

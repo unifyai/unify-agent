@@ -251,6 +251,14 @@ class ProductionSettings(BaseSettings):
     # step, and sending the same reply again surfaces it. Replies that differ,
     # and one-shot runs, are unaffected. Off: as shipped.
     UNIFY_REPEAT_GUARD: bool = False
+    # The actor's prompt asks it to use what is free before an action that
+    # costs something (a paid request, a scored submission, an irreversible
+    # effect): run a stored function that matches the task on inputs it
+    # already has and check the output against its evidence. A function
+    # stored during a task records a hash of the task's request in its
+    # metadata, and a search from a task with the same request marks it
+    # ``same_task: true``. Off: as shipped.
+    UNIFY_TRY_FIRST: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -359,6 +367,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_REPEAT_GUARD",
+        "UNIFY_TRY_FIRST",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",

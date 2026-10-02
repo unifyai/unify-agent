@@ -59,6 +59,7 @@ from .dependency_analysis import (
 from .types.function import Function
 from .source_labels import compile_function_source
 from .base import BaseFunctionManager
+from . import task_origin
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -1065,6 +1066,8 @@ class FunctionManager(BaseFunctionManager):
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
+            # UNIFY_TRY_FIRST: origin hashes become ``same_task``.
+            task_origin.annotate(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
                 # results must not re-import what the actor prompt
@@ -1295,6 +1298,10 @@ class FunctionManager(BaseFunctionManager):
                         )
                     ],
                 }
+                # UNIFY_TRY_FIRST: record the task this version was stored from.
+                origin = task_origin.stamped(prior.get("metadata") if prior else None)
+                if origin is not None:
+                    entry_data["metadata"] = origin
 
                 if prior is not None:
                     # Update existing function
