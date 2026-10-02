@@ -19,6 +19,10 @@ from unify.conversation_manager.settings import ConversationSettings
 from unify.function_manager.settings import FunctionSettings
 from unify.guidance_manager.settings import GuidanceSettings
 
+# The reasoning efforts unillm forwards to providers (it maps them per
+# provider, e.g. DeepSeek's high/max), with "" for "as shipped".
+_REVIEW_EFFORTS = ("", "none", "low", "medium", "high", "xhigh", "max")
+
 
 def _parse_bool(v: Any) -> bool:
     """Parse a value as boolean."""
@@ -264,6 +268,20 @@ class ProductionSettings(BaseSettings):
     # context compression the compressed context points at the file
     # (unify/transcripts.py). Off: nothing is written.
     UNIFY_TRANSCRIPTS: bool = False
+    # Reasoning effort of every storage review (forked, standalone, after a
+    # turn, or asked for mid-task): one of the efforts unillm forwards
+    # (``none``, ``low``, ``medium``, ``high``, ``xhigh``, ``max``). A forked
+    # review sends the session's messages and tools unchanged and keeps its
+    # cache affinity key; only the effort of its requests differs. Empty: each
+    # review runs at the effort it gets as shipped.
+    UNIFY_REVIEW_REASONING_EFFORT: str = ""
+    # Model of every storage review, as a unillm endpoint
+    # (``provider/model@host``). A model other than the session's cannot share
+    # its cache, so with UNIFY_REVIEW_FORK the review runs standalone and the
+    # log says why. Without UNIFY_REVIEW_REASONING_EFFORT it runs at the
+    # effort a client named for a model gets (``high``). Empty: the review
+    # uses the actor's model, as shipped.
+    UNIFY_REVIEW_MODEL: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
@@ -411,6 +429,28 @@ class ProductionSettings(BaseSettings):
         if not 0 <= value <= 30:
             raise ValueError(
                 f"UNIFY_TOOL_BATCH_WAIT must be between 0 and 30 seconds, not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REVIEW_REASONING_EFFORT", mode="before")
+    @classmethod
+    def parse_review_reasoning_effort(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in _REVIEW_EFFORTS:
+            raise ValueError(
+                "UNIFY_REVIEW_REASONING_EFFORT must be empty or one of "
+                f"{', '.join(_REVIEW_EFFORTS[1:])}, not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REVIEW_MODEL", mode="before")
+    @classmethod
+    def parse_review_model(cls, v: Any) -> str:
+        value = str(v or "").strip()
+        if value and "@" not in value:
+            raise ValueError(
+                "UNIFY_REVIEW_MODEL must be empty or a unillm endpoint "
+                f"('provider/model@host'), not {v!r}",
             )
         return value
 

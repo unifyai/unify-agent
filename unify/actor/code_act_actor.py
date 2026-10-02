@@ -801,6 +801,39 @@ def _review_opening_is_neutral() -> bool:
     return _review_framing_unified() or _curation_doctrine_compose()
 
 
+def _review_reasoning_effort() -> str:
+    """``UNIFY_REVIEW_REASONING_EFFORT``: the storage review's effort, or ""."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_REVIEW_REASONING_EFFORT
+
+
+def _review_model() -> str:
+    """``UNIFY_REVIEW_MODEL``: the storage review's endpoint, or ""."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_REVIEW_MODEL
+
+
+def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
+    """A standalone storage review's client: the actor's model, as shipped.
+
+    ``UNIFY_REVIEW_MODEL`` replaces the model and
+    ``UNIFY_REVIEW_REASONING_EFFORT`` the effort. The effort is set on the
+    built client, so it holds even where a default model's paired effort
+    would override one passed to :func:`new_llm_client`.
+    """
+    client = new_llm_client(
+        _review_model() or actor._model,
+        purpose="planning",
+        origin=origin,
+    )
+    effort = _review_reasoning_effort()
+    if effort:
+        client.set_reasoning_effort(effort)
+    return client
+
+
 # UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
 GUIDANCE_ENTRY_TARGET_CHARS = 2000
 
@@ -1652,6 +1685,14 @@ def _review_fork_source(
     client = getattr(inner, "_client", None)
     if client is None:
         return None, "the session has no LLM client"
+    review_model = _review_model()
+    session_model = getattr(client, "endpoint", None)
+    if review_model and review_model != session_model:
+        return None, (
+            f"UNIFY_REVIEW_MODEL is {review_model}, not the session's "
+            f"{session_model}, and a fork can only reuse the session's cache "
+            "on its own model"
+        )
     if getattr(getattr(inner, "_compression", None), "count", 0):
         return None, "the session's history was compressed"
     last = cache_discipline.last_sent_request(client)
@@ -1717,6 +1758,11 @@ def _start_storage_review_fork(
         purpose="planning",
         messages=fork_source["messages"],
     )
+    # UNIFY_REVIEW_REASONING_EFFORT: the fork's requests differ from the
+    # session's only in effort; messages, tools and affinity key are its own.
+    effort = _review_reasoning_effort()
+    if effort:
+        client.set_reasoning_effort(effort)
     first_choice = fork_source.get("tool_choice")
     first_choice = first_choice if isinstance(first_choice, str) else "auto"
     # The list's ask_about_completed_tool is the loop's own, over the review's
@@ -2047,7 +2093,7 @@ def _start_storage_check_loop(
         f"{original_result}"
     )
 
-    client = new_llm_client(actor._model, purpose="planning", origin="StorageCheck")
+    client = _storage_review_client(actor, origin="StorageCheck")
     client.set_system_message(system_prompt)
 
     return start_async_tool_loop(
@@ -2189,7 +2235,7 @@ def _start_proactive_storage_loop(
         f"{trajectory_json}"
     )
 
-    client = new_llm_client(actor._model, purpose="planning", origin="ProactiveStorage")
+    client = _storage_review_client(actor, origin="ProactiveStorage")
     client.set_system_message(system_prompt)
 
     return start_async_tool_loop(
