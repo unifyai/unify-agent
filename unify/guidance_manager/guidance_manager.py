@@ -13,7 +13,7 @@ from ..common.stale_reason import StaleReason, merge_stale_reasons
 from ..common.semantic_search import rank_by_similarity
 from ..common.tool_outcome import ToolOutcome
 from .base import BaseGuidanceManager
-from .builtins import ensure_seeded
+from .builtins import builtin_guidance_enabled, ensure_seeded
 from .types.guidance import Guidance
 
 logger = logging.getLogger(__name__)
@@ -98,11 +98,13 @@ class GuidanceManager(BaseGuidanceManager):
         self._exclude_ids = frozenset(value) if value else None
 
     def _scope(self, caller_filter: Optional[str] = None) -> Optional[str]:
-        """Compose *caller_filter* with ``filter_scope`` and the id exclusions."""
+        """Compose *caller_filter* with ``filter_scope``, the id exclusions and,
+        under ``UNIFY_BUILTIN_GUIDANCE=0``, the stored entries only."""
         return and_clauses(
             caller_filter,
             self._filter_scope,
             not_in("guidance_id", self._exclude_ids),
+            None if builtin_guidance_enabled() else "is_builtin = 0",
         )
 
     # -- Reads ------------------------------------------------------------------
@@ -134,6 +136,8 @@ class GuidanceManager(BaseGuidanceManager):
 
     @staticmethod
     def _is_builtin_guidance(guidance_id: int) -> bool:
+        if not builtin_guidance_enabled():
+            return False
         return (
             db.query_one(
                 "SELECT 1 FROM builtin_guidance WHERE guidance_id = ?",

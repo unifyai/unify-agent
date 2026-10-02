@@ -132,6 +132,12 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
+    # Off: the built-in guidance catalogue (the Agent Skills snapshot in
+    # guidance_manager/builtins_guidance.json) is neither seeded nor read, so
+    # every guidance search, filter, lookup and count sees only the entries
+    # the assistant stored itself; rows an earlier process seeded stay in the
+    # store, untouched. On reads them alongside the stored entries as shipped.
+    UNIFY_BUILTIN_GUIDANCE: bool = True
     # Offer FunctionManager_patch_function and GuidanceManager_patch_guidance,
     # which replace excerpts of a stored entry in place -- one edit or an
     # ordered, all-or-nothing batch, each matched exactly or, failing that,
@@ -283,6 +289,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_FORK",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
+        "UNIFY_BUILTIN_GUIDANCE",
         mode="before",
     )
     @classmethod
