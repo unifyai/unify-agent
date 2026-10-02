@@ -227,6 +227,28 @@ _EXECUTION_RULES = textwrap.dedent("""
 # must not offer one.
 _PRIMITIVES_GLOBAL_ROW = "| `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |\n"
 
+# UNIFY_REPLY_PROTOCOL_NOTE: reply-format actions are the actor's own reply.
+_REPLY_PROTOCOL_NOTE = textwrap.dedent("""
+    ### Actions Taken By Replying
+
+    When the requester defines actions you take by replying in a stated
+    format (a JSON object such as `{"action": ...}`, a keyword, a fixed
+    template), those actions exist only as your own final reply. They are
+    not functions, tools or `primitives.*` methods, and no code, search or
+    sub-agent can take them for you: to take one, end your turn with
+    exactly that reply. Do not delegate a sub-task whose result would be
+    such an action. If you are a sub-agent and your task seems to need one,
+    say so in your result instead of calling a function that does not
+    exist.
+""").strip()
+
+
+def _reply_protocol_note_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE)
+
+
 _SUB_ACTOR_DIAL = textwrap.dedent("""
     - Plain code -> `query_llm(...)` -> a sub-agent
       (`primitives.actor.act`) is a dial, not a mode switch: take
@@ -682,6 +704,8 @@ def build_code_act_prompt(
         parts.append(_TOOL_SELECTION)
         parts.append(_PYTHON_FIRST)
         parts.append(_EXECUTION_RULES)
+        if _reply_protocol_note_enabled():
+            parts.append(_REPLY_PROTOCOL_NOTE)
         parts.append(_INCREMENTAL_EXECUTION)
 
         if has_fm_tools or has_gm_tools:

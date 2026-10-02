@@ -207,6 +207,12 @@ class ProductionSettings(BaseSettings):
     # short and is split rather than grown, and the update-first order no
     # longer sends a fix into a broader existing entry. Empty: as shipped.
     UNIFY_CURATION_DOCTRINE: str = ""
+    # The actor's prompt states that actions the requester asks to be taken by
+    # replying in a stated format are only ever the actor's own final reply:
+    # they are not functions or primitives, and no code or sub-agent can take
+    # them, so a sub-agent whose task seems to need one reports that instead
+    # of calling a function that does not exist. Off: as shipped.
+    UNIFY_REPLY_PROTOCOL_NOTE: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -306,6 +312,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
         "UNIFY_BUILTIN_GUIDANCE",
+        "UNIFY_REPLY_PROTOCOL_NOTE",
         mode="before",
     )
     @classmethod
