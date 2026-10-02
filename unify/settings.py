@@ -213,6 +213,12 @@ class ProductionSettings(BaseSettings):
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
     UNIFY_REPLY_PROTOCOL_NOTE: bool = False
+    # Seconds the tool loop keeps waiting for the rest of a batch of tool
+    # calls once the first result owes the model a turn. Without it the turn
+    # starts at once, and when a sibling lands during it the loop cancels it
+    # (the provider has already billed it) and asks again. A sibling still
+    # running when the window closes is raced as shipped. 0: as shipped.
+    UNIFY_TOOL_BATCH_WAIT: float = 0.0
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -364,6 +370,16 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "warn"):
             raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_TOOL_BATCH_WAIT", mode="before")
+    @classmethod
+    def parse_tool_batch_wait(cls, v: Any) -> float:
+        value = float(v or 0)
+        if not 0 <= value <= 30:
+            raise ValueError(
+                f"UNIFY_TOOL_BATCH_WAIT must be between 0 and 30 seconds, not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_REVIEW_FRAMING", mode="before")

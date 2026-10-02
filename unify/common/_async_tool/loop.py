@@ -4,6 +4,7 @@ import hashlib
 import json
 import inspect
 import copy
+import time
 from dataclasses import dataclass, field
 
 from typing import (
@@ -613,6 +614,11 @@ async def async_tool_loop_inner(
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
     _discipline = _cache_discipline.enabled()
+    from unify.settings import SETTINGS as _BATCH_SETTINGS
+
+    # UNIFY_TOOL_BATCH_WAIT: once a tool's result owes the model a turn, how
+    # long the loop still waits for the rest of that batch before the turn.
+    _batch_wait_s = float(_BATCH_SETTINGS.UNIFY_TOOL_BATCH_WAIT)
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -1431,6 +1437,9 @@ async def async_tool_loop_inner(
     # True whenever the LLM must get an immediate turn before the loop waits
     # again (user interjection, clarification answer, etc.).
     llm_turn_required = False
+    # UNIFY_TOOL_BATCH_WAIT: monotonic deadline of the current wait for the
+    # rest of a batch whose first result already owes the model a turn.
+    _batch_wait_until: Optional[float] = None
     # A patient interjection (trigger_immediate_llm_turn=False) arriving while
     # the LLM is already thinking earns exactly one extra LLM step after the
     # current one, unless another event triggers a turn anyway.
@@ -1919,8 +1928,18 @@ async def async_tool_loop_inner(
 
             # ── A. Wait for a tool completion, cancellation, interjection,
             #       clarification or notification ────────────────────────
-            # Skipped entirely when the model already needs to speak.
-            if tools_data.pending and not llm_turn_required:
+            # Skipped entirely when the model already needs to speak, except
+            # while UNIFY_TOOL_BATCH_WAIT holds the turn for the rest of the
+            # batch: a turn started now is cancelled (and still billed) when
+            # the next sibling lands.
+            _batch_waiting = (
+                _batch_wait_until is not None
+                and bool(tools_data.pending)
+                and time.monotonic() < _batch_wait_until
+            )
+            if not _batch_waiting:
+                _batch_wait_until = None
+            if tools_data.pending and (not llm_turn_required or _batch_waiting):
                 interject_w = asyncio.create_task(
                     interject_queue.get(),
                     name="InterjectQueueGet",
@@ -1964,11 +1983,32 @@ async def async_tool_loop_inner(
                         f"timeout ({timeout}s) exceeded",
                     )
 
+                _wait_timeout = timer.remaining_time()
+                if _batch_waiting:
+                    _left = max(0.0, _batch_wait_until - time.monotonic())
+                    _wait_timeout = (
+                        _left if _wait_timeout is None else min(_wait_timeout, _left)
+                    )
                 done, _ = await asyncio.wait(
                     waiters,
-                    timeout=timer.remaining_time(),
+                    timeout=_wait_timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+
+                if not done and _batch_waiting and not timer.has_exceeded_time():
+                    # The batch window closed with siblings still running: the
+                    # model takes its turn now, as without the switch.
+                    for aux in (
+                        interject_w,
+                        cancel_waiter,
+                        *clar_waiters.keys(),
+                        *notif_waiters.keys(),
+                    ):
+                        if not aux.done():
+                            aux.cancel()
+                            await asyncio.gather(aux, return_exceptions=True)
+                    _batch_wait_until = None
+                    continue
 
                 # Nothing completed means the wait itself timed out.
                 if not done:
@@ -2010,6 +2050,12 @@ async def async_tool_loop_inner(
                 )
                 if needs_turn:
                     llm_turn_required = True
+                    if (
+                        _batch_wait_s > 0
+                        and _batch_wait_until is None
+                        and tools_data.pending
+                    ):
+                        _batch_wait_until = time.monotonic() + _batch_wait_s
                 if restart or tools_data.pending:
                     continue  # jump to top-of-loop
 
@@ -2823,6 +2869,7 @@ async def async_tool_loop_inner(
                 )
 
             llm_turn_required = False
+            _batch_wait_until = None
             runtime_state.step_index += 1
 
             # ── E. Launch any new tool calls ─────────────────────────────
