@@ -1,8 +1,10 @@
-"""Symbolic: tests run sandboxed.
+"""Symbolic: tests run sandboxed, and a test's time limit ends it.
 
 The test sandbox (tests/_test_sandbox.py) re-executes every pytest process
 inside bubblewrap; these tests check, from inside it, what code a model
 writes can see, by running such code the way the actor runs a Python cell.
+The time-limit tests (tests/_test_timeouts.py) run a pytest of their own on a
+throwaway test file and check how it ends.
 """
 
 from __future__ import annotations
@@ -10,8 +12,10 @@ from __future__ import annotations
 import os
 import pwd
 import shutil
+import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -166,3 +170,105 @@ def _load_sandbox():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# ── time limits ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.timeout(123)
+def test_the_marker_sets_the_limit(request):
+    from tests._test_timeouts import limit_for
+
+    assert limit_for(request.node) == 123
+
+
+def test_an_unmarked_test_gets_the_default_limit(request, monkeypatch):
+    from tests._test_timeouts import limit_for
+
+    monkeypatch.delenv("UNIFY_TEST_TIMEOUT", raising=False)
+    assert limit_for(request.node) == 900
+    monkeypatch.setenv("UNIFY_TEST_TIMEOUT", "0")
+    assert limit_for(request.node) is None
+
+
+def _run_pytest(tmp_path: Path, body: str, *, grace: float) -> tuple[int, str, float]:
+    (tmp_path / "pytest.ini").write_text("[pytest]\nmarkers =\n    timeout\n")
+    (tmp_path / "test_limited.py").write_text(textwrap.dedent(body))
+    env = {
+        **os.environ,
+        "UNIFY_TEST_TIMEOUT_GRACE": str(grace),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    env.pop("UNIFY_TEST_TIMEOUTS", None)
+    started = time.monotonic()
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tests._test_timeouts",
+            "-p",
+            "no:cacheprovider",
+            "-c",
+            str(tmp_path / "pytest.ini"),
+            "--rootdir",
+            str(tmp_path),
+            str(tmp_path / "test_limited.py"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    return done.returncode, done.stdout + done.stderr, time.monotonic() - started
+
+
+def test_a_test_past_its_limit_fails_and_the_next_one_runs(tmp_path):
+    status, output, _ = _run_pytest(
+        tmp_path,
+        """
+        import pytest
+
+        @pytest.mark.timeout(1)
+        def test_spins():
+            while True:
+                pass
+
+        def test_after():
+            pass
+        """,
+        grace=30,
+    )
+    assert status == 1, output
+    assert (
+        "Timeout: the call of test_limited.py::test_spins took more than 1s" in output
+    )
+    assert "1 failed, 1 passed" in output
+
+
+def test_a_test_that_swallows_the_timeout_is_killed(tmp_path):
+    # Code that catches every exception (as model-written code may) keeps
+    # running past the soft limit; the watchdog ends the process anyway.
+    status, output, elapsed = _run_pytest(
+        tmp_path,
+        """
+        import time
+        import pytest
+
+        @pytest.mark.timeout(1)
+        def test_never_stops():
+            while True:
+                try:
+                    time.sleep(0.05)
+                except BaseException:
+                    pass
+        """,
+        grace=2,
+    )
+    assert status == 1, output
+    assert "Timeout (0:00:03)!" in output
+    assert "test_never_stops" in output
+    assert elapsed < 60

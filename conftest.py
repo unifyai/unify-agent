@@ -24,6 +24,9 @@ def _enter_test_sandbox() -> None:
 
 _enter_test_sandbox()
 
+# Per-test time limits (``@pytest.mark.timeout``), enforced with a hard kill.
+pytest_plugins = ["tests._test_timeouts"]
+
 try:  # pragma: no cover - defensive logging hygiene
     import logging
 
