@@ -27,6 +27,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from unify.common._async_tool import time_context
 from unify.common.hierarchical_logger import DEFAULT_ICON
 from unify.common.tool_errors import ToolInputError
 
@@ -956,7 +957,7 @@ class SessionExecutor:
         sandbox.require_bwrap()
         policy = sandbox.build_policy()
         timeout = self._timeout or DEFAULT_SHELL_TIMEOUT_S
-        started = time.perf_counter()
+        started = time_context.perf_counter()
         created = False
         if state_mode == "stateless":
             shell = BashSession(policy=policy)
@@ -987,7 +988,7 @@ class SessionExecutor:
             "state_mode": state_mode,
             "session_id": session_id,
             "session_created": created,
-            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "duration_ms": int((time_context.perf_counter() - started) * 1000),
         }
 
     async def execute(
@@ -1018,11 +1019,11 @@ class SessionExecutor:
             f"(state_mode={state_mode}, session_id={session_id})",
         )
 
-        started = datetime.now(timezone.utc)
-        t0 = started.timestamp()
+        # The loop's monotonic clock, the one tool-call timings read.
+        t0 = time_context.perf_counter()
 
         def _duration_ms() -> int:
-            return int((datetime.now(timezone.utc).timestamp() - t0) * 1000)
+            return int((time_context.perf_counter() - t0) * 1000)
 
         async def _execute_in_python_session(
             sb: PythonExecutionSession,

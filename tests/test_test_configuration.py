@@ -26,6 +26,7 @@ import pytest
 import unify.conversation_manager.conversation_manager  # noqa: F401
 import unify.conversation_manager.domains.brain_action_tools as brain_action_tools
 from unify.actor.execution.session import SessionExecutor
+from unify.common._async_tool import time_context
 from unify.conversation_manager.domains.renderer import Renderer
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -345,3 +346,37 @@ def test_an_action_history_event_shows_the_frozen_time():
         max_history=5,
     )
     assert f"<event type='act_started' timestamp='{FROZEN_PROMPT_TIME}'>" in history
+
+
+@pytest.mark.asyncio
+async def test_execute_code_reports_a_zero_duration_under_the_frozen_clock():
+    ex = SessionExecutor()
+    try:
+        res = await ex.execute(
+            code="import time\ntime.sleep(0.05)\n1",
+            state_mode="stateless",
+            session_id=None,
+        )
+    finally:
+        await ex.close()
+    assert res["error"] is None, res["error"]
+    assert res["duration_ms"] == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_code_measures_its_duration_on_the_real_clock(monkeypatch):
+    """As shipped, the clock seam is ``time.perf_counter``: the duration is
+    whole milliseconds of the time the code took."""
+    monkeypatch.setattr(time_context, "perf_counter", time.perf_counter)
+    ex = SessionExecutor()
+    try:
+        res = await ex.execute(
+            code="import time\ntime.sleep(0.05)\n1",
+            state_mode="stateless",
+            session_id=None,
+        )
+    finally:
+        await ex.close()
+    assert res["error"] is None, res["error"]
+    assert isinstance(res["duration_ms"], int)
+    assert 50 <= res["duration_ms"] < 60_000

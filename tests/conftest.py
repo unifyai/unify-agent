@@ -145,6 +145,8 @@ def stub_external_deps(monkeypatch):
     def _static_perf_counter() -> float:
         return 1000.0
 
+    # The monotonic clock behind tool-call timings and execute_code's
+    # ``duration_ms``.
     monkeypatch.setattr(
         "unify.common._async_tool.time_context.perf_counter",
         _static_perf_counter,
