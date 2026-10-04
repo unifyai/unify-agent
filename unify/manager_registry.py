@@ -196,8 +196,14 @@ class ManagerRegistry:
             if simulation_guidance is not None:
                 ctor_kwargs["simulation_guidance"] = simulation_guidance
 
-        # 5. Create instance
-        instance = klass(**ctor_kwargs)
+        # 5. Create instance. A singleton class's metaclass hands back its
+        # registered instance from a plain call, so a forced new instance
+        # is built past it: otherwise a caller scoping its "fresh" manager
+        # (a sub-actor's guidance scope) would scope everyone's.
+        if _force_new and isinstance(klass, SingletonABCMeta):
+            instance = ABCMeta.__call__(klass, **ctor_kwargs)
+        else:
+            instance = klass(**ctor_kwargs)
 
         # 6. Cache (unless forced)
         if not _force_new:
