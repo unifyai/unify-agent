@@ -170,6 +170,78 @@ def test_a_corrected_actor_leaves_the_next_actors_docs_alone(monkeypatch):
     assert "``stop_execute_code_<call_id>``" in _tool_descriptions()["execute_code"]
 
 
+# ── no parent conversation for a loop without a parent (D23) ───────────────
+
+_PARENT = "## Parent Chat Context"
+
+
+async def _loop_request(*, lineage=None, parent_chat_context=None) -> dict:
+    """The first request of a scripted loop, started under *lineage*."""
+    from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE
+    from unify.common.async_tool_loop import start_async_tool_loop
+
+    token = TOOL_LOOP_LINEAGE.set(list(lineage or []))
+    try:
+        with h.scripted([h.completion(content="done")]) as provider:
+            handle = start_async_tool_loop(
+                h.new_client(),
+                "Say done.",
+                {},
+                log_steps=False,
+                timeout=30,
+                parent_chat_context=parent_chat_context,
+            )
+            await asyncio.wait_for(handle.result(), 30)
+    finally:
+        TOOL_LOOP_LINEAGE.reset(token)
+    return provider.requests[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_on_a_top_level_actor_is_not_told_of_a_parent(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    request = await _first_request(persist=False)
+    assert _PARENT not in _system_text(request)
+    assert "outer_user" not in json.dumps(request["messages"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_off_a_top_level_actor_gets_the_shipped_section(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    assert _PARENT in _system_text(await _first_request(persist=False))
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "lineage, context, expected",
+    [
+        (None, None, False),  # no parent loop, no context: top level
+        (["Outer.act(ab12)"], None, True),  # started inside another loop
+        (None, [], True),  # a caller handed it (empty) parent context
+        (None, [{"role": "user", "content": "hi"}], True),
+    ],
+)
+async def test_on_the_section_follows_whether_a_parent_exists(
+    monkeypatch,
+    lineage,
+    context,
+    expected,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    request = await _loop_request(lineage=lineage, parent_chat_context=context)
+    assert (_PARENT in _system_text(request)) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_off_a_loop_without_a_parent_still_gets_the_section(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    assert _PARENT in _system_text(await _loop_request())
+
+
 @pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
 def test_the_setting_parses_booleans(value, expected):
     from unify.settings import ProductionSettings

@@ -796,8 +796,18 @@ async def async_tool_loop_inner(
     # The parent-context section is added even when empty, so context
     # continuations arriving via interjections can refer to "the initial Parent
     # Chat Context in your system message" without looking fabricated.
+    # UNIFY_PROMPT_ACCURACY: not to a loop that has no parent -- one no other
+    # loop started (its lineage is its own id) and given no parent context --
+    # which no parent conversation exists for, and no continuation can reach.
+    from unify.settings import SETTINGS as _ACCURACY_SETTINGS
+
+    _no_parent = (
+        bool(_ACCURACY_SETTINGS.UNIFY_PROMPT_ACCURACY)
+        and parent_chat_context is None
+        and len(cfg.lineage) < 2
+    )
     _has_parent_chat_context = False
-    if propagate_chat_context != ChatContextPropagation.NEVER:
+    if propagate_chat_context != ChatContextPropagation.NEVER and not _no_parent:
         ctx_content = parent_chat_context_safe if parent_chat_context_safe else []
         ctx_content_transformed = _transform_context_roles(ctx_content)
         _has_parent_chat_context = True

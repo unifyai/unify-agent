@@ -282,7 +282,9 @@ class ProductionSettings(BaseSettings):
     # when the session ends, unless UNIFY_TURN_STORAGE_REVIEWS), not one per
     # turn with results as background notes; the steering docs of
     # execute_code and execute_function name the `steer` tool, not the
-    # stop_* tools it replaced. Off: as shipped.
+    # stop_* tools it replaced; and a loop that no other loop started and
+    # that was given no parent context is not told it runs inside a parent
+    # conversation. Off: as shipped.
     UNIFY_PROMPT_ACCURACY: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
