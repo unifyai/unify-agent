@@ -6,6 +6,24 @@ from pathlib import Path
 from typing import Optional
 from datetime import datetime
 
+
+def _enter_test_sandbox() -> None:
+    """Re-run this pytest process inside the test sandbox (tests/_test_sandbox.py).
+
+    First, before anything is imported or written: model-written code runs in
+    this process, and the sandbox decides what it can read.
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "tests" / "_test_sandbox.py"
+    spec = importlib.util.spec_from_file_location("_unify_test_sandbox", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.enter(path.parent.parent)
+
+
+_enter_test_sandbox()
+
 try:  # pragma: no cover - defensive logging hygiene
     import logging
 

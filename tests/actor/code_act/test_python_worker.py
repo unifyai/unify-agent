@@ -29,7 +29,20 @@ from unify.actor.execution.types import parts_to_text
 from unify.actor.execution import worker as worker_mod
 from unify.settings import ProductionSettings, SETTINGS
 
-HARNESS_PID = os.getpid()
+
+def process_id() -> str:
+    """This process: its pid and the pid namespace it is counted in.
+
+    A pid alone does not tell two processes apart across namespaces: under
+    the test sandbox (tests/_test_sandbox.py) the harness and a worker in its
+    own sandbox are both pid 2.
+    """
+    return f"{os.getpid()}@{os.readlink('/proc/self/ns/pid')}"
+
+
+# The same, as an expression for cell code.
+PROCESS_ID = "f\"{os.getpid()}@{os.readlink('/proc/self/ns/pid')}\""
+HARNESS_PID = process_id()
 # Cell code sees the restricted builtins, which leave out ``globals``.
 HAS_X = "try:\n    x\n    found = True\nexcept NameError:\n    found = False\nfound"
 
@@ -49,7 +62,7 @@ class Opaque:
         self.label = label
 
     async def result(self) -> str:
-        return f"finished {self.label} in {os.getpid()}"
+        return f"finished {self.label} in {process_id()}"
 
     def __repr__(self) -> str:
         return f"Opaque({self.label!r})"
@@ -69,11 +82,11 @@ class FakeFiles:
         self._private = "hidden"
 
     async def search(self, query, limit=3):
-        self.calls.append(("search", query, limit, os.getpid()))
+        self.calls.append(("search", query, limit, process_id()))
         return {"query": query, "hits": [f"{query}-{i}" for i in range(limit)]}
 
     def count(self, words):
-        self.calls.append(("count", tuple(words), os.getpid()))
+        self.calls.append(("count", tuple(words), process_id()))
         return len(words)
 
     async def item(self) -> Item:
@@ -164,7 +177,7 @@ async def test_without_the_worker_switch_cells_run_in_process(
         out, res = await run(
             ex,
             "import os\nx = 41\nr = await primitives.files.search('q', limit=1)\n"
-            "print(os.getpid(), r['hits'])\ntype(primitives.files).__name__",
+            f"print({PROCESS_ID}, r['hits'])\ntype(primitives.files).__name__",
         )
         assert res["error"] is None
         assert out.split(maxsplit=1) == [str(HARNESS_PID), "['q-0']\n"]
@@ -187,12 +200,12 @@ async def test_state_persists_across_cells_in_one_worker_per_session(worker_worl
     try:
         out, res = await run(
             ex,
-            "import os, math\nx = 41\ndef f(y):\n    return y * 2\nos.getpid()",
+            "import os, math\nx = 41\ndef f(y):\n    return y * 2\n" + PROCESS_ID,
         )
         assert res["error"] is None, res["error"]
         pid = res["result"]
-        assert isinstance(pid, int) and pid != HARNESS_PID
-        out, res = await run(ex, "print(f(x), math.floor(2.5))\nos.getpid()")
+        assert isinstance(pid, str) and pid != HARNESS_PID
+        out, res = await run(ex, "print(f(x), math.floor(2.5))\n" + PROCESS_ID)
         assert out == "82 2\n" and res["result"] == pid
         # Another session and a stateless cell have workers of their own.
         _, res = await run(ex, HAS_X, session_id=1)
@@ -320,7 +333,7 @@ async def test_primitives_run_in_the_harness_through_the_proxy(worker_world):
             "both = await asyncio.gather(primitives.files.search('x', limit=1), "
             "primitives.files.search('y', limit=1))\n"
             "print(r['hits'], n, [b['hits'] for b in both], primitives.files.root)\n"
-            "os.getpid()",
+            + PROCESS_ID,
         )
         assert res["error"] is None, res["error"]
         worker_pid = res["result"]
@@ -437,7 +450,7 @@ async def test_stored_functions_run_in_the_worker_and_call_back_for_primitives(
         "async def tally(word):\n"
         "    import os\n"
         "    r = await primitives.files.search(word, limit=2)\n"
-        "    return {'hits': r['hits'], 'ran_in': os.getpid()}\n"
+        "    return {'hits': r['hits'], 'ran_in': " + PROCESS_ID + "}\n"
     )
     ns: dict = {}
     exec(compile_function_source("tally", source), ns)
@@ -450,7 +463,10 @@ async def test_stored_functions_run_in_the_worker_and_call_back_for_primitives(
     ex, calls = executor_with_fakes()
     ex.register_fm_globals({"tally": stored})
     try:
-        out, res = await run(ex, "import os\nr = await tally('dog')\n(r, os.getpid())")
+        out, res = await run(
+            ex,
+            f"import os\nr = await tally('dog')\n(r, {PROCESS_ID})",
+        )
         assert res["error"] is None, res["error"]
         value, worker_pid = res["result"]
         assert value["hits"] == ["dog-0", "dog-1"]
@@ -601,7 +617,7 @@ async def test_inspect_state_reads_the_workers_variables(worker_world):
         assert empty["state"]["variables"] == []
         seeded = await tools["execute_code"](
             thought="Seed the session.",
-            code="import os\ncolour = 'teal'\ntotal = 8\nos.getpid()",
+            code="import os\ncolour = 'teal'\ntotal = 8\n" + PROCESS_ID,
         )
         assert seeded.error is None and seeded.result != HARNESS_PID
         names = await tools["inspect_state"]()
