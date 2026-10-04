@@ -917,9 +917,16 @@ def _review_framing_unified() -> bool:
 
 
 def _curation_doctrine_compose() -> bool:
+    """The compose doctrine's rules apply (``compose``, or ``minimal``, which keeps them)."""
     from unify.settings import SETTINGS
 
-    return SETTINGS.UNIFY_CURATION_DOCTRINE == "compose"
+    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("compose", "minimal")
+
+
+def _curation_doctrine_minimal() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_CURATION_DOCTRINE == "minimal"
 
 
 def _review_opening_is_neutral() -> bool:
@@ -1015,6 +1022,53 @@ _STORAGE_COMPOSE_DOCTRINE = (
 def _storage_compose_note() -> str:
     """The compose doctrine (``UNIFY_CURATION_DOCTRINE=compose``); else empty."""
     return _STORAGE_COMPOSE_DOCTRINE if _curation_doctrine_compose() else ""
+
+
+# UNIFY_CURATION_DOCTRINE=minimal: the rulebook keeps what storage needs --
+# what can be stored and how it runs, the compose rules, dependencies -- and
+# drops what was written for an office assistant (user notifications,
+# recurring weekly deliverables, specialist sub-agents, model-choice trials,
+# logging markers, the distillation essay).
+_STORAGE_MINIMAL_DOCTRINE = (
+    "## What Can Be Stored\n\n"
+    "Code that ran successfully in this trajectory can be stored as a "
+    "function with `FunctionManager_add_functions`. The `primitives.*` "
+    "namespaces and the stored functions it calls are detected from its "
+    "source and injected when it runs, so it needs no imports for them. A "
+    "step that judged meaning in the trajectory (classifying, extracting, "
+    "drafting) stays a `query_llm(...)` call in the stored function. "
+    "Functions are `async def` and `await` their calls: the runtime owns "
+    "the event loop, and a sync facade uses the injected "
+    "`run_coro_sync(factory)`. A function that imports a third-party "
+    "package is stored with `dependencies` set to the pip specifiers "
+    "`install_python_packages` used; `FunctionManager_add_functions` "
+    "refuses it without them.\n\n"
+    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
+    "uses through `function_ids`) is short prose for what code cannot "
+    "carry: a composition that would be hard to rediscover, or an approach "
+    "that failed in a non-obvious way and what worked instead. A function "
+    "whose docstring covers its use needs no guidance entry.\n\n"
+)
+
+
+def _storage_doctrine_sections() -> str:
+    """The rulebook sections before the instructions, per ``UNIFY_CURATION_DOCTRINE``."""
+    if _curation_doctrine_minimal():
+        return (
+            f"{_STORAGE_MINIMAL_DOCTRINE}"
+            f"{_storage_environment_note()}"
+            f"{_storage_compose_note()}"
+            f"{_storage_update_first_note()}"
+        )
+    return (
+        f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
+        f"{_STORAGE_TWO_STORES}"
+        f"{_storage_compose_note()}"
+        f"{_storage_update_first_note()}"
+        f"{_STORAGE_SUB_AGENT_PATTERNS}"
+        f"{_STORAGE_RECURRING_DELIVERABLE}"
+    )
 
 
 def _storage_update_first_note() -> str:
@@ -2302,13 +2356,7 @@ def _start_storage_check_loop(
             tools=tools,
             message=(
                 f"{_review_fork_role()}"
-                f"{_STORAGE_WHAT_CAN_BE_STORED}"
-                f"{_storage_environment_note()}"
-                f"{_STORAGE_TWO_STORES}"
-                f"{_storage_compose_note()}"
-                f"{_storage_update_first_note()}"
-                f"{_STORAGE_SUB_AGENT_PATTERNS}"
-                f"{_STORAGE_RECURRING_DELIVERABLE}"
+                f"{_storage_doctrine_sections()}"
                 f"{instructions}"
                 "\n\n"
                 f"{stop_context_section}"
@@ -2328,13 +2376,7 @@ def _start_storage_check_loop(
     # so provider prompt caching only pays cold tokens for the per-run tail.
     system_prompt = (
         f"{role_line}"
-        f"{_STORAGE_WHAT_CAN_BE_STORED}"
-        f"{_storage_environment_note()}"
-        f"{_STORAGE_TWO_STORES}"
-        f"{_storage_compose_note()}"
-        f"{_storage_update_first_note()}"
-        f"{_STORAGE_SUB_AGENT_PATTERNS}"
-        f"{_STORAGE_RECURRING_DELIVERABLE}"
+        f"{_storage_doctrine_sections()}"
         f"{instructions}"
         "\n\n"
         f"{stop_context_section}"

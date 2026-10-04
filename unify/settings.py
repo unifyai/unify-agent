@@ -269,7 +269,12 @@ class ProductionSettings(BaseSettings):
     # entry's behaviour on the inputs it already handled (a behaviour change
     # gets a new name and the old entry is retired), a guidance entry stays
     # short and is split rather than grown, and the update-first order no
-    # longer sends a fix into a broader existing entry. Empty: as shipped.
+    # longer sends a fix into a broader existing entry. ``minimal``: the
+    # same rules, with the rest of the rulebook cut to what storage needs
+    # (what can be stored and how it runs, dependencies, what guidance is
+    # for): no user-notification, recurring-deliverable, specialist
+    # sub-agent, model-choice-trial, logging-marker or distillation-dial
+    # sections. Empty: as shipped.
     UNIFY_CURATION_DOCTRINE: str = ""
     # The actor's prompt states that actions the requester asks to be taken by
     # replying in a stated format are only ever the actor's own final reply:
@@ -723,9 +728,10 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_curation_doctrine(cls, v: Any) -> str:
         value = str(v or "").strip().lower()
-        if value not in ("", "compose"):
+        if value not in ("", "compose", "minimal"):
             raise ValueError(
-                f"UNIFY_CURATION_DOCTRINE must be empty or 'compose', not {v!r}",
+                "UNIFY_CURATION_DOCTRINE must be empty, 'compose' or 'minimal', "
+                f"not {v!r}",
             )
         return value
 

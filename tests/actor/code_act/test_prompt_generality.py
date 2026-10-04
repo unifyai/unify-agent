@@ -115,6 +115,10 @@ SWITCH_SETS = {
         "UNIFY_CODE_FIRST": True,
     },
     "accuracy": {"UNIFY_PROMPT_ACCURACY": True},
+    "minimal doctrine": {
+        "UNIFY_CURATION_DOCTRINE": "minimal",
+        "UNIFY_FUNCTION_PATCH": True,
+    },
     "lean": {"UNIFY_PROMPT_PROFILE": "lean"},
     "lean, on, delegation on demand": {
         "UNIFY_PROMPT_PROFILE": "lean",
