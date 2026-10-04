@@ -323,6 +323,17 @@ class ProductionSettings(BaseSettings):
     # gave it ("auto" unless a gate requires a call). Read once per loop. On:
     # as shipped.
     UNIFY_PENDING_REQUIRED: bool = True
+    # Each tool call the loop schedules appends a user-role
+    # "[steerable <call_id>] <tool> started." message, a call that becomes a
+    # handle appends "[steerable <call_id>] now supports ...", and a finished
+    # call that can be asked about appends "[askable <call_id>] ...". The
+    # first of them also appends the "User Visibility Context" system
+    # message. Off: none of these is appended; the call ids stay in the
+    # model's own tool calls, and progress, clarification and interjection
+    # messages (with the visibility message they bring) are unchanged. Read
+    # once per loop, so a session never changes mid-way, and nothing already
+    # in a transcript is removed. On: as shipped.
+    UNIFY_LIFECYCLE_NOTICES: bool = True
     # Off: while the actor's discovery gate is open, no model turn starts
     # before the library searches a turn scheduled have returned. As shipped
     # the gate grants one at once, while they run, and the model is woken as
@@ -498,6 +509,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REPEAT_GUARD",
         "UNIFY_BATCH_WAKE",
         "UNIFY_PENDING_REQUIRED",
+        "UNIFY_LIFECYCLE_NOTICES",
         "UNIFY_TRY_FIRST",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",

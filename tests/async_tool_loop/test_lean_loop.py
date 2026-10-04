@@ -1,19 +1,22 @@
-"""Symbolic: the lean-loop switches, each alone and together.
+"""Symbolic: the three lean-loop switches, each alone and together.
 
-``UNIFY_BATCH_WAKE``: the model is woken once per tool batch.
- No model turn starts while a call is still running, and a result or a progress
-notification never cancels a turn already sent. Only tool results wait for the
-batch: a message from the user, the environment or another agent (an
-interjection, a clarification or a notification) wakes the model at once. In
-the fixed-build ARC LOW cell 158 of the 161 cancelled turns were a model turn
-started on the first of two library searches the model itself chose (once the
-discovery gate is satisfied the policy returns ``auto`` with no hold), the
-empty function search landing in about 10 ms and the guidance search 40-600 ms
-later; the model never declared ``wait(until="all")``.
+``UNIFY_BATCH_WAKE``: no model turn starts while a call is still running, and a
+result or a progress notification never cancels a turn already sent. Only tool
+results wait for the batch: a message from the user, the environment or another
+agent (an interjection, a clarification or a notification) wakes the model at
+once. In the fixed-build ARC LOW cell 158 of the 161 cancelled turns were a
+model turn started on the first of two library searches the model itself chose
+(once the discovery gate is satisfied the policy returns ``auto`` with no
+hold), the empty function search landing in about 10 ms and the guidance
+search 40-600 ms later; the model never declared ``wait(until="all")``.
 
 ``UNIFY_PENDING_REQUIRED=0``: a turn sent while calls run keeps its policy's
 ``tool_choice`` instead of being forced to ``required`` (337 of 1,446 main
 calls in that cell).
+
+``UNIFY_LIFECYCLE_NOTICES=0``: no ``[steerable …]``/``[askable …]``
+announcements, and the visibility message they bring, unless a progress,
+clarification or interjection message brings it.
 
 The transport is scripted and slowed (``LLM_SECONDS`` per turn after the
 first), so the races are deterministic and nothing leaves the process.
@@ -87,7 +90,16 @@ TOOLS = {
     "GuidanceManager_search": GuidanceManager_search,
 }
 
-SHIPPED = {"UNIFY_BATCH_WAKE": False, "UNIFY_PENDING_REQUIRED": True}
+LEAN = {
+    "UNIFY_BATCH_WAKE": True,
+    "UNIFY_PENDING_REQUIRED": False,
+    "UNIFY_LIFECYCLE_NOTICES": False,
+}
+SHIPPED = {
+    "UNIFY_BATCH_WAKE": False,
+    "UNIFY_PENDING_REQUIRED": True,
+    "UNIFY_LIFECYCLE_NOTICES": True,
+}
 
 
 def _done(n: int = 6):
@@ -520,10 +532,105 @@ async def test_pending_required_is_read_once_per_loop(monkeypatch):
     assert {r["tool_choice"] for r in while_pending} == {"auto"}
 
 
+# ── UNIFY_LIFECYCLE_NOTICES ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notices_shipped_and_off(monkeypatch):
+    replies = [_batch("fast_tool", "medium_tool"), *[_batch("wait")] * 3, *_done()]
+    requests, _, _ = await _run(monkeypatch, replies, switches=SHIPPED)
+    shipped = [n for r in requests for n in _notices(r)]
+    assert any(n.startswith("[steerable ") and "started." in n for n in shipped)
+    assert any("User Visibility Context" in n for n in shipped)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        replies,
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+    )
+    assert [n for r in requests for n in _notices(r)] == []
+    # The calls' ids are still in the model's own tool calls.
+    first_turn = next(m for m in requests[1]["messages"] if m.get("tool_calls"))
+    assert first_turn["tool_calls"][0]["id"].startswith("call_")
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notices_are_read_once_per_loop(monkeypatch):
+    def flip():
+        monkeypatch.setattr(SETTINGS, "UNIFY_LIFECYCLE_NOTICES", True)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "medium_tool"), *[_batch("wait")] * 3, *_done()],
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+        after_first=flip,
+    )
+    assert [n for r in requests for n in _notices(r)] == []
+
+
+@pytest.mark.asyncio
+async def test_an_interjection_still_brings_the_visibility_message(monkeypatch):
+    async def interject(handle):
+        await asyncio.sleep(0.3)
+        await handle.interject("STOP_AND_LISTEN")
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 3, *_done()],
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+        during=interject,
+    )
+    seen = [n for r in requests for n in _notices(r)]
+    assert seen and all("User Visibility Context" in n for n in seen)
+
+
+# ── all three together ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_lean_loop_one_wake_auto_no_notices_append_only(monkeypatch):
+    replies = [
+        _batch(
+            ("FunctionManager_search_functions", {"query": "q"}),
+            ("GuidanceManager_search", {"query": "q"}),
+        ),
+        _batch("fast_tool", "late_tool", "slow_tool"),
+        _batch("wait"),
+        *_done(),
+    ]
+    requests, _, handle = await _run(
+        monkeypatch,
+        replies,
+        switches=LEAN,
+        ceiling=1.0,
+    )
+    assert handle._runtime_state.cancelled_turns == 0
+    assert [n for r in requests for n in _notices(r)] == []
+    assert {r["tool_choice"] for r in requests} == {"auto"}
+    assert _results_seen(requests[1]) == {"FM_EMPTY_RESULT", "GM_RESULT"}
+    assert _append_only(requests)
+
+
+@pytest.mark.asyncio
+async def test_the_actor_runs_with_the_lean_loop(monkeypatch):
+    for name, value in LEAN.items():
+        monkeypatch.setattr(SETTINGS, name, value)
+    result, _, requests = await h.scenario_actor()
+    assert result
+    assert [n for r in requests for n in _notices(r)] == []
+    assert _append_only(h.session_requests(requests))
+
+
 def test_the_settings_default_to_as_shipped():
     settings = ProductionSettings()
     assert settings.UNIFY_BATCH_WAKE is False
     assert settings.UNIFY_PENDING_REQUIRED is True
-    lean = ProductionSettings(UNIFY_BATCH_WAKE="1", UNIFY_PENDING_REQUIRED="0")
+    assert settings.UNIFY_LIFECYCLE_NOTICES is True
+    lean = ProductionSettings(
+        UNIFY_BATCH_WAKE="1",
+        UNIFY_PENDING_REQUIRED="0",
+        UNIFY_LIFECYCLE_NOTICES="off",
+    )
     assert lean.UNIFY_BATCH_WAKE is True
     assert lean.UNIFY_PENDING_REQUIRED is False
+    assert lean.UNIFY_LIFECYCLE_NOTICES is False

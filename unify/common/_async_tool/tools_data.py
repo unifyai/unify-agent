@@ -472,6 +472,12 @@ class ToolsData:
         # guidance lands at most once, whichever trigger — a user interjection
         # or the first [progress]/[clarification] message — fires first.
         self._visibility_guidance_injected: bool = False
+        # UNIFY_LIFECYCLE_NOTICES, read once so a loop never changes mid-way:
+        # off, the "[steerable ...]" and "[askable ...]" announcements are not
+        # appended (nothing already in the transcript is touched).
+        from unify.settings import SETTINGS
+
+        self._lifecycle_notices: bool = bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES)
 
     def get_ask_tools(self) -> Dict[str, Callable]:
         """Snapshot of the currently available ``ask_*`` dynamic tools.
@@ -651,7 +657,10 @@ class ToolsData:
         here would freeze a second copy into the prefix forever.
         Custom-method discoverability lives in `record_tool_capability_delta`,
         so a call that never gets a handle never pays for that either.
+        Not appended under ``UNIFY_LIFECYCLE_NOTICES=0``.
         """
+        if not self._lifecycle_notices:
+            return
         await self._ensure_visibility_guidance_injected(msg_dispatcher)
         content = f"[steerable {info.call_id}] {info.name} started."
         await msg_dispatcher.append_msgs(
@@ -668,8 +677,11 @@ class ToolsData:
 
         Not a re-announcement: no arguments, no restatement of "started",
         only which of interject/pause/ask became available plus any custom
-        methods the handle exposes.
+        methods the handle exposes. Not appended under
+        ``UNIFY_LIFECYCLE_NOTICES=0``.
         """
+        if not self._lifecycle_notices:
+            return
         handle = info.handle
         caps = []
         if handle is not None:
@@ -702,8 +714,11 @@ class ToolsData:
         schema on every completion; that docstring stays frozen. Carries no
         argument payload, same as ``record_tool_started``: the adjacent
         assistant `tool_calls` entry already has the full arguments, and a
-        copy here would freeze into the prefix forever.
+        copy here would freeze into the prefix forever. Not appended under
+        ``UNIFY_LIFECYCLE_NOTICES=0``.
         """
+        if not self._lifecycle_notices:
+            return
         await self._ensure_visibility_guidance_injected(msg_dispatcher)
         content = (
             f"[askable {call_id}] {name} completed and is askable via "
