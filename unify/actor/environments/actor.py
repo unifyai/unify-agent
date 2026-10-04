@@ -8,8 +8,10 @@ Stored functions that call ``primitives.actor.act(...)`` work through the
 standard ``depends_on`` pipeline: detected at storage time by
 ``DependencyVisitor``, injected at runtime by ``_inject_dependencies``
 via ``construct_sandbox_root("primitives")`` → ``Primitives()``.  This
-is why ``_ActorRunner`` must be fully stateless (no ContextVars, no
-parent state).
+is why ``_ActorRunner`` must be fully stateless: it holds no parent
+state, and the ContextVars it reads are optional. The one it never does
+without, when set, is the caller's grants (unify/actor/grants.py), which
+bound every sub-actor it builds.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from unify.actor.environments.base import (
     ToolMetadata,
     build_filtered_method_docs,
 )
+from unify.actor.grants import GrantEscalationError, bound_child_grants, caller_grants
 from unify.function_manager.primitives.registry import get_registry
 from unify.function_manager.primitives.scope import PrimitiveScope
 
@@ -130,10 +133,14 @@ def _build_scoped_gm(
 
 def _resolve_prompt_guidance(
     prompt_guidance: list[str | int] | None,
+    caller_scope: str | None = None,
 ) -> tuple[str | None, frozenset[int]]:
     """Resolve guidance entries by title or ID and return formatted text.
 
-    Each identifier is looked up from the default ``GuidanceManager``.
+    Each identifier is looked up from the default ``GuidanceManager``, or,
+    when the caller's guidance is scoped, from one under *caller_scope*: a
+    caller cannot hand a sub-actor guidance it cannot read itself, and an
+    entry outside its scope is refused rather than skipped.
     Strings are matched against the ``title`` column; integers against
     ``guidance_id``.  Resolved entries are concatenated as Markdown
     sections suitable for injection into the system prompt.
@@ -149,15 +156,26 @@ def _resolve_prompt_guidance(
         GuidanceManager as _GM,
     )
 
-    gm = _GM()
+    gm = _GM() if caller_scope is None else _build_scoped_gm(caller_scope)
 
     sections: list[str] = []
     resolved_ids: set[int] = set()
     for identifier in prompt_guidance:
         if isinstance(identifier, int):
-            rows = gm.filter(filter=f"guidance_id = {int(identifier)}", limit=1)
+            clause = f"guidance_id = {int(identifier)}"
         else:
-            rows = gm.filter(filter=f"title = '{identifier}'", limit=1)
+            quoted = str(identifier).replace("'", "''")
+            clause = f"title = '{quoted}'"
+        rows = gm.filter(filter=clause, limit=1)
+        if (
+            caller_scope is not None
+            and not rows
+            and _GM().filter(filter=clause, limit=1)
+        ):
+            raise GrantEscalationError(
+                f"prompt_guidance names {identifier!r}, which is outside this "
+                "actor's guidance scope, so it cannot pass it to a sub-actor.",
+            )
         # Explicitly pinned guidance is injected with its complete content;
         # list reads only carry previews, so re-fetch each match in full.
         rows = [gm.get_guidance(guidance_id=g.guidance_id) for g in rows]
@@ -261,7 +279,12 @@ def _build_inner_actor(
     """Construct the actor a ``primitives.actor.act`` call runs.
 
     Returns the actor and the guidelines its ``act`` receives. Everything the
-    actor may use derives from these arguments, never from the caller.
+    actor may use derives from these arguments, bounded by the grants of the
+    actor run making the call (unify/actor/grants.py): a request for
+    ``can_store`` or ``can_spawn_sub_agents`` the caller lacks is refused,
+    ``can_compose`` is dropped when the caller lacks it, and the discovery
+    and guidance scopes are joined with the caller's. Outside an actor run
+    the arguments are used as given.
     ``can_spawn_sub_agents`` is the only grant of ``primitives.actor``:
     without it the actor's FunctionManager neither surfaces nor injects the
     primitive and no ``ActorEnvironment`` puts it in the sandbox, so search,
@@ -273,6 +296,24 @@ def _build_inner_actor(
         registered_environments,
     )
     from unify.function_manager.primitives.environment import environment_aliases
+
+    parent = caller_grants()
+    bounded = bound_child_grants(
+        parent,
+        can_compose=can_compose,
+        can_store=can_store,
+        can_spawn_sub_agents=can_spawn_sub_agents,
+        discovery_scope=discovery_scope,
+        guidance_scope=guidance_scope,
+    )
+    can_compose = bounded.can_compose
+    can_store = bounded.can_store
+    can_spawn_sub_agents = bounded.can_spawn_sub_agents
+    # A prompt function outside the caller's discovery scope matches nothing
+    # in the child's FunctionManager below, so it is never resolved (and an
+    # unmatched pattern is refused there).
+    discovery_scope = bounded.discovery_scope
+    guidance_scope = bounded.guidance_scope
 
     # Namespaces the environment registered (UNIFY_ENV_NAMESPACES) are not a
     # grant of primitives.actor: a sub-agent works in the same environment as
@@ -327,6 +368,7 @@ def _build_inner_actor(
     # Resolve prompt_guidance entries and merge with guidelines.
     guidance_text, resolved_guidance_ids = _resolve_prompt_guidance(
         prompt_guidance,
+        parent.guidance_scope if parent is not None else None,
     )
     effective_guidelines = guidelines or ""
     if guidance_text:
@@ -373,7 +415,8 @@ class _ActorRunner:
     instance has no enclosing ``CodeActActor`` and no ContextVar state,
     so every piece of context the inner actor needs (FM scope, environments,
     permissions) must be derived from the explicit parameters passed to
-    ``act()``.
+    ``act()``. Inside an actor run those parameters are bounded by the
+    caller's grants (unify/actor/grants.py), never widened.
     """
 
     _PRIMITIVE_METHODS = ("act",)

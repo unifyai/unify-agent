@@ -29,6 +29,7 @@ from unify.actor.base import BaseCodeActActor
 from unify.common.context_dump import make_messages_safe_for_context_dump
 from unify import environment, sandbox
 from unify.actor.workspace_tools import workspace_tools as _workspace_tools
+from unify.actor.grants import CALLER_GRANTS, ActorGrants
 from unify.actor.execution import (
     ExecutionResult,
     PythonExecutionSession,
@@ -5474,6 +5475,14 @@ class CodeActActor(BaseCodeActActor):
         env_token = _CURRENT_ENVIRONMENTS.set(sandbox_envs)
         can_clarify_token = _CAN_CLARIFY.set(bool(clarification_enabled))
         llm_profile_token = CURRENT_ACT_LLM_PROFILE.set(act_llm_profile)
+        # What this run may do; every sub-actor it starts is bounded by it.
+        grants_token = CALLER_GRANTS.set(
+            ActorGrants.of_actor(
+                self,
+                can_compose=effective_can_compose,
+                can_store=effective_can_store,
+            ),
+        )
 
         # Set agent context for depth tracking and handle access
         parent_ctx = _CURRENT_AGENT_CONTEXT.get()
@@ -5505,6 +5514,10 @@ class CodeActActor(BaseCodeActActor):
                 pass
             try:
                 CURRENT_ACT_LLM_PROFILE.reset(llm_profile_token)
+            except Exception:
+                pass
+            try:
+                CALLER_GRANTS.reset(grants_token)
             except Exception:
                 pass
             try:
