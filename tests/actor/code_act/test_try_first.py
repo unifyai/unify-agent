@@ -4,21 +4,23 @@ On ARC return visits Unify bought a demonstration first in 101 of 101
 visits, even when search had found a function stored for the same task;
 the rows that run the stored program first (HPL/PL) solved 28-42 return
 visits with no feedback, Unify none. With the switch the actor's prompt
-says to run a matching stored function on the inputs it already has and
+says to run a stored function that fits on the inputs it already has and
 act on its result when it works before an action that costs something
 (never to check it against examples it was given), and a function stored
-during a task records the task's request, so a search from a task whose
-request matches marks it ``same_task: true``.
+while handling a request records that request, so a search from a request
+close to it shows ``similar_request: <score>``.
 
 A whole-request hash never matched a return visit: a recorded opening
 request carries the visit's own data (a fresh test grid, another requester).
 In the decision-point replays of 2 Oct, marking the stored function of the
 same task made the actor run it first in 29 of 105 replays against 17 of 105
-(McNemar p=0.012). The match is therefore a similarity that leaves numbers
-out and weights tokens by rarity among the library's requests; calibrated
-offline on 1,123 recorded opening requests, it marked 169 of 170 functions
-stored from the same task and 0 of 3,173 from other tasks at the stream's
-search points (weighted Jaccard >= 0.2). Requests are captured at unillm's
+(McNemar p=0.012). The match is therefore a similarity of the requests'
+letter and digit runs, every token kept and weighted by its rarity among
+the library's requests (4 Oct: the first version left numbers out, a rule
+taken from the benchmarks' grids and amounts). Calibrated offline on a
+tune/held-out split of recorded opening requests of six benchmarks and 60
+hand-written assistant request pairs (research artifact similar-request-v1),
+it marks at a score of 0.24 or more. Requests are captured at unillm's
 transport (``tests/cache_discipline_helpers.py``), so nothing leaves the
 process.
 """
@@ -85,7 +87,14 @@ def test_off_the_prompt_has_no_try_first_note(try_first):
     try_first(False)
     prompt = _prompt()
     assert "Free before paid" not in prompt
-    assert "same_task" not in prompt
+    assert "similar_request" not in prompt
+
+
+def test_the_note_names_the_mark_and_no_task():
+    note = pb._TRY_FIRST_NOTE
+    assert f"`{task_origin.MARK}`" in note
+    assert "same_task" not in note
+    assert "task" not in note.lower()
 
 
 # ── task keys ────────────────────────────────────────────────────────────
@@ -135,27 +144,41 @@ def _score(a: str, b: str, *others: str) -> float:
     return task_origin.similarity(a, b, weights)
 
 
-def test_numbers_and_dimensions_are_not_compared():
-    assert task_origin.tokens("Input (13x13): 8 0 21 2021 3x4x5 grid") == frozenset(
-        {"input", "grid"},
+def test_letter_and_digit_runs_are_tokens_and_none_is_left_out():
+    assert task_origin.tokens("Input (13x13): 8 0 21 2021 3x4x5 Q3 grid") == frozenset(
+        {"input", "13", "x", "8", "0", "21", "2021", "3", "4", "5", "q", "grid"},
     )
+    assert task_origin.tokens("Café №7, 東京") == frozenset({"café", "7", "東京"})
 
 
-def test_a_return_visit_with_fresh_data_matches_and_another_task_does_not():
+def test_with_one_stored_request_only_the_same_text_matches():
+    # Nothing tells shared wording from distinctive wording yet.
+    first = _visit("p-3d61a", [[1, 0, 2], [0, 1, 0]])
+    again = _visit("p-3d61a", [[5, 5], [0, 5], [5, 0], [1, 1]])
+    assert _score(again, first) == 0.0
+    assert _score(first, first) == 1.0
+
+
+def test_a_return_visit_with_fresh_data_matches_and_another_puzzle_does_not():
     first = _visit("p-3d61a", [[1, 0, 2], [0, 1, 0]])
     again = _visit("p-3d61a", [[5, 5], [0, 5], [5, 0], [1, 1]])
     other = _visit("p-9b07c", [[1, 0, 2], [0, 1, 0]])
+    library = [
+        _visit("p-55e10", [[3, 3], [3, 0]]),
+        _visit("p-71c2f", [[2, 0], [0, 2], [2, 2]]),
+        _visit("p-a04d9", [[7, 1, 7]]),
+    ]
     assert task_origin.task_key(first) != task_origin.task_key(again)
-    # Only numbers differ: the same task, however small the library.
-    assert _score(again, first) == 1.0
-    # The preamble every request shares weighs nothing; the ids differ.
-    assert _score(other, first) == 0.0
-    assert _score(other, first, _visit("p-55e10", [[3]])) == 0.0
+    # Numbers are compared like any token: the fresh table weighs against
+    # the match, the shared id for it.
+    assert _score(again, first, *library) >= task_origin.SIMILAR_REQUEST_THRESHOLD
+    # The same table under another id: the preamble weighs nothing.
+    assert _score(other, first, *library) < task_origin.SIMILAR_REQUEST_THRESHOLD
 
 
-def test_a_reworded_variant_matches_once_the_library_knows_other_tasks():
-    def ask(name: str, task: str) -> str:
-        return f"{PREAMBLE}\nRequester: {name}.\nTask: {task}"
+def test_a_reworded_variant_matches_once_the_library_knows_other_requests():
+    def ask(name: str, request: str) -> str:
+        return f"{PREAMBLE}\nRequester: {name}.\nRequest: {request}"
 
     five = ask(
         "Ana Lee",
@@ -170,11 +193,76 @@ def test_a_reworded_variant_matches_once_the_library_knows_other_tasks():
         ask("Di Ruiz", "How long is my longest playlist, in minutes?"),
         ask("Ed Wu", "Send $20 to each of my friends with a note."),
     ]
-    assert _score(one, five, *others) >= task_origin.SAME_TASK_THRESHOLD
+    assert _score(one, five, *others) >= task_origin.SIMILAR_REQUEST_THRESHOLD
     for other in others:
-        assert _score(other, five, *others) < task_origin.SAME_TASK_THRESHOLD
+        assert _score(other, five, *others) < task_origin.SIMILAR_REQUEST_THRESHOLD
     # With nothing else known, a reworded request is not a match.
-    assert _score(one, five) < task_origin.SAME_TASK_THRESHOLD
+    assert _score(one, five) < task_origin.SIMILAR_REQUEST_THRESHOLD
+
+
+# A few earlier requests of an assistant's library.
+ASSISTANT_LIBRARY = [
+    "Reply to the email from Jordan about the conference sponsorship and say "
+    "we can do the silver tier.",
+    "What's on my calendar for tomorrow? Move anything before 10am to the "
+    "afternoon.",
+    "Book a 30-minute meeting with Priya Shah next Tuesday afternoon to review "
+    "the hiring plan.",
+    "Pay the electricity bill from the joint account.",
+    "Write release notes for version 2.8 from the merged pull requests since " "2.7.",
+]
+
+
+@pytest.mark.parametrize(
+    "stored, current",
+    [
+        # The same deliverable with another period, recipient or payee.
+        (
+            "Send the Q3 revenue report to finance.",
+            "Send the Q4 revenue report to finance.",
+        ),
+        (
+            "Send the Q3 revenue report to finance.",
+            "Send the Q3 revenue report to the legal team.",
+        ),
+        (
+            "Pay the electricity bill from the joint account.",
+            "Pay the water bill from the joint account.",
+        ),
+        (
+            "Text each of my tenants at 14 Elm St a reminder that October rent "
+            "of $1,850 is due on the 1st.",
+            "Text each of my tenants at 22 Oak Ave a reminder that November "
+            "rent of $2,100 is due on the 1st.",
+        ),
+    ],
+)
+def test_a_recurring_deliverable_with_new_parameters_matches(stored, current):
+    library = [r for r in ASSISTANT_LIBRARY if r != stored]
+    assert _score(current, stored, *library) >= task_origin.SIMILAR_REQUEST_THRESHOLD
+
+
+def test_another_procedure_on_the_same_object_scores_lower_and_unrelated_ones_do_not_match():
+    stored = "Send the Q3 revenue report to finance."
+    recurring = _score(
+        "Send the Q4 revenue report to finance.",
+        stored,
+        *ASSISTANT_LIBRARY,
+    )
+    other_procedure = _score(
+        "Fix the formula in the Q3 revenue report.",
+        stored,
+        *ASSISTANT_LIBRARY,
+    )
+    assert other_procedure < recurring
+    for unrelated in (
+        "Plan a week of vegetarian dinners for two and write the shopping list.",
+        "Check me in for my flight tomorrow and pick an aisle seat.",
+    ):
+        assert (
+            _score(unrelated, stored, *ASSISTANT_LIBRARY)
+            < task_origin.SIMILAR_REQUEST_THRESHOLD
+        )
 
 
 def test_a_recorded_request_is_bounded():
@@ -215,7 +303,7 @@ def _origin(request: str) -> dict:
 
 
 @_handle_project
-def test_on_a_search_from_the_same_task_marks_the_function(try_first):
+def test_on_a_search_from_the_same_request_marks_the_function(try_first):
     try_first(True)
     fm = FunctionManager()
     assert _in_task(TASK, lambda: fm.add_functions(implementations=SOURCE)) == {
@@ -224,28 +312,52 @@ def test_on_a_search_from_the_same_task_marks_the_function(try_first):
     assert _stored(fm) == _origin(TASK)
 
     same = _in_task(" " + TASK + "\n", lambda: _search(fm))
-    assert same["same_task"] is True
+    assert same["similar_request"] == 1.0
+    assert "same_task" not in same
     # Where a function came from is never shown.
     assert "origin_" not in json.dumps(same, default=str)
 
     other = _in_task("Triple the number 5.", lambda: _search(fm))
-    assert "same_task" not in other
+    assert "similar_request" not in other
     assert "origin_" not in json.dumps(other, default=str)
-    assert "same_task" not in _search(fm)  # no task keyed
+    assert "similar_request" not in _search(fm)  # no request keyed
     for shown in (fm.list_functions(), fm.filter_functions()):
         assert "origin_" not in json.dumps(shown, default=str)
 
 
+def _source(name: str, factor: int) -> str:
+    return (
+        f"def {name}(x: int) -> int:\n"
+        f'    """Multiply a number by {factor}."""\n'
+        f"    return {factor} * x\n"
+    )
+
+
 @_handle_project
-def test_on_a_return_visit_with_fresh_data_is_marked(try_first):
+def test_on_a_return_visit_with_fresh_data_shows_its_score(try_first):
     try_first(True)
     fm = FunctionManager()
     first = _visit("p-3d61a", [[1, 0, 2], [0, 1, 0]])
     _in_task(first, lambda: fm.add_functions(implementations=SOURCE))
     again = _visit("p-3d61a", [[5, 5], [0, 5], [5, 0]])
-    assert _in_task(again, lambda: _search(fm))["same_task"] is True
+    # The only request known: nothing tells its wording apart yet.
+    assert "similar_request" not in _in_task(again, lambda: _search(fm))
+    # Functions stored while handling other puzzles weigh the shared wording.
+    for name, factor, puzzle, table in (
+        ("triple", 3, "p-55e10", [[3, 3], [3, 0]]),
+        ("quadruple", 4, "p-71c2f", [[2, 0], [0, 2], [2, 2]]),
+        ("quintuple", 5, "p-a04d9", [[7, 1, 7]]),
+    ):
+        _in_task(
+            _visit(puzzle, table),
+            lambda: fm.add_functions(implementations=_source(name, factor)),
+        )
+    row = _in_task(again, lambda: _search(fm))
+    score = row["similar_request"]
+    assert task_origin.SIMILAR_REQUEST_THRESHOLD <= score < 1
+    assert score == round(score, 2)
     other = _visit("p-9b07c", [[1, 0, 2], [0, 1, 0]])
-    assert "same_task" not in _in_task(other, lambda: _search(fm))
+    assert "similar_request" not in _in_task(other, lambda: _search(fm))
 
 
 @_handle_project
@@ -262,7 +374,7 @@ def test_on_an_overwrite_from_another_task_keeps_both_origins(try_first):
         task_origin.task_key("second task"),
     ]
     assert _stored(fm)["origin_requests"] == ["first task", "second task"]
-    assert _in_task("first task", lambda: _search(fm))["same_task"] is True
+    assert _in_task("first task", lambda: _search(fm))["similar_request"] == 1.0
 
 
 @_handle_project
@@ -287,7 +399,7 @@ def test_off_nothing_is_recorded_or_marked(try_first):
     fm = FunctionManager()
     _in_task(TASK, lambda: fm.add_functions(implementations=SOURCE))
     assert _stored(fm) == {}
-    assert "same_task" not in _in_task(TASK, lambda: _search(fm))
+    assert "similar_request" not in _in_task(TASK, lambda: _search(fm))
 
 
 # ── through the actor ────────────────────────────────────────────────────
@@ -341,16 +453,16 @@ def _search_results_seen(requests: list[dict]) -> list[str]:
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 @_handle_project
-async def test_on_a_return_visit_to_the_same_task_sees_same_task(try_first):
+async def test_on_the_same_request_again_the_actor_sees_similar_request(try_first):
     try_first(True)
     await _act(TASK, store="actor")
     assert _stored(FunctionManager()) == _origin(TASK)
 
     seen = _search_results_seen(await _act(TASK))
-    assert seen and all('"same_task": true' in s for s in seen), seen[:1]
+    assert seen and all('"similar_request": 1.0' in s for s in seen), seen[:1]
 
     seen = _search_results_seen(await _act("Double 7, please."))
-    assert seen and not any("same_task" in s for s in seen)
+    assert seen and not any("similar_request" in s for s in seen)
     assert task_origin.current() is None
 
 

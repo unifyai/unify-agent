@@ -528,12 +528,12 @@ _WRITING_TO_THE_LIBRARIES = "\n\n#### Writing to the libraries\n"
 _TRY_FIRST_NOTE = textwrap.dedent("""
     **Free before paid.** Before an action that costs something (a paid
     request, a submission that is scored, an irreversible effect), use
-    what is free first: when a stored function matches the task, run it
+    what is free first: when a stored function fits what is asked, run it
     on inputs you already have and, when it works, act on its result; pay
-    for more information only when it does not. A search result marked
-    `same_task` was stored from a task whose request closely matches this
-    one (instance data such as numbers may differ); check that it fits
-    before relying on it.
+    for more information only when it does not. A search result with
+    `similar_request` (a score up to 1; higher is closer) was stored while
+    handling a request similar to this one; it is worth trying on the
+    inputs you have before costlier steps. Check that it fits.
 """).strip()
 
 

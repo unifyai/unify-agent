@@ -1,37 +1,41 @@
-"""Which task a stored function came from (``UNIFY_TRY_FIRST``).
+"""Which request a stored function came from (``UNIFY_TRY_FIRST``).
 
-A top-level ``act()`` keys its task by its request (the session's first user
-message): a short hash of the whitespace-collapsed text, and a bounded copy of
-that text (at most 4,000 characters: all of it, or its first and last 2,000).
-The task loop and its storage review inherit the key through the task context.
-With the switch on, a function stored during that task records both in its
+A top-level ``act()`` keys its request (the session's first user message): a
+short hash of the whitespace-collapsed text, and a bounded copy of that text
+(at most 4,000 characters: all of it, or its first and last 2,000). The loop
+and its storage review inherit the key through the context. With the switch
+on, a function stored while handling that request records both in its
 ``metadata`` (``origin_tasks``: the hashes; ``origin_requests``: the copies of
-the latest :data:`MAX_ORIGIN_REQUESTS` distinct requests), and a search from a
-later task marks the function ``same_task: true`` when that task's request
-matches one the function was stored from: the same hash, or a similarity of at
-least :data:`SAME_TASK_THRESHOLD`. Neither field is ever shown in a library
-result. Sub-agents inherit the key of the task they work for. With the switch
-off nothing is recorded or marked.
+the latest :data:`MAX_ORIGIN_REQUESTS` distinct requests; the field names are
+kept from the first version), and a search from a later request adds
+``similar_request: <score>`` to the function's result when the current request
+is close to one it was stored from: a score of 1 for the same text, otherwise
+the similarity below, shown rounded to two decimals from
+:data:`SIMILAR_REQUEST_THRESHOLD` on. Neither origin field is ever shown in a
+library result. Sub-agents inherit the key of the request they work for. With
+the switch off nothing is recorded or marked.
 
-The similarity tells instructions from instance data without knowing the
-request's format. A request is reduced to its set of lower-cased alphanumeric
-tokens, leaving out numbers and dimension-like runs (``21``, ``13x13``): the
-grids, amounts and dates that change between visits to one task. Each token is
-weighted by how rare it is among the requests known at the search (the origin
-requests of every function in the library, and the current one): ``ln(N /
-df)`` over those N distinct requests, so wording that every known request
-shares (a stream's common preamble) weighs nothing and wording that names or
-describes one task weighs most. The score is the weighted Jaccard index of the
-two token sets: the weight of the tokens both have over the weight of the
-tokens either has. Two requests with no weighted token apart from what all
-known requests share score 1: they differ only in numbers and spacing.
+The similarity knows nothing about any request format. A request is reduced
+to its set of lower-cased tokens: runs of letters and runs of digits, each a
+token of its own (``Q3`` is ``q`` and ``3``; ``13x13`` is ``13``, ``x`` and
+``13``), so a value written next to a word is compared apart from it. Every
+token is kept. Each is weighted by how rare it is among the requests known at
+the search (the origin requests of every function in the library, and the
+current one): ``ln(N / df)`` over those N distinct requests, so wording that
+every known request shares (a stream's common preamble) weighs nothing, and
+the values one request alone carries weigh most. The score is the weighted
+Jaccard index of the two token sets: the weight of the tokens both have over
+the weight of the tokens either has. With few known requests there is little
+to tell shared wording from distinctive wording by, so the score is low (with
+one stored request it is 0 unless the texts are equal): a mark needs a
+library of a few requests.
 
-Calibrated offline on recorded opening requests: return visits to one task
-whose requests differ only in instance data score 1; differently worded
-variants of one task score about 0.15-0.45 once the library holds requests of
-a few other tasks, and different tasks mostly under 0.15. Different tasks that
-share instance wording (the same requester's name and address) can score
-0.2-0.6, so a mark is a hint to check, never proof.
+Calibrated offline on a split of recorded opening requests and hand-written
+assistant requests (research artifact similar-request-v1): recurring requests
+whose parameters change score about 0.25-0.9, different requests in one
+domain mostly under 0.25 but up to about 0.45 when they share the object they
+act on (the same report, the same requester), unrelated requests under 0.1.
+A mark, and its score, is a hint to check, never proof.
 """
 
 from __future__ import annotations
@@ -53,13 +57,13 @@ MAX_ORIGIN_REQUESTS = 3
 # Head and tail kept from a long request.
 _HEAD = 2000
 _TAIL = 2000
-# A function is marked ``same_task`` from this similarity on.
-SAME_TASK_THRESHOLD = 0.2
+# A search result shows ``similar_request`` from this similarity on.
+SIMILAR_REQUEST_THRESHOLD = 0.24
+MARK = "similar_request"
 
 _WS = re.compile(r"\s+")
-_TOKEN = re.compile(r"[a-z0-9]+")
-# Instance data: plain numbers and dimension-like runs (13x13, 3x4x5).
-_NUMBERLIKE = re.compile(r"^\d+(?:x\d+)*$")
+# A run of letters or a run of digits (any script).
+_TOKEN = re.compile(r"[^\W\d_]+|\d+")
 
 
 @dataclass(frozen=True)
@@ -108,10 +112,8 @@ def bounded_text(request: Any) -> str:
 
 @lru_cache(maxsize=4096)
 def tokens(text: str) -> frozenset[str]:
-    """The tokens a request is compared by (numbers and dimension-like runs left out)."""
-    return frozenset(
-        token for token in _TOKEN.findall(text.lower()) if not _NUMBERLIKE.match(token)
-    )
+    """The tokens a request is compared by: its runs of letters and of digits."""
+    return frozenset(_TOKEN.findall(text.lower()))
 
 
 def token_weights(texts: Iterable[str]) -> Dict[str, float]:
@@ -213,7 +215,7 @@ def strip(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class Marker:
-    """Marks the search rows of functions stored from the current task.
+    """Marks the search rows of functions stored while handling a similar request.
 
     *library* holds the rows of every function the search could return: their
     origin requests and the current request weight the tokens.
@@ -230,26 +232,27 @@ class Marker:
             self._weights = token_weights([*texts, task.text])
         return self._weights
 
-    def same_task(self, row: Dict[str, Any]) -> bool:
+    def score(self, row: Dict[str, Any]) -> Optional[float]:
+        """How close the current request is to the closest one *row* was stored from.
+
+        1 for the same text; ``None`` with no current request or no origins.
+        """
         task = self._task
         if task is None:
-            return False
+            return None
         keys, texts = _origins(row)
         if task.key in keys:
-            return True
+            return 1.0
         if not texts:
-            return False
+            return None
         weights = self._token_weights(task)
-        return any(
-            similarity(task.text, text, weights) >= SAME_TASK_THRESHOLD
-            for text in texts
-        )
+        return max(similarity(task.text, text, weights) for text in texts)
 
     def annotate(self, row: Dict[str, Any]) -> None:
-        """Drop the origin fields from *row*; add ``same_task: true`` when it matches."""
+        """Drop the origin fields from *row*; add ``similar_request`` when close enough."""
         if not _has_origins(row):
             return
-        matched = self.same_task(row)
+        score = self.score(row)
         row["metadata"] = strip(row)["metadata"]
-        if matched:
-            row["same_task"] = True
+        if score is not None and score >= SIMILAR_REQUEST_THRESHOLD:
+            row[MARK] = round(score, 2)

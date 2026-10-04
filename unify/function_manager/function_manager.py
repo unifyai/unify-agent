@@ -1105,8 +1105,9 @@ class FunctionManager(BaseFunctionManager):
     ) -> List[Dict[str, Any]]:
         """Return actor-facing discovery rows without large structured payloads.
 
-        *marker* (``UNIFY_TRY_FIRST``) marks the rows stored from the current
-        task; it weighs requests over the whole library the rows came from.
+        *marker* (``UNIFY_TRY_FIRST``) marks the rows stored while handling a
+        request similar to the current one; it weighs requests over the whole
+        library the rows came from.
         """
 
         marker = marker or task_origin.Marker(rows)
@@ -1115,7 +1116,7 @@ class FunctionManager(BaseFunctionManager):
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
-            # UNIFY_TRY_FIRST: origin fields become ``same_task``.
+            # UNIFY_TRY_FIRST: origin fields become ``similar_request``.
             marker.annotate(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
@@ -1369,7 +1370,7 @@ class FunctionManager(BaseFunctionManager):
                         )
                     ],
                 }
-                # UNIFY_TRY_FIRST: record the task this version was stored from.
+                # UNIFY_TRY_FIRST: record the request this version was stored from.
                 origin = task_origin.stamped(prior.get("metadata") if prior else None)
                 if origin is not None:
                     entry_data["metadata"] = origin
