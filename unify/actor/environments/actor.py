@@ -855,12 +855,16 @@ class ActorEnvironment(BaseEnvironment):
 
         # With environment namespaces registered it is no longer the only one.
         lead = "" if environment_aliases() else "The one `primitives.*` surface. "
+        from unify.actor import core_surface
+
+        # UNIFY_TOOL_SURFACE=core has no execute_function.
+        via = "" if core_surface.enabled() else " (or call it via `execute_function`)"
         lines = [
             f"### `{fq_prefix}` — Actor Delegation\n",
             f"{lead}Awaiting a call returns a "
             f"`SteerableToolHandle` (`handle = await {fq_prefix}.act(...)`): "
-            "make the handle the last expression of `execute_code` (or call it "
-            "via `execute_function`) so the outer loop can steer it — "
+            f"make the handle the last expression of `execute_code`{via} "
+            "so the outer loop can steer it — "
             "`await handle.result()` only when the code itself composes on the "
             "result.\n",
         ]

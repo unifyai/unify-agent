@@ -77,7 +77,15 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         return tools
 
     def get_prompt_context(self) -> str:
+        from unify.actor import core_surface
+
         namespaces = environment_namespaces()
+        # UNIFY_TOOL_SURFACE=core: the library search is the sandbox's.
+        search = (
+            "`await functions.search(...)`"
+            if core_surface.enabled()
+            else "`FunctionManager_search_functions`"
+        )
         lines = [
             "### `primitives.*` — This Environment's Namespaces\n",
             "The environment you work in registered the namespaces below. "
@@ -85,7 +93,7 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
             "`primitives.<namespace>.<method>(...)`. A stored function that "
             "calls them needs no import: they are recorded and injected when it "
             "runs later. Each method's signature and "
-            "documentation come back from `FunctionManager_search_functions` "
+            f"documentation come back from {search} "
             "(as primitive rows) and from `help(primitives.<namespace>.<method>)`. "
             "Effects: `read` methods change nothing, `write` methods create or "
             "change state, `destructive` methods delete or overwrite it.\n",
