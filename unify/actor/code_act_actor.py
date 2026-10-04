@@ -5417,6 +5417,10 @@ class CodeActActor(BaseCodeActActor):
         # UNIFY_PROMPT_CLOCK=message: the clock and the filesystem context
         # open the first user message instead of ending the system prompt.
         clock_in_message = SETTINGS.UNIFY_PROMPT_CLOCK == "message"
+        # The default policy's discovery-first gate; UNIFY_DISCOVERY_GATE off
+        # leaves the library searches to the model (no gated or forced turn).
+        default_policy = self.tool_policy is _USE_DEFAULT
+        discovery_gate = default_policy and SETTINGS.UNIFY_DISCOVERY_GATE
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
         prompt_kwargs: Dict[str, Any] = dict(
             environments=sandbox_envs,
@@ -5425,8 +5429,13 @@ class CodeActActor(BaseCodeActActor):
             # describe; it is told the libraries are read-only instead.
             can_store=effective_can_store and not admission_gated and not inline_only,
             guidelines=effective_guidelines,
-            discovery_first_policy=self.tool_policy is _USE_DEFAULT,
+            discovery_first_policy=discovery_gate,
             persist=bool(persist),
+            **(
+                {"search_when_useful": True}
+                if default_policy and not discovery_gate
+                else {}
+            ),
             **({"library_read_only": True} if admission_gated else {}),
             **({"inline_curation": inline_mode} if inline_mode else {}),
         )
@@ -5459,8 +5468,9 @@ class CodeActActor(BaseCodeActActor):
         # Tool policy controls which tools are visible per turn, and whether a
         # tool call is required.  The static _filter_tools (can_compose,
         # can_store) is always applied regardless of the dynamic policy.
-        if self.tool_policy is None:
-            # No dynamic policy -- only static filtering on every turn.
+        if self.tool_policy is None or (default_policy and not discovery_gate):
+            # No dynamic policy (or the default one with UNIFY_DISCOVERY_GATE
+            # off) -- only static filtering on every turn.
             def _static_only_policy(step: int, tools: Dict[str, Any]):
                 return "auto", _filter_tools(tools)
 
@@ -5526,7 +5536,7 @@ class CodeActActor(BaseCodeActActor):
                 has_gm_tools=any(
                     str(k).startswith("GuidanceManager_") for k in base_tools
                 ),
-                discovery_gate=self.tool_policy is _USE_DEFAULT,
+                discovery_gate=discovery_gate,
             )
             if snapshot:
                 first_message_parts.append(snapshot)
@@ -5534,7 +5544,7 @@ class CodeActActor(BaseCodeActActor):
         # Soft/partial discovery hosts often serialize families under
         # tool_choice=required. Inject a Unify-local completion mutator that
         # appends missing preferred discovery calls for the gated schema.
-        if self.tool_policy is _USE_DEFAULT:
+        if discovery_gate:
             _discovery_mutator = _build_discovery_parallel_mutator()
             _orig_generate = client.generate
 

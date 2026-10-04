@@ -127,6 +127,8 @@ SWITCH_OFF = {
 
 PROMPT_MODES = {
     "act": {"can_store": True, "discovery_first_policy": True},
+    # UNIFY_DISCOVERY_GATE off
+    "search when useful": {"can_store": True, "search_when_useful": True},
     "persist": {"can_store": True, "persist": True},
     "read only": {"can_store": True, "library_read_only": True},
     "no store": {},

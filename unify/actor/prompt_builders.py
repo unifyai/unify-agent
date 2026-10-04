@@ -101,6 +101,34 @@ _DISCOVERY_FIRST_POLICY = textwrap.dedent("""
        composition, branching, iteration, or combining intermediate results.
 """).strip()
 
+# UNIFY_DISCOVERY_GATE off: no discovery-first gate, so the library section's
+# search-first paragraph gives way to one sentence that leaves the searches to
+# the model; what it says about using a result is kept.
+_ALWAYS_SEARCH_FIRST = (
+    "Always search **FunctionManager and GuidanceManager**\n"
+    "(`FunctionManager_search_functions`, `GuidanceManager_search`) before\n"
+    "deciding how to execute, then use what you find: call a relevant\n"
+    "function via `execute_function`, follow relevant guidance. Prefer healthy matches (empty\n"
+    "`stale_reasons`); stale entries are second-class — disclose the debt\n"
+    "if used and repair via update/re-link. A no-hit is **not** permission to immediately write new code.\n"
+    "Search is a discovery step, not an execution decision. After discovery,\n"
+    "choose the minimal correct execution path —\n"
+    "if the request or discovery step already identifies one exact function\n"
+    "or primitive call, use `execute_function`; use `execute_code` only\n"
+    "when the task genuinely requires multi-step composition."
+)
+_SEARCH_WHEN_USEFUL = (
+    "A library of reusable functions and guidance exists and can be\n"
+    "searched with the listed library tools when useful. When you use what\n"
+    "you find, call a relevant function via `execute_function` and follow\n"
+    "relevant guidance. Prefer healthy matches (empty `stale_reasons`);\n"
+    "stale entries are second-class — disclose the debt if used and repair\n"
+    "via update/re-link. Choose the minimal correct execution path — if the\n"
+    "request or a search result already identifies one exact function or\n"
+    "primitive call, use `execute_function`; use `execute_code` only when\n"
+    "the task genuinely requires multi-step composition."
+)
+
 _TOOL_SELECTION = textwrap.dedent("""
     ### Tool Selection: `execute_function` vs `execute_code`
 
@@ -563,6 +591,7 @@ _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST = _with_try_first(
 def _library_section(
     inline_curation: str = "",
     tools: Optional[Mapping[str, Callable]] = None,
+    search_when_useful: bool = False,
 ) -> str:
     if _review_framing_unified():
         text = (
@@ -576,6 +605,8 @@ def _library_section(
             if _try_first_enabled()
             else _FUNCTION_AND_GUIDANCE_LIBRARY
         )
+    if search_when_useful:
+        text = _unified(text, _ALWAYS_SEARCH_FIRST, _SEARCH_WHEN_USEFUL)
     if inline_curation:
         text = _inline_library_section(text, inline_curation, tools or {})
     return text
@@ -828,6 +859,7 @@ def build_code_act_prompt(
     can_store: bool = False,
     guidelines: Optional[str] = None,
     discovery_first_policy: bool = False,
+    search_when_useful: bool = False,
     persist: bool = False,
     library_read_only: bool = False,
     session_sections: bool = True,
@@ -846,6 +878,12 @@ def build_code_act_prompt(
     discovery_first_policy:
         When ``True``, appends guidance explaining the discovery-first tool
         policy (FM and GM must be called before other tools unlock).
+    search_when_useful:
+        When ``True`` (``UNIFY_DISCOVERY_GATE`` off), the library section's
+        search-first paragraph ("Always search ... A no-hit is not
+        permission ...") is replaced by one sentence saying the library
+        exists and can be searched with the listed tools when useful,
+        followed by what that paragraph says about using a result.
     persist:
         When ``True``, the skill-storage notice describes the persistent
         session's schedule — automatic consolidation after each completed
@@ -910,7 +948,9 @@ def build_code_act_prompt(
         parts.append(_INCREMENTAL_EXECUTION)
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_library_section(inline_curation, tools))
+            parts.append(
+                _library_section(inline_curation, tools, search_when_useful),
+            )
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 
@@ -956,7 +996,9 @@ def build_code_act_prompt(
             )
 
         if has_fm_tools or has_gm_tools:
-            parts.append(_library_section(inline_curation, tools))
+            parts.append(
+                _library_section(inline_curation, tools, search_when_useful),
+            )
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
 

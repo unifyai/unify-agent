@@ -315,6 +315,25 @@ class ProductionSettings(BaseSettings):
     # for), and a turn that leaves a family out is followed, once its calls
     # return, by one that requires it. On: as shipped.
     UNIFY_DISCOVERY_SPECULATIVE_TURN: bool = True
+    # Off: the actor's library searches are the model's choice. As shipped the
+    # default tool policy opens every task with a discovery-first gate: until
+    # each present library family (FunctionManager, GuidanceManager) has been
+    # searched, the model is offered only their search tools with
+    # tool_choice "required", and the system prompt tells it to search both
+    # before deciding how to execute. Off, no turn is gated or forced: every
+    # turn offers the actor's full (statically filtered) tool list with
+    # tool_choice "auto", the completion mutator that adds a missing search
+    # family is not installed, the gate's refusal rule under
+    # UNIFY_CACHE_DISCIPLINE never applies, and the prompt's discovery-first
+    # section and its library section's search-first paragraph ("Always
+    # search ...", "A no-hit is not permission ...") give way to one sentence
+    # saying the library exists and can be searched with the listed tools
+    # when useful (what the paragraph says about using a result is kept).
+    # The library tools, their schemas and stored functions are unchanged,
+    # as is UNIFY_LIBRARY_SNAPSHOT's line (without its note on skipping an
+    # empty library's search, which describes the gate). A caller's own
+    # tool_policy is unaffected. On: as shipped.
+    UNIFY_DISCOVERY_GATE: bool = True
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
     # requester has already answered is held back once: the loop appends a
@@ -455,6 +474,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
+        "UNIFY_DISCOVERY_GATE",
         mode="before",
     )
     @classmethod
