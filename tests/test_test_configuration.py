@@ -289,10 +289,15 @@ def test_a_fresh_calls_test_builds_clients_without_the_cache():
     assert new_llm_client().cache is False
 
 
-def test_the_steering_pause_test_always_calls_the_model():
+@pytest.mark.parametrize(
+    "name",
+    [
+        "test_pause_resume_inflight_handle",
+        "test_two_concurrent_handles_pause_one_other_completes",
+    ],
+)
+def test_the_steering_pause_tests_always_call_the_model(name):
     from tests.conversation_manager.actions.integration import test_steerability
 
-    marks = {
-        m.name for m in test_steerability.test_pause_resume_inflight_handle.pytestmark
-    }
+    marks = {m.name for m in getattr(test_steerability, name).pytestmark}
     assert "fresh_llm_calls" in marks

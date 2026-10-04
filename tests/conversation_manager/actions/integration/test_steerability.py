@@ -139,6 +139,8 @@ async def test_interject_midflight_constraints(initialized_cm_codeact):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
+# As above: from the cache, action A and its review finish before the pause.
+@pytest.mark.fresh_llm_calls
 @_handle_project
 async def test_two_concurrent_handles_pause_one_other_completes(initialized_cm_codeact):
     """
