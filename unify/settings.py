@@ -309,14 +309,14 @@ class ProductionSettings(BaseSettings):
     UNIFY_REPEAT_GUARD: bool = False
     # The actor's prompt asks it to use what is free before an action that
     # costs something (a paid request, a scored submission, an irreversible
-    # effect): run a stored function that matches the task on inputs it
-    # already has and act on its result when it works. A function stored
-    # during a task records the task's request in its metadata (a hash, and
-    # a copy of at most 4,000 characters, never shown in library results),
-    # and a search marks it ``same_task: true`` when the current request
-    # matches one it was stored from: the same text, or a weighted token
-    # overlap of at least 0.2 with numbers left out and tokens weighted by
-    # their rarity among the library's requests
+    # effect): run a stored function that fits on inputs it already has and
+    # act on its result when it works. A function stored while handling a
+    # request records that request in its metadata (a hash, and a copy of at
+    # most 4,000 characters, never shown in library results), and a search
+    # adds ``similar_request: <score>`` to its result when the current
+    # request is close to one it was stored from: 1 for the same text, or a
+    # weighted overlap of their letter and digit runs, each weighted by its
+    # rarity among the library's requests, of at least 0.24
     # (unify/function_manager/task_origin.py). Off: as shipped.
     UNIFY_TRY_FIRST: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
