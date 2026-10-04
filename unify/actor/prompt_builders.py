@@ -170,6 +170,8 @@ _TOOL_SELECTION = textwrap.dedent("""
 
 """).strip()
 
+_STEERING_HEADING = "### Responding to a steering checkpoint"
+
 _PYTHON_FIRST = textwrap.dedent("""
     ### Python First
 
@@ -422,6 +424,18 @@ def _build_sandbox_environment_section(*, has_primitives: bool) -> str:
           `images=[...]`. For reuse, keep the query_llm(...) call
           inside the stored function and choose `model=` deliberately.
     """)
+    if _lean_profile():
+        # The globals table and signatures as shipped; the doctrine short.
+        head = template[: template.index("When to use `query_llm(...)` vs plain code:")]
+        lean = head.format(
+            primitives_row=_PRIMITIVES_GLOBAL_ROW if has_primitives else "",
+            query_signature=query_signature,
+            list_signature=list_signature,
+        ).strip()
+        doctrine = _LEAN_QUERY_LLM
+        if has_primitives:
+            doctrine = f"{doctrine} {_LEAN_SUB_ACTOR_DIAL}"
+        return f"{lean}\n\n{doctrine}"
     return template.format(
         primitives_row=_PRIMITIVES_GLOBAL_ROW if has_primitives else "",
         query_signature=query_signature,
@@ -544,7 +558,7 @@ def _review_framing_unified() -> bool:
 def _prompt_accuracy_enabled() -> bool:
     from unify.settings import SETTINGS
 
-    return bool(SETTINGS.UNIFY_PROMPT_ACCURACY)
+    return SETTINGS.prompt_accuracy()
 
 
 def _unified(text: str, old: str, new: str) -> str:
@@ -843,6 +857,12 @@ def _build_filesystem_context() -> str:
     from unify.workspace import get_local_root
 
     resolved = get_local_root()
+    if _lean_profile():
+        return (
+            "### Workspace\n\n"
+            f"Your working directory is `{resolved}`; it persists across "
+            "tasks. Write files there, with absolute paths."
+        )
     return textwrap.dedent(f"""
         ### Filesystem Context
 
@@ -929,6 +949,99 @@ def _build_code_act_rules_and_examples(
             parts.append(env_ctx)
 
     return "\n\n---\n\n".join(p for p in parts if p and p.strip()).strip()
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_PROMPT_PROFILE=lean
+# ---------------------------------------------------------------------------
+# For a non-interactive session: one requester, nobody reading progress
+# notifications. The sections describe the session's mechanisms and state
+# few rules; the requester's reply format comes first.
+
+
+def _lean_profile() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.lean_prompt()
+
+
+_LEAN_ROLE = textwrap.dedent("""
+    ### Role
+
+    You solve the request in this conversation by writing and running
+    Python, with a library of stored functions and procedures to draw on.
+
+    Your answer is your final reply: a message without a tool call. When
+    the requester defines a format for replies (a JSON object, a keyword, a
+    fixed template), each reply follows that format exactly.
+""").strip()
+
+_LEAN_QUERY_LLM = textwrap.dedent("""
+    Use plain Python for exact steps (lookups, filters, arithmetic,
+    reshaping) and `query_llm(...)` inside the code for steps that judge
+    meaning (classify, extract, summarise, draft). Each `query_llm` call is
+    stateless, so its prompt carries all the evidence it needs; pass a
+    Pydantic `response_format=` when the code branches on the result.
+""").strip()
+
+_LEAN_SUB_ACTOR_DIAL = (
+    "A sub-agent (`primitives.actor.act`) suits a sub-task whose plan must "
+    "be discovered while it runs."
+)
+
+_LEAN_TOOL_SELECTION = textwrap.dedent("""
+    ### Code And Function Calls
+
+    `execute_code` runs Python cells in a persistent session.
+    `execute_function(function_name="...", call_kwargs={...})` runs one
+    stored function or primitive by name. A steerable handle reaches the
+    outer loop (for `steer`) when it is the result of `execute_function` or
+    the last expression of a cell.
+""").strip()
+
+_LEAN_EXECUTION_RULES = textwrap.dedent("""
+    ### Execution
+
+    1. **Sessions**: cells share one persistent sandbox for the task, like
+       a notebook: bind results to variables and build on them, and print
+       only what the next decision needs. `list_sessions()` and
+       `inspect_state()` show live sessions and names;
+       `state_mode="stateless"` or a named session isolates a cell. A
+       `NameError` on a known name usually means the sandbox restarted.
+    2. **Async**: the runtime owns the event loop, so code `await`s (and a
+       sync facade uses the injected `run_coro_sync(factory)`) rather than
+       calling `asyncio.run(...)`; `asyncio.gather` runs independent I/O
+       concurrently.
+    3. **Structured outputs**: Pydantic models defined in the code need
+       `model_rebuild()` on the outermost model.
+    4. **Evidence**: a step that ran is not a step that worked. The result
+       of a mutation or an extraction (a return value, a re-read) shows
+       whether it worked; when it contradicts the expected result, fix and
+       re-run.
+    5. **Final reply**: when the request is addressed, reply without a tool
+       call, in the requester's format when it defines one.
+    6. **Provenance**: when a source fails, the reply says so; records
+       generated from memory are not presented as sourced data.
+""").strip()
+
+_LEAN_CLARIFICATION_RULE = (
+    "7. **Clarification**: `request_clarification` asks the requester a\n"
+    "   question and waits for the answer."
+)
+
+_LEAN_INCREMENTAL_EXECUTION = textwrap.dedent("""
+    ### Verify Before Scaling
+
+    Run a loop body once and check its result before iterating over many
+    items. `state_mode="read_only"` tries an alternative on the current
+    state without changing it.
+""").strip()
+
+
+def _lean_execution_rules(can_clarify: bool) -> str:
+    if can_clarify:
+        return f"{_LEAN_EXECUTION_RULES}\n{_LEAN_CLARIFICATION_RULE}"
+    return _LEAN_EXECUTION_RULES
 
 
 def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> bool:
@@ -1032,12 +1145,19 @@ def build_code_act_prompt(
         # selection rules first (identical across actors), then per-actor and
         # per-session content (environment scope, filesystem paths,
         # guidelines) at the tail.
-        parts.append(
-            "### Role\n\n"
-            "You are an expert agent that solves tasks by writing and executing code. "
-            "Your primary tool is a multi-session Python execution environment, "
-            "backed by a library of stored functions and procedures.",
-        )
+        lean = _lean_profile()
+        if lean:
+            # The requester's reply format first.
+            parts.append(_LEAN_ROLE)
+            if _reply_protocol_note_enabled():
+                parts.append(_REPLY_PROTOCOL_NOTE)
+        else:
+            parts.append(
+                "### Role\n\n"
+                "You are an expert agent that solves tasks by writing and executing code. "
+                "Your primary tool is a multi-session Python execution environment, "
+                "backed by a library of stored functions and procedures.",
+            )
 
         parts.append(_tools_section())
 
@@ -1046,14 +1166,27 @@ def build_code_act_prompt(
                 has_primitives=_injects_actor_primitives(environments),
             ),
         )
-        parts.append(_TOOL_SELECTION)
-        parts.append(_PYTHON_FIRST)
-        parts.append(_execution_rules(can_clarify))
-        if _reply_protocol_note_enabled():
-            parts.append(_REPLY_PROTOCOL_NOTE)
+        if lean:
+            # The steering section is kept as shipped.
+            parts.append(_LEAN_TOOL_SELECTION)
+            parts.append(_TOOL_SELECTION[_TOOL_SELECTION.index(_STEERING_HEADING) :])
+            parts.append(_PYTHON_FIRST)
+            parts.append(_lean_execution_rules(can_clarify))
+        else:
+            parts.append(_TOOL_SELECTION)
+            parts.append(_PYTHON_FIRST)
+            parts.append(_execution_rules(can_clarify))
+            if _reply_protocol_note_enabled():
+                parts.append(_REPLY_PROTOCOL_NOTE)
         if _code_first_enabled():
             parts.append(_CODE_FIRST)
-        parts.append(_incremental_execution(can_clarify))
+        parts.append(
+            (
+                _LEAN_INCREMENTAL_EXECUTION
+                if lean
+                else _incremental_execution(can_clarify)
+            ),
+        )
 
         if has_fm_tools or has_gm_tools:
             parts.append(

@@ -1254,7 +1254,7 @@ _STALE_STEERING_DOC = (
 def _prompt_accuracy_enabled() -> bool:
     from unify.settings import SETTINGS
 
-    return bool(SETTINGS.UNIFY_PROMPT_ACCURACY)
+    return SETTINGS.prompt_accuracy()
 
 
 # UNIFY_DELEGATION=off: execute_function's docs do not offer the sub-actor
@@ -1273,6 +1273,55 @@ _SUB_ACTOR_EXAMPLES_DOC = (
 )
 
 
+# UNIFY_PROMPT_PROFILE=lean: the code tools describe what they do, without
+# preferring one over the other, and the install tool says why installs go
+# through it instead of ordering it.
+_LEAN_TOOL_DOCS = (
+    (
+        re.compile(
+            r"\*\*IMPORTANT — single-call rule\*\*: If the task requires only a"
+            r"\s+single function or primitive call with no surrounding logic,"
+            r"\s+use ``execute_function`` instead\. ``execute_code`` is for"
+            r"\s+\*\*multi-step composition\*\* — conditional logic, loops, or"
+            r"\s+combining multiple primitives/functions where intermediate"
+            r"\s+results are needed within the same code block\.\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"\*\*This is the preferred tool for any task that maps to a single"
+            r"\s+function or primitive call\*\* — (?P<what>.*?)\. It"
+            r"\s+\*\*structurally guarantees\*\* the returned handle is exposed to"
+            r"\s+the outer loop for steering \(ask, stop, pause, resume,"
+            r"\s+interject\); inside ``execute_code`` a handle is only adopted"
+            r"\s+if it happens to be the last expression\. Use ``execute_code``"
+            r"\s+only for genuine multi-step composition \(conditional logic,"
+            r"\s+loops, combining intermediate results\)\.",
+            re.DOTALL,
+        ),
+        lambda m: (
+            "It runs one callable -- "
+            + " ".join(m.group("what").split())
+            + " -- and exposes the handle it returns to the outer loop for "
+            "steering (ask, stop, pause, resume, interject)."
+        ),
+    ),
+)
+_LEAN_INSTALL_DOC = (
+    re.compile(
+        r"\*\*You MUST use this tool whenever you need a Python package that is not"
+        r"\s+already available\.\*\* Never install via ``execute_code`` \(``!pip install``,"
+        r"\s+``subprocess\.run\(\[\"pip\", \.\.\.\]\)``, ``uv pip install``, or any other"
+        r"\s+shell-based method\) — direct installs bypass the managed environment and"
+        r"\s+leave it in an inconsistent state\.",
+    ),
+    "Packages that are not already available are installed with this tool. "
+    "An install from ``execute_code`` (``pip``, ``uv``, a subprocess) bypasses "
+    "the managed environment and leaves it inconsistent.",
+)
+
+
 def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     """Correct the docstrings (tool descriptions) of *tools* in place, per the switches.
 
@@ -1281,14 +1330,19 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     """
     from unify.actor.environments.actor import delegation_mode
 
+    from unify.settings import SETTINGS
+
     rewrites: list = []
     if _prompt_accuracy_enabled():
         rewrites.extend(_STALE_STEERING_DOC)
     if delegation_mode() == "off":
         rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
+    if SETTINGS.lean_prompt():
+        rewrites.extend(_LEAN_TOOL_DOCS)
+        rewrites.append(_LEAN_INSTALL_DOC)
     if not rewrites:
         return
-    for name in ("execute_code", "execute_function"):
+    for name in ("execute_code", "execute_function", "install_python_packages"):
         tool = tools.get(name)
         fn = tool.fn if isinstance(tool, ToolSpec) else tool
         if fn is None or not fn.__doc__:
@@ -5774,7 +5828,8 @@ class CodeActActor(BaseCodeActActor):
                 clarification_queues=_clar_queues,
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
-                on_notify=_on_notify,
+                # UNIFY_PROMPT_PROFILE=lean: no notification channel.
+                on_notify=None if SETTINGS.lean_prompt() else _on_notify,
                 **(
                     {
                         "first_message_context": "\n\n".join(

@@ -615,7 +615,7 @@ class _ActorRunner:
         clarification_enabled = True
         from unify.settings import SETTINGS
 
-        if SETTINGS.UNIFY_PROMPT_ACCURACY:
+        if SETTINGS.prompt_accuracy():
             from unify.actor.execution import _CAN_CLARIFY
 
             parent_can_clarify = _CAN_CLARIFY.get(None)

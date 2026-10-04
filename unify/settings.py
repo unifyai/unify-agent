@@ -298,6 +298,21 @@ class ProductionSettings(BaseSettings):
     # three-line pointer instead of the docs, which ``help(primitives.actor.act)``
     # returns in the sandbox.
     UNIFY_DELEGATION: str = "on"
+    # ``lean``: an actor prompt for a non-interactive session (one requester,
+    # no reader of progress notifications), which describes the session's
+    # mechanisms and states few rules. It opens with the role and the
+    # requester's reply format (followed at once by the reply-protocol note
+    # when UNIFY_REPLY_PROTOCOL_NOTE is on); has no notification rule and no
+    # send_notification tool, no Uncertainties ending (the reply follows the
+    # requester's format), no clarification norms, a one-line workspace
+    # instead of the attachments table, "verify before scaling" instead of
+    # the pacing rules for browser and UI work, a short query_llm doctrine,
+    # and no preference for execute_function over execute_code in the
+    # prompt or the two tools' descriptions; and includes every
+    # UNIFY_PROMPT_ACCURACY fix. The library, discovery, storage and steering
+    # sections are unchanged (their own switches govern them). Empty: as
+    # shipped.
+    UNIFY_PROMPT_PROFILE: str = ""
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
     # result worked out in text, with judgment steps kept as query_llm calls
@@ -594,6 +609,16 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
+    @field_validator("UNIFY_PROMPT_PROFILE", mode="before")
+    @classmethod
+    def parse_prompt_profile(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "lean"):
+            raise ValueError(
+                f"UNIFY_PROMPT_PROFILE must be empty or 'lean', not {v!r}",
+            )
+        return value
+
     @field_validator("UNIFY_DELEGATION", mode="before")
     @classmethod
     def parse_delegation(cls, v: Any) -> str:
@@ -730,6 +755,14 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_WORKSPACE_PYTHON must be empty or 'worker', not {v!r}",
             )
         return value
+
+    def prompt_accuracy(self) -> bool:
+        """Whether the UNIFY_PROMPT_ACCURACY fixes apply (the switch, or the lean profile)."""
+        return bool(self.UNIFY_PROMPT_ACCURACY) or self.UNIFY_PROMPT_PROFILE == "lean"
+
+    def lean_prompt(self) -> bool:
+        """``UNIFY_PROMPT_PROFILE=lean``."""
+        return self.UNIFY_PROMPT_PROFILE == "lean"
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -114,6 +114,20 @@ SWITCH_SETS = {
         "UNIFY_TRY_FIRST": True,
         "UNIFY_CODE_FIRST": True,
     },
+    "accuracy": {"UNIFY_PROMPT_ACCURACY": True},
+    "lean": {"UNIFY_PROMPT_PROFILE": "lean"},
+    "lean, on, delegation on demand": {
+        "UNIFY_PROMPT_PROFILE": "lean",
+        "UNIFY_DELEGATION": "on_demand",
+        "UNIFY_REVIEW_FRAMING": "unified",
+        "UNIFY_CURATION_DOCTRINE": "compose",
+        "UNIFY_REPLY_PROTOCOL_NOTE": True,
+        "UNIFY_FUNCTION_PATCH": True,
+        "UNIFY_STORE_CHECK": "resolve",
+        "UNIFY_TRY_FIRST": True,
+        "UNIFY_CODE_FIRST": True,
+        "UNIFY_FUNCTION_CASES": True,
+    },
 }
 SWITCH_OFF = {
     "UNIFY_REVIEW_FRAMING": "",
@@ -124,6 +138,9 @@ SWITCH_OFF = {
     "UNIFY_TRY_FIRST": False,
     "UNIFY_CODE_FIRST": False,
     "UNIFY_FUNCTION_CASES": False,
+    "UNIFY_PROMPT_ACCURACY": False,
+    "UNIFY_PROMPT_PROFILE": "",
+    "UNIFY_DELEGATION": "on",
 }
 
 PROMPT_MODES = {
@@ -383,7 +400,7 @@ def test_the_actors_prompt_names_no_benchmark(switches, actor_tools, mode):
         tools=tools,
         **PROMPT_MODES[mode],
     )
-    assert "### Execution Rules" in prompt
+    assert "### Execution" in prompt
     assert _findings({f"prompt ({switches}, {mode})": prompt}) == []
 
 

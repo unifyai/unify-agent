@@ -802,7 +802,7 @@ async def async_tool_loop_inner(
     from unify.settings import SETTINGS as _ACCURACY_SETTINGS
 
     _no_parent = (
-        bool(_ACCURACY_SETTINGS.UNIFY_PROMPT_ACCURACY)
+        _ACCURACY_SETTINGS.prompt_accuracy()
         and parent_chat_context is None
         and len(cfg.lineage) < 2
     )
