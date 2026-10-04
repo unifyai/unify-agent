@@ -3,7 +3,6 @@ import asyncio
 import builtins
 import concurrent.futures
 from contextvars import ContextVar
-from datetime import datetime, timezone
 import inspect
 import functools
 import logging
@@ -868,7 +867,7 @@ class FunctionManager(BaseFunctionManager):
         fid = func_data.get("function_id")
         if fid is None:
             return
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = db.now_iso()
         kept = settings.recent_calls_kept
 
         def _write() -> None:
@@ -925,7 +924,7 @@ class FunctionManager(BaseFunctionManager):
         delete-then-add (the librarian's supersede flow) inherits the
         deleted row's usage trace so the replacement stands where its
         predecessor stood."""
-        entry_data["created_at"] = datetime.now(timezone.utc).isoformat()
+        entry_data["created_at"] = db.now_iso()
         inherited = self._take_usage_legacy(name)
         if inherited:
             entry_data.update(
@@ -986,7 +985,7 @@ class FunctionManager(BaseFunctionManager):
         settings = self.activation_settings
         if not settings.enabled:
             return rows[:n]
-        now = datetime.now(timezone.utc)
+        now = db.utc_now()
         ranked: List[tuple[float, int, Dict[str, Any]]] = []
         for idx, row in enumerate(rows):
             standing = activation(
@@ -2308,7 +2307,7 @@ class FunctionManager(BaseFunctionManager):
     @staticmethod
     def _insert_function(entry: Dict[str, Any]) -> int:
         values = _encode_function_values(entry)
-        values.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        values.setdefault("created_at", db.now_iso())
         columns = list(values)
         cursor = db.execute(
             f"INSERT INTO functions ({', '.join(columns)})"

@@ -8,17 +8,16 @@ store holds.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Dict, List
 
 import pytest
 
 import unify.function_manager.function_manager as fm_module
 from tests.helpers import _handle_project
+from unify import db
 from unify.function_manager.activation import ActivationSettings
 from unify.function_manager.function_manager import FunctionManager
-
-NOW = datetime.now(timezone.utc)
 
 
 def _FM(**kwargs: Any) -> FunctionManager:
@@ -35,16 +34,17 @@ def _row(
     is_primitive: bool = False,
     created_days_ago: float = 400,
 ) -> Dict[str, Any]:
+    now = db.utc_now()  # the clock search ranks by
     row: Dict[str, Any] = {
         "function_id": abs(hash(name)) % 10_000,
         "name": name,
         "_similarity": score,
         "is_primitive": is_primitive,
-        "created_at": (NOW - timedelta(days=created_days_ago)).isoformat(),
+        "created_at": (now - timedelta(days=created_days_ago)).isoformat(),
     }
     if days_dormant is not None:
         stamps = [
-            (NOW - timedelta(days=days_dormant + i)).isoformat()
+            (now - timedelta(days=days_dormant + i)).isoformat()
             for i in range(max(1, calls))
         ]
         row["usage_calls"] = calls

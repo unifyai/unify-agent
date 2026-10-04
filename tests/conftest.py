@@ -150,6 +150,10 @@ def stub_external_deps(monkeypatch):
         _static_perf_counter,
     )
 
+    # The store's clock: created_at, usage traces and the history, trust and
+    # case records of stored functions and guidance.
+    monkeypatch.setattr(db, "utc_now", lambda: _FIXED_DATETIME)
+
 
 def _patch_every_copy(monkeypatch, original, replacement) -> None:
     """Point ``original``'s defining attribute and every by-name copy of it

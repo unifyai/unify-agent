@@ -221,8 +221,18 @@ def store_path() -> str:
     return str(store_home() / "store.sqlite")
 
 
+def utc_now() -> datetime:
+    """The store's clock: the current UTC time, timezone-aware.
+
+    Every timestamp the store writes (function and guidance rows, usage
+    traces, history, trust and case records) reads this one function, so a
+    test can freeze it in one place.
+    """
+    return datetime.now(timezone.utc)
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now().isoformat()
 
 
 def _json_default(value: Any) -> Any:
@@ -430,4 +440,5 @@ __all__ = [
     "store_home",
     "store_path",
     "transaction",
+    "utc_now",
 ]
