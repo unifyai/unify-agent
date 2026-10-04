@@ -426,8 +426,12 @@ class ToolsData:
         extra_ask_tools: "Optional[Dict[str, Callable]]" = None,
         completed_askable_tools: Optional[Dict[str, dict]] = None,
         call_counts: Optional[Dict[str, int]] = None,
+        steering_tools: bool = True,
     ):
         self._client = client
+        # False: the loop offers no wait/steer/ask_about_completed_tool, so
+        # nothing announces calls as "[steerable ...]" or "[askable ...]".
+        self.steering_tools = bool(steering_tools)
         self._logger = logger
         self.normalized = normalise_tools(tools)
         self.pending: Set[asyncio.Task] = set()
@@ -474,10 +478,13 @@ class ToolsData:
         self._visibility_guidance_injected: bool = False
         # UNIFY_LIFECYCLE_NOTICES, read once so a loop never changes mid-way:
         # off, the "[steerable ...]" and "[askable ...]" announcements are not
-        # appended (nothing already in the transcript is touched).
+        # appended (nothing already in the transcript is touched). A loop
+        # without the steering tools they name never appends them.
         from unify.settings import SETTINGS
 
-        self._lifecycle_notices: bool = bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES)
+        self._lifecycle_notices: bool = (
+            bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES) and self.steering_tools
+        )
 
     def get_ask_tools(self) -> Dict[str, Callable]:
         """Snapshot of the currently available ``ask_*`` dynamic tools.

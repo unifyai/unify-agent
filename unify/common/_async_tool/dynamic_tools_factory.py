@@ -411,9 +411,11 @@ class DynamicToolFactory:
             self._refresh_task_capabilities(task)
 
         # The static surface is present every turn regardless of what is
-        # pending, completed or paused.
-        self._create_wait_tool()
-        self._create_steer_tool()
-        self._create_ask_about_completed_tool()
+        # pending, completed or paused -- unless the loop runs without it
+        # (steering_tools=False, UNIFY_TOOL_SURFACE=core without sub-actors).
+        if getattr(self.tools_data, "steering_tools", True):
+            self._create_wait_tool()
+            self._create_steer_tool()
+            self._create_ask_about_completed_tool()
 
         self.tools_data._live_ask_fns_ref = self.live_ask_fns

@@ -1145,6 +1145,8 @@ def start_async_tool_loop(
     on_notify: Optional[Callable[[str], Any]] = None,
     fixed_tools_schema: Optional[list[dict]] = None,
     first_message_context: Optional[str] = None,
+    steering_tools: bool = True,
+    compression_tools_on_demand: bool = False,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for
@@ -1161,6 +1163,9 @@ def start_async_tool_loop(
     first_message_context : str | None, default None
         Text that opens the loop's first user message, and the message that
         restarts it after compression (see ``async_tool_loop_inner``).
+
+    steering_tools, compression_tools_on_demand : bool
+        See ``async_tool_loop_inner``; the defaults are as shipped.
 
     timeout : int | None, default None
         Activity-based timeout in seconds. When ``None`` (default), no
@@ -1291,6 +1296,8 @@ def start_async_tool_loop(
                 fixed_tools_schema=fixed_tools_schema,
                 first_message_context=first_message_context,
                 runtime_state=runtime_state,
+                steering_tools=steering_tools,
+                compression_tools_on_demand=compression_tools_on_demand,
             )
         except asyncio.CancelledError:
             raise
@@ -1377,6 +1384,8 @@ def start_async_tool_loop(
         "runtime_state": runtime_state,
         "fixed_tools_schema": fixed_tools_schema,
         "first_message_context": first_message_context,
+        "steering_tools": steering_tools,
+        "compression_tools_on_demand": compression_tools_on_demand,
     }
 
     with suppress(Exception):

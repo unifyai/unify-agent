@@ -493,6 +493,8 @@ async def async_tool_loop_inner(
     runtime_state: Optional[ToolLoopRuntimeState] = None,
     fixed_tools_schema: Optional[list[dict]] = None,
     first_message_context: Optional[str] = None,
+    steering_tools: bool = True,
+    compression_tools_on_demand: bool = False,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -630,6 +632,20 @@ async def async_tool_loop_inner(
         the first user message of a seeded batch), separated from it by a
         rule. A compressed session restarts with it again, since its first
         message is then a new one. ``None`` sends the message as given.
+
+    steering_tools : ``bool``, default ``True``
+        ``False`` (``UNIFY_TOOL_SURFACE=core`` without sub-actors): the loop
+        offers no ``wait``, ``steer`` or ``ask_about_completed_tool``, appends
+        none of the ``[steerable ...]``/``[askable ...]`` announcements that
+        name them, and keeps a turn's own ``tool_choice`` while calls run
+        (``"required"`` would leave only the caller's tools to call).
+
+    compression_tools_on_demand : ``bool``, default ``False``
+        ``True`` (``UNIFY_TOOL_SURFACE=core``): ``compress_context`` and the
+        ``extra_compression_tools`` are offered only on the turn that must
+        compress, as they are offered on it as shipped, and are otherwise left
+        out of the tool list (``UNIFY_CACHE_DISCIPLINE``'s fixed list
+        included), so the list holds only the caller's tools.
 
     Returns
     -------
@@ -927,6 +943,7 @@ async def async_tool_loop_inner(
         extra_ask_tools=extra_ask_tools,
         completed_askable_tools=completed_askable_tools,
         call_counts=runtime_state.call_counts,
+        steering_tools=steering_tools,
     )
     logger.debug(
         f"[setup +{_setup_elapsed()}] ToolsData ready ({len(tools_data.normalized)} tools)",
@@ -2445,12 +2462,15 @@ async def async_tool_loop_inner(
             # the schema but is refused at execution time while anything is
             # pending (see the steer()/response-tool execution branches
             # below), so "required" still only leaves live options.
-            # UNIFY_PENDING_REQUIRED=0 keeps the policy's tool_choice.
+            # UNIFY_PENDING_REQUIRED=0 keeps the policy's tool_choice, and so
+            # does a loop without the steering tools (steering_tools=False),
+            # where "required" would leave only the caller's tools to call.
             _has_pending_tools = bool(tools_data.pending)
             if (
                 _has_pending_tools
                 and tool_choice_mode != "required"
                 and _pending_required
+                and steering_tools
             ):
                 tool_choice_mode = "required"
 
@@ -2531,11 +2551,20 @@ async def async_tool_loop_inner(
                         has_parent_context=bool(parent_chat_context),
                     )
                     for name, spec in policy_tools_norm.items()
+                    if not (
+                        compression_tools_on_demand
+                        and name in (extra_compression_tools or ())
+                    )
                 ]
                 # compress_context stays out of gated turns so required
                 # discovery/tool policies cannot be satisfied by compressing;
                 # forced over-threshold compression above still applies.
-                if _compress_schema is not None and not _policy_gated:
+                # compression_tools_on_demand: only that forced turn has it.
+                if (
+                    _compress_schema is not None
+                    and not _policy_gated
+                    and not compression_tools_on_demand
+                ):
                     visible_base_tools_schema.append(_compress_schema)
 
             # The response-submission tool is in the schema whenever
@@ -2747,12 +2776,39 @@ async def async_tool_loop_inner(
                                     has_parent_context=bool(parent_chat_context),
                                 )
                                 for name, spec in tools_data.normalized.items()
+                                if not (
+                                    compression_tools_on_demand
+                                    and name in (extra_compression_tools or ())
+                                )
                             },
-                            compress_schema=_compress_schema,
-                            turn_schemas=tmp_tools,
+                            compress_schema=(
+                                None
+                                if compression_tools_on_demand
+                                else _compress_schema
+                            ),
+                            turn_schemas=[
+                                schema
+                                for schema in tmp_tools
+                                if not compression_tools_on_demand
+                                or _cache_discipline.schema_name(schema)
+                                not in {
+                                    "compress_context",
+                                    *(extra_compression_tools or ()),
+                                }
+                            ],
                         )
                     )
-                tmp_tools = runtime_state.session_tools_schema
+                # compression_tools_on_demand: the turn that must compress
+                # sends its own list (the session's list has no compression
+                # tools); compression starts a new prefix anyway.
+                _on_demand_turn = (
+                    compression_tools_on_demand
+                    and _over_threshold
+                    and enable_compression
+                    and not _has_pending_tools
+                )
+                if not _on_demand_turn:
+                    tmp_tools = runtime_state.session_tools_schema
                 # Set once, before the first request: the key names the
                 # prefix (model, system prompt, this fixed list) unless a
                 # key is already set, as a fork's is.
