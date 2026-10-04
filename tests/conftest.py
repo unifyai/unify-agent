@@ -196,6 +196,26 @@ def _exact_cache_keying_for_evals(request):
         UNILLM_SETTINGS.UNILLM_CACHE_KEYING = previous
 
 
+@pytest.fixture(autouse=True)
+def _fresh_llm_calls(request, monkeypatch):
+    """A ``fresh_llm_calls`` test reaches the model on every call, never the cache.
+
+    For a test whose subject is the timing between live calls: a recording
+    replays in a fraction of a second and so finishes before a decision the
+    test drives with another call (a pause) can land. Clients read the
+    setting when they are built, so this runs before any fixture builds one.
+    """
+    if request.node.get_closest_marker("fresh_llm_calls") is None:
+        yield
+        return
+
+    from unillm.settings import SETTINGS as UNILLM_SETTINGS
+
+    monkeypatch.setenv("UNILLM_CACHE", "false")
+    monkeypatch.setattr(UNILLM_SETTINGS, "UNILLM_CACHE", False)
+    yield
+
+
 # --------------------------------------------------------------------------- #
 # 4. Command-line options                                                     #
 # --------------------------------------------------------------------------- #

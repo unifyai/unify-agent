@@ -260,7 +260,8 @@ Each test phase (setup, call, teardown) has a time limit: its
 none). At the limit the test fails; `UNIFY_TEST_TIMEOUT_GRACE` seconds later
 (60) the process prints every thread's stack and exits, even if the test's code
 never yields (`tests/_test_timeouts.py`). `UNIFY_TEST_TIMEOUTS=off` or `--pdb`
-disables both.
+disables both. A test marked `@pytest.mark.fresh_llm_calls` never reads the
+UniLLM cache.
 
 ---
 

@@ -1,4 +1,5 @@
-"""Symbolic: tests run sandboxed, and a test's time limit ends it.
+"""Symbolic: tests run sandboxed, a test's time limit ends it, and a test
+can insist on fresh model calls.
 
 The test sandbox (tests/_test_sandbox.py) re-executes every pytest process
 inside bubblewrap; these tests check, from inside it, what code a model
@@ -272,3 +273,26 @@ def test_a_test_that_swallows_the_timeout_is_killed(tmp_path):
     assert "Timeout (0:00:03)!" in output
     assert "test_never_stops" in output
     assert elapsed < 60
+
+
+# ── fresh model calls ───────────────────────────────────────────────────────
+
+
+@pytest.mark.fresh_llm_calls
+def test_a_fresh_calls_test_builds_clients_without_the_cache():
+    import unillm
+
+    assert unillm.SETTINGS.UNILLM_CACHE is False
+    assert os.environ["UNILLM_CACHE"] == "false"
+    from unify.common.llm_client import new_llm_client
+
+    assert new_llm_client().cache is False
+
+
+def test_the_steering_pause_test_always_calls_the_model():
+    from tests.conversation_manager.actions.integration import test_steerability
+
+    marks = {
+        m.name for m in test_steerability.test_pause_resume_inflight_handle.pytestmark
+    }
+    assert "fresh_llm_calls" in marks

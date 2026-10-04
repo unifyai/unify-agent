@@ -32,6 +32,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.eval]
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
+# A cached actor reply finishes in a fraction of a second, before the live
+# pause decision lands, so the handle is never seen paused.
+@pytest.mark.fresh_llm_calls
 @_handle_project
 async def test_pause_resume_inflight_handle(initialized_cm_codeact):
     """Pause and resume an in-flight actor handle via natural user messages."""
