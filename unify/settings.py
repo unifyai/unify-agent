@@ -300,6 +300,21 @@ class ProductionSettings(BaseSettings):
     # its own max_seconds is clamped to this, so a slow call never keeps the
     # model from results that have landed for longer. Between 1 and 120.
     UNIFY_WAIT_CEILING_SECONDS: float = 15.0
+    # No model turn starts while a tool call is still running: the model is
+    # woken once, when every running call has finished, as if each turn added
+    # wait(until="all") over everything in flight. A landed result is held
+    # back at most UNIFY_WAIT_CEILING_SECONDS, counted from the first one held,
+    # and the model is then woken with the results so far. Only tool results
+    # are held: a message from the user, the environment or another agent (an
+    # interjection, a clarification request or a progress notification) still
+    # wakes the model at once, as does a stop. A tool result or a notification
+    # that lands while a model turn is in flight never cancels it (the
+    # provider bills it anyway): the turn finishes and the model gets the
+    # result or the message next. An interjection, a clarification and a stop
+    # still cancel a turn in flight, as shipped. No eager turn is granted
+    # while calls run. Requests, tools and the prompt are unchanged; only when
+    # the model is called changes. Read once per loop. Off: as shipped.
+    UNIFY_BATCH_WAKE: bool = False
     # Off: while the actor's discovery gate is open, no model turn starts
     # before the library searches a turn scheduled have returned. As shipped
     # the gate grants one at once, while they run, and the model is woken as
@@ -473,6 +488,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_REPEAT_GUARD",
+        "UNIFY_BATCH_WAKE",
         "UNIFY_TRY_FIRST",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",

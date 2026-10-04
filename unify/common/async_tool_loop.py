@@ -1171,6 +1171,7 @@ def start_async_tool_loop(
         used, and the tool result reaches the model on the following turn
         instead. That trades a turn of freshness for the cost of the step, which
         is only worth it where nobody is waiting on the latency.
+        ``UNIFY_BATCH_WAKE`` turns it ``False`` for every loop.
 
     persist : bool, default False
         If ``True``, the loop does not terminate when the LLM produces content

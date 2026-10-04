@@ -21,6 +21,16 @@ discovery gate asks for this under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
 Only the forced calls are held: a result from any other call wakes the model
 as shipped.
 
+``UNIFY_BATCH_WAKE`` makes the hold the loop's rule instead of the model's
+choice: whenever calls are running, a hold covers all of them (the model
+declares nothing), its clock starting only when the first result is held
+(``from_first_result``), so a slow batch with nothing landed waits as
+shipped and a landed result waits at most ``UNIFY_WAIT_CEILING_SECONDS``.
+Only tool results wait for it: a new message, a clarification request or a
+progress notification (from the user, the environment or another agent)
+still wakes the model at once. The loop also stops cancelling a sent turn
+when a result or a progress notification lands during it.
+
 The accounting is always on and changes no request: every model turn the loop
 cancels after dispatch is counted on the loop's runtime state and published as
 a ``ToolLoopCancelledTurn`` event (``unify/events/types/tool_loop.py``), once
@@ -48,6 +58,12 @@ def enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(SETTINGS.UNIFY_WAIT_FOR_BATCH)
+
+
+def batch_wake() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_BATCH_WAKE)
 
 
 def ceiling_seconds() -> float:
@@ -118,13 +134,18 @@ class BatchHold:
     waiting, so the turn it earned is granted when the hold ends.
     ``own_only`` marks a hold a tool policy imposed on the calls it forced
     (``"required_unit"``): only their results are held, and a result from
-    any other call wakes the model as shipped.
+    any other call wakes the model as shipped. ``from_first_result`` marks
+    the hold ``UNIFY_BATCH_WAKE`` installs: its time starts when the first
+    result is held (``hold``), not when it is installed, so it never ends
+    while there is nothing to wake the model with.
     """
 
     tasks: Set[asyncio.Task] = field(default_factory=set)
     until: Optional[float] = None
     owed: bool = False
     own_only: bool = False
+    from_first_result: bool = False
+    seconds: float = 0.0
 
     @property
     def declared(self) -> bool:
@@ -136,29 +157,45 @@ class BatchHold:
         seconds: float,
         *,
         own_only: bool = False,
+        from_first_result: bool = False,
     ) -> None:
         self.tasks = set(tasks)
-        self.until = time.monotonic() + seconds
+        self.seconds = seconds
+        self.until = None if from_first_result else time.monotonic() + seconds
         self.owed = False
         self.own_only = own_only
+        self.from_first_result = from_first_result
 
     def holds(self, landed: Set[asyncio.Task]) -> bool:
         """Whether the results of *landed* wait for the hold to end."""
         return self.declared and (not self.own_only or not (landed - self.tasks))
 
+    def hold(self) -> None:
+        """A result landed and waits for the hold to end: it is owed a turn,
+        and a ``from_first_result`` hold's time starts now."""
+        self.owed = True
+        if self.until is None and self.from_first_result:
+            self.until = time.monotonic() + self.seconds
+
     def active(self, pending: Set[asyncio.Task]) -> bool:
         """Still holding: a declared call is running and the time is not up."""
-        return (
-            self.declared
-            and bool(self.tasks & pending)
-            and self.until is not None
-            and time.monotonic() < self.until
-        )
+        if not (self.declared and self.tasks & pending):
+            return False
+        if self.until is None:
+            return self.from_first_result
+        return time.monotonic() < self.until
 
     def remaining(self) -> float:
         if self.until is None:
             return 0.0
         return max(0.0, self.until - time.monotonic())
+
+    def time_left(self) -> Optional[float]:
+        """How long the hold may still wait; ``None`` while a
+        ``from_first_result`` hold has held nothing, so has no deadline."""
+        if self.until is None and self.from_first_result:
+            return None
+        return self.remaining()
 
     def release(self) -> bool:
         """End the hold; return whether a held result still owes a turn."""
@@ -167,6 +204,8 @@ class BatchHold:
         self.until = None
         self.owed = False
         self.own_only = False
+        self.from_first_result = False
+        self.seconds = 0.0
         return owed
 
 

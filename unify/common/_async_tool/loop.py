@@ -545,6 +545,14 @@ async def async_tool_loop_inner(
         a new user turn arrives so the assistant can pivot immediately; when
         ``False`` the loop waits for the model to finish first.
 
+    interrupt_llm_on_tool_completion : ``bool``, default ``True``
+        When ``True`` a tool result landing during an in-flight
+        ``client.generate`` cancels it (the provider still bills it) so the
+        next step starts with the result; ``False`` lets the step finish and
+        the result reaches the model on the following turn.
+        ``UNIFY_BATCH_WAKE`` makes it ``False``, and also holds every turn
+        until the calls in flight have finished (see ``batch_wait``).
+
     propagate_chat_context : ``ChatContextPropagation``, default ``LLM_DECIDES``
         Whether a filtered snapshot of this loop's conversation (genuine user
         turns and substantive assistant text only) is threaded into child
@@ -1649,6 +1657,25 @@ async def async_tool_loop_inner(
         except Exception:
             pass
 
+    def _hold_running_calls() -> None:
+        """UNIFY_BATCH_WAKE: hold the next turn until every running call has
+        finished. A call waiting for a clarification is left out: only the
+        model can let it finish, and its question wakes the model anyway. The
+        hold's time starts with the first result it holds."""
+        if not _batch_wake or _hold.declared:
+            return
+        running = {
+            t
+            for t in tools_data.pending
+            if not getattr(tools_data.info.get(t), "waiting_for_clarification", False)
+        }
+        if running:
+            _hold.install(
+                running,
+                _batch_wait.ceiling_seconds(),
+                from_first_result=True,
+            )
+
     def _on_cancelled_turn(payload: dict) -> None:
         """Record and publish one phase of a cancelled turn's accounting."""
         _batch_wait.record(runtime_state, payload)
@@ -1667,6 +1694,12 @@ async def async_tool_loop_inner(
     # held until they have all finished or the hold's time is up.
     _wait_for_batch = _batch_wait.enabled()
     _hold = _batch_wait.BatchHold()
+    # UNIFY_BATCH_WAKE, read once for the loop: while calls run, a hold covers
+    # all of them (only tool results wait for it), and a result or a
+    # notification never cancels a sent turn.
+    _batch_wake = _batch_wait.batch_wake()
+    if _batch_wake:
+        interrupt_llm_on_tool_completion = False
     # A patient interjection (trigger_immediate_llm_turn=False) arriving while
     # the LLM is already thinking earns exactly one extra LLM step after the
     # current one, unless another event triggers a turn anyway.
@@ -2162,10 +2195,18 @@ async def async_tool_loop_inner(
             # finished or its time is up; a result it held back is owed the
             # turn it would have had.
             if _hold.declared and not _hold.active(tools_data.pending):
+                if _batch_wake and _hold.owed and _hold.tasks & tools_data.pending:
+                    logger.info(
+                        f"Results held for {_hold.seconds:g}s while "
+                        f"{len(_hold.tasks & tools_data.pending)} call(s) still "
+                        "run – waking the model with the results so far.",
+                        prefix=ICONS["wait"],
+                    )
                 if _hold.release():
                     llm_turn_required = True
             # Skipped entirely when the model already needs to speak.
             if tools_data.pending and not llm_turn_required:
+                _hold_running_calls()
                 interject_w = asyncio.create_task(
                     interject_queue.get(),
                     name="InterjectQueueGet",
@@ -2210,8 +2251,8 @@ async def async_tool_loop_inner(
                     )
 
                 _wait_timeout = timer.remaining_time()
-                if _hold.declared:
-                    _left = _hold.remaining()
+                _left = _hold.time_left() if _hold.declared else None
+                if _left is not None:
                     _wait_timeout = (
                         _left if _wait_timeout is None else min(_wait_timeout, _left)
                     )
@@ -2277,13 +2318,15 @@ async def async_tool_loop_inner(
                     notif_waiters,
                 )
                 # Under a hold only results wait: an interjection, a
-                # clarification or a notification wakes the model as shipped.
+                # clarification or a notification (a message from the user,
+                # the environment or another agent) wakes the model as
+                # shipped, UNIFY_BATCH_WAKE included.
                 _event_wake = restart or bool(
                     done & (clar_waiters.keys() | notif_waiters.keys()),
                 )
                 if needs_turn:
                     if _hold.declared and not _event_wake and _hold.holds(_landed):
-                        _hold.owed = True
+                        _hold.hold()
                     else:
                         llm_turn_required = True
                 if _hold.declared and _event_wake and _hold.release():
@@ -2929,7 +2972,7 @@ async def async_tool_loop_inner(
                     (_finished and interrupt_llm_on_tool_completion)
                     or (interject_w in done and not _patient_interjection)
                     or done & clar_waiters2.keys()
-                    or done & notif_waiters2.keys()
+                    or (done & notif_waiters2.keys() and not _batch_wake)
                 ):
                     if _finished:
                         logger.debug(
@@ -2989,6 +3032,20 @@ async def async_tool_loop_inner(
                 # placeholder is no longer at the tail appends a synthetic
                 # assistant/tool status pair, and the loop would otherwise
                 # mistake that pair's tool message for this step's turn.
+                # UNIFY_BATCH_WAKE: a notification that landed during the
+                # step does not cancel it either; it goes back to the front of
+                # its tool's queue, so it is delivered (or drained with the
+                # tool's result) once the step has landed, and wakes the model
+                # then.
+                if _batch_wake and done & notif_waiters2.keys():
+                    for pw, src in notif_waiters2.items():
+                        if pw in done:
+                            _requeue_at_front(
+                                tools_data.info[src].notification_queue,
+                                pw.result(),
+                            )
+                    if not (_finished or interject_w in done):
+                        await asyncio.gather(llm_task, return_exceptions=True)
                 if _finished or interject_w in done:
                     deferred_llm_turn = True
                     await asyncio.gather(llm_task, return_exceptions=True)
@@ -4286,6 +4343,7 @@ async def async_tool_loop_inner(
 
                 if _declared_wait is not None:
                     await _declare_batch_wait(msg, *_declared_wait)
+                _hold_running_calls()
                 if _policy_unit and not _hold.declared:
                     _hold_required_unit(msg)
 
