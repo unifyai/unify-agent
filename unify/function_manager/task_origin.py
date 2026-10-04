@@ -39,6 +39,15 @@ runs it is split into. A shared id then weighs as one rare token instead of
 a few short runs (``ddc``, ``8``, ``a``, ``32``, ``b``) that other ids share.
 A request without such a word is compared exactly as without the switch.
 
+``UNIFY_SIMILAR_REQUEST_CORPUS=stream`` weighs the tokens over more requests:
+each top-level request is also logged (its key and bounded copy) in
+``<UNIFY_HOME>/request_log.sqlite``, which keeps the latest
+:data:`REQUEST_LOG_SIZE` distinct requests across restarts, and the weights
+count those as well as the library's origin requests and the current one. A
+function stored for one or two requests then scores on wording the stream's
+other requests do not share, where the library alone could not tell it from
+a preamble. A sub-agent's request is not logged (it is not a new task).
+
 Calibrated offline on a split of recorded opening requests and hand-written
 assistant requests (research artifact similar-request-v1): recurring requests
 whose parameters change score about 0.25-0.9, different requests in one
@@ -52,11 +61,17 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import logging
 import math
 import re
+import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 FIELD = "origin_tasks"
 REQUESTS_FIELD = "origin_requests"
@@ -69,6 +84,10 @@ _TAIL = 2000
 # A search result shows ``similar_request`` from this similarity on.
 SIMILAR_REQUEST_THRESHOLD = 0.24
 MARK = "similar_request"
+# UNIFY_SIMILAR_REQUEST_CORPUS=stream: the request log keeps this many
+# distinct top-level requests, the latest.
+REQUEST_LOG_SIZE = 200
+REQUEST_LOG_FILE = "request_log.sqlite"
 
 _WS = re.compile(r"\s+")
 # A run of letters or a run of digits (any script).
@@ -186,7 +205,75 @@ def enter(request: Any) -> Optional[contextvars.Token]:
     key = task_key(request)
     if key is None:
         return None
-    return _CURRENT.set(_Task(key=key, text=bounded_text(request)))
+    task = _Task(key=key, text=bounded_text(request))
+    if _stream_corpus():
+        _log_request(task)
+    return _CURRENT.set(task)
+
+
+def _stream_corpus() -> bool:
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_SIMILAR_REQUEST_CORPUS", "") == "stream"
+
+
+def request_log_path() -> Path:
+    """``<UNIFY_HOME>/request_log.sqlite``: the log of top-level requests."""
+    from unify import db
+
+    return db.store_home() / REQUEST_LOG_FILE
+
+
+def _connect_log(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS requests (seq INTEGER PRIMARY KEY"
+        " AUTOINCREMENT, key TEXT NOT NULL UNIQUE, text TEXT NOT NULL)",
+    )
+    return conn
+
+
+def _log_request(task: _Task) -> None:
+    """Log *task* as the latest request; keep the latest :data:`REQUEST_LOG_SIZE`.
+
+    A request seen before moves to the end. A log that cannot be written is
+    skipped with a warning: the weights then come from the library alone.
+    """
+    try:
+        path = request_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(_connect_log(path)) as conn, conn:
+            conn.execute("DELETE FROM requests WHERE key = ?", (task.key,))
+            conn.execute(
+                "INSERT INTO requests (key, text) VALUES (?, ?)",
+                (task.key, task.text),
+            )
+            conn.execute(
+                "DELETE FROM requests WHERE seq NOT IN"
+                " (SELECT seq FROM requests ORDER BY seq DESC LIMIT ?)",
+                (REQUEST_LOG_SIZE,),
+            )
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(f"request log not written: {type(exc).__name__}: {exc}")
+
+
+def logged_requests() -> List[str]:
+    """The logged requests' bounded copies, oldest first (empty without a log)."""
+    path = request_log_path()
+    if not path.exists():
+        return []
+    try:
+        with closing(_connect_log(path)) as conn:
+            return [
+                text
+                for (text,) in conn.execute(
+                    "SELECT text FROM requests ORDER BY seq",
+                )
+            ]
+    except sqlite3.Error as exc:
+        logger.warning(f"request log not read: {type(exc).__name__}: {exc}")
+        return []
 
 
 def leave(token: Optional[contextvars.Token]) -> None:
@@ -256,7 +343,8 @@ class Marker:
     """Marks the search rows of functions stored while handling a similar request.
 
     *library* holds the rows of every function the search could return: their
-    origin requests and the current request weight the tokens.
+    origin requests and the current request weight the tokens (with
+    ``UNIFY_SIMILAR_REQUEST_CORPUS=stream``, the logged requests too).
     """
 
     def __init__(self, library: Sequence[Dict[str, Any]] = ()) -> None:
@@ -267,6 +355,8 @@ class Marker:
     def _token_weights(self, task: _Task) -> Dict[str, float]:
         if self._weights is None:
             texts = [text for row in self._library for text in _origins(row)[1]]
+            if _stream_corpus():
+                texts = [*logged_requests(), *texts]
             self._weights = token_weights([*texts, task.text])
         return self._weights
 

@@ -464,6 +464,15 @@ class ProductionSettings(BaseSettings):
     # it is split into, so a shared id counts as one rare token. A request
     # without such a word scores exactly as before. Off: as shipped.
     UNIFY_SIMILAR_REQUEST_IDENTIFIERS: bool = False
+    # ``stream``: ``similar_request`` weighs tokens by their rarity among the
+    # last 200 distinct top-level requests this home has handled (a log in
+    # ``<UNIFY_HOME>/request_log.sqlite``, kept across restarts), as well as
+    # the library's origin requests and the current one. A sub-agent's
+    # request is not logged. With only the library's few origin requests, a
+    # word that two of them share weighs nothing, so a function stored for
+    # one or two requests rarely scores above 0. Empty: the weights come from
+    # the library's origin requests and the current one, as shipped.
+    UNIFY_SIMILAR_REQUEST_CORPUS: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -654,6 +663,16 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session', 'run' "
                 f"or 'static', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_SIMILAR_REQUEST_CORPUS", mode="before")
+    @classmethod
+    def parse_similar_request_corpus(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "stream"):
+            raise ValueError(
+                f"UNIFY_SIMILAR_REQUEST_CORPUS must be empty or 'stream', not {v!r}",
             )
         return value
 
