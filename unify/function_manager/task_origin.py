@@ -32,6 +32,13 @@ to tell shared wording from distinctive wording by, so the score is low (with
 one stored request it is 0 unless the texts are equal): a mark needs a
 library of a few requests.
 
+``UNIFY_SIMILAR_REQUEST_IDENTIFIERS`` also keeps every whole identifier as a
+token of its own: an ASCII word of 6 or more letters, digits, ``_`` or ``-``
+that mixes letters and digits (``task-ddc8a32b``, ``inv_2024q3``), next to the
+runs it is split into. A shared id then weighs as one rare token instead of
+a few short runs (``ddc``, ``8``, ``a``, ``32``, ``b``) that other ids share.
+A request without such a word is compared exactly as without the switch.
+
 Calibrated offline on a split of recorded opening requests and hand-written
 assistant requests (research artifact similar-request-v1): recurring requests
 whose parameters change score about 0.25-0.9, different requests in one
@@ -66,6 +73,13 @@ MARK = "similar_request"
 _WS = re.compile(r"\s+")
 # A run of letters or a run of digits (any script).
 _TOKEN = re.compile(r"[^\W\d_]+|\d+")
+# UNIFY_SIMILAR_REQUEST_IDENTIFIERS: a whole identifier, 6 or more ASCII
+# letters, digits, ``_`` or ``-`` mixing letters and digits. Kept with a
+# prefix no run of letters or digits has, so it never merges with one.
+_IDENTIFIER = re.compile(
+    r"\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{6,}\b",
+)
+_IDENTIFIER_PREFIX = "#"
 
 
 @dataclass(frozen=True)
@@ -115,10 +129,29 @@ def bounded_text(request: Any) -> str:
     return text
 
 
-@lru_cache(maxsize=4096)
+def _identifiers_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_SIMILAR_REQUEST_IDENTIFIERS", False))
+
+
 def tokens(text: str) -> frozenset[str]:
-    """The tokens a request is compared by: its runs of letters and of digits."""
-    return frozenset(_TOKEN.findall(text.lower()))
+    """The tokens a request is compared by: its runs of letters and of digits.
+
+    With ``UNIFY_SIMILAR_REQUEST_IDENTIFIERS`` also its whole identifiers,
+    each prefixed with ``#``.
+    """
+    return _tokens(text, _identifiers_enabled())
+
+
+@lru_cache(maxsize=4096)
+def _tokens(text: str, identifiers: bool) -> frozenset[str]:
+    found = set(_TOKEN.findall(text.lower()))
+    if identifiers:
+        found.update(
+            _IDENTIFIER_PREFIX + word.lower() for word in _IDENTIFIER.findall(text)
+        )
+    return frozenset(found)
 
 
 def token_weights(texts: Iterable[str]) -> Dict[str, float]:

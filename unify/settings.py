@@ -458,6 +458,12 @@ class ProductionSettings(BaseSettings):
     # but the prompt says nothing about using free things before paid ones.
     # UNIFY_TRY_FIRST alone keeps both, as before. Off: as shipped.
     UNIFY_TASK_ORIGIN: bool = False
+    # ``similar_request`` also compares whole identifiers: an ASCII word of 6
+    # or more letters, digits, ``_`` or ``-`` mixing letters and digits (a
+    # task id, a hash) is a token of its own beside the letter and digit runs
+    # it is split into, so a shared id counts as one rare token. A request
+    # without such a word scores exactly as before. Off: as shipped.
+    UNIFY_SIMILAR_REQUEST_IDENTIFIERS: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -597,6 +603,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LIFECYCLE_NOTICES",
         "UNIFY_TRY_FIRST",
         "UNIFY_TASK_ORIGIN",
+        "UNIFY_SIMILAR_REQUEST_IDENTIFIERS",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",
         "UNIFY_CACHE_DISCIPLINE",
