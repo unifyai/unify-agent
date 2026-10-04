@@ -5389,6 +5389,14 @@ class CodeActActor(BaseCodeActActor):
         core = core_surface.enabled()
         if core:
             core_surface.require_prerequisites(can_compose=effective_can_compose)
+        # UNIFY_SHORTLIST_GATE: refuse a gate nothing could pass.
+        from unify.settings import SETTINGS as _GATE_SETTINGS
+
+        shortlist_gate = _GATE_SETTINGS.shortlist_gate_threshold()
+        if shortlist_gate is not None:
+            from unify.actor.library_shortlist import require_gate_prerequisites
+
+            require_gate_prerequisites()
 
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(
@@ -5965,8 +5973,12 @@ class CodeActActor(BaseCodeActActor):
             # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
             # request, after the snapshot line; ranked inside the task's
             # origin context, so a function stored for a similar request
-            # carries its mark.
-            if SETTINGS.UNIFY_LIBRARY_SHORTLIST:
+            # carries its mark. UNIFY_SHORTLIST_GATE: by request similarity,
+            # for a top-level task only (a sub-agent inherits its caller's
+            # request, so its list would be its caller's again).
+            if SETTINGS.UNIFY_LIBRARY_SHORTLIST and (
+                shortlist_gate is None or task_origin_token is not None
+            ):
                 from unify.actor.library_shortlist import shortlist_block
 
                 shortlist = shortlist_block(
@@ -5981,6 +5993,7 @@ class CodeActActor(BaseCodeActActor):
                         str(k).startswith("GuidanceManager_") for k in base_tools
                     )
                     or (core_session is not None and core_session.prompt.guidance),
+                    gate=shortlist_gate,
                 )
                 if shortlist:
                     first_message_parts.append(shortlist)

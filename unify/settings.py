@@ -8,7 +8,8 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
-from typing import Any
+import math
+from typing import Any, Optional
 
 import unillm
 from pydantic import Field, field_validator
@@ -31,6 +32,20 @@ def _parse_bool(v: Any) -> bool:
     if isinstance(v, str):
         return v.lower() in ("true", "yes", "1", "on")
     return bool(v)
+
+
+def _shortlist_gate_threshold(value: Any) -> Optional[float]:
+    """The threshold of a ``similar_request:<t>`` gate; ``None`` when empty or invalid."""
+    signal, sep, raw = str(value or "").strip().lower().partition(":")
+    if not sep or signal.strip() != "similar_request":
+        return None
+    try:
+        threshold = float(raw)
+    except ValueError:
+        return None
+    if not math.isfinite(threshold) or not 0 < threshold <= 1:
+        return None
+    return threshold
 
 
 class ProductionSettings(BaseSettings):
@@ -473,6 +488,21 @@ class ProductionSettings(BaseSettings):
     # one or two requests rarely scores above 0. Empty: the weights come from
     # the library's origin requests and the current one, as shipped.
     UNIFY_SIMILAR_REQUEST_CORPUS: str = ""
+    # ``similar_request:<t>`` (0 < t <= 1), with UNIFY_LIBRARY_SHORTLIST and
+    # UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): the shortlist lists only stored
+    # functions recorded under a request whose ``similar_request`` to the
+    # current one is at least t, at most five, ranked by that score, then by
+    # how often each was called, then newest first, one line each:
+    # ``function `name(sig)`: first docstring line [similar_request 0.31 ·
+    # used 4×]``. No embedding is computed; the activation ranking and the
+    # hiding of lapsed functions are not applied; guidance (which records no
+    # origin) and functions without an origin record are never listed. Only
+    # a top-level task gets the list (a sub-agent's score would be its
+    # caller's request's). The list is written once in the first message and
+    # the model can still search. An actor refuses to start with the gate
+    # set and either companion switch off. Empty: the shortlist ranks by
+    # embedding similarity, as shipped.
+    UNIFY_SHORTLIST_GATE: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -676,6 +706,20 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
+    @field_validator("UNIFY_SHORTLIST_GATE", mode="before")
+    @classmethod
+    def parse_shortlist_gate(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if not value:
+            return ""
+        threshold = _shortlist_gate_threshold(value)
+        if threshold is None:
+            raise ValueError(
+                "UNIFY_SHORTLIST_GATE must be empty or 'similar_request:<t>' "
+                f"with 0 < t <= 1, not {v!r}",
+            )
+        return f"similar_request:{threshold:g}"
+
     @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
     @classmethod
     def parse_prompt_clock(cls, v: Any) -> str:
@@ -851,6 +895,10 @@ class ProductionSettings(BaseSettings):
     def lean_prompt(self) -> bool:
         """``UNIFY_PROMPT_PROFILE=lean``."""
         return self.UNIFY_PROMPT_PROFILE == "lean"
+
+    def shortlist_gate_threshold(self) -> Optional[float]:
+        """The ``UNIFY_SHORTLIST_GATE`` threshold; ``None`` when the gate is off."""
+        return _shortlist_gate_threshold(self.UNIFY_SHORTLIST_GATE)
 
     model_config = SettingsConfigDict(
         env_file=".env",

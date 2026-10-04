@@ -3359,6 +3359,39 @@ class FunctionManager(BaseFunctionManager):
             rows.append(compact)
         return rows
 
+    def _gated_shortlist_rows(self, threshold: float, k: int) -> List[Dict[str, Any]]:
+        """``UNIFY_SHORTLIST_GATE``: the stored functions recorded under a request like this one.
+
+        The at most *k* stored functions in scope (primitives excluded) whose
+        ``similar_request`` to the current request is at least *threshold*,
+        ranked by it, then by calls, then newest. Nothing is embedded; the
+        activation ranking and its hiding of lapsed functions do not apply;
+        no search hit is counted. Rows carry ``function_id``, ``name``,
+        ``argspec``, ``docstring``, ``usage_calls`` and ``similar_request``.
+        """
+        from unify.actor.library_shortlist import gate_rows
+
+        if k <= 0:
+            return []
+        library = self._rows(self._compositional_scope())
+        if not library:
+            return []
+        marker = task_origin.Marker(library)
+        return [
+            {
+                key: row.get(key)
+                for key in (
+                    "function_id",
+                    "name",
+                    "argspec",
+                    "docstring",
+                    "usage_calls",
+                    "similar_request",
+                )
+            }
+            for row in gate_rows(library, marker, threshold, k=k)
+        ]
+
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #
     # ------------------------------------------------------------------ #

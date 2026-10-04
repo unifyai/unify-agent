@@ -19,12 +19,21 @@ not the model's retrieval, so it leaves the functions' standing unchanged.
 Primitives are left out (they are platform surface, documented elsewhere), as
 are entries with nothing to compare and functions the activation ranking
 drops as lapsed. A ranking that fails (no embeddings) gives no list.
+
+``UNIFY_SHORTLIST_GATE=similar_request:<t>`` lists by request instead: only
+stored functions recorded under a request (``UNIFY_TASK_ORIGIN``) whose
+``similar_request`` to the current one is at least *t*, ranked by that score,
+then by how often each was called, then newest first (:func:`gate_rows`).
+Nothing is embedded, the activation ranking and its hiding of lapsed
+functions do not apply, and guidance, which records no request, is not
+listed. Each line shows the score and the call count as evidence; a task
+whose request resembles none of the recorded ones gets no list.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +44,12 @@ _SUMMARY_CHARS = 140
 _HEADER = (
     "Library entries closest to this request, ranked by similarity "
     "(read or call any of them if useful):"
+)
+# UNIFY_SHORTLIST_GATE
+_GATED_HEADER = (
+    "Stored functions saved while handling requests similar to this one "
+    "(similar_request: overlap of the two requests' words, 1 is the same "
+    "request; used: times called). Read or call any of them if useful:"
 )
 
 
@@ -74,6 +89,72 @@ def _function_line(row: Dict[str, Any]) -> str:
     if row.get("similar_request") is not None:
         line += f" [similar_request {row['similar_request']}]"
     return line
+
+
+def _gated_function_line(row: Dict[str, Any]) -> str:
+    argspec = str(row.get("argspec") or "").strip()
+    signature = f"{row.get('name')}{argspec if argspec.startswith('(') else '(' + argspec + ')'}"
+    line = f"- function `{signature}`"
+    summary = _first_line(row.get("docstring"))
+    if summary:
+        line += f": {summary}"
+    score = float(row.get("similar_request") or 0.0)
+    calls = int(row.get("usage_calls") or 0)
+    return line + f" [similar_request {score:.2f} · used {calls}×]"
+
+
+def gate_rows(
+    rows: Sequence[Dict[str, Any]],
+    marker: Any,
+    threshold: float,
+    *,
+    k: int = K,
+) -> List[Dict[str, Any]]:
+    """``UNIFY_SHORTLIST_GATE``: the at most *k* rows *marker* scores at least *threshold*.
+
+    *marker* is a :class:`~unify.function_manager.task_origin.Marker`; a row
+    it cannot score (no recorded request, or no current one) is never kept.
+    Ranked by score, then call count (``usage_calls``), then newest (the
+    larger id: the store's insertion order, which no benchmark clock moves).
+    Each kept row is a copy carrying its ``similar_request`` score.
+    """
+    kept: List[tuple[float, int, int, Dict[str, Any]]] = []
+    for row in rows:
+        score = marker.score(row)
+        if score is None or score < threshold:
+            continue
+        newest = int(row.get("function_id") or row.get("guidance_id") or 0)
+        kept.append((score, int(row.get("usage_calls") or 0), newest, row))
+    kept.sort(key=lambda item: (-item[0], -item[1], -item[2]))
+    return [
+        {**row, "similar_request": round(score, 2)}
+        for score, _, _, row in kept[: max(k, 0)]
+    ]
+
+
+def require_gate_prerequisites() -> None:
+    """Refuse ``UNIFY_SHORTLIST_GATE`` without the switches it reads.
+
+    Raises :class:`ValueError` naming the missing switch: without the
+    shortlist there is nothing to gate, and without request records nothing
+    could ever pass the gate.
+    """
+    from unify.function_manager import task_origin
+    from unify.settings import SETTINGS
+
+    if SETTINGS.shortlist_gate_threshold() is None:
+        return
+    if not SETTINGS.UNIFY_LIBRARY_SHORTLIST:
+        raise ValueError(
+            "UNIFY_SHORTLIST_GATE needs UNIFY_LIBRARY_SHORTLIST=1: it decides "
+            "which entries the shortlist lists.",
+        )
+    if not task_origin.enabled():
+        raise ValueError(
+            "UNIFY_SHORTLIST_GATE needs UNIFY_TASK_ORIGIN=1 (or UNIFY_TRY_FIRST=1): "
+            "without the requests stored functions were recorded under, no "
+            "function could pass the gate.",
+        )
 
 
 def _guidance_line(row: Dict[str, Any]) -> str:
@@ -123,8 +204,15 @@ def shortlist_block(
     *,
     functions: bool = True,
     guidance: bool = True,
+    gate: Optional[float] = None,
 ) -> Optional[str]:
-    """The shortlist as first-message text, or ``None`` (nothing to list, or no ranking)."""
+    """The shortlist as first-message text, or ``None`` (nothing to list, or no ranking).
+
+    With *gate* (``UNIFY_SHORTLIST_GATE``'s threshold) only the stored
+    functions whose ``similar_request`` passes it, and no embedding.
+    """
+    if gate is not None:
+        return _gated_block(function_manager, gate, functions=functions)
     try:
         rows = shortlist_rows(
             function_manager,
@@ -145,6 +233,25 @@ def shortlist_block(
     return "\n".join([_HEADER, *lines])
 
 
+def _gated_block(
+    function_manager: Any,
+    gate: float,
+    *,
+    functions: bool,
+) -> Optional[str]:
+    ranked = getattr(function_manager, "_gated_shortlist_rows", None)
+    if not functions or not callable(ranked):
+        return None
+    try:
+        rows = ranked(gate, K)
+    except Exception as exc:
+        logger.debug(f"gated shortlist unavailable: {type(exc).__name__}: {exc}")
+        return None
+    if not rows:
+        return None
+    return "\n".join([_GATED_HEADER, *(_gated_function_line(row) for row in rows)])
+
+
 def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:
     """The function names and guidance ids a block lists (for analysis and tests)."""
     out: Dict[str, List[str]] = {"functions": [], "guidance": []}
@@ -158,7 +265,9 @@ def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:
 
 __all__ = [
     "K",
+    "gate_rows",
     "request_text",
+    "require_gate_prerequisites",
     "shortlist_block",
     "shortlist_rows",
     "shortlisted_names",
