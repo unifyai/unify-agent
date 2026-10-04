@@ -363,6 +363,16 @@ def _default_tool_policy(
     (``UNIFY_WAIT_FOR_BATCH``) waits for them instead, and the gate, still
     open, requires the missing family on the turn it is woken for.
 
+    With ``UNIFY_DISCOVERY_SPECULATIVE_TURN`` off the policy returns
+    ``{"eager": False, "gated": True}`` instead: no turn is granted while the
+    searches a turn scheduled are running, so none is started only to be
+    cancelled (and still billed) when one lands. The gated turns themselves
+    are unchanged (``tool_choice="required"``, only the discovery tools,
+    parallel calls asked for, ``compress_context`` withheld), and a model
+    that fires one family is woken once that call has returned, on a turn
+    that, the gate still open, requires the missing family. The switch is
+    read each time the policy is evaluated.
+
     When only a subset of the manager tool families is present, those families
     act as the gates.  When none are present the policy is a no-op pass-through.
 
@@ -412,11 +422,18 @@ def _default_tool_policy(
             gated.update(_discovery_tools_for_prefix(filtered, "GuidanceManager_"))
 
         if gated:
-            opts: dict = {"eager": True}
+            from unify.common._async_tool import cache_discipline
+            from unify.settings import SETTINGS
+
+            # UNIFY_DISCOVERY_SPECULATIVE_TURN off: gated turns without the
+            # eager turn granted while their searches run.
+            opts: dict = (
+                {"eager": True}
+                if SETTINGS.UNIFY_DISCOVERY_SPECULATIVE_TURN
+                else {"eager": False, "gated": True}
+            )
             # Under UNIFY_CACHE_DISCIPLINE the other tools stay in the request
             # and a call to one is refused with this rule.
-            from unify.common._async_tool import cache_discipline
-
             if cache_discipline.enabled():
                 required = ", ".join(f"`{name}`" for name in gated)
                 opts["mask_rule"] = (

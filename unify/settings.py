@@ -300,6 +300,14 @@ class ProductionSettings(BaseSettings):
     # its own max_seconds is clamped to this, so a slow call never keeps the
     # model from results that have landed for longer. Between 1 and 120.
     UNIFY_WAIT_CEILING_SECONDS: float = 15.0
+    # Off: while the actor's discovery gate is open, no model turn starts
+    # before the library searches a turn scheduled have returned. As shipped
+    # the gate grants one at once, while they run; it is cancelled, and still
+    # billed, when a search lands during it. The gate still requires the
+    # searches (tool_choice "required", only the gated tools, parallel calls
+    # asked for), and a turn that leaves a family out is followed, once its
+    # calls return, by one that requires it. On: as shipped.
+    UNIFY_DISCOVERY_SPECULATIVE_TURN: bool = True
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
     # requester has already answered is held back once: the loop appends a
@@ -439,6 +447,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
+        "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         mode="before",
     )
     @classmethod

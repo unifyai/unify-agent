@@ -132,7 +132,9 @@ def _parse_tool_policy_result(
 
     While ``eager=True``, the loop also withholds ``compress_context`` from the
     visible tool schema (except on the forced over-threshold compression path)
-    so gated required policies cannot be bypassed by compressing context.
+    so gated required policies cannot be bypassed by compressing context, and
+    asks for parallel tool calls. ``{"gated": True}`` asks for those two
+    without the eager turn (see ``_policy_gates_turn``).
     """
     if not isinstance(result, (tuple, list)) or len(result) < 2:
         raise TypeError(
@@ -147,6 +149,20 @@ def _parse_tool_policy_result(
         else:
             eager = bool(opts)
     return str(mode), tools, eager
+
+
+def _policy_gates_turn(result: Any) -> bool:
+    """Whether a ``tool_policy`` result gates the turn it is evaluated for.
+
+    A gated turn withholds ``compress_context`` from the visible schema and
+    asks for parallel tool calls, so the required calls are made together
+    and cannot be bypassed by compressing. Eager results gate their turn;
+    ``{"gated": True}`` gates it without the eager turn, which the actor's
+    discovery gate returns under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
+    """
+    _, _, eager = _parse_tool_policy_result(result)
+    opts = result[2] if len(result) >= 3 else None
+    return eager or (isinstance(opts, dict) and bool(opts.get("gated", False)))
 
 
 def _is_cache_miss_error(exc: BaseException | None) -> bool:
@@ -530,8 +546,9 @@ async def async_tool_loop_inner(
         after scheduling tool calls, without waiting for them, for as long as
         the policy keeps returning ``eager=True``; eager turns also withhold
         ``compress_context`` from the visible schema (forced over-threshold
-        compression still applies). Omitting ``eager`` keeps the
-        wait-for-results behaviour. A turn that declares
+        compression still applies) and ask for parallel tool calls, which
+        ``{"gated": True}`` asks for without the eager turn. Omitting
+        ``eager`` keeps the wait-for-results behaviour. A turn that declares
         ``wait(until="all")`` (``UNIFY_WAIT_FOR_BATCH``) gets no eager turn.
 
     parent_chat_context : ``list[dict] | None``
@@ -2272,6 +2289,7 @@ async def async_tool_loop_inner(
                 f"[setup +{_setup_elapsed()}] tool policy eval (step={runtime_state.step_index})",
             )
             _policy_eager = False
+            _policy_gated = False
             _policy_mask_rules: Dict[str, str] = {}
             _policy_mask_default: Optional[str] = None
             if tool_policy is not None:
@@ -2293,6 +2311,7 @@ async def async_tool_loop_inner(
                             _policy_result,
                         )
                     )
+                    _policy_gated = _policy_gates_turn(_policy_result)
                     if _discipline:
                         _policy_mask_rules, _policy_mask_default = (
                             _cache_discipline.policy_mask_rules(_policy_result)
@@ -2303,6 +2322,7 @@ async def async_tool_loop_inner(
                     )
                     tool_choice_mode, filtered = "auto", _tools_snapshot
                     _policy_eager = False
+                    _policy_gated = False
                 policy_tools_norm = normalise_tools(filtered)
             else:
                 tool_choice_mode = "auto"
@@ -2396,10 +2416,10 @@ async def async_tool_loop_inner(
                     )
                     for name, spec in policy_tools_norm.items()
                 ]
-                # compress_context stays out of eager gated turns so required
+                # compress_context stays out of gated turns so required
                 # discovery/tool policies cannot be satisfied by compressing;
                 # forced over-threshold compression above still applies.
-                if _compress_schema is not None and not _policy_eager:
+                if _compress_schema is not None and not _policy_gated:
                     visible_base_tools_schema.append(_compress_schema)
 
             # The response-submission tool is in the schema whenever
@@ -2636,7 +2656,7 @@ async def async_tool_loop_inner(
                         else "the context window is nearly full, so "
                         "`compress_context` has to be called now"
                     )
-                elif _policy_eager:
+                elif _policy_gated:
                     _turn_mask_rules.setdefault(
                         "compress_context",
                         "compression waits until this turn's required calls "
@@ -2681,8 +2701,8 @@ async def async_tool_loop_inner(
                 }
                 if max_parallel_tool_calls is not None:
                     _gen_kwargs["parallel_tool_calls"] = max_parallel_tool_calls > 1
-                elif _policy_eager:
-                    # Discovery-first (and other eager gates) expose multiple
+                elif _policy_gated:
+                    # Discovery-first (and other gated turns) expose multiple
                     # required tools that must be callable in one assistant turn.
                     _gen_kwargs["parallel_tool_calls"] = True
 
@@ -2988,7 +3008,7 @@ async def async_tool_loop_inner(
                     }
                     if max_parallel_tool_calls is not None:
                         _gen_kwargs["parallel_tool_calls"] = max_parallel_tool_calls > 1
-                    elif _policy_eager:
+                    elif _policy_gated:
                         _gen_kwargs["parallel_tool_calls"] = True
 
                     # See the matching comment at the interrupt-mode dispatch
