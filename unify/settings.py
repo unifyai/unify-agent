@@ -451,6 +451,13 @@ class ProductionSettings(BaseSettings):
     # rarity among the library's requests, of at least 0.24
     # (unify/function_manager/task_origin.py). Off: as shipped.
     UNIFY_TRY_FIRST: bool = False
+    # The request records and ``similar_request`` marks of UNIFY_TRY_FIRST
+    # without its prompt paragraph: a function stored while handling a
+    # request records that request, and a search (or the library
+    # shortlist) from a similar request shows ``similar_request: <score>``,
+    # but the prompt says nothing about using free things before paid ones.
+    # UNIFY_TRY_FIRST alone keeps both, as before. Off: as shipped.
+    UNIFY_TASK_ORIGIN: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -589,6 +596,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_PENDING_REQUIRED",
         "UNIFY_LIFECYCLE_NOTICES",
         "UNIFY_TRY_FIRST",
+        "UNIFY_TASK_ORIGIN",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",
         "UNIFY_CACHE_DISCIPLINE",

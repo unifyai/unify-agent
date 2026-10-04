@@ -5951,9 +5951,10 @@ class CodeActActor(BaseCodeActActor):
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] starting async tool loop")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
-        # UNIFY_TRY_FIRST: the task loop and its storage review inherit this
-        # task's key (set until the handle is built); a sub-agent, started
-        # inside a keyed task, keeps the key of the task it works for.
+        # UNIFY_TASK_ORIGIN, UNIFY_TRY_FIRST: the task loop and its storage
+        # review inherit this task's key (set until the handle is built); a
+        # sub-agent, started inside a keyed task, keeps the key of the task
+        # it works for.
         task_origin_token = _task_origin.enter(request)
         # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
         # review inherit the identifiers of this request (set until the handle

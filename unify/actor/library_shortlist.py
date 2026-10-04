@@ -7,9 +7,10 @@ and lists the closest :data:`K` of them, functions and guidance together, one
 line each: a
 function's name, signature and the first line of its docstring, a guidance
 entry's id, title and the first line of its content, and ``similar_request``
-where ``UNIFY_TRY_FIRST`` marks it. The list opens the first user message
-with the session's other first-message context, so every later request
-shares it as a prefix; it is never repeated or updated during the task. It
+where ``UNIFY_TASK_ORIGIN`` or ``UNIFY_TRY_FIRST`` marks it. The list opens
+the first user message with the session's other first-message context, so
+every later request shares it as a prefix; it is never repeated or updated
+during the task. It
 asks nothing of the model: reading an entry, calling it, or searching the
 libraries is the model's choice.
 

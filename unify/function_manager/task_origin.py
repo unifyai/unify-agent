@@ -1,4 +1,4 @@
-"""Which request a stored function came from (``UNIFY_TRY_FIRST``).
+"""Which request a stored function came from (``UNIFY_TASK_ORIGIN``, ``UNIFY_TRY_FIRST``).
 
 A top-level ``act()`` keys its request (the session's first user message): a
 short hash of the whitespace-collapsed text, and a bounded copy of that text
@@ -13,7 +13,9 @@ is close to one it was stored from: a score of 1 for the same text, otherwise
 the similarity below, shown rounded to two decimals from
 :data:`SIMILAR_REQUEST_THRESHOLD` on. Neither origin field is ever shown in a
 library result. Sub-agents inherit the key of the request they work for. With
-the switch off nothing is recorded or marked.
+the switch off nothing is recorded or marked. ``UNIFY_TASK_ORIGIN`` turns this
+on by itself; ``UNIFY_TRY_FIRST`` turns it on together with its prompt
+paragraph.
 
 The similarity knows nothing about any request format. A request is reduced
 to its set of lower-cased tokens: runs of letters and runs of digits, each a
@@ -79,9 +81,12 @@ _CURRENT: contextvars.ContextVar[Optional[_Task]] = contextvars.ContextVar(
 
 
 def enabled() -> bool:
+    """Whether requests are keyed, recorded and marked (either switch)."""
     from unify.settings import SETTINGS
 
-    return bool(getattr(SETTINGS, "UNIFY_TRY_FIRST", False))
+    return bool(getattr(SETTINGS, "UNIFY_TASK_ORIGIN", False)) or bool(
+        getattr(SETTINGS, "UNIFY_TRY_FIRST", False),
+    )
 
 
 def _normalised(request: Any) -> str:
