@@ -425,6 +425,11 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         ask_tools, completed_askable_tools = self._inspection_tool_surface()
 
         inspection_client = new_llm_client(self._client_model())
+        # An inspection belongs to the run it inspects, so it runs at that
+        # run's effort -- not at the "high" a client named for a model gets.
+        inspected_effort = self._client_reasoning_effort()
+        if inspected_effort:
+            inspection_client.set_reasoning_effort(inspected_effort)
         inspection_tools: dict = dict(ask_tools)
 
         if completed:
@@ -459,6 +464,13 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         with suppress(Exception):
             if self._client is not None:
                 return self._client.endpoint
+        return None
+
+    def _client_reasoning_effort(self) -> str | None:
+        with suppress(Exception):
+            if self._client is not None:
+                effort = self._client.reasoning_effort
+                return effort if isinstance(effort, str) and effort else None
         return None
 
     def _inspection_tool_surface(self) -> tuple[dict, dict]:
