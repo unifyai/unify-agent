@@ -316,17 +316,20 @@ def pytest_sessionstart(session):
 
 
 def _parallel_run_result_file(kind: str) -> str | None:
-    """The temp file parallel_run.sh reads this session's ``kind`` result from.
+    """The file parallel_run.sh reads this session's ``kind`` result from.
 
-    None outside a parallel_run.sh session. The name carries the tmux socket
-    as well as the session id: every tmux server numbers its sessions from
-    $0, and each terminal running parallel_run.sh has a server of its own.
+    None outside a parallel_run.sh session. It lives in the run's results
+    directory (``UNIFY_TEST_RESULTS_DIR``), not /tmp: the session runs in the
+    test sandbox, whose /tmp is private. The name carries the tmux socket as
+    well as the session id: every tmux server numbers its sessions from $0,
+    and each terminal running parallel_run.sh has a server of its own.
     """
     socket = os.environ.get("UNIFY_TEST_SOCKET")
     session_id = os.environ.get("UNIFY_TMUX_SESSION_ID")
     if not (socket and session_id):
         return None
-    return f"/tmp/parallel_run_{kind}_{socket}_{session_id}.txt"
+    directory = os.environ.get("UNIFY_TEST_RESULTS_DIR") or "/tmp"
+    return f"{directory}/parallel_run_{kind}_{socket}_{session_id}.txt"
 
 
 def pytest_sessionfinish(session, exitstatus):

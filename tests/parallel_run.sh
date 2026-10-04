@@ -92,10 +92,12 @@ _mark_reported() {
 }
 
 # Record one finished session's duration, cache stats and cost for the
-# end-of-run sorted output. The per-session temp files are written by
-# tests/conftest.py, keyed on the socket and the tmux session id: every tmux
-# server numbers its sessions from $0, so the id alone is shared by
-# overlapping runs from different terminals.
+# end-of-run sorted output. The per-session files are written by
+# tests/conftest.py into this run's RESULTS_DIR (UNIFY_TEST_RESULTS_DIR in the
+# session), keyed on the socket and the tmux session id: every tmux server
+# numbers its sessions from $0, so the id alone is shared by overlapping runs
+# from different terminals. They are not in /tmp: each pytest process runs in
+# the test sandbox (tests/_test_sandbox.py), whose /tmp is its own.
 _record_session_result() {
   local sid="$1" status="$2" base="$3"
   [[ -n "${START_TIMES_FILE:-}" && -f "$START_TIMES_FILE" ]] || return 0
@@ -106,14 +108,14 @@ _record_session_result() {
   local key="${TMUX_SOCKET}_${sid}"
 
   local hits=0 canonical=0 misses=0
-  local stats_file="/tmp/parallel_run_cache_${key}.txt"
+  local stats_file="${RESULTS_DIR:-/tmp}/parallel_run_cache_${key}.txt"
   if [[ -f "$stats_file" ]]; then
     IFS='|' read -r hits canonical misses < "$stats_file" 2>/dev/null || true
     rm -f "$stats_file"
   fi
 
   local cost="0"
-  local cost_file="/tmp/parallel_run_cost_${key}.txt"
+  local cost_file="${RESULTS_DIR:-/tmp}/parallel_run_cost_${key}.txt"
   if [[ -f "$cost_file" ]]; then
     cost=$(tr -d '[:space:]' < "$cost_file" 2>/dev/null || echo 0)
     rm -f "$cost_file"
@@ -122,7 +124,7 @@ _record_session_result() {
   # pytest exits 0 when every test skips, so a green session may have run
   # nothing. Report those as skipped rather than passed.
   local outcome_passed outcome_skipped
-  local outcome_file="/tmp/parallel_run_outcome_${key}.txt"
+  local outcome_file="${RESULTS_DIR:-/tmp}/parallel_run_outcome_${key}.txt"
   if [[ -f "$outcome_file" ]]; then
     IFS='|' read -r outcome_passed outcome_skipped < "$outcome_file" 2>/dev/null || true
     rm -f "$outcome_file"
@@ -503,6 +505,7 @@ run_cmd() {
   # UNILLM_CACHE_STATS must be set before unillm is imported.
   env_exports="export LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 UNILLM_CACHE_STATS=true"
   env_exports="$env_exports $(printf 'UNIFY_STORE_PATH=%q' "$(resolve_store_path "$session_name")")"
+  env_exports="$env_exports $(printf 'UNIFY_TEST_RESULTS_DIR=%q' "$RESULTS_DIR")"
   # Append user-provided --env overrides plus the socket/log-dir/OTEL exports
   env_exports="$env_exports$(build_env_exports)"
   # Build pytest command with optional marker filter and extra args
