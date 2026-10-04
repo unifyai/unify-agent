@@ -13,6 +13,14 @@ finished, or ``max_seconds`` has passed (clamped to
 ``UNIFY_WAIT_CEILING_SECONDS``). The loop guesses nothing: a turn without the
 declaration is woken exactly as shipped.
 
+A tool policy can ask for the same hold on a turn it forces: a result whose
+options carry ``"required_unit": True`` makes the required calls a turn makes
+one unit, held the same way (until all have finished, at most
+``UNIFY_WAIT_CEILING_SECONDS``) without the model declaring it. The actor's
+discovery gate asks for this under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
+Only the forced calls are held: a result from any other call wakes the model
+as shipped.
+
 The accounting is always on and changes no request: every model turn the loop
 cancels after dispatch is counted on the loop's runtime state and published as
 a ``ToolLoopCancelledTurn`` event (``unify/events/types/tool_loop.py``), once
@@ -108,20 +116,35 @@ class BatchHold:
 
     ``owed`` records that a result landed while the hold kept the model
     waiting, so the turn it earned is granted when the hold ends.
+    ``own_only`` marks a hold a tool policy imposed on the calls it forced
+    (``"required_unit"``): only their results are held, and a result from
+    any other call wakes the model as shipped.
     """
 
     tasks: Set[asyncio.Task] = field(default_factory=set)
     until: Optional[float] = None
     owed: bool = False
+    own_only: bool = False
 
     @property
     def declared(self) -> bool:
         return bool(self.tasks)
 
-    def install(self, tasks: Set[asyncio.Task], seconds: float) -> None:
+    def install(
+        self,
+        tasks: Set[asyncio.Task],
+        seconds: float,
+        *,
+        own_only: bool = False,
+    ) -> None:
         self.tasks = set(tasks)
         self.until = time.monotonic() + seconds
         self.owed = False
+        self.own_only = own_only
+
+    def holds(self, landed: Set[asyncio.Task]) -> bool:
+        """Whether the results of *landed* wait for the hold to end."""
+        return self.declared and (not self.own_only or not (landed - self.tasks))
 
     def active(self, pending: Set[asyncio.Task]) -> bool:
         """Still holding: a declared call is running and the time is not up."""
@@ -143,6 +166,7 @@ class BatchHold:
         self.tasks = set()
         self.until = None
         self.owed = False
+        self.own_only = False
         return owed
 
 

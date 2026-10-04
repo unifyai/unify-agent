@@ -134,7 +134,9 @@ def _parse_tool_policy_result(
     visible tool schema (except on the forced over-threshold compression path)
     so gated required policies cannot be bypassed by compressing context, and
     asks for parallel tool calls. ``{"gated": True}`` asks for those two
-    without the eager turn (see ``_policy_gates_turn``).
+    without the eager turn (see ``_policy_gates_turn``), and
+    ``{"required_unit": True}`` holds the next turn for the calls a turn
+    makes to the required tools (see ``_policy_requires_unit``).
     """
     if not isinstance(result, (tuple, list)) or len(result) < 2:
         raise TypeError(
@@ -163,6 +165,25 @@ def _policy_gates_turn(result: Any) -> bool:
     _, _, eager = _parse_tool_policy_result(result)
     opts = result[2] if len(result) >= 3 else None
     return eager or (isinstance(opts, dict) and bool(opts.get("gated", False)))
+
+
+def _policy_requires_unit(result: Any) -> bool:
+    """Whether a ``tool_policy`` result makes the calls it forces one unit.
+
+    ``{"required_unit": True}`` on a ``"required"`` result holds the model's
+    next turn until every call the turn makes to the required tools has
+    finished, at most ``UNIFY_WAIT_CEILING_SECONDS`` (``batch_wait``): the
+    harness imposed those calls, so it waits for all of them before asking
+    again. The actor's discovery gate returns it under
+    ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
+    """
+    mode, _, _ = _parse_tool_policy_result(result)
+    opts = result[2] if len(result) >= 3 else None
+    return (
+        mode == "required"
+        and isinstance(opts, dict)
+        and bool(opts.get("required_unit", False))
+    )
 
 
 def _is_cache_miss_error(exc: BaseException | None) -> bool:
@@ -550,6 +571,10 @@ async def async_tool_loop_inner(
         ``{"gated": True}`` asks for without the eager turn. Omitting
         ``eager`` keeps the wait-for-results behaviour. A turn that declares
         ``wait(until="all")`` (``UNIFY_WAIT_FOR_BATCH``) gets no eager turn.
+        ``{"required_unit": True}`` on a ``"required"`` result wakes the
+        model once the calls the turn makes to the required tools have all
+        finished (at most ``UNIFY_WAIT_CEILING_SECONDS``), as a declared
+        ``wait(until="all")`` limited to them would.
 
     parent_chat_context : ``list[dict] | None``
         Chat history passed from an outer loop. When a tool call opts into
@@ -1601,6 +1626,29 @@ async def async_tool_loop_inner(
             pass
         await _prune_wait_call(msg, call)
 
+    def _hold_required_unit(msg: dict) -> None:
+        """A policy's ``"required_unit"``: hold the next turn for the calls
+        this message made to the turn's required tools, while two or more
+        run; other calls are not held (``BatchHold.own_only``)."""
+        unit = {
+            t
+            for t in tools_data.pending
+            if getattr(tools_data.info.get(t), "assistant_msg", None) is msg
+            and getattr(tools_data.info.get(t), "name", None) in policy_tools_norm
+        }
+        if len(unit) < 2:
+            return
+        seconds = _batch_wait.ceiling_seconds()
+        _hold.install(unit, seconds, own_only=True)
+        try:
+            logger.info(
+                f"The turn's {len(unit)} required calls are one unit – the next "
+                f"turn waits for them, at most {seconds:g}s.",
+                prefix=ICONS["wait"],
+            )
+        except Exception:
+            pass
+
     def _on_cancelled_turn(payload: dict) -> None:
         """Record and publish one phase of a cancelled turn's accounting."""
         _batch_wait.record(runtime_state, payload)
@@ -2219,6 +2267,9 @@ async def async_tool_loop_inner(
                 if cancel_waiter in done and interject_w not in done:
                     raise asyncio.CancelledError
 
+                # The tool calls among what woke the wait; a policy's hold
+                # holds only its own (see ``BatchHold.holds``).
+                _landed = done & tools_data.pending
                 needs_turn, restart = await _ingest_tick(
                     done,
                     interject_w,
@@ -2231,7 +2282,7 @@ async def async_tool_loop_inner(
                     done & (clar_waiters.keys() | notif_waiters.keys()),
                 )
                 if needs_turn:
-                    if _hold.declared and not _event_wake:
+                    if _hold.declared and not _event_wake and _hold.holds(_landed):
                         _hold.owed = True
                     else:
                         llm_turn_required = True
@@ -2290,6 +2341,7 @@ async def async_tool_loop_inner(
             )
             _policy_eager = False
             _policy_gated = False
+            _policy_unit = False
             _policy_mask_rules: Dict[str, str] = {}
             _policy_mask_default: Optional[str] = None
             if tool_policy is not None:
@@ -2312,6 +2364,7 @@ async def async_tool_loop_inner(
                         )
                     )
                     _policy_gated = _policy_gates_turn(_policy_result)
+                    _policy_unit = _policy_requires_unit(_policy_result)
                     if _discipline:
                         _policy_mask_rules, _policy_mask_default = (
                             _cache_discipline.policy_mask_rules(_policy_result)
@@ -2323,6 +2376,7 @@ async def async_tool_loop_inner(
                     tool_choice_mode, filtered = "auto", _tools_snapshot
                     _policy_eager = False
                     _policy_gated = False
+                    _policy_unit = False
                 policy_tools_norm = normalise_tools(filtered)
             else:
                 tool_choice_mode = "auto"
@@ -4232,6 +4286,8 @@ async def async_tool_loop_inner(
 
                 if _declared_wait is not None:
                     await _declare_batch_wait(msg, *_declared_wait)
+                if _policy_unit and not _hold.declared:
+                    _hold_required_unit(msg)
 
                 if _persist_response_emitted:
                     pass  # fall through to section F → persist wait

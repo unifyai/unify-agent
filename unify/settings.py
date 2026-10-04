@@ -302,11 +302,18 @@ class ProductionSettings(BaseSettings):
     UNIFY_WAIT_CEILING_SECONDS: float = 15.0
     # Off: while the actor's discovery gate is open, no model turn starts
     # before the library searches a turn scheduled have returned. As shipped
-    # the gate grants one at once, while they run; it is cancelled, and still
-    # billed, when a search lands during it. The gate still requires the
-    # searches (tool_choice "required", only the gated tools, parallel calls
-    # asked for), and a turn that leaves a family out is followed, once its
-    # calls return, by one that requires it. On: as shipped.
+    # the gate grants one at once, while they run, and the model is woken as
+    # soon as the first of two searches lands; either turn is cancelled, and
+    # still billed, when a search lands during it. Off, the searches the gate
+    # forces are one unit: the model is woken once all a turn made have
+    # returned, or at UNIFY_WAIT_CEILING_SECONDS, or at once on a stop, a new
+    # message, a clarification or a notification; other calls are not held.
+    # The mutator that adds the missing family to a turn that searched one
+    # also recognises the actor's gate request, which lists wait, steer and
+    # ask_about_completed_tool. The gate still requires the searches
+    # (tool_choice "required", only the gated tools, parallel calls asked
+    # for), and a turn that leaves a family out is followed, once its calls
+    # return, by one that requires it. On: as shipped.
     UNIFY_DISCOVERY_SPECULATIVE_TURN: bool = True
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
