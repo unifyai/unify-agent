@@ -2381,6 +2381,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._stopped: bool = False
         self._stop_reason: Optional[str] = None
         self._active_relay: Optional[asyncio.Task] = None
+        # Whether the caller's latest steering asked for this handle to be
+        # held. Pause is forwarded to whichever loop is active when it
+        # arrives, and a pause that lands as the task loop is finishing would
+        # otherwise end with that loop: the review would then run unpaused
+        # while the caller believes the handle is held.
+        self._pause_requested: bool = False
 
         # Optional turn-boundary reviews for persistent sessions (off unless
         # UNIFY_TURN_STORAGE_REVIEWS is set). A persist=True loop never
@@ -2972,6 +2978,8 @@ class _StorageCheckHandle(SteerableToolHandle):
                     )
                 else:
                     self._storage_handle = storage_handle
+                    if self._pause_requested:
+                        await storage_handle.pause()
                     storage_success = True
                     try:
                         storage_summary = await self._storage_handle.result()
@@ -3148,17 +3156,23 @@ class _StorageCheckHandle(SteerableToolHandle):
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
         self._stop_reason = reason
+        # A stop supersedes a pause: the review still runs after a stop, and
+        # starting it held would leave the handle waiting on a resume that the
+        # caller, having stopped it, has no reason to send.
+        self._pause_requested = False
         handle = self._active_handle
         if handle is not None:
             await handle.stop(reason=reason, **kwargs)
 
     async def pause(self, **kwargs) -> Optional[str]:
+        self._pause_requested = True
         handle = self._active_handle
         if handle is not None:
             return await handle.pause(**kwargs)
         return None
 
     async def resume(self, **kwargs) -> Optional[str]:
+        self._pause_requested = False
         handle = self._active_handle
         if handle is not None:
             return await handle.resume(**kwargs)
