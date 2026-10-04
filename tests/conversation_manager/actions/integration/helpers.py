@@ -63,40 +63,39 @@ def _get_steering_tool(
     handle_id: int,
     operation: str,
 ) -> tuple[str, Any]:
-    """Look up a CM steering tool closure for an in-flight action.
+    """Look up the CM steering tool closure for *operation*.
 
-    Returns the (tool_name, tool_fn) pair. The tool closure records the event
-    in ``handle_actions`` and calls the underlying handle method, matching
-    exactly what the CM brain does when it invokes a steering tool.
+    Returns the (tool_name, tool_fn) pair. The CM's steering tools have fixed
+    names (``stop_action``, ``pause_action``, ...) and take the target as
+    ``handle_id``, so the tool set, and the prompt-cache key it is part of,
+    stays the same as actions come and go. Calling the closure records the
+    event in ``handle_actions`` and calls the underlying handle method,
+    matching exactly what the CM brain does when it invokes a steering tool.
 
     Args:
         cm: CMStepDriver instance.
-        handle_id: The action handle ID.
+        handle_id: The action handle ID (checked to be in flight).
         operation: One of "pause", "resume", "stop", "interject", "ask".
 
     Raises:
-        AssertionError: If no matching tool is found (e.g. asking for
-            ``pause`` when the action is already paused).
+        AssertionError: If the action is not in flight or there is no tool
+            for *operation*.
     """
     from unify.conversation_manager.domains.brain_action_tools import (
         ConversationManagerBrainActionTools,
     )
 
+    assert handle_id in (cm.cm.in_flight_actions or {}), (
+        f"handle_id={handle_id} is not in flight: "
+        f"{sorted((cm.cm.in_flight_actions or {}).keys())}"
+    )
     action_tools = ConversationManagerBrainActionTools(cm.cm)
     steering_tools = action_tools.build_action_steering_tools()
-
-    suffix = f"__{handle_id}"
-    matches = {
-        name: fn
-        for name, fn in steering_tools.items()
-        if name.startswith(f"{operation}_") and name.endswith(suffix)
-    }
-    assert matches, (
-        f"No {operation}_* steering tool found for handle_id={handle_id}. "
-        f"Available: {list(steering_tools.keys())}"
-    )
-    name, fn = next(iter(matches.items()))
-    return name, fn
+    name = f"{operation}_action"
+    assert (
+        name in steering_tools
+    ), f"No {name} steering tool. Available: {list(steering_tools.keys())}"
+    return name, steering_tools[name]
 
 
 async def steer_action(
@@ -122,7 +121,7 @@ async def steer_action(
         The dict returned by the steering tool closure.
     """
     _name, tool_fn = _get_steering_tool(cm, handle_id, operation)
-    return await tool_fn(**kwargs)
+    return await tool_fn(handle_id=handle_id, **kwargs)
 
 
 # ---------------------------------------------------------------------------
