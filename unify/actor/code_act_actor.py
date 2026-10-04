@@ -960,6 +960,17 @@ def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
     return client
 
 
+def _review_gate_client(actor: "CodeActActor") -> Any:
+    """The ``UNIFY_REVIEW_GATE`` call's client: the review's model, at ``low``
+    effort unless ``UNIFY_REVIEW_REASONING_EFFORT`` sets the review's."""
+    from unify.actor import review_gate
+
+    client = _storage_review_client(actor, origin=review_gate.ORIGIN)
+    if not _review_reasoning_effort():
+        client.set_reasoning_effort(review_gate.GATE_EFFORT)
+    return client
+
+
 # UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
 GUIDANCE_ENTRY_TARGET_CHARS = 2000
 
@@ -3070,6 +3081,33 @@ class _StorageCheckHandle(SteerableToolHandle):
             turn_task = self._turn_review_task
             if turn_task is not None and not turn_task.done():
                 await asyncio.gather(turn_task, return_exceptions=True)
+
+            # UNIFY_REVIEW_GATE: one tool-free yes/no call decides whether the
+            # review runs; a failed or unreadable gate runs it as shipped.
+            from unify.actor import review_gate
+
+            if review_gate.enabled():
+                decision = await review_gate.decide(
+                    client_factory=lambda: _review_gate_client(self._actor),
+                    trajectory=trajectory,
+                    final_result=self._review_final_result(),
+                    outcome_note=_storage_review_outcome_note(
+                        self._outcome,
+                        lessons=lessons,
+                    ),
+                )
+                logger.info(
+                    f"StorageCheck gate: review={decision.review} "
+                    f"decided={decision.decided} ({decision.reason})",
+                )
+                if not decision.review:
+                    await self._notification_q.put(
+                        {
+                            "type": "storage_review_skipped",
+                            "message": f"review gate: {decision.reason}",
+                        },
+                    )
+                    return
 
             _sc_suffix = _token_hex(2)
             _sc_call_id = new_call_id()

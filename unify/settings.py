@@ -313,6 +313,16 @@ class ProductionSettings(BaseSettings):
     # sections are unchanged (their own switches govern them). Empty: as
     # shipped.
     UNIFY_PROMPT_PROFILE: str = ""
+    # Before the storage review that follows a session, one tool-free call
+    # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
+    # sets the review's) reads the end of the trajectory, the checked outcome
+    # (UNIFY_OUTCOME) and the final reply, and answers whether the session
+    # left reusable working code, a lesson found by trial and error, or a
+    # stored entry needing repair; the review runs only on a yes
+    # (unify/actor/review_gate.py). A failed call or an unreadable reply runs
+    # the review. Turn reviews and store_skills are not gated. Off: as
+    # shipped.
+    UNIFY_REVIEW_GATE: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
     # result worked out in text, with judgment steps kept as query_llm calls
@@ -557,6 +567,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_PROMPT_ACCURACY",
+        "UNIFY_REVIEW_GATE",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",

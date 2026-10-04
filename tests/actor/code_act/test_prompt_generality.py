@@ -141,6 +141,7 @@ SWITCH_OFF = {
     "UNIFY_PROMPT_ACCURACY": False,
     "UNIFY_PROMPT_PROFILE": "",
     "UNIFY_DELEGATION": "on",
+    "UNIFY_REVIEW_GATE": False,
 }
 
 PROMPT_MODES = {
@@ -438,6 +439,19 @@ def test_the_switched_texts_are_in_the_prompt_they_lint(monkeypatch, actor_tools
 
 
 # ── the storage review ───────────────────────────────────────────────────
+
+
+def test_the_review_gate_names_no_benchmark():
+    from unify.actor import review_gate
+
+    texts = {
+        "GATE_SYSTEM_PROMPT": review_gate.GATE_SYSTEM_PROMPT,
+        "gate user message": review_gate.build_user_message(
+            trajectory=[{"role": "user", "content": "the request"}],
+            final_result="the reply",
+        ),
+    }
+    assert _findings(texts) == []
 
 
 def test_the_rulebook_names_no_benchmark(switches):
