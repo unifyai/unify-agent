@@ -132,6 +132,44 @@ async def test_act_describes_the_schedule_the_session_gets(monkeypatch, turn_rev
     assert (_SESSION_END in system) is not turn_reviews
 
 
+# ── the steering docs name `steer` (D20) ────────────────────────────────
+
+
+def _tool_descriptions() -> dict[str, str]:
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.common.llm_helpers import method_to_schema
+
+    actor = CodeActActor()
+    out = {}
+    for name in ("execute_code", "execute_function"):
+        tool = actor.get_tools("act")[name]
+        fn = getattr(tool, "fn", tool)
+        out[name] = method_to_schema(fn, name)["function"]["description"]
+    return out
+
+
+def test_on_the_steering_docs_name_the_steer_tool(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    for name, text in _tool_descriptions().items():
+        assert "stop_execute_" not in text, name
+        assert 'steer(call_id=<id>, action="stop")' in text, name
+        assert 'action="interject"' in text, name
+
+
+def test_off_the_steering_docs_are_as_shipped(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    docs = _tool_descriptions()
+    assert "``stop_execute_code_<call_id>``" in docs["execute_code"]
+    assert "``stop_execute_function_<call_id>``" in docs["execute_function"]
+
+
+def test_a_corrected_actor_leaves_the_next_actors_docs_alone(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    _tool_descriptions()
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    assert "``stop_execute_code_<call_id>``" in _tool_descriptions()["execute_code"]
+
+
 @pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
 def test_the_setting_parses_booleans(value, expected):
     from unify.settings import ProductionSettings

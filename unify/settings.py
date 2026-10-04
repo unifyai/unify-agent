@@ -280,7 +280,9 @@ class ProductionSettings(BaseSettings):
     # The actor states only what the session actually has: the skill-storage
     # notice of a persistent session describes the review it gets (once,
     # when the session ends, unless UNIFY_TURN_STORAGE_REVIEWS), not one per
-    # turn with results as background notes. Off: as shipped.
+    # turn with results as background notes; the steering docs of
+    # execute_code and execute_function name the `steer` tool, not the
+    # stop_* tools it replaced. Off: as shipped.
     UNIFY_PROMPT_ACCURACY: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a

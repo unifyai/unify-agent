@@ -1238,6 +1238,43 @@ _STORAGE_BASE_INSTRUCTIONS = (
 # Shared tool docstrings
 # ---------------------------------------------------------------------------
 
+# UNIFY_PROMPT_ACCURACY: the steering docs name the tool that exists. The
+# per-call stop_* tools they describe were replaced by `steer` (its stop and
+# interject actions), which the actor prompt already names.
+_STALE_STEERING_DOC = (
+    (
+        re.compile(r"``stop_execute_(?:code|function)_<call_id>``"),
+        '``steer(call_id=<id>, action="stop")``',
+    ),
+    (re.compile(r"interjecting(\s+)again"), '``action="interject"``'),
+)
+
+
+def _prompt_accuracy_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_PROMPT_ACCURACY)
+
+
+def _correct_tool_docs(tools: Dict[str, Any]) -> None:
+    """Correct the docstrings (tool descriptions) of *tools* in place, per the switches.
+
+    The tools are built per actor, so a rewrite never reaches another actor.
+    Off: the docstrings are as shipped.
+    """
+    if not _prompt_accuracy_enabled():
+        return
+    for name in ("execute_code", "execute_function"):
+        tool = tools.get(name)
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is None or not fn.__doc__:
+            continue
+        doc = fn.__doc__
+        for pattern, replacement in _STALE_STEERING_DOC:
+            doc = pattern.sub(replacement, doc)
+        fn.__doc__ = doc
+
+
 # One contract for the package-install tool.
 _INSTALL_PYTHON_PACKAGES_DOC = """Install Python packages into the workspace environment.
 
@@ -5097,6 +5134,7 @@ class CodeActActor(BaseCodeActActor):
             display_label="Closing all sessions",
         )
 
+        _correct_tool_docs(tools)
         return tools
 
     @functools.wraps(BaseCodeActActor.act, updated=())
