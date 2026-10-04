@@ -243,6 +243,41 @@ async def test_steering_composes_with_context_forwarding():
     assert "us-gamma" not in comms.sent
 
 
+@pytest.mark.asyncio
+async def test_the_author_sees_how_a_direct_call_was_made():
+    """A bare definition does not show its arguments; the author must be told.
+
+    The sandbox route steers a synthesised block that ends in the call, so its
+    arguments are in the source. This route steers the definition alone, and
+    without the call a correction about *which* vendors has to guess what a
+    vendor is.
+    """
+    comms = _Comms()
+    queue: asyncio.Queue = asyncio.Queue()
+    seen: dict = {}
+
+    async def _recording_author(*, interjections, session):
+        seen["invocation"] = session.invocation
+        seen["completed"] = session.cache.completed_calls()
+        return await _author(interjections=interjections, session=session)
+
+    session = SteeringSession(interject_q=queue, patch_author=_recording_author)
+    steerer = _patch_after(comms, 2, queue, "only the EU vendors")
+
+    with use_session(session):
+        out = await _execute(_manager(), comms)
+    await steerer
+
+    assert out["error"] is None, out["error"]
+    assert seen["invocation"] == f"notify_vendors(vendors={VENDORS!r})"
+    assert seen["completed"] == [
+        "comms.send('eu-alpha')",
+        "comms.send('us-beta')",
+    ]
+    # Scoped to the call: nothing describes a call that has returned.
+    assert session.invocation == ""
+
+
 # ── the globals must be left as they were found ────────────────────────────
 @pytest.mark.asyncio
 async def test_stateful_globals_are_restored_after_a_steered_call():

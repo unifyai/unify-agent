@@ -26,6 +26,7 @@ from unify.function_manager.steering import (
     ControlledInterruption,
     ExecutionStopped,
     InterruptionRequest,
+    MemoisedDispatch,
     Patch,
     SteeringSession,
     bind_session,
@@ -197,6 +198,27 @@ def test_occurrences_reset_for_a_retry():
     make_cache_key(session, "t", ("a",), {})
     session.runtime.reset_position()
     assert make_cache_key(session, "t", ("a",), {})[-1] == 0
+
+
+@pytest.mark.asyncio
+async def test_completed_calls_name_their_arguments():
+    """A correction is written against what was sent, not just that it was."""
+    session = SteeringSession()
+
+    class _Comms:
+        async def send(self, to, *, urgent=False):
+            return to
+
+    class _P:
+        comms = _Comms()
+
+    prims = MemoisedDispatch(_P(), session)
+    await prims.comms.send("eu-alpha")
+    await prims.comms.send("us-beta", urgent=True)
+    assert session.cache.completed_calls() == [
+        "comms.send('eu-alpha')",
+        "comms.send('us-beta', urgent=True)",
+    ]
 
 
 def test_invalidation_is_by_prefix():

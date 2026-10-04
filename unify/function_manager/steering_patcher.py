@@ -30,9 +30,15 @@ _SYSTEM = """\
 You are correcting a code block that is running right now. It has been \
 suspended mid-execution so your edit can be applied.
 
-You are given the source, which of its functions are currently executing, and \
-which calls have already completed. Decide what the correction means for the \
-code that has not run yet.
+You are given a message that arrived while it runs, the source, which of its \
+functions you may rewrite, and which calls have already completed. Decide what \
+the message means for the code that has not run yet.
+
+Not every message is a correction. A question (how long it takes, what it is \
+doing, how far it has got), an acknowledgement or encouragement leaves the \
+task exactly as it was: return false for `stop` and no patches. You cannot \
+reply here — questions are answered elsewhere while the block keeps \
+running — so stopping is never a way to answer one.
 
 Rules that matter:
 
@@ -47,16 +53,20 @@ still covers earlier items is safe.
 - If the correction means an earlier call should now happen *differently*, \
 name it in `invalidate` so its record is discarded and it runs again. Use this \
 sparingly and never for something irreversible that already happened.
-- Set `stop` to true when the correction revokes the task, or when remaining \
-work would now be wrong and there is no listed function you can rewrite. A \
-stop leaves completed work in place and abandons everything still pending.
-- If the correction does not change any remaining work, return false for \
+- Set `stop` to true only when the message revokes the task, or when it says \
+remaining work would now be wrong and there is no listed function you can \
+rewrite. A stop leaves completed work in place and abandons everything still \
+pending.
+- Completed calls are listed with the arguments they were given. Write \
+rewritten code against the data as it actually is, as shown by those \
+arguments and by how the block was called, not against a shape you assume.
+- If the message does not change any remaining work, return false for \
 `stop` and no patches.
 - A stop and patches are mutually exclusive.
 
 Respond with JSON only:
 
-{"reason": "<short restatement of the correction>",
+{"reason": "<short restatement of the message>",
  "stop": false,
  "patches": [{"function_name": "<name>",
               "source": "<complete def or async def>",
@@ -83,15 +93,20 @@ def _build_user_prompt(
     interjections: Sequence[str],
     completed: Sequence[str],
     defined: Sequence[str],
+    invocation: str = "",
 ) -> str:
     parts = [
-        "The correction:",
+        "The message:",
         *(f"  {text}" for text in interjections),
         "",
         "The running block:",
         "```",
         source,
         "```",
+    ]
+    if invocation:
+        parts += ["", "It was called as:", f"  {invocation}"]
+    parts += [
         "",
         f"Functions you may rewrite: {', '.join(defined) or '(none)'}",
     ]
@@ -182,6 +197,7 @@ class LLMPatchAuthor:
             interjections=interjections,
             completed=session.cache.completed_calls(),
             defined=defined,
+            invocation=session.invocation,
         )
         client = self._client_factory()
         raw = await client.generate(user_message=prompt, system_message=_SYSTEM)

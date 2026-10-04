@@ -46,6 +46,7 @@ from .steering import (
     MemoisedDispatch,
     active_session,
     bind_session,
+    format_call,
     instrument,
     restore_session,
     run_with_steering,
@@ -3623,6 +3624,16 @@ class FunctionManager(BaseFunctionManager):
         result = None
         error = None
 
+        def _entry_definition(tree: ast.Module) -> Any:
+            return next(
+                (
+                    node
+                    for node in tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                ),
+                None,
+            )
+
         async def _run_implementation(source: str) -> Any:
             """Define the function from *source* and call it.
 
@@ -3631,14 +3642,7 @@ class FunctionManager(BaseFunctionManager):
             keeps the shape the caller was told about.
             """
             attempt_tree = ast.parse(source)
-            definition = next(
-                (
-                    node
-                    for node in attempt_tree.body
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                ),
-                None,
-            )
+            definition = _entry_definition(attempt_tree)
             if definition is None:
                 raise ValueError("No function definition found in implementation")
 
@@ -3671,10 +3675,18 @@ class FunctionManager(BaseFunctionManager):
                 if steering is None:
                     result = await _run_implementation(implementation)
                 else:
+                    # The implementation is a bare definition, so unlike a
+                    # sandbox block it does not show what it was called with.
+                    entry = _entry_definition(ast.parse(implementation))
                     result = await run_with_steering(
                         implementation,
                         _run_implementation,
                         session=steering,
+                        invocation=format_call(
+                            entry.name if entry is not None else "<function>",
+                            (),
+                            call_kwargs,
+                        ),
                     )
         except ExecutionStopped as stopped:
             result = stopped.outcome
