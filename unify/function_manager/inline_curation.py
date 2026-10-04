@@ -1,8 +1,8 @@
 """Inline curation (``UNIFY_INLINE_CURATION``): the actor stores and repairs skills during the task.
 
 As shipped, the actor writes a function only when the user asks for one; what it works out on its own is left
-to the review that follows the task. With this switch the actor's prompt says it may store a unit it has
-verified during the task, and repair a stored function that failed on the spot, keeping its behaviour on the
+to the review that follows the task. With this switch the actor's prompt says it may store a unit that ran
+and worked during the task, and repair a stored function that failed on the spot, keeping its behaviour on the
 inputs it already handled. Unchecked in-task writes have stored junk before (functions named ``_unused`` or
 ``nope``), so every write the actor makes itself goes through two mechanical guards, which the review's own
 writes do not:

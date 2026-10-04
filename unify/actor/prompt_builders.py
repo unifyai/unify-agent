@@ -249,24 +249,21 @@ def _reply_protocol_note_enabled() -> bool:
     return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE)
 
 
-# UNIFY_CODE_FIRST: answer checkable tasks with a program checked on the evidence.
+# UNIFY_CODE_FIRST: compute a computable result with a program.
 _CODE_FIRST = textwrap.dedent("""
-    ### Solve With Code You Can Check
+    ### Compute With Code
 
-    When a result can be computed or checked — transforming data, applying
-    a rule inferred from examples, querying or updating a system through
-    its API, planning steps whose effect you can verify — write a program
-    in `execute_code` that produces it, check it against every example or
-    known result you have, and answer with its output rather than with a
-    result worked out by hand. When a check fails, fix the program's logic
-    and re-run it (never hard-code the expected outputs); actions with side
-    effects still go step by step, as Incremental Execution says. Keep
-    judgment steps (classifying, wording, reading something ambiguous) as
-    `query_llm(...)` calls inside the program. A program that reproduced
-    the evidence can be stored and reused on the next similar task;
-    reasoning done only in text cannot. If one stored function or primitive
-    call is the whole task, call it as Tool Selection says; answer without
-    code only when the request is conversational or a single obvious step.
+    When a result can be computed — transforming data, applying a rule,
+    querying or updating a system through its API — compute it with a
+    program in `execute_code` rather than by hand, and answer with its
+    output; actions with side effects still go step by step, as
+    Incremental Execution says. Keep judgment steps (classifying, wording,
+    reading something ambiguous) as `query_llm(...)` calls inside the
+    program. A working program can be stored and reused on the next
+    similar task; reasoning done only in text cannot. If one stored
+    function or primitive call is the whole task, call it as Tool
+    Selection says; answer without code only when the request is
+    conversational or a single obvious step.
 """).strip()
 
 
@@ -531,13 +528,12 @@ _WRITING_TO_THE_LIBRARIES = "\n\n#### Writing to the libraries\n"
 _TRY_FIRST_NOTE = textwrap.dedent("""
     **Free before paid.** Before an action that costs something (a paid
     request, a submission that is scored, an irreversible effect), use
-    what is free first: run a stored function that matches the task on
-    inputs you already have, and check its output against the evidence
-    you have (worked examples, expected formats, earlier feedback). When
-    it checks out, act on its result; pay for more information only when
-    it does not. A search result marked `same_task` was stored from a
-    task whose request closely matches this one (instance data such as
-    numbers may differ); check that it fits before relying on it.
+    what is free first: when a stored function matches the task, run it
+    on inputs you already have and, when it works, act on its result; pay
+    for more information only when it does not. A search result marked
+    `same_task` was stored from a task whose request closely matches this
+    one (instance data such as numbers may differ); check that it fits
+    before relying on it.
 """).strip()
 
 
@@ -585,7 +581,7 @@ def _library_section(
     return text
 
 
-# UNIFY_INLINE_CURATION: the actor writes verified units during the task.
+# UNIFY_INLINE_CURATION: the actor stores units that ran and worked during the task.
 _FUNCTION_WRITES_BULLET = (
     "- **Functions**: explicit user requests to add/update/delete functions\n"
     "  use `FunctionManager_add_functions` (`overwrite=True` to update) or\n"
@@ -626,8 +622,8 @@ def _inline_function_bullet(tools: Mapping[str, Callable]) -> str:
             "function did on its recorded calls"
         )
     functions = (
-        "**Functions, during the task**: once a reusable unit is verified — "
-        "it ran and you checked its result — store it with "
+        "**Functions, during the task**: once a reusable unit ran and "
+        "worked, store it with "
         f"`FunctionManager_add_functions`; when a stored function fails, fix "
         f"it with {patch}, keeping its behaviour on the inputs it already "
         "handled (a change of behaviour is a new function with a new name). "
@@ -638,8 +634,8 @@ def _inline_function_bullet(tools: Mapping[str, Callable]) -> str:
         "(`FunctionManager_delete_function` to delete)."
     )
     guidance = (
-        "**Guidance, during the task**: likewise, record a procedure you "
-        "verified with `GuidanceManager_add_guidance`, and correct an entry "
+        "**Guidance, during the task**: likewise, record a procedure that "
+        "worked with `GuidanceManager_add_guidance`, and correct an entry "
         f"that misled you with {guidance_fix}."
     )
     return "".join(
@@ -853,8 +849,8 @@ def build_code_act_prompt(
     inline_curation:
         The session's effective ``UNIFY_INLINE_CURATION`` (``on`` or
         ``only``; empty as shipped): the library section says the actor
-        stores and repairs verified units during the task, and with
-        ``only`` that no review follows it.
+        stores units that ran and worked during the task and repairs
+        failed ones, and with ``only`` that no review follows it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(

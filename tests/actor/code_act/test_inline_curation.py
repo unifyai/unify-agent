@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_INLINE_CURATION``: the actor stores and repairs verified units during the task.
+"""Symbolic: ``UNIFY_INLINE_CURATION``: the actor stores working units and repairs failed ones during the task.
 
 As shipped, the actor writes a function only when the user asks; what it
 works out itself is left to the review after the task. Hermes ("When you work
@@ -128,13 +128,13 @@ def test_off_the_prompt_is_as_shipped():
     assert INLINE_BULLET not in prompt
 
 
-def test_on_the_function_bullet_invites_verified_inline_writes():
+def test_on_the_function_bullet_invites_inline_writes_of_working_units():
     prompt = _prompt(inline_curation="on")
     assert SHIPPED_FUNCTIONS_BULLET not in prompt
     assert INLINE_BULLET in prompt
     section = prompt.split("#### Writing to the libraries")[1].split("####")[0]
     for phrase in (
-        "it ran and you checked its result",
+        "once a reusable unit ran and worked",
         "`FunctionManager_add_functions`",
         "keeping its behaviour on the",
         "new function with a new name",

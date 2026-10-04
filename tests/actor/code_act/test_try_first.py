@@ -5,9 +5,10 @@ visits, even when search had found a function stored for the same task;
 the rows that run the stored program first (HPL/PL) solved 28-42 return
 visits with no feedback, Unify none. With the switch the actor's prompt
 says to run a matching stored function on the inputs it already has and
-check it against its evidence before an action that costs something, and a
-function stored during a task records the task's request, so a search from a
-task whose request matches marks it ``same_task: true``.
+act on its result when it works before an action that costs something
+(never to check it against examples it was given), and a function stored
+during a task records the task's request, so a search from a task whose
+request matches marks it ``same_task: true``.
 
 A whole-request hash never matched a return visit: a recorded opening
 request carries the visit's own data (a fresh test grid, another requester).

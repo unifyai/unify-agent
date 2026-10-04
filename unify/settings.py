@@ -177,9 +177,9 @@ class ProductionSettings(BaseSettings):
     # replayed and every tool is as shipped.
     UNIFY_FUNCTION_CASES: bool = False
     # ``on``: the actor's prompt says that during the task it may store a
-    # unit it has verified (it ran and its result was checked) and repair a
-    # stored function that failed, keeping its behaviour on the inputs it
-    # handled (a behaviour change gets a new name); guidance likewise. Every
+    # unit that ran and worked and repair a stored function that failed,
+    # keeping its behaviour on the inputs it handled (a behaviour change gets
+    # a new name); guidance likewise. Every
     # function the actor itself adds must have a name that says what it does
     # (snake_case, at least two words, one a real word that is no
     # placeholder such as ``tmp`` or ``unused``) and passes the storage check
@@ -277,12 +277,13 @@ class ProductionSettings(BaseSettings):
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
     UNIFY_REPLY_PROTOCOL_NOTE: bool = False
-    # The actor's prompt asks it to solve a task whose result can be computed
-    # or checked by writing a program, checking it against every example or
-    # known result it has, and answering with the program's output instead of
-    # a result worked out in text, with judgment steps kept as query_llm
-    # calls inside the program, so that a solved task leaves a program the
-    # review can store. Conversational and single-step requests, and tasks one
+    # The actor's prompt asks it to compute a result that can be computed
+    # with a program and answer with the program's output instead of a
+    # result worked out in text, with judgment steps kept as query_llm calls
+    # inside the program, so that a solved task leaves a program the review
+    # can store. It does not ask the actor to check the program against
+    # examples it was given: stored functions are checked mechanically
+    # (UNIFY_FUNCTION_CASES replays their recorded calls). Conversational and single-step requests, and tasks one
     # stored function or primitive call completes, are answered as before.
     # Off: as shipped.
     UNIFY_CODE_FIRST: bool = False
@@ -302,13 +303,13 @@ class ProductionSettings(BaseSettings):
     # The actor's prompt asks it to use what is free before an action that
     # costs something (a paid request, a scored submission, an irreversible
     # effect): run a stored function that matches the task on inputs it
-    # already has and check the output against its evidence. A function
-    # stored during a task records the task's request in its metadata (a
-    # hash, and a copy of at most 4,000 characters, never shown in library
-    # results), and a search marks it ``same_task: true`` when the current
-    # request matches one it was stored from: the same text, or a weighted
-    # token overlap of at least 0.2 with numbers left out and tokens weighted
-    # by their rarity among the library's requests
+    # already has and act on its result when it works. A function stored
+    # during a task records the task's request in its metadata (a hash, and
+    # a copy of at most 4,000 characters, never shown in library results),
+    # and a search marks it ``same_task: true`` when the current request
+    # matches one it was stored from: the same text, or a weighted token
+    # overlap of at least 0.2 with numbers left out and tokens weighted by
+    # their rarity among the library's requests
     # (unify/function_manager/task_origin.py). Off: as shipped.
     UNIFY_TRY_FIRST: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
