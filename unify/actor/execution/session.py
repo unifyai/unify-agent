@@ -421,6 +421,11 @@ class PythonExecutionSession:
         # ``global_state`` holds only what the harness provides them.
         self._worker: Optional["PythonWorker"] = None
 
+        # UNIFY_TOOL_SURFACE=core: the harness objects of the act() this
+        # sandbox belongs to (``functions``, ``guidance``, ``install``, ...),
+        # which its other sessions get too (SessionExecutor._inject_fm_globals).
+        self.core_globals: Dict[str, Any] = {}
+
         if environments:
             for namespace, env in environments.items():
                 try:
@@ -855,6 +860,11 @@ class SessionExecutor:
     def _inject_fm_globals(self, sb: PythonExecutionSession) -> None:
         if self._fm_globals:
             sb.global_state.update(self._fm_globals)
+        # UNIFY_TOOL_SURFACE=core: a stateless or named session holds the
+        # running act()'s sandbox objects as its own session 0 does.
+        bound = _CURRENT_SANDBOX.get(None)
+        if bound is not None and bound is not sb and bound.core_globals:
+            sb.global_state.update(bound.core_globals)
 
     def _new_session(self) -> PythonExecutionSession:
         return PythonExecutionSession(environments=self._environments)

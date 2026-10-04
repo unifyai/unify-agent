@@ -514,6 +514,32 @@ class ProductionSettings(BaseSettings):
     # Empty: no network at all.
     UNIFY_WORKSPACE_NETWORK: str = ""
     UNIFY_WORKSPACE_PROXY_PORT: int = 0
+    # ``core``: the actor's only JSON tool is ``execute_code`` (Python, and
+    # bash); its answer is a reply without tool calls, or ``final_response``
+    # when the caller set a response format. Everything else is Python in
+    # the sandbox, reached through the sandboxed worker's harness proxy:
+    # ``functions`` (search, filter, list, get, run, add, patch, delete,
+    # retire, reconcile_dependencies) and ``guidance`` (search, filter, get,
+    # add, update, patch, delete, reconcile_dependencies), whose writes
+    # refuse at call time, with the reason, whatever this session may not
+    # write; ``install``, ``read_file`` and ``grep``; and
+    # ``request_clarification`` where the session can ask. ``functions.run``
+    # (replacing ``execute_function``) runs a stored function in the worker
+    # and records usage, cases and trust as ``execute_function`` does; so is
+    # a stored function called by name. The prompt names these objects in a
+    # short index and ``help(obj)`` prints their docs as cell output, so the
+    # tool list and the system prompt never change during a session.
+    # ``wait``, ``steer`` and ``ask_about_completed_tool`` (and the call
+    # announcements that name them) are offered only to an actor that can
+    # start sub-actors. Compression is as shipped, except that
+    # ``compress_context`` (and ``store_skills``) are offered only on the
+    # turn the loop asks for it, not on every turn. The session tools,
+    # ``send_notification`` and ``install_python_packages`` are not offered.
+    # Needs UNIFY_WORKSPACE=sandboxed, UNIFY_WORKSPACE_PYTHON=worker
+    # (bubblewrap installed) and UNIFY_DISCOVERY_GATE off: an actor refuses
+    # to start otherwise, and never runs model code unconfined
+    # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
+    UNIFY_TOOL_SURFACE: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -771,6 +797,16 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "worker"):
             raise ValueError(
                 f"UNIFY_WORKSPACE_PYTHON must be empty or 'worker', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_TOOL_SURFACE", mode="before")
+    @classmethod
+    def parse_tool_surface(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "core"):
+            raise ValueError(
+                f"UNIFY_TOOL_SURFACE must be empty or 'core', not {v!r}",
             )
         return value
 

@@ -236,12 +236,15 @@ class PythonWorker:
         packages = str(environment.site_packages())
         if packages not in paths:
             paths.append(packages)
-        return {
+        msg = {
             "op": "init",
             "sys_path": paths,
             "builtins": builtins_names,
             "globals": specs,
         }
+        if _core_surface():
+            msg["help"] = True
+        return msg
 
     async def _start(self) -> None:
         # The policy as it is now: a restarted worker sees the current one.
@@ -419,7 +422,7 @@ class PythonWorker:
         return decode(value, tagged=tagged)
 
     # -- namespace sync --------------------------------------------------------
-    def _describe_global(self, name: str, value: Any) -> dict:
+    def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
         from unify.common.asyncio_compat import run_coro_sync
         from unify.function_manager.steering import (
@@ -450,11 +453,15 @@ class PythonWorker:
                     "reason": "the stored function's source is not available to "
                     "define it in the worker",
                 }
-            return {
+            desc = {
                 "kind": "function",
                 "source": "".join(entry[2]),
                 "filename": code.co_filename,
             }
+            if record:
+                # UNIFY_TOOL_SURFACE=core: its calls are recorded here.
+                desc["record"] = True
+            return desc
         if _model_written(value):
             # Defined by model code in this namespace; it runs only in the
             # worker, which defines its own copy when it runs that code.
@@ -473,16 +480,21 @@ class PythonWorker:
                 data = None
             else:
                 return {"kind": "value", "value": data}
-        return {
+        desc = {
             "kind": "remote",
             "callable": callable(value),
             "async": _is_async_callable(value),
             "repr": short_repr(value, 200),
             "runtime": name == RUNTIME_GLOBAL and isinstance(value, SteeringRuntime),
         }
+        if _function_library(value) is not None:
+            # UNIFY_TOOL_SURFACE=core: ``functions.run`` runs in the worker.
+            desc["library"] = "functions"
+        return desc
 
     def _manifest(self, shadow: Dict[str, Any]) -> dict:
         want: Dict[str, dict] = {}
+        record = _function_library(shadow.get("functions")) is not None
         for name, value in list(shadow.items()):
             if not isinstance(name, str) or name in _SKIP:
                 continue
@@ -490,7 +502,7 @@ class PythonWorker:
                 continue
             if name in self._base and self._base[name] is value:
                 continue
-            want[name] = self._describe_global(name, value)
+            want[name] = self._describe_global(name, value, record=record)
         changed: Dict[str, dict] = {}
         for name, desc in want.items():
             # A root rebinds every cell (steering wraps ``primitives`` anew);
@@ -573,24 +585,8 @@ class PythonWorker:
         op = msg.get("op")
         reply: Dict[str, Any] = {"op": "reply", "id": msg.get("id")}
         try:
-            target = msg.get("target") or {}
-            obj = self._resolve(shadow, target)
-            if op == "describe":
-                path = target.get("path") or [target.get("root", "")]
-                reply["value"] = self._describe(obj, str(path[-1]))
-            elif op == "dir":
-                reply["value"] = sorted(n for n in dir(obj) if not n.startswith("_"))
-            elif op == "call":
-                args = self.decode(msg.get("args") or [], shadow)
-                kwargs = self.decode(msg.get("kwargs") or {}, shadow)
-                out = obj(*args, **kwargs)
-                awaited = inspect.isawaitable(out)
-                if awaited:
-                    out = await out
-                reply["value"] = self.encode(out)
-                reply["coroutine"] = awaited
-            else:
-                raise BoundaryRefusal(f"unknown request {op!r}")
+            with self._recording(msg.get("cases"), shadow):
+                await self._answer(op, msg, shadow, reply)
         except asyncio.CancelledError:
             reply["error"] = {
                 "type": "CancelledError",
@@ -610,6 +606,89 @@ class PythonWorker:
             await self._send(reply)
         except WorkerDied:
             pass
+
+    @staticmethod
+    def _recording(cases: Any, shadow: Dict[str, Any]) -> Any:
+        """UNIFY_TOOL_SURFACE=core: the environment calls served inside add
+        to the cases of the stored-function calls the request came from."""
+        import contextlib
+
+        stack = contextlib.ExitStack()
+        library = _function_library(shadow.get("functions"))
+        if not cases or library is None or not isinstance(cases, list):
+            return stack
+        from unify.function_manager import store_cases
+
+        for token in cases:
+            stack.enter_context(store_cases.tracing(library._case_pending(token)))
+        return stack
+
+    def _library(self, shadow: Dict[str, Any]) -> Any:
+        library = _function_library(shadow.get("functions"))
+        if library is None or not self._exposed_remote("functions"):
+            raise BoundaryRefusal(
+                "stored functions are recorded only where the session's "
+                "`functions` library is exposed (UNIFY_TOOL_SURFACE=core)",
+            )
+        return library
+
+    async def _answer(
+        self,
+        op: Any,
+        msg: dict,
+        shadow: Dict[str, Any],
+        reply: Dict[str, Any],
+    ) -> None:
+        if op == "fn_begin":
+            reply["value"] = self.encode(
+                await self._library(shadow)._begin(
+                    name=str(msg.get("name")),
+                    mode=str(msg.get("mode")),
+                    args=list(self.decode(msg.get("args") or [], shadow)),
+                    kwargs=dict(self.decode(msg.get("kwargs") or {}, shadow)),
+                ),
+            )
+            return
+        if op == "fn_end":
+            reply["value"] = self.encode(
+                await self._library(shadow)._end(
+                    token=msg.get("token"),
+                    result=self.decode(msg.get("result"), shadow),
+                    error=msg.get("error"),
+                    abandoned=bool(msg.get("abandoned")),
+                ),
+            )
+            return
+        if op == "doc" and _core_surface():
+            from unify.actor import core_surface
+
+            target = msg.get("target")
+            if not target:
+                reply["value"] = core_surface.index_help(shadow)
+                return
+            reply["value"] = core_surface.help_text(
+                self._resolve(shadow, target),
+                str(msg.get("label") or "object"),
+            )
+            return
+        target = msg.get("target") or {}
+        obj = self._resolve(shadow, target)
+        if op == "describe":
+            path = target.get("path") or [target.get("root", "")]
+            reply["value"] = self._describe(obj, str(path[-1]))
+        elif op == "dir":
+            reply["value"] = sorted(n for n in dir(obj) if not n.startswith("_"))
+        elif op == "call":
+            args = self.decode(msg.get("args") or [], shadow)
+            kwargs = self.decode(msg.get("kwargs") or {}, shadow)
+            out = obj(*args, **kwargs)
+            awaited = inspect.isawaitable(out)
+            if awaited:
+                out = await out
+            reply["value"] = self.encode(out)
+            reply["coroutine"] = awaited
+        else:
+            raise BoundaryRefusal(f"unknown request {op!r}")
 
     def _apply_note(self, msg: dict, shadow: Dict[str, Any]) -> None:
         from unify.function_manager.steering import SteeringRuntime
@@ -638,7 +717,7 @@ class PythonWorker:
             while True:
                 msg = await self._read()
                 op = msg.get("op")
-                if op in ("call", "describe", "dir"):
+                if op in _SERVED:
                     task = asyncio.create_task(self._serve(msg, shadow))
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
@@ -760,6 +839,25 @@ class PythonWorker:
         await self._send({"op": "variables", "id": cid})
         done = await asyncio.wait_for(self._serve_until_done(cid, {}), timeout=30)
         return dict(done.get("variables") or {})
+
+
+#: What the worker asks of the harness, each served in a task of its own.
+_SERVED = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+
+
+def _core_surface() -> bool:
+    from unify.actor import core_surface
+
+    return core_surface.enabled()
+
+
+def _function_library(value: Any) -> Any:
+    """*value* when it is a core-surface ``functions`` library, else None."""
+    if value is None or not _core_surface():
+        return None
+    from unify.actor.core_surface import FunctionLibrary
+
+    return value if isinstance(value, FunctionLibrary) else None
 
 
 def _no_refs(value: Any, where: str) -> Any:

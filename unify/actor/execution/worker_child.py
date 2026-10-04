@@ -13,7 +13,8 @@ nothing a cell prints or a subprocess writes can reach the channel.
 
 Harness -> worker::
 
-    {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...}}
+    {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
+     "help": bool}
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool}
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
     {"op": "reply", "id": k, "error": {"type", "module", "message", "args"}}
@@ -22,7 +23,19 @@ Worker -> harness::
 
     {"op": "ready", "missing": {name: error}}
     {"op": "call" | "describe" | "dir", "id": k, "target": {...}, ...}
+    {"op": "fn_begin", "id": k, "name": str, "mode": "run" | "call",
+     "args": [...], "kwargs": {...}}
+    {"op": "fn_end", "id": k, "token": int, "result": ..., "error": str | None,
+     "abandoned": bool}
+    {"op": "doc", "id": k, "target": {...} | None, "label": str}
     {"op": "note", "event": str, ...}           (no reply)
+
+``fn_begin``/``fn_end``/``doc`` and the ``help`` flag exist only under
+``UNIFY_TOOL_SURFACE=core`` (unify/actor/core_surface.py): a stored function
+run by ``functions.run``, or called by name, runs here and the harness records
+the call between its begin and its end. While one runs, every request carries
+``"cases": [token, ...]``, the recordings it belongs to, so the harness adds
+the environment calls it serves to those cases.
     {"op": "done", "id": n, "result": ..., "error": str | None, ...}
 
 Values cross as JSON with a few tagged forms (``{"__unify__": tag, ...}``):
@@ -40,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import builtins
+import contextvars
 import datetime as _dt
 import decimal
 import importlib
@@ -59,6 +73,16 @@ TAG = "__unify__"
 MAX_DEPTH = 64
 MAX_REPR = 500
 MAX_FD_OUTPUT = 256 * 1024
+
+#: The states ``functions.run`` takes (as ``execute_function`` did).
+RUN_STATES = ("stateless", "stateful", "read_only")
+
+# UNIFY_TOOL_SURFACE=core: the recordings (harness tokens) of the stored-
+# function calls running in this context, outermost first.
+_CASES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
+    "unify_worker_cases",
+    default=(),
+)
 
 __all__ = [
     "BoundaryRefusal",
@@ -349,16 +373,31 @@ class _Refused:
 
 
 class _StoredFunction:
-    """A stored function defined in the worker; tells the harness it ran."""
+    """A stored function defined in the worker; tells the harness it ran.
 
-    def __init__(self, raw: Callable[..., Any], name: str, worker: "Worker") -> None:
+    With ``record`` (``UNIFY_TOOL_SURFACE=core``) each call is recorded by the
+    harness as the in-process boundary wrapper records it -- usage, trust
+    evidence, a case with the environment calls it makes -- instead of only
+    being noted as used.
+    """
+
+    def __init__(
+        self,
+        raw: Callable[..., Any],
+        name: str,
+        worker: "Worker",
+        record: bool = False,
+    ) -> None:
         self.__wrapped__ = raw
         self.__name__ = name
         self.__qualname__ = name
         self.__doc__ = getattr(raw, "__doc__", None)
         self._worker = worker
+        self._record = record
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._record:
+            return self._worker.call_recorded(self, args, kwargs)
         self._worker.note("function_used", name=self.__name__)
         return self.__wrapped__(*args, **kwargs)
 
@@ -394,6 +433,19 @@ class _RuntimeProxy(RemoteNamespace):
         return super().__getattr__(name)
 
 
+class _FunctionsProxy(RemoteNamespace):
+    """``functions`` (``UNIFY_TOOL_SURFACE=core``): the harness's function
+    library, except ``run``, which runs the stored code here, in the worker."""
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "run":
+            return self._w.run_function
+        return super().__getattr__(name)
+
+
+_NO_ARGUMENT = object()
+
+
 async def _ready(value: Any) -> Any:
     return value
 
@@ -416,6 +468,9 @@ class Worker:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.ns: dict[str, Any] = {}
         self.installed: dict[str, Any] = {}
+        # The globals every namespace starts from (init's), for the fresh
+        # globals of ``functions.run(..., state="stateless")``.
+        self.base_ns: dict[str, Any] = {}
         self._stdout: list[dict] = []
         self._stderr: list[dict] = []
         self._real_print = builtins.print
@@ -452,12 +507,17 @@ class Worker:
         # The harness closed the channel: nothing more can be asked of us.
         os._exit(0)
 
+    @staticmethod
+    def _with_cases(fields: dict) -> dict:
+        cases = _CASES.get()
+        return {**fields, "cases": list(cases)} if cases else fields
+
     def request_sync(self, op: str, **fields: Any) -> tuple[Any, dict]:
         rid = next(self._ids)
         event = threading.Event()
         box: list = []
         self._pending[rid] = ("sync", event, box)
-        self.send({"op": op, "id": rid, **fields})
+        self.send({"op": op, "id": rid, **self._with_cases(fields)})
         event.wait()
         return self._unwrap(box[0]), box[0]
 
@@ -467,7 +527,7 @@ class Worker:
         rid = next(self._ids)
         self._pending[rid] = ("async", loop, fut)
         try:
-            self.send({"op": op, "id": rid, **fields})
+            self.send({"op": op, "id": rid, **self._with_cases(fields)})
             msg = await fut
         finally:
             self._pending.pop(rid, None)
@@ -683,6 +743,11 @@ class Worker:
                 missing[name] = value._reason
             else:
                 self.ns[name] = value
+        if msg.get("help"):
+            # Under -S there is no site-installed help(); this one prints the
+            # harness objects' documentation too.
+            self.ns["help"] = self.help
+        self.base_ns = dict(self.ns)
         return missing
 
     @staticmethod
@@ -720,7 +785,13 @@ class Worker:
         finally:
             await cp(f"After: {label}")
 
-    def _define_function(self, name: str, source: str, filename: str) -> Any:
+    def _define_function(
+        self,
+        name: str,
+        source: str,
+        filename: str,
+        record: bool = False,
+    ) -> Any:
         lines = source.splitlines(keepends=True)
         linecache.cache[filename] = (len(source), None, lines, filename)
         try:
@@ -733,7 +804,7 @@ class Worker:
         raw = self.ns.get(name)
         if not callable(raw):
             return _Refused(name, "its source does not define it")
-        return _StoredFunction(raw, name, self)
+        return _StoredFunction(raw, name, self, record=record)
 
     def apply_sync(self, sync: dict) -> None:
         for name in sync.get("remove") or []:
@@ -747,6 +818,8 @@ class Worker:
             if kind == "remote":
                 if desc.get("runtime"):
                     obj: Any = _RuntimeProxy(self, target, name, repr_text)
+                elif desc.get("library") == "functions":
+                    obj = _FunctionsProxy(self, target, name, repr_text)
                 elif desc.get("callable"):
                     obj = RemoteCallable(
                         self,
@@ -760,7 +833,12 @@ class Worker:
             elif kind == "value":
                 obj = self.decode(desc.get("value"))
             elif kind == "function":
-                obj = self._define_function(name, desc["source"], desc["filename"])
+                obj = self._define_function(
+                    name,
+                    desc["source"],
+                    desc["filename"],
+                    record=bool(desc.get("record")),
+                )
             elif kind == "local":
                 obj = self._local(desc["local"])
             elif kind == "import":
@@ -784,6 +862,183 @@ class Worker:
                 continue
             out[name] = short_repr(value)
         return out
+
+    # -- stored functions (UNIFY_TOOL_SURFACE=core) ----------------------------
+    def _record_value(self, value: Any) -> Any:
+        """*value* for the harness's recording: data as data, anything else
+        as its repr, so recording never refuses a call."""
+        return self.encode_result(value)
+
+    def _begin_fields(self, name: str, mode: str, args: tuple, kwargs: dict) -> dict:
+        return {
+            "name": name,
+            "mode": mode,
+            "args": [self._record_value(a) for a in args],
+            "kwargs": {str(k): self._record_value(v) for k, v in kwargs.items()},
+        }
+
+    def _end_fields(
+        self,
+        token: int,
+        result: Any = None,
+        error: Optional[BaseException] = None,
+    ) -> dict:
+        if error is None:
+            return {"token": token, "result": self._record_value(result)}
+        if not isinstance(error, Exception):
+            # Cancelled or stopped: the call says nothing about the function.
+            return {"token": token, "abandoned": True}
+        return {"token": token, "error": _format_cell_error(error)}
+
+    @staticmethod
+    def _add_note(error: BaseException, reply: Any) -> None:
+        note = reply.get("note") if isinstance(reply, dict) else None
+        if note and isinstance(error, Exception):
+            try:
+                error.add_note(str(note))
+            except Exception:  # noqa: BLE001 - a note never replaces the error
+                pass
+
+    def call_recorded(self, fn: "_StoredFunction", args: tuple, kwargs: dict) -> Any:
+        """A direct call of a stored function, recorded by the harness as the
+        in-process boundary wrapper records one."""
+        raw = fn.__wrapped__
+        reply, _ = self.request_sync(
+            "fn_begin",
+            **self._begin_fields(fn.__name__, "call", args, kwargs),
+        )
+        token = reply.get("token") if isinstance(reply, dict) else None
+        if token is None:
+            return raw(*args, **kwargs)
+        mark = _CASES.set(_CASES.get() + (token,))
+        try:
+            result = raw(*args, **kwargs)
+        except BaseException as exc:
+            _CASES.reset(mark)
+            self._add_note(
+                exc,
+                self.request_sync("fn_end", **self._end_fields(token, error=exc))[0],
+            )
+            raise
+        _CASES.reset(mark)
+        if inspect.isawaitable(result):
+            return self._finish_recorded(token, result)
+        self.request_sync("fn_end", **self._end_fields(token, result=result))
+        return result
+
+    async def _finish_recorded(self, token: int, awaitable: Any) -> Any:
+        mark = _CASES.set(_CASES.get() + (token,))
+        try:
+            value = await awaitable
+        except BaseException as exc:
+            _CASES.reset(mark)
+            reply, _ = await self.request_async(
+                "fn_end",
+                **self._end_fields(token, error=exc),
+            )
+            self._add_note(exc, reply)
+            raise
+        _CASES.reset(mark)
+        await self.request_async("fn_end", **self._end_fields(token, result=value))
+        return value
+
+    def _resolve_name(self, name: str) -> Any:
+        """``name`` (dotted for ``primitives.*``) in this worker's namespace."""
+        head, *rest = str(name).split(".")
+        if head not in self.ns:
+            raise NameError(
+                f"name {name!r} is not a stored function and not defined in "
+                "this session",
+            )
+        value = self.ns[head]
+        for part in rest:
+            value = getattr(value, part)
+        return value
+
+    async def run_function(
+        self,
+        name: str,
+        /,
+        *,
+        state: str = "stateless",
+        **kwargs: Any,
+    ) -> Any:
+        """``functions.run``: call a stored function by name, here, recorded."""
+        if state not in RUN_STATES:
+            raise ValueError(
+                f"state must be one of {list(RUN_STATES)}, not {state!r}",
+            )
+        reply, _ = await self.request_async(
+            "fn_begin",
+            **self._begin_fields(str(name), "run", (), kwargs),
+        )
+        token = reply.get("token") if isinstance(reply, dict) else None
+        if token is None:
+            # A primitive, or a function this session defined: called as it is.
+            out = self._resolve_name(name)(**kwargs)
+            return (await out) if inspect.isawaitable(out) else out
+        fn_name = str(reply.get("fn_name") or name)
+        source = str(reply.get("source") or "")
+        filename = str(reply.get("filename") or f"<function:{fn_name}>")
+        if state == "stateful":
+            ns = self.ns
+        elif state == "read_only":
+            ns = dict(self.ns)
+        else:
+            ns = {**self.base_ns, **self.installed}
+        mark = _CASES.set(_CASES.get() + (token,))
+        try:
+            linecache.cache[filename] = (
+                len(source),
+                None,
+                source.splitlines(keepends=True),
+                filename,
+            )
+            exec(compile(source, filename, "exec"), ns)
+            fn = ns.get(fn_name)
+            if not callable(fn):
+                raise NameError(f"the stored source does not define {fn_name!r}")
+            out = fn(**kwargs)
+            if inspect.isawaitable(out):
+                out = await out
+        except BaseException as exc:
+            _CASES.reset(mark)
+            end, _ = await self.request_async(
+                "fn_end",
+                **self._end_fields(token, error=exc),
+            )
+            self._add_note(exc, end)
+            raise
+        _CASES.reset(mark)
+        await self.request_async("fn_end", **self._end_fields(token, result=out))
+        if state == "stateful" and ns.get(fn_name) is fn:
+            # Defined in the session now; later calls by name are recorded too.
+            ns[fn_name] = _StoredFunction(fn, fn_name, self, record=True)
+        return out
+
+    def help(self, obj: Any = _NO_ARGUMENT) -> None:
+        """Print the documentation of *obj*: a harness object's from the
+        harness, anything else's as ``pydoc`` renders it."""
+        if obj is _NO_ARGUMENT:
+            text, _ = self.request_sync("doc", target=None, label="")
+        elif isinstance(obj, _Remote):
+            text, _ = self.request_sync(
+                "doc",
+                target=object.__getattribute__(obj, "_target"),
+                label=object.__getattribute__(obj, "_label"),
+            )
+        elif getattr(obj, "__func__", None) is Worker.run_function:
+            text, _ = self.request_sync(
+                "doc",
+                target={"root": "functions", "path": ["run"]},
+                label="functions.run",
+            )
+        else:
+            import pydoc
+
+            target = obj.__wrapped__ if isinstance(obj, _StoredFunction) else obj
+            text = pydoc.render_doc(target, title="%s", renderer=pydoc.plaintext)
+        self._write(self._stdout, str(text).rstrip("\n") + "\n")
 
     # -- cells -----------------------------------------------------------------
     def handle(self, msg: dict) -> None:
