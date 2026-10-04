@@ -116,8 +116,15 @@ async def test_a_session_finds_runs_and_calls_a_stored_function_in_code(
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 @_handle_project
+@pytest.mark.parametrize("profile", ["", "lean"])
 @pytest.mark.parametrize("structured", [False, True])
-async def test_the_only_json_tool_is_execute_code(core_world, structured):
+async def test_the_only_json_tool_is_execute_code(
+    core_world,
+    monkeypatch,
+    structured,
+    profile,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
     from pydantic import BaseModel
 
     class Answer(BaseModel):
@@ -150,6 +157,7 @@ async def test_the_only_json_tool_is_execute_code(core_world, structured):
         "install_python_packages",
         "send_notification",
         "list_sessions",
+        "inspect_state",
         "store_skills` tool",
     ):
         assert absent not in system, absent

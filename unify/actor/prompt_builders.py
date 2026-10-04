@@ -1297,6 +1297,17 @@ _CORE_CODE_FIRST_TAIL = "call it as Tool\nSelection says;"
 _CORE_CODE_FIRST_TAIL_PYTHON = "call it in one\ncell;"
 
 
+# The lean rules' pointer to the session tools, which the core surface does not have.
+_LEAN_RULE_SESSIONS = (
+    "`list_sessions()` and\n"
+    "   `inspect_state()` show live sessions and names;\n"
+    '   `state_mode="stateless"` or a named session isolates a cell.'
+)
+_LEAN_RULE_SESSIONS_CORE = (
+    '`state_mode="stateless"` or a\n   named session isolates a cell.'
+)
+
+
 def _build_core_prompt(
     core: "PromptSurface",
     *,
@@ -1308,16 +1319,29 @@ def _build_core_prompt(
     session_sections: bool,
     inline_curation: str,
 ) -> str:
-    """The system prompt of a ``UNIFY_TOOL_SURFACE=core`` session."""
+    """The system prompt of a ``UNIFY_TOOL_SURFACE=core`` session.
+
+    The shipped sections, or the lean profile's (``UNIFY_PROMPT_PROFILE``),
+    with the accuracy fixes where they apply (``UNIFY_PROMPT_ACCURACY``),
+    less what names JSON tools the session does not have.
+    """
     from unify.actor import core_surface
     from unify.common._async_tool import batch_wait
 
-    parts: list[str] = [
-        "### Role\n\n"
-        "You are an expert agent that solves tasks by writing and executing code. "
-        "Your primary tool is a multi-session Python execution environment, "
-        "backed by a library of stored functions and procedures.",
-    ]
+    lean = _lean_profile()
+    can_clarify = core.clarification
+    parts: list[str] = []
+    if lean:
+        parts.append(_LEAN_ROLE)
+        if _reply_protocol_note_enabled():
+            parts.append(_REPLY_PROTOCOL_NOTE)
+    else:
+        parts.append(
+            "### Role\n\n"
+            "You are an expert agent that solves tasks by writing and executing code. "
+            "Your primary tool is a multi-session Python execution environment, "
+            "backed by a library of stored functions and procedures.",
+        )
     tools = core.tools_section()
     if core.steering and batch_wait.enabled():
         tools = f"{tools}\n\n{_WAIT_FOR_BATCH_LINE}"
@@ -1329,14 +1353,25 @@ def _build_core_prompt(
     parts.append(core.index())
     parts.append(core.tool_selection(_TOOL_SELECTION))
     parts.append(core.python_first())
-    parts.append(core_surface.execution_rules(_EXECUTION_RULES))
-    if _reply_protocol_note_enabled():
-        parts.append(_REPLY_PROTOCOL_NOTE)
+    if lean:
+        parts.append(
+            _unified(
+                _lean_execution_rules(can_clarify),
+                _LEAN_RULE_SESSIONS,
+                _LEAN_RULE_SESSIONS_CORE,
+            ),
+        )
+    else:
+        parts.append(core_surface.execution_rules(_execution_rules(can_clarify)))
+        if _reply_protocol_note_enabled():
+            parts.append(_REPLY_PROTOCOL_NOTE)
     if _code_first_enabled():
         parts.append(
             _unified(_CODE_FIRST, _CORE_CODE_FIRST_TAIL, _CORE_CODE_FIRST_TAIL_PYTHON),
         )
-    parts.append(_INCREMENTAL_EXECUTION)
+    parts.append(
+        _LEAN_INCREMENTAL_EXECUTION if lean else _incremental_execution(can_clarify),
+    )
     if core.functions or core.guidance:
         library = core.library_section(inline_curation=inline_curation)
         if _try_first_enabled():
