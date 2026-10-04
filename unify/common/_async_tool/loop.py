@@ -637,8 +637,11 @@ async def async_tool_loop_inner(
         ``False`` (``UNIFY_TOOL_SURFACE=core`` without sub-actors): the loop
         offers no ``wait``, ``steer`` or ``ask_about_completed_tool``, appends
         none of the ``[steerable ...]``/``[askable ...]`` announcements that
-        name them, and keeps a turn's own ``tool_choice`` while calls run
-        (``"required"`` would leave only the caller's tools to call).
+        name them, keeps a turn's own ``tool_choice`` while calls run
+        (``"required"`` would leave only the caller's tools to call), and
+        wakes the model once per batch, as ``UNIFY_BATCH_WAKE`` does (with
+        no ``wait`` to call, a turn started on part of a batch could only run
+        more code or end the run).
 
     compression_tools_on_demand : ``bool``, default ``False``
         ``True`` (``UNIFY_TOOL_SURFACE=core``): ``compress_context`` and the
@@ -1724,7 +1727,10 @@ async def async_tool_loop_inner(
     # UNIFY_BATCH_WAKE, read once for the loop: while calls run, a hold covers
     # all of them (only tool results wait for it), and a result or a
     # notification never cancels a sent turn.
-    _batch_wake = _batch_wait.batch_wake()
+    # A loop without the steering tools (steering_tools=False) waits the
+    # same way: with no `wait` to call, a turn started on part of a batch
+    # could only run more code or end the run.
+    _batch_wake = _batch_wait.batch_wake() or not steering_tools
     if _batch_wake:
         interrupt_llm_on_tool_completion = False
     # UNIFY_PENDING_REQUIRED, read once for the loop.
