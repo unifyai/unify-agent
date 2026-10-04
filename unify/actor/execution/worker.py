@@ -13,8 +13,9 @@ What the cell needs from the harness it reaches through a proxy served here.
 Every name the session's namespace holds beyond the base globals is installed
 in the worker as one of:
 
-* a **remote** object (``primitives``, environment namespaces,
-  ``request_clarification``, ``query_llm``, steering probes): attribute access
+* a **remote** object (``primitives``, environment namespaces, the globals a
+  registered environment binds (``apis``), ``request_clarification``,
+  ``query_llm``, steering probes): attribute access
   asks the harness what the attribute is, and a call is sent over the channel,
   run here against the session's *current* binding of that name -- so the
   memoising and context-forwarding wrappers a cell installs apply -- and its
@@ -425,12 +426,7 @@ class PythonWorker:
     def _describe_global(self, name: str, value: Any, record: bool = False) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
         from unify.common.asyncio_compat import run_coro_sync
-        from unify.function_manager.steering import (
-            AROUND_CP_FN,
-            RUNTIME_GLOBAL,
-            SteeringRuntime,
-            _is_async_callable,
-        )
+        from unify.function_manager.steering import AROUND_CP_FN
 
         if name == "display" and callable(value):
             return {"kind": "local", "local": "display"}
@@ -444,6 +440,12 @@ class PythonWorker:
             spec = _importable(name, value)
             if spec is not None:
                 return {"kind": "import", "spec": spec}
+        if _environment_global(name, value):
+            # A global the registered environment binds (AppWorld's ``apis``)
+            # holds the harness's connection to the environment: a copy
+            # imported in the worker would dial it from inside the sandbox,
+            # which does not reach it, so it is served from here.
+            return self._remote(name, value)
         code = _stored_function_code(value)
         if code is not None:
             entry = linecache.cache.get(code.co_filename)
@@ -480,6 +482,16 @@ class PythonWorker:
                 data = None
             else:
                 return {"kind": "value", "value": data}
+        return self._remote(name, value)
+
+    @staticmethod
+    def _remote(name: str, value: Any) -> dict:
+        from unify.function_manager.steering import (
+            RUNTIME_GLOBAL,
+            SteeringRuntime,
+            _is_async_callable,
+        )
+
         desc = {
             "kind": "remote",
             "callable": callable(value),
@@ -843,6 +855,20 @@ class PythonWorker:
 
 #: What the worker asks of the harness, each served in a task of its own.
 _SERVED = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+
+
+def _environment_global(name: str, value: Any) -> bool:
+    """Whether *value* is the global ``name`` a registered environment binds
+    (``UNIFY_ENV_NAMESPACES``); modules are imported as they are."""
+    if isinstance(value, types.ModuleType):
+        return False
+    from unify.function_manager.primitives.environment import environment_globals
+
+    try:
+        bound = environment_globals()
+    except Exception:  # noqa: BLE001 - an environment that fails to load binds nothing
+        return False
+    return name in bound and bound[name] is value
 
 
 def _core_surface() -> bool:
