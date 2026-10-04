@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Annotated, Any, Callable, Dict, Optional
 from contextlib import suppress
+from . import batch_wait
+from .batch_wait import WaitUntil
 from .tools_data import ToolsData
 
 
@@ -229,7 +231,32 @@ class DynamicToolFactory:
     def _create_wait_tool(self) -> None:
         """Expose the always-present no-op `wait` tool: the model calls it
         to keep waiting on running calls (or the next interjection) without
-        starting, stopping, pausing or modifying any in-flight work."""
+        starting, stopping, pausing or modifying any in-flight work.
+
+        Under UNIFY_WAIT_FOR_BATCH it also takes ``until="all"``, which a turn
+        adds alongside its own calls to be woken once they have all finished
+        (see ``batch_wait``); the loop handles both forms at execution time.
+        """
+        if batch_wait.enabled():
+
+            async def wait(
+                until: Annotated[
+                    WaitUntil,
+                    batch_wait.UNTIL_DOC,
+                ] = WaitUntil.NEXT,
+                max_seconds: Annotated[
+                    Optional[int],
+                    batch_wait.MAX_SECONDS_DOC,
+                ] = None,
+            ) -> Dict[str, str]:
+                return {"status": "waiting"}
+
+            self._register_tool(
+                func_name="wait",
+                fallback_doc=batch_wait.WAIT_DOC,
+                fn=wait,
+            )
+            return
 
         async def _wait() -> Dict[str, str]:
             return {"status": "waiting"}

@@ -359,7 +359,9 @@ def _default_tool_policy(
     call is scheduled (without waiting for that call's result).  That way a
     model that only fires one of the required discovery tools on the first
     turn is prompted for the missing family right away, overlapping the
-    in-flight search.
+    in-flight search. A turn that adds ``wait(until="all")`` to its calls
+    (``UNIFY_WAIT_FOR_BATCH``) waits for them instead, and the gate, still
+    open, requires the missing family on the turn it is woken for.
 
     When only a subset of the manager tool families is present, those families
     act as the gates.  When none are present the policy is a no-op pass-through.

@@ -4,7 +4,6 @@ import hashlib
 import json
 import inspect
 import copy
-import time
 from dataclasses import dataclass, field
 
 from typing import (
@@ -68,6 +67,7 @@ from .tools_data import (
 from .dynamic_tools_factory import DynamicToolFactory
 from . import cache_discipline as _cache_discipline
 from . import repeat_guard as _repeat_guard_mod
+from . import batch_wait as _batch_wait
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
@@ -103,6 +103,13 @@ class ToolLoopRuntimeState:
     # UNIFY_CACHE_DISCIPLINE: the tool list this session advertises, fixed at
     # its first call and kept across compression restarts.
     session_tools_schema: Optional[list] = None
+    # Model turns cancelled after dispatch (the provider bills what it has
+    # received), by what superseded them, and the part of their cost unillm
+    # has reported so far (a decimal string; the rest is unknown).
+    cancelled_turns: int = 0
+    cancelled_turns_by_cause: Dict[str, int] = field(default_factory=dict)
+    cancelled_turns_priced: int = 0
+    cancelled_turns_usd: str = "0"
 
 
 def _parse_tool_policy_result(
@@ -117,7 +124,11 @@ def _parse_tool_policy_result(
     ``eager=True`` means: after the model schedules tool calls on this turn,
     immediately grant another LLM turn (without waiting for those tools to
     finish) for as long as subsequent policy evaluations keep returning
-    ``eager=True``.  Default is ``False`` (wait for tool results).
+    ``eager=True``.  Default is ``False`` (wait for tool results). Under
+    ``UNIFY_WAIT_FOR_BATCH`` a turn that also calls ``wait(until="all")``
+    gets no eager turn: it is woken once its calls have finished, and the
+    policy, evaluated again for that turn, still decides its tools and
+    ``tool_choice`` (``"required"`` while a gate is open).
 
     While ``eager=True``, the loop also withholds ``compress_context`` from the
     visible tool schema (except on the forced over-threshold compression path)
@@ -520,7 +531,8 @@ async def async_tool_loop_inner(
         the policy keeps returning ``eager=True``; eager turns also withhold
         ``compress_context`` from the visible schema (forced over-threshold
         compression still applies). Omitting ``eager`` keeps the
-        wait-for-results behaviour.
+        wait-for-results behaviour. A turn that declares
+        ``wait(until="all")`` (``UNIFY_WAIT_FOR_BATCH``) gets no eager turn.
 
     parent_chat_context : ``list[dict] | None``
         Chat history passed from an outer loop. When a tool call opts into
@@ -639,11 +651,6 @@ async def async_tool_loop_inner(
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
     _discipline = _cache_discipline.enabled()
-    from unify.settings import SETTINGS as _BATCH_SETTINGS
-
-    # UNIFY_TOOL_BATCH_WAIT: once a tool's result owes the model a turn, how
-    # long the loop still waits for the rest of that batch before the turn.
-    _batch_wait_s = float(_BATCH_SETTINGS.UNIFY_TOOL_BATCH_WAIT)
     # UNIFY_REPEAT_GUARD: a persistent session's replies and the requester
     # messages that answered them, to hold back a reply already answered.
     _repeat_guard = (
@@ -1480,12 +1487,121 @@ async def async_tool_loop_inner(
                 needs_turn = True
         return needs_turn, False
 
+    async def _prune_wait_call(msg: dict, call: dict) -> None:
+        """Drop a `wait` call from the transcript; the loop waits anyway."""
+        with suppress(Exception):
+            from .messages import (
+                prune_wait_tool_call as _prune_wait,
+            )
+
+            await _prune_wait(
+                msg,
+                call["id"],
+                client=client,
+                assistant_meta=assistant_meta,
+                msg_dispatcher=_msg_dispatcher,
+            )
+
+        # The assistant message containing this wait() was published to the
+        # EventBus before it could be inspected, so a matching tool result
+        # lets the frontend resolve the pending tool-call row.
+        with suppress(Exception):
+            await to_event_bus(
+                create_tool_call_message(
+                    "wait",
+                    call["id"],
+                    "",
+                ),
+                cfg,
+            )
+
+    async def _settle_wait_call(msg: dict, call: dict) -> None:
+        """Answer a plain `wait` call (no LLM turn follows it)."""
+        # With pending tools the wait call is pruned to avoid transcript
+        # clutter; the loop waits for them anyway.
+        if tools_data.pending:
+            try:
+                logger.info(
+                    "Assistant chose `wait` – no-op; not persisting to transcript.",
+                    prefix=ICONS["wait"],
+                )
+            except Exception:
+                pass
+
+            await _prune_wait_call(msg, call)
+            # No immediate LLM turn after a wait: the loop now waits for
+            # pending tools or interjections.
+            return
+
+        # With no pending tools, pruning would loop forever on the cache
+        # (same conversation → same cached response). A factual tool response
+        # changes the conversation state, prescribes nothing, and stays
+        # accurate even if interjections arrive later.
+        try:
+            logger.info(
+                "Assistant called `wait` with no pending tools.",
+                prefix=ICONS["wait"],
+            )
+        except Exception:
+            pass
+
+        tool_msg = create_tool_call_message(
+            name="wait",
+            call_id=call["id"],
+            content="No tasks are currently running.",
+        )
+        await insert_tool_message_after_assistant(
+            assistant_meta,
+            msg,
+            tool_msg,
+            client,
+            _msg_dispatcher,
+        )
+
+    async def _declare_batch_wait(msg: dict, call: dict, args: Any) -> None:
+        """UNIFY_WAIT_FOR_BATCH: hold the next turn for this turn's calls.
+
+        The hold covers the calls this message scheduled that are still
+        running; with none, the call is an ordinary `wait`.
+        """
+        batch = {
+            t
+            for t in tools_data.pending
+            if getattr(tools_data.info.get(t), "assistant_msg", None) is msg
+        }
+        if not batch:
+            await _settle_wait_call(msg, call)
+            return
+        seconds = _batch_wait.hold_seconds(args)
+        _hold.install(batch, seconds)
+        try:
+            logger.info(
+                f'Assistant chose `wait(until="all")` – the next turn waits for '
+                f"{len(batch)} call(s), at most {seconds:g}s.",
+                prefix=ICONS["wait"],
+            )
+        except Exception:
+            pass
+        await _prune_wait_call(msg, call)
+
+    def _on_cancelled_turn(payload: dict) -> None:
+        """Record and publish one phase of a cancelled turn's accounting."""
+        _batch_wait.record(runtime_state, payload)
+        logger.debug(
+            f"⏱️ [ToolLoop] cancelled turn {payload['turn_id'][:8]} "
+            f"{payload['phase']}: cause={payload['cause']}, "
+            f"cost={payload.get('provider_cost_usd')}, "
+            f"cancelled so far={runtime_state.cancelled_turns}",
+        )
+        _batch_wait.publish(payload)
+
     # True whenever the LLM must get an immediate turn before the loop waits
     # again (user interjection, clarification answer, etc.).
     llm_turn_required = False
-    # UNIFY_TOOL_BATCH_WAIT: monotonic deadline of the current wait for the
-    # rest of a batch whose first result already owes the model a turn.
-    _batch_wait_until: Optional[float] = None
+    # UNIFY_WAIT_FOR_BATCH: the calls a turn declared with wait(until="all"),
+    # held until they have all finished or the hold's time is up.
+    _wait_for_batch = _batch_wait.enabled()
+    _hold = _batch_wait.BatchHold()
     # A patient interjection (trigger_immediate_llm_turn=False) arriving while
     # the LLM is already thinking earns exactly one extra LLM step after the
     # current one, unless another event triggers a turn anyway.
@@ -1977,18 +2093,14 @@ async def async_tool_loop_inner(
 
             # ── A. Wait for a tool completion, cancellation, interjection,
             #       clarification or notification ────────────────────────
-            # Skipped entirely when the model already needs to speak, except
-            # while UNIFY_TOOL_BATCH_WAIT holds the turn for the rest of the
-            # batch: a turn started now is cancelled (and still billed) when
-            # the next sibling lands.
-            _batch_waiting = (
-                _batch_wait_until is not None
-                and bool(tools_data.pending)
-                and time.monotonic() < _batch_wait_until
-            )
-            if not _batch_waiting:
-                _batch_wait_until = None
-            if tools_data.pending and (not llm_turn_required or _batch_waiting):
+            # UNIFY_WAIT_FOR_BATCH: a hold ends once every call it covers has
+            # finished or its time is up; a result it held back is owed the
+            # turn it would have had.
+            if _hold.declared and not _hold.active(tools_data.pending):
+                if _hold.release():
+                    llm_turn_required = True
+            # Skipped entirely when the model already needs to speak.
+            if tools_data.pending and not llm_turn_required:
                 interject_w = asyncio.create_task(
                     interject_queue.get(),
                     name="InterjectQueueGet",
@@ -2033,8 +2145,8 @@ async def async_tool_loop_inner(
                     )
 
                 _wait_timeout = timer.remaining_time()
-                if _batch_waiting:
-                    _left = max(0.0, _batch_wait_until - time.monotonic())
+                if _hold.declared:
+                    _left = _hold.remaining()
                     _wait_timeout = (
                         _left if _wait_timeout is None else min(_wait_timeout, _left)
                     )
@@ -2044,9 +2156,9 @@ async def async_tool_loop_inner(
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
-                if not done and _batch_waiting and not timer.has_exceeded_time():
-                    # The batch window closed with siblings still running: the
-                    # model takes its turn now, as without the switch.
+                if not done and _hold.declared and not timer.has_exceeded_time():
+                    # The hold's time is up with calls still running; the top
+                    # of the loop ends it.
                     for aux in (
                         interject_w,
                         cancel_waiter,
@@ -2056,7 +2168,6 @@ async def async_tool_loop_inner(
                         if not aux.done():
                             aux.cancel()
                             await asyncio.gather(aux, return_exceptions=True)
-                    _batch_wait_until = None
                     continue
 
                 # Nothing completed means the wait itself timed out.
@@ -2097,14 +2208,18 @@ async def async_tool_loop_inner(
                     clar_waiters,
                     notif_waiters,
                 )
+                # Under a hold only results wait: an interjection, a
+                # clarification or a notification wakes the model as shipped.
+                _event_wake = restart or bool(
+                    done & (clar_waiters.keys() | notif_waiters.keys()),
+                )
                 if needs_turn:
+                    if _hold.declared and not _event_wake:
+                        _hold.owed = True
+                    else:
+                        llm_turn_required = True
+                if _hold.declared and _event_wake and _hold.release():
                     llm_turn_required = True
-                    if (
-                        _batch_wait_s > 0
-                        and _batch_wait_until is None
-                        and tools_data.pending
-                    ):
-                        _batch_wait_until = time.monotonic() + _batch_wait_s
                 if restart or tools_data.pending:
                     continue  # jump to top-of-loop
 
@@ -2550,6 +2665,9 @@ async def async_tool_loop_inner(
             # message this step produced.
             _patient_asst_msg: Optional[dict] = None
 
+            # The model speaks now, so a declared wait is over.
+            _hold.release()
+
             if interrupt_llm_with_interjections:
                 # ––––– pre-emptive mode: the LLM step races the pending
                 # tools, interjections, cancellation, clarifications and
@@ -2583,11 +2701,25 @@ async def async_tool_loop_inner(
                     if _discipline
                     else None
                 )
+                # Watched in case it is cancelled below: the provider bills it
+                # anyway, and unillm reports the charge to the meter's hook.
+                _turn_meter = _batch_wait.TurnMeter(
+                    loop_id=cfg.loop_id,
+                    label=cfg.label,
+                    step_index=runtime_state.step_index,
+                    on_event=_on_cancelled_turn,
+                )
                 llm_task = asyncio.create_task(
-                    generate_with_preprocess(
-                        client,
-                        _apply_reasoning_model_compat(_gen_kwargs, tool_choice_mode),
-                        **_gen_kwargs,
+                    _batch_wait.metered(
+                        generate_with_preprocess(
+                            client,
+                            _apply_reasoning_model_compat(
+                                _gen_kwargs,
+                                tool_choice_mode,
+                            ),
+                            **_gen_kwargs,
+                        ),
+                        _turn_meter,
                     ),
                     name="LLMGenerate",
                 )
@@ -2731,6 +2863,25 @@ async def async_tool_loop_inner(
                             f"{len(_finished)} completed",
                         )
                     if not llm_task.done():
+                        _cancel_cause = (
+                            "interjection"
+                            if interject_w in done and not _patient_interjection
+                            else (
+                                "clarification"
+                                if done & clar_waiters2.keys()
+                                else (
+                                    "notification"
+                                    if done & notif_waiters2.keys()
+                                    else "tool_result"
+                                )
+                            )
+                        )
+                        _batch_wait.note_cancelled(
+                            runtime_state,
+                            _turn_meter,
+                            _cancel_cause,
+                            len(tools_data.pending),
+                        )
                         llm_task.cancel()
                         await asyncio.gather(llm_task, return_exceptions=True)
                     needs_turn, _ = await _ingest_tick(
@@ -2786,6 +2937,12 @@ async def async_tool_loop_inner(
                 # Cancellation only escalates when the flag is actually set.
                 if cancel_waiter in done and cancel_event.is_set():
                     if not llm_task.done():
+                        _batch_wait.note_cancelled(
+                            runtime_state,
+                            _turn_meter,
+                            "stop",
+                            len(tools_data.pending),
+                        )
                         llm_task.cancel()
                         await asyncio.gather(llm_task, return_exceptions=True)
                     raise asyncio.CancelledError
@@ -2918,7 +3075,6 @@ async def async_tool_loop_inner(
                 )
 
             llm_turn_required = False
-            _batch_wait_until = None
             runtime_state.step_index += 1
 
             # ── E. Launch any new tool calls ─────────────────────────────
@@ -2980,6 +3136,9 @@ async def async_tool_loop_inner(
                         "or conclude.",
                     )
                     await _msg_dispatcher.append_msgs([sys_notice])
+
+                # UNIFY_WAIT_FOR_BATCH: a wait(until="all") in this turn.
+                _declared_wait: Optional[Tuple[dict, Any]] = None
 
                 for idx, call in enumerate(msg["tool_calls"]):  # capture index
                     name = call["function"]["name"]
@@ -3381,73 +3540,12 @@ async def async_tool_loop_inner(
                         continue
 
                     if lname_cf == "wait":
-                        # With pending tools the wait call is pruned to avoid
-                        # transcript clutter; the loop waits for them anyway.
-                        if tools_data.pending:
-                            try:
-                                logger.info(
-                                    "Assistant chose `wait` – no-op; not persisting to transcript.",
-                                    prefix=ICONS["wait"],
-                                )
-                            except Exception:
-                                pass
-
-                            with suppress(Exception):
-                                from .messages import (
-                                    prune_wait_tool_call as _prune_wait,
-                                )
-
-                                await _prune_wait(
-                                    msg,
-                                    call["id"],
-                                    client=client,
-                                    assistant_meta=assistant_meta,
-                                    msg_dispatcher=_msg_dispatcher,
-                                )
-
-                            # The assistant message containing this wait() was
-                            # published to the EventBus before it could be
-                            # inspected, so a matching tool result lets the
-                            # frontend resolve the pending tool-call row.
-                            with suppress(Exception):
-                                await to_event_bus(
-                                    create_tool_call_message(
-                                        "wait",
-                                        call["id"],
-                                        "",
-                                    ),
-                                    cfg,
-                                )
-
-                            # No immediate LLM turn after a wait: the loop now
-                            # waits for pending tools or interjections.
+                        if _wait_for_batch and _batch_wait.declares_batch(args):
+                            # UNIFY_WAIT_FOR_BATCH: settled once every call of
+                            # this turn is scheduled, so it can cover them.
+                            _declared_wait = (call, args)
                             continue
-
-                        # With no pending tools, pruning would loop forever on
-                        # the cache (same conversation → same cached response).
-                        # A factual tool response changes the conversation
-                        # state, prescribes nothing, and stays accurate even if
-                        # interjections arrive later.
-                        try:
-                            logger.info(
-                                "Assistant called `wait` with no pending tools.",
-                                prefix=ICONS["wait"],
-                            )
-                        except Exception:
-                            pass
-
-                        tool_msg = create_tool_call_message(
-                            name="wait",
-                            call_id=call["id"],
-                            content="No tasks are currently running.",
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
-                            msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
-                        )
+                        await _settle_wait_call(msg, call)
                         continue
 
                     elif lname_cf == "steer":
@@ -4112,6 +4210,9 @@ async def async_tool_loop_inner(
                         initial_paused=not pause_event.is_set(),
                     )
 
+                if _declared_wait is not None:
+                    await _declare_batch_wait(msg, *_declared_wait)
+
                 if _persist_response_emitted:
                     pass  # fall through to section F → persist wait
                 else:
@@ -4141,8 +4242,11 @@ async def async_tool_loop_inner(
                     # re-evaluation uses the updated called_tools so eagerness
                     # ends as soon as the policy stops requesting it, and only
                     # runs when this turn was already eager: non-eager policies
-                    # must not get an extra same-step callback.
-                    if tool_policy is not None and _policy_eager:
+                    # must not get an extra same-step callback. A turn that
+                    # declared wait(until="all") (UNIFY_WAIT_FOR_BATCH) asked
+                    # to be woken with its results, so it gets no eager turn;
+                    # the policy still gates the turn it is woken for.
+                    if tool_policy is not None and _policy_eager and not _hold.declared:
                         try:
                             _eager_snapshot = {
                                 n: s.fn for n, s in tools_data.normalized.items()

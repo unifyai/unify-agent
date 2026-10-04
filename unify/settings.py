@@ -287,12 +287,19 @@ class ProductionSettings(BaseSettings):
     # stored function or primitive call completes, are answered as before.
     # Off: as shipped.
     UNIFY_CODE_FIRST: bool = False
-    # Seconds the tool loop keeps waiting for the rest of a batch of tool
-    # calls once the first result owes the model a turn. Without it the turn
-    # starts at once, and when a sibling lands during it the loop cancels it
-    # (the provider has already billed it) and asks again. A sibling still
-    # running when the window closes is raced as shipped. 0: as shipped.
-    UNIFY_TOOL_BATCH_WAIT: float = 0.0
+    # The loop's `wait` tool takes ``until="all"``: a turn that calls several
+    # tools and adds wait(until="all") is woken once, when every call from
+    # that turn has finished, instead of when the first one does (a turn
+    # started then is cancelled, and still billed, when a sibling lands).
+    # The model decides; the declaration also skips the eager turn a
+    # discovery gate would grant. A new message, a clarification request, a
+    # progress notification or a stop still wakes it at once. The tool's
+    # description and one line of the actor prompt say so. Off: as shipped.
+    UNIFY_WAIT_FOR_BATCH: bool = False
+    # The longest a wait(until="all") holds the next turn back (seconds):
+    # its own max_seconds is clamped to this, so a slow call never keeps the
+    # model from results that have landed for longer. Between 1 and 120.
+    UNIFY_WAIT_CEILING_SECONDS: float = 15.0
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
     # requester has already answered is held back once: the loop appends a
@@ -507,13 +514,13 @@ class ProductionSettings(BaseSettings):
             raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
         return value
 
-    @field_validator("UNIFY_TOOL_BATCH_WAIT", mode="before")
+    @field_validator("UNIFY_WAIT_CEILING_SECONDS", mode="before")
     @classmethod
-    def parse_tool_batch_wait(cls, v: Any) -> float:
-        value = float(v or 0)
-        if not 0 <= value <= 30:
+    def parse_wait_ceiling_seconds(cls, v: Any) -> float:
+        value = float(15.0 if v in (None, "") else v)
+        if not 1 <= value <= 120:
             raise ValueError(
-                f"UNIFY_TOOL_BATCH_WAIT must be between 0 and 30 seconds, not {v!r}",
+                f"UNIFY_WAIT_CEILING_SECONDS must be between 1 and 120, not {v!r}",
             )
         return value
 

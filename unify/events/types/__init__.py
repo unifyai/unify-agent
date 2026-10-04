@@ -13,11 +13,12 @@ from pydantic import BaseModel
 from .comms import CommsPayload
 from .llm import LLMPayload
 from .manager_method import ManagerMethodPayload
-from .tool_loop import ToolLoopPayload
+from .tool_loop import ToolLoopCancelledTurnPayload, ToolLoopPayload
 
 __all__ = [
     "ManagerMethodPayload",
     "ToolLoopPayload",
+    "ToolLoopCancelledTurnPayload",
     "CommsPayload",
     "LLMPayload",
     "PAYLOAD_REGISTRY",
@@ -27,6 +28,7 @@ __all__ = [
 PAYLOAD_REGISTRY: dict[str, type[BaseModel]] = {
     "ManagerMethod": ManagerMethodPayload,
     "ToolLoop": ToolLoopPayload,
+    "ToolLoopCancelledTurn": ToolLoopCancelledTurnPayload,
     "Comms": CommsPayload,
     "LLM": LLMPayload,
 }

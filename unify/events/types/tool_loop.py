@@ -142,3 +142,44 @@ class ToolLoopPayload(BaseModel):
         default=None,
         description="Sparse mapping of tool_name -> human-readable label for tool calls in this event only",
     )
+
+
+class ToolLoopCancelledTurnPayload(BaseModel):
+    """A model turn the tool loop cancelled after sending it.
+
+    The provider bills a request it has received whether or not its answer
+    is read, so each of these is a paid turn that produced nothing. Published
+    with ``phase="cancelled"`` when the loop cancels the turn, and again with
+    ``phase="billed"`` (same ``turn_id``) if unillm later reports what the
+    provider charged; a turn with no ``billed`` event has an unknown cost.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    turn_id: str = Field(description="Identifies one cancelled turn across phases")
+    phase: str = Field(description='"cancelled" or "billed"')
+    loop_id: str = Field(description="Public method that spawned this loop")
+    hierarchy_label: Optional[str] = Field(
+        default=None,
+        description="The loop's lineage label",
+    )
+    step_index: int = Field(description="The loop step the turn was sent at")
+    cause: str = Field(
+        description=(
+            'What superseded the turn: "tool_result", "interjection", '
+            '"clarification", "notification" or "stop"'
+        ),
+    )
+    cancelled_turns: int = Field(
+        description="Turns this loop has cancelled so far, this one included",
+    )
+    pending_tools: int = Field(
+        description="Tool calls still running when the turn was cancelled",
+    )
+    provider_cost_usd: Optional[str] = Field(
+        default=None,
+        description='What the provider charged, as a decimal string ("billed" only)',
+    )
+    prompt_tokens: Optional[int] = Field(default=None)
+    cached_prompt_tokens: Optional[int] = Field(default=None)
+    completion_tokens: Optional[int] = Field(default=None)
