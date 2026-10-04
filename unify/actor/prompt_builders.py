@@ -271,6 +271,39 @@ _REPLY_PROTOCOL_NOTE = textwrap.dedent("""
 """).strip()
 
 
+# UNIFY_PROMPT_ACCURACY: without request_clarification the rules do not
+# mention it. Each excerpt must occur once in its section.
+_RULE_5_CLARIFY = (
+    " If the result rests on an unverified choice between\n"
+    "   plausible alternatives, request clarification; if the evidence\n"
+    "   contradicts the result, fix and re-run."
+)
+_RULE_5_NO_CLARIFY = " If the evidence\n   contradicts the result, fix and re-run."
+_RULE_8_START = "\n\n8. **Proactive clarification**"
+_INCREMENTAL_CLARIFY = (
+    "review, and (if `request_clarification` is available) confirm the\n"
+    "approach before scaling;"
+)
+_INCREMENTAL_NO_CLARIFY = "and review it before scaling;"
+
+
+def _execution_rules(can_clarify: bool) -> str:
+    if can_clarify or not _prompt_accuracy_enabled():
+        return _EXECUTION_RULES
+    text = _unified(_EXECUTION_RULES, _RULE_5_CLARIFY, _RULE_5_NO_CLARIFY)
+    return text[: text.index(_RULE_8_START)]
+
+
+def _incremental_execution(can_clarify: bool) -> str:
+    if can_clarify or not _prompt_accuracy_enabled():
+        return _INCREMENTAL_EXECUTION
+    return _unified(
+        _INCREMENTAL_EXECUTION,
+        _INCREMENTAL_CLARIFY,
+        _INCREMENTAL_NO_CLARIFY,
+    )
+
+
 def _reply_protocol_note_enabled() -> bool:
     from unify.settings import SETTINGS
 
@@ -930,6 +963,7 @@ def build_code_act_prompt(
     session_sections: bool = True,
     inline_curation: str = "",
     turn_reviews: bool = True,
+    can_clarify: bool = True,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -975,6 +1009,9 @@ def build_code_act_prompt(
         (``UNIFY_TURN_STORAGE_REVIEWS``). With ``False`` and
         ``UNIFY_PROMPT_ACCURACY`` the storage notice says the session is
         reviewed once, when it ends, and that no result reaches it.
+    can_clarify:
+        Whether the session has ``request_clarification``. With ``False``
+        and ``UNIFY_PROMPT_ACCURACY`` the execution rules do not mention it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -1011,12 +1048,12 @@ def build_code_act_prompt(
         )
         parts.append(_TOOL_SELECTION)
         parts.append(_PYTHON_FIRST)
-        parts.append(_EXECUTION_RULES)
+        parts.append(_execution_rules(can_clarify))
         if _reply_protocol_note_enabled():
             parts.append(_REPLY_PROTOCOL_NOTE)
         if _code_first_enabled():
             parts.append(_CODE_FIRST)
-        parts.append(_INCREMENTAL_EXECUTION)
+        parts.append(_incremental_execution(can_clarify))
 
         if has_fm_tools or has_gm_tools:
             parts.append(

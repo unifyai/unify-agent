@@ -156,6 +156,14 @@ _CURRENT_ENVIRONMENTS: contextvars.ContextVar[dict] = contextvars.ContextVar(
     default={},
 )
 
+# Whether the actor running the current sandbox can ask its caller
+# (``clarification_enabled``); ``None`` outside any actor. A sub-actor it
+# starts inherits it under UNIFY_PROMPT_ACCURACY.
+_CAN_CLARIFY: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "code_act_can_clarify",
+    default=None,
+)
+
 
 # ---------------------------------------------------------------------------
 # Validation helpers

@@ -34,6 +34,7 @@ from unify.actor.execution import (
     PythonExecutionSession,
     SessionExecutor,
     SessionKey,
+    _CAN_CLARIFY,
     _CURRENT_ENVIRONMENTS,
     _CURRENT_SANDBOX,
     _PARENT_CHAT_CONTEXT,
@@ -5295,6 +5296,7 @@ class CodeActActor(BaseCodeActActor):
         sandbox = PythonExecutionSession(environments=sandbox_envs)
         token = _CURRENT_SANDBOX.set(sandbox)
         env_token = _CURRENT_ENVIRONMENTS.set(sandbox_envs)
+        can_clarify_token = _CAN_CLARIFY.set(bool(clarification_enabled))
         llm_profile_token = CURRENT_ACT_LLM_PROFILE.set(act_llm_profile)
 
         # Set agent context for depth tracking and handle access
@@ -5319,6 +5321,10 @@ class CodeActActor(BaseCodeActActor):
                 pass
             try:
                 _CURRENT_ENVIRONMENTS.reset(env_token)
+            except Exception:
+                pass
+            try:
+                _CAN_CLARIFY.reset(can_clarify_token)
             except Exception:
                 pass
             try:
@@ -5476,6 +5482,7 @@ class CodeActActor(BaseCodeActActor):
             ),
             # The schedule the storage handle below is given.
             turn_reviews=bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS),
+            can_clarify=bool(clarification_enabled),
             **({"library_read_only": True} if admission_gated else {}),
             **({"inline_curation": inline_mode} if inline_mode else {}),
         )

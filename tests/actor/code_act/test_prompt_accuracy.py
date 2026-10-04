@@ -242,6 +242,140 @@ async def test_off_a_loop_without_a_parent_still_gets_the_section(monkeypatch):
     assert _PARENT in _system_text(await _loop_request())
 
 
+# ── clarification only where it exists (D33, D31) ───────────────────────
+
+
+def _clarify_prompt(*, can_clarify: bool) -> str:
+    from unify.actor.code_act_actor import CodeActActor
+
+    actor = CodeActActor()
+    return pb.build_code_act_prompt(
+        environments={},
+        tools=dict(actor.get_tools("act")),
+        can_store=True,
+        can_clarify=can_clarify,
+    )
+
+
+def test_on_without_the_tool_the_rules_never_mention_clarification(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    prompt = _flat(_clarify_prompt(can_clarify=False))
+    assert "request_clarification" not in prompt
+    assert "request clarification" not in prompt
+    assert "Proactive clarification" not in prompt
+    # What the rules say about evidence and batches is kept.
+    assert "If the evidence contradicts the result, fix and re-run." in prompt
+    assert "process a 5–10 item batch, and review it before scaling;" in prompt
+    assert "7. **Data provenance" in prompt
+
+
+def test_on_with_the_tool_the_rules_are_as_shipped(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    shipped = _clarify_prompt(can_clarify=True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    assert _clarify_prompt(can_clarify=True) == shipped
+
+
+def test_off_the_rules_mention_clarification_as_shipped(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
+    prompt = _clarify_prompt(can_clarify=False)
+    assert pb._EXECUTION_RULES in prompt
+    assert pb._INCREMENTAL_EXECUTION in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_act_without_clarification_sends_no_clarification_text(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    request = await _first_request(persist=False, clarification_enabled=False)
+    system = _flat(_system_text(request))
+    assert "request_clarification" not in system
+    assert "request clarification" not in system
+    names = [t["function"]["name"] for t in request["tools"] or []]
+    assert "request_clarification" not in names
+
+
+class _FakeInnerActor:
+    def __init__(self):
+        self.kwargs = None
+
+    async def act(self, request, **kwargs):
+        self.kwargs = kwargs
+
+        class _Handle:
+            async def result(self):
+                return "done"
+
+        return _Handle()
+
+    async def close(self):
+        pass
+
+
+async def _sub_actor_clarification(monkeypatch, parent_can_clarify) -> bool:
+    from unify.actor.environments import actor as actor_env
+    from unify.actor.execution import _CAN_CLARIFY
+
+    fake = _FakeInnerActor()
+    monkeypatch.setattr(
+        actor_env,
+        "_build_inner_actor",
+        lambda **_kw: (fake, None),
+    )
+    token = _CAN_CLARIFY.set(parent_can_clarify)
+    try:
+        handle = await actor_env._ActorRunner().act("a sub-task")
+        await handle.result()
+    finally:
+        _CAN_CLARIFY.reset(token)
+    return fake.kwargs["clarification_enabled"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "accuracy, parent, expected",
+    [
+        (True, False, False),  # the parent cannot ask: neither can its sub-actor
+        (True, True, True),
+        (True, None, True),  # outside any actor: as shipped
+        (False, False, True),  # off: always offered, as shipped
+    ],
+)
+async def test_a_sub_actor_asks_only_when_its_parent_can(
+    monkeypatch,
+    accuracy,
+    parent,
+    expected,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", accuracy)
+    assert await _sub_actor_clarification(monkeypatch, parent) is expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize("clarify", [False, True])
+async def test_act_tells_its_sandbox_whether_it_can_ask(monkeypatch, clarify):
+    """The value a sub-actor started from this actor's sandbox inherits."""
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.actor.execution import _CAN_CLARIFY
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
+    actor = CodeActActor()
+    try:
+        with h.scripted(h.ACTOR_REPLIES):
+            handle = await actor.act(
+                "List the files in the workspace.",
+                persist=False,
+                can_store=False,
+                clarification_enabled=clarify,
+            )
+            seen = _CAN_CLARIFY.get(None)
+            await asyncio.wait_for(handle.result(), 60)
+    finally:
+        await actor.close()
+    assert seen is clarify
+
+
 @pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
 def test_the_setting_parses_booleans(value, expected):
     from unify.settings import ProductionSettings

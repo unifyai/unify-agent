@@ -284,7 +284,9 @@ class ProductionSettings(BaseSettings):
     # execute_code and execute_function name the `steer` tool, not the
     # stop_* tools it replaced; and a loop that no other loop started and
     # that was given no parent context is not told it runs inside a parent
-    # conversation. Off: as shipped.
+    # conversation; the execution rules mention request_clarification only
+    # when the session has it; and a sub-actor gets request_clarification
+    # only when the actor that started it could ask. Off: as shipped.
     UNIFY_PROMPT_ACCURACY: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a

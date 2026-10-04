@@ -610,11 +610,23 @@ class _ActorRunner:
             can_spawn_sub_agents=can_spawn_sub_agents,
         )
 
+        # UNIFY_PROMPT_ACCURACY: the sub-actor may ask only when the actor
+        # that started it can (outside any actor, as shipped).
+        clarification_enabled = True
+        from unify.settings import SETTINGS
+
+        if SETTINGS.UNIFY_PROMPT_ACCURACY:
+            from unify.actor.execution import _CAN_CLARIFY
+
+            parent_can_clarify = _CAN_CLARIFY.get(None)
+            if parent_can_clarify is not None:
+                clarification_enabled = parent_can_clarify
+
         handle = await inner_actor.act(
             request,
             guidelines=effective_guidelines,
             response_format=response_format,
-            clarification_enabled=True,
+            clarification_enabled=clarification_enabled,
             _parent_chat_context=_parent_chat_context,
             _clarification_up_q=_clarification_up_q,
             _clarification_down_q=_clarification_down_q,
