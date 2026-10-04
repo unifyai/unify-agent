@@ -131,18 +131,16 @@ def stub_external_deps(monkeypatch):
             return _FIXED_DATETIME.strftime("%I:%M %p ") + label
         return _FIXED_DATETIME.strftime("%A, %B %d, %Y at %I:%M %p ") + label
 
-    # Patch prompt_helpers.now everywhere it's imported
-    monkeypatch.setattr("unify.common.prompt_helpers.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.prompt_builders.now", _static_now)
-    monkeypatch.setattr("unify.conversation_manager.events.prompt_now", _static_now)
-    monkeypatch.setattr(
-        "unify.conversation_manager.domains.chat_history.prompt_now",
-        _static_now,
-    )
-    monkeypatch.setattr(
-        "unify.conversation_manager.conversation_manager.prompt_now",
-        _static_now,
-    )
+    # Patch prompt_helpers.now everywhere it's imported. A module that binds
+    # it by name (``from unify.common.prompt_helpers import now as
+    # prompt_now``) keeps its own reference, which patching prompt_helpers
+    # alone misses, so every loaded ``unify`` module is searched for one.
+    # A module first imported during a test binds that test's patched clock,
+    # which the marker lets the next test find too.
+    from unify.common import prompt_helpers
+
+    _static_now._frozen_prompt_clock = True
+    _patch_every_copy(monkeypatch, prompt_helpers.now, _static_now)
 
     def _static_perf_counter() -> float:
         return 1000.0
@@ -151,6 +149,29 @@ def stub_external_deps(monkeypatch):
         "unify.common._async_tool.time_context.perf_counter",
         _static_perf_counter,
     )
+
+
+def _patch_every_copy(monkeypatch, original, replacement) -> None:
+    """Point ``original``'s defining attribute and every by-name copy of it
+    in a loaded ``unify`` module at ``replacement``.
+
+    An earlier test's replacement (one marked ``_frozen_prompt_clock``) is
+    replaced as well."""
+    import sys
+    import types
+
+    def _is_copy(value) -> bool:
+        return value is original or (
+            type(value) is types.FunctionType
+            and getattr(value, "_frozen_prompt_clock", False)
+        )
+
+    for name, module in list(sys.modules.items()):
+        if module is None or not (name == "unify" or name.startswith("unify.")):
+            continue
+        for attr, value in list(getattr(module, "__dict__", {}).items()):
+            if _is_copy(value):
+                monkeypatch.setattr(module, attr, replacement)
 
 
 # --------------------------------------------------------------------------- #
