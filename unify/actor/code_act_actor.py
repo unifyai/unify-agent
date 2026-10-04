@@ -1257,13 +1257,36 @@ def _prompt_accuracy_enabled() -> bool:
     return bool(SETTINGS.UNIFY_PROMPT_ACCURACY)
 
 
+# UNIFY_DELEGATION=off: execute_function's docs do not offer the sub-actor
+# primitive as their example of a primitive.
+_SUB_ACTOR_EXAMPLES_DOC = (
+    (
+        re.compile(r"a primitive\s+\(``primitives\.actor\.act``\) or a stored"),
+        "a primitive or a stored",
+    ),
+    (
+        re.compile(
+            r"\(dotted path for primitives, e\.g\.\s+``\"primitives\.actor\.act\"``\)",
+        ),
+        "(dotted path for primitives)",
+    ),
+)
+
+
 def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     """Correct the docstrings (tool descriptions) of *tools* in place, per the switches.
 
     The tools are built per actor, so a rewrite never reaches another actor.
-    Off: the docstrings are as shipped.
+    With the switches off the docstrings are as shipped.
     """
-    if not _prompt_accuracy_enabled():
+    from unify.actor.environments.actor import delegation_mode
+
+    rewrites: list = []
+    if _prompt_accuracy_enabled():
+        rewrites.extend(_STALE_STEERING_DOC)
+    if delegation_mode() == "off":
+        rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
+    if not rewrites:
         return
     for name in ("execute_code", "execute_function"):
         tool = tools.get(name)
@@ -1271,7 +1294,7 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
         if fn is None or not fn.__doc__:
             continue
         doc = fn.__doc__
-        for pattern, replacement in _STALE_STEERING_DOC:
+        for pattern, replacement in rewrites:
             doc = pattern.sub(replacement, doc)
         fn.__doc__ = doc
 
@@ -4444,6 +4467,13 @@ class CodeActActor(BaseCodeActActor):
                 if callable(get_function_data):
                     function_data = get_function_data(name=function_name)
                 if function_data is None:
+                    from unify.actor.environments.actor import refuses_sub_actor
+
+                    if refuses_sub_actor(function_name):
+                        raise NameError(
+                            f"{function_name} is not available: this session "
+                            "runs without sub-actors (UNIFY_DELEGATION=off)",
+                        )
                     get_stored_primitive = getattr(
                         self.function_manager,
                         "_get_stored_primitive_data_by_name",

@@ -393,7 +393,7 @@ class Act:
 
     async def start(self) -> None:
         import unify
-        from unify.actor.environments import ActorEnvironment, registered_environments
+        from unify.actor.environments.actor import top_level_environments
         from unify.manager_registry import ManagerRegistry
         from unify.session_details import SESSION_DETAILS
         from unify.workspace import get_local_root
@@ -407,7 +407,7 @@ class Act:
         os.chdir(local_root)
         self._actor = ManagerRegistry.get_actor(
             description="direct actor session",
-            environments=[ActorEnvironment(), *registered_environments()],
+            environments=top_level_environments(),
         )
 
     async def close(self) -> None:

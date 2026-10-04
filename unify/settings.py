@@ -288,6 +288,16 @@ class ProductionSettings(BaseSettings):
     # when the session has it; and a sub-actor gets request_clarification
     # only when the actor that started it could ask. Off: as shipped.
     UNIFY_PROMPT_ACCURACY: bool = False
+    # Delegation for the actor `unify act` and the conversation manager
+    # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
+    # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
+    # no sub-actor: no ``primitives`` global, no delegation docs, no
+    # sub-actor notch in the query_llm doctrine, and execute_function
+    # refuses ``primitives.actor.*``, for runs that are one task with no
+    # use for delegates. ``on_demand`` installs it, and the prompt carries a
+    # three-line pointer instead of the docs, which ``help(primitives.actor.act)``
+    # returns in the sandbox.
+    UNIFY_DELEGATION: str = "on"
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
     # result worked out in text, with judgment steps kept as query_llm calls
@@ -581,6 +591,25 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "message"):
             raise ValueError(
                 f"UNIFY_PROMPT_CLOCK must be empty or 'message', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_DELEGATION", mode="before")
+    @classmethod
+    def parse_delegation(cls, v: Any) -> str:
+        value = str("on" if v is None else v).strip().lower() or "on"
+        # A boolean spelling is the plain on/off of the switch.
+        value = {
+            "true": "on",
+            "1": "on",
+            "yes": "on",
+            "false": "off",
+            "0": "off",
+            "no": "off",
+        }.get(value, value)
+        if value not in ("on", "off", "on_demand"):
+            raise ValueError(
+                f"UNIFY_DELEGATION must be 'on', 'off' or 'on_demand', not {v!r}",
             )
         return value
 

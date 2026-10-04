@@ -466,14 +466,11 @@ def _init_managers(
             cm.actor = actor
         else:
             # Create via ManagerRegistry (respects SETTINGS.actor.IMPL)
-            from unify.actor.environments import (
-                ActorEnvironment,
-                registered_environments,
-            )
+            from unify.actor.environments.actor import top_level_environments
 
             cm.actor = ManagerRegistry.get_actor(
                 description="production deployment",
-                environments=[ActorEnvironment(), *registered_environments()],
+                environments=top_level_environments(),
             )
         actor_cls = type(cm.actor).__name__
         LOGGER.info(
