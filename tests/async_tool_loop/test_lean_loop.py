@@ -1,6 +1,7 @@
-"""Symbolic: ``UNIFY_BATCH_WAKE`` wakes the model once per tool batch.
+"""Symbolic: the lean-loop switches, each alone and together.
 
-No model turn starts while a call is still running, and a result or a progress
+``UNIFY_BATCH_WAKE``: the model is woken once per tool batch.
+ No model turn starts while a call is still running, and a result or a progress
 notification never cancels a turn already sent. Only tool results wait for the
 batch: a message from the user, the environment or another agent (an
 interjection, a clarification or a notification) wakes the model at once. In
@@ -9,6 +10,10 @@ started on the first of two library searches the model itself chose (once the
 discovery gate is satisfied the policy returns ``auto`` with no hold), the
 empty function search landing in about 10 ms and the guidance search 40-600 ms
 later; the model never declared ``wait(until="all")``.
+
+``UNIFY_PENDING_REQUIRED=0``: a turn sent while calls run keeps its policy's
+``tool_choice`` instead of being forced to ``required`` (337 of 1,446 main
+calls in that cell).
 
 The transport is scripted and slowed (``LLM_SECONDS`` per turn after the
 first), so the races are deterministic and nothing leaves the process.
@@ -82,7 +87,7 @@ TOOLS = {
     "GuidanceManager_search": GuidanceManager_search,
 }
 
-SHIPPED = {"UNIFY_BATCH_WAKE": False}
+SHIPPED = {"UNIFY_BATCH_WAKE": False, "UNIFY_PENDING_REQUIRED": True}
 
 
 def _done(n: int = 6):
@@ -460,6 +465,65 @@ async def test_batch_wake_grants_no_eager_gate_turn(monkeypatch):
     assert handle._runtime_state.cancelled_turns == 0
 
 
-def test_the_setting_defaults_to_as_shipped():
-    assert ProductionSettings().UNIFY_BATCH_WAKE is False
-    assert ProductionSettings(UNIFY_BATCH_WAKE="1").UNIFY_BATCH_WAKE is True
+# ── UNIFY_PENDING_REQUIRED ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [True, False], ids=["shipped", "off"])
+async def test_a_turn_sent_while_calls_run_keeps_its_tool_choice(
+    monkeypatch,
+    required,
+):
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 4, *_done()],
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": required},
+    )
+    # As shipped the fast result wakes the model while the slow call runs.
+    while_pending = [r for r in requests[1:] if _sent_while(r, "SLOW_RESULT")]
+    assert while_pending
+    expected = "required" if required else "auto"
+    assert {r["tool_choice"] for r in while_pending} == {expected}
+    assert requests[0]["tool_choice"] == "auto"
+    assert requests[-1]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_a_gates_required_choice_is_kept_with_the_switch_off(monkeypatch):
+    replies = [
+        _batch(("FunctionManager_search_functions", {"query": "q"})),
+        _batch(("GuidanceManager_search", {"query": "q"})),
+        *_done(),
+    ]
+    requests, _, _ = await _run(
+        monkeypatch,
+        replies,
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": False},
+        tool_policy=h.gate_policy,
+    )
+    assert requests[0]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_pending_required_is_read_once_per_loop(monkeypatch):
+    def flip():
+        monkeypatch.setattr(SETTINGS, "UNIFY_PENDING_REQUIRED", True)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 4, *_done()],
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": False},
+        after_first=flip,
+    )
+    while_pending = [r for r in requests[1:] if _sent_while(r, "SLOW_RESULT")]
+    assert while_pending
+    assert {r["tool_choice"] for r in while_pending} == {"auto"}
+
+
+def test_the_settings_default_to_as_shipped():
+    settings = ProductionSettings()
+    assert settings.UNIFY_BATCH_WAKE is False
+    assert settings.UNIFY_PENDING_REQUIRED is True
+    lean = ProductionSettings(UNIFY_BATCH_WAKE="1", UNIFY_PENDING_REQUIRED="0")
+    assert lean.UNIFY_BATCH_WAKE is True
+    assert lean.UNIFY_PENDING_REQUIRED is False

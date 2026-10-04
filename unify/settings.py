@@ -315,6 +315,14 @@ class ProductionSettings(BaseSettings):
     # while calls run. Requests, tools and the prompt are unchanged; only when
     # the model is called changes. Read once per loop. Off: as shipped.
     UNIFY_BATCH_WAKE: bool = False
+    # While a tool call is still running, every model turn is sent with
+    # tool_choice "required", so the model has to call some tool (often a
+    # bare `wait`, which the loop prunes) instead of replying. It dates from
+    # a final-answer tool the actor no longer has: its answer is a reply
+    # without tool calls. Off: such a turn keeps the tool_choice its policy
+    # gave it ("auto" unless a gate requires a call). Read once per loop. On:
+    # as shipped.
+    UNIFY_PENDING_REQUIRED: bool = True
     # Off: while the actor's discovery gate is open, no model turn starts
     # before the library searches a turn scheduled have returned. As shipped
     # the gate grants one at once, while they run, and the model is woken as
@@ -489,6 +497,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_REPEAT_GUARD",
         "UNIFY_BATCH_WAKE",
+        "UNIFY_PENDING_REQUIRED",
         "UNIFY_TRY_FIRST",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",

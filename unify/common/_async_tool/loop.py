@@ -1700,6 +1700,10 @@ async def async_tool_loop_inner(
     _batch_wake = _batch_wait.batch_wake()
     if _batch_wake:
         interrupt_llm_on_tool_completion = False
+    # UNIFY_PENDING_REQUIRED, read once for the loop.
+    from unify.settings import SETTINGS as _LOOP_SETTINGS
+
+    _pending_required = bool(_LOOP_SETTINGS.UNIFY_PENDING_REQUIRED)
     # A patient interjection (trigger_immediate_llm_turn=False) arriving while
     # the LLM is already thinking earns exactly one extra LLM step after the
     # current one, unless another event triggers a turn anyway.
@@ -2431,8 +2435,13 @@ async def async_tool_loop_inner(
             # the schema but is refused at execution time while anything is
             # pending (see the steer()/response-tool execution branches
             # below), so "required" still only leaves live options.
+            # UNIFY_PENDING_REQUIRED=0 keeps the policy's tool_choice.
             _has_pending_tools = bool(tools_data.pending)
-            if _has_pending_tools and tool_choice_mode != "required":
+            if (
+                _has_pending_tools
+                and tool_choice_mode != "required"
+                and _pending_required
+            ):
                 tool_choice_mode = "required"
 
             logger.debug(
