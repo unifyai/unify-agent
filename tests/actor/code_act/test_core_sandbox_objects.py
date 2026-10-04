@@ -509,3 +509,42 @@ def test_the_write_policy_matches_the_tools_the_json_surface_withholds():
         assert core_surface.WritePolicy(can_store=False).refusal(method) is None
         assert core_surface.WritePolicy(admission_gated=True).refusal(method)
     assert '"GuidanceManager_add_guidance"' in source
+
+
+REMOVE_AT_OR_AFTER = REMOVE_BEFORE.replace(
+    "track['year'] < year",
+    "track['year'] >= year",
+)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
+    core_world,
+    music,
+    monkeypatch,
+):
+    """The recorded case replays (with its environment answers) against a
+    new source, and a change that does something else is refused."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
+    outs, _records, _used, _installs = await _reuse(
+        monkeypatch,
+        music,
+        core=True,
+        calls=[("remove_tracks_before", {"year": 2010})],
+    )
+    assert outs[0].result == 2
+    from unify.function_manager.function_manager import FunctionManager
+
+    fm = FunctionManager(include_primitives=False)
+    out = fm.add_functions(
+        implementations=[REMOVE_AT_OR_AFTER],
+        overwrite=True,
+        raise_on_error=False,
+    )
+    assert out["remove_tracks_before"].startswith(
+        "error: 'remove_tracks_before' was not changed: the new source does "
+        "something else on 1 recorded call(s) that worked before:",
+    )

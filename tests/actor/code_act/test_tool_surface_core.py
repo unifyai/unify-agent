@@ -243,3 +243,59 @@ async def test_the_actor_refuses_to_start_without_confinement_or_with_the_gate(
         await actor.close()
     # Nothing was started: no sandbox slot is held.
     assert actor._act_semaphore._value == 20
+
+
+# ── clarification and the forked review ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_request_clarification_in_a_cell_is_the_json_tool_in_python():
+    """Where the session can ask: the caller's queues and the request and
+    answer events, as the loop's JSON tool; where it cannot: no such name."""
+    up, down = asyncio.Queue(), asyncio.Queue()
+    events: list = []
+    session = core_surface.Session(
+        tools={},
+        prompt=core_surface.PromptSurface(),
+        steering=False,
+        objects={},
+        clarification=core_surface._clarification_factory(
+            (up, down),
+            lambda q: events.append(("asked", q)),
+            lambda a: events.append(("answered", a)),
+        ),
+    )
+    namespace: dict = {"request_clarification": "shipped"}
+    token = session.enter()
+    try:
+        restore = core_surface.bind_clarification(namespace, None, None)
+        ask = namespace["request_clarification"]
+        await down.put("blue")
+        assert await ask("Which colour?") == "blue"
+        assert await up.get() == "Which colour?"
+        assert events == [("asked", "Which colour?"), ("answered", "blue")]
+        restore()
+        assert namespace == {"request_clarification": "shipped"}
+    finally:
+        core_surface.Session.leave(token)
+    # A session that cannot ask has no request_clarification.
+    token = core_surface._CLARIFICATION.set(None)
+    try:
+        restore = core_surface.bind_clarification(namespace, up, down)
+        assert "request_clarification" not in namespace
+        restore()
+    finally:
+        core_surface._CLARIFICATION.reset(token)
+    # Outside a core session nothing is touched.
+    assert core_surface.bind_clarification(namespace, up, down) is None
+    assert namespace == {"request_clarification": "shipped"}
+
+
+def test_a_forked_review_falls_back_to_the_standalone_one(monkeypatch):
+    from unify.actor.code_act_actor import _review_fork_source
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
+    source, reason = _review_fork_source(object(), object())
+    assert source is None and "no library tools" in reason
