@@ -325,8 +325,9 @@ class ProductionSettings(BaseSettings):
     # left reusable working code, a lesson found by trial and error, or a
     # stored entry needing repair; the review runs only on a yes
     # (unify/actor/review_gate.py). A failed call or an unreadable reply runs
-    # the review. Turn reviews and store_skills are not gated. Off: as
-    # shipped.
+    # the review. While the library holds nothing (0 functions, 0 guidance
+    # entries) the gate is not asked and the review runs. Turn reviews and
+    # store_skills are not gated. Off: as shipped.
     UNIFY_REVIEW_GATE: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a

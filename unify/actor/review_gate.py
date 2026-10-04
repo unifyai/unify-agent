@@ -16,6 +16,12 @@ review would (``_prepare_trajectory_for_storage_review``), the checked
 outcome when the environment posted one (``UNIFY_OUTCOME``) and the final
 reply. A reply it cannot read, or a failed call, runs the review as
 shipped: the gate only ever saves a review, never loses one by accident.
+
+While the library holds nothing (no stored function and no guidance entry)
+the gate is not asked and the review runs: the first sessions of a run are
+the ones that seed the library, and on the 80 captured reviews the gate's
+one costly miss was such a session (AppWorld HIGH's first task, whose three
+stored functions later tasks called).
 """
 
 from __future__ import annotations
@@ -75,6 +81,12 @@ def enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(SETTINGS.UNIFY_REVIEW_GATE)
+
+
+def library_is_empty(counts: tuple[Optional[int], Optional[int]]) -> bool:
+    """Whether *counts* (stored functions, guidance entries) say the library
+    holds nothing. An unknown count (``None``) is not taken as empty."""
+    return tuple(counts) == (0, 0)
 
 
 def _text(content: Any) -> str:

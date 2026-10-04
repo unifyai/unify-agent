@@ -3125,10 +3125,22 @@ class _StorageCheckHandle(SteerableToolHandle):
                 await asyncio.gather(turn_task, return_exceptions=True)
 
             # UNIFY_REVIEW_GATE: one tool-free yes/no call decides whether the
-            # review runs; a failed or unreadable gate runs it as shipped.
+            # review runs; a failed or unreadable gate runs it as shipped. While
+            # the library holds nothing, the gate is not asked: the review runs.
             from unify.actor import review_gate
 
-            if review_gate.enabled():
+            ask_gate = review_gate.enabled()
+            if ask_gate and review_gate.library_is_empty(
+                _library_counts(
+                    getattr(self._actor, "function_manager", None),
+                    getattr(self._actor, "guidance_manager", None),
+                ),
+            ):
+                logger.info(
+                    "StorageCheck gate not asked: the library is empty; reviewing",
+                )
+                ask_gate = False
+            if ask_gate:
                 decision = await review_gate.decide(
                     client_factory=lambda: _review_gate_client(self._actor),
                     trajectory=trajectory,

@@ -128,10 +128,20 @@ def test_the_gate_names_no_benchmark_and_asks_for_no_example_checks():
 # ── the session's review ────────────────────────────────────────────────
 
 
-async def _session(monkeypatch, *, gate: bool, gate_reply: str) -> list[dict]:
+async def _session(
+    monkeypatch,
+    *,
+    gate: bool,
+    gate_reply: str,
+    counts: tuple = (1, 0),
+) -> list[dict]:
+    """One session and its review; *counts* is the library's (functions,
+    guidance) size the actor reads, non-empty by default so the gate is asked."""
+    from unify.actor import code_act_actor as caa
     from unify.actor.code_act_actor import CodeActActor
 
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", gate)
+    monkeypatch.setattr(caa, "_library_counts", lambda *_a, **_k: counts)
     actor = CodeActActor()
     try:
         with h.scripted([]) as provider:
@@ -228,6 +238,59 @@ async def test_the_gate_takes_the_review_effort_when_set(monkeypatch):
     )
     (gate_request,) = _gate_requests(requests)
     assert gate_request["reasoning_effort"] == "medium"
+
+
+# ── an empty library ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "counts, empty",
+    [
+        ((0, 0), True),
+        ((1, 0), False),
+        ((0, 1), False),
+        ((None, 0), False),
+        ((0, None), False),
+        ((None, None), False),
+    ],
+)
+def test_only_known_zero_counts_are_an_empty_library(counts, empty):
+    assert review_gate.library_is_empty(counts) is empty
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_an_empty_library_is_reviewed_without_asking_the_gate(monkeypatch):
+    # The first sessions seed the library: the gate would have said no here.
+    requests = await _session(
+        monkeypatch,
+        gate=True,
+        gate_reply='{"review": false, "reason": "nothing reusable"}',
+        counts=(0, 0),
+    )
+    assert _gate_requests(requests) == []
+    assert _review_requests(requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_an_unknown_library_size_asks_the_gate(monkeypatch):
+    requests = await _session(
+        monkeypatch,
+        gate=True,
+        gate_reply='{"review": false, "reason": "nothing reusable"}',
+        counts=(None, None),
+    )
+    assert len(_gate_requests(requests)) == 1
+    assert _review_requests(requests) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_off_an_empty_library_changes_nothing(monkeypatch):
+    requests = await _session(monkeypatch, gate=False, gate_reply="", counts=(0, 0))
+    assert _gate_requests(requests) == []
+    assert _review_requests(requests)
 
 
 @pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
