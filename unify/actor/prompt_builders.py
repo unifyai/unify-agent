@@ -10,6 +10,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
+    from unify.actor.core_surface import PromptSurface
     from unify.actor.environments.base import BaseEnvironment
 
 # ---------------------------------------------------------------------------
@@ -1077,6 +1078,7 @@ def build_code_act_prompt(
     inline_curation: str = "",
     turn_reviews: bool = True,
     can_clarify: bool = True,
+    core: Optional["PromptSurface"] = None,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -1125,7 +1127,24 @@ def build_code_act_prompt(
     can_clarify:
         Whether the session has ``request_clarification``. With ``False``
         and ``UNIFY_PROMPT_ACCURACY`` the execution rules do not mention it.
+    core:
+        ``UNIFY_TOOL_SURFACE=core``: what the session's sandbox holds
+        (unify/actor/core_surface.py). The prompt names its objects in a short
+        index and describes ``execute_code`` as the only tool; the sections
+        that name JSON tools it does not have are left out or say the same in
+        Python.
     """
+    if core is not None:
+        return _build_core_prompt(
+            core,
+            environments=environments,
+            can_store=can_store,
+            guidelines=guidelines,
+            persist=persist,
+            library_read_only=library_read_only,
+            session_sections=session_sections,
+            inline_curation=inline_curation,
+        )
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
         tools and any(str(k).startswith("FunctionManager_") for k in tools.keys()),
@@ -1257,4 +1276,88 @@ def build_code_act_prompt(
         if rules_and_examples:
             parts.append(rules_and_examples)
 
+    return "\n\n".join(p for p in parts if p and p.strip())
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_TOOL_SURFACE=core
+# ---------------------------------------------------------------------------
+
+_CORE_SANDBOX_SEARCH = (
+    "Find stored functions with the\n"
+    "`FunctionManager_search_functions` JSON tool, then read live docs\n"
+    "in-sandbox with `help(...)`"
+)
+_CORE_SANDBOX_SEARCH_PYTHON = (
+    "Find stored functions with\n"
+    "`await functions.search(...)`, then read live docs in-sandbox with\n"
+    "`help(...)`"
+)
+_CORE_CODE_FIRST_TAIL = "call it as Tool\nSelection says;"
+_CORE_CODE_FIRST_TAIL_PYTHON = "call it in one\ncell;"
+
+
+def _build_core_prompt(
+    core: "PromptSurface",
+    *,
+    environments: Mapping[str, "BaseEnvironment"],
+    can_store: bool,
+    guidelines: Optional[str],
+    persist: bool,
+    library_read_only: bool,
+    session_sections: bool,
+    inline_curation: str,
+) -> str:
+    """The system prompt of a ``UNIFY_TOOL_SURFACE=core`` session."""
+    from unify.actor import core_surface
+    from unify.common._async_tool import batch_wait
+
+    parts: list[str] = [
+        "### Role\n\n"
+        "You are an expert agent that solves tasks by writing and executing code. "
+        "Your primary tool is a multi-session Python execution environment, "
+        "backed by a library of stored functions and procedures.",
+    ]
+    tools = core.tools_section()
+    if core.steering and batch_wait.enabled():
+        tools = f"{tools}\n\n{_WAIT_FOR_BATCH_LINE}"
+    parts.append(tools)
+    sandbox = _build_sandbox_environment_section(
+        has_primitives=_injects_actor_primitives(environments),
+    )
+    parts.append(_unified(sandbox, _CORE_SANDBOX_SEARCH, _CORE_SANDBOX_SEARCH_PYTHON))
+    parts.append(core.index())
+    parts.append(core.tool_selection(_TOOL_SELECTION))
+    parts.append(core.python_first())
+    parts.append(core_surface.execution_rules(_EXECUTION_RULES))
+    if _reply_protocol_note_enabled():
+        parts.append(_REPLY_PROTOCOL_NOTE)
+    if _code_first_enabled():
+        parts.append(
+            _unified(_CODE_FIRST, _CORE_CODE_FIRST_TAIL, _CORE_CODE_FIRST_TAIL_PYTHON),
+        )
+    parts.append(_INCREMENTAL_EXECUTION)
+    if core.functions or core.guidance:
+        library = core.library_section(inline_curation=inline_curation)
+        if _try_first_enabled():
+            library = f"{library}\n\n{_TRY_FIRST_NOTE}"
+        parts.append(library)
+        if library_read_only:
+            parts.append(core.read_only_notice())
+    if can_store:
+        parts.append(
+            core.storage_notice(persist=persist, inline_curation=inline_curation),
+        )
+    if session_sections:
+        parts.append(_build_clock_context())
+        parts.append(_build_filesystem_context())
+    rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
+    if rules_and_examples:
+        parts.append(rules_and_examples)
+    if guidelines:
+        parts.append(
+            f"### Guidelines\n\n"
+            f"Follow these guidelines throughout this session:\n\n"
+            f"{guidelines}",
+        )
     return "\n\n".join(p for p in parts if p and p.strip())

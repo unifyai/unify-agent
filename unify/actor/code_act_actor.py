@@ -26,6 +26,7 @@ from typing import (
 from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
+from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
 from unify import environment, sandbox
 from unify.actor.workspace_tools import workspace_tools as _workspace_tools
@@ -1986,6 +1987,11 @@ def _review_fork_source(
 
     if not cache_discipline.review_fork_enabled():
         return None, None
+    if core_surface.enabled():
+        return None, (
+            "UNIFY_TOOL_SURFACE=core: the session's tool list holds no "
+            "library tools for a forked review to call"
+        )
     if not cache_discipline.enabled():
         return None, (
             "UNIFY_REVIEW_FORK needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
@@ -3914,6 +3920,13 @@ class CodeActActor(BaseCodeActActor):
                     clarification_up_q,
                     clarification_down_q,
                 )
+            # UNIFY_TOOL_SURFACE=core: the cell's request_clarification is the
+            # session's (or absent where it cannot ask); None otherwise.
+            core_clarification = core_surface.bind_clarification(
+                sb.global_state,
+                clarification_up_q,
+                clarification_down_q,
+            )
 
             # The patch author only matters when there is a channel to be
             # corrected through; without one nothing can interrupt, so the
@@ -3931,6 +3944,8 @@ class CodeActActor(BaseCodeActActor):
                 with use_session(steering):
                     yield steering
             finally:
+                if core_clarification is not None:
+                    core_clarification()
                 if clar_token is not None:
                     restore_sandbox_clarification_queues(sb.global_state, clar_token)
 
@@ -5370,6 +5385,11 @@ class CodeActActor(BaseCodeActActor):
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
         # and the discovery tools available. Without it there are no usable tools.
+        # UNIFY_TOOL_SURFACE=core: refuse what cannot run confined.
+        core = core_surface.enabled()
+        if core:
+            core_surface.require_prerequisites(can_compose=effective_can_compose)
+
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(
                 "CodeActActor cannot run with can_compose=False: "
@@ -5586,6 +5606,49 @@ class CodeActActor(BaseCodeActActor):
         if inline_mode:
             base_tools = _guard_inline_writes(base_tools)
 
+        # UNIFY_TOOL_SURFACE=core: execute_code is the only JSON tool; the
+        # libraries, install, read_file and grep are objects in the sandbox,
+        # whose writes refuse at call time what this session may not do.
+        core_session: Optional[core_surface.Session] = None
+        if core:
+            from unify.settings import SETTINGS as _CORE_SETTINGS
+
+            _core_reviews = (
+                effective_can_store and not admission_gated and not inline_only
+            )
+            core_session = core_surface.start_session(
+                self,
+                sandbox=sandbox,
+                environments=sandbox_envs,
+                tools=base_tools,
+                policy=core_surface.WritePolicy(
+                    can_store=effective_can_store,
+                    admission_gated=admission_gated,
+                    inline_mode=inline_mode,
+                ),
+                store_skills=_core_reviews,
+                clarification_enabled=clarification_enabled,
+                caller_queues=(
+                    (env_clarification_up_q, env_clarification_down_q)
+                    if caller_supplied_clarification_queues
+                    else None
+                ),
+                # Defined below, before the loop can call them.
+                on_clarification_request=lambda q: (
+                    _on_clar_req(q) if _on_clar_req is not None else None
+                ),
+                on_clarification_answer=lambda a: (
+                    _on_clar_ans(a) if _on_clar_ans is not None else None
+                ),
+                structured=response_format is not None,
+                turn_reviews=(
+                    _core_reviews
+                    and bool(persist)
+                    and bool(_CORE_SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
+                ),
+            )
+            base_tools = dict(core_session.tools)
+
         # When execute_code is masked (can_compose=False), strip any
         # execute_code references from execute_function's docstring so the
         # LLM has no awareness that a code sandbox exists.
@@ -5677,6 +5740,8 @@ class CodeActActor(BaseCodeActActor):
         )
         if clock_in_message:
             prompt_kwargs["session_sections"] = False
+        if core_session is not None:
+            prompt_kwargs["core"] = core_session.prompt
         system_prompt = build_code_act_prompt(**prompt_kwargs)
         # UNIFY_CACHE_AFFINITY_SCOPE=static keys the session on the prompt
         # without its per-session sections.
@@ -5768,10 +5833,12 @@ class CodeActActor(BaseCodeActActor):
                 _library_counts(self.function_manager, self.guidance_manager),
                 has_fm_tools=any(
                     str(k).startswith("FunctionManager_") for k in base_tools
-                ),
+                )
+                or (core_session is not None and core_session.prompt.functions),
                 has_gm_tools=any(
                     str(k).startswith("GuidanceManager_") for k in base_tools
-                ),
+                )
+                or (core_session is not None and core_session.prompt.guidance),
                 discovery_gate=discovery_gate,
             )
             if snapshot:
@@ -5802,6 +5869,7 @@ class CodeActActor(BaseCodeActActor):
         # call on AppWorld) rather than listed and refused.
         if (
             admission_gated
+            and not core
             and cache_discipline.enabled()
             and _admitted_review_can_write_in_session_list()
         ):
@@ -5891,6 +5959,7 @@ class CodeActActor(BaseCodeActActor):
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
         instance_token = _instance_lint.enter(request)
+        core_token = core_session.enter() if core_session is not None else None
         try:
             # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
             # request, after the snapshot line; ranked inside the task's
@@ -5905,10 +5974,12 @@ class CodeActActor(BaseCodeActActor):
                     request,
                     functions=any(
                         str(k).startswith("FunctionManager_") for k in base_tools
-                    ),
+                    )
+                    or (core_session is not None and core_session.prompt.functions),
                     guidance=any(
                         str(k).startswith("GuidanceManager_") for k in base_tools
-                    ),
+                    )
+                    or (core_session is not None and core_session.prompt.guidance),
                 )
                 if shortlist:
                     first_message_parts.append(shortlist)
@@ -5930,11 +6001,26 @@ class CodeActActor(BaseCodeActActor):
                     if effective_can_store and not admission_gated and not inline_only
                     else None
                 ),
-                clarification_queues=_clar_queues,
+                # UNIFY_TOOL_SURFACE=core: request_clarification is the
+                # sandbox's, and there is no send_notification tool.
+                clarification_queues=_clar_queues if core_session is None else None,
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
-                # UNIFY_PROMPT_PROFILE=lean: no notification channel.
-                on_notify=None if SETTINGS.lean_prompt() else _on_notify,
+                # UNIFY_PROMPT_PROFILE=lean: no notification channel; nor
+                # under UNIFY_TOOL_SURFACE=core.
+                on_notify=(
+                    None
+                    if SETTINGS.lean_prompt() or core_session is not None
+                    else _on_notify
+                ),
+                **(
+                    {
+                        "steering_tools": core_session.steering,
+                        "compression_tools_on_demand": True,
+                    }
+                    if core_session is not None
+                    else {}
+                ),
                 **(
                     {
                         "first_message_context": "\n\n".join(
@@ -5951,6 +6037,8 @@ class CodeActActor(BaseCodeActActor):
             raise
         finally:
             current_run_meter.reset(meter_token)
+            if core_token is not None:
+                core_surface.Session.leave(core_token)
         handle.run_meter = run_meter  # type: ignore[attr-defined]
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] loop started, returning handle",
