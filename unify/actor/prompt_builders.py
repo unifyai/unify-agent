@@ -508,6 +508,12 @@ def _review_framing_unified() -> bool:
     return SETTINGS.UNIFY_REVIEW_FRAMING == "unified"
 
 
+def _prompt_accuracy_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_PROMPT_ACCURACY)
+
+
 def _unified(text: str, old: str, new: str) -> str:
     """``text`` with ``old`` replaced by ``new``; ``old`` must occur exactly once."""
     if text.count(old) != 1:
@@ -548,6 +554,60 @@ _STORAGE_SESSION_NOTICE_UNIFIED = _unified(
     "session ends), in a curation step that follows the turn. Do not call\n"
     "`store_skills` for work a completed turn already contains — that\n"
     "curation step covers it.",
+)
+
+
+# UNIFY_PROMPT_ACCURACY: a persistent session without turn reviews is
+# reviewed once, when it ends, and no review result reaches the session.
+_SESSION_NOTES_PARAGRAPH = (
+    "Consolidation results arrive in the conversation as bracketed\n"
+    "background notes. When a note (or your own storage) reports a stored\n"
+    "function covering a deliverable that is requested again, the whole\n"
+)
+_SESSION_OWN_STORAGE_PARAGRAPH = (
+    "When your own storage reports a stored function covering a\n"
+    "deliverable that is requested again, the whole\n"
+)
+_STORAGE_SESSION_END_NOTICE = _unified(
+    _unified(
+        _STORAGE_SESSION_NOTICE,
+        "In this persistent session, a dedicated skill-consolidation process\n"
+        "reviews your trajectory automatically **after each completed turn**\n"
+        "(and again when the session ends). Do not call `store_skills` for\n"
+        "work a completed turn already contains — the automatic review covers\n"
+        "it. Reserve `store_skills` for mid-turn moments: something worth\n"
+        "keeping is at risk before a risky continuation, or the user\n"
+        "explicitly asks to store a skill right now.",
+        "In this persistent session, a dedicated skill-consolidation process\n"
+        "reviews your whole trajectory automatically once, **when the session\n"
+        "ends**; nothing reviews it between turns, and no review result is\n"
+        "added to this conversation. Reserve `store_skills` for moments when\n"
+        "something worth keeping is at risk before a risky continuation, or\n"
+        "the user explicitly asks to store a skill right now.",
+    ),
+    _SESSION_NOTES_PARAGRAPH,
+    _SESSION_OWN_STORAGE_PARAGRAPH,
+)
+_STORAGE_SESSION_END_NOTICE_UNIFIED = _unified(
+    _unified(
+        _STORAGE_SESSION_NOTICE,
+        "In this persistent session, a dedicated skill-consolidation process\n"
+        "reviews your trajectory automatically **after each completed turn**\n"
+        "(and again when the session ends). Do not call `store_skills` for\n"
+        "work a completed turn already contains — the automatic review covers\n"
+        "it. Reserve `store_skills` for mid-turn moments: something worth\n"
+        "keeping is at risk before a risky continuation, or the user\n"
+        "explicitly asks to store a skill right now.",
+        "In this persistent session, you curate the libraries from your whole\n"
+        "trajectory yourself once, **when the session ends**, in a curation\n"
+        "step that follows it; nothing is curated between turns, and no\n"
+        "curation result is added to this conversation. Reserve\n"
+        "`store_skills` for moments when something worth keeping is at risk\n"
+        "before a risky continuation, or the user explicitly asks to store a\n"
+        "skill right now.",
+    ),
+    _SESSION_NOTES_PARAGRAPH,
+    _SESSION_OWN_STORAGE_PARAGRAPH,
 )
 
 
@@ -697,8 +757,13 @@ def _inline_library_section(
     return text
 
 
-def _storage_notice(persist: bool) -> str:
+def _storage_notice(persist: bool, turn_reviews: bool = True) -> str:
     if persist:
+        # UNIFY_PROMPT_ACCURACY: describe the schedule the session gets.
+        if not turn_reviews and _prompt_accuracy_enabled():
+            if _review_framing_unified():
+                return _STORAGE_SESSION_END_NOTICE_UNIFIED
+            return _STORAGE_SESSION_END_NOTICE
         if _review_framing_unified():
             return _STORAGE_SESSION_NOTICE_UNIFIED
         return _STORAGE_SESSION_NOTICE
@@ -864,6 +929,7 @@ def build_code_act_prompt(
     library_read_only: bool = False,
     session_sections: bool = True,
     inline_curation: str = "",
+    turn_reviews: bool = True,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -904,6 +970,11 @@ def build_code_act_prompt(
         ``only``; empty as shipped): the library section says the actor
         stores units that ran and worked during the task and repairs
         failed ones, and with ``only`` that no review follows it.
+    turn_reviews:
+        Whether a persistent session is reviewed after each completed turn
+        (``UNIFY_TURN_STORAGE_REVIEWS``). With ``False`` and
+        ``UNIFY_PROMPT_ACCURACY`` the storage notice says the session is
+        reviewed once, when it ends, and that no result reaches it.
     """
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -961,7 +1032,7 @@ def build_code_act_prompt(
             # A persistent session's consolidation runs per completed turn,
             # not after a final result the loop never produces — the notice
             # must describe the schedule the session actually gets.
-            parts.append(_storage_notice(persist))
+            parts.append(_storage_notice(persist, turn_reviews))
 
         # ── Per-assistant / dynamic tail ──
         if session_sections:

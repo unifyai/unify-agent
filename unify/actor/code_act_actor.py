@@ -5436,6 +5436,8 @@ class CodeActActor(BaseCodeActActor):
                 if default_policy and not discovery_gate
                 else {}
             ),
+            # The schedule the storage handle below is given.
+            turn_reviews=bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS),
             **({"library_read_only": True} if admission_gated else {}),
             **({"inline_curation": inline_mode} if inline_mode else {}),
         )

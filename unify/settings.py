@@ -277,6 +277,11 @@ class ProductionSettings(BaseSettings):
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
     UNIFY_REPLY_PROTOCOL_NOTE: bool = False
+    # The actor states only what the session actually has: the skill-storage
+    # notice of a persistent session describes the review it gets (once,
+    # when the session ends, unless UNIFY_TURN_STORAGE_REVIEWS), not one per
+    # turn with results as background notes. Off: as shipped.
+    UNIFY_PROMPT_ACCURACY: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
     # result worked out in text, with judgment steps kept as query_llm calls
@@ -520,6 +525,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_OUTCOME",
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
+        "UNIFY_PROMPT_ACCURACY",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
