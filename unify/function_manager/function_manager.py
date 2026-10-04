@@ -3315,6 +3315,50 @@ class FunctionManager(BaseFunctionManager):
 
         return callables_list  # type: ignore[return-value]
 
+    def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
+        """``UNIFY_LIBRARY_SHORTLIST``: the *k* stored functions closest to *text*.
+
+        Ranked as ``search_functions`` ranks them (similarity, then the
+        activation ranking that drops lapsed functions), over the stored
+        functions in scope only, primitives excluded. Unlike a search it
+        counts no hit: the harness, not the model, asked. Rows carry
+        ``name``, ``argspec``, ``docstring``, ``_similarity`` and, under
+        ``UNIFY_TRY_FIRST``, ``similar_request``.
+        """
+        if not str(text or "").strip() or k <= 0:
+            return []
+        library = self._rows(self._compositional_scope())
+        if not library:
+            return []
+        marker = task_origin.Marker(library)
+        settings = self.activation_settings
+        fetch = (
+            min(
+                max(k + 4, k * settings.search_overfetch_factor),
+                settings.search_overfetch_cap,
+            )
+            if settings.enabled
+            else k
+        )
+        ranked = rank_by_similarity(
+            library,
+            {field: text for field in SEARCHED_FUNCTION_FIELDS},
+            limit=fetch,
+            id_field="function_id",
+        )
+        ranked = self._activation_rank(ranked, n=k, include_dormant=False)
+        rows = []
+        for row in ranked:
+            compact = {
+                key: row.get(key)
+                for key in ("function_id", "name", "argspec", "docstring", "metadata")
+            }
+            compact["_similarity"] = float(row.get(SIMILARITY_FIELD) or 0.0)
+            marker.annotate(compact)
+            compact.pop("metadata", None)
+            rows.append(compact)
+        return rows
+
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #
     # ------------------------------------------------------------------ #

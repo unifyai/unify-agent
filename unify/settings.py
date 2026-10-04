@@ -334,6 +334,18 @@ class ProductionSettings(BaseSettings):
     # empty library's search, which describes the gate). A caller's own
     # tool_policy is unaffected. On: as shipped.
     UNIFY_DISCOVERY_GATE: bool = True
+    # On: at the start of each act() (sub-agents' included) the harness ranks the stored
+    # functions and guidance entries in scope against the request by
+    # embedding similarity (no model call; primitives and lapsed functions
+    # left out; no search hit counted) and lists the closest five, functions
+    # and guidance together, one line each, in the task's first user message:
+    # a function's name, signature, first docstring line and, under
+    # UNIFY_TRY_FIRST, similar_request; a guidance entry's id, title and first
+    # content line. The list is written once, after the UNIFY_LIBRARY_SNAPSHOT
+    # line, and asks nothing: reading, calling or searching stays the model's
+    # choice, and no turn is forced. An empty or unranked library adds
+    # nothing. Off: as shipped.
+    UNIFY_LIBRARY_SHORTLIST: bool = False
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
     # requester has already answered is held back once: the loop appends a
@@ -475,6 +487,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
+        "UNIFY_LIBRARY_SHORTLIST",
         mode="before",
     )
     @classmethod

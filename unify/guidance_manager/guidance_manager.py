@@ -581,6 +581,31 @@ class GuidanceManager(BaseGuidanceManager):
         )
         return [self._with_content_preview(Guidance(**row)) for row in rows]
 
+    def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
+        """``UNIFY_LIBRARY_SHORTLIST``: the *k* guidance entries in scope closest to *text*.
+
+        Ranked as ``search`` ranks them, by the similarity of the title and
+        the content to *text*. Rows carry ``guidance_id``, ``title``,
+        ``content`` and ``_similarity``.
+        """
+        if not str(text or "").strip() or k <= 0:
+            return []
+        rows = rank_by_similarity(
+            self._rows(self._scope(None)),
+            {"title": text, "content": text},
+            limit=k,
+            id_field="guidance_id",
+        )
+        return [
+            {
+                "guidance_id": row.get("guidance_id"),
+                "title": row.get("title"),
+                "content": row.get("content"),
+                "_similarity": float(row.get("_similarity") or 0.0),
+            }
+            for row in rows
+        ]
+
     @functools.wraps(BaseGuidanceManager.filter, updated=())
     def filter(
         self,

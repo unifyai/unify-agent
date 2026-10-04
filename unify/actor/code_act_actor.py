@@ -5656,6 +5656,26 @@ class CodeActActor(BaseCodeActActor):
         # is built); a sub-agent keeps those of the task it works for.
         instance_token = _instance_lint.enter(request)
         try:
+            # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
+            # request, after the snapshot line; ranked inside the task's
+            # origin context, so a function stored for a similar request
+            # carries its mark.
+            if SETTINGS.UNIFY_LIBRARY_SHORTLIST:
+                from unify.actor.library_shortlist import shortlist_block
+
+                shortlist = shortlist_block(
+                    self.function_manager,
+                    self.guidance_manager,
+                    request,
+                    functions=any(
+                        str(k).startswith("FunctionManager_") for k in base_tools
+                    ),
+                    guidance=any(
+                        str(k).startswith("GuidanceManager_") for k in base_tools
+                    ),
+                )
+                if shortlist:
+                    first_message_parts.append(shortlist)
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,

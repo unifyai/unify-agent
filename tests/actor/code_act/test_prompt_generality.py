@@ -35,6 +35,7 @@ import pytest
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.actor import prompt_builders as pb
+from unify.actor import library_shortlist
 from unify.settings import SETTINGS
 
 # Benchmark and dataset names (with or without a separator), and words that
@@ -286,6 +287,8 @@ def _session_texts(tools: dict) -> dict[str, str]:
         "case report": store_cases.report("f", replays),
         "naming refusal": naming,
         "_TRY_FIRST_NOTE": pb._TRY_FIRST_NOTE,
+        # UNIFY_LIBRARY_SHORTLIST
+        "library shortlist header": library_shortlist._HEADER,
         "_CODE_FIRST": pb._CODE_FIRST,
         "_INLINE_ONLY_BULLET": pb._INLINE_ONLY_BULLET,
         "store_verify.doctrine()": store_verify.doctrine(),
