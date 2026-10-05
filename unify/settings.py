@@ -48,6 +48,25 @@ def _shortlist_gate_threshold(value: Any) -> Optional[float]:
     return threshold
 
 
+# UNIFY_SHORTLIST_LIFT: earlier requests compared when ``recent`` names no k.
+SHORTLIST_LIFT_DEFAULT_K = 4
+
+
+def _shortlist_lift(value: Any) -> Optional[tuple[int, Optional[float]]]:
+    """``(k, floor)`` of a ``recent[:<k>[:<floor>]]`` setting; ``None`` when empty or invalid."""
+    parts = str(value or "").strip().lower().split(":")
+    if parts[0] != "recent" or len(parts) > 3:
+        return None
+    try:
+        k = int(parts[1]) if len(parts) > 1 else SHORTLIST_LIFT_DEFAULT_K
+        floor = float(parts[2]) if len(parts) > 2 else None
+    except ValueError:
+        return None
+    if k < 1 or (floor is not None and not math.isfinite(floor)):
+        return None
+    return k, floor
+
+
 class ProductionSettings(BaseSettings):
     """Runtime settings; test settings (TestingSettings) inherit from this class."""
 
@@ -655,6 +674,23 @@ class ProductionSettings(BaseSettings):
     # content line [similar_request 0.31]``. Off: nothing is recorded and the
     # gated shortlist lists functions only, as shipped.
     UNIFY_GUIDANCE_ORIGIN: bool = False
+    # ``recent``, ``recent:<k>`` or ``recent:<k>:<floor>`` (k >= 1), with
+    # UNIFY_LIBRARY_SHORTLIST ranking by embedding (no UNIFY_SHORTLIST_GATE):
+    # the shortlist ranks every entry in scope by its lift, its similarity to
+    # this request less its mean similarity to the last k top-level requests
+    # of this home (one that equals this request left out), and lists at
+    # most five whose lift reaches the floor (default per embedder, in
+    # unify/actor/shortlist_lift.py), so an entry close to every request
+    # gives way to one close to this request. The earlier requests' vectors
+    # come from the embedding cache, where their own task start put them:
+    # each top-level request's text hash is kept in
+    # ``<UNIFY_HOME>/request_log.sqlite`` (a table only this switch creates),
+    # and no text is embedded beyond what the shipped ranking embeds. With
+    # fewer than k earlier vectors the list is ranked and headed as shipped.
+    # A sub-agent's list is ranked the same way, and its request not kept.
+    # An actor refuses to start with this set and the shortlist off or
+    # gated. Empty: as shipped.
+    UNIFY_SHORTLIST_LIFT: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -952,6 +988,21 @@ class ProductionSettings(BaseSettings):
             )
         return f"similar_request:{threshold:g}"
 
+    @field_validator("UNIFY_SHORTLIST_LIFT", mode="before")
+    @classmethod
+    def parse_shortlist_lift(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if not value:
+            return ""
+        parsed = _shortlist_lift(value)
+        if parsed is None:
+            raise ValueError(
+                "UNIFY_SHORTLIST_LIFT must be empty, 'recent', 'recent:<k>' or "
+                f"'recent:<k>:<floor>' with an integer k >= 1, not {v!r}",
+            )
+        k, floor = parsed
+        return f"recent:{k}" + ("" if floor is None else f":{floor:g}")
+
     @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
     @classmethod
     def parse_prompt_clock(cls, v: Any) -> str:
@@ -1153,6 +1204,10 @@ class ProductionSettings(BaseSettings):
     def shortlist_gate_threshold(self) -> Optional[float]:
         """The ``UNIFY_SHORTLIST_GATE`` threshold; ``None`` when the gate is off."""
         return _shortlist_gate_threshold(self.UNIFY_SHORTLIST_GATE)
+
+    def shortlist_lift(self) -> Optional[tuple[int, Optional[float]]]:
+        """``UNIFY_SHORTLIST_LIFT``'s ``(k, floor)`` (floor ``None``: the embedder's default); ``None`` when off."""
+        return _shortlist_lift(self.UNIFY_SHORTLIST_LIFT)
 
     model_config = SettingsConfigDict(
         env_file=".env",
