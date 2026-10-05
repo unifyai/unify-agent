@@ -141,26 +141,54 @@ _DOC_NAMES = (
 )
 
 
+# What a contract says about ``_``-prefixed parameters outside their own
+# entries: a Returns bullet or a Raises entry about a mode only the harness
+# selects (``_return_callable=True``, ``_also_return_metadata=True``), and the
+# "When ``_x=False``:" prefix of the bullet that describes the default.
+_PRIVATE_BULLET = re.compile(
+    r"^(?P<i>[ \t]*)- When ``_\w+=True``[^\n]*\n(?:(?P=i)[ \t]+[^\n]*\n)*",
+    re.M,
+)
+_PRIVATE_DEFAULT = re.compile(r"- When ``_\w+=False``: (?P<first>\w)")
+_PRIVATE_RAISES = re.compile(
+    r"^(?P<i>[ \t]*)\w+Error\n(?P=i)[ \t]+If ``_\w+[^\n]*\n"
+    r"(?:(?P=i)[ \t]{5,}[^\n]*\n)*",
+    re.M,
+)
+_EMPTY_RAISES = re.compile(r"\n[ \t]*Raises\n[ \t]*-+[ \t]*(?=\n[ \t]*\n|\n?\Z)")
+
+
 def public_doc(doc: Optional[str]) -> str:
-    """*doc* without the entries of ``_``-prefixed parameters, cleaned, with
-    the libraries' JSON tool names given as the Python surface names them."""
+    """*doc* without what it says about ``_``-prefixed parameters (their
+    entries, and the Returns and Raises text about the modes they select:
+    the harness passes them, never a cell), cleaned, with the libraries' JSON
+    tool names given as the Python surface names them."""
     text = inspect.cleandoc(doc or "")
     out: List[str] = []
     skipping = False
     skip_indent = 0
+    blank = False
     for line in text.splitlines():
         stripped = line.lstrip()
         indent = len(line) - len(stripped)
         if re.match(r"_[A-Za-z0-9_]* *[:(]", stripped):
-            skipping, skip_indent = True, indent
+            skipping, skip_indent, blank = True, indent, False
             continue
         if skipping:
             if stripped and indent <= skip_indent:
                 skipping = False
+                if blank:
+                    # The blank line before the next section was skipped too.
+                    out.append("")
             else:
+                blank = blank or not stripped
                 continue
         out.append(line)
-    text = "\n".join(out).strip()
+    text = "\n".join(out).strip() + "\n"
+    text = _PRIVATE_BULLET.sub("", text)
+    text = _PRIVATE_DEFAULT.sub(lambda m: "- " + m.group("first").upper(), text)
+    text = _PRIVATE_RAISES.sub("", text)
+    text = _EMPTY_RAISES.sub("", text).strip()
     for old, new in _DOC_NAMES:
         text = text.replace(old, new)
     return text
@@ -1045,13 +1073,15 @@ def _file_tools() -> Dict[str, Callable[..., Any]]:
 
 def _document() -> None:
     """Give the library methods the managers' own contracts as their docs."""
-    from unify.function_manager.base import BaseFunctionManager
+    from unify.function_manager.base import (
+        BaseFunctionManager,
+        search_doc_without_dormant,
+    )
     from unify.function_manager.function_manager import FunctionManager
     from unify.guidance_manager.base import BaseGuidanceManager
     from unify.guidance_manager.guidance_manager import GuidanceManager
 
     pairs = (
-        (FunctionLibrary.search, BaseFunctionManager.search_functions),
         (FunctionLibrary.filter, BaseFunctionManager.filter_functions),
         (FunctionLibrary.list, BaseFunctionManager.list_functions),
         (FunctionLibrary.add, BaseFunctionManager.add_functions),
@@ -1075,6 +1105,10 @@ def _document() -> None:
     )
     for method, source in pairs:
         method.__doc__ = public_doc(source.__doc__)
+    # It takes no include_dormant, so its contract does not offer it.
+    FunctionLibrary.search.__doc__ = public_doc(
+        search_doc_without_dormant(BaseFunctionManager.search_functions.__doc__),
+    )
     GuidanceLibrary.search.__doc__ = (
         public_doc(BaseGuidanceManager.search.__doc__)
         + "\n\nA plain string is compared with the entries' ``content``; pass a "
