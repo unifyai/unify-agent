@@ -871,6 +871,27 @@ class FunctionManager(BaseFunctionManager):
                     )
                 except Exception:  # noqa: BLE001 - metering must never break a call
                     pass
+        # UNIFY_ENTRY_RECORD: this session called the function (a review's
+        # calls are not counted).
+        from . import entry_record
+
+        if entry_record.enabled() and not func_data.get("is_primitive"):
+            name = str(func_data.get("name") or "")
+            text = task_origin.current_request()
+            reviewing = entry_record.in_review()
+            if name and text and not reviewing:
+                try:
+                    self._write_off_loop(
+                        lambda: entry_record.record_use(
+                            entry_record.FUNCTION,
+                            name,
+                            entry_record.CALL,
+                            text=text,
+                        ),
+                        what=f"entry use:{name}",
+                    )
+                except Exception:  # noqa: BLE001 - metering must never break a call
+                    pass
         settings = self.activation_settings
         if not settings.enabled:
             return
@@ -3044,7 +3065,11 @@ class FunctionManager(BaseFunctionManager):
         deleted_functions: List[tuple[int, str]],
     ) -> None:
         """Drop deleted ids from every guidance entry citing them, recording why."""
+        from . import entry_links
+
         for function_id, name in deleted_functions:
+            # UNIFY_ENTRY_RECORD: its rows in the many-to-many link table too.
+            entry_links.drop(function_id=function_id)
             rows = db.query(
                 "SELECT guidance_id, function_ids, stale_reasons FROM guidance"
                 " WHERE EXISTS (SELECT 1 FROM json_each(function_ids) WHERE value = ?)",
@@ -3353,11 +3378,19 @@ class FunctionManager(BaseFunctionManager):
             n=n,
             include_dormant=include_dormant,
         )
+        # UNIFY_SEARCH_IDENTIFIERS: functions stored for a request naming an
+        # identifier of the query come first.
+        shared: Dict[str, List[str]] = {}
+        if self._identifier_search_enabled():
+            results, shared = self._identifier_first(library, results, query, n)
         self._bump_search_hits(results)
         from . import store_cases
 
         if not _return_callable:
+            records = self._search_records(results, library, shared)
             compact_results = self._compact_function_search_rows(results, marker)
+            for compact in compact_results:
+                compact.update(records.get(str(compact.get("name")), {}))
             if include_implementations:
                 for compact, full in zip(compact_results, results, strict=True):
                     if "implementation" in full:
@@ -3378,7 +3411,10 @@ class FunctionManager(BaseFunctionManager):
             results = [row for row in results if row.get("name") not in unloadable]
 
         if _also_return_metadata:
+            records = self._search_records(results, library, shared)
             metadata_rows = self._compact_function_search_rows(results, marker)
+            for compact in metadata_rows:
+                compact.update(records.get(str(compact.get("name")), {}))
             if include_implementations:
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:
@@ -3392,6 +3428,104 @@ class FunctionManager(BaseFunctionManager):
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
 
         return callables_list  # type: ignore[return-value]
+
+    @staticmethod
+    def _identifier_search_enabled() -> bool:
+        from unify.settings import SETTINGS
+
+        return task_origin.enabled() and bool(
+            getattr(SETTINGS, "UNIFY_SEARCH_IDENTIFIERS", False),
+        )
+
+    @staticmethod
+    def _identifier_first(
+        library: List[Dict[str, Any]],
+        results: List[Dict[str, Any]],
+        query: str,
+        n: int,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
+        """``UNIFY_SEARCH_IDENTIFIERS``: *results* with the functions whose recorded requests name a query identifier first."""
+        matched = task_origin.identifier_matches(query, library, key="name")
+        if not matched:
+            return results, {}
+        by_name = {str(row.get("name")): row for row in library}
+        first = [by_name[name] for name in matched if name in by_name]
+        rest = [row for row in results if row.get("name") not in matched]
+        return (first + rest)[: max(n, len(first))], matched
+
+    def _search_records(
+        self,
+        rows: List[Dict[str, Any]],
+        library: List[Dict[str, Any]],
+        shared: Dict[str, List[str]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """``{name: fields}`` a search row adds: ``record`` (``UNIFY_ENTRY_RECORD``) and kept ``revisions``."""
+        from . import entry_record
+
+        recording = entry_record.enabled()
+        if not rows or not (recording or shared):
+            return {}
+        guidance = []
+        try:
+            from unify.guidance_manager.guidance_manager import GuidanceManager
+
+            guidance = [
+                {"guidance_id": r["guidance_id"], "metadata": r["metadata"]}
+                for r in GuidanceManager._evidence_rows_static()
+            ]
+        except Exception:  # noqa: BLE001 - the weights fall back to functions
+            guidance = []
+        marker = task_origin.Marker([*library, *guidance])
+        names = [str(row.get("name")) for row in rows if not row.get("is_primitive")]
+        uses = (
+            entry_record.uses_of([(entry_record.FUNCTION, name) for name in names])
+            if recording
+            else {}
+        )
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            name = str(row.get("name"))
+            if row.get("is_primitive"):
+                continue
+            parts = []
+            if shared.get(name):
+                parts.append(
+                    "stored while handling a request that also named "
+                    + " and ".join(f"`{w}`" for w in shared[name]),
+                )
+            if recording:
+                parts.append(
+                    entry_record.record_text(
+                        marker,
+                        entry_record.FUNCTION,
+                        row,
+                        uses.get((entry_record.FUNCTION, name)),
+                    ),
+                )
+            out[name] = {"record": "; ".join(parts)}
+        return out
+
+    def _evidence_rows(self) -> List[Dict[str, Any]]:
+        """The stored functions in scope (primitives excluded), with ``metadata``, ``usage_calls`` and source.
+
+        For the evidence list and the storage review's same-origin section;
+        no search hit is counted.
+        """
+        return [
+            {
+                key: row.get(key)
+                for key in (
+                    "function_id",
+                    "name",
+                    "argspec",
+                    "docstring",
+                    "implementation",
+                    "metadata",
+                    "usage_calls",
+                )
+            }
+            for row in self._rows(self._compositional_scope())
+        ]
 
     def _shortlist_rows(
         self,

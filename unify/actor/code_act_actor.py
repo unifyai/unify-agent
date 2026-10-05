@@ -61,6 +61,7 @@ from unify.function_manager.base import BaseFunctionManager
 from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import origin_capture as _origin_capture
 from unify.function_manager import task_origin as _task_origin
+from unify.function_manager import entry_record as _entry_record
 from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
 from unify.actor.prompt_builders import build_code_act_prompt, build_session_context
@@ -2362,6 +2363,9 @@ def _origin_link_notes(
 
     if related_shortlist.enabled():
         review_parts.append(related_shortlist.REVIEW_SECTION)
+    # UNIFY_ENTRY_RECORD: the entries the trajectory relied on.
+    if _entry_record.enabled():
+        review_parts.append(_entry_record.REVIEW_SECTION)
     if _review_outcome.enabled():
         review_parts.append(_review_outcome.REVIEW_SECTION)
         gate_parts.append(_review_outcome.GATE_SECTION)
@@ -2697,7 +2701,19 @@ def _close_with_result(handle: Any, close: Callable[[], Awaitable[None]]) -> Non
     handle.result = _result_then_close
 
 
-def _start_storage_check_loop(
+def _start_storage_check_loop(**kwargs: Any) -> "AsyncToolLoopHandle | None":
+    """Start the storage review (:func:`_start_storage_check_loop_inner`).
+
+    ``UNIFY_ENTRY_RECORD``: inside it (and the tasks it starts), calls and
+    reads are the review's, not the session's, and are not counted as uses.
+    """
+    from unify.function_manager import entry_record
+
+    with entry_record.reviewing():
+        return _start_storage_check_loop_inner(**kwargs)
+
+
+def _start_storage_check_loop_inner(
     *,
     trajectory: list[dict],
     ask_tools: dict,
@@ -3047,7 +3063,18 @@ def _start_storage_check_loop(
 # ---------------------------------------------------------------------------
 
 
-def _start_proactive_storage_loop(
+def _start_proactive_storage_loop(**kwargs: Any) -> "AsyncToolLoopHandle | None":
+    """Start an on-demand storage review (:func:`_start_proactive_storage_loop_inner`).
+
+    ``UNIFY_ENTRY_RECORD``: its calls and reads are not counted as uses.
+    """
+    from unify.function_manager import entry_record
+
+    with entry_record.reviewing():
+        return _start_proactive_storage_loop_inner(**kwargs)
+
+
+def _start_proactive_storage_loop_inner(
     *,
     trajectory: list[dict],
     ask_tools: dict,
@@ -3834,6 +3861,7 @@ class _StorageCheckHandle(SteerableToolHandle):
                 gate_judgement = decision.answer_outcome
                 if not decision.review:
                     _review_outcome.record(gate_judgement)
+
                     await self._notification_q.put(
                         {
                             "type": "storage_review_skipped",
@@ -3950,6 +3978,8 @@ class _StorageCheckHandle(SteerableToolHandle):
                             getattr(self._actor, "function_manager", None),
                             getattr(self._actor, "guidance_manager", None),
                         )
+                        # UNIFY_ENTRY_RECORD: the entries it says were relied on.
+                        _entry_record.record_relied(storage_summary)
 
                     await publish_manager_method_event(
                         _sc_call_id,

@@ -767,6 +767,33 @@ class ProductionSettings(BaseSettings):
     # refuses to start with this on and request records off. Off: as
     # shipped.
     UNIFY_LISTING_USAGE: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): one record for every stored
+    # entry, function or guidance (unify/function_manager/entry_record.py).
+    # Guidance records the requests it was written for as under
+    # UNIFY_GUIDANCE_ORIGIN (and joins the gated shortlist, the possibly
+    # related tier and the review's similar-request section like a
+    # function). Each session that called a stored function, read a guidance
+    # entry (get_guidance) or, as its storage review judged, relied on an
+    # entry keeps a hash of its request against that entry (the latest five
+    # sessions per entry and kind of use, in
+    # ``<UNIFY_HOME>/request_log.sqlite``; the review's own reads and calls
+    # are not counted). The storage review names the entries the trajectory
+    # followed or called in one JSON key, ``relied_on``. Function search rows
+    # and guidance reads and search results then carry ``record``: what the
+    # entry was stored for (this same request, shared rare identifiers, or
+    # another request), how that session ended, its status (verified when
+    # written in an accepted session or relied on in a later accepted one;
+    # else unverified) and its use with how those sessions ended. It
+    # informs; nothing is hidden. An actor refuses to start with this on and
+    # request records off. Off: as shipped.
+    UNIFY_ENTRY_RECORD: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a function or guidance
+    # search whose query names a whole identifier (the shape
+    # UNIFY_SIMILAR_REQUEST_IDENTIFIERS keeps) also finds the entries whose
+    # recorded requests name it, listed first and marked with the
+    # identifiers they share; an identifier every recorded request names is
+    # ignored. A query without one ranks as shipped. Off: as shipped.
+    UNIFY_SEARCH_IDENTIFIERS: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1007,6 +1034,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LESSON_STATUS",
         "UNIFY_GUIDANCE_SCOPED",
         "UNIFY_LISTING_USAGE",
+        "UNIFY_ENTRY_RECORD",
+        "UNIFY_SEARCH_IDENTIFIERS",
         mode="before",
     )
     @classmethod

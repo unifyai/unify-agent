@@ -103,3 +103,26 @@ GuidanceWithLinks = create_model(
         ),
     ),
 )
+
+
+# UNIFY_ENTRY_RECORD: a read of an entry with its record (what it was written
+# for, its status, its use and the functions linked to it). Still named
+# ``Guidance``.
+_RECORD_FIELDS = dict(
+    record=(
+        str,
+        Field(
+            default="",
+            description=(
+                "What the entry was written for, how that session ended, its "
+                "status and how it has been used."
+            ),
+        ),
+    ),
+)
+GuidanceWithRecord = create_model("Guidance", __base__=Guidance, **_RECORD_FIELDS)
+GuidanceWithLinksAndRecord = create_model(
+    "Guidance",
+    __base__=GuidanceWithLinks,
+    **_RECORD_FIELDS,
+)

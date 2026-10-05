@@ -245,7 +245,7 @@ def enter(request: Any) -> Optional[contextvars.Token]:
         return None
     task = _Task(key=key, text=bounded_text(request))
     related = _related_enabled()
-    if _stream_corpus() or recurrence_enabled() or related:
+    if _stream_corpus() or recurrence_enabled() or related or _records_requests():
         _log_request(task)
     if related:
         _log_request_lines(task.key, line_keys(request))
@@ -265,11 +265,25 @@ def _related_enabled() -> bool:
     return SETTINGS.shortlist_related() is not None
 
 
-def guidance_enabled() -> bool:
-    """``UNIFY_GUIDANCE_ORIGIN`` (with request records on)."""
+def _records_requests() -> bool:
+    """``UNIFY_ENTRY_RECORD``: top-level requests are logged and guidance origins kept.
+
+    The log maps a use's request hash back to its text and weighs rare words
+    over the stream, as ``UNIFY_SIMILAR_REQUEST_CORPUS=stream`` does.
+    """
     from unify.settings import SETTINGS
 
-    return enabled() and bool(getattr(SETTINGS, "UNIFY_GUIDANCE_ORIGIN", False))
+    return bool(getattr(SETTINGS, "UNIFY_ENTRY_RECORD", False))
+
+
+def guidance_enabled() -> bool:
+    """``UNIFY_GUIDANCE_ORIGIN``, or ``UNIFY_ENTRY_RECORD`` (one origin for both kinds), with request records on."""
+    from unify.settings import SETTINGS
+
+    return enabled() and (
+        bool(getattr(SETTINGS, "UNIFY_GUIDANCE_ORIGIN", False))
+        or bool(getattr(SETTINGS, "UNIFY_ENTRY_RECORD", False))
+    )
 
 
 def provenance_enabled() -> bool:
@@ -315,7 +329,12 @@ def guidance_recorded() -> bool:
     ``UNIFY_GUIDANCE_ORIGIN``, or a listing switch that shows what they were
     written for (``UNIFY_LISTING_PROVENANCE``, ``UNIFY_LESSON_STATUS``).
     """
-    return guidance_enabled() or listing_provenance_enabled() or lesson_status_enabled()
+    return (
+        guidance_enabled()
+        or listing_provenance_enabled()
+        or lesson_status_enabled()
+        or (enabled() and _records_requests())
+    )
 
 
 def recurrence_enabled() -> bool:
@@ -356,6 +375,8 @@ def require_origin_link_prerequisites() -> None:
         "UNIFY_LISTING_PROVENANCE",
         "UNIFY_LESSON_STATUS",
         "UNIFY_LISTING_USAGE",
+        "UNIFY_ENTRY_RECORD",
+        "UNIFY_SEARCH_IDENTIFIERS",
     ):
         if getattr(SETTINGS, name, False):
             raise ValueError(
@@ -407,7 +428,11 @@ def text_key(text: str) -> str:
 
 
 def _checker_kept() -> bool:
-    return provenance_enabled() or listing_notes_enabled()
+    return (
+        provenance_enabled()
+        or listing_notes_enabled()
+        or (enabled() and _records_requests())
+    )
 
 
 def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
@@ -629,6 +654,46 @@ def shared_identifiers(
             weighted.append((-weight, order, mine[low]))
     weighted.sort()
     return [word for _, _, word in weighted[: max(limit, 0)]]
+
+
+def identifier_matches(
+    query: str,
+    rows: Sequence[Dict[str, Any]],
+    *,
+    key: str = "guidance_id",
+) -> Dict[Any, List[str]]:
+    """``UNIFY_SEARCH_IDENTIFIERS``: ``{row[key]: shared identifiers}`` for the rows whose recorded requests name an identifier of *query*.
+
+    Ordered by how rare the rarest shared identifier is among the recorded
+    (and, with a request log, the logged) requests, then by how many are
+    shared. An identifier every recorded request names says nothing and is
+    ignored. Empty when *query* names no identifier.
+    """
+    wanted = identifiers(query)
+    if not wanted:
+        return {}
+    known = [text for row in rows for text in _origins(row)[1]]
+    known = list(dict.fromkeys([*logged_requests(), *known]))
+    if not known:
+        return {}
+    sets = [frozenset(identifiers(text)) for text in known]
+    weight: Dict[str, float] = {}
+    for low in wanted:
+        df = sum(1 for found in sets if low in found)
+        if 0 < df < len(sets):
+            weight[low] = math.log(len(sets) / df)
+    scored = []
+    for order, row in enumerate(rows):
+        texts = _origins(row)[1]
+        named = set().union(*(identifiers(text) for text in texts)) if texts else set()
+        shared = sorted(
+            (low for low in weight if low in named),
+            key=lambda low: -weight[low],
+        )
+        if shared:
+            scored.append((-weight[shared[0]], -len(shared), order, row, shared))
+    scored.sort(key=lambda item: item[:3])
+    return {row.get(key): [wanted[low] for low in shared] for *_, row, shared in scored}
 
 
 @dataclass(frozen=True)
@@ -889,7 +954,8 @@ class Marker:
         """The requests the weights are taken over, besides the current one."""
         if self._known is None:
             texts = [text for row in self._library for text in _origins(row)[1]]
-            if _stream_corpus():
+            # UNIFY_ENTRY_RECORD logs requests too, and weighs over them.
+            if _stream_corpus() or _records_requests():
                 texts = [*logged_requests(), *texts]
             self._known = texts
         return self._known

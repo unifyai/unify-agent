@@ -90,6 +90,8 @@ NEW_SWITCHES = {
     "UNIFY_CACHE_AFFINITY_SCOPE": "prefix",
     "UNIFY_OUTCOME": False,
     "UNIFY_REVIEW_FAILED": "",
+    "UNIFY_ENTRY_RECORD": False,
+    "UNIFY_SEARCH_IDENTIFIERS": False,
 }
 
 # The UNIFY_ settings of the commit the actor golden was recorded on
