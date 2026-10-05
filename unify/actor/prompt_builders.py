@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import textwrap
 from typing import (
     Callable,
@@ -1064,6 +1065,157 @@ def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> 
     return not all(isinstance(e, EnvironmentNamespacesEnvironment) for e in members)
 
 
+# ---------------------------------------------------------------------------
+# UNIFY_PROMPT_TRIM
+# ---------------------------------------------------------------------------
+# It rewrites the static sections (never an environment's own context, the
+# guidelines or the per-session sections). Each rewrite applies where its
+# text occurs: a section holds only some of them.
+
+# UNIFY_PROMPT_TRIM, no environment in the ``primitives`` namespace: nothing
+# in the sandbox is a primitive, and nothing returns a steerable handle.
+_TRIM_NO_PRIMITIVES = (
+    (re.compile(r"\(`primitives\.\*`, `query_llm`, …\)"), "(`query_llm`, …)"),
+    (
+        re.compile(r"not functions, tools or `primitives\.\*` methods"),
+        "not functions or tools",
+    ),
+    (
+        re.compile(
+            r"stored function or primitive by name\. A steerable handle reaches the"
+            r"\s+outer loop \(for `steer`\) when it is the result of `execute_function` or"
+            r"\s+the last expression of a cell\.",
+        ),
+        "stored function by name.",
+    ),
+    (
+        re.compile(
+            r"\nWhen a correction concerns work already running in `primitives\.\*`"
+            r"\s+handles, .*?directly in code\.",
+            re.DOTALL,
+        ),
+        "",
+    ),
+    (re.compile(r"\| `SteerableToolHandle` \|[^\n]*\n"), ""),
+    (
+        re.compile(
+            r"- \*\*Handle adoption:\*\*.*?(?=- Procedures are)",
+            re.DOTALL,
+        ),
+        "",
+    ),
+    (
+        re.compile(r" primitive calls,(?P<ws>\s+)filters"),
+        lambda m: m.group("ws") + "filters",
+    ),
+    (re.compile(r"`print\(\)`, `await handle\.result\(\)`, or"), "`print()` or"),
+    (
+        re.compile(r"Procedures are \*\*not\*\* primitives —"),
+        "Procedures are **not** callable —",
+    ),
+    (
+        re.compile(r"function(?P<ws>\s+)or\s+primitive\s+call"),
+        lambda m: "function" + ("\n" if "\n" in m.group(0) else " ") + "call",
+    ),
+)
+# ... and no environment at all: nothing is documented in the prompt for
+# search to leave out, and search finds stored functions only.
+_TRIM_DISCOVERY_SCOPE = re.compile(
+    r"\*\*Discovery index scope:\*\*.*?via `execute_function`\.\n\n",
+    re.DOTALL,
+)
+_TRIM_PRIMITIVE_CATALOGUE = (
+    re.compile(
+        r"Function search covers user-stored functions"
+        r"\s+\*\*and\*\* the built-in `primitives\.\*` catalogue — primitive rows come back"
+        r"\s+with `is_primitive`, `argspec`, and `docstring`\.",
+    ),
+    "Function search covers user-stored functions.",
+)
+# No sub-actor primitive: the actor cannot delegate.
+_TRIM_NO_DELEGATE = (
+    (
+        re.compile(r"no code, search or\s+sub-agent can take them for you"),
+        "no code or search\ncan take them for you",
+    ),
+    (
+        re.compile(
+            r" Do not delegate a sub-task whose result would be\s+such an action\.",
+        ),
+        "",
+    ),
+)
+# UNIFY_DELEGATION=off: there are no sub-agents.
+_TRIM_NO_SUB_AGENTS = (
+    re.compile(
+        r" If you are a sub-agent and your task seems to need one,"
+        r"\s+say so in your result instead of calling a function that does not"
+        r"\s+exist\.",
+    ),
+    "",
+)
+# No list_sessions / inspect_state tools.
+_TRIM_NO_SESSION_TOOLS = (
+    (
+        re.compile(
+            r"`list_sessions\(\)` and\s+`inspect_state\(\)` show live sessions and"
+            r" names;\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"`list_sessions\(\)` / `inspect_state\(\)` rediscover live sessions"
+            r"\s+and names — variables survive",
+        ),
+        "Variables survive",
+    ),
+)
+
+
+def _prompt_trim_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_PROMPT_TRIM)
+
+
+def _section_rewrites(
+    environments: Mapping[str, "BaseEnvironment"],
+    tools: Optional[Mapping[str, Callable]],
+) -> list:
+    """The (pattern, replacement) pairs the switch applies to static sections."""
+    rewrites: list = []
+    if _prompt_trim_enabled():
+        from unify.actor.environments.actor import delegation_mode
+
+        if "primitives" not in environments:
+            rewrites.extend(_TRIM_NO_PRIMITIVES)
+            if not environments:
+                rewrites.append((_TRIM_DISCOVERY_SCOPE, ""))
+            else:
+                rewrites.append(_TRIM_PRIMITIVE_CATALOGUE)
+        if not _injects_actor_primitives(environments):
+            rewrites.extend(_TRIM_NO_DELEGATE)
+        if delegation_mode() == "off":
+            rewrites.append(_TRIM_NO_SUB_AGENTS)
+        if tools is not None and not (
+            "list_sessions" in tools and "inspect_state" in tools
+        ):
+            rewrites.extend(_TRIM_NO_SESSION_TOOLS)
+    return rewrites
+
+
+def _rewrite_sections(parts: list[str], rewrites: list) -> list[str]:
+    if not rewrites:
+        return parts
+    out = []
+    for part in parts:
+        for pattern, replacement in rewrites:
+            part = pattern.sub(replacement, part)
+        out.append(part)
+    return out
+
+
 def build_code_act_prompt(
     *,
     environments: Mapping[str, "BaseEnvironment"],
@@ -1222,6 +1374,8 @@ def build_code_act_prompt(
             # not after a final result the loop never produces — the notice
             # must describe the schedule the session actually gets.
             parts.append(_storage_notice(persist, turn_reviews))
+
+        parts = _rewrite_sections(parts, _section_rewrites(environments, tools))
 
         # ── Per-assistant / dynamic tail ──
         if session_sections:
@@ -1383,6 +1537,7 @@ def _build_core_prompt(
         parts.append(
             core.storage_notice(persist=persist, inline_curation=inline_curation),
         )
+    parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
         parts.append(_build_clock_context())
         parts.append(_build_filesystem_context())

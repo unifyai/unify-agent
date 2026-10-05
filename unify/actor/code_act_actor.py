@@ -1678,7 +1678,70 @@ _LEAN_INSTALL_DOC = (
 )
 
 
-def _correct_tool_docs(tools: Dict[str, Any]) -> None:
+# UNIFY_PROMPT_TRIM, no environment in the ``primitives`` namespace: the
+# code tools name no primitive and no handle only a primitive returns.
+# Applied after the other rewrites, so each pattern takes the shipped form
+# and the forms they leave.
+_TRIM_NO_PRIMITIVES_DOC = (
+    (
+        re.compile(r"a primitive(?:\s+\(``primitives\.actor\.act``\))?\s+or a stored"),
+        "a stored",
+    ),
+    (re.compile(r"function or primitive"), "function"),
+    (re.compile(r"primitives/functions"), "functions"),
+    (re.compile(r"function\s+or primitive call"), "function call"),
+    (
+        re.compile(
+            r"\s*\(dotted path for primitives(?:, e\.g\.\s+``\"primitives\.actor\.act\"``)?\)",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"It runs one callable -- (?P<what>.*?) -- and exposes the handle it"
+            r" returns to the outer loop for steering \(ask, stop, pause, resume,"
+            r" interject\)\.",
+            re.DOTALL,
+        ),
+        lambda m: f"It runs one callable: {m.group('what')}.",
+    ),
+    (
+        re.compile(
+            r"It\s+\*\*structurally guarantees\*\* the returned handle is exposed to"
+            r"\s+the outer loop for steering \(ask, stop, pause, resume,"
+            r"\s+interject\); inside ``execute_code`` a handle is only adopted"
+            r"\s+if it happens to be the last expression\.\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r",(?P<ws>\s+)at the top of every loop body, and before\s+every"
+            r" ``primitives\.\*`` call\.",
+        ),
+        lambda m: f" and{m.group('ws')}at the top of every loop body.",
+    ),
+    (
+        re.compile(
+            r"value — a steerable handle as the last expression is"
+            r"\s+automatically adopted by the outer loop for mid-flight"
+            r"\s+steering\)",
+        ),
+        "value)",
+    ),
+)
+
+
+_TRIM_STORE_SKILLS_EXAMPLE = re.compile(
+    r"a non-obvious\s+configuration of primitives\.actor\.act,\s+",
+)
+
+
+def _correct_tool_docs(
+    tools: Dict[str, Any],
+    *,
+    environments: Optional[Dict[str, Any]] = None,
+) -> None:
     """Correct the docstrings (tool descriptions) of *tools* in place, per the switches.
 
     The tools are built per actor, so a rewrite never reaches another actor.
@@ -1697,6 +1760,8 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     if SETTINGS.lean_prompt():
         rewrites.extend(_LEAN_TOOL_DOCS)
         rewrites.append(_LEAN_INSTALL_DOC)
+    if SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in (environments or {}):
+        rewrites.extend(_TRIM_NO_PRIMITIVES_DOC)
     if not rewrites and not placeholder_note.enabled():
         return
     for name in ("execute_code", "execute_function", "install_python_packages"):
@@ -1710,6 +1775,31 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
         if name == "execute_function" and placeholder_note.enabled():
             doc = placeholder_note.correct_doc(doc)
         fn.__doc__ = doc
+    if SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in (environments or {}):
+        tool = tools.get("store_skills")
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is not None and fn.__doc__:
+            fn.__doc__ = _TRIM_STORE_SKILLS_EXAMPLE.sub("", fn.__doc__, count=1)
+
+
+def _hide_parent_chat_context(tools: Dict[str, Any]) -> None:
+    """UNIFY_PROMPT_TRIM without a primitives environment: the conversation a
+    code tool is given reaches only the primitives it forwards to, so the
+    code tools do not offer ``include_parent_chat_context``. The parameter is
+    left out of the signature the loop reads; the functions are unchanged."""
+    for name in ("execute_code", "execute_function"):
+        tool = tools.get(name)
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is None:
+            continue
+        sig = inspect.signature(fn)
+        if "_parent_chat_context" not in sig.parameters:
+            continue
+        fn.__signature__ = sig.replace(
+            parameters=[
+                p for p in sig.parameters.values() if p.name != "_parent_chat_context"
+            ],
+        )
 
 
 # One contract for the package-install tool.
@@ -5938,7 +6028,14 @@ class CodeActActor(BaseCodeActActor):
             display_label="Closing all sessions",
         )
 
-        _correct_tool_docs(tools)
+        _correct_tool_docs(tools, environments=self.environments)
+        # Aliased: a bare local import would shadow SETTINGS for the whole method.
+        from unify.settings import SETTINGS as _TRIM_SETTINGS
+
+        # UNIFY_PROMPT_TRIM: only primitives read the conversation a code
+        # tool is given.
+        if _TRIM_SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in self.environments:
+            _hide_parent_chat_context(tools)
         return tools
 
     @functools.wraps(BaseCodeActActor.act, updated=())

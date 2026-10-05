@@ -369,6 +369,18 @@ class ProductionSettings(BaseSettings):
     # sections are unchanged (their own switches govern them). Empty: as
     # shipped.
     UNIFY_PROMPT_PROFILE: str = ""
+    # Prompt text describes only what the session has. On: an interjection
+    # does not append the "User Visibility Context" message when the model
+    # has no channel to the user besides its final reply (no
+    # send_notification, no clarification request), and when a progress or
+    # clarification message appends it, it leaves out the channels and the
+    # announcements the loop does not have; without a primitives environment
+    # the prompt and the tool descriptions do not name `primitives.*`,
+    # sub-agents or the steerable handles only primitives return, and the
+    # code tools do not offer include_parent_chat_context (only primitives
+    # read the conversation it passes); and the session tools are named only
+    # where they are offered. Off: as shipped.
+    UNIFY_PROMPT_TRIM: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome

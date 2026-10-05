@@ -947,6 +947,13 @@ async def async_tool_loop_inner(
         completed_askable_tools=completed_askable_tools,
         call_counts=runtime_state.call_counts,
         steering_tools=steering_tools,
+        # The model's channels to the user besides its final reply. Under
+        # UNIFY_TOOL_SURFACE=core a clarification request is a sandbox
+        # object the loop sees only as on_clarification_request.
+        can_notify_user=on_notify is not None,
+        can_ask_user=(
+            clarification_queues is not None or on_clarification_request is not None
+        ),
     )
     logger.debug(
         f"[setup +{_setup_elapsed()}] ToolsData ready ({len(tools_data.normalized)} tools)",
@@ -2165,7 +2172,10 @@ async def async_tool_loop_inner(
                 # and what the user can and cannot see. record_progress and
                 # record_clarification share the same flag on tools_data, so
                 # the injection is paid for once whichever event comes first.
-                await tools_data._ensure_visibility_guidance_injected(_msg_dispatcher)
+                await tools_data._ensure_visibility_guidance_injected(
+                    _msg_dispatcher,
+                    interjection=True,
+                )
 
                 # A context continuation goes in a separate user message tagged
                 # _ctx_header, so the current LLM sees it but it is filtered
