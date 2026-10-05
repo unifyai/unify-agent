@@ -700,6 +700,19 @@ class ProductionSettings(BaseSettings):
     # to start otherwise, and never runs model code unconfined
     # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
     UNIFY_TOOL_SURFACE: str = ""
+    # With UNIFY_TOOL_SURFACE=core and UNIFY_REVIEW_FORK, run the storage
+    # review as a fork of the session too, instead of falling back to the
+    # standalone librarian: the session's last request (its execute_code-only
+    # tool list included) plus one user message with the rulebook, naming the
+    # libraries as the sandbox does (``functions.add``, ``guidance.add``).
+    # The review's execute_code runs its cells in a new sandboxed worker that
+    # holds only ``functions`` and ``guidance``, with the review's writes --
+    # no task environment, files or variables, and no stored function is run.
+    # Any other tool in the list is refused. Falls back to the standalone
+    # review, saying why, without worker Python or with UNIFY_STORE_VERIFY
+    # (its check has no sandbox method). Off: the core surface's review is
+    # standalone, as shipped.
+    UNIFY_REVIEW_FORK_CORE: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -756,6 +769,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",
+        "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
         "UNIFY_BUILTIN_GUIDANCE",

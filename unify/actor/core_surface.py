@@ -50,7 +50,7 @@ import logging
 import re
 import textwrap
 import types
-from typing import Any, Callable, Dict, List, Mapping, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -206,11 +206,21 @@ class WritePolicy:
     can_store: bool = True
     admission_gated: bool = False
     inline_mode: str = ""
+    #: ``UNIFY_REVIEW_FORK_CORE``: the policy of a forked storage review's
+    #: sandbox, which stores and edits the libraries but runs no stored
+    #: function and binds none in its namespace (the task is over).
+    review: bool = False
+    #: ``(method, why)`` pairs refused before anything else (a lessons-only
+    #: review's function writes).
+    withheld: Tuple[Tuple[str, str], ...] = ()
 
     def refusal(self, method: str) -> Optional[str]:
         """Why ``method`` (``functions.add``, ...) is refused here; ``None`` if allowed."""
         from unify.settings import SETTINGS
 
+        for name, why in self.withheld:
+            if name == method:
+                return f"{method} is not available in this review: {why}"
         if self.admission_gated and method in _ADMISSION_WITHHELD:
             return (
                 f"{method} is not available in this session: the libraries are "
@@ -243,6 +253,12 @@ class WritePolicy:
             GUIDANCE: ["add", "update", "patch", "delete"],
         }[family]
         return [n for n in names if self.refusal(f"{family}.{n}") is None]
+
+
+REVIEW_RUN_REFUSAL = (
+    "the storage review stores and edits the libraries; it does not run "
+    "stored functions (the task is over)"
+)
 
 
 def _refuse(policy: WritePolicy, method: str) -> None:
@@ -297,9 +313,12 @@ class FunctionLibrary:
 
     def _load(self, method: str, **kwargs: Any) -> Any:
         """A read that also binds the functions it returns in the session, as
-        the actor's JSON search tools do."""
+        the actor's JSON search tools do. A review's read binds nothing, as
+        the review's JSON search tools do not."""
         from unify.actor.execution import _CURRENT_SANDBOX
 
+        if self._policy.review:
+            return getattr(self._fm, method)(**kwargs)
         sb = _CURRENT_SANDBOX.get(None)
         namespace = sb.global_state if sb is not None else {}
         before = set(namespace)
@@ -546,6 +565,8 @@ class FunctionLibrary:
         from unify.function_manager.source_labels import function_source_filename
         from unify.function_manager.store_trust import CallObserver, source_signature
 
+        if self._policy.review:
+            raise PermissionError(REVIEW_RUN_REFUSAL)
         func_data = self._lookup(name)
         if func_data is None:
             return {"found": False}
@@ -926,6 +947,165 @@ def sandbox_objects(
     if getattr(actor, "guidance_manager", None) is not None:
         objects[GUIDANCE] = GuidanceLibrary(actor.guidance_manager, policy)
     return objects
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_REVIEW_FORK_CORE: the forked storage review's sandbox
+# ---------------------------------------------------------------------------
+
+
+def review_fork_enabled() -> bool:
+    """Whether ``UNIFY_REVIEW_FORK_CORE`` lets a core session's review fork."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", False))
+
+
+def review_fork_refusal(tool_names: List[str]) -> Optional[str]:
+    """Why a core session's review cannot fork, or ``None`` when it can.
+
+    *tool_names* are those of the session's last request: the fork reuses
+    that list, and its ``execute_code`` is what the review stores through.
+    """
+    from unify.actor.execution import worker as worker_mod
+    from unify.function_manager import store_verify
+
+    if "execute_code" not in tool_names:
+        return "the session's tool list has no execute_code for the review's cells"
+    if not worker_mod.enabled():
+        return (
+            "UNIFY_REVIEW_FORK_CORE runs the review's cells in the sandboxed "
+            "worker, which needs UNIFY_WORKSPACE=sandboxed and "
+            "UNIFY_WORKSPACE_PYTHON=worker"
+        )
+    if store_verify.enabled():
+        return (
+            "UNIFY_STORE_VERIFY checks a function before it is stored, and the "
+            "review's sandbox has no method for that check"
+        )
+    return None
+
+
+# The JSON tool names the storage rulebook uses, as the sandbox names them;
+# longer names first, so no name is replaced inside another. The function
+# check (UNIFY_STORE_VERIFY) has no sandbox method and a core review does not
+# fork with it on, so a lessons-only review's list of refused writes drops it.
+_REVIEW_NAMES = (
+    ("`FunctionManager_check_function`, ", ""),
+    ("FunctionManager_reconcile_dependencies", "functions.reconcile_dependencies"),
+    ("GuidanceManager_reconcile_dependencies", "guidance.reconcile_dependencies"),
+    ("FunctionManager_search_functions", "functions.search"),
+    ("FunctionManager_filter_functions", "functions.filter"),
+    ("FunctionManager_list_functions", "functions.list"),
+    ("FunctionManager_add_functions", "functions.add"),
+    ("FunctionManager_delete_function", "functions.delete"),
+    ("FunctionManager_patch_function", "functions.patch"),
+    ("FunctionManager_retire_case", "functions.retire"),
+    ("GuidanceManager_update_guidance", "guidance.update"),
+    ("GuidanceManager_delete_guidance", "guidance.delete"),
+    ("GuidanceManager_patch_guidance", "guidance.patch"),
+    ("GuidanceManager_add_guidance", "guidance.add"),
+    ("GuidanceManager_get_guidance", "guidance.get"),
+    ("GuidanceManager_search", "guidance.search"),
+    ("GuidanceManager_filter", "guidance.filter"),
+    ("install_python_packages", "install"),
+)
+
+
+def python_names(text: str) -> str:
+    """*text* with the libraries' JSON tool names as the sandbox names them."""
+    for old, new in _REVIEW_NAMES:
+        text = text.replace(old, new)
+    return text
+
+
+def review_policy(
+    *,
+    lesson_refusals: Optional[Mapping[str, str]] = None,
+) -> WritePolicy:
+    """The writes of a forked review's sandbox: every library write the
+    session's switches allow, less a lessons-only review's (*lesson_refusals*:
+    JSON tool name -> why), which are refused saying why."""
+    withheld = tuple(
+        (python_names(name), why)
+        for name, why in (lesson_refusals or {}).items()
+        if python_names(name) != name
+    )
+    return WritePolicy(review=True, withheld=withheld)
+
+
+class ReviewSandbox:
+    """Where a forked storage review's ``execute_code`` cells run.
+
+    A sandbox of its own, in the confined worker, holding only ``functions``
+    and ``guidance`` with the review's writes: the session's sandbox (its
+    environment, files and variables) is closed when the task ends, and the
+    review is not given another. The worker starts with the first cell; the
+    owner closes it when the review ends.
+    """
+
+    def __init__(self, actor: Any, policy: WritePolicy) -> None:
+        self._actor = actor
+        self._policy = policy
+        self._session: Any = None
+
+    def _sandbox(self) -> Any:
+        if self._session is None:
+            from unify.actor.execution.session import PythonExecutionSession
+
+            objects = {
+                name: obj
+                for name, obj in sandbox_objects(
+                    self._actor,
+                    policy=self._policy,
+                ).items()
+                if name in (FUNCTIONS, GUIDANCE)
+            }
+            session = PythonExecutionSession(environments={})
+            session.global_state.update(objects)
+            session.core_globals = dict(objects)
+            self._session = session
+        return self._session
+
+    async def execute_code(
+        self,
+        thought: str = "",
+        code: Optional[str] = None,
+        *,
+        language: str = "python",
+        state_mode: Optional[str] = None,
+        session_id: Optional[int] = None,
+        session_name: Optional[str] = None,
+    ) -> Any:
+        """Run a Python cell in the review's sandbox (``functions`` and
+        ``guidance`` only). Every cell runs in the same namespace."""
+        from unify.actor.execution import _CURRENT_SANDBOX
+        from unify.actor.execution.types import ExecutionResult
+
+        _ = (thought, state_mode, session_id, session_name)
+        if language != "python":
+            return {
+                "error": (
+                    f"The storage review runs Python cells only, not {language!r}: "
+                    "its sandbox holds the function and guidance libraries."
+                ),
+            }
+        if code is None or not code.strip():
+            return {"stdout": "", "stderr": "", "result": None, "error": None}
+        sandbox = self._sandbox()
+        token = _CURRENT_SANDBOX.set(sandbox)
+        try:
+            out = await sandbox.execute(code)
+        finally:
+            _CURRENT_SANDBOX.reset(token)
+        if isinstance(out.get("stdout"), list):
+            return ExecutionResult(**out)
+        return out
+
+    async def close(self) -> None:
+        session, self._session = self._session, None
+        if session is not None:
+            await session.close()
 
 
 # ---------------------------------------------------------------------------

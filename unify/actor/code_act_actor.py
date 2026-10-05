@@ -2299,7 +2299,38 @@ _REVIEW_CLOSING_UNIFIED = (
 )
 
 
-def _review_fork_role() -> str:
+# UNIFY_REVIEW_FORK_CORE: what the fork's tools do, for a core session.
+_REVIEW_FORK_TOOLS = (
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+_REVIEW_FORK_TOOLS_CORE = (
+    "Your tool list is the one the task used. `execute_code` now runs each "
+    "cell in the review's own sandbox, which holds only the `functions` and "
+    "`guidance` libraries, awaited as in the task (`await "
+    "functions.search(...)`, `await functions.add(...)`, `await "
+    "guidance.add(...)`): the task's environment, files and variables are "
+    "not in it, and stored functions are not run. Any other tool is refused. "
+    "Library writes that were read-only during the task are available to you "
+    "now.\n\n"
+)
+
+_REVIEW_FORK_MASK_RULE_CORE = (
+    "the storage review runs only execute_code, in a sandbox that holds the "
+    "function and guidance libraries; the task's other tools are not "
+    "available to it"
+)
+
+
+def _review_fork_role(*, core: bool = False) -> str:
+    role = _review_fork_role_shipped()
+    if core:
+        role = role.replace(_REVIEW_FORK_TOOLS, _REVIEW_FORK_TOOLS_CORE)
+    return role
+
+
+def _review_fork_role_shipped() -> str:
     if _review_framing_unified():
         return _REVIEW_FORK_ROLE_UNIFIED
     if _review_opening_is_neutral():
@@ -2342,10 +2373,22 @@ def _review_fork_source(
     if not cache_discipline.review_fork_enabled():
         return None, None
     if core_surface.enabled():
-        return None, (
-            "UNIFY_TOOL_SURFACE=core: the session's tool list holds no "
-            "library tools for a forked review to call"
+        if not core_surface.review_fork_enabled():
+            return None, (
+                "UNIFY_TOOL_SURFACE=core: the session's tool list holds no "
+                "library tools for a forked review to call"
+            )
+        # UNIFY_REVIEW_FORK_CORE: the review stores through the list's
+        # execute_code, in a sandbox holding only the libraries.
+        source, why = _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
+        if source is None:
+            return None, why
+        why = core_surface.review_fork_refusal(
+            cache_discipline.schema_names(source["tools"]),
         )
+        if why is not None:
+            return None, why
+        return {**source, "core": True}, None
     return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
 
 
@@ -2447,6 +2490,7 @@ def _start_storage_review_fork(
     message: str,
     parent_lineage: list[str] | None,
     mask_rules: Optional[Dict[str, str]] = None,
+    mask_rule: str = _REVIEW_FORK_MASK_RULE,
 ) -> "AsyncToolLoopHandle":
     """Start the storage review as a fork of the session's conversation.
 
@@ -2476,7 +2520,7 @@ def _start_storage_review_fork(
     # calls; the review's variant over the task's tools is not in the list.
     review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
 
-    opts: dict = {"mask_rule": _REVIEW_FORK_MASK_RULE}
+    opts: dict = {"mask_rule": mask_rule}
     if mask_rules:
         # A lessons-only review: the function writes the list advertises are
         # refused with their own rule, not the fork's.
@@ -2503,6 +2547,24 @@ def _start_storage_review_fork(
         enable_compression=False,
         fixed_tools_schema=fork_source["tools"],
     )
+
+
+def _close_with_result(handle: Any, close: Callable[[], Awaitable[None]]) -> None:
+    """Run *close* once *handle*'s result has been awaited, however it ends."""
+    original = handle.result
+
+    async def _result_then_close() -> Any:
+        try:
+            return await original()
+        finally:
+            try:
+                await close()
+            except Exception as exc:  # cleanup never masks the review's result
+                logger.warning(
+                    f"StorageCheck sandbox close failed: {type(exc).__name__}: {exc}",
+                )
+
+    handle.result = _result_then_close
 
 
 def _start_storage_check_loop(
@@ -2749,6 +2811,41 @@ def _start_storage_check_loop(
     result_header = (
         "## Latest Turn Response\n\n" if live_session else "## Final Result\n\n"
     )
+
+    if fork_source is not None and fork_source.get("core"):
+        # UNIFY_REVIEW_FORK_CORE: the same message, naming the libraries as
+        # the sandbox does; the review stores through execute_code, whose
+        # cells run in a sandbox of their own. The final result is the
+        # session's, unchanged.
+        review_sandbox = core_surface.ReviewSandbox(
+            actor,
+            core_surface.review_policy(lesson_refusals=lesson_rules),
+        )
+        rulebook = core_surface.python_names(
+            f"{_review_fork_role(core=True)}"
+            f"{_storage_doctrine_sections()}"
+            f"{instructions}"
+            "\n\n"
+            f"{stop_context_section}"
+            f"{proactive_storage_section}"
+            f"{_storage_needs_repair_note()}"
+            f"{origin_note}"
+            f"{outcome_note}"
+            f"{result_header}",
+        )
+        closing = core_surface.python_names(
+            _REVIEW_CLOSING_UNIFIED if _review_framing_unified() else "",
+        )
+        handle = _start_storage_review_fork(
+            fork_source=fork_source,
+            actor=actor,
+            tools={"execute_code": review_sandbox.execute_code},
+            message=f"{rulebook}{original_result}{closing}",
+            parent_lineage=parent_lineage,
+            mask_rule=_REVIEW_FORK_MASK_RULE_CORE,
+        )
+        _close_with_result(handle, review_sandbox.close)
+        return handle
 
     if fork_source is not None:
         # The conversation is the trajectory. The completed-tool and inner
