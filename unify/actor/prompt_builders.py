@@ -1139,9 +1139,9 @@ def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> 
 
 
 # ---------------------------------------------------------------------------
-# UNIFY_PROMPT_TRIM
+# UNIFY_PROMPT_TRIM and UNIFY_STATEFUL_CELLS
 # ---------------------------------------------------------------------------
-# It rewrites the static sections (never an environment's own context, the
+# Both rewrite the static sections (never an environment's own context, the
 # guidelines or the per-session sections). Each rewrite applies where its
 # text occurs: a section holds only some of them.
 
@@ -1246,6 +1246,62 @@ _TRIM_NO_SESSION_TOOLS = (
 )
 
 
+# UNIFY_STATEFUL_CELLS: every cell runs in the task's one session, and the
+# session tools are not offered (unify/actor/cell_state.py), so the prompt
+# names no cell mode and no session tool.
+_STATEFUL_CELLS = (
+    (
+        re.compile(
+            r"\s*`list_sessions\(\)` and\s+`inspect_state\(\)` show live sessions and"
+            r'\s+names;\s+`state_mode="stateless"` or a\s+named session isolates a'
+            r" cell\.",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r'\s*`state_mode="stateless"` or a\s+named session isolates a cell\.',
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r'\s*`state_mode="read_only"` tries an alternative on the current'
+            r"\s+state without changing it\.",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"`list_sessions\(\)` / `inspect_state\(\)` rediscover live sessions"
+            r"\s+and names — variables survive",
+        ),
+        "Variables survive",
+    ),
+    (
+        re.compile(
+            r'Isolate a cell with\s+`state_mode="stateless"` or a named session;'
+            r"\s+fan out",
+        ),
+        "Fan out",
+    ),
+    (
+        re.compile(
+            r"\*\*Read-only for exploration\*\*: branch off known-good state with"
+            r'\s+`state_mode="read_only"` to try alternatives without risk\.\s+',
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"Functions support execution mode overrides independent of the"
+            r" session's\s+`state_mode`:",
+        ),
+        "Functions called in a cell support execution mode overrides:",
+    ),
+)
+
+
 def _prompt_trim_enabled() -> bool:
     from unify.settings import SETTINGS
 
@@ -1256,8 +1312,13 @@ def _section_rewrites(
     environments: Mapping[str, "BaseEnvironment"],
     tools: Optional[Mapping[str, Callable]],
 ) -> list:
-    """The (pattern, replacement) pairs the switch applies to static sections."""
+    """The (pattern, replacement) pairs the switches apply to static sections."""
+    from unify.actor import cell_state
+
     rewrites: list = []
+    # First: it removes the whole session sentence the trim would shorten.
+    if cell_state.enabled():
+        rewrites.extend(_STATEFUL_CELLS)
     if _prompt_trim_enabled():
         from unify.actor.environments.actor import delegation_mode
 

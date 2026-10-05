@@ -387,6 +387,20 @@ class ProductionSettings(BaseSettings):
     # sections are unchanged (their own switches govern them). Empty: as
     # shipped.
     UNIFY_PROMPT_PROFILE: str = ""
+    # execute_code takes state_mode (an untyped optional string), session_id
+    # and session_name, and four tools manage sessions. An omitted mode runs
+    # the cell in session 0, the task's persistent session, but a model that
+    # fills in every argument writes a mode into every cell, and next to
+    # execute_function (whose own default is "stateless") and inspect_state
+    # ("run stateless") it writes "stateless": nothing a cell computed is
+    # there for the next. On: execute_code has no state_mode or session
+    # argument and every cell runs in session 0, like a notebook;
+    # list_sessions, inspect_state, close_session and close_all_sessions are
+    # not offered; execute_function keeps its state_mode (stateless by
+    # default; stateful and read_only use session 0) and has no session
+    # argument; the prompt names no cell mode and no session tool
+    # (unify/actor/cell_state.py). Off: as shipped.
+    UNIFY_STATEFUL_CELLS: bool = False
     # Prompt text describes only what the session has. On: an interjection
     # does not append the "User Visibility Context" message when the model
     # has no channel to the user besides its final reply (no

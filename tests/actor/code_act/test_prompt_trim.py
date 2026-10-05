@@ -180,6 +180,19 @@ def test_session_text_follows_the_session_tools(trim, monkeypatch):
     assert "Variables survive context compression" in shipped
 
 
+@pytest.mark.parametrize("cells", [False, True])
+def test_composes_with_stateful_cells(trim, monkeypatch, cells):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
+    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", cells)
+    prompt, schemas = _render(_actor())
+    assert "primitives" not in prompt
+    assert ('state_mode="stateless"' in prompt) is not cells
+    assert (
+        "state_mode" in schemas["execute_code"]["function"]["parameters"]["properties"]
+    ) is not cells
+
+
 def test_a_core_session_prompt_names_no_primitive(trim, monkeypatch):
     """UNIFY_TOOL_SURFACE=core, lean, no primitives: the shared sections are
     trimmed as in the JSON-tool prompt."""
