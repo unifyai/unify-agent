@@ -34,9 +34,14 @@ def _origin_for(guidance_id: Optional[int]) -> Optional[str]:
 
     if not task_origin.guidance_recorded():
         return None
+    from ..function_manager import verified_guard
+
     prior = _stored_origin(guidance_id) if guidance_id is not None else None
     stamped = task_origin.stamped(prior)
-    return None if stamped is None else db.dumps(stamped)
+    if stamped is None:
+        return None
+    # UNIFY_PROTECT_VERIFIED: this session wrote the entry's current content.
+    return db.dumps(verified_guard.stamped(stamped) or stamped)
 
 
 def _stored_origin(guidance_id: Any) -> Optional[Dict[str, Any]]:
@@ -439,6 +444,9 @@ class GuidanceManager(BaseGuidanceManager):
                     preserve_historical=False,
                 )
             ]
+        # UNIFY_PROTECT_VERIFIED: a verified entry stays while this
+        # session's answer is not known to be accepted.
+        self._refuse_unverified_change(guidance_id, "update")
         # UNIFY_GUIDANCE_ORIGIN: the request this revision was written for.
         origin = _origin_for(guidance_id)
         if origin is not None:
@@ -457,6 +465,21 @@ class GuidanceManager(BaseGuidanceManager):
             {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}},
             _instance_warning(title, content),
         )
+
+    @staticmethod
+    def _refuse_unverified_change(guidance_id: int, action: str) -> None:
+        """``UNIFY_PROTECT_VERIFIED``: raise when this session may not change the entry."""
+        from ..function_manager import verified_guard
+
+        if not verified_guard.enabled():
+            return
+        row = {
+            "guidance_id": guidance_id,
+            "metadata": _stored_origin(guidance_id) or {},
+        }
+        why = verified_guard.refusal("guidance", guidance_id, row, action=action)
+        if why:
+            raise ValueError(why)
 
     @staticmethod
     def _update_row(
@@ -639,6 +662,7 @@ class GuidanceManager(BaseGuidanceManager):
         guidance_id: int,
     ) -> ToolOutcome:
         self._raise_if_builtin(guidance_id, "deleted")
+        self._refuse_unverified_change(guidance_id, "delete")
         deleted = db.execute(
             "DELETE FROM guidance WHERE guidance_id = ?",
             (int(guidance_id),),

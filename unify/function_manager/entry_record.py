@@ -277,7 +277,16 @@ def _metadata(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def writer_keys(row: Dict[str, Any]) -> List[str]:
-    """The request hashes of the sessions that wrote *row* (every request its origin records)."""
+    """The request hashes of the sessions that wrote *row*'s content.
+
+    With ``UNIFY_PROTECT_VERIFIED`` the session that wrote its current content
+    (``content_by``); otherwise every request its origin records.
+    """
+    from .verified_guard import content_by
+
+    by = content_by(row)
+    if by:
+        return [by]
     texts = [
         t
         for t in (_metadata(row).get(task_origin.REQUESTS_FIELD) or [])

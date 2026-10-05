@@ -59,7 +59,7 @@ from .dependency_analysis import (
 from .types.function import Function
 from .source_labels import compile_function_source
 from .base import BaseFunctionManager
-from . import task_origin
+from . import task_origin, verified_guard
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -1410,6 +1410,29 @@ class FunctionManager(BaseFunctionManager):
                 origin = task_origin.stamped(prior.get("metadata") if prior else None)
                 if origin is not None:
                     entry_data["metadata"] = origin
+                # UNIFY_PROTECT_VERIFIED: a verified function stays while this
+                # session's answer is not known to be accepted; otherwise this
+                # session wrote the content.
+                if verified_guard.enabled():
+                    why = (
+                        verified_guard.refusal(
+                            "function",
+                            name,
+                            prior,
+                            action="update",
+                        )
+                        if prior is not None
+                        else None
+                    )
+                    if why is not None:
+                        results[name] = f"kept: {why}"
+                        continue
+                    written = verified_guard.stamped(
+                        entry_data.get("metadata")
+                        or (prior.get("metadata") if prior else None),
+                    )
+                    if written is not None:
+                        entry_data["metadata"] = written
 
                 if prior is not None:
                     # Update existing function
@@ -3151,6 +3174,21 @@ class FunctionManager(BaseFunctionManager):
         all_rows = self._rows("is_primitive = 0")
         by_id = {int(row["function_id"]): row for row in all_rows}
         requested = [int(fid) for fid in function_ids if int(fid) in by_id]
+        # UNIFY_PROTECT_VERIFIED: a verified function stays while this
+        # session's answer is not known to be accepted.
+        if verified_guard.enabled():
+            refusals = [
+                verified_guard.refusal(
+                    "function",
+                    by_id[fid]["name"],
+                    by_id[fid],
+                    action="delete",
+                )
+                for fid in requested
+            ]
+            refusals = [r for r in refusals if r]
+            if refusals:
+                raise ValueError(" ".join(refusals))
         results: Dict[str, str] = {
             f"function_{fid}": "already_deleted"
             for fid in function_ids

@@ -266,14 +266,16 @@ def _related_enabled() -> bool:
 
 
 def _records_requests() -> bool:
-    """``UNIFY_ENTRY_RECORD``: top-level requests are logged and guidance origins kept.
+    """``UNIFY_ENTRY_RECORD`` or ``UNIFY_PROTECT_VERIFIED``: requests are logged, outcomes and guidance origins kept.
 
     The log maps a use's request hash back to its text and weighs rare words
     over the stream, as ``UNIFY_SIMILAR_REQUEST_CORPUS=stream`` does.
     """
     from unify.settings import SETTINGS
 
-    return bool(getattr(SETTINGS, "UNIFY_ENTRY_RECORD", False))
+    return bool(getattr(SETTINGS, "UNIFY_ENTRY_RECORD", False)) or bool(
+        getattr(SETTINGS, "UNIFY_PROTECT_VERIFIED", False),
+    )
 
 
 def guidance_enabled() -> bool:
@@ -377,6 +379,7 @@ def require_origin_link_prerequisites() -> None:
         "UNIFY_LISTING_USAGE",
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
+        "UNIFY_PROTECT_VERIFIED",
     ):
         if getattr(SETTINGS, name, False):
             raise ValueError(

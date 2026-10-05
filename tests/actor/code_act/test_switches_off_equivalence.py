@@ -93,6 +93,7 @@ NEW_SWITCHES = {
     "UNIFY_ENTRY_RECORD": False,
     "UNIFY_EVIDENCE_LIST": "",
     "UNIFY_SEARCH_IDENTIFIERS": False,
+    "UNIFY_PROTECT_VERIFIED": False,
 }
 
 # The UNIFY_ settings of the commit the actor golden was recorded on
