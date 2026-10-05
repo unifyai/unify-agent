@@ -30,22 +30,20 @@ the evidence behind each entry, and stays silent when nothing qualifies.
   procedure is shown with its guidelines), then newest; at most :data:`K`
   cards.
 * **Possibly related** (claims nothing). At most *k* cards not seen before,
-  by the cosine of the request's distinct lines (those fewer than half of
-  the earlier logged requests contain) with each card's "use this when"
-  statement (:mod:`unify.actor.related_shortlist`), at or above the floor;
-  one embedding call per task start.
-* **Standing cards, one line.** A card the floor also passes for most of the
-  last :data:`STANDING_WINDOW` logged requests of other jobs (requests not
-  seen-before matches of this one) matches whatever comes and says little
-  about this request. It is not listed as possibly related; its id and
-  title are named once, on one line. Computed from the vectors those
-  requests' own task starts cached: no further embedding.
+  by the cosine of the request with each entry's "use this when" statement
+  (:mod:`unify.actor.related_shortlist`; written by the review, else a
+  template from its name and docstring or title), at or above the floor;
+  one embedding call per task start. The request is compared whole: nothing
+  is masked and nothing is scored against recent requests.
+* **One matcher interface.** Both tiers go through a :class:`Matcher`
+  (:data:`MATCHERS`), so the rule that decides "seen before" and the score
+  that ranks "possibly related" can be replaced without touching cards,
+  records or text. :class:`KeysAndStatements` is the default.
 * **Evidence, never hiding.** Each card says why it is listed, how that
   session ended, its status (verified or not, and why) and its use, from
   :mod:`unify.function_manager.entry_record`. A note's first line is shown
   with its status.
-* **Silence.** Nothing seen before, nothing above the floor and no standing
-  card: no list.
+* **Silence.** Nothing seen before and nothing above the floor: no list.
 
 It runs for a top-level task only (a sub-agent's request is its caller's).
 Under ``UNIFY_CORE_BIND_LISTED`` only the seen-before functions are bound.
@@ -54,8 +52,6 @@ Under ``UNIFY_CORE_BIND_LISTED`` only the seen-before functions are bound.
 from __future__ import annotations
 
 import logging
-import sqlite3
-from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -63,13 +59,7 @@ logger = logging.getLogger(__name__)
 
 K = 5
 DEFAULT_THRESHOLD = 0.175
-STANDING_WINDOW = 8
-STANDING_MIN_EARLIER = 4
-STANDING_SHARE = 0.5
-MAX_STANDING_NAMED = 4
 _LINE_CHARS = 140
-_STANDING_TITLE_CHARS = 48
-TABLE = "evidence_queries"
 
 SEEN_HEADER = (
     "Seen before: entries recorded while handling a request like this one "
@@ -78,11 +68,6 @@ SEEN_HEADER = (
 RELATED_HEADER = (
     "Possibly related (no match is claimed; judge whether the intent is the same):"
 )
-STANDING_HEAD = (
-    "Standing entries (general entries that match most requests, so they say "
-    "little about this one; read any if useful): "
-)
-
 #: ``embed(texts) -> unit vectors``, one row per text.
 Embed = Callable[[Sequence[str]], Any]
 
@@ -397,103 +382,76 @@ def seen_before(
     return out
 
 
-# ── possibly related and standing ────────────────────────────────────────
+# ── the matcher ──────────────────────────────────────────────────────────
 
 
-def _connect(path) -> sqlite3.Connection:
-    from unify.function_manager import task_origin
+class Matcher:
+    """What decides "seen before" and ranks "possibly related"; replaceable as a whole.
 
-    conn = task_origin._connect_log(path)
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS {TABLE} (key TEXT PRIMARY KEY, text_hash TEXT NOT NULL)",
-    )
-    return conn
+    :meth:`seen` returns ``[(entry key, Match, accepted uses)]`` best first;
+    :meth:`related_scores` returns one score per entry key (higher is
+    closer) from at most one embedding call. Cards, records and text do not
+    depend on which matcher chose the entries.
+    """
 
+    name = "base"
 
-def log_query(query: str) -> None:
-    """Keep the hash of the current request's distinct text (its vector is cached), for later breadth."""
-    from unify.common import embeddings
-    from unify.function_manager import task_origin
+    def seen(
+        self,
+        lib: Library,
+        current_text: str,
+        current_key: Optional[str],
+        logged: Sequence[str],
+        uses: Dict[Key, Any],
+        *,
+        threshold: float,
+    ) -> List[Tuple[Key, Match, int]]:
+        raise NotImplementedError
 
-    key = task_origin.current()
-    if key is None or not query:
-        return
-    try:
-        path = task_origin.request_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(_connect(path)) as conn, conn:
-            conn.execute(
-                f"INSERT OR REPLACE INTO {TABLE} (key, text_hash) VALUES (?, ?)",
-                (key, embeddings.text_hash(query)),
-            )
-            conn.execute(
-                f"DELETE FROM {TABLE} WHERE key NOT IN (SELECT key FROM requests)",
-            )
-    except (OSError, sqlite3.Error) as exc:
-        logger.warning(f"evidence query not logged: {type(exc).__name__}: {exc}")
-
-
-def earlier_queries() -> List[Tuple[str, str]]:
-    """``[(request text, query hash)]`` of the logged requests but the current one, oldest first."""
-    from unify.function_manager import task_origin
-
-    path = task_origin.request_log_path()
-    if not path.exists():
-        return []
-    current = task_origin.current()
-    try:
-        with closing(_connect(path)) as conn:
-            rows = conn.execute(
-                f"SELECT r.key, r.text, q.text_hash FROM requests r JOIN {TABLE} q"
-                " ON q.key = r.key ORDER BY r.seq",
-            ).fetchall()
-    except sqlite3.Error as exc:
-        logger.warning(f"evidence queries not read: {type(exc).__name__}: {exc}")
-        return []
-    return [(text, h) for key, text, h in rows if key != current]
+    def related_scores(
+        self,
+        lib: Library,
+        keys: Sequence[Key],
+        request: str,
+        *,
+        embed: Embed,
+    ) -> Dict[Key, float]:
+        raise NotImplementedError
 
 
-def other_jobs(
-    earlier: Sequence[Tuple[str, Any]],
-    current_text: str,
-    known: Sequence[str],
-    *,
-    threshold: float,
-    window: int = STANDING_WINDOW,
-) -> List[Any]:
-    """The payloads of the latest *window* earlier requests that are not seen-before matches of this one."""
-    from unify.function_manager import task_origin
+class KeysAndStatements(Matcher):
+    """Seen before by keys (same request, rare shared identifier, ``similar_request``); related by statement cosine."""
 
-    weights = task_origin.token_weights(
-        [*known, *(t for t, _ in earlier), current_text],
-    )
-    out = []
-    for text, payload in earlier:
-        if text == current_text:
-            continue
-        if task_origin.similarity(current_text, text, weights) >= threshold:
-            continue
-        if task_origin.shared_identifiers(current_text, text, known):
-            continue
-        out.append(payload)
-    return out[-window:]
+    name = "keys"
+
+    def seen(self, lib, current_text, current_key, logged, uses, *, threshold):
+        return entry_matches(
+            lib,
+            current_text,
+            current_key,
+            logged,
+            uses,
+            threshold=threshold,
+        )
+
+    def related_scores(self, lib, keys, request, *, embed):
+        import numpy as np
+
+        if not keys:
+            return {}
+        statements = {key: statement(key[0], lib.entries[key])[0] for key in keys}
+        texts = list(dict.fromkeys([request, *statements.values()]))
+        vectors = np.asarray(embed(texts), dtype=np.float32)
+        index = {text: i for i, text in enumerate(texts)}
+        q = vectors[index[request]]
+        return {
+            key: float(np.dot(q, vectors[index[text]]))
+            for key, text in statements.items()
+        }
 
 
-def standing_breadth(
-    statement_vector: Any,
-    earlier_vectors: Sequence[Any],
-    floor: float,
-) -> Optional[float]:
-    """The share of *earlier_vectors* the floor passes for this statement; ``None`` with too few."""
-    import numpy as np
-
-    if len(earlier_vectors) < STANDING_MIN_EARLIER:
-        return None
-    sims = np.asarray(earlier_vectors, dtype=np.float32) @ np.asarray(
-        statement_vector,
-        dtype=np.float32,
-    )
-    return float((sims >= floor).mean())
+MATCHERS: Dict[str, Callable[[], Matcher]] = {"keys": KeysAndStatements}
+"""The matchers by name; the default is ``keys``."""
 
 
 def statement(kind: str, row: Dict[str, Any]) -> Tuple[str, bool]:
@@ -624,7 +582,6 @@ def _linked_lines(
 def render(
     seen: Sequence[Tuple[Card, Match]],
     related: Sequence[Tuple[Card, str, bool, str]],
-    standing: Sequence[Card],
     uses: Dict[Key, Any],
     *,
     bound: Optional[Dict[str, bool]] = None,
@@ -666,23 +623,6 @@ def render(
             kind, row = card.head
             lines.append(f"  record: {_record(kind, row, uses)}")
         blocks.append("\n".join(lines))
-    if standing:
-        named = []
-        for card in standing[:MAX_STANDING_NAMED]:
-            kind, row = card.head
-            if kind == "guidance":
-                label = _first_line(row.get("title"), _STANDING_TITLE_CHARS)
-                named.append(f"guidance {row.get('guidance_id')} `{label}`")
-            else:
-                named.append(f"function `{row.get('name')}`")
-        more = len(standing) - len(named)
-        text = (
-            STANDING_HEAD
-            + ", ".join(named)
-            + (f", and {more} more" if more > 0 else "")
-            + "."
-        )
-        blocks.append(text)
     return "\n\n".join(blocks) if blocks else None
 
 
@@ -695,10 +635,7 @@ class Listing:
 
     seen: List[Tuple[Card, Match]] = field(default_factory=list)
     related: List[Tuple[Card, str, bool, str]] = field(default_factory=list)
-    standing: List[Card] = field(default_factory=list)
-    cosines: Dict[Key, float] = field(default_factory=dict)
-    breadth: Dict[Key, Optional[float]] = field(default_factory=dict)
-    query: str = ""
+    scores: Dict[Key, float] = field(default_factory=dict)
 
 
 def select(
@@ -709,81 +646,56 @@ def select(
     logged: Sequence[str],
     uses: Dict[Key, Any],
     *,
-    earlier_lines: Sequence[Any],
-    earlier: Sequence[Tuple[str, str]],
     k: int,
     floor: float,
     threshold: float,
     embed: Embed,
-    cached: Callable[[Sequence[str]], Dict[str, Any]],
+    matcher: Optional[Matcher] = None,
 ) -> Listing:
     """Choose each tier's cards for one task start (no text, no writes)."""
-    import numpy as np
-
     from unify.actor import related_shortlist
 
+    matcher = matcher or KeysAndStatements()
     out = Listing()
     shown: set = set()
-    out.seen = seen_before(
+    matches = matcher.seen(
         lib,
         current_text,
         current_key,
         logged,
         uses,
         threshold=threshold,
-        shown=shown,
     )
+    by_key = {key: match for key, match, _ in matches}
+    for card in choose_cards(lib, [key for key, _, _ in matches], K, shown):
+        match = by_key[card.key()]
+        match.recurred = recurrence(match, current_text, logged, threshold=threshold)
+        out.seen.append((card, match))
     pool = [key for key in lib.entries if key not in shown]
     if not pool or k <= 0:
         return out
-    query, shared = related_shortlist.distinct_text(request, earlier_lines)
-    out.query = query
-    statements = {key: statement(key[0], lib.entries[key]) for key in pool}
-    texts = list(dict.fromkeys([query, *(text for text, _ in statements.values())]))
-    vectors = np.asarray(embed(texts), dtype=np.float32)
-    index = {text: i for i, text in enumerate(texts)}
-    q = vectors[index[query]]
-    # Standing: the floor passes this entry for most recent other jobs.
-    origin_texts = [t for _, row in lib.kind_rows() for t in _origins(row)[1]]
-    others = other_jobs(
-        earlier,
-        current_text,
-        list(dict.fromkeys([*logged, *origin_texts])),
-        threshold=threshold,
-    )
-    found = cached(others)
-    earlier_vectors = [found[h] for h in others if h in found]
-    ranked: List[Tuple[float, int, Key]] = []
-    standing: List[Tuple[float, Key]] = []
-    for key in pool:
-        text, _ = statements[key]
-        v = vectors[index[text]]
-        cosine = float(np.dot(q, v))
-        breadth = standing_breadth(v, earlier_vectors, floor)
-        out.cosines[key] = cosine
-        out.breadth[key] = breadth
-        if cosine < floor:
-            continue
-        if breadth is not None and breadth > STANDING_SHARE:
-            standing.append((cosine, key))
-            continue
-        row = lib.entries[key]
-        ranked.append(
-            (cosine, int(row.get("function_id") or row.get("guidance_id") or 0), key),
-        )
-    ranked.sort(key=lambda item: (-item[0], -item[1]))
-    for card in choose_cards(lib, [key for _, _, key in ranked], k, shown):
-        text, written = statements[card.key()]
-        out.related.append(
+    out.scores = matcher.related_scores(lib, pool, request, embed=embed)
+    ranked = sorted(
+        (
             (
-                card,
-                text,
-                written,
-                related_shortlist._origin_excerpt(card.head[1], shared),
-            ),
+                score,
+                int(
+                    lib.entries[key].get("function_id")
+                    or lib.entries[key].get("guidance_id")
+                    or 0,
+                ),
+                key,
+            )
+            for key, score in out.scores.items()
+            if score >= floor
+        ),
+        key=lambda item: (-item[0], -item[1]),
+    )
+    for card in choose_cards(lib, [key for _, _, key in ranked], k, shown):
+        text, written = statement(*card.head)
+        out.related.append(
+            (card, text, written, related_shortlist._origin_excerpt(card.head[1], [])),
         )
-    standing.sort(key=lambda item: -item[0])
-    out.standing = [card_for(lib, key) for _, key in standing if key not in shown]
     return out
 
 
@@ -824,16 +736,11 @@ def block(
             task_origin.current(),
             task_origin.logged_requests(),
             uses,
-            earlier_lines=task_origin.logged_request_lines(),
-            earlier=earlier_queries(),
             k=k,
             floor=related_shortlist.floor_for(embeddings.embedder().model, configured),
             threshold=threshold(),
             embed=embed or embeddings.embed,
-            cached=embeddings.cached_vectors,
         )
-        if listing.query:
-            log_query(listing.query)
     except Exception as exc:  # an aid; the task starts without it
         logger.debug(f"evidence list unavailable: {type(exc).__name__}: {exc}")
         return None
@@ -854,7 +761,6 @@ def block(
     return render(
         listing.seen,
         listing.related,
-        listing.standing,
         uses,
         bound=bound,
         call_form=call_form if bound else None,
@@ -871,8 +777,6 @@ def listed_names(block_text: Optional[str]) -> Dict[str, Dict[str, List[str]]]:
             out["seen"] = shortlisted_names(part)
         elif part.startswith(RELATED_HEADER):
             out["related"] = shortlisted_names(part)
-        elif part.startswith(STANDING_HEAD):
-            out["standing"] = {"text": [part]}
     return out
 
 
@@ -889,7 +793,9 @@ __all__ = [
     "Match",
     "RELATED_HEADER",
     "SEEN_HEADER",
-    "STANDING_HEAD",
+    "KeysAndStatements",
+    "MATCHERS",
+    "Matcher",
     "block",
     "build_cards",
     "enabled",

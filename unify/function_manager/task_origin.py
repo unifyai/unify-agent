@@ -259,12 +259,10 @@ def _stream_corpus() -> bool:
 
 
 def _related_enabled() -> bool:
-    """``UNIFY_SHORTLIST_RELATED`` or ``UNIFY_EVIDENCE_LIST``: distinct lines are taken against the logged requests."""
+    """``UNIFY_SHORTLIST_RELATED``: its distinct lines are taken against the logged requests."""
     from unify.settings import SETTINGS
 
-    return (
-        SETTINGS.shortlist_related() is not None or SETTINGS.evidence_list() is not None
-    )
+    return SETTINGS.shortlist_related() is not None
 
 
 def _records_requests() -> bool:

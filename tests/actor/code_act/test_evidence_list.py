@@ -7,8 +7,8 @@ score than others, always listed five entries, and never said why one was
 there. The evidence list answers "seen before?" by keys (same request, rare
 shared identifier, similar wording; no embedding), lists at most k
 "possibly related" entries by meaning under a header that claims nothing,
-names standing entries (those that match most recent other jobs) on one
-line, shows each card's record, and is silent when nothing qualifies.
+compares the request whole (no masking, no score against recent requests),
+shows each card's record, and is silent when nothing qualifies.
 Functions and notes are linked many to many, so a card is a function with
 its notes or a note with the functions it guides. Embeddings come from a
 concept fake; requests are captured at unillm's transport, so nothing leaves
@@ -270,7 +270,6 @@ async def test_an_unrelated_request_gets_no_list(switches, embed_calls):
     first = await _act(UNRELATED, seed=_seed)
     assert ev.SEEN_HEADER not in first
     assert ev.RELATED_HEADER not in first
-    assert ev.STANDING_HEAD not in first
     assert "Library at task start: 1 stored function, 2 guidance entries." in first
 
 
@@ -294,34 +293,6 @@ async def test_a_reworded_request_gets_the_function_as_possibly_related_only(
     assert related[2] == "  with guidance 2 `Rotating tables`"
     assert related[3].startswith("  record: unverified")
     assert len([ln for ln in related if ln.startswith("- ")]) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(300)
-@_handle_project
-async def test_a_note_that_matches_every_job_is_named_once_as_standing(
-    switches,
-    embed_calls,
-):
-    switches()
-    # Each earlier puzzle starts a task of its own, so its distinct lines are
-    # logged and embedded; the generic note matches every one of them.
-    actor_seed = {"done": False}
-
-    def seed(actor):
-        if not actor_seed["done"]:
-            _seed(actor)
-            actor_seed["done"] = True
-
-    firsts = []
-    for task in [*EARLIER, NEW_PUZZLE]:
-        firsts.append(await _act(task, seed=seed))
-    last = firsts[-1]
-    standing = _tier(last, ev.STANDING_HEAD)
-    assert standing.startswith(ev.STANDING_HEAD)
-    assert f"guidance 1 `{GENERIC_TITLE}`" in standing
-    related = _tier(last, ev.RELATED_HEADER)
-    assert GENERIC_TITLE not in related
 
 
 @pytest.mark.asyncio
@@ -387,7 +358,7 @@ def test_cards_render_both_sides_of_many_to_many_links():
     assert [row["name"] for _, row in note.linked] == ["rotate_table", "flip_table"]
     alone = ev.card_for(lib, ("guidance", "9"))
     assert alone.linked == []
-    text = ev.render([], [(note, "Use this when: Table turns.", False, "")], [], {})
+    text = ev.render([], [(note, "Use this when: Table turns.", False, "")], {})
     assert "- guidance 7 `Table turns`: Use this when: Table turns." in text
     assert "  guides function `rotate_table(table)`" in text
     assert "  guides function `flip_table(table)`" in text
@@ -406,7 +377,7 @@ def test_an_entry_an_earlier_card_shows_is_not_listed_again():
     ]
 
 
-def _select(lib, request, *, k, embed):
+def _select(lib, request, *, k, embed, matcher=None):
     return ev.select(
         lib,
         request,
@@ -414,13 +385,11 @@ def _select(lib, request, *, k, embed):
         None,
         [],
         {},
-        earlier_lines=[],
-        earlier=[],
         k=k,
         floor=FLOOR,
         threshold=ev.DEFAULT_THRESHOLD,
         embed=embed,
-        cached=lambda hashes: {},
+        matcher=matcher,
     )
 
 
@@ -443,11 +412,31 @@ def test_one_embedding_call_per_task_start_and_none_without_the_related_tier():
     assert calls == []
 
 
-def test_a_standing_entry_needs_enough_other_jobs():
-    v = _vector("table puzzle rows")
-    near = [_vector("puzzle table instance")] * 3
-    assert ev.standing_breadth(v, near, FLOOR) is None
-    assert ev.standing_breadth(v, near + near, FLOOR) == 1.0
+def test_the_matcher_is_replaceable_as_a_whole():
+    class Nothing(ev.Matcher):
+        def seen(self, lib, current_text, current_key, logged, uses, *, threshold):
+            return []
+
+        def related_scores(self, lib, keys, request, *, embed):
+            return {("guidance", "9"): 1.0}
+
+    lib = ev.build_library(*_rows())
+    listing = _select(lib, REWORDED, k=1, embed=None, matcher=Nothing())
+    assert listing.seen == []
+    assert [card.key() for card, *_ in listing.related] == [("guidance", "9")]
+    assert ev.MATCHERS["keys"] is ev.KeysAndStatements
+
+
+def test_the_request_is_compared_whole():
+    calls = []
+
+    def embed(texts):
+        calls.append(list(texts))
+        return np.stack([_vector(t) for t in texts])
+
+    lib = ev.build_library(*_rows())
+    _select(lib, ROTATE_AGAIN, k=1, embed=embed)
+    assert calls[0][0] == ROTATE_AGAIN
 
 
 # ── refusals and settings ────────────────────────────────────────────────
@@ -493,7 +482,6 @@ def test_the_texts_name_no_benchmark_and_ask_for_no_example_check():
     texts = {
         "SEEN_HEADER": ev.SEEN_HEADER,
         "RELATED_HEADER": ev.RELATED_HEADER,
-        "STANDING_HEAD": ev.STANDING_HEAD,
         "entry_record.REVIEW_SECTION": entry_record.REVIEW_SECTION,
     }
     assert _findings(texts) == []

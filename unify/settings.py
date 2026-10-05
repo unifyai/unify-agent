@@ -812,23 +812,22 @@ class ProductionSettings(BaseSettings):
     UNIFY_ENTRY_RECORD: bool = False
     # ``on`` or ``related:<k>[:<floor>]`` (k 0 to 2), with
     # UNIFY_LIBRARY_SHORTLIST and UNIFY_ENTRY_RECORD: the shortlist becomes an
-    # evidence list (unify/actor/evidence_list.py). A stored function and the
-    # guidance linked to it (``function_ids``) form one card. "Seen before"
-    # lists at most five cards whose recorded requests (where they were
-    # stored, or sessions that used them) are this same request, share a
-    # rare whole identifier with it, or reach ``similar_request`` of the
-    # UNIFY_SHORTLIST_GATE threshold (else 0.175); no embedding. "Possibly
-    # related (no match is claimed)" lists at most k more (``on``: 1) by the
-    # cosine of the request's distinct lines with each card's "use this when"
-    # statement, at or above the floor (default per embedder, as
-    # UNIFY_SHORTLIST_RELATED), leaving out standing cards: those the floor
-    # also passes for most of the last eight logged requests of other jobs,
-    # which are named once on one line instead. Every card shows why it is
-    # listed, how the session it came from ended, its status and its use; a
-    # note's first line is shown with its status, never hidden. Nothing that
-    # qualifies, no list. Never in a sub-agent. Under UNIFY_TOOL_SURFACE=core
-    # with UNIFY_CORE_BIND_LISTED, only "seen before" functions are bound. An
-    # actor refuses to start with this set and a prerequisite off, or with
+    # evidence list (unify/actor/evidence_list.py). Functions and guidance
+    # entries are independent and may be linked many to many; a listed entry
+    # is a card with what it links (a function with its notes, or a note with
+    # the functions it guides). "Seen before" lists at most five cards whose
+    # recorded requests (where they were stored, or sessions that used them)
+    # are this same request, share a rare whole identifier with it, or reach
+    # ``similar_request`` of the UNIFY_SHORTLIST_GATE threshold (else 0.175);
+    # no embedding. "Possibly related (no match is claimed)" lists at most k
+    # more (``on``: 1) by the cosine of the whole request with each entry's
+    # "use this when" statement, at or above the floor (default per embedder,
+    # as UNIFY_SHORTLIST_RELATED). Every card shows why it is listed, how the
+    # session it came from ended, its status and its use; a note's first line
+    # is shown with its status, never hidden. Nothing that qualifies, no
+    # list. Never in a sub-agent. Under UNIFY_TOOL_SURFACE=core with
+    # UNIFY_CORE_BIND_LISTED, only "seen before" functions are bound. An actor
+    # refuses to start with this set and a prerequisite off, or with
     # UNIFY_SHORTLIST_LIFT. Empty: as shipped.
     UNIFY_EVIDENCE_LIST: str = ""
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a function or guidance
