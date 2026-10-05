@@ -955,6 +955,28 @@ class Worker:
             value = getattr(value, part)
         return value
 
+    def _define_helpers(self, helpers: list, ns: dict) -> None:
+        """Define the stored functions a ``functions.run`` entry point calls in
+        the namespace it runs in, each recorded when called, as a read that
+        loads the entry point binds them. All are defined before any is
+        wrapped, so they find one another by name."""
+        raws = []
+        for helper in helpers:
+            name = str(helper.get("name"))
+            source = str(helper.get("source") or "")
+            filename = str(helper.get("filename") or f"<function:{name}>")
+            linecache.cache[filename] = (
+                len(source),
+                None,
+                source.splitlines(keepends=True),
+                filename,
+            )
+            exec(compile(source, filename, "exec"), ns)
+            if callable(ns.get(name)):
+                raws.append((name, ns[name]))
+        for name, raw in raws:
+            ns[name] = _StoredFunction(raw, name, self, record=True)
+
     async def run_function(
         self,
         name: str,
@@ -988,6 +1010,7 @@ class Worker:
             ns = {**self.base_ns, **self.installed}
         mark = _CASES.set(_CASES.get() + (token,))
         try:
+            self._define_helpers(reply.get("helpers") or [], ns)
             linecache.cache[filename] = (
                 len(source),
                 None,

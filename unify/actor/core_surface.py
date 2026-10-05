@@ -398,7 +398,8 @@ class FunctionLibrary:
         globals (the sandbox's objects and the stored functions found so far,
         none of the cells' variables); ``"stateful"`` in this session's
         namespace, where it stays defined; ``"read_only"`` in a copy of this
-        session's namespace, discarded afterwards. Its declared dependencies
+        session's namespace, discarded afterwards. The stored functions it
+        calls are defined with it, and its and their declared dependencies
         are installed first. What it raises is raised here. A dotted
         ``primitives.*`` name, or a function defined in this session, is
         called as it is. A stored function can also be called by name, once
@@ -581,6 +582,7 @@ class FunctionLibrary:
             return {"found": True, "primitive": True}
 
         run = _Run(name=name, mode=mode, func_data=func_data)
+        helpers = self._helpers(func_data) if mode == "run" else []
         if mode == "call":
             # The boundary wrapper's order: usage, trust, case.
             self._note_use(func_data)
@@ -600,7 +602,15 @@ class FunctionLibrary:
         if run.recorder is not None:
             run.pending = run.recorder.begin(tuple(args), kwargs)
         if mode == "run":
-            deps = list(func_data.get("dependencies") or [])
+            # A helper's packages are installed with the entry point's, as a
+            # read that loads the entry point installs them.
+            deps = list(
+                dict.fromkeys(
+                    spec
+                    for data in (func_data, *helpers)
+                    for spec in (data.get("dependencies") or [])
+                ),
+            )
             if deps:
                 try:
                     await asyncio.to_thread(environment.ensure, deps)
@@ -624,7 +634,41 @@ class FunctionLibrary:
             "fn_name": entry,
             "source": impl if mode == "run" else None,
             "filename": function_source_filename(entry),
+            "helpers": [
+                {
+                    "name": data["name"],
+                    "source": data["implementation"],
+                    "filename": function_source_filename(data["name"]),
+                }
+                for data in helpers
+            ],
         }
+
+    def _helpers(self, func_data: dict) -> List[dict]:
+        """The stored functions ``func_data`` calls, transitively, in the order
+        found: what ``functions.run`` defines beside it in the worker, as a
+        read that loads a function injects its ``depends_on`` (each name once,
+        so recursion and cycles end; primitives, dotted names and names the
+        library does not hold are left out, and fail as the call reaches them)."""
+        seen = {str(func_data.get("name"))}
+        queue = list(func_data.get("depends_on") or [])
+        found: List[dict] = []
+        while queue:
+            dep = queue.pop(0)
+            if not isinstance(dep, str) or not dep or "." in dep or dep in seen:
+                continue
+            seen.add(dep)
+            data = self._lookup(dep)
+            impl = data.get("implementation") if data else None
+            if (
+                data is None
+                or data.get("is_primitive")
+                or not (isinstance(impl, str) and impl.strip())
+            ):
+                continue
+            found.append({**data, "name": data.get("name") or dep})
+            queue.extend(data.get("depends_on") or [])
+        return found
 
     async def _end(
         self,
