@@ -51,6 +51,29 @@ def _shortlist_related(value: Any) -> Optional[tuple[int, Optional[float]]]:
     return k, floor
 
 
+def _evidence_list(value: Any) -> Optional[tuple[int, Optional[float]]]:
+    """``(k, floor)`` of an ``on`` / ``related:<k>[:<floor>]`` value; ``None`` when empty or invalid.
+
+    ``on`` is ``related:1`` (floor ``None``: the embedder's default).
+    """
+    text = str(value or "").strip().lower()
+    if text == "on":
+        return 1, None
+    parts = [part.strip() for part in text.split(":")]
+    if len(parts) not in (2, 3) or parts[0] != "related":
+        return None
+    try:
+        k = int(parts[1])
+        floor = float(parts[2]) if len(parts) == 3 else None
+    except ValueError:
+        return None
+    if not 0 <= k <= 2:
+        return None
+    if floor is not None and (not math.isfinite(floor) or not -1 <= floor < 1):
+        return None
+    return k, floor
+
+
 def _shortlist_gate_threshold(value: Any) -> Optional[float]:
     """The threshold of a ``similar_request:<t>`` gate; ``None`` when empty or invalid."""
     signal, sep, raw = str(value or "").strip().lower().partition(":")
@@ -787,6 +810,27 @@ class ProductionSettings(BaseSettings):
     # informs; nothing is hidden. An actor refuses to start with this on and
     # request records off. Off: as shipped.
     UNIFY_ENTRY_RECORD: bool = False
+    # ``on`` or ``related:<k>[:<floor>]`` (k 0 to 2), with
+    # UNIFY_LIBRARY_SHORTLIST and UNIFY_ENTRY_RECORD: the shortlist becomes an
+    # evidence list (unify/actor/evidence_list.py). A stored function and the
+    # guidance linked to it (``function_ids``) form one card. "Seen before"
+    # lists at most five cards whose recorded requests (where they were
+    # stored, or sessions that used them) are this same request, share a
+    # rare whole identifier with it, or reach ``similar_request`` of the
+    # UNIFY_SHORTLIST_GATE threshold (else 0.175); no embedding. "Possibly
+    # related (no match is claimed)" lists at most k more (``on``: 1) by the
+    # cosine of the request's distinct lines with each card's "use this when"
+    # statement, at or above the floor (default per embedder, as
+    # UNIFY_SHORTLIST_RELATED), leaving out standing cards: those the floor
+    # also passes for most of the last eight logged requests of other jobs,
+    # which are named once on one line instead. Every card shows why it is
+    # listed, how the session it came from ended, its status and its use; a
+    # note's first line is shown with its status, never hidden. Nothing that
+    # qualifies, no list. Never in a sub-agent. Under UNIFY_TOOL_SURFACE=core
+    # with UNIFY_CORE_BIND_LISTED, only "seen before" functions are bound. An
+    # actor refuses to start with this set and a prerequisite off, or with
+    # UNIFY_SHORTLIST_LIFT. Empty: as shipped.
+    UNIFY_EVIDENCE_LIST: str = ""
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a function or guidance
     # search whose query names a whole identifier (the shape
     # UNIFY_SIMILAR_REQUEST_IDENTIFIERS keeps) also finds the entries whose
@@ -1127,6 +1171,23 @@ class ProductionSettings(BaseSettings):
         k, floor = parsed
         return f"statement:{k}" + ("" if floor is None else f":{floor:g}")
 
+    @field_validator("UNIFY_EVIDENCE_LIST", mode="before")
+    @classmethod
+    def parse_evidence_list(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if not value:
+            return ""
+        parsed = _evidence_list(value)
+        if parsed is None:
+            raise ValueError(
+                "UNIFY_EVIDENCE_LIST must be empty, 'on' or 'related:<k>' / "
+                f"'related:<k>:<floor>' with k 0 to 2 and -1 <= floor < 1, not {v!r}",
+            )
+        k, floor = parsed
+        if value == "on":
+            return "on"
+        return f"related:{k}" + ("" if floor is None else f":{floor:g}")
+
     @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
     @classmethod
     def parse_prompt_clock(cls, v: Any) -> str:
@@ -1332,6 +1393,10 @@ class ProductionSettings(BaseSettings):
     def shortlist_lift(self) -> Optional[tuple[int, Optional[float]]]:
         """``UNIFY_SHORTLIST_LIFT``'s ``(k, floor)`` (floor ``None``: the embedder's default); ``None`` when off."""
         return _shortlist_lift(self.UNIFY_SHORTLIST_LIFT)
+
+    def evidence_list(self) -> Optional[tuple[int, Optional[float]]]:
+        """``(k, floor)`` of ``UNIFY_EVIDENCE_LIST``'s possibly related tier; ``None`` when off."""
+        return _evidence_list(self.UNIFY_EVIDENCE_LIST)
 
     def shortlist_related(self) -> Optional[tuple[int, Optional[float]]]:
         """``(k, floor)`` of ``UNIFY_SHORTLIST_RELATED`` (floor ``None``: the embedder's); ``None`` when off."""

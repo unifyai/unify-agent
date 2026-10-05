@@ -58,6 +58,9 @@ how the sessions of its last calls ended
 statements, under a header of their own, never bound
 (:mod:`unify.actor.related_shortlist`).
 
+``UNIFY_EVIDENCE_LIST`` replaces both lists with the evidence list
+(:mod:`unify.actor.evidence_list`).
+
 ``UNIFY_CORE_BIND_LISTED`` (core tool surface): the caller passes *bind*,
 which binds the listed functions in the sandbox as a read would and says
 which are ``async def``; either header then says how to call a listed
@@ -386,7 +389,22 @@ def shortlist_block(
 
     With *bind* (``UNIFY_CORE_BIND_LISTED``) the listed functions are bound
     by it before the text is written, and the header says how to call one.
+
+    ``UNIFY_EVIDENCE_LIST``: the evidence list instead
+    (:mod:`unify.actor.evidence_list`).
     """
+    from unify.actor import evidence_list
+
+    if evidence_list.enabled():
+        return evidence_list.block(
+            function_manager,
+            guidance_manager,
+            request_text(request),
+            functions=functions,
+            guidance=guidance,
+            bind=bind,
+            call_form=CALL_FORM,
+        )
     if gate is not None:
         block = _gated_block(
             function_manager,

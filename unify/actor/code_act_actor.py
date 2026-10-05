@@ -2361,7 +2361,7 @@ def _origin_link_notes(
     # UNIFY_SHORTLIST_RELATED: a statement for each entry the review writes.
     from unify.actor import related_shortlist
 
-    if related_shortlist.enabled():
+    if related_shortlist.statements_enabled():
         review_parts.append(related_shortlist.REVIEW_SECTION)
     # UNIFY_ENTRY_RECORD: the entries the trajectory relied on.
     if _entry_record.enabled():
@@ -6205,6 +6205,11 @@ class CodeActActor(BaseCodeActActor):
         from unify.actor import shortlist_lift as _shortlist_lift
 
         _shortlist_lift.require_prerequisites()
+        # UNIFY_EVIDENCE_LIST: refuse a list with nothing to read.
+        from unify.actor import evidence_list as _evidence_list
+
+        _evidence_list.require_prerequisites()
+        evidence = _evidence_list.enabled()
         if _GATE_SETTINGS.UNIFY_REVIEW_GENERALISE and not _task_origin.enabled():
             raise ValueError(
                 "UNIFY_REVIEW_GENERALISE needs UNIFY_TASK_ORIGIN=1 (or "
@@ -6825,8 +6830,10 @@ class CodeActActor(BaseCodeActActor):
             # carries its mark. UNIFY_SHORTLIST_GATE: by request similarity,
             # for a top-level task only (a sub-agent inherits its caller's
             # request, so its list would be its caller's again).
+            # UNIFY_EVIDENCE_LIST: for a top-level task only, as the gate.
             if SETTINGS.UNIFY_LIBRARY_SHORTLIST and (
-                shortlist_gate is None or task_origin_token is not None
+                (shortlist_gate is None and not evidence)
+                or task_origin_token is not None
             ):
                 from unify.actor.library_shortlist import shortlist_block
 

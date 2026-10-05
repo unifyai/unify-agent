@@ -124,6 +124,17 @@ def enabled() -> bool:
     return setting() is not None
 
 
+def statements_enabled() -> bool:
+    """Whether reviews write, and the harness keeps, "use this when" statements.
+
+    ``UNIFY_SHORTLIST_RELATED``, or ``UNIFY_EVIDENCE_LIST``, whose possibly
+    related tier ranks by them.
+    """
+    from unify.settings import SETTINGS
+
+    return enabled() or SETTINGS.evidence_list() is not None
+
+
 def require_prerequisites() -> None:
     """Refuse ``UNIFY_SHORTLIST_RELATED`` without the gated shortlist it extends."""
     from unify.settings import SETTINGS
@@ -451,7 +462,7 @@ def record_statements(
     The kept statements are embedded once, so the next task start finds
     them in the cache. Nothing happens while the switch is off.
     """
-    if not enabled():
+    if not statements_enabled():
         return {}
     outcomes: Dict[Tuple[str, str], str] = {}
     kept: List[str] = []
@@ -505,5 +516,6 @@ __all__ = [
     "require_prerequisites",
     "setting",
     "statement_of",
+    "statements_enabled",
     "template_statement",
 ]
