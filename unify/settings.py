@@ -555,6 +555,18 @@ class ProductionSettings(BaseSettings):
     # against this one, and the closest score. An actor refuses to start with
     # this on and request records off. Off: as shipped.
     UNIFY_REVIEW_RECURRENCE: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): the storage review that
+    # follows a session, and its gate, also state whether the conversation
+    # shows the session's final answer was confirmed or rejected by the
+    # requester or the environment, or neither, judged by the model from the
+    # conversation alone (unify/actor/review_outcome.py: one JSON line ending
+    # the review's reply, one more key in the gate's). The judgement is kept
+    # under the session's request in ``<UNIFY_HOME>/request_log.sqlite`` (the
+    # review's, else the gate's; unknown keeps nothing), where
+    # UNIFY_ORIGIN_PROVENANCE reads it. Nothing in the conversation is parsed
+    # by the harness. An actor refuses to start with this on and request
+    # records off. Off: as shipped.
+    UNIFY_REVIEW_OUTCOME: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -716,6 +728,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_ORIGIN_PROVENANCE",
         "UNIFY_CAPTURE_ACCEPTED",
         "UNIFY_REVIEW_RECURRENCE",
+        "UNIFY_REVIEW_OUTCOME",
         mode="before",
     )
     @classmethod

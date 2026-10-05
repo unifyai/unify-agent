@@ -58,6 +58,7 @@ from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager
+from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import origin_capture as _origin_capture
 from unify.function_manager import task_origin as _task_origin
 from unify.function_manager import instance_lint as _instance_lint
@@ -1994,8 +1995,10 @@ def _origin_link_notes(
     (:mod:`unify.function_manager.origin_capture`), unless the checked
     outcome says the session failed or the review may record only lessons.
     ``UNIFY_REVIEW_RECURRENCE``: how many earlier logged requests resemble
-    this one. Both notes are empty, and the cell ``None``, with the switches
-    off.
+    this one. ``UNIFY_REVIEW_OUTCOME``: the request to state whether the
+    conversation shows the final answer was confirmed
+    (:mod:`unify.actor.review_outcome`). Both notes are empty, and the cell
+    ``None``, with the switches off.
     """
     cell = None
     review_parts: list[str] = []
@@ -2017,6 +2020,9 @@ def _origin_link_notes(
     if recurrence_note:
         review_parts.append(recurrence_note + "\n\n")
         gate_parts.append(recurrence_note)
+    if _review_outcome.enabled():
+        review_parts.append(_review_outcome.REVIEW_SECTION)
+        gate_parts.append(_review_outcome.GATE_SECTION)
     gate_note = "".join(f"\n\n{part}" for part in gate_parts)
     return cell, "".join(review_parts), gate_note
 
@@ -3301,6 +3307,9 @@ class _StorageCheckHandle(SteerableToolHandle):
                     "StorageCheck gate not asked: the library is empty; reviewing",
                 )
                 ask_gate = False
+            # UNIFY_REVIEW_OUTCOME: the gate's judgement of the answer, kept
+            # when no review states one.
+            gate_judgement: Optional[str] = None
             if ask_gate:
                 decision = await review_gate.decide(
                     client_factory=lambda: _review_gate_client(self._actor),
@@ -3316,7 +3325,9 @@ class _StorageCheckHandle(SteerableToolHandle):
                     f"StorageCheck gate: review={decision.review} "
                     f"decided={decision.decided} ({decision.reason})",
                 )
+                gate_judgement = decision.answer_outcome
                 if not decision.review:
+                    _review_outcome.record(gate_judgement)
                     await self._notification_q.put(
                         {
                             "type": "storage_review_skipped",
@@ -3415,6 +3426,15 @@ class _StorageCheckHandle(SteerableToolHandle):
                         logger.warning(
                             f"StorageCheck failed: {type(exc).__name__}: {exc}",
                         )
+                    # UNIFY_REVIEW_OUTCOME: the review's judgement, else the gate's.
+                    _review_outcome.record(
+                        (
+                            _review_outcome.parse(storage_summary)
+                            if storage_success
+                            else None
+                        ),
+                        gate_judgement,
+                    )
 
                     await publish_manager_method_event(
                         _sc_call_id,

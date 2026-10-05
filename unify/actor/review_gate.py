@@ -75,6 +75,8 @@ class GateDecision:
     reason: str
     # Whether the model's reply decided it (False: the gate failed open).
     decided: bool
+    # UNIFY_REVIEW_OUTCOME: the reply's "answer_outcome", when it states one.
+    answer_outcome: Optional[str] = None
 
 
 def enabled() -> bool:
@@ -177,10 +179,13 @@ def parse_decision(raw: Any) -> Optional[GateDecision]:
     if not isinstance(data, dict) or not isinstance(data.get("review"), bool):
         return None
     reason = data.get("reason")
+    from unify.actor import review_outcome
+
     return GateDecision(
         review=data["review"],
         reason=" ".join(str(reason or "").split())[:300],
         decided=True,
+        answer_outcome=review_outcome.parse(match.group(0)),
     )
 
 

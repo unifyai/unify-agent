@@ -62,9 +62,14 @@ from shares with the current one, rarest first, at most
 :data:`MAX_SHARED_IDENTIFIERS`, leaving out any that every known request
 has; or that it was stored for this same request. With ``UNIFY_OUTCOME`` a
 session's checked outcome is kept under its request (:func:`record_outcome`,
-in the request log's ``outcomes`` table) and the text adds whether the
-checker accepted the answer of the session the function was stored from.
-Only the shared identifiers and the verdict are shown, never the origin text.
+in the request log's ``request_outcomes`` table) and the text adds whether
+the checker accepted the answer of the session the function was stored
+from. With ``UNIFY_REVIEW_OUTCOME`` the storage review's own judgement of
+the conversation (was the final answer confirmed or rejected by the
+requester or the environment?) is kept the same way, under its own source,
+and the text says "confirmed (rejected), as judged by its review"; a
+checker's outcome wins over it. Only the shared identifiers and the verdict
+are shown, never the origin text.
 
 ``UNIFY_REVIEW_RECURRENCE`` logs every top-level request as the stream
 corpus does and counts, for the storage review, the earlier logged requests
@@ -253,17 +258,29 @@ def recurrence_enabled() -> bool:
     return enabled() and bool(getattr(SETTINGS, "UNIFY_REVIEW_RECURRENCE", False))
 
 
-def require_origin_link_prerequisites() -> None:
-    """Refuse ``UNIFY_ORIGIN_PROVENANCE`` or ``UNIFY_REVIEW_RECURRENCE`` without request records.
+def review_outcome_enabled() -> bool:
+    """``UNIFY_REVIEW_OUTCOME`` (with request records on)."""
+    from unify.settings import SETTINGS
 
-    Both read the requests that ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``)
-    records; without them they would never say anything.
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_REVIEW_OUTCOME", False))
+
+
+def require_origin_link_prerequisites() -> None:
+    """Refuse ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE`` or ``UNIFY_REVIEW_OUTCOME`` without request records.
+
+    Each reads or keeps something under the requests that
+    ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``) records; without them they
+    would never say anything.
     """
     from unify.settings import SETTINGS
 
     if enabled():
         return
-    for name in ("UNIFY_ORIGIN_PROVENANCE", "UNIFY_REVIEW_RECURRENCE"):
+    for name in (
+        "UNIFY_ORIGIN_PROVENANCE",
+        "UNIFY_REVIEW_RECURRENCE",
+        "UNIFY_REVIEW_OUTCOME",
+    ):
         if getattr(SETTINGS, name, False):
             raise ValueError(
                 f"{name} needs UNIFY_TASK_ORIGIN=1 (or UNIFY_TRY_FIRST=1): it "
@@ -288,11 +305,18 @@ def _connect_log(path: Path) -> sqlite3.Connection:
     return conn
 
 
+CHECKER = "checker"
+"""An outcome the environment's checker posted (``UNIFY_OUTCOME``)."""
+REVIEW = "review"
+"""An outcome the session's storage review judged from the conversation (``UNIFY_REVIEW_OUTCOME``)."""
+
+
 def _connect_outcomes(path: Path) -> sqlite3.Connection:
     conn = _connect_log(path)
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS outcomes (seq INTEGER PRIMARY KEY"
-        " AUTOINCREMENT, text_key TEXT NOT NULL UNIQUE, solved INTEGER NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS request_outcomes (seq INTEGER PRIMARY KEY"
+        " AUTOINCREMENT, text_key TEXT NOT NULL, source TEXT NOT NULL,"
+        " solved INTEGER NOT NULL, UNIQUE (text_key, source))",
     )
     return conn
 
@@ -306,30 +330,39 @@ def text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def record_outcome(solved: Any) -> bool:
-    """``UNIFY_ORIGIN_PROVENANCE``: keep the current request's checked outcome; whether it was kept.
+def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
+    """Keep the current request's outcome from *source*; whether it was kept.
 
-    *solved* is the outcome's ``solved`` (``unify.outcome``): ``True`` or
+    *source* :data:`CHECKER` is the outcome the environment posted
+    (``UNIFY_OUTCOME``), kept while ``UNIFY_ORIGIN_PROVENANCE`` is on;
+    :data:`REVIEW` is the storage review's judgement from the conversation,
+    kept while ``UNIFY_REVIEW_OUTCOME`` is on. *solved* is ``True`` or
     ``False``; anything else (unknown) keeps nothing. The latest outcome of
-    a request replaces an earlier one; the latest :data:`OUTCOME_LOG_SIZE`
-    are kept. A log that cannot be written is skipped with a warning.
+    a request from a source replaces the earlier one; the latest
+    :data:`OUTCOME_LOG_SIZE` are kept. A log that cannot be written is
+    skipped with a warning.
     """
     task = _CURRENT.get()
-    if not provenance_enabled() or task is None or not isinstance(solved, bool):
+    allowed = {CHECKER: provenance_enabled, REVIEW: review_outcome_enabled}.get(source)
+    if allowed is None or not allowed() or task is None or not isinstance(solved, bool):
         return False
     try:
         path = request_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(_connect_outcomes(path)) as conn, conn:
             key = text_key(task.text)
-            conn.execute("DELETE FROM outcomes WHERE text_key = ?", (key,))
             conn.execute(
-                "INSERT INTO outcomes (text_key, solved) VALUES (?, ?)",
-                (key, int(solved)),
+                "DELETE FROM request_outcomes WHERE text_key = ? AND source = ?",
+                (key, source),
             )
             conn.execute(
-                "DELETE FROM outcomes WHERE seq NOT IN"
-                " (SELECT seq FROM outcomes ORDER BY seq DESC LIMIT ?)",
+                "INSERT INTO request_outcomes (text_key, source, solved)"
+                " VALUES (?, ?, ?)",
+                (key, source, int(solved)),
+            )
+            conn.execute(
+                "DELETE FROM request_outcomes WHERE seq NOT IN (SELECT seq FROM"
+                " request_outcomes ORDER BY seq DESC LIMIT ?)",
                 (OUTCOME_LOG_SIZE,),
             )
         return True
@@ -338,21 +371,29 @@ def record_outcome(solved: Any) -> bool:
         return False
 
 
-def origin_outcome(text: str) -> Optional[bool]:
-    """The checked outcome kept for the request whose bounded copy is *text*; ``None`` if none."""
+def origin_outcome(text: str) -> Optional[tuple[bool, str]]:
+    """``(solved, source)`` kept for the request whose bounded copy is *text*; ``None`` if none.
+
+    The checker's outcome wins over the review's judgement.
+    """
     path = request_log_path()
     if not path.exists():
         return None
     try:
         with closing(_connect_outcomes(path)) as conn:
-            row = conn.execute(
-                "SELECT solved FROM outcomes WHERE text_key = ?",
-                (text_key(text),),
-            ).fetchone()
+            rows = dict(
+                conn.execute(
+                    "SELECT source, solved FROM request_outcomes WHERE text_key = ?",
+                    (text_key(text),),
+                ).fetchall(),
+            )
     except sqlite3.Error as exc:
         logger.warning(f"request outcome not read: {type(exc).__name__}: {exc}")
         return None
-    return None if row is None else bool(row[0])
+    for source in (CHECKER, REVIEW):
+        if source in rows:
+            return bool(rows[source]), source
+    return None
 
 
 def _log_request(task: _Task) -> None:
@@ -606,14 +647,23 @@ class Marker:
                     "stored while handling a request that also named "
                     + " and ".join(f"`{word}`" for word in shared),
                 )
-        accepted = origin_outcome(origin)
-        if accepted is not None:
+        kept = origin_outcome(origin)
+        if kept is not None:
+            accepted, source = kept
             parts.append(
-                (
-                    "the checker accepted that session's answer"
-                    if accepted
-                    else "the checker did not accept that session's answer"
-                ),
+                {
+                    (True, CHECKER): "the checker accepted that session's answer",
+                    (
+                        False,
+                        CHECKER,
+                    ): "the checker did not accept that session's answer",
+                    (True, REVIEW): (
+                        "that session's answer was confirmed, as judged by its review"
+                    ),
+                    (False, REVIEW): (
+                        "that session's answer was rejected, as judged by its review"
+                    ),
+                }[(accepted, source)],
             )
         return "; ".join(parts) or None
 
