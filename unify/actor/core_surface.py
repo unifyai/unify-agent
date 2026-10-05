@@ -1035,13 +1035,15 @@ def _file_tools() -> Dict[str, Callable[..., Any]]:
 
 def _document() -> None:
     """Give the library methods the managers' own contracts as their docs."""
-    from unify.function_manager.base import BaseFunctionManager
+    from unify.function_manager.base import (
+        BaseFunctionManager,
+        search_doc_without_dormant,
+    )
     from unify.function_manager.function_manager import FunctionManager
     from unify.guidance_manager.base import BaseGuidanceManager
     from unify.guidance_manager.guidance_manager import GuidanceManager
 
     pairs = (
-        (FunctionLibrary.search, BaseFunctionManager.search_functions),
         (FunctionLibrary.filter, BaseFunctionManager.filter_functions),
         (FunctionLibrary.list, BaseFunctionManager.list_functions),
         (FunctionLibrary.add, BaseFunctionManager.add_functions),
@@ -1065,6 +1067,10 @@ def _document() -> None:
     )
     for method, source in pairs:
         method.__doc__ = public_doc(source.__doc__)
+    # It takes no include_dormant, so its contract does not offer it.
+    FunctionLibrary.search.__doc__ = public_doc(
+        search_doc_without_dormant(BaseFunctionManager.search_functions.__doc__),
+    )
     GuidanceLibrary.search.__doc__ = (
         public_doc(BaseGuidanceManager.search.__doc__)
         + "\n\nA plain string is compared with the entries' ``content``; pass a "

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from abc import abstractmethod
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -8,6 +9,28 @@ from ..common.state_managers import BaseStateManager
 
 # State modes for function execution
 StateMode = Literal["stateful", "read_only", "stateless"]
+
+# ``search_functions``'s ``include_dormant``: the sentence that names it and
+# its entry under Parameters.
+_DORMANT_CLAUSE = re.compile(
+    r",\s+and ``include_dormant=True`` brings them back here\)",
+)
+_DORMANT_PARAMETER = re.compile(
+    r"\n(?P<indent>[ \t]*)include_dormant : bool.*?(?=\n(?P=indent)\S)",
+    re.DOTALL,
+)
+
+
+def search_doc_without_dormant(doc: Optional[str]) -> str:
+    """*doc* (``search_functions``'s contract) without ``include_dormant``.
+
+    For a search that does not take the parameter (the actor's
+    ``FunctionManager_search_functions`` tool, the core surface's
+    ``functions.search``): a call passing it is refused there, so its
+    documentation must not offer it.
+    """
+    text = _DORMANT_CLAUSE.sub(")", doc or "", count=1)
+    return _DORMANT_PARAMETER.sub("", text, count=1)
 
 
 class BaseFunctionManager(BaseStateManager):

@@ -57,7 +57,7 @@ from unify.common.act_llm_profiles import (
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
-from unify.function_manager.base import BaseFunctionManager
+from unify.function_manager.base import BaseFunctionManager, search_doc_without_dormant
 from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import origin_capture as _origin_capture
 from unify.function_manager import task_origin as _task_origin
@@ -4925,8 +4925,9 @@ class CodeActActor(BaseCodeActActor):
                     )
                 return result["metadata"]
 
-            FunctionManager_search_functions.__doc__ = (
-                BaseFunctionManager.search_functions.__doc__
+            # It takes no include_dormant, so its contract does not offer it.
+            FunctionManager_search_functions.__doc__ = search_doc_without_dormant(
+                BaseFunctionManager.search_functions.__doc__,
             )
 
             async def FunctionManager_filter_functions(
