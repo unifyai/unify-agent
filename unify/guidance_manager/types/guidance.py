@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, create_model, field_validator, model_validator
 
 from unify.common.stale_reason import StaleReason, coerce_stale_reasons
 
@@ -84,3 +84,22 @@ class Guidance(BaseModel):
     def to_post_json(self) -> dict:
         exclude = {"guidance_id"} if self.guidance_id == UNASSIGNED else set()
         return self.model_dump(mode="json", exclude=exclude)
+
+
+# UNIFY_GUIDANCE_LINKED_NAMES: a read of an entry, also naming the functions
+# it links. Still named ``Guidance`` (its repr, and the type a sandboxed
+# worker reports); built only by the guidance manager's reads.
+GuidanceWithLinks = create_model(
+    "Guidance",
+    __base__=Guidance,
+    linked_functions=(
+        List[str],
+        Field(
+            default_factory=list,
+            description=(
+                "The stored functions function_ids names, each as "
+                "`name(signature)`, `(async)` after an async def."
+            ),
+        ),
+    ),
+)

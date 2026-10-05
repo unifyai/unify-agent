@@ -730,6 +730,15 @@ class ProductionSettings(BaseSettings):
     # prompt's ``execute_function`` sentence). No effect on the JSON
     # surface. Off: as shipped.
     UNIFY_CORE_CALL_EXAMPLE: bool = False
+    # A guidance read (search, filter, get: ``guidance.*`` under the core
+    # surface, ``GuidanceManager_*`` otherwise) also shows the functions an
+    # entry links, as ``linked_functions``: each one's name and signature
+    # (``(async)`` for an ``async def``), beside the bare ``function_ids``.
+    # Under UNIFY_TOOL_SURFACE=core the read also binds those functions in
+    # the sandbox, as a ``functions.get`` would, so a name it shows is
+    # callable from the next cell. A linked id with no stored function is left out (its
+    # ``stale_reasons`` already say so). Off: as shipped.
+    UNIFY_GUIDANCE_LINKED_NAMES: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -809,6 +818,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_GUIDANCE_ORIGIN",
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
+        "UNIFY_GUIDANCE_LINKED_NAMES",
         mode="before",
     )
     @classmethod

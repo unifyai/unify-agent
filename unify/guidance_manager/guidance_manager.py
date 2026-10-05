@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 import sqlite3
 from contextvars import ContextVar
 from typing import Any, Dict, FrozenSet, List, Optional, Union
@@ -14,7 +15,7 @@ from ..common.semantic_search import rank_by_similarity
 from ..common.tool_outcome import ToolOutcome
 from .base import BaseGuidanceManager
 from .builtins import builtin_guidance_enabled, ensure_seeded
-from .types.guidance import Guidance
+from .types.guidance import Guidance, GuidanceWithLinks
 
 
 def _origin_for(guidance_id: Optional[int]) -> Optional[str]:
@@ -62,6 +63,55 @@ def _patch_enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
+
+
+def _linked_names_enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", False))
+
+
+def _call_signature(row: Dict[str, Any]) -> str:
+    """``name(signature)``, with `` (async)`` for an ``async def``."""
+    name = str(row.get("name") or "")
+    argspec = str(row.get("argspec") or "").strip()
+    text = name + (argspec if argspec.startswith("(") else f"({argspec})")
+    source = str(row.get("implementation") or "")
+    if re.search(rf"^\s*async\s+def\s+{re.escape(name)}\b", source, re.M):
+        text += " (async)"
+    return text
+
+
+def _with_linked_functions(entries: List[Guidance]) -> List[Guidance]:
+    """``UNIFY_GUIDANCE_LINKED_NAMES``: *entries* naming the functions they link.
+
+    Each becomes a ``Guidance`` read with ``linked_functions``: the name and
+    signature of each id in ``function_ids`` that a stored function has, in
+    that order. Off: *entries* as they are.
+    """
+    if not _linked_names_enabled():
+        return entries
+    ids = sorted(
+        {int(i) for entry in entries for i in (entry.function_ids or [])},
+    )
+    found: Dict[int, str] = {}
+    if ids:
+        marks = ", ".join("?" for _ in ids)
+        for row in db.query(
+            "SELECT function_id, name, argspec, implementation FROM functions "
+            f"WHERE function_id IN ({marks})",
+            tuple(ids),
+        ):
+            found[int(row["function_id"])] = _call_signature(row)
+    return [
+        GuidanceWithLinks(
+            **entry.model_dump(),
+            linked_functions=[
+                found[int(i)] for i in entry.function_ids if int(i) in found
+            ],
+        )
+        for entry in entries
+    ]
 
 
 def _instance_warning(title: Optional[str], content: Optional[str]) -> Optional[str]:
@@ -615,7 +665,9 @@ class GuidanceManager(BaseGuidanceManager):
             limit=k,
             id_field="guidance_id",
         )
-        return [self._with_content_preview(Guidance(**row)) for row in rows]
+        return _with_linked_functions(
+            [self._with_content_preview(Guidance(**row)) for row in rows],
+        )
 
     def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
         """``UNIFY_LIBRARY_SHORTLIST``: the *k* guidance entries in scope closest to *text*.
@@ -692,7 +744,9 @@ class GuidanceManager(BaseGuidanceManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.GUIDANCE_COLUMNS).payload
-        return [self._with_content_preview(Guidance(**row)) for row in rows]
+        return _with_linked_functions(
+            [self._with_content_preview(Guidance(**row)) for row in rows],
+        )
 
     @functools.wraps(BaseGuidanceManager.get_guidance, updated=())
     def get_guidance(
@@ -706,4 +760,4 @@ class GuidanceManager(BaseGuidanceManager):
         )
         if not rows:
             raise ValueError(f"No guidance found with guidance_id {guidance_id}.")
-        return Guidance(**rows[0])
+        return _with_linked_functions([Guidance(**rows[0])])[0]

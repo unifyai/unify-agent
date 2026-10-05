@@ -344,8 +344,9 @@ class FunctionLibrary:
     ) -> Dict[str, bool]:
         """Bind the stored functions *names* as ``get`` binds one; ``{name: is_async}``.
 
-        ``UNIFY_CORE_BIND_LISTED``: the shortlist's functions, at task
-        start. One filter read, as ``get`` makes, so no search hit is
+        ``UNIFY_CORE_BIND_LISTED`` (the shortlist's functions, at task start)
+        and ``UNIFY_GUIDANCE_LINKED_NAMES`` (the functions a guidance read
+        names). One filter read, as ``get`` makes, so no search hit is
         counted; a name the read does not load (deleted, quarantined,
         unloadable) is left out of the result.
         """
@@ -823,12 +824,45 @@ class GuidanceLibrary:
     it. ``help(guidance.<method>)`` prints a method's full contract.
     """
 
-    def __init__(self, guidance_manager: Any, policy: WritePolicy) -> None:
+    def __init__(
+        self,
+        guidance_manager: Any,
+        policy: WritePolicy,
+        functions: Optional["FunctionLibrary"] = None,
+    ) -> None:
         self._gm = guidance_manager
         self._policy = policy
+        self._functions = functions
 
     def __repr__(self) -> str:
         return "<guidance: the guidance library (help(guidance) for its methods)>"
+
+    def _bind_linked(self, read: Any) -> Any:
+        """``UNIFY_GUIDANCE_LINKED_NAMES``: bind the functions *read* names.
+
+        A guidance read then shows each linked function's name and signature
+        (``linked_functions``); binding them, as a ``functions.get`` would,
+        makes those names callable from the next cell. Off: *read* as is.
+        """
+        from unify.settings import SETTINGS
+
+        if not SETTINGS.UNIFY_GUIDANCE_LINKED_NAMES or self._functions is None:
+            return read
+        entries = read if isinstance(read, list) else [read]
+        names: List[str] = []
+        for entry in entries:
+            for text in getattr(entry, "linked_functions", None) or []:
+                names.append(str(text).split("(", 1)[0].strip())
+        if names:
+            try:
+                self._functions._bind_names(names)
+            except Exception as exc:  # noqa: BLE001 - the read stands without it
+                logger.warning(
+                    "could not load the functions guidance links: %s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+        return read
 
     async def search(
         self,
@@ -837,7 +871,9 @@ class GuidanceLibrary:
     ) -> List[Any]:
         if isinstance(references, str):
             references = {"content": references} if references.strip() else None
-        return await asyncio.to_thread(self._gm.search, references=references, k=k)
+        return self._bind_linked(
+            await asyncio.to_thread(self._gm.search, references=references, k=k),
+        )
 
     async def filter(
         self,
@@ -845,15 +881,19 @@ class GuidanceLibrary:
         offset: int = 0,
         limit: int = 100,
     ) -> List[Any]:
-        return await asyncio.to_thread(
-            self._gm.filter,
-            filter=filter,
-            offset=offset,
-            limit=limit,
+        return self._bind_linked(
+            await asyncio.to_thread(
+                self._gm.filter,
+                filter=filter,
+                offset=offset,
+                limit=limit,
+            ),
         )
 
     async def get(self, guidance_id: int) -> Any:
-        return await asyncio.to_thread(self._gm.get_guidance, guidance_id=guidance_id)
+        return self._bind_linked(
+            await asyncio.to_thread(self._gm.get_guidance, guidance_id=guidance_id),
+        )
 
     async def _write(self, method: str, fn: Callable[..., Any], **kwargs: Any):
         _refuse(self._policy, method)
@@ -1032,7 +1072,11 @@ def sandbox_objects(
     if getattr(actor, "function_manager", None) is not None:
         objects[FUNCTIONS] = FunctionLibrary(actor, policy)
     if getattr(actor, "guidance_manager", None) is not None:
-        objects[GUIDANCE] = GuidanceLibrary(actor.guidance_manager, policy)
+        objects[GUIDANCE] = GuidanceLibrary(
+            actor.guidance_manager,
+            policy,
+            objects.get(FUNCTIONS),
+        )
     return objects
 
 

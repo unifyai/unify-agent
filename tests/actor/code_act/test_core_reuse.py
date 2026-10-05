@@ -1,4 +1,4 @@
-"""Symbolic: under the core surface a stored function is usable as listed.
+"""Symbolic: under the core surface a stored function is usable as listed, and guidance names what it links.
 
 The AppWorld core-surface screen (e836a5aee, HIGH r1) showed the library
 shortlist in 11 sessions and none of them called a stored function: the
@@ -7,13 +7,16 @@ things differ from the JSON surface, which made 0.38-0.71 stored-function
 calls per task: a listed function is not callable until something reads it
 and the list does not say how to call it; the prompt's ``functions`` line has
 no example call; and a guidance read shows the functions it links only as
-bare ``function_ids``. Two off-by-default switches address the first two;
-they inform, and force nothing:
+bare ``function_ids``. Three off-by-default switches inform, and force
+nothing:
 
 * ``UNIFY_CORE_BIND_LISTED``: the shortlist's functions are bound at task
   start exactly as ``functions.get`` binds one (no search hit counted), and
   either shortlist header says how to call one.
 * ``UNIFY_CORE_CALL_EXAMPLE``: the ``functions`` index line shows one call.
+* ``UNIFY_GUIDANCE_LINKED_NAMES``: guidance reads (both surfaces) show each
+  linked function's name and signature as ``linked_functions``; under the
+  core surface the read also binds them.
 
 The model is a scripted transport (tests/cache_discipline_helpers.py);
 cells run in the real sandboxed worker, skipped where bubblewrap is missing.
@@ -37,6 +40,7 @@ from tests.helpers import _handle_project
 from unify import db
 from unify.actor import core_surface
 from unify.actor import library_shortlist as ls
+from unify.guidance_manager.types.guidance import Guidance
 from unify.settings import ProductionSettings, SETTINGS
 
 DOUBLE = 'def double(x: int) -> int:\n    """Double a number."""\n    return x * 2\n'
@@ -107,6 +111,7 @@ def test_the_switches_are_off_by_default():
     for name in (
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
+        "UNIFY_GUIDANCE_LINKED_NAMES",
     ):
         assert getattr(defaults, name) is False, name
         assert getattr(ProductionSettings(**{name: "1"}), name) is True, name
@@ -320,3 +325,115 @@ async def test_the_core_prompt_carries_the_example_with_the_switch(
         systems[on] = requests[0]["messages"][0]["content"]
     assert EXAMPLE not in " ".join(systems[False].split())
     assert EXAMPLE in " ".join(systems[True].split())
+
+
+# ── guidance reads name the functions they link ─────────────────────────────
+
+
+def _seed_linked():
+    """Two stored functions and one guidance entry linking both and a gone id."""
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.guidance_manager.guidance_manager import GuidanceManager
+
+    fm = FunctionManager(include_primitives=False)
+    fm.add_functions(implementations=[DOUBLE, TWICE])
+    ids = {
+        r["name"]: int(r["function_id"])
+        for r in db.query("SELECT function_id, name FROM functions")
+    }
+    gm = GuidanceManager()
+    gm.add_guidance(
+        title="Doubling numbers",
+        content="To double a number, multiply it by two.",
+        function_ids=[ids["double_twice"], ids["double"], 999],
+    )
+    gid = int(db.query_one("SELECT guidance_id FROM guidance")["guidance_id"])
+    return fm, gm, gid
+
+
+@_handle_project
+def test_guidance_reads_are_as_shipped_with_the_switch_off(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", False)
+    _fm, gm, gid = _seed_linked()
+    read = gm.get_guidance(guidance_id=gid)
+    assert type(read) is Guidance
+    assert "linked_functions" not in read.model_dump()
+    for rows in (gm.search(), gm.filter()):
+        assert [type(r) for r in rows] == [Guidance]
+
+
+@_handle_project
+def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
+    _fm, gm, gid = _seed_linked()
+    expected = ["double_twice(x: int) -> int (async)", "double(x: int) -> int"]
+    read = gm.get_guidance(guidance_id=gid)
+    # Still a Guidance (its repr and the type the worker reports), ids kept.
+    assert isinstance(read, Guidance) and type(read).__name__ == "Guidance"
+    assert read.linked_functions == expected
+    assert len(read.function_ids) == 3  # the gone id stays in function_ids
+    assert repr(read).startswith("Guidance(") and "linked_functions=" in repr(read)
+    for rows in (gm.search(), gm.filter()):
+        assert [r.linked_functions for r in rows] == [expected]
+    # What the JSON tool result is made of.
+    assert read.model_dump(mode="json")["linked_functions"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+@_handle_project
+async def test_the_json_guidance_tool_shows_the_linked_functions(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
+    fm, gm, gid = _seed_linked()
+    actor = _actor(function_manager=fm, guidance_manager=gm, can_store=False)
+    replies = (
+        lambda: h.completion(
+            calls=[("GuidanceManager_get_guidance", {"guidance_id": gid})],
+        ),
+        lambda: h.completion(content="done"),
+    )
+    try:
+        _r, requests = await _act(actor, replies)
+    finally:
+        await actor.close()
+    (reply,) = _tool_replies(requests[-1])
+    assert "linked_functions" in reply
+    assert "double_twice(x: int) -> int (async)" in reply, reply
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+@pytest.mark.parametrize("linked", [False, True])
+async def test_a_core_guidance_read_binds_the_functions_it_names(
+    core_world,
+    monkeypatch,
+    linked,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", linked)
+    fm, gm, gid = _seed_linked()
+    actor = _actor(function_manager=fm, guidance_manager=gm, can_store=False)
+    # As after any read, a name it binds is callable from the next cell.
+    replies = (
+        _cell(f"g = await guidance.get({gid})\nprint(g)"),
+        _cell("print(double(4))"),
+        lambda: h.completion(content="done"),
+    )
+    try:
+        _r, requests = await _act(actor, replies)
+    finally:
+        await actor.close()
+    read, called = _tool_replies(requests[-1])
+    if linked:
+        assert "linked_functions=" in read and "double(x: int) -> int" in read, read
+        assert "8" in called and "NameError" not in called, called
+        assert _usage("double") == {"usage_calls": 1, "usage_search_hits": 0}
+    else:
+        assert "linked_functions" not in read, read
+        assert "NameError" in called, called
