@@ -521,6 +521,40 @@ class ProductionSettings(BaseSettings):
     # set and either companion switch off. Empty: the shortlist ranks by
     # embedding similarity, as shipped.
     UNIFY_SHORTLIST_GATE: str = ""
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a stored function marked
+    # ``similar_request`` (in a search result, the library shortlist or the
+    # gated shortlist) also says why: the whole identifiers (6 or more ASCII
+    # letters, digits, ``_`` or ``-``, mixing letters and digits) that the
+    # request it was stored from shares with the current one, rarest first,
+    # at most two, leaving out any every known request has; or that it was
+    # stored for this same request. With UNIFY_OUTCOME, a session's checked
+    # outcome (``solved``) is kept under its request in
+    # ``<UNIFY_HOME>/request_log.sqlite``, and the line adds whether the
+    # checker accepted the answer of the session the function was stored
+    # from. Only the shared identifiers and that verdict are shown, never the
+    # origin request. An actor refuses to start with this on and request
+    # records off. Off: as shipped.
+    UNIFY_ORIGIN_PROVENANCE: bool = False
+    # When a session's last substantial reply (8 or more letter and digit
+    # runs) repeats the output of a code cell it ran, and no checked outcome
+    # says the session failed, the storage review is shown that cell as a
+    # candidate entry-point function (and the review gate is told the
+    # answer came from code). While that review runs with
+    # UNIFY_FUNCTION_CASES on, a function it adds or updates that can be
+    # called with the cell's literal values (the top-level ``name = <literal>``
+    # assignments, matched by parameter name, or the one required parameter)
+    # is run once on them as a case replay runs (no environment, network or
+    # model; at most three tries), and a call whose return repeats that
+    # reply is recorded as the function's case. Off: as shipped.
+    UNIFY_CAPTURE_ACCEPTED: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
+    # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
+    # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
+    # its gate are told how many earlier logged requests score at least the
+    # gate threshold (UNIFY_SHORTLIST_GATE, else 0.24) of ``similar_request``
+    # against this one, and the closest score. An actor refuses to start with
+    # this on and request records off. Off: as shipped.
+    UNIFY_REVIEW_RECURRENCE: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -679,6 +713,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
+        "UNIFY_ORIGIN_PROVENANCE",
+        "UNIFY_CAPTURE_ACCEPTED",
+        "UNIFY_REVIEW_RECURRENCE",
         mode="before",
     )
     @classmethod

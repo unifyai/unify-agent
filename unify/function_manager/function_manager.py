@@ -1475,6 +1475,19 @@ class FunctionManager(BaseFunctionManager):
             ).items():
                 results[name] = f"{results[name]}; warning: {warning}"
 
+        # UNIFY_CAPTURE_ACCEPTED: in a review shown the code behind the
+        # session's answer, record each written function's answering call.
+        from . import origin_capture
+
+        if origin_capture.current() is not None:
+            for name in dict.fromkeys(name for name, *_ in parsed):
+                status = results.get(name, "")
+                if not status.startswith(("added", "updated")):
+                    continue
+                note = origin_capture.record_answering_call(self, name)
+                if note:
+                    results[name] = f"{status}; {note}"
+
         # Check for errors and raise if requested
         if raise_on_error:
             errors = {k: v for k, v in results.items() if v.startswith("error")}
@@ -3420,7 +3433,9 @@ class FunctionManager(BaseFunctionManager):
         ranked by it, then by calls, then newest. Nothing is embedded; the
         activation ranking and its hiding of lapsed functions do not apply;
         no search hit is counted. Rows carry ``function_id``, ``name``,
-        ``argspec``, ``docstring``, ``usage_calls`` and ``similar_request``.
+        ``argspec``, ``docstring``, ``usage_calls``, ``similar_request`` and,
+        under ``UNIFY_ORIGIN_PROVENANCE``, ``origin`` when it has something
+        to say.
         """
         from unify.actor.library_shortlist import gate_rows
 
@@ -3430,8 +3445,9 @@ class FunctionManager(BaseFunctionManager):
         if not library:
             return []
         marker = task_origin.Marker(library)
-        return [
-            {
+        rows = []
+        for row in gate_rows(library, marker, threshold, k=k):
+            out = {
                 key: row.get(key)
                 for key in (
                     "function_id",
@@ -3442,8 +3458,12 @@ class FunctionManager(BaseFunctionManager):
                     "similar_request",
                 )
             }
-            for row in gate_rows(library, marker, threshold, k=k)
-        ]
+            # UNIFY_ORIGIN_PROVENANCE: why it passed the gate.
+            why = marker.provenance(row)
+            if why:
+                out[task_origin.ORIGIN_MARK] = why
+            rows.append(out)
+        return rows
 
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #

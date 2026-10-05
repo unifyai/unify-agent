@@ -54,6 +54,22 @@ whose parameters change score about 0.25-0.9, different requests in one
 domain mostly under 0.25 but up to about 0.45 when they share the object they
 act on (the same report, the same requester), unrelated requests under 0.1.
 A mark, and its score, is a hint to check, never proof.
+
+``UNIFY_ORIGIN_PROVENANCE`` says why a function is marked (:meth:`Marker.provenance`):
+the whole identifiers (the shape above, with or without
+``UNIFY_SIMILAR_REQUEST_IDENTIFIERS``) that the closest request it was stored
+from shares with the current one, rarest first, at most
+:data:`MAX_SHARED_IDENTIFIERS`, leaving out any that every known request
+has; or that it was stored for this same request. With ``UNIFY_OUTCOME`` a
+session's checked outcome is kept under its request (:func:`record_outcome`,
+in the request log's ``outcomes`` table) and the text adds whether the
+checker accepted the answer of the session the function was stored from.
+Only the shared identifiers and the verdict are shown, never the origin text.
+
+``UNIFY_REVIEW_RECURRENCE`` logs every top-level request as the stream
+corpus does and counts, for the storage review, the earlier logged requests
+whose ``similar_request`` to the current one reaches a threshold
+(:func:`recurrence`).
 """
 
 from __future__ import annotations
@@ -84,10 +100,16 @@ _TAIL = 2000
 # A search result shows ``similar_request`` from this similarity on.
 SIMILAR_REQUEST_THRESHOLD = 0.24
 MARK = "similar_request"
+# UNIFY_ORIGIN_PROVENANCE: the field a marked search row says why in.
+ORIGIN_MARK = "origin"
 # UNIFY_SIMILAR_REQUEST_CORPUS=stream: the request log keeps this many
 # distinct top-level requests, the latest.
 REQUEST_LOG_SIZE = 200
 REQUEST_LOG_FILE = "request_log.sqlite"
+# UNIFY_ORIGIN_PROVENANCE: at most this many shared identifiers are named.
+MAX_SHARED_IDENTIFIERS = 2
+# The request log keeps the checked outcomes of this many requests, the latest.
+OUTCOME_LOG_SIZE = 1000
 
 _WS = re.compile(r"\s+")
 # A run of letters or a run of digits (any script).
@@ -206,7 +228,7 @@ def enter(request: Any) -> Optional[contextvars.Token]:
     if key is None:
         return None
     task = _Task(key=key, text=bounded_text(request))
-    if _stream_corpus():
+    if _stream_corpus() or recurrence_enabled():
         _log_request(task)
     return _CURRENT.set(task)
 
@@ -215,6 +237,38 @@ def _stream_corpus() -> bool:
     from unify.settings import SETTINGS
 
     return getattr(SETTINGS, "UNIFY_SIMILAR_REQUEST_CORPUS", "") == "stream"
+
+
+def provenance_enabled() -> bool:
+    """``UNIFY_ORIGIN_PROVENANCE`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_ORIGIN_PROVENANCE", False))
+
+
+def recurrence_enabled() -> bool:
+    """``UNIFY_REVIEW_RECURRENCE`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_REVIEW_RECURRENCE", False))
+
+
+def require_origin_link_prerequisites() -> None:
+    """Refuse ``UNIFY_ORIGIN_PROVENANCE`` or ``UNIFY_REVIEW_RECURRENCE`` without request records.
+
+    Both read the requests that ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``)
+    records; without them they would never say anything.
+    """
+    from unify.settings import SETTINGS
+
+    if enabled():
+        return
+    for name in ("UNIFY_ORIGIN_PROVENANCE", "UNIFY_REVIEW_RECURRENCE"):
+        if getattr(SETTINGS, name, False):
+            raise ValueError(
+                f"{name} needs UNIFY_TASK_ORIGIN=1 (or UNIFY_TRY_FIRST=1): it "
+                "reads the requests stored functions were recorded under.",
+            )
 
 
 def request_log_path() -> Path:
@@ -232,6 +286,73 @@ def _connect_log(path: Path) -> sqlite3.Connection:
         " AUTOINCREMENT, key TEXT NOT NULL UNIQUE, text TEXT NOT NULL)",
     )
     return conn
+
+
+def _connect_outcomes(path: Path) -> sqlite3.Connection:
+    conn = _connect_log(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS outcomes (seq INTEGER PRIMARY KEY"
+        " AUTOINCREMENT, text_key TEXT NOT NULL UNIQUE, solved INTEGER NOT NULL)",
+    )
+    return conn
+
+
+def text_key(text: str) -> str:
+    """The key an outcome is kept under: 16 hex digits of the sha256 of a bounded copy.
+
+    Taken over the copy a function records (not the full request), so the
+    copy alone finds it.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def record_outcome(solved: Any) -> bool:
+    """``UNIFY_ORIGIN_PROVENANCE``: keep the current request's checked outcome; whether it was kept.
+
+    *solved* is the outcome's ``solved`` (``unify.outcome``): ``True`` or
+    ``False``; anything else (unknown) keeps nothing. The latest outcome of
+    a request replaces an earlier one; the latest :data:`OUTCOME_LOG_SIZE`
+    are kept. A log that cannot be written is skipped with a warning.
+    """
+    task = _CURRENT.get()
+    if not provenance_enabled() or task is None or not isinstance(solved, bool):
+        return False
+    try:
+        path = request_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(_connect_outcomes(path)) as conn, conn:
+            key = text_key(task.text)
+            conn.execute("DELETE FROM outcomes WHERE text_key = ?", (key,))
+            conn.execute(
+                "INSERT INTO outcomes (text_key, solved) VALUES (?, ?)",
+                (key, int(solved)),
+            )
+            conn.execute(
+                "DELETE FROM outcomes WHERE seq NOT IN"
+                " (SELECT seq FROM outcomes ORDER BY seq DESC LIMIT ?)",
+                (OUTCOME_LOG_SIZE,),
+            )
+        return True
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(f"request outcome not written: {type(exc).__name__}: {exc}")
+        return False
+
+
+def origin_outcome(text: str) -> Optional[bool]:
+    """The checked outcome kept for the request whose bounded copy is *text*; ``None`` if none."""
+    path = request_log_path()
+    if not path.exists():
+        return None
+    try:
+        with closing(_connect_outcomes(path)) as conn:
+            row = conn.execute(
+                "SELECT solved FROM outcomes WHERE text_key = ?",
+                (text_key(text),),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning(f"request outcome not read: {type(exc).__name__}: {exc}")
+        return None
+    return None if row is None else bool(row[0])
 
 
 def _log_request(task: _Task) -> None:
@@ -274,6 +395,77 @@ def logged_requests() -> List[str]:
     except sqlite3.Error as exc:
         logger.warning(f"request log not read: {type(exc).__name__}: {exc}")
         return []
+
+
+def identifiers(text: str) -> Dict[str, str]:
+    """The whole identifiers of *text*, lower-cased, each with its first spelling."""
+    found: Dict[str, str] = {}
+    for word in _IDENTIFIER.findall(text):
+        found.setdefault(word.lower(), word)
+    return found
+
+
+def shared_identifiers(
+    current: str,
+    origin: str,
+    known: Iterable[str],
+    *,
+    limit: int = MAX_SHARED_IDENTIFIERS,
+) -> List[str]:
+    """The whole identifiers *current* and *origin* share, rarest among *known* first.
+
+    *known* are the requests the weights are taken over (they should include
+    both). An identifier every known request has weighs nothing and is left
+    out; ties keep the order of *current*. Spelled as *current* spells them.
+    """
+    mine = identifiers(current)
+    shared = [low for low in mine if low in identifiers(origin)]
+    if not shared:
+        return []
+    texts = list(dict.fromkeys([*known, current, origin]))
+    sets = [frozenset(identifiers(text)) for text in texts]
+    weighted = []
+    for order, low in enumerate(shared):
+        df = sum(1 for found in sets if low in found)
+        weight = math.log(len(sets) / df) if df else 0.0
+        if weight > 1e-12:
+            weighted.append((-weight, order, mine[low]))
+    weighted.sort()
+    return [word for _, _, word in weighted[: max(limit, 0)]]
+
+
+@dataclass(frozen=True)
+class Recurrence:
+    """How many earlier logged requests resemble the current one (``UNIFY_REVIEW_RECURRENCE``)."""
+
+    similar: int
+    earlier: int
+    threshold: float
+    closest: Optional[float]
+
+
+def recurrence(threshold: Optional[float] = None) -> Optional[Recurrence]:
+    """The earlier logged requests whose ``similar_request`` to the current one is at least *threshold*.
+
+    *threshold* defaults to :data:`SIMILAR_REQUEST_THRESHOLD`. Weights are
+    taken over the logged requests and the current one. ``None`` while the
+    switch is off or no request is current.
+    """
+    task = _CURRENT.get()
+    if not recurrence_enabled() or task is None:
+        return None
+    t = SIMILAR_REQUEST_THRESHOLD if threshold is None else float(threshold)
+    earlier = [text for text in logged_requests() if text != task.text]
+    if not earlier:
+        return Recurrence(0, 0, t, None)
+    weights = token_weights([*earlier, task.text])
+    scores = [similarity(task.text, text, weights) for text in earlier]
+    return Recurrence(
+        similar=sum(1 for score in scores if score >= t),
+        earlier=len(earlier),
+        threshold=t,
+        closest=max(scores),
+    )
 
 
 def leave(token: Optional[contextvars.Token]) -> None:
@@ -351,13 +543,20 @@ class Marker:
         self._task = _CURRENT.get() if enabled() else None
         self._library = library
         self._weights: Optional[Dict[str, float]] = None
+        self._known: Optional[List[str]] = None
 
-    def _token_weights(self, task: _Task) -> Dict[str, float]:
-        if self._weights is None:
+    def _known_texts(self) -> List[str]:
+        """The requests the weights are taken over, besides the current one."""
+        if self._known is None:
             texts = [text for row in self._library for text in _origins(row)[1]]
             if _stream_corpus():
                 texts = [*logged_requests(), *texts]
-            self._weights = token_weights([*texts, task.text])
+            self._known = texts
+        return self._known
+
+    def _token_weights(self, task: _Task) -> Dict[str, float]:
+        if self._weights is None:
+            self._weights = token_weights([*self._known_texts(), task.text])
         return self._weights
 
     def score(self, row: Dict[str, Any]) -> Optional[float]:
@@ -376,11 +575,64 @@ class Marker:
         weights = self._token_weights(task)
         return max(similarity(task.text, text, weights) for text in texts)
 
+    def provenance(self, row: Dict[str, Any]) -> Optional[str]:
+        """``UNIFY_ORIGIN_PROVENANCE``: why *row* is close to the current request, or ``None``.
+
+        Names the whole identifiers the closest request it was stored from
+        shares with the current one (or says it was this same request), and
+        whether the checker accepted that session's answer when an outcome
+        was kept. ``None`` while the switch is off, with no current request
+        or origin, or with nothing to say.
+        """
+        task = self._task
+        if task is None or not provenance_enabled():
+            return None
+        keys, texts = _origins(row)
+        if task.key in keys:
+            same, origin = True, task.text
+        elif texts:
+            weights = self._token_weights(task)
+            origin = max(texts, key=lambda text: similarity(task.text, text, weights))
+            same = False
+        else:
+            return None
+        parts: List[str] = []
+        if same:
+            parts.append("stored while handling this same request")
+        else:
+            shared = shared_identifiers(task.text, origin, self._known_texts())
+            if shared:
+                parts.append(
+                    "stored while handling a request that also named "
+                    + " and ".join(f"`{word}`" for word in shared),
+                )
+        accepted = origin_outcome(origin)
+        if accepted is not None:
+            parts.append(
+                (
+                    "the checker accepted that session's answer"
+                    if accepted
+                    else "the checker did not accept that session's answer"
+                ),
+            )
+        return "; ".join(parts) or None
+
     def annotate(self, row: Dict[str, Any]) -> None:
-        """Drop the origin fields from *row*; add ``similar_request`` when close enough."""
+        """Drop the origin fields from *row*; add ``similar_request`` when close enough.
+
+        With ``UNIFY_ORIGIN_PROVENANCE`` a marked row also gets ``origin``
+        (:meth:`provenance`) when there is something to say.
+        """
         if not _has_origins(row):
             return
         score = self.score(row)
+        why = (
+            self.provenance(row)
+            if score is not None and score >= SIMILAR_REQUEST_THRESHOLD
+            else None
+        )
         row["metadata"] = strip(row)["metadata"]
         if score is not None and score >= SIMILAR_REQUEST_THRESHOLD:
             row[MARK] = round(score, 2)
+            if why:
+                row[ORIGIN_MARK] = why

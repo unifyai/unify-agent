@@ -58,6 +58,7 @@ from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager
+from unify.function_manager import origin_capture as _origin_capture
 from unify.function_manager import task_origin as _task_origin
 from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
@@ -1980,6 +1981,72 @@ def _storage_review_outcome_note(
     return outcome_mod.render(outcome, lessons=lessons)
 
 
+def _origin_link_notes(
+    trajectory: list[dict],
+    *,
+    outcome: Optional[dict],
+    answer: Optional[str],
+    lessons: bool,
+) -> tuple[Any, str, str]:
+    """``(answer cell, review note, gate note)`` for the review that follows a session.
+
+    ``UNIFY_CAPTURE_ACCEPTED``: the code cell the session's answer repeats
+    (:mod:`unify.function_manager.origin_capture`), unless the checked
+    outcome says the session failed or the review may record only lessons.
+    ``UNIFY_REVIEW_RECURRENCE``: how many earlier logged requests resemble
+    this one. Both notes are empty, and the cell ``None``, with the switches
+    off.
+    """
+    cell = None
+    review_parts: list[str] = []
+    gate_parts: list[str] = []
+    if (
+        _origin_capture.enabled()
+        and not lessons
+        and (outcome or {}).get("solved") is not False
+    ):
+        try:
+            cell = _origin_capture.find_answer_cell(trajectory, answer=answer)
+        except Exception as exc:  # an aid; never blocks the review
+            logger.warning(f"answer cell not found: {type(exc).__name__}: {exc}")
+            cell = None
+        if cell is not None:
+            review_parts.append(_origin_capture.review_note(cell, outcome))
+            gate_parts.append(_origin_capture.gate_note(cell, outcome))
+    recurrence_note = _review_recurrence_note()
+    if recurrence_note:
+        review_parts.append(recurrence_note + "\n\n")
+        gate_parts.append(recurrence_note)
+    gate_note = "".join(f"\n\n{part}" for part in gate_parts)
+    return cell, "".join(review_parts), gate_note
+
+
+def _review_recurrence_note() -> str:
+    """``UNIFY_REVIEW_RECURRENCE``: the review's line on how often requests like this one came."""
+    from unify.settings import SETTINGS
+
+    try:
+        found = _task_origin.recurrence(SETTINGS.shortlist_gate_threshold())
+    except Exception as exc:  # an aid; never blocks the review
+        logger.warning(f"request recurrence not counted: {type(exc).__name__}: {exc}")
+        return ""
+    if found is None:
+        return ""
+    if found.earlier == 0:
+        return (
+            "## Recurrence\n\nThis is the first request in this assistant's "
+            "request log: no earlier request to compare it with."
+        )
+    closest = f"{found.closest:.2f}" if found.closest is not None else "none"
+    return (
+        "## Recurrence\n\n"
+        f"{found.similar} of the {found.earlier} earlier requests in this "
+        "assistant's request log resemble this one (similar_request at least "
+        f"{found.threshold:g}, an overlap of the two requests' words weighted "
+        f"by rarity; the closest scores {closest})."
+    )
+
+
 _REVIEW_FORK_ROLE = (
     "## Storage Review\n\n"
     "The task above is over. You now act as a skill librarian: review this "
@@ -2197,6 +2264,7 @@ def _start_storage_check_loop(
     fork_source: dict | None = None,
     outcome: dict | None = None,
     lessons: bool = False,
+    origin_note: str = "",
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
 
@@ -2439,6 +2507,7 @@ def _start_storage_check_loop(
                 f"{stop_context_section}"
                 f"{proactive_storage_section}"
                 f"{_storage_needs_repair_note()}"
+                f"{origin_note}"
                 f"{outcome_note}"
                 f"{result_header}"
                 f"{original_result}"
@@ -2464,6 +2533,7 @@ def _start_storage_check_loop(
         f"{_storage_needs_repair_note()}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
+        f"{origin_note}"
         f"{outcome_note}"
         f"{result_header}"
         f"{original_result}"
@@ -3124,6 +3194,11 @@ class _StorageCheckHandle(SteerableToolHandle):
             except Exception:
                 pass
 
+            # UNIFY_ORIGIN_PROVENANCE: keep the checked outcome under this
+            # task's request, for the listings of what it stores.
+            if self._outcome is not None:
+                _task_origin.record_outcome(self._outcome.get("solved"))
+
             # ── Phase 2: storage check ────────────────────────────────
             # A crashed trajectory is not a source of reusable knowledge — the
             # librarian would derive functions, guidance, and claims from work
@@ -3201,6 +3276,15 @@ class _StorageCheckHandle(SteerableToolHandle):
             if turn_task is not None and not turn_task.done():
                 await asyncio.gather(turn_task, return_exceptions=True)
 
+            # UNIFY_CAPTURE_ACCEPTED, UNIFY_REVIEW_RECURRENCE: what the review
+            # and its gate are told about the answer's code and recurrence.
+            answer_cell, review_origin_note, gate_origin_note = _origin_link_notes(
+                trajectory,
+                outcome=self._outcome,
+                answer=self._reply_at_outcome,
+                lessons=lessons,
+            )
+
             # UNIFY_REVIEW_GATE: one tool-free yes/no call decides whether the
             # review runs; a failed or unreadable gate runs it as shipped. While
             # the library holds nothing, the gate is not asked: the review runs.
@@ -3225,7 +3309,8 @@ class _StorageCheckHandle(SteerableToolHandle):
                     outcome_note=_storage_review_outcome_note(
                         self._outcome,
                         lessons=lessons,
-                    ),
+                    )
+                    + gate_origin_note,
                 )
                 logger.info(
                     f"StorageCheck gate: review={decision.review} "
@@ -3288,19 +3373,23 @@ class _StorageCheckHandle(SteerableToolHandle):
                         "the standalone review",
                     )
 
-                storage_handle = _start_storage_check_loop(
-                    trajectory=trajectory,
-                    ask_tools=ask_tools,
-                    completed_tool_metadata=completed_tool_metadata,
-                    actor=self._actor,
-                    original_result=self._review_final_result(),
-                    parent_lineage=_sc_parent_lineage,
-                    stop_reason=self._stop_reason,
-                    proactive_summaries=proactive_summaries or None,
-                    fork_source=fork_source,
-                    outcome=self._outcome,
-                    lessons=lessons,
-                )
+                # UNIFY_CAPTURE_ACCEPTED: the review's tools inherit the
+                # answer cell, so a function it stores is tried on its values.
+                with _origin_capture.reviewing(answer_cell):
+                    storage_handle = _start_storage_check_loop(
+                        trajectory=trajectory,
+                        ask_tools=ask_tools,
+                        completed_tool_metadata=completed_tool_metadata,
+                        actor=self._actor,
+                        original_result=self._review_final_result(),
+                        parent_lineage=_sc_parent_lineage,
+                        stop_reason=self._stop_reason,
+                        proactive_summaries=proactive_summaries or None,
+                        fork_source=fork_source,
+                        outcome=self._outcome,
+                        lessons=lessons,
+                        origin_note=review_origin_note,
+                    )
 
                 if storage_handle is None:
                     await publish_manager_method_event(
@@ -5475,6 +5564,9 @@ class CodeActActor(BaseCodeActActor):
             from unify.actor.library_shortlist import require_gate_prerequisites
 
             require_gate_prerequisites()
+        # UNIFY_ORIGIN_PROVENANCE, UNIFY_REVIEW_RECURRENCE: refuse a switch
+        # that could never say anything.
+        _task_origin.require_origin_link_prerequisites()
 
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(

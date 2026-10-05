@@ -28,6 +28,12 @@ Nothing is embedded, the activation ranking and its hiding of lapsed
 functions do not apply, and guidance, which records no request, is not
 listed. Each line shows the score and the call count as evidence; a task
 whose request resembles none of the recorded ones gets no list.
+
+``UNIFY_ORIGIN_PROVENANCE`` ends a marked function's line, in either list,
+with why it is marked, in parentheses: the identifiers its origin request
+shares with this one, or that it was this same request, and whether the
+checker accepted that session's answer when that was recorded
+(:meth:`~unify.function_manager.task_origin.Marker.provenance`).
 """
 
 from __future__ import annotations
@@ -88,7 +94,13 @@ def _function_line(row: Dict[str, Any]) -> str:
         line += f": {summary}"
     if row.get("similar_request") is not None:
         line += f" [similar_request {row['similar_request']}]"
-    return line
+    return line + _origin_suffix(row)
+
+
+def _origin_suffix(row: Dict[str, Any]) -> str:
+    """``UNIFY_ORIGIN_PROVENANCE``: `` (<why>)`` when the row says why it is marked."""
+    why = row.get("origin")
+    return f" ({why})" if isinstance(why, str) and why else ""
 
 
 def _gated_function_line(row: Dict[str, Any]) -> str:
@@ -100,7 +112,9 @@ def _gated_function_line(row: Dict[str, Any]) -> str:
         line += f": {summary}"
     score = float(row.get("similar_request") or 0.0)
     calls = int(row.get("usage_calls") or 0)
-    return line + f" [similar_request {score:.2f} · used {calls}×]"
+    return (
+        line + f" [similar_request {score:.2f} · used {calls}×]" + _origin_suffix(row)
+    )
 
 
 def gate_rows(
