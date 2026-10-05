@@ -1139,6 +1139,28 @@ def _review_gate_client(actor: "CodeActActor") -> Any:
     return client
 
 
+def _review_gate_fork_client(fork_source: dict) -> Any:
+    """The ``UNIFY_REVIEW_GATE_FORK`` call's client: a fork of the session's.
+
+    It keeps the session's model, effort and cache affinity key, so its
+    request differs from the session's last only in what it appends;
+    ``UNIFY_REVIEW_REASONING_EFFORT`` sets the effort, as for a forked
+    review.
+    """
+    from unify.actor import review_gate
+
+    client = fork_llm_client(
+        fork_source["client"],
+        origin=review_gate.ORIGIN,
+        purpose="planning",
+        messages=fork_source["messages"],
+    )
+    effort = _review_reasoning_effort()
+    if effort:
+        client.set_reasoning_effort(effort)
+    return client
+
+
 # UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
 GUIDANCE_ENTRY_TARGET_CHARS = 2000
 
@@ -2316,7 +2338,6 @@ def _review_fork_source(
     to run with its own tools.
     """
     from unify.common._async_tool import cache_discipline
-    from unify.common._async_tool.messages import find_unreplied_assistant_entries
 
     if not cache_discipline.review_fork_enabled():
         return None, None
@@ -2325,9 +2346,46 @@ def _review_fork_source(
             "UNIFY_TOOL_SURFACE=core: the session's tool list holds no "
             "library tools for a forked review to call"
         )
+    return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
+
+
+def _gate_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+) -> tuple[Optional[dict], Optional[str]]:
+    """What a forked review gate (``UNIFY_REVIEW_GATE_FORK``) continues from.
+
+    As :func:`_review_fork_source`, for the gate: ``(None, None)`` with the
+    switch off. The gate runs no tool, so the core surface's tool list does
+    not stop it from forking.
+    """
+    from unify.actor import review_gate
+
+    if not review_gate.fork_enabled():
+        return None, None
+    return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_GATE_FORK")
+
+
+def _session_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+    *,
+    switch: str,
+) -> tuple[Optional[dict], Optional[str]]:
+    """The session's conversation for a fork, or why it cannot be continued.
+
+    The source holds the session's ``client``, its raw ``messages``, the
+    ``tools`` and ``tool_choice`` of its last request, and ``sent_messages``:
+    its history as that request sent it (system prompt first, preprocessed)
+    followed by what came after, so a fork that sends them unchanged starts
+    with the last request's bytes.
+    """
+    from unify.common._async_tool import cache_discipline
+    from unify.common._async_tool.messages import find_unreplied_assistant_entries
+
     if not cache_discipline.enabled():
         return None, (
-            "UNIFY_REVIEW_FORK needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
+            f"{switch} needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
             "list the fork reuses"
         )
     client = getattr(inner, "_client", None)
@@ -2373,6 +2431,7 @@ def _review_fork_source(
         {
             "client": client,
             "messages": raw,
+            "sent_messages": as_sent,
             "tools": last["tools"],
             "tool_choice": last.get("tool_choice"),
         },
@@ -3506,16 +3565,39 @@ class _StorageCheckHandle(SteerableToolHandle):
             # when no review states one.
             gate_judgement: Optional[str] = None
             if ask_gate:
-                decision = await review_gate.decide(
-                    client_factory=lambda: _review_gate_client(self._actor),
-                    trajectory=trajectory,
-                    final_result=self._review_final_result(),
-                    outcome_note=_storage_review_outcome_note(
+                gate_outcome_note = (
+                    _storage_review_outcome_note(
                         self._outcome,
                         lessons=lessons,
                     )
-                    + gate_origin_note,
+                    + gate_origin_note
                 )
+                # UNIFY_REVIEW_GATE_FORK: ask it at the end of the session's
+                # own conversation when that can be continued exactly.
+                gate_fork, gate_fork_skipped = _gate_fork_source(
+                    self._inner,
+                    self._actor,
+                )
+                if gate_fork_skipped:
+                    logger.info(
+                        f"StorageCheck gate fork skipped: {gate_fork_skipped}; "
+                        "asking the standalone gate",
+                    )
+                if gate_fork is not None:
+                    decision = await review_gate.decide_in_fork(
+                        client_factory=lambda: _review_gate_fork_client(gate_fork),
+                        fork_source=gate_fork,
+                        final_result=self._review_final_result(),
+                        outcome_note=gate_outcome_note,
+                        prompt_caching=getattr(self._actor, "_prompt_caching", None),
+                    )
+                else:
+                    decision = await review_gate.decide(
+                        client_factory=lambda: _review_gate_client(self._actor),
+                        trajectory=trajectory,
+                        final_result=self._review_final_result(),
+                        outcome_note=gate_outcome_note,
+                    )
                 logger.info(
                     f"StorageCheck gate: review={decision.review} "
                     f"decided={decision.decided} ({decision.reason})",

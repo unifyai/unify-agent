@@ -22,6 +22,14 @@ the gate is not asked and the review runs: the first sessions of a run are
 the ones that seed the library, and on the 80 captured reviews the gate's
 one costly miss was such a session (AppWorld HIGH's first task, whose three
 stored functions later tasks called).
+
+``UNIFY_REVIEW_GATE_FORK`` asks the same question as a fork of the session's
+conversation (:func:`decide_in_fork`). The standalone gate is a new prompt:
+every one of its 24 calls per ARC LOW lean-all run (about 17k tokens each)
+read 0 tokens from the provider's cache, 30-35% of that arm's cache writes.
+Forked, its request is the session's last request as sent, the session's
+reply and one appended user message, so all but that message is the prefix
+the session already cached.
 """
 
 from __future__ import annotations
@@ -83,6 +91,13 @@ def enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(SETTINGS.UNIFY_REVIEW_GATE)
+
+
+def fork_enabled() -> bool:
+    """Whether ``UNIFY_REVIEW_GATE_FORK`` asks the gate in a fork of the session."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_REVIEW_GATE_FORK", False))
 
 
 def library_is_empty(counts: tuple[Optional[int], Optional[int]]) -> bool:
@@ -163,6 +178,32 @@ def build_user_message(
     return "\n\n".join(parts)
 
 
+# UNIFY_REVIEW_GATE_FORK: the gate's criteria, asked at the end of the
+# session's own conversation. The criteria are the standalone gate's; only
+# the opening differs, since the conversation above is the session.
+_FORK_OPENING = "You decide whether a finished agent session is worth"
+GATE_FORK_PROMPT = (
+    "## Library Review Gate\n\n"
+    "The task above is over. Do not continue it and do not call any tool: "
+    "answer in text. "
+    + GATE_SYSTEM_PROMPT.replace(
+        _FORK_OPENING,
+        "Decide whether this finished session (the conversation above) is worth",
+        1,
+    )
+)
+
+
+def build_fork_message(*, final_result: str, outcome_note: str = "") -> str:
+    """The one user message a forked gate appends to the session's conversation."""
+    parts = [GATE_FORK_PROMPT]
+    if outcome_note.strip():
+        parts.append(outcome_note.strip())
+    parts.append("## Final reply\n\n" + _clip(str(final_result or "")))
+    parts.append("Should this session's work be reviewed for the library?")
+    return "\n\n".join(parts)
+
+
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -207,6 +248,66 @@ async def decide(
             ),
             system_message=GATE_SYSTEM_PROMPT,
         )
+    except Exception as exc:  # the review runs as shipped
+        logger.warning(
+            f"StorageCheck gate failed ({type(exc).__name__}: {exc}); reviewing",
+        )
+        return GateDecision(True, f"gate call failed: {type(exc).__name__}", False)
+    decision = parse_decision(raw)
+    if decision is None:
+        logger.warning("StorageCheck gate reply stated no decision; reviewing")
+        return GateDecision(True, "gate reply stated no decision", False)
+    return decision
+
+
+async def decide_in_fork(
+    *,
+    client_factory: Callable[[], Any],
+    fork_source: dict,
+    final_result: str,
+    outcome_note: str = "",
+    prompt_caching: Any = None,
+) -> GateDecision:
+    """Ask the gate as a fork of the session (``UNIFY_REVIEW_GATE_FORK``).
+
+    *fork_source* is the session's (``_review_fork_source`` in the actor):
+    ``sent_messages`` is its history as its last request sent it (system
+    prompt first) followed by its reply, ``tools`` and ``tool_choice`` what
+    that request carried. The request is that history plus one user message,
+    the same tools, and the same tool choice -- ``auto`` for a forced one,
+    since the answer is text. The gate runs no tool: a reply that calls one
+    states no decision. A failed call or an unreadable reply runs the
+    review, as with the standalone gate.
+    """
+    from unify.common._async_tool import cache_discipline
+
+    request: dict[str, Any] = {
+        "messages": [
+            *fork_source["sent_messages"],
+            {
+                "role": "user",
+                "content": build_fork_message(
+                    final_result=final_result,
+                    outcome_note=outcome_note,
+                ),
+            },
+        ],
+        "stateful": False,
+        "return_full_completion": True,
+    }
+    if fork_source.get("tools"):
+        tool_choice = fork_source.get("tool_choice")
+        if cache_discipline.is_forced_tool_choice(tool_choice):
+            tool_choice = "auto"
+        request["tools"] = fork_source["tools"]
+        request["tool_choice"] = tool_choice
+    if prompt_caching is not None:
+        request["prompt_caching"] = prompt_caching
+    try:
+        client = client_factory()
+        completion = await client.generate(**request)
+        cache_discipline.log_cache_use(client, completion, label=ORIGIN)
+        raw = cache_discipline.completion_text(completion.choices[0].message.content)
     except Exception as exc:  # the review runs as shipped
         logger.warning(
             f"StorageCheck gate failed ({type(exc).__name__}: {exc}); reviewing",

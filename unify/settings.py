@@ -380,6 +380,20 @@ class ProductionSettings(BaseSettings):
     # entries) the gate is not asked and the review runs. Turn reviews and
     # store_skills are not gated. Off: as shipped.
     UNIFY_REVIEW_GATE: bool = False
+    # Ask the UNIFY_REVIEW_GATE question as a fork of the session's own
+    # conversation: the gate's request is the actor's last request as sent
+    # (system prompt, messages, tools, tool choice; a forced choice is sent
+    # as ``auto``), the actor's reply to it, and one appended user message
+    # with the gate's criteria, the checked outcome and the final reply, so
+    # the provider serves all but that message from the session's cache.
+    # The gate offers no new tool and runs none: a reply that calls one
+    # states no decision and the review runs. It keeps the session's effort
+    # unless UNIFY_REVIEW_REASONING_EFFORT sets the review's. Needs
+    # UNIFY_CACHE_DISCIPLINE; without it, on another review model, or when
+    # the session was compressed, its history changed after its last request
+    # or it ended with unanswered tool calls, the gate is asked standalone and
+    # the log says why. Ignored without UNIFY_REVIEW_GATE. Off: as shipped.
+    UNIFY_REVIEW_GATE_FORK: bool = False
     # The actor's prompt asks it to compute a result that can be computed
     # with a program and answer with the program's output instead of a
     # result worked out in text, with judgment steps kept as query_llm calls
@@ -749,6 +763,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_PROMPT_ACCURACY",
         "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
+        "UNIFY_REVIEW_GATE_FORK",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_STORE_ASYNC_CHECK",
