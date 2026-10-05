@@ -431,6 +431,13 @@ class ProductionSettings(BaseSettings):
     # loaded; call directly"; a guidance line names the stored functions the
     # entry links. Nothing is called, read or forced. Off: as shipped.
     UNIFY_SHORTLIST_CALLABLE_FIRST: bool = False
+    # With UNIFY_TOOL_SURFACE=core: ``help(obj)`` on a harness object or
+    # method prints its signature, the first sentence of its contract and one
+    # example, in about 400 characters; ``help(obj, full=True)`` prints the
+    # full contract. With UNIFY_STATEFUL_CELLS too, ``functions.run`` runs a
+    # stored function in the session the cells run in unless ``state`` says
+    # otherwise, and the prompt's index says so. Off: as shipped.
+    UNIFY_CORE_HELP_COMPACT: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome

@@ -1328,17 +1328,228 @@ def index_help(namespace: Mapping[str, Any]) -> str:
         lines.append(f"  {name}: " + " ".join(doc.split()))
     lines += [
         "",
-        "help(obj) prints the full documentation of one of them or of a method.",
+        (
+            "help(obj) prints a short summary of one of them or of a method, "
+            "with an example; help(obj, full=True) its full documentation."
+            if help_compact()
+            else "help(obj) prints the full documentation of one of them or of a "
+            "method."
+        ),
     ]
     return "\n".join(lines) + "\n"
 
 
-def help_text(obj: Any, label: str) -> str:
+# ---------------------------------------------------------------------------
+# UNIFY_CORE_HELP_COMPACT
+# ---------------------------------------------------------------------------
+
+#: One call of each harness object or method, on no particular domain.
+HELP_EXAMPLES: Dict[str, str] = {
+    "functions": 'rows = await functions.search("parse dates")',
+    "functions.search": 'rows = await functions.search("parse dates")',
+    "functions.filter": "rows = await functions.filter(\"name LIKE '%date%'\")",
+    "functions.list": 'names = [f["name"] for f in await functions.list()]',
+    "functions.get": 'row = await functions.get("parse_dates")',
+    "functions.run": 'total = await functions.run("sum_invoice_lines", invoice_id=7)',
+    "functions.add": "await functions.add(source)  # source: the text of a def",
+    "functions.patch": (
+        'await functions.patch("parse_dates", old="%d/%m", new="%m/%d", '
+        'why="US dates")'
+    ),
+    "functions.delete": "await functions.delete(function_id=3)",
+    "functions.retire": (
+        'await functions.retire("parse_dates", case_id=2, why="format changed")'
+    ),
+    "functions.reconcile_dependencies": "await functions.reconcile_dependencies()",
+    "guidance": 'hits = await guidance.search("deploy a release")',
+    "guidance.search": 'hits = await guidance.search("deploy a release")',
+    "guidance.filter": "rows = await guidance.filter(\"title LIKE '%release%'\")",
+    "guidance.get": "entry = await guidance.get(4)",
+    "guidance.add": (
+        'await guidance.add(title="Release steps", content="1. ...", '
+        "function_ids=[3])"
+    ),
+    "guidance.update": 'await guidance.update(4, content="...")',
+    "guidance.patch": (
+        'await guidance.patch(4, old="step 2", new="step 3", why="order changed")'
+    ),
+    "guidance.delete": "await guidance.delete(4)",
+    "guidance.reconcile_dependencies": "await guidance.reconcile_dependencies()",
+    "install": 'await install(["pandas>=2"])',
+    "read_file": 'print(await read_file("notes.txt", 1, 40))',
+    "grep": 'print(await grep("TODO", "."))',
+    "request_clarification": (
+        'answer = await request_clarification("Which year should I use?")'
+    ),
+}
+_SENTENCE_CHARS = 200
+
+
+# A Returns bullet, or a Raises entry, about a ``_``-prefixed parameter the
+# surface does not take: from its line to the next line indented as little.
+_PRIVATE_BULLET = re.compile(
+    r"^(?P<i>[ \t]*)- When ``_\w+=True``[^\n]*\n(?:(?P=i)[ \t]+[^\n]*\n)*",
+    re.M,
+)
+# ... and the one about the default the harness leaves alone.
+_PRIVATE_DEFAULT = re.compile(r"- When ``_\w+=False``: (?P<first>\w)")
+_PRIVATE_RAISES = re.compile(
+    r"^(?P<i>[ \t]*)\w+Error\n(?P=i)[ \t]+If ``_\w+[^\n]*\n(?:(?P=i)[ \t]{5,}[^\n]*\n)*",
+    re.M,
+)
+_EMPTY_RAISES = re.compile(r"\n[ \t]*Raises\n[ \t]*------\n(?=[ \t]*(?:\n|$))")
+
+
+def without_private_modes(text: str) -> str:
+    """*text* (a help text) without what it says about ``_``-prefixed
+    parameters: the harness passes those, never a cell (``public_doc``
+    already leaves out their own entries)."""
+    text = _PRIVATE_BULLET.sub("", text if text.endswith("\n") else text + "\n")
+    text = _PRIVATE_DEFAULT.sub(lambda m: "- " + m.group("first").upper(), text)
+    text = _PRIVATE_RAISES.sub("", text)
+    return _EMPTY_RAISES.sub("\n", text).rstrip() + "\n"
+
+
+def help_compact() -> bool:
+    """Whether ``UNIFY_CORE_HELP_COMPACT`` is on."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_CORE_HELP_COMPACT", False))
+
+
+def run_state() -> str:
+    """The state ``functions.run`` runs a stored function in when none is given.
+
+    ``"stateless"`` as shipped; with ``UNIFY_CORE_HELP_COMPACT`` and
+    ``UNIFY_STATEFUL_CELLS`` (every cell runs in the task's one session),
+    ``"stateful"``: that session, as a cell's own code would.
+    """
+    from unify.actor import cell_state
+
+    return "stateful" if help_compact() and cell_state.enabled() else "stateless"
+
+
+def _short_signature(obj: Any, label: str) -> str:
+    """``(a, b=1, *, c)``: parameter names and defaults, no annotations."""
+    try:
+        sig = inspect.signature(obj)
+    except (TypeError, ValueError):
+        return "(...)"
+    params = []
+    for p in sig.parameters.values():
+        if p.name.startswith("_") or p.name == "self":
+            continue
+        p = p.replace(annotation=inspect.Parameter.empty)
+        if label == "functions.run" and p.name == "state":
+            p = p.replace(default=run_state())
+        from unify import sandbox
+
+        if p.default is not p.empty and sandbox.is_secret_name(p.name):
+            p = p.replace(default=_Hidden())
+        params.append(p)
+    try:
+        return str(sig.replace(parameters=params, return_annotation=sig.empty))
+    except ValueError:
+        return "(...)"
+
+
+def _first_sentence(doc: str) -> str:
+    text = " ".join(public_doc(doc).split("\n\n")[0].split())
+    match = re.search(r"(?<=[.!?])\s", text)
+    sentence = text[: match.start()] if match else text
+    if len(sentence) > _SENTENCE_CHARS:
+        sentence = sentence[: _SENTENCE_CHARS - 1].rstrip() + "…"
+    return sentence
+
+
+def compact_help_text(obj: Any, label: str) -> str:
+    """``UNIFY_CORE_HELP_COMPACT``: ``help(obj)`` in about 400 characters.
+
+    A method or function: its call with parameter names and defaults, the
+    first sentence of its contract, one example. An object: the first
+    sentence and its method names. Each ends by saying how to print the full
+    contract.
+    """
+    doc = inspect.getdoc(obj) or ""
+    example = HELP_EXAMPLES.get(label)
+    lines: List[str] = []
+    if callable(obj) and not inspect.isclass(obj) and inspect.isroutine(obj):
+        is_async = inspect.iscoroutinefunction(obj)
+        lines.append(
+            ("await " if is_async else "") + label + _short_signature(obj, label),
+        )
+        if label == "functions.run":
+            sentence = (
+                "Calls a stored function by name with keyword arguments and "
+                f'returns its result; state="{run_state()}" by default'
+                + (
+                    " (this session's variables)."
+                    if run_state() == "stateful"
+                    else " (fresh globals)."
+                )
+            )
+        else:
+            sentence = _first_sentence(doc)
+    else:
+        if callable(obj) and not inspect.isclass(obj):
+            is_async = inspect.iscoroutinefunction(
+                getattr(obj, "__call__", None),
+            ) or inspect.iscoroutinefunction(obj)
+            target = obj if inspect.isroutine(obj) else getattr(obj, "__call__", obj)
+            lines.append(
+                ("await " if is_async else "")
+                + label
+                + _short_signature(target, label),
+            )
+            sentence = _first_sentence(doc)
+        else:
+            lines.append(label)
+            sentence = _first_sentence(doc)
+            methods = []
+            for attr in sorted(n for n in dir(obj) if not n.startswith("_")):
+                member = getattr(type(obj), attr, None)
+                if member is None or isinstance(member, property):
+                    continue
+                if callable(getattr(obj, attr, None)):
+                    methods.append(attr)
+            if methods:
+                sentence = (sentence + " " if sentence else "") + (
+                    "Methods (awaited): " + ", ".join(methods) + "."
+                )
+    if sentence:
+        lines.append(textwrap.fill(sentence, 76))
+    if example:
+        lines.append(f"Example: {example}")
+    lines.append(f"help({label}, full=True) prints the full contract.")
+    return "\n".join(lines) + "\n"
+
+
+def help_text(obj: Any, label: str, full: bool = False) -> str:
     """What ``help(obj)`` prints in a cell for a harness object named ``label``.
 
     Signatures and docstrings only: never the value of an attribute, so a
-    help call shows nothing a cell could not otherwise call.
+    help call shows nothing a cell could not otherwise call. With
+    ``UNIFY_CORE_HELP_COMPACT`` and not *full*: :func:`compact_help_text`.
     """
+    if help_compact() and not full:
+        return compact_help_text(obj, label)
+    text = _help_text(obj, label)
+    if help_compact():
+        text = without_private_modes(text)
+    if label == "functions.run" and run_state() == "stateful":
+        text = (
+            text.replace("state: str = 'stateless'", "state: str = 'stateful'", 1)
+            .replace('``"stateless"`` (the default) in', '``"stateless"`` in', 1)
+            .replace(
+                '``"stateful"`` in this session\'s',
+                '``"stateful"`` (the default) in this session\'s',
+                1,
+            )
+        )
+    return text
+
+
+def _help_text(obj: Any, label: str) -> str:
     lines: List[str] = []
     is_async = inspect.iscoroutinefunction(obj) or inspect.iscoroutinefunction(
         getattr(obj, "__call__", None),
@@ -1497,7 +1708,7 @@ class PromptSurface:
             text = (
                 "- `functions`: stored functions. `search(query)`, "
                 "`filter(where)`, `list()`, `get(name)`, "
-                '`run(name, state="stateless", **kwargs)`'
+                f'`run(name, state="{run_state()}", **kwargs)`'
             )
             text += (
                 "; writes " + ", ".join(f"`{w}(...)`" for w in writes)
@@ -1539,8 +1750,14 @@ class PromptSurface:
                 "returns the answer.",
             )
         lines.append(
-            "- `help(obj)` prints the full documentation of any of these, or "
-            "of one method.",
+            (
+                "- `help(obj)` prints a short summary of any of these, or of one "
+                "method, with an example; `help(obj, full=True)` its full "
+                "documentation."
+                if help_compact()
+                else "- `help(obj)` prints the full documentation of any of these, or "
+                "of one method."
+            ),
         )
         return "\n".join(_fill(line) for line in lines)
 

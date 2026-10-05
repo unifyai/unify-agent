@@ -246,6 +246,13 @@ class PythonWorker:
         }
         if _core_surface():
             msg["help"] = True
+            from unify.actor import core_surface
+
+            if core_surface.help_compact():
+                # UNIFY_CORE_HELP_COMPACT: help(obj, full=True) for the full
+                # contract, and where functions.run runs by default.
+                msg["help"] = "compact"
+                msg["run_state"] = core_surface.run_state()
         return msg
 
     async def _start(self) -> None:
@@ -690,6 +697,7 @@ class PythonWorker:
             reply["value"] = core_surface.help_text(
                 self._resolve(shadow, target),
                 str(msg.get("label") or "object"),
+                full=bool(msg.get("full")),
             )
             return
         target = msg.get("target") or {}

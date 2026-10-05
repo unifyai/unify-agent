@@ -56,6 +56,7 @@ import builtins
 import contextvars
 import datetime as _dt
 import decimal
+import functools
 import importlib
 import inspect
 import io
@@ -67,7 +68,7 @@ import sys
 import tempfile
 import threading
 import traceback
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 TAG = "__unify__"
 MAX_DEPTH = 64
@@ -439,6 +440,13 @@ class _FunctionsProxy(RemoteNamespace):
 
     def __getattr__(self, name: str) -> Any:
         if name == "run":
+            if self._w.run_state != "stateless":
+                # UNIFY_CORE_HELP_COMPACT with UNIFY_STATEFUL_CELLS: in the
+                # session the cells run in, unless ``state`` says otherwise.
+                return functools.partial(
+                    self._w.run_function,
+                    state=self._w.run_state,
+                )
             return self._w.run_function
         return super().__getattr__(name)
 
@@ -467,6 +475,8 @@ class Worker:
         self._out_fd = out_fd
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.ns: dict[str, Any] = {}
+        #: Where ``functions.run`` runs a stored function when no state is given.
+        self.run_state = "stateless"
         self.installed: dict[str, Any] = {}
         # The globals every namespace starts from (init's), for the fresh
         # globals of ``functions.run(..., state="stateless")``.
@@ -747,6 +757,10 @@ class Worker:
             # Under -S there is no site-installed help(); this one prints the
             # harness objects' documentation too.
             self.ns["help"] = self.help
+            if msg.get("help") == "compact":
+                # UNIFY_CORE_HELP_COMPACT: short by default, full on request.
+                self.ns["help"] = self.help_compact
+        self.run_state = str(msg.get("run_state") or "stateless")
         self.base_ns = dict(self.ns)
         return missing
 
@@ -1044,19 +1058,30 @@ class Worker:
     def help(self, obj: Any = _NO_ARGUMENT) -> None:
         """Print the documentation of *obj*: a harness object's from the
         harness, anything else's as ``pydoc`` renders it."""
+        self._help(obj, {})
+
+    def help_compact(self, obj: Any = _NO_ARGUMENT, full: bool = False) -> None:
+        """Print a short summary of *obj* with an example (a harness object's,
+        from the harness); ``full=True`` prints its full documentation."""
+        self._help(obj, {"full": bool(full)})
+
+    def _help(self, obj: Any, extra: Dict[str, Any]) -> None:
+        run = obj.func if isinstance(obj, functools.partial) else obj
         if obj is _NO_ARGUMENT:
-            text, _ = self.request_sync("doc", target=None, label="")
+            text, _ = self.request_sync("doc", target=None, label="", **extra)
         elif isinstance(obj, _Remote):
             text, _ = self.request_sync(
                 "doc",
                 target=object.__getattribute__(obj, "_target"),
                 label=object.__getattribute__(obj, "_label"),
+                **extra,
             )
-        elif getattr(obj, "__func__", None) is Worker.run_function:
+        elif getattr(run, "__func__", None) is Worker.run_function:
             text, _ = self.request_sync(
                 "doc",
                 target={"root": "functions", "path": ["run"]},
                 label="functions.run",
+                **extra,
             )
         else:
             import pydoc
