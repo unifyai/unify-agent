@@ -64,14 +64,20 @@ _TEMPLATE_DOC_CHARS = 160
 _SHARED_SHARE = 0.5
 _MIN_EARLIER = 2
 
-# The floor a candidate's cosine must reach, per embedder (its cache label).
-# Local bge-small: calibrated offline (research artifact
-# overhaul-lanes/tier2-related-v1) to keep requests unrelated to every entry
-# from getting a list; the production embedder's is provisional until a
-# calibration run on its own vectors.
+# The floor a candidate's cosine must reach, per embedder (its cache label),
+# calibrated offline on the SEMANTIC-V2 task starts with template
+# statements (research artifact overhaul-lanes/tier2-related-v1). Local
+# bge-small: the smallest floor listing anything for at most 5% of requests
+# that need no stored entry. text-embedding-3-small, whose cosines sit lower
+# and closer together: the floor that best trades recall on every kind of
+# repeat against lists where nothing fits, chosen leave-one-cluster-out
+# over all the data (at the 5% rule's 0.385 it listed something on 51% of
+# task starts and the original entry for 63% of near-misses; at 0.45, 29%
+# and 14%, keeping 62% of reworded AppWorld repeats against 10% from the
+# gate alone).
 DEFAULT_FLOORS = {
     "BAAI/bge-small-en-v1.5": 0.68,
-    "openai/text-embedding-3-small": 0.30,
+    "openai/text-embedding-3-small": 0.45,
 }
 
 HEADER = (
