@@ -112,7 +112,14 @@ def _message_text(content: Any) -> str:
 
 def _tool_call_meta(messages: List[dict]) -> Dict[str, dict]:
     """Index every tool call by id so its result message can recover the
-    tool's name and ``thought`` argument."""
+    tool's name and ``thought`` argument.
+
+    Under ``UNIFY_CODE_PROJECTION=notebook`` a cell has no ``thought``
+    argument; its first comment, or else its first line of code, stands in.
+    """
+    from unify.actor import notebook_cells
+
+    notebook = notebook_cells.enabled()
     call_meta: Dict[str, dict] = {}
     for m in messages:
         if m.get("role") != "assistant":
@@ -127,6 +134,13 @@ def _tool_call_meta(messages: List[dict]) -> Dict[str, dict]:
                     str,
                 ):
                     thought = parsed_args["thought"]
+                elif (
+                    notebook
+                    and fn.get("name") == "execute_code"
+                    and isinstance(parsed_args, dict)
+                    and isinstance(parsed_args.get("code"), str)
+                ):
+                    thought = notebook_cells.caption(parsed_args["code"]) or None
             call_meta[tc.get("id")] = {"name": fn.get("name"), "thought": thought}
     return call_meta
 

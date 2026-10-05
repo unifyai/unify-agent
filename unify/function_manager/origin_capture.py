@@ -164,6 +164,9 @@ def _code_cells(
     trajectory: Sequence[Mapping[str, Any]],
 ) -> List[tuple[int, str, str, str]]:
     """``(index of the result, code, language, output)`` for each code cell, in order."""
+    from unify.actor import notebook_cells
+
+    notebook = notebook_cells.enabled()
     calls: Dict[str, tuple[str, str]] = {}
     cells: List[tuple[int, str, str, str]] = []
     for index, message in enumerate(trajectory):
@@ -179,10 +182,11 @@ def _code_cells(
                 except (TypeError, ValueError):
                     continue
                 if isinstance(args, dict) and isinstance(args.get("code"), str):
-                    calls[str(call.get("id"))] = (
-                        args["code"],
-                        str(args.get("language") or "python"),
-                    )
+                    code, language = args["code"], str(args.get("language") or "python")
+                    if "language" not in args and notebook:
+                        # UNIFY_CODE_PROJECTION=notebook: a %%bash first line.
+                        language, code = notebook_cells.language_and_code(code)
+                    calls[str(call.get("id"))] = (code, language)
         elif message.get("role") == "tool":
             found = calls.pop(str(message.get("tool_call_id")), None)
             if found is not None:

@@ -718,6 +718,23 @@ class ProductionSettings(BaseSettings):
     # to start otherwise, and never runs model code unconfined
     # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
     UNIFY_TOOL_SURFACE: str = ""
+    # What the model is asked to fill in to run a cell. Empty (or "legacy"):
+    # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
+    # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
+    # workspace) as fields, the session JSON tools, and a JSON envelope
+    # before each cell's output. "notebook": the tool takes one field,
+    # ``code``, and where a cell runs is written in it as Jupyter magics on
+    # its first lines -- ``%%bash``, ``%pip install PKG``, ``%%scratch``
+    # (stateless), ``%%what_if`` (read-only), ``%%session NAME`` and
+    # ``%sessions`` (the session tools' data) -- mapped onto the unchanged
+    # function behind the tool; an unknown or misplaced magic is refused
+    # with what to write instead. The cell's first comment (or first code
+    # line) becomes its ``thought``; its result reads as a notebook cell
+    # (stdout, ``[stderr]``, ``Out: <repr>``, the traceback), the
+    # ``ExecutionResult`` object being unchanged; the session JSON tools are
+    # not offered and the prompt names the magics where it named the fields
+    # (unify/actor/notebook_cells.py). On both tool surfaces.
+    UNIFY_CODE_PROJECTION: str = ""
     # With UNIFY_TOOL_SURFACE=core and UNIFY_REVIEW_FORK, run the storage
     # review as a fork of the session too, instead of falling back to the
     # standalone librarian: the session's last request (its execute_code-only
@@ -1084,6 +1101,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "core"):
             raise ValueError(
                 f"UNIFY_TOOL_SURFACE must be empty or 'core', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CODE_PROJECTION", mode="before")
+    @classmethod
+    def parse_code_projection(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "legacy" else value
+        if value not in ("", "notebook"):
+            raise ValueError(
+                "UNIFY_CODE_PROJECTION must be empty, 'legacy' or 'notebook', "
+                f"not {v!r}",
             )
         return value
 

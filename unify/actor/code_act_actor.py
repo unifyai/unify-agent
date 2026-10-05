@@ -6280,6 +6280,30 @@ class CodeActActor(BaseCodeActActor):
             )
             base_tools = dict(core_session.tools)
 
+        # UNIFY_CODE_PROJECTION=notebook: execute_code takes one field, the
+        # cell, whose first-line magics map onto the same function's
+        # arguments; the session tools' data is the %sessions magic.
+        from unify.actor import notebook_cells
+
+        if notebook_cells.enabled() and "execute_code" in base_tools:
+            from unify import sandbox as _workspace_sandbox
+            from unify.actor.prompt_builders import _injects_actor_primitives
+            from unify.actor.workspace_tools import _network_text
+
+            _workspace = _workspace_sandbox.enabled()
+            base_tools = notebook_cells.project_tools(
+                base_tools,
+                caps=notebook_cells.Capabilities(bash=_workspace),
+                steering=(
+                    core_session.prompt.steering if core_session is not None else True
+                ),
+                structured=response_format is not None,
+                parent_context=_injects_actor_primitives(sandbox_envs),
+                resolve_session_name=self._resolve_session_name,
+                session_tools=_act_tools,
+                network=_network_text() if _workspace else "",
+            )
+
         # When execute_code is masked (can_compose=False), strip any
         # execute_code references from execute_function's docstring so the
         # LLM has no awareness that a code sandbox exists.
@@ -6385,6 +6409,14 @@ class CodeActActor(BaseCodeActActor):
                 if clock_in_message
                 else build_code_act_prompt(**prompt_kwargs, session_sections=False)
             )
+        if notebook_cells.enabled() and "execute_code" in base_tools:
+            # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
+            # named the session fields and tools.
+            system_prompt = notebook_cells.rewrite_prompt(system_prompt)
+            if static_system_prompt is not None:
+                static_system_prompt = notebook_cells.rewrite_prompt(
+                    static_system_prompt,
+                )
         # What opens the session's first user message (first_message_context),
         # in this order: the session sections (UNIFY_PROMPT_CLOCK=message: the
         # clock, then the filesystem context), then the library's size

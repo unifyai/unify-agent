@@ -1246,6 +1246,20 @@ class ReviewSandbox:
                     "its sandbox holds the function and guidance libraries."
                 ),
             }
+        if code is not None and code.strip():
+            from unify.actor import notebook_cells
+
+            if notebook_cells.enabled():
+                # The session's cell tool takes magics; this sandbox has none.
+                from unify.common.tool_errors import ToolInputError
+
+                try:
+                    code = notebook_cells.parse_cell(
+                        code,
+                        notebook_cells.Capabilities(install=False, sessions=False),
+                    ).code
+                except ToolInputError as exc:
+                    return {"error": exc.as_tool_result()}
         if code is None or not code.strip():
             return {"stdout": "", "stderr": "", "result": None, "error": None}
         sandbox = self._sandbox()
