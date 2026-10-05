@@ -716,6 +716,12 @@ class ProductionSettings(BaseSettings):
     # refuses to start with this on and request records off. Off: as
     # shipped.
     UNIFY_LESSON_STATUS: bool = False
+    # The storage rulebook asks that a lesson from the trajectory go into a
+    # guidance entry of its own, which records the request it was learned on,
+    # rather than be appended to an entry written while handling other
+    # tasks; an existing entry is changed to correct or clarify what it says,
+    # or when the trajectory followed it. Off: as shipped.
+    UNIFY_GUIDANCE_SCOPED: bool = False
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each call of a stored
     # function keeps the request it ran under (a hash, the latest three per
     # function, in ``<UNIFY_HOME>/request_log.sqlite``), and every function
@@ -964,6 +970,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_GUIDANCE_LINKED_NAMES",
         "UNIFY_LISTING_PROVENANCE",
         "UNIFY_LESSON_STATUS",
+        "UNIFY_GUIDANCE_SCOPED",
         "UNIFY_LISTING_USAGE",
         mode="before",
     )

@@ -1347,6 +1347,7 @@ def _storage_doctrine_sections() -> str:
             f"{_storage_environment_note()}"
             f"{_storage_compose_note()}"
             f"{_storage_update_first_note()}"
+            f"{_guidance_scoped_note()}"
         )
     return (
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
@@ -1354,9 +1355,32 @@ def _storage_doctrine_sections() -> str:
         f"{_STORAGE_TWO_STORES}"
         f"{_storage_compose_note()}"
         f"{_storage_update_first_note()}"
+        f"{_guidance_scoped_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{_STORAGE_RECURRING_DELIVERABLE}"
     )
+
+
+# UNIFY_GUIDANCE_SCOPED: on the 5 Oct Continual-ARC paper-protocol run the
+# entry written after the first (failed) instance was listed first in all 74
+# lists, and later reviews appended other tasks' rules to it, so one generic
+# note carried several tasks' lessons under the first task's origin.
+_GUIDANCE_SCOPED = (
+    "### Keep guidance scoped\n\n"
+    "A lesson from this trajectory goes into a guidance entry of its own, "
+    "which records the request it was learned on. Change an existing "
+    "guidance entry to correct or clarify what it already says, or when "
+    "this trajectory followed it; do not append this task's lesson to an "
+    "entry written while handling other tasks, even one on a related "
+    "subject.\n\n"
+)
+
+
+def _guidance_scoped_note() -> str:
+    """The scoped-guidance rule, while ``UNIFY_GUIDANCE_SCOPED`` is on; else empty."""
+    from unify.settings import SETTINGS
+
+    return _GUIDANCE_SCOPED if SETTINGS.UNIFY_GUIDANCE_SCOPED else ""
 
 
 def _storage_update_first_note() -> str:
@@ -3129,6 +3153,7 @@ def _start_proactive_storage_loop(
         f"{_STORAGE_TWO_STORES}"
         f"{_storage_compose_note()}"
         f"{_storage_update_first_note()}"
+        f"{_guidance_scoped_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
         "\n\n"
