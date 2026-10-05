@@ -71,6 +71,10 @@ and the text says "confirmed (rejected), as judged by its review"; a
 checker's outcome wins over it. Only the shared identifiers and the verdict
 are shown, never the origin text.
 
+``UNIFY_GUIDANCE_ORIGIN`` records the same origin fields for guidance entries
+(:func:`guidance_enabled`), in the guidance table's ``origin`` column, which
+no guidance read returns; the gated shortlist scores them like functions.
+
 ``UNIFY_REVIEW_RECURRENCE`` logs every top-level request as the stream
 corpus does and counts, for the storage review, the earlier logged requests
 whose ``similar_request`` to the current one reaches a threshold
@@ -244,6 +248,13 @@ def _stream_corpus() -> bool:
     return getattr(SETTINGS, "UNIFY_SIMILAR_REQUEST_CORPUS", "") == "stream"
 
 
+def guidance_enabled() -> bool:
+    """``UNIFY_GUIDANCE_ORIGIN`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_GUIDANCE_ORIGIN", False))
+
+
 def provenance_enabled() -> bool:
     """``UNIFY_ORIGIN_PROVENANCE`` (with request records on)."""
     from unify.settings import SETTINGS
@@ -266,11 +277,11 @@ def review_outcome_enabled() -> bool:
 
 
 def require_origin_link_prerequisites() -> None:
-    """Refuse ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE`` or ``UNIFY_REVIEW_OUTCOME`` without request records.
+    """Refuse ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE``, ``UNIFY_REVIEW_OUTCOME`` or ``UNIFY_GUIDANCE_ORIGIN`` without request records.
 
-    Each reads or keeps something under the requests that
+    Each reads, keeps or records something under the requests that
     ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``) records; without them they
-    would never say anything.
+    would never say or record anything.
     """
     from unify.settings import SETTINGS
 
@@ -280,11 +291,12 @@ def require_origin_link_prerequisites() -> None:
         "UNIFY_ORIGIN_PROVENANCE",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
+        "UNIFY_GUIDANCE_ORIGIN",
     ):
         if getattr(SETTINGS, name, False):
             raise ValueError(
                 f"{name} needs UNIFY_TASK_ORIGIN=1 (or UNIFY_TRY_FIRST=1): it "
-                "reads the requests stored functions were recorded under.",
+                "reads the requests stored entries were recorded under.",
             )
 
 

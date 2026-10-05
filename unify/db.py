@@ -287,7 +287,12 @@ class _Connection:
         _add_missing_columns(self.conn)
 
 
-_ADDED_COLUMNS = (("function_trust", "failure_hashes", "TEXT NOT NULL DEFAULT '[]'"),)
+_ADDED_COLUMNS = (
+    ("function_trust", "failure_hashes", "TEXT NOT NULL DEFAULT '[]'"),
+    # UNIFY_GUIDANCE_ORIGIN: the requests a guidance entry was written for
+    # (JSON, NULL when none were recorded). Not in ``all_guidance``.
+    ("guidance", "origin", "TEXT"),
+)
 """Columns added to a table after it first shipped: a store created earlier gets them on open."""
 
 

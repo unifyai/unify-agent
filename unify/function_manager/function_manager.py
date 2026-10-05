@@ -3425,7 +3425,14 @@ class FunctionManager(BaseFunctionManager):
             rows.append(compact)
         return rows
 
-    def _gated_shortlist_rows(self, threshold: float, k: int) -> List[Dict[str, Any]]:
+    def _gated_shortlist_rows(
+        self,
+        threshold: float,
+        k: int,
+        guidance: Sequence[Dict[str, Any]] = (),
+        *,
+        functions: bool = True,
+    ) -> List[Dict[str, Any]]:
         """``UNIFY_SHORTLIST_GATE``: the stored functions recorded under a request like this one.
 
         The at most *k* stored functions in scope (primitives excluded) whose
@@ -3436,17 +3443,42 @@ class FunctionManager(BaseFunctionManager):
         ``argspec``, ``docstring``, ``usage_calls``, ``similar_request`` and,
         under ``UNIFY_ORIGIN_PROVENANCE``, ``origin`` when it has something
         to say.
+
+        ``UNIFY_GUIDANCE_ORIGIN``: *guidance* holds the guidance rows with a
+        recorded origin (``GuidanceManager._origin_rows``); they weigh the
+        requests and compete for the *k* places like functions, and come back
+        as ``guidance_id``, ``title``, ``content`` and ``similar_request`` with
+        ``kind`` ``"guidance"`` (function rows then carry ``kind``
+        ``"function"``). Without *functions* only guidance is listed.
         """
         from unify.actor.library_shortlist import gate_rows
 
         if k <= 0:
             return []
         library = self._rows(self._compositional_scope())
-        if not library:
+        if not library and not guidance:
             return []
-        marker = task_origin.Marker(library)
+        marker = task_origin.Marker([*library, *guidance])
+        candidates = [
+            *(library if functions else []),
+            *({**row, "kind": "guidance"} for row in guidance),
+        ]
         rows = []
-        for row in gate_rows(library, marker, threshold, k=k):
+        for row in gate_rows(candidates, marker, threshold, k=k):
+            if row.get("kind") == "guidance":
+                rows.append(
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "kind",
+                            "guidance_id",
+                            "title",
+                            "content",
+                            "similar_request",
+                        )
+                    },
+                )
+                continue
             out = {
                 key: row.get(key)
                 for key in (
@@ -3458,6 +3490,8 @@ class FunctionManager(BaseFunctionManager):
                     "similar_request",
                 )
             }
+            if guidance:
+                out["kind"] = "function"
             # UNIFY_ORIGIN_PROVENANCE: why it passed the gate.
             why = marker.provenance(row)
             if why:

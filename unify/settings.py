@@ -532,7 +532,8 @@ class ProductionSettings(BaseSettings):
     # ``function `name(sig)`: first docstring line [similar_request 0.31 ·
     # used 4×]``. No embedding is computed; the activation ranking and the
     # hiding of lapsed functions are not applied; guidance (which records no
-    # origin) and functions without an origin record are never listed. Only
+    # origin unless UNIFY_GUIDANCE_ORIGIN) and functions without an origin
+    # record are never listed. Only
     # a top-level task gets the list (a sub-agent's score would be its
     # caller's request's). The list is written once in the first message and
     # the model can still search. An actor refuses to start with the gate
@@ -585,6 +586,17 @@ class ProductionSettings(BaseSettings):
     # by the harness. An actor refuses to start with this on and request
     # records off. Off: as shipped.
     UNIFY_REVIEW_OUTCOME: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a guidance entry added or
+    # updated while handling a request records that request as a stored
+    # function does (its key and a copy of at most 4,000 characters, the
+    # latest three), in the guidance table's ``origin`` column (added, empty,
+    # to a store created before it). No guidance read returns it. With
+    # UNIFY_SHORTLIST_GATE the gated shortlist scores such entries by
+    # ``similar_request`` as it scores functions (the same threshold; the
+    # five places shared), listing each as ``guidance <id> `title`: first
+    # content line [similar_request 0.31]``. Off: nothing is recorded and the
+    # gated shortlist lists functions only, as shipped.
+    UNIFY_GUIDANCE_ORIGIN: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -748,6 +760,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CAPTURE_ACCEPTED",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
+        "UNIFY_GUIDANCE_ORIGIN",
         mode="before",
     )
     @classmethod

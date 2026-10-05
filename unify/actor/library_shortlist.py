@@ -25,9 +25,14 @@ stored functions recorded under a request (``UNIFY_TASK_ORIGIN``) whose
 ``similar_request`` to the current one is at least *t*, ranked by that score,
 then by how often each was called, then newest first (:func:`gate_rows`).
 Nothing is embedded, the activation ranking and its hiding of lapsed
-functions do not apply, and guidance, which records no request, is not
-listed. Each line shows the score and the call count as evidence; a task
+functions do not apply, and guidance, which records no request (unless
+``UNIFY_GUIDANCE_ORIGIN``, below), is not listed. Each line shows the score and the call count as evidence; a task
 whose request resembles none of the recorded ones gets no list.
+
+``UNIFY_GUIDANCE_ORIGIN`` lets guidance entries that recorded the request
+they were written for join the gated list: scored the same way, sharing the
+same places, each line labelled ``guidance <id>`` with its title, first
+content line and score.
 
 ``UNIFY_ORIGIN_PROVENANCE`` ends a marked function's line, in either list,
 with why it is marked, in parentheses: the identifiers its origin request
@@ -56,6 +61,12 @@ _GATED_HEADER = (
     "Stored functions saved while handling requests similar to this one "
     "(similar_request: overlap of the two requests' words, 1 is the same "
     "request; used: times called). Read or call any of them if useful:"
+)
+# UNIFY_GUIDANCE_ORIGIN
+_GATED_HEADER_WITH_GUIDANCE = (
+    "Stored functions and guidance saved while handling requests similar to "
+    "this one (similar_request: overlap of the two requests' words, 1 is the "
+    "same request; used: times called). Read or call any of them if useful:"
 )
 
 
@@ -115,6 +126,12 @@ def _gated_function_line(row: Dict[str, Any]) -> str:
     return (
         line + f" [similar_request {score:.2f} · used {calls}×]" + _origin_suffix(row)
     )
+
+
+def _gated_guidance_line(row: Dict[str, Any]) -> str:
+    """``UNIFY_GUIDANCE_ORIGIN``: a guidance entry in the gated list."""
+    score = float(row.get("similar_request") or 0.0)
+    return _guidance_line(row) + f" [similar_request {score:.2f}]"
 
 
 def gate_rows(
@@ -226,7 +243,12 @@ def shortlist_block(
     functions whose ``similar_request`` passes it, and no embedding.
     """
     if gate is not None:
-        return _gated_block(function_manager, gate, functions=functions)
+        return _gated_block(
+            function_manager,
+            gate,
+            functions=functions,
+            guidance_manager=guidance_manager if guidance else None,
+        )
     try:
         rows = shortlist_rows(
             function_manager,
@@ -252,18 +274,36 @@ def _gated_block(
     gate: float,
     *,
     functions: bool,
+    guidance_manager: Any = None,
 ) -> Optional[str]:
+    from unify.function_manager import task_origin
+
     ranked = getattr(function_manager, "_gated_shortlist_rows", None)
-    if not functions or not callable(ranked):
+    # UNIFY_GUIDANCE_ORIGIN: guidance with recorded origins joins the list.
+    origin_rows = getattr(guidance_manager, "_origin_rows", None)
+    with_guidance = task_origin.guidance_enabled() and callable(origin_rows)
+    if not callable(ranked) or not (functions or with_guidance):
         return None
     try:
-        rows = ranked(gate, K)
+        if with_guidance:
+            rows = ranked(gate, K, origin_rows(), functions=functions)
+        else:
+            rows = ranked(gate, K)
     except Exception as exc:
         logger.debug(f"gated shortlist unavailable: {type(exc).__name__}: {exc}")
         return None
     if not rows:
         return None
-    return "\n".join([_GATED_HEADER, *(_gated_function_line(row) for row in rows)])
+    lines = [
+        (
+            _gated_guidance_line(row)
+            if row.get("kind") == "guidance"
+            else _gated_function_line(row)
+        )
+        for row in rows
+    ]
+    header = _GATED_HEADER_WITH_GUIDANCE if with_guidance else _GATED_HEADER
+    return "\n".join([header, *lines])
 
 
 def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:

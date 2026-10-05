@@ -16,6 +16,28 @@ from .base import BaseGuidanceManager
 from .builtins import builtin_guidance_enabled, ensure_seeded
 from .types.guidance import Guidance
 
+
+def _origin_for(guidance_id: Optional[int]) -> Optional[str]:
+    """``UNIFY_GUIDANCE_ORIGIN``: the entry's ``origin`` with the current request added.
+
+    The JSON to store, or ``None`` while the switch is off or no request is
+    keyed (the column is then left as it is).
+    """
+    from ..function_manager import task_origin
+
+    if not task_origin.guidance_enabled():
+        return None
+    prior = None
+    if guidance_id is not None:
+        row = db.query_one(
+            "SELECT origin FROM guidance WHERE guidance_id = ?",
+            (int(guidance_id),),
+        )
+        prior = db.loads(row["origin"]) if row and row["origin"] else None
+    stamped = task_origin.stamped(prior if isinstance(prior, dict) else None)
+    return None if stamped is None else db.dumps(stamped)
+
+
 logger = logging.getLogger(__name__)
 
 # Content cap for search/filter result payloads. Entries (notably imported
@@ -262,19 +284,29 @@ class GuidanceManager(BaseGuidanceManager):
             content=content or "",
             function_ids=function_ids or [],
         )
-        cursor = db.execute(
-            "INSERT INTO guidance (title, content, function_ids, stale_reasons, created_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (
-                g.title,
-                g.content,
-                db.dumps(g.function_ids),
-                db.dumps(
-                    [reason.model_dump(mode="json") for reason in g.stale_reasons],
-                ),
-                db.now_iso(),
+        values = (
+            g.title,
+            g.content,
+            db.dumps(g.function_ids),
+            db.dumps(
+                [reason.model_dump(mode="json") for reason in g.stale_reasons],
             ),
+            db.now_iso(),
         )
+        # UNIFY_GUIDANCE_ORIGIN: the request this entry was written for.
+        origin = _origin_for(None)
+        if origin is None:
+            cursor = db.execute(
+                "INSERT INTO guidance (title, content, function_ids, stale_reasons, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                values,
+            )
+        else:
+            cursor = db.execute(
+                "INSERT INTO guidance (title, content, function_ids, stale_reasons,"
+                " created_at, origin) VALUES (?, ?, ?, ?, ?, ?)",
+                (*values, origin),
+            )
         return _with_warning(
             {
                 "outcome": "guidance created successfully",
@@ -323,6 +355,10 @@ class GuidanceManager(BaseGuidanceManager):
                     preserve_historical=False,
                 )
             ]
+        # UNIFY_GUIDANCE_ORIGIN: the request this revision was written for.
+        origin = _origin_for(guidance_id)
+        if origin is not None:
+            updates["origin"] = origin
         self._update_row(
             guidance_id,
             updates,
@@ -605,6 +641,39 @@ class GuidanceManager(BaseGuidanceManager):
             }
             for row in rows
         ]
+
+    def _origin_rows(self) -> List[Dict[str, Any]]:
+        """``UNIFY_GUIDANCE_ORIGIN``: the stored entries in scope with a recorded origin.
+
+        Rows carry ``guidance_id``, ``title``, ``content`` and the origin as
+        ``metadata`` (the shape :class:`~unify.function_manager.task_origin.Marker`
+        reads). Built-in entries never have one. For the gated shortlist
+        only: no read the model makes returns the origin.
+        """
+        visible = {
+            int(row["guidance_id"]): row
+            for row in self._rows(self._scope("is_builtin = 0"))
+        }
+        if not visible:
+            return []
+        out = []
+        for row in db.query(
+            "SELECT guidance_id, origin FROM guidance"
+            " WHERE origin IS NOT NULL ORDER BY guidance_id",
+        ):
+            entry = visible.get(int(row["guidance_id"]))
+            origin = db.loads(row["origin"])
+            if entry is None or not isinstance(origin, dict):
+                continue
+            out.append(
+                {
+                    "guidance_id": entry["guidance_id"],
+                    "title": entry["title"],
+                    "content": entry["content"],
+                    "metadata": origin,
+                },
+            )
+        return out
 
     @functools.wraps(BaseGuidanceManager.filter, updated=())
     def filter(
