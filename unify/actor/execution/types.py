@@ -170,6 +170,9 @@ class ExecutionResult(BaseModel):
     #: when an interjection actually reached this execution, so an ordinary
     #: run carries no extra weight in the transcript.
     steering: Optional[Dict[str, Any]] = None
+    #: A note about the call's arguments (``UNIFY_PLACEHOLDER_NOTE``); set only
+    #: when there is one.
+    note: Optional[str] = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -187,6 +190,8 @@ class ExecutionResult(BaseModel):
             meta["result"] = self.result
         if self.error is not None:
             meta["error"] = self.error
+        if self.note is not None:
+            meta["note"] = self.note
         if self.state_mode is not None:
             meta["state_mode"] = self.state_mode
         if self.session_id is not None:

@@ -1462,6 +1462,7 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     The tools are built per actor, so a rewrite never reaches another actor.
     With the switches off the docstrings are as shipped.
     """
+    from unify.actor import placeholder_note
     from unify.actor.environments.actor import delegation_mode
 
     from unify.settings import SETTINGS
@@ -1474,7 +1475,7 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     if SETTINGS.lean_prompt():
         rewrites.extend(_LEAN_TOOL_DOCS)
         rewrites.append(_LEAN_INSTALL_DOC)
-    if not rewrites:
+    if not rewrites and not placeholder_note.enabled():
         return
     for name in ("execute_code", "execute_function", "install_python_packages"):
         tool = tools.get(name)
@@ -1484,6 +1485,8 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
         doc = fn.__doc__
         for pattern, replacement in rewrites:
             doc = pattern.sub(replacement, doc)
+        if name == "execute_function" and placeholder_note.enabled():
+            doc = placeholder_note.correct_doc(doc)
         fn.__doc__ = doc
 
 
@@ -4687,6 +4690,12 @@ class CodeActActor(BaseCodeActActor):
                 """
                 _ = thought  # Thought is logged by the LLM; not used programmatically.
                 call_kwargs = call_kwargs or {}
+                # UNIFY_PLACEHOLDER_NOTE: a credential-named argument that
+                # received a stand-in ("{{access_token}}", "") is named in
+                # the result; the call runs as given. None while off.
+                from unify.actor import placeholder_note
+
+                argument_note = placeholder_note.note(call_kwargs)
                 function_data: dict[str, Any] | None = None
                 get_function_data = getattr(
                     self.function_manager,
@@ -4980,6 +4989,8 @@ class CodeActActor(BaseCodeActActor):
                         )
                     else:
                         out["session_name"] = None
+                    if argument_note is not None:
+                        out["note"] = argument_note
 
                     # Wrap in ExecutionResult.
                     if isinstance(out.get("stdout"), list):

@@ -131,6 +131,15 @@ class ProductionSettings(BaseSettings):
     # informs and never refuses (unify/function_manager/store_async_check.py).
     # Off stores as shipped.
     UNIFY_STORE_ASYNC_CHECK: bool = False
+    # On: an ``execute_function`` result carries a short note when a
+    # credential-named argument received a stand-in (an unfilled template
+    # such as ``{{access_token}}``, an empty string, ``unknown``...), naming
+    # it and saying that values are passed as written and session variables
+    # are not substituted; the call runs unchanged and only stand-ins are
+    # echoed. The tool's description says the same in one sentence
+    # (unify/actor/placeholder_note.py). Off: results and description as
+    # shipped.
+    UNIFY_PLACEHOLDER_NOTE: bool = False
     # On: a function or guidance entry is checked, before it is stored, for
     # identifiers of the session's own task instance: id-like tokens (hex
     # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
@@ -666,6 +675,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_STORE_ASYNC_CHECK",
+        "UNIFY_PLACEHOLDER_NOTE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
