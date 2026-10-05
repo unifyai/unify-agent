@@ -182,6 +182,12 @@ class ExecutionResult(BaseModel):
         Implements the FormattedToolResult protocol, giving the sandbox full
         control over how its output appears in the LLM transcript.
         """
+        from unify.settings import SETTINGS
+
+        if getattr(SETTINGS, "UNIFY_PLAIN_CELL_OUTPUT", False) and not _holds_handle(
+            self.result,
+        ):
+            return self._plain_llm_content()
         blocks: List[dict] = []
 
         # Build metadata section (non-stdout/stderr fields)
@@ -248,3 +254,94 @@ class ExecutionResult(BaseModel):
             blocks.append({"type": "text", "text": "(no output)"})
 
         return blocks
+
+    def _plain_llm_content(self) -> List[dict]:
+        """``UNIFY_PLAIN_CELL_OUTPUT``: the result as a notebook cell shows it.
+
+        What the cell printed (stdout; then stderr, after a ``[stderr]``
+        line), then ``Out: <repr>`` of the last expression's value when it is
+        not None, then the traceback; a note on the call's arguments
+        (``UNIFY_PLACEHOLDER_NOTE``) first, and what steered the block
+        (interjections it received, functions patched) last. No session or
+        timing metadata, and no steering counters for a block nothing
+        steered. Images keep their place among the printed parts.
+        """
+        parts: List[Union[TextPart, ImagePart]] = []
+
+        def text(value: str) -> None:
+            if parts and isinstance(parts[-1], TextPart):
+                previous = parts[-1].text
+                if previous and not previous.endswith("\n"):
+                    value = "\n" + value
+            parts.append(TextPart(text=value))
+
+        def has_content(stream: List[Union[TextPart, ImagePart]]) -> bool:
+            return any(
+                (isinstance(p, TextPart) and p.text.strip()) or isinstance(p, ImagePart)
+                for p in stream
+            )
+
+        if self.note is not None:
+            text(f"[note] {self.note}\n")
+        if has_content(self.stdout):
+            parts.extend(self.stdout)
+        if has_content(self.stderr):
+            text("[stderr]\n")
+            for part in self.stderr:
+                if isinstance(part, TextPart) and part.text:
+                    parts.append(TextPart(text=compact_diagnostic_text(part.text)))
+                else:
+                    parts.append(part)
+        if self.result is not None:
+            text(f"Out: {_repr(self.result)}\n")
+        if self.error is not None:
+            text(str(self.error).rstrip("\n") + "\n")
+        steered = {
+            key: value
+            for key, value in (self.steering or {}).items()
+            if key in ("interjections_received", "patched")
+        }
+        if steered:
+            import json
+
+            text(f"[steering] {json.dumps(self.steering, default=str)}\n")
+        blocks = parts_to_llm_content(parts)
+        if not blocks:
+            return [{"type": "text", "text": "(no output)"}]
+        last = blocks[-1]
+        if last.get("type") == "text":
+            last["text"] = last["text"].rstrip("\n")
+        return blocks
+
+
+def _repr(value: Any) -> str:
+    try:
+        return repr(value)
+    except Exception as exc:  # noqa: BLE001 - a broken __repr__ still shows something
+        return f"<{type(value).__name__} (repr failed: {type(exc).__name__})>"
+
+
+def _holds_handle(value: Any) -> bool:
+    """Whether *value* is, or holds, a steerable handle or the sentinel the loop
+    puts in its place once adopted: such a result keeps the JSON envelope."""
+    import re
+
+    from unify.common._async_tool.tools_data import (
+        _HANDLE_SENTINEL,
+        _handle_label_sentinel,
+    )
+    from unify.common.async_tool_loop import SteerableToolHandle
+
+    if isinstance(value, SteerableToolHandle):
+        return True
+    if isinstance(value, str):
+        labelled = re.escape(_handle_label_sentinel("LABEL")).replace(
+            "LABEL",
+            r"h\d+",
+        )
+        return value == _HANDLE_SENTINEL or bool(re.fullmatch(labelled, value))
+    if isinstance(value, dict):
+        return any(_holds_handle(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_holds_handle(v) for v in value)
+    return False

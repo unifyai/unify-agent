@@ -1,11 +1,17 @@
-"""Symbolic: ``UNIFY_CODE_ONLY_CELLS``: the code-cell tool asks for code alone.
+"""Symbolic: what the code-cell tool asks for and shows.
 
 In the Python-tool-mode ARC LOW runs (af8958e5d) 54-66% of the model's cells
 were narration: a printed sentence, a comment or ``None``, with the reasoning
 in ``execute_code``'s required ``thought`` ("shown to the user as the
-rationale for this step") and no reasoning tokens. With the switch on
-(unify/actor/code_cells.py) ``code`` is the only required argument and there
-is no ``thought``; without primitives, no ``include_parent_chat_context``.
+rationale for this step") and no reasoning tokens, and each result came back
+as a JSON envelope of session metadata before what the cell printed. Two
+off-by-default switches (unify/actor/code_cells.py):
+
+* ``UNIFY_CODE_ONLY_CELLS``: ``code`` is the only required argument and there
+  is no ``thought``; without primitives, no ``include_parent_chat_context``.
+* ``UNIFY_PLAIN_CELL_OUTPUT``: a result reads as a notebook cell's: stdout,
+  stderr, ``Out: <repr>``, the traceback (tests/actor/code_act/
+  test_plain_cell_output.py); here, the description that says so.
 
 The model, where there is one, is the scripted transport of
 tests/cache_discipline_helpers.py.
@@ -24,7 +30,10 @@ from unify.actor import core_surface
 from unify.common.llm_helpers import method_to_schema
 from unify.settings import ProductionSettings, SETTINGS
 
-SWITCHES = ("UNIFY_CODE_ONLY_CELLS",)
+SWITCHES = (
+    "UNIFY_CODE_ONLY_CELLS",
+    "UNIFY_PLAIN_CELL_OUTPUT",
+)
 
 
 def _actor(environments=None, **kwargs):
@@ -180,3 +189,30 @@ async def test_a_thought_is_refused_and_a_cell_without_one_runs(monkeypatch):
     assert "thought" in tool_messages[0] and "code" in tool_messages[0]
     assert "AA" not in tool_messages[0]
     assert "BB" in tool_messages[1]
+
+
+# ── UNIFY_PLAIN_CELL_OUTPUT: the description ────────────────────────────────
+
+
+@pytest.mark.parametrize("core", [False, True])
+def test_the_output_section_describes_the_plain_output(workspace, core, monkeypatch):
+    shipped = _code_tool(_actor(), core=core)["description"]
+    monkeypatch.setattr(SETTINGS, "UNIFY_PLAIN_CELL_OUTPUT", True)
+    on = _code_tool(_actor(), core=core)["description"]
+    assert "An ExecutionResult with" in shipped
+    assert "An ExecutionResult with" not in on and "session_created" not in on
+    assert "``Out: <repr>``" in on and "``[stderr]``" in on
+    # The handle sentence stays where the shipped section had it.
+    assert ("steerable handle" in on) == ("steerable handle" in shipped)
+    if workspace:
+        assert "``Out:`` is the exit status" in " ".join(on.split())
+    # Only the Output section (and the bash bullet's word) changed.
+    before = shipped.split("Output\n------")[0].replace("``result``", "``Out:``")
+    assert on.split("Output\n------")[0] == before
+
+
+def test_the_plain_description_composes_with_stateful_cells(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PLAIN_CELL_OUTPUT", True)
+    on = _code_tool(_actor())["description"]
+    assert "session_id" not in on and "``Out: <repr>``" in on

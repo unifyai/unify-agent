@@ -406,6 +406,17 @@ class ProductionSettings(BaseSettings):
     # (only primitives read it) (unify/actor/code_cells.py). execute_function
     # is unchanged. Off: as shipped.
     UNIFY_CODE_ONLY_CELLS: bool = False
+    # A cell's result reaches the model as a JSON envelope (result, error,
+    # state_mode, session_id, session_name, session_created, duration_ms),
+    # then "--- stdout ---" and "--- stderr ---" sections. On: it reads as a
+    # notebook cell does: stdout, then stderr, then ``Out: <repr>`` of the
+    # last expression's value, then the traceback, then what steered the
+    # block (interjections, patches) if anything did; nothing about the
+    # session or the time taken. A result that is or holds a steerable handle
+    # keeps the envelope while the loop adopts the handle; its answer, once
+    # in, is the cell's ``Out:``. The cell tool's description says what the
+    # output is. Off: as shipped.
+    UNIFY_PLAIN_CELL_OUTPUT: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome

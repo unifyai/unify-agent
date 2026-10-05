@@ -1,4 +1,5 @@
-"""What the code-cell tool asks for: ``UNIFY_CODE_ONLY_CELLS``.
+"""What the code-cell tool asks for and shows: ``UNIFY_CODE_ONLY_CELLS`` and
+``UNIFY_PLAIN_CELL_OUTPUT``.
 
 As shipped ``execute_code`` requires a ``thought``, "a brief, first-person,
 one-sentence explanation ... shown to the user as the rationale for this
@@ -16,7 +17,11 @@ conversation it passes). The function behind the tool is unchanged: it is
 called with an empty thought. A call that still passes ``thought`` is refused
 by the tool loop's unknown-argument rule, naming the tool's parameters.
 
-The switch changes only the actor's own copy of the tool (the tools are built
+``UNIFY_PLAIN_CELL_OUTPUT``: the description's Output section says what
+:meth:`~unify.actor.execution.types.ExecutionResult.to_llm_content` then
+shows: what the cell printed, the last expression's value, the traceback.
+
+Each switch changes only the actor's own copy of the tool (the tools are built
 per actor), on the JSON surface and, since the core surface copies the same
 function, on ``UNIFY_TOOL_SURFACE=core``.
 """
@@ -26,11 +31,15 @@ from __future__ import annotations
 import dataclasses
 import functools
 import inspect
+import re
 from typing import Any, Callable, Dict, Mapping
 
 __all__ = [
+    "PLAIN_OUTPUT",
     "code_only",
     "correct_tools",
+    "describe_output",
+    "plain_output",
 ]
 
 
@@ -42,6 +51,48 @@ def _setting(name: str) -> bool:
 
 def code_only() -> bool:
     return _setting("UNIFY_CODE_ONLY_CELLS")
+
+
+def plain_output() -> bool:
+    return _setting("UNIFY_PLAIN_CELL_OUTPUT")
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_PLAIN_CELL_OUTPUT: the Output section
+# ---------------------------------------------------------------------------
+
+#: The Output section's text with the switch on.
+PLAIN_OUTPUT = (
+    "What the cell printed (stdout; then stderr, after a ``[stderr]``\n"
+    "line), then ``Out: <repr>`` of the last expression's value when it\n"
+    "is not None, then the traceback if the cell raised."
+)
+_HANDLE_NOTE = (
+    "A steerable handle as the last expression is adopted by the\n"
+    "outer loop for mid-flight steering."
+)
+_BASH_RESULT = re.compile(r"``result``(?P<ws>\s+)is the exit status")
+# The shipped section: from its heading to the next blank line.
+_OUTPUT_SECTION = re.compile(
+    r"(?P<head>Output\n(?P<i>[ \t]*)------\n)(?P<body>.*?)(?=\n[ \t]*\n|\Z)",
+    re.DOTALL,
+)
+
+
+def describe_output(doc: str) -> str:
+    """*doc* (the cell tool's description) with the plain Output section."""
+
+    def section(m: "re.Match[str]") -> str:
+        i = m.group("i")
+        text = PLAIN_OUTPUT
+        if "steerable handle" in m.group("body"):
+            text = f"{text}\n{_HANDLE_NOTE}"
+        body = "\n".join(i + line for line in text.splitlines())
+        return m.group("head") + body
+
+    doc = _OUTPUT_SECTION.sub(section, doc, count=1)
+    # The workspace's bash bullet (unify/actor/workspace_tools.py).
+    return _BASH_RESULT.sub(r"``Out:``\g<ws>is the exit status", doc, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -96,16 +147,23 @@ def correct_tools(
     tools: Dict[str, Any],
     environments: Mapping[str, Any],
 ) -> None:
-    """Apply the switch to the actor's ``execute_code``, in place."""
+    """Apply the switches that are on to the actor's ``execute_code``, in place."""
     from unify.common.tool_spec import ToolSpec
 
     tool = tools.get("execute_code")
-    if tool is None or not code_only():
+    if tool is None or not (plain_output() or code_only()):
         return
-    fn = _code_only_tool(
-        tool.fn if isinstance(tool, ToolSpec) else tool,
-        keep_parent_context="primitives" in (environments or {}),
-    )
+    fn = tool.fn if isinstance(tool, ToolSpec) else tool
+    doc = fn.__doc__ or ""
+    if plain_output():
+        doc = describe_output(doc)
+    if code_only():
+        fn = _code_only_tool(
+            fn,
+            keep_parent_context="primitives" in (environments or {}),
+        )
+    if doc != (fn.__doc__ or ""):
+        fn.__doc__ = doc
     if isinstance(tool, ToolSpec):
         tools["execute_code"] = dataclasses.replace(tool, fn=fn)
     else:
