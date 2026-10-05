@@ -48,6 +48,7 @@ function (:data:`CALL_FORM`), and an async one's line says ``(async)``.
 
 from __future__ import annotations
 
+import ast
 import logging
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -99,6 +100,166 @@ _ASYNC_MARK = " (async)"
 
 #: ``bind(names) -> {name: is_async}`` for the names it bound.
 Binder = Callable[[List[str]], Dict[str, bool]]
+
+# UNIFY_SHORTLIST_CALLABLE_FIRST
+_HEADER_CALLABLE_FIRST = (
+    "Library entries closest to this request, ranked by similarity, functions "
+    "first (use any of them if useful):"
+)
+_LOADED = "already loaded; call directly"
+
+
+def callable_first() -> bool:
+    """Whether ``UNIFY_SHORTLIST_CALLABLE_FIRST`` is on."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_SHORTLIST_CALLABLE_FIRST", False))
+
+
+def call_arguments(argspec: Any) -> Optional[str]:
+    """The arguments of a call of a function with *argspec*, by name.
+
+    ``(grid, color=0, *rest, scale: int, **extra)`` gives ``grid=...,
+    color=0, *rest, scale=...``: a parameter without a default by name, one
+    with a default as its default, ``*args`` as written, ``**kwargs`` left
+    out. ``None`` when *argspec* does not parse.
+    """
+    text = str(argspec or "").strip()
+    if not text.startswith("("):
+        text = f"({text})"
+    try:
+        tree = ast.parse(f"def _f{text}: pass")
+        args = tree.body[0].args  # type: ignore[attr-defined]
+    except (SyntaxError, AttributeError, IndexError):
+        return None
+    out: List[str] = []
+    positional = [*args.posonlyargs, *args.args]
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    for arg, default in zip(positional, defaults):
+        if arg.arg in ("self", "cls"):
+            continue
+        value = "..." if default is None else ast.unparse(default)
+        out.append(
+            value if arg in args.posonlyargs else f"{arg.arg}={value}",
+        )
+    if args.vararg is not None:
+        out.append(f"*{args.vararg.arg}")
+    for arg, default in zip(args.kwonlyargs, args.kw_defaults):
+        out.append(f"{arg.arg}={'...' if default is None else ast.unparse(default)}")
+    return ", ".join(out)
+
+
+def _call_form(row: Dict[str, Any], is_async: bool, surface: str, loaded: bool) -> str:
+    """How to call the stored function *row*: by name where it is loaded."""
+    name = str(row.get("name"))
+    arguments = call_arguments(row.get("argspec"))
+    if arguments is None:
+        arguments = "..."
+    if loaded:
+        return ("await " if is_async else "") + f"{name}({arguments})"
+    if surface == "json":
+        mapping = ", ".join(
+            f'"{part.split("=", 1)[0]}": {part.split("=", 1)[1]}'
+            for part in arguments.split(", ")
+            if "=" in part
+        )
+        return f'execute_function("{name}", {{{mapping}}})'
+    sep = ", " if arguments else ""
+    return f'await functions.run("{name}"{sep}{arguments})'
+
+
+def _callable_function_line(
+    row: Dict[str, Any],
+    is_async: bool,
+    *,
+    surface: str,
+    loaded: bool,
+    gated: bool = False,
+) -> str:
+    """``UNIFY_SHORTLIST_CALLABLE_FIRST``: a function's line, led by its call."""
+    line = f"- function `{_call_form(row, is_async, surface, loaded)}`"
+    if loaded:
+        line += f" ({_LOADED})"
+    summary = _first_line(row.get("docstring"))
+    if summary:
+        line += f": {summary}"
+    if gated:
+        score = float(row.get("similar_request") or 0.0)
+        calls = int(row.get("usage_calls") or 0)
+        line += f" [similar_request {score:.2f} · used {calls}×]"
+    elif row.get("similar_request") is not None:
+        line += f" [similar_request {row['similar_request']}]"
+    return line + _origin_suffix(row)
+
+
+def _linked_guidance_line(row: Dict[str, Any], linked: Sequence[str]) -> str:
+    """A guidance entry's line naming the stored functions it links."""
+    line = f"- guidance {row.get('guidance_id')} `{_first_line(row.get('title'))}`"
+    if linked:
+        line += " (for " + ", ".join(f"`{n}`" for n in linked) + ")"
+    summary = _first_line(row.get("content"))
+    if summary:
+        line += f": {summary}"
+    return line
+
+
+def render_callable_first(
+    rows: Sequence[tuple],
+    bound: Dict[str, bool],
+    *,
+    surface: str,
+    links: Optional[Dict[int, List[str]]] = None,
+    gated: bool = False,
+    header: Optional[str] = None,
+) -> str:
+    """``UNIFY_SHORTLIST_CALLABLE_FIRST``: *rows* (``[(kind, row), ...]``,
+    ranked) as a list that leads with the functions.
+
+    *bound* is ``{name: is_async}`` for the listed functions the harness
+    loaded into the session; *surface* is ``core`` or ``json`` (how to call
+    a function that is not loaded); *links* maps a guidance id to the names
+    of the functions it links (a guidance row may carry them as ``linked``).
+    """
+    links = links or {}
+    functions = [row for kind, row in rows if kind == "function"]
+    guidance = [row for kind, row in rows if kind != "function"]
+    lines = [header or _HEADER_CALLABLE_FIRST]
+    for row in functions:
+        name = str(row.get("name"))
+        lines.append(
+            _callable_function_line(
+                row,
+                bound.get(name, False),
+                surface=surface,
+                loaded=name in bound,
+                gated=gated,
+            ),
+        )
+    for row in guidance:
+        gid = row.get("guidance_id")
+        linked = row.get("linked")
+        if linked is None:
+            linked = links.get(int(gid), []) if gid is not None else []
+        line = _linked_guidance_line(row, linked)
+        if gated and row.get("similar_request") is not None:
+            line += f" [similar_request {float(row['similar_request']):.2f}]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _guidance_links(
+    guidance_manager: Any,
+    rows: Sequence[Dict[str, Any]],
+) -> Dict[int, List[str]]:
+    lookup = getattr(guidance_manager, "_linked_function_names", None)
+    ids = [int(r["guidance_id"]) for r in rows if r.get("guidance_id") is not None]
+    if not callable(lookup) or not ids:
+        return {}
+    try:
+        return dict(lookup(ids) or {})
+    except Exception as exc:  # noqa: BLE001 - the list stands without the links
+        logger.debug(f"guidance links unavailable: {type(exc).__name__}: {exc}")
+        return {}
 
 
 def request_text(request: Any) -> str:
@@ -268,6 +429,7 @@ def shortlist_block(
     guidance: bool = True,
     gate: Optional[float] = None,
     bind: Optional[Binder] = None,
+    surface: str = "json",
 ) -> Optional[str]:
     """The shortlist as first-message text, or ``None`` (nothing to list, or no ranking).
 
@@ -284,6 +446,7 @@ def shortlist_block(
             functions=functions,
             guidance_manager=guidance_manager if guidance else None,
             bind=bind,
+            surface=surface,
         )
     try:
         rows = shortlist_rows(
@@ -299,6 +462,16 @@ def shortlist_block(
     if not rows:
         return None
     bound = _bind(bind, [row for kind, row in rows if kind == "function"])
+    if callable_first():
+        return render_callable_first(
+            rows,
+            bound,
+            surface=surface,
+            links=_guidance_links(
+                guidance_manager,
+                [row for kind, row in rows if kind != "function"],
+            ),
+        )
     lines = [
         (
             _function_line(row, bound.get(str(row.get("name")), False))
@@ -334,6 +507,7 @@ def _gated_block(
     functions: bool,
     guidance_manager: Any = None,
     bind: Optional[Binder] = None,
+    surface: str = "json",
 ) -> Optional[str]:
     from unify.function_manager import task_origin
 
@@ -354,6 +528,25 @@ def _gated_block(
     if not rows:
         return None
     bound = _bind(bind, [row for row in rows if row.get("kind") != "guidance"])
+    if callable_first():
+        header = (
+            _GATED_HEADER_WITH_GUIDANCE if with_guidance else _GATED_HEADER
+        ).replace(" Read or call any of them if useful:", " Functions first:")
+        kinds = [
+            ("guidance" if row.get("kind") == "guidance" else "function", row)
+            for row in rows
+        ]
+        return render_callable_first(
+            kinds,
+            bound,
+            surface=surface,
+            links=_guidance_links(
+                guidance_manager,
+                [row for kind, row in kinds if kind == "guidance"],
+            ),
+            gated=True,
+            header=header,
+        )
     lines = [
         (
             _gated_guidance_line(row)
@@ -377,7 +570,11 @@ def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:
     out: Dict[str, List[str]] = {"functions": [], "guidance": []}
     for line in (block or "").splitlines():
         if line.startswith("- function `"):
-            out["functions"].append(line[len("- function `") :].split("(", 1)[0])
+            call = line[len("- function `") :].removeprefix("await ")
+            call = call.removeprefix('execute_function("').removeprefix(
+                'functions.run("',
+            )
+            out["functions"].append(call.split("(", 1)[0].split('"', 1)[0])
         elif line.startswith("- guidance "):
             out["guidance"].append(line[len("- guidance ") :].split(" ", 1)[0])
     return out
@@ -386,7 +583,10 @@ def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:
 __all__ = [
     "CALL_FORM",
     "K",
+    "call_arguments",
+    "callable_first",
     "gate_rows",
+    "render_callable_first",
     "request_text",
     "require_gate_prerequisites",
     "shortlist_block",

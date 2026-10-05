@@ -6054,6 +6054,53 @@ class CodeActActor(BaseCodeActActor):
         code_cells.correct_tools(tools, self.environments)
         return tools
 
+    def _json_listed_binder(
+        self,
+        sandbox: Any,
+    ) -> Optional[Callable[[list], Dict[str, bool]]]:
+        """``UNIFY_SHORTLIST_CALLABLE_FIRST`` on the JSON tools: what loads the
+        shortlist's functions into *sandbox*, as ``FunctionManager_filter_functions``
+        loads what it returns (no search hit is counted), so the list can say
+        they are already loaded. ``None`` with the switch off or no library."""
+        from unify.actor.library_shortlist import callable_first
+
+        if not callable_first() or self.function_manager is None:
+            return None
+
+        def bind(names: list) -> Dict[str, bool]:
+            wanted = list(dict.fromkeys(str(n) for n in names if n))
+            if not wanted:
+                return {}
+            quoted = ", ".join("'" + n.replace("'", "''") + "'" for n in wanted)
+            namespace = sandbox.global_state
+            before = set(namespace)
+            result = self.function_manager.filter_functions(
+                filter=f"name IN ({quoted})",
+                offset=0,
+                limit=len(wanted),
+                include_implementations=False,
+                _return_callable=True,
+                _namespace=namespace,
+                _also_return_metadata=True,
+            )
+            new = set(namespace) - before
+            if new:
+                self._session_executor.register_fm_globals(
+                    {k: namespace[k] for k in new},
+                )
+            loaded = {
+                str(row.get("name"))
+                for row in (result.get("metadata") or [])
+                if isinstance(row, dict) and row.get("name")
+            }
+            return {
+                name: core_surface._is_async_function(namespace[name])
+                for name in wanted
+                if name in loaded and name in namespace
+            }
+
+        return bind
+
     @functools.wraps(BaseCodeActActor.act, updated=())
     @log_manager_call(
         "CodeActActor",
@@ -6729,11 +6776,14 @@ class CodeActActor(BaseCodeActActor):
                     gate=shortlist_gate,
                     # UNIFY_CORE_BIND_LISTED: the listed functions are bound
                     # as a read binds them, and the header says how to call.
+                    # UNIFY_SHORTLIST_CALLABLE_FIRST on the JSON tools: bound
+                    # as a FunctionManager read binds them.
                     bind=(
                         core_session.listed_binder(sandbox)
                         if core_session is not None
-                        else None
+                        else self._json_listed_binder(sandbox)
                     ),
+                    surface="core" if core_session is not None else "json",
                 )
                 if shortlist:
                     first_message_parts.append(shortlist)

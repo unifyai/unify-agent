@@ -423,6 +423,14 @@ class ProductionSettings(BaseSettings):
     # format; it notes that taking an action the requester defines needs no
     # cell. Off: as shipped.
     UNIFY_CODE_EXAMPLE_TURN: bool = False
+    # With UNIFY_LIBRARY_SHORTLIST: the list leads with the stored functions,
+    # then guidance. Each function line shows a call with the function's own
+    # parameter names and, where the harness loaded it into the session (the
+    # core surface with UNIFY_CORE_BIND_LISTED, or the JSON tools, where the
+    # listed functions are then loaded as a library read loads them), "already
+    # loaded; call directly"; a guidance line names the stored functions the
+    # entry links. Nothing is called, read or forced. Off: as shipped.
+    UNIFY_SHORTLIST_CALLABLE_FIRST: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome

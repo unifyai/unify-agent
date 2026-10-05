@@ -694,6 +694,38 @@ class GuidanceManager(BaseGuidanceManager):
             for row in rows
         ]
 
+    def _linked_function_names(self, guidance_ids: List[int]) -> Dict[int, List[str]]:
+        """``UNIFY_SHORTLIST_CALLABLE_FIRST``: the stored functions each entry links.
+
+        ``{guidance_id: [name, ...]}``, in the order of the entry's
+        ``function_ids``; an id no stored function has is left out. No read is
+        counted.
+        """
+        ids = sorted({int(i) for i in guidance_ids})
+        if not ids:
+            return {}
+        marks = ", ".join("?" for _ in ids)
+        linked: Dict[int, List[int]] = {}
+        for row in db.query(
+            f"SELECT guidance_id, function_ids FROM guidance WHERE guidance_id IN ({marks})",
+            tuple(ids),
+        ):
+            linked[int(row["guidance_id"])] = [
+                int(i) for i in (db.loads(row["function_ids"]) or [])
+            ]
+        wanted = sorted({i for fids in linked.values() for i in fids})
+        names: Dict[int, str] = {}
+        if wanted:
+            marks = ", ".join("?" for _ in wanted)
+            for row in db.query(
+                f"SELECT function_id, name FROM functions WHERE function_id IN ({marks})",
+                tuple(wanted),
+            ):
+                names[int(row["function_id"])] = str(row["name"])
+        return {
+            gid: [names[i] for i in fids if i in names] for gid, fids in linked.items()
+        }
+
     def _origin_rows(self) -> List[Dict[str, Any]]:
         """``UNIFY_GUIDANCE_ORIGIN``: the stored entries in scope with a recorded origin.
 
