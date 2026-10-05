@@ -859,6 +859,18 @@ class FunctionManager(BaseFunctionManager):
         Primitives are platform surface, not library memory, and are never
         traced.
         """
+        # UNIFY_LISTING_USAGE: keep the request this call ran under.
+        if task_origin.listing_usage_enabled() and not func_data.get("is_primitive"):
+            name = str(func_data.get("name") or "")
+            text = task_origin.current_request()
+            if name and text:
+                try:
+                    self._write_off_loop(
+                        lambda: task_origin.record_call(name, text),
+                        what=f"call request:{name}",
+                    )
+                except Exception:  # noqa: BLE001 - metering must never break a call
+                    pass
         settings = self.activation_settings
         if not settings.enabled:
             return
@@ -3438,6 +3450,10 @@ class FunctionManager(BaseFunctionManager):
             rows.append(compact)
         return rows
 
+    def _library_rows(self) -> List[Dict[str, Any]]:
+        """The stored functions in scope, primitives excluded, with their metadata (for the shortlist's notes)."""
+        return self._rows(self._compositional_scope())
+
     def _gated_shortlist_rows(
         self,
         threshold: float,
@@ -3477,6 +3493,7 @@ class FunctionManager(BaseFunctionManager):
             *({**row, "kind": "guidance"} for row in guidance),
         ]
         rows = []
+        notes = task_origin.listing_notes_enabled()
         for row in gate_rows(candidates, marker, threshold, k=k):
             if row.get("kind") == "guidance":
                 rows.append(
@@ -3491,6 +3508,9 @@ class FunctionManager(BaseFunctionManager):
                         )
                     },
                 )
+                # UNIFY_LISTING_PROVENANCE, UNIFY_LESSON_STATUS
+                if notes:
+                    rows[-1].update(task_origin.listing_notes(marker, "guidance", row))
                 continue
             out = {
                 key: row.get(key)
@@ -3509,6 +3529,9 @@ class FunctionManager(BaseFunctionManager):
             why = marker.provenance(row)
             if why:
                 out[task_origin.ORIGIN_MARK] = why
+            # UNIFY_LISTING_PROVENANCE, UNIFY_LISTING_USAGE
+            if notes:
+                out.update(task_origin.listing_notes(marker, "function", row))
             rows.append(out)
         return rows
 
