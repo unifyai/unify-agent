@@ -41,6 +41,7 @@ next cell starts a fresh one and its output says so.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import itertools
 import json
@@ -362,7 +363,6 @@ class PythonWorker:
     # -- codec -----------------------------------------------------------------
     def _ref(self, obj: Any) -> dict:
         from unify.common.async_tool_loop import SteerableToolHandle
-        from unify.function_manager.steering import _is_async_callable
 
         _refuse_unreachable(obj, f"a {child.type_name(obj)} returned by the harness")
         rid = self._ref_ids.get(id(obj))
@@ -376,7 +376,7 @@ class PythonWorker:
             "type": child.type_name(obj),
             "repr": short_repr(obj),
             "callable": callable(obj),
-            "async": _is_async_callable(obj),
+            "async": _async_callable(obj),
             "handle": isinstance(obj, SteerableToolHandle),
         }
 
@@ -486,16 +486,12 @@ class PythonWorker:
 
     @staticmethod
     def _remote(name: str, value: Any) -> dict:
-        from unify.function_manager.steering import (
-            RUNTIME_GLOBAL,
-            SteeringRuntime,
-            _is_async_callable,
-        )
+        from unify.function_manager.steering import RUNTIME_GLOBAL, SteeringRuntime
 
         desc = {
             "kind": "remote",
             "callable": callable(value),
-            "async": _is_async_callable(value),
+            "async": _async_callable(value),
             "repr": short_repr(value, 200),
             "runtime": name == RUNTIME_GLOBAL and isinstance(value, SteeringRuntime),
         }
@@ -564,13 +560,10 @@ class PythonWorker:
         return obj
 
     def _describe(self, obj: Any, name: str) -> dict:
-        from unify.function_manager.steering import (
-            _PASSTHROUGH_TYPES,
-            _is_async_callable,
-        )
+        from unify.function_manager.steering import _PASSTHROUGH_TYPES
 
         if callable(obj):
-            return {"kind": "callable", "async": _is_async_callable(obj)}
+            return {"kind": "callable", "async": _async_callable(obj)}
         if isinstance(obj, _PASSTHROUGH_TYPES):
             if sandbox.is_secret_name(name):
                 raise BoundaryRefusal(
@@ -855,6 +848,55 @@ class PythonWorker:
 
 #: What the worker asks of the harness, each served in a task of its own.
 _SERVED = frozenset({"call", "describe", "dir", "fn_begin", "fn_end", "doc"})
+
+
+_PLAIN_TYPES = (
+    types.FunctionType,
+    types.MethodType,
+    types.BuiltinFunctionType,
+    types.BuiltinMethodType,
+    functools.partial,
+)
+
+
+def _plain(obj: Any) -> bool:
+    """Whether reading an attribute of *obj* only looks it up: no ``__getattr__``
+    and no ``__getattribute__`` of its class's own that could run code."""
+    if isinstance(obj, _PLAIN_TYPES):
+        return True
+    cls = type(obj)
+    return (
+        inspect.getattr_static(cls, "__getattr__", None) is None
+        and cls.__getattribute__ is object.__getattribute__
+    )
+
+
+def _async_callable(fn: Any) -> bool:
+    """``steering._is_async_callable`` without running an object's dynamic
+    attribute lookup.
+
+    The harness describes the objects it serves the worker by probing them
+    (``_is_coroutine_marker``, ``__wrapped__``). An environment object that
+    answers any attribute name -- AppWorld's ``apis`` turns ``apis.<name>``
+    into an app lookup and raises for unknown names -- would take such a probe
+    for a request. For those objects only what the instance or its class
+    holds is read (``inspect.getattr_static``); every other object is probed
+    as before.
+    """
+    from unify.function_manager.steering import _is_async_callable
+
+    seen: set[int] = set()
+    while fn is not None and id(fn) not in seen:
+        seen.add(id(fn))
+        if _plain(fn):
+            return _is_async_callable(fn)
+        marker = getattr(inspect, "_is_coroutine_mark", None)
+        if marker is not None and (
+            inspect.getattr_static(fn, "_is_coroutine_marker", None) is marker
+        ):
+            return True
+        fn = inspect.getattr_static(fn, "__wrapped__", None)
+    return False
 
 
 def _environment_global(name: str, value: Any) -> bool:
