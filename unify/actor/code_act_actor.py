@@ -983,16 +983,27 @@ def _review_framing_unified() -> bool:
 
 
 def _curation_doctrine_compose() -> bool:
-    """The compose doctrine's rules apply (``compose``, or ``minimal``, which keeps them)."""
+    """The compose doctrine's framing applies (``compose``, ``minimal``, ``functions_first``).
+
+    ``functions_first`` keeps the compose opening, instructions frame and
+    update-first order, and replaces the compose rules themselves.
+    """
     from unify.settings import SETTINGS
 
-    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("compose", "minimal")
+    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("compose", "minimal", "functions_first")
 
 
 def _curation_doctrine_minimal() -> bool:
+    """The minimal rulebook applies (``minimal``, or ``functions_first``, which keeps it)."""
     from unify.settings import SETTINGS
 
-    return SETTINGS.UNIFY_CURATION_DOCTRINE == "minimal"
+    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("minimal", "functions_first")
+
+
+def _curation_doctrine_functions_first() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_CURATION_DOCTRINE == "functions_first"
 
 
 def _review_opening_is_neutral() -> bool:
@@ -1085,8 +1096,83 @@ _STORAGE_COMPOSE_DOCTRINE = (
 )
 
 
+# UNIFY_CURATION_DOCTRINE=functions_first: the compose rules, rewritten so
+# that a review asks first which functions a trajectory supports. On the 5 Oct
+# ARC LOW runs, 80 of 192 repeat visits had a solved earlier visit and no
+# function to reuse: the review kept a note, the gate called the task a
+# one-off, or the answer had been typed out. Where functions were stored, 12
+# of 13 for one rule were helpers that left the rule's deciding value as a
+# parameter, and 4 of the 5 wrong reuses passed that parameter wrongly.
+_STORAGE_FUNCTIONS_FIRST_DOCTRINE = (
+    "## Functions First\n\n"
+    "Stored functions are what make the next task of this kind cheaper and "
+    "more reliable: a later session that finds a function which does its "
+    "task calls it instead of working the task out again. So the first "
+    "question of this review is which functions the trajectory supports. "
+    "Guidance comes second, and goes with the functions.\n\n"
+    "- **Store the procedure that produced the result.** When the task was "
+    "done by code, or by steps code could repeat, store that procedure as a "
+    "root function whose inputs are what the next task of this kind will be "
+    "given (its raw input, not values worked out along the way) and whose "
+    "result is what this task delivered or did. A later session should be "
+    "able to do such a task with one call. The code that produced the "
+    "result outranks helpers written beside it.\n"
+    "- **Compose it from small functions.** Write the root as a short "
+    "function that calls smaller ones, each doing one well-defined step "
+    "that another procedure could use, and store those too. Call functions "
+    "already in the library instead of copying them. A hierarchy of small "
+    "functions is easier to check, patch and recombine than one long "
+    "body.\n"
+    "- **Parametrise what varies; decide what was decided.** Values that "
+    "would differ in the next instance (the input, identifiers, names, "
+    "sizes, counts) are parameters, or are read from the input inside the "
+    "function. A choice the trajectory settled (which value or element "
+    "plays which role, which rule applies) is made inside the function, "
+    "read from the input where it can be, not handed to the caller as a "
+    "parameter to guess. A parameter keeps a default only when the "
+    "trajectory showed that value.\n"
+    "- **No instance literals.** Values that belong only to this instance "
+    "(its data, its identifiers, its answer) appear nowhere in a stored "
+    "function, docstring or guidance entry.\n"
+    "- **Guard the assumptions.** A function raises a clear error on an "
+    "input outside what the trajectory handled (a shape, a range, a "
+    "missing element), so a caller with a different kind of task finds out "
+    "at once instead of getting a wrong result.\n"
+    "- **Generalise rather than duplicate.** When the library already holds "
+    "a function for this kind of task, change it so it also covers this "
+    "instance, rather than adding a sibling under a new name. Two instances "
+    "show what varied: make that a parameter and keep the rest in the "
+    "code. A change must keep the function's behaviour on the inputs it "
+    "already handled; when the behaviour itself must change, store it under "
+    "a new name and retire the old entry.\n"
+    "- **Guidance with the functions.** For each root function, add or "
+    "update one short guidance entry (under about "
+    f"{GUIDANCE_ENTRY_TARGET_CHARS:,} characters) linked to it through "
+    "`function_ids`: the kind of request it serves, how to call it, what it "
+    "assumes, and what failed on the way to it. Guidance on its own is "
+    "right only when nothing in the work could be written as a "
+    "function.\n"
+    "- **Untested code says so.** Prefer code the trajectory ran. When the "
+    "trajectory reached its result without code but its steps are fully "
+    "determined, you may write the function from them; its docstring then "
+    "says it has not been run yet.\n\n"
+)
+
+_STORAGE_FUNCTIONS_FIRST_STEP_3 = (
+    "3. Decide the functions first: the root function for the procedure "
+    "that produced the result, the smaller functions it composes, and the "
+    "changes that let an existing function cover this instance instead of "
+    "a sibling. Then add the guidance entry that goes with them, and any "
+    "lesson code cannot carry. Retire the entries a generalisation "
+    "supersedes.\n"
+)
+
+
 def _storage_compose_note() -> str:
-    """The compose doctrine (``UNIFY_CURATION_DOCTRINE=compose``); else empty."""
+    """The compose doctrine (``compose``, ``minimal``), the functions-first doctrine
+    (``functions_first``); else empty."""
+    if _curation_doctrine_functions_first():
+        return _STORAGE_FUNCTIONS_FIRST_DOCTRINE
     return _STORAGE_COMPOSE_DOCTRINE if _curation_doctrine_compose() else ""
 
 
@@ -1095,7 +1181,7 @@ def _storage_compose_note() -> str:
 # drops what was written for an office assistant (user notifications,
 # recurring weekly deliverables, specialist sub-agents, model-choice trials,
 # logging markers, the distillation essay).
-_STORAGE_MINIMAL_DOCTRINE = (
+_STORAGE_MINIMAL_WHAT = (
     "## What Can Be Stored\n\n"
     "Code that ran successfully in this trajectory can be stored as a "
     "function with `FunctionManager_add_functions`. The `primitives.*` "
@@ -1114,19 +1200,36 @@ _STORAGE_MINIMAL_DOCTRINE = (
     "package is stored with `dependencies` set to the pip specifiers "
     "`install_python_packages` used; `FunctionManager_add_functions` "
     "refuses it without them.\n\n"
+)
+_STORAGE_MINIMAL_GUIDANCE = (
     "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
     "uses through `function_ids`) is short prose for what code cannot "
     "carry: a composition that would be hard to rediscover, or an approach "
     "that failed in a non-obvious way and what worked instead. A function "
     "whose docstring covers its use needs no guidance entry.\n\n"
 )
+_STORAGE_MINIMAL_DOCTRINE = _STORAGE_MINIMAL_WHAT + _STORAGE_MINIMAL_GUIDANCE
+# functions_first: guidance goes with the functions (its doctrine says how).
+_STORAGE_FUNCTIONS_FIRST_GUIDANCE = (
+    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
+    "uses through `function_ids`) is short prose for what code cannot "
+    "carry: when and how to use the stored functions, a composition that "
+    "would be hard to rediscover, or an approach that failed in a "
+    "non-obvious way and what worked instead.\n\n"
+)
 
 
 def _storage_doctrine_sections() -> str:
     """The rulebook sections before the instructions, per ``UNIFY_CURATION_DOCTRINE``."""
     if _curation_doctrine_minimal():
+        guidance = (
+            _STORAGE_FUNCTIONS_FIRST_GUIDANCE
+            if _curation_doctrine_functions_first()
+            else _STORAGE_MINIMAL_GUIDANCE
+        )
         return (
-            f"{_STORAGE_MINIMAL_DOCTRINE}"
+            f"{_STORAGE_MINIMAL_WHAT}"
+            f"{guidance}"
             f"{_storage_environment_note()}"
             f"{_storage_compose_note()}"
             f"{_storage_update_first_note()}"
@@ -1338,10 +1441,13 @@ def _storage_base_instructions() -> str:
         return _STORAGE_BASE_INSTRUCTIONS
     start = _STORAGE_BASE_INSTRUCTIONS.index("3. Decide")
     end = _STORAGE_BASE_INSTRUCTIONS.index("4. **Delete")
+    step_3 = (
+        _STORAGE_FUNCTIONS_FIRST_STEP_3
+        if _curation_doctrine_functions_first()
+        else _STORAGE_COMPOSE_STEP_3
+    )
     return (
-        _STORAGE_BASE_INSTRUCTIONS[:start]
-        + _STORAGE_COMPOSE_STEP_3
-        + _STORAGE_BASE_INSTRUCTIONS[end:]
+        _STORAGE_BASE_INSTRUCTIONS[:start] + step_3 + _STORAGE_BASE_INSTRUCTIONS[end:]
     )
 
 

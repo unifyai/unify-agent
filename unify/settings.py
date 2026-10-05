@@ -307,7 +307,15 @@ class ProductionSettings(BaseSettings):
     # (what can be stored and how it runs, dependencies, what guidance is
     # for): no user-notification, recurring-deliverable, specialist
     # sub-agent, model-choice-trial, logging-marker or distillation-dial
-    # sections. Empty: as shipped.
+    # sections. ``functions_first``: the ``minimal`` rulebook with the
+    # compose rules replaced by a functions-first doctrine: a review asks
+    # first which functions the trajectory supports -- a root function for
+    # the procedure that produced the result, composed of small stored
+    # functions, with what varies between instances as parameters, the
+    # decisions the trajectory settled made inside the code, no instance
+    # literals, and an existing function for the same kind of task
+    # generalised rather than duplicated -- and stores a short guidance
+    # entry linked to the functions as well. Empty: as shipped.
     UNIFY_CURATION_DOCTRINE: str = ""
     # The actor's prompt states that actions the requester asks to be taken by
     # replying in a stated format are only ever the actor's own final reply:
@@ -903,10 +911,10 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_curation_doctrine(cls, v: Any) -> str:
         value = str(v or "").strip().lower()
-        if value not in ("", "compose", "minimal"):
+        if value not in ("", "compose", "minimal", "functions_first"):
             raise ValueError(
-                "UNIFY_CURATION_DOCTRINE must be empty, 'compose' or 'minimal', "
-                f"not {v!r}",
+                "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal' "
+                f"or 'functions_first', not {v!r}",
             )
         return value
 
