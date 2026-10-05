@@ -216,6 +216,53 @@ def test_without_anything_bound_the_list_is_as_shipped():
     assert asked == []
 
 
+class _GuidedLibrary:
+    """A gated ranking that also lists guidance (``UNIFY_GUIDANCE_ORIGIN``)."""
+
+    def __init__(self):
+        self.asked: list = []
+
+    def _gated_shortlist_rows(self, threshold, k, guidance=(), *, functions=True):
+        self.asked.append((list(guidance), functions))
+        rows = [
+            {**ROWS[0], "kind": "function", "similar_request": 0.31, "usage_calls": 2},
+        ]
+        return [
+            *(rows if functions else []),
+            {**GUIDANCE_ROWS[0], "kind": "guidance", "similar_request": 0.5},
+        ]
+
+    def _origin_rows(self):
+        return [{"guidance_id": 1, "metadata": {}}]
+
+
+def test_a_gated_list_with_guidance_binds_only_its_functions(monkeypatch):
+    """``UNIFY_CORE_BIND_LISTED`` with ``UNIFY_GUIDANCE_ORIGIN``: the gated
+    list's header says both kinds are listed and how to call a function;
+    only the functions are bound, and the guidance line is as shipped."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_ORIGIN", True)
+    lib = _GuidedLibrary()
+    shipped = ls.shortlist_block(lib, lib, TASK, gate=0.2)
+    asked: list = []
+
+    def bind(names):
+        asked.append(list(names))
+        return {"double": False}
+
+    on = ls.shortlist_block(lib, lib, TASK, gate=0.2, bind=bind)
+    assert shipped.splitlines()[0] == ls._GATED_HEADER_WITH_GUIDANCE
+    assert on.splitlines()[0] == ls._GATED_HEADER_WITH_GUIDANCE_CALL
+    assert ls.CALL_FORM in on.splitlines()[0]
+    assert asked == [["double"]]
+    assert on.splitlines()[1:] == shipped.splitlines()[1:]
+    assert "guidance 1 `Doubling`" in on.splitlines()[2]
+    # Guidance only: nothing to bind, and no call form.
+    only = ls.shortlist_block(lib, lib, TASK, gate=0.2, functions=False, bind=bind)
+    assert only.splitlines()[0] == ls._GATED_HEADER_WITH_GUIDANCE
+    assert asked == [["double"]]
+
+
 # ── the shortlist's functions are callable in the first cell ────────────────
 
 
