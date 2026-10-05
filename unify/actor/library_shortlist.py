@@ -39,12 +39,17 @@ with why it is marked, in parentheses: the identifiers its origin request
 shares with this one, or that it was this same request, and whether the
 checker accepted that session's answer when that was recorded
 (:meth:`~unify.function_manager.task_origin.Marker.provenance`).
+
+``UNIFY_CORE_BIND_LISTED`` (core tool surface): the caller passes *bind*,
+which binds the listed functions in the sandbox as a read would and says
+which are ``async def``; either header then says how to call a listed
+function (:data:`CALL_FORM`), and an async one's line says ``(async)``.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +73,32 @@ _GATED_HEADER_WITH_GUIDANCE = (
     "this one (similar_request: overlap of the two requests' words, 1 is the "
     "same request; used: times called). Read or call any of them if useful:"
 )
+# UNIFY_CORE_BIND_LISTED: how to call a listed function, which is bound.
+CALL_FORM = (
+    "listed functions are loaded, so call one directly: `name(...)`, or "
+    '`await functions.run("name", arg=...)`'
+)
+_HEADER_CALL = (
+    "Library entries closest to this request, ranked by similarity "
+    f"(read or call any of them if useful; {CALL_FORM}):"
+)
+_GATED_HEADER_CALL = (
+    "Stored functions saved while handling requests similar to this one "
+    "(similar_request: overlap of the two requests' words, 1 is the same "
+    "request; used: times called). Read or call any of them if useful; "
+    f"{CALL_FORM}:"
+)
+# UNIFY_GUIDANCE_ORIGIN with UNIFY_CORE_BIND_LISTED: guidance listed too.
+_GATED_HEADER_WITH_GUIDANCE_CALL = (
+    "Stored functions and guidance saved while handling requests similar to "
+    "this one (similar_request: overlap of the two requests' words, 1 is the "
+    "same request; used: times called). Read or call any of them if useful; "
+    f"{CALL_FORM}:"
+)
+_ASYNC_MARK = " (async)"
+
+#: ``bind(names) -> {name: is_async}`` for the names it bound.
+Binder = Callable[[List[str]], Dict[str, bool]]
 
 
 def request_text(request: Any) -> str:
@@ -96,10 +127,10 @@ def _first_line(text: Any) -> str:
     return ""
 
 
-def _function_line(row: Dict[str, Any]) -> str:
+def _function_line(row: Dict[str, Any], is_async: bool = False) -> str:
     argspec = str(row.get("argspec") or "").strip()
     signature = f"{row.get('name')}{argspec if argspec.startswith('(') else '(' + argspec + ')'}"
-    line = f"- function `{signature}`"
+    line = f"- function `{signature}`" + (_ASYNC_MARK if is_async else "")
     summary = _first_line(row.get("docstring"))
     if summary:
         line += f": {summary}"
@@ -114,10 +145,10 @@ def _origin_suffix(row: Dict[str, Any]) -> str:
     return f" ({why})" if isinstance(why, str) and why else ""
 
 
-def _gated_function_line(row: Dict[str, Any]) -> str:
+def _gated_function_line(row: Dict[str, Any], is_async: bool = False) -> str:
     argspec = str(row.get("argspec") or "").strip()
     signature = f"{row.get('name')}{argspec if argspec.startswith('(') else '(' + argspec + ')'}"
-    line = f"- function `{signature}`"
+    line = f"- function `{signature}`" + (_ASYNC_MARK if is_async else "")
     summary = _first_line(row.get("docstring"))
     if summary:
         line += f": {summary}"
@@ -236,11 +267,15 @@ def shortlist_block(
     functions: bool = True,
     guidance: bool = True,
     gate: Optional[float] = None,
+    bind: Optional[Binder] = None,
 ) -> Optional[str]:
     """The shortlist as first-message text, or ``None`` (nothing to list, or no ranking).
 
     With *gate* (``UNIFY_SHORTLIST_GATE``'s threshold) only the stored
     functions whose ``similar_request`` passes it, and no embedding.
+
+    With *bind* (``UNIFY_CORE_BIND_LISTED``) the listed functions are bound
+    by it before the text is written, and the header says how to call one.
     """
     if gate is not None:
         return _gated_block(
@@ -248,6 +283,7 @@ def shortlist_block(
             gate,
             functions=functions,
             guidance_manager=guidance_manager if guidance else None,
+            bind=bind,
         )
     try:
         rows = shortlist_rows(
@@ -262,11 +298,33 @@ def shortlist_block(
         return None
     if not rows:
         return None
+    bound = _bind(bind, [row for kind, row in rows if kind == "function"])
     lines = [
-        _function_line(row) if kind == "function" else _guidance_line(row)
+        (
+            _function_line(row, bound.get(str(row.get("name")), False))
+            if kind == "function"
+            else _guidance_line(row)
+        )
         for kind, row in rows
     ]
-    return "\n".join([_HEADER, *lines])
+    header = _HEADER_CALL if bind is not None and bound else _HEADER
+    return "\n".join([header, *lines])
+
+
+def _bind(bind: Optional[Binder], rows: Sequence[Dict[str, Any]]) -> Dict[str, bool]:
+    """``UNIFY_CORE_BIND_LISTED``: ``{name: is_async}`` for the listed functions *bind* bound."""
+    names = [str(row.get("name")) for row in rows if row.get("name")]
+    if bind is None or not names:
+        return {}
+    try:
+        return dict(bind(names) or {})
+    except Exception as exc:  # noqa: BLE001 - the list stands without it
+        logger.warning(
+            "could not load the shortlisted functions: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return {}
 
 
 def _gated_block(
@@ -275,6 +333,7 @@ def _gated_block(
     *,
     functions: bool,
     guidance_manager: Any = None,
+    bind: Optional[Binder] = None,
 ) -> Optional[str]:
     from unify.function_manager import task_origin
 
@@ -294,15 +353,22 @@ def _gated_block(
         return None
     if not rows:
         return None
+    bound = _bind(bind, [row for row in rows if row.get("kind") != "guidance"])
     lines = [
         (
             _gated_guidance_line(row)
             if row.get("kind") == "guidance"
-            else _gated_function_line(row)
+            else _gated_function_line(row, bound.get(str(row.get("name")), False))
         )
         for row in rows
     ]
-    header = _GATED_HEADER_WITH_GUIDANCE if with_guidance else _GATED_HEADER
+    call = bind is not None and bool(bound)
+    if with_guidance:
+        header = (
+            _GATED_HEADER_WITH_GUIDANCE_CALL if call else _GATED_HEADER_WITH_GUIDANCE
+        )
+    else:
+        header = _GATED_HEADER_CALL if call else _GATED_HEADER
     return "\n".join([header, *lines])
 
 
@@ -318,6 +384,7 @@ def shortlisted_names(block: Optional[str]) -> Dict[str, List[str]]:
 
 
 __all__ = [
+    "CALL_FORM",
     "K",
     "gate_rows",
     "request_text",

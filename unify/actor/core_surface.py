@@ -311,15 +311,16 @@ class FunctionLibrary:
 
     # -- reads ---------------------------------------------------------------
 
-    def _load(self, method: str, **kwargs: Any) -> Any:
+    def _load(self, method: str, *, _sandbox: Any = None, **kwargs: Any) -> Any:
         """A read that also binds the functions it returns in the session, as
-        the actor's JSON search tools do. A review's read binds nothing, as
-        the review's JSON search tools do not."""
+        the actor's JSON search tools do (in *_sandbox*, else the running
+        cell's). A review's read binds nothing, as the review's JSON search
+        tools do not."""
         from unify.actor.execution import _CURRENT_SANDBOX
 
         if self._policy.review:
             return getattr(self._fm, method)(**kwargs)
-        sb = _CURRENT_SANDBOX.get(None)
+        sb = _sandbox if _sandbox is not None else _CURRENT_SANDBOX.get(None)
         namespace = sb.global_state if sb is not None else {}
         before = set(namespace)
         result = getattr(self._fm, method)(
@@ -334,6 +335,48 @@ class FunctionLibrary:
                 {k: namespace[k] for k in new},
             )
         return result["metadata"]
+
+    def _bind_names(
+        self,
+        names: List[str],
+        *,
+        sandbox: Any = None,
+    ) -> Dict[str, bool]:
+        """Bind the stored functions *names* as ``get`` binds one; ``{name: is_async}``.
+
+        ``UNIFY_CORE_BIND_LISTED``: the shortlist's functions, at task
+        start. One filter read, as ``get`` makes, so no search hit is
+        counted; a name the read does not load (deleted, quarantined,
+        unloadable) is left out of the result.
+        """
+        from unify.actor.execution import _CURRENT_SANDBOX
+
+        wanted = list(dict.fromkeys(str(n) for n in names if n))
+        if not wanted:
+            return {}
+        sb = sandbox if sandbox is not None else _CURRENT_SANDBOX.get(None)
+        if sb is None:
+            return {}
+        quoted = ", ".join("'" + n.replace("'", "''") + "'" for n in wanted)
+        rows = self._load(
+            "filter_functions",
+            _sandbox=sb,
+            filter=f"name IN ({quoted})",
+            offset=0,
+            limit=len(wanted),
+            include_implementations=False,
+        )
+        loaded = {
+            str(row.get("name"))
+            for row in (rows if isinstance(rows, list) else [])
+            if isinstance(row, Mapping) and row.get("name")
+        }
+        namespace = sb.global_state
+        return {
+            name: _is_async_function(namespace.get(name))
+            for name in wanted
+            if name in loaded and name in namespace
+        }
 
     async def search(
         self,
@@ -993,6 +1036,14 @@ def sandbox_objects(
     return objects
 
 
+def _is_async_function(value: Any) -> bool:
+    """Whether the bound stored function *value* is ``async def`` (unwrapped)."""
+    try:
+        return inspect.iscoroutinefunction(inspect.unwrap(value))
+    except Exception:  # noqa: BLE001 - a wrapper that does not unwrap
+        return False
+
+
 # ---------------------------------------------------------------------------
 # UNIFY_REVIEW_FORK_CORE: the forked storage review's sandbox
 # ---------------------------------------------------------------------------
@@ -1347,6 +1398,8 @@ class PromptSurface:
     store_skills_on_compression: bool = False
     #: A persistent session's trajectory is reviewed after each turn.
     turn_reviews: bool = False
+    #: ``UNIFY_CORE_CALL_EXAMPLE``: the ``functions`` line shows a call.
+    call_example: bool = False
 
     def tools_section(self) -> str:
         answer = (
@@ -1385,6 +1438,13 @@ class PromptSurface:
                 else "; read-only in this session"
             )
             text += ". A function found by a read is callable by name in later cells."
+            if self.call_example:
+                # UNIFY_CORE_CALL_EXAMPLE
+                text += (
+                    ' Example: `total = await functions.run("sum_invoice_lines", '
+                    "invoice_id=7)`, or once found, `sum_invoice_lines(invoice_id=7)`; "
+                    "a stored function that does a step saves rewriting it."
+                )
             lines.append(text)
         if self.guidance:
             writes = self.policy.writes(GUIDANCE)
@@ -1670,6 +1730,22 @@ class Session:
         """Set this session's clarification binding; returns the reset token."""
         return _CLARIFICATION.set(self.clarification)
 
+    def listed_binder(
+        self,
+        sandbox: Any,
+    ) -> Optional[Callable[[List[str]], Dict[str, bool]]]:
+        """``UNIFY_CORE_BIND_LISTED``: what binds the shortlist's functions in *sandbox*.
+
+        ``None`` with the switch off, or without a function library: the
+        shortlist is then written as shipped.
+        """
+        from unify.settings import SETTINGS
+
+        library = self.objects.get(FUNCTIONS)
+        if not SETTINGS.UNIFY_CORE_BIND_LISTED or library is None:
+            return None
+        return lambda names: library._bind_names(names, sandbox=sandbox)
+
     @staticmethod
     def leave(token: Any) -> None:
         try:
@@ -1700,6 +1776,8 @@ def start_session(
     the loop offers only on the turn that compresses, when ``store_skills``)
     and puts the rest in *sandbox* as Python objects.
     """
+    from unify.settings import SETTINGS
+
     steering = offers_steering(environments)
     session_tools = core_tools(tools, steering=steering)
     if store_skills and "store_skills" in tools:
@@ -1725,6 +1803,7 @@ def start_session(
         structured=structured,
         store_skills_on_compression="store_skills" in session_tools,
         turn_reviews=turn_reviews,
+        call_example=bool(getattr(SETTINGS, "UNIFY_CORE_CALL_EXAMPLE", False)),
     )
     return Session(
         tools=session_tools,

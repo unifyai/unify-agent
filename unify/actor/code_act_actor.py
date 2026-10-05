@@ -6573,6 +6573,13 @@ class CodeActActor(BaseCodeActActor):
                     )
                     or (core_session is not None and core_session.prompt.guidance),
                     gate=shortlist_gate,
+                    # UNIFY_CORE_BIND_LISTED: the listed functions are bound
+                    # as a read binds them, and the header says how to call.
+                    bind=(
+                        core_session.listed_binder(sandbox)
+                        if core_session is not None
+                        else None
+                    ),
                 )
                 if shortlist:
                     first_message_parts.append(shortlist)
