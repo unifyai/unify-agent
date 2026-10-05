@@ -34,6 +34,23 @@ def _parse_bool(v: Any) -> bool:
     return bool(v)
 
 
+def _shortlist_related(value: Any) -> Optional[tuple[int, Optional[float]]]:
+    """``(k, floor)`` of a ``statement:<k>[:<floor>]`` value; ``None`` when empty or invalid."""
+    parts = [part.strip() for part in str(value or "").strip().lower().split(":")]
+    if len(parts) not in (2, 3) or parts[0] != "statement":
+        return None
+    try:
+        k = int(parts[1])
+        floor = float(parts[2]) if len(parts) == 3 else None
+    except ValueError:
+        return None
+    if not 1 <= k <= 2:
+        return None
+    if floor is not None and (not math.isfinite(floor) or not -1 <= floor < 1):
+        return None
+    return k, floor
+
+
 def _shortlist_gate_threshold(value: Any) -> Optional[float]:
     """The threshold of a ``similar_request:<t>`` gate; ``None`` when empty or invalid."""
     signal, sep, raw = str(value or "").strip().lower().partition(":")
@@ -617,6 +634,24 @@ class ProductionSettings(BaseSettings):
     # set and either companion switch off. Empty: the shortlist ranks by
     # embedding similarity, as shipped.
     UNIFY_SHORTLIST_GATE: str = ""
+    # ``statement:<k>`` (k 1 or 2), or ``statement:<k>:<floor>``, with
+    # UNIFY_SHORTLIST_GATE: after the gated list, under its own header
+    # ("Possibly related (judge whether the intent matches; ...)"), at most k
+    # more stored functions (and guidance entries with a recorded origin,
+    # UNIFY_GUIDANCE_ORIGIN) that the gated list did not list, ranked by the
+    # cosine of the request's distinct lines (those fewer than half of the
+    # earlier logged requests contain) with each entry's "use this when"
+    # statement, one embedding call per task start. No score is shown and no
+    # match asserted; an entry under the floor (default per embedder, in
+    # unify/actor/related_shortlist.py) is left out. Each line shows the
+    # statement and a bounded copy of the request the entry was stored for.
+    # The storage review writes the statement of each entry it adds or
+    # updates (one ``use_when <name>: ...`` line in its reply), kept only
+    # without this task's identifiers; an entry without one gets a template
+    # from its name and docstring, labelled so. Never in a sub-agent; under
+    # UNIFY_TOOL_SURFACE=core these functions are not bound. An actor refuses
+    # to start with this set and the gate off. Empty: as shipped.
+    UNIFY_SHORTLIST_RELATED: str = ""
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a stored function marked
     # ``similar_request`` (in a search result, the library shortlist or the
     # gated shortlist) also says why: the whole identifiers (6 or more ASCII
@@ -1048,6 +1083,21 @@ class ProductionSettings(BaseSettings):
         k, floor = parsed
         return f"recent:{k}" + ("" if floor is None else f":{floor:g}")
 
+    @field_validator("UNIFY_SHORTLIST_RELATED", mode="before")
+    @classmethod
+    def parse_shortlist_related(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if not value:
+            return ""
+        parsed = _shortlist_related(value)
+        if parsed is None:
+            raise ValueError(
+                "UNIFY_SHORTLIST_RELATED must be empty, 'statement:<k>' or "
+                f"'statement:<k>:<floor>' with k 1 or 2 and -1 <= floor < 1, not {v!r}",
+            )
+        k, floor = parsed
+        return f"statement:{k}" + ("" if floor is None else f":{floor:g}")
+
     @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
     @classmethod
     def parse_prompt_clock(cls, v: Any) -> str:
@@ -1253,6 +1303,10 @@ class ProductionSettings(BaseSettings):
     def shortlist_lift(self) -> Optional[tuple[int, Optional[float]]]:
         """``UNIFY_SHORTLIST_LIFT``'s ``(k, floor)`` (floor ``None``: the embedder's default); ``None`` when off."""
         return _shortlist_lift(self.UNIFY_SHORTLIST_LIFT)
+
+    def shortlist_related(self) -> Optional[tuple[int, Optional[float]]]:
+        """``(k, floor)`` of ``UNIFY_SHORTLIST_RELATED`` (floor ``None``: the embedder's); ``None`` when off."""
+        return _shortlist_related(self.UNIFY_SHORTLIST_RELATED)
 
     model_config = SettingsConfigDict(
         env_file=".env",

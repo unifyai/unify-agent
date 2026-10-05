@@ -75,6 +75,11 @@ are shown, never the origin text.
 (:func:`guidance_enabled`), in the guidance table's ``origin`` column, which
 no guidance read returns; the gated shortlist scores them like functions.
 
+``UNIFY_SHORTLIST_RELATED`` logs every top-level request as the stream
+corpus does, with a short hash of each of its lines (the whole request's,
+in the log's ``request_lines`` table), so a later request's lines that most
+logged requests share can be told from its own (:func:`line_keys`).
+
 ``UNIFY_REVIEW_RECURRENCE`` logs every top-level request as the stream
 corpus does and counts, for the storage review, the earlier logged requests
 whose ``similar_request`` to the current one reaches a threshold
@@ -115,6 +120,8 @@ ORIGIN_MARK = "origin"
 # distinct top-level requests, the latest.
 REQUEST_LOG_SIZE = 200
 REQUEST_LOG_FILE = "request_log.sqlite"
+# UNIFY_SHORTLIST_RELATED: at most this many line hashes per logged request.
+MAX_LINE_KEYS = 500
 # UNIFY_ORIGIN_PROVENANCE: at most this many shared identifiers are named.
 MAX_SHARED_IDENTIFIERS = 2
 # The request log keeps the checked outcomes of this many requests, the latest.
@@ -237,8 +244,11 @@ def enter(request: Any) -> Optional[contextvars.Token]:
     if key is None:
         return None
     task = _Task(key=key, text=bounded_text(request))
-    if _stream_corpus() or recurrence_enabled():
+    related = _related_enabled()
+    if _stream_corpus() or recurrence_enabled() or related:
         _log_request(task)
+    if related:
+        _log_request_lines(task.key, line_keys(request))
     return _CURRENT.set(task)
 
 
@@ -246,6 +256,13 @@ def _stream_corpus() -> bool:
     from unify.settings import SETTINGS
 
     return getattr(SETTINGS, "UNIFY_SIMILAR_REQUEST_CORPUS", "") == "stream"
+
+
+def _related_enabled() -> bool:
+    """``UNIFY_SHORTLIST_RELATED``: its distinct lines are taken against the logged requests."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.shortlist_related() is not None
 
 
 def guidance_enabled() -> bool:
@@ -483,6 +500,80 @@ def _log_request(task: _Task) -> None:
             )
     except (OSError, sqlite3.Error) as exc:
         logger.warning(f"request log not written: {type(exc).__name__}: {exc}")
+
+
+def line_keys(request: Any) -> List[str]:
+    """``UNIFY_SHORTLIST_RELATED``: a short hash of each distinct whitespace-collapsed line of *request*.
+
+    Taken from the whole request (the logged copy keeps only its first and
+    last 2,000 characters), at most :data:`MAX_LINE_KEYS`.
+    """
+    text = request if isinstance(request, str) else _normalised(request)
+    keys: Dict[str, None] = {}
+    for line in str(text or "").splitlines():
+        line = _WS.sub(" ", line).strip()
+        if line:
+            keys[hashlib.sha256(line.encode("utf-8")).hexdigest()[:16]] = None
+        if len(keys) >= MAX_LINE_KEYS:
+            break
+    return list(keys)
+
+
+def _log_request_lines(key: str, lines: List[str]) -> None:
+    """Keep the line hashes of the logged request *key*; drop those of requests no longer logged."""
+    try:
+        path = request_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(_connect_log(path)) as conn, conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS request_lines (key TEXT PRIMARY KEY,"
+                " lines TEXT NOT NULL)",
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO request_lines (key, lines) VALUES (?, ?)",
+                (key, json.dumps(lines)),
+            )
+            conn.execute(
+                "DELETE FROM request_lines WHERE key NOT IN (SELECT key FROM requests)",
+            )
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(f"request lines not written: {type(exc).__name__}: {exc}")
+
+
+def logged_request_lines() -> List[frozenset]:
+    """The line hashes of each logged request but the current one, oldest first.
+
+    A request logged without them (before ``UNIFY_SHORTLIST_RELATED``) is
+    left out. Empty without a log.
+    """
+    path = request_log_path()
+    if not path.exists():
+        return []
+    current_key = current()
+    try:
+        with closing(_connect_log(path)) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'request_lines'",
+            ).fetchone()
+            if not exists:
+                return []
+            rows = conn.execute(
+                "SELECT r.key, l.lines FROM requests r JOIN request_lines l"
+                " ON l.key = r.key ORDER BY r.seq",
+            ).fetchall()
+    except sqlite3.Error as exc:
+        logger.warning(f"request lines not read: {type(exc).__name__}: {exc}")
+        return []
+    out = []
+    for key, lines in rows:
+        if key == current_key:
+            continue
+        try:
+            out.append(frozenset(json.loads(lines)))
+        except ValueError:
+            continue
+    return out
 
 
 def logged_requests() -> List[str]:

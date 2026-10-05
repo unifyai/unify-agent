@@ -3535,6 +3535,49 @@ class FunctionManager(BaseFunctionManager):
             rows.append(out)
         return rows
 
+    def _related_candidates(self) -> List[Dict[str, Any]]:
+        """``UNIFY_SHORTLIST_RELATED``: the stored functions in scope, for the possibly related tier.
+
+        Primitives excluded. Rows carry ``function_id``, ``name``,
+        ``argspec``, ``docstring`` and ``metadata`` (the statement and the
+        origin requests). No search hit is counted.
+        """
+        return [
+            {
+                key: row.get(key)
+                for key in ("function_id", "name", "argspec", "docstring", "metadata")
+            }
+            for row in self._rows(self._compositional_scope())
+        ]
+
+    def _set_use_when(self, name: str, statement: str) -> bool:
+        """``UNIFY_SHORTLIST_RELATED``: keep *statement* as the stored function *name*'s ``use_when``.
+
+        Only for a function in scope added or updated while handling the
+        current request (its origin records that request); ``False``
+        otherwise. The function's history is not touched.
+        """
+        from unify.actor.related_shortlist import STATEMENT
+
+        key = task_origin.current()
+        if key is None:
+            return False
+        rows = self._rows(
+            self._compositional_scope("name = ?"),
+            (str(name),),
+            limit=1,
+        )
+        if not rows:
+            return False
+        row = rows[0]
+        metadata = dict(row.get("metadata") or {})
+        if key not in (metadata.get(task_origin.FIELD) or []):
+            return False
+        metadata[STATEMENT] = statement
+        with db.transaction():
+            self._update_function(int(row["function_id"]), {"metadata": metadata})
+        return True
+
     def _similar_request_functions(
         self,
         threshold: float,

@@ -733,6 +733,41 @@ class GuidanceManager(BaseGuidanceManager):
             )
         return out
 
+    def _set_use_when(self, guidance_id: Any, statement: str) -> bool:
+        """``UNIFY_SHORTLIST_RELATED``: keep *statement* in the entry's recorded origin.
+
+        Only for an entry in scope (not built-in) whose origin records the
+        current request (``UNIFY_GUIDANCE_ORIGIN``: added or updated while
+        handling it); ``False`` otherwise. No guidance read returns it.
+        """
+        from ..actor.related_shortlist import STATEMENT
+        from ..function_manager import task_origin
+
+        key = task_origin.current()
+        try:
+            gid = int(guidance_id)
+        except (TypeError, ValueError):
+            return False
+        if key is None or not self._rows(
+            self._scope(f"is_builtin = 0 AND guidance_id = {gid}"),
+        ):
+            return False
+        row = db.query_one(
+            "SELECT origin FROM guidance WHERE guidance_id = ?",
+            (gid,),
+        )
+        origin = db.loads(row["origin"]) if row and row["origin"] else None
+        if not isinstance(origin, dict) or key not in (
+            origin.get(task_origin.FIELD) or []
+        ):
+            return False
+        origin[STATEMENT] = statement
+        db.execute(
+            "UPDATE guidance SET origin = ? WHERE guidance_id = ?",
+            (db.dumps(origin), gid),
+        )
+        return True
+
     @functools.wraps(BaseGuidanceManager.filter, updated=())
     def filter(
         self,

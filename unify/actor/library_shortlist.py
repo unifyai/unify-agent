@@ -53,6 +53,11 @@ first content line; ``UNIFY_LISTING_USAGE`` adds a function's call count and
 how the sessions of its last calls ended
 (:func:`~unify.function_manager.task_origin.listing_notes`).
 
+``UNIFY_SHORTLIST_RELATED`` follows the gated list with at most two
+"possibly related" entries ranked by the meaning of their "use this when"
+statements, under a header of their own, never bound
+(:mod:`unify.actor.related_shortlist`).
+
 ``UNIFY_CORE_BIND_LISTED`` (core tool surface): the caller passes *bind*,
 which binds the listed functions in the sandbox as a read would and says
 which are ``async def``; either header then says how to call a listed
@@ -383,12 +388,20 @@ def shortlist_block(
     by it before the text is written, and the header says how to call one.
     """
     if gate is not None:
-        return _gated_block(
+        block = _gated_block(
             function_manager,
             gate,
             functions=functions,
             guidance_manager=guidance_manager if guidance else None,
             bind=bind,
+        )
+        return _with_related(
+            block,
+            function_manager,
+            guidance_manager,
+            request,
+            functions=functions,
+            guidance=guidance,
         )
     from unify.actor import shortlist_lift
 
@@ -440,6 +453,36 @@ def shortlist_block(
     else:
         header = _HEADER_CALL if call else _HEADER
     return "\n".join([header, *lines])
+
+
+def _with_related(
+    block: Optional[str],
+    function_manager: Any,
+    guidance_manager: Any,
+    request: Any,
+    *,
+    functions: bool,
+    guidance: bool,
+) -> Optional[str]:
+    """``UNIFY_SHORTLIST_RELATED``: *block*, then the possibly related entries it did not list.
+
+    *block* unchanged while the switch is off. The tier's functions are
+    never bound (:mod:`unify.actor.related_shortlist`).
+    """
+    from unify.actor import related_shortlist
+
+    if not related_shortlist.enabled():
+        return block
+    related = related_shortlist.related_block(
+        function_manager,
+        guidance_manager,
+        request_text(request),
+        listed=shortlisted_names(block),
+        functions=functions,
+        guidance=guidance,
+    )
+    parts = [part for part in (block, related) if part]
+    return "\n\n".join(parts) if parts else None
 
 
 def _bind(bind: Optional[Binder], rows: Sequence[Dict[str, Any]]) -> Dict[str, bool]:

@@ -2357,6 +2357,11 @@ def _origin_link_notes(
     if recurrence_note:
         review_parts.append(recurrence_note + "\n\n")
         gate_parts.append(recurrence_note)
+    # UNIFY_SHORTLIST_RELATED: a statement for each entry the review writes.
+    from unify.actor import related_shortlist
+
+    if related_shortlist.enabled():
+        review_parts.append(related_shortlist.REVIEW_SECTION)
     if _review_outcome.enabled():
         review_parts.append(_review_outcome.REVIEW_SECTION)
         gate_parts.append(_review_outcome.GATE_SECTION)
@@ -3936,6 +3941,15 @@ class _StorageCheckHandle(SteerableToolHandle):
                         ),
                         gate_judgement,
                     )
+                    # UNIFY_SHORTLIST_RELATED: keep the statements it wrote.
+                    if storage_success:
+                        from unify.actor import related_shortlist
+
+                        related_shortlist.record_statements(
+                            storage_summary,
+                            getattr(self._actor, "function_manager", None),
+                            getattr(self._actor, "guidance_manager", None),
+                        )
 
                     await publish_manager_method_event(
                         _sc_call_id,
@@ -6150,6 +6164,10 @@ class CodeActActor(BaseCodeActActor):
             from unify.actor.library_shortlist import require_gate_prerequisites
 
             require_gate_prerequisites()
+        # UNIFY_SHORTLIST_RELATED: refuse a tier with no gated list to follow.
+        from unify.actor import related_shortlist as _related
+
+        _related.require_prerequisites()
         # UNIFY_ORIGIN_PROVENANCE, UNIFY_REVIEW_RECURRENCE: refuse a switch
         # that could never say anything.
         _task_origin.require_origin_link_prerequisites()
