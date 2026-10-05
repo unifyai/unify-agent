@@ -6047,6 +6047,10 @@ class CodeActActor(BaseCodeActActor):
 
         if cell_state.enabled():
             cell_state.correct_tools(tools)
+        # UNIFY_CODE_ONLY_CELLS: what the cell tool asks for.
+        from unify.actor import code_cells
+
+        code_cells.correct_tools(tools, self.environments)
         return tools
 
     @functools.wraps(BaseCodeActActor.act, updated=())

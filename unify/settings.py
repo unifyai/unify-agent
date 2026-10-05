@@ -395,6 +395,17 @@ class ProductionSettings(BaseSettings):
     # read the conversation it passes); and the session tools are named only
     # where they are offered. Off: as shipped.
     UNIFY_PROMPT_TRIM: bool = False
+    # execute_code requires a one-sentence ``thought`` "shown to the user as
+    # the rationale for this step" and takes ``code`` as an optional, nullable
+    # argument. At low effort the model answers in the thought: 54-66% of its
+    # cells in the Python-tool-mode ARC LOW runs were narration (a printed
+    # sentence, a comment, None) with the reasoning in the thought and 0
+    # reasoning tokens. On: ``code`` is the cell tool's only required
+    # argument (a string), the cell tool takes no ``thought``, and without a
+    # primitives environment it does not offer include_parent_chat_context
+    # (only primitives read it) (unify/actor/code_cells.py). execute_function
+    # is unchanged. Off: as shipped.
+    UNIFY_CODE_ONLY_CELLS: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome
