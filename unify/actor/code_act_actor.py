@@ -1036,15 +1036,23 @@ def render_generalise_note(rows: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n\n"
 
 
-def _review_generalise_note(function_manager: Any) -> str:
-    """``UNIFY_REVIEW_GENERALISE``: the section for this review, or "" (off, none, or unreadable)."""
+def _review_generalise_note(function_manager: Any, guidance_manager: Any = None) -> str:
+    """``UNIFY_REVIEW_GENERALISE``: the section for this review, or "" (off, none, or unreadable).
+
+    With ``UNIFY_GUIDANCE_ORIGIN`` the guidance entries' recorded requests
+    weigh the scores too, as in the gated shortlist.
+    """
     if not _review_generalise_enabled() or function_manager is None:
         return ""
     ranked = getattr(function_manager, "_similar_request_functions", None)
     if not callable(ranked):
         return ""
     try:
-        rows = ranked(_generalise_threshold(), _GENERALISE_MAX_FUNCTIONS)
+        args: list = [_generalise_threshold(), _GENERALISE_MAX_FUNCTIONS]
+        origin_rows = getattr(guidance_manager, "_origin_rows", None)
+        if _task_origin.guidance_enabled() and callable(origin_rows):
+            args.append(origin_rows())
+        rows = ranked(*args)
     except Exception as exc:  # an aid; never blocks the review
         logger.warning(
             f"similar-request functions not listed: {type(exc).__name__}: {exc}",
@@ -2617,7 +2625,7 @@ def _start_storage_check_loop(
         return None
     # UNIFY_REVIEW_GENERALISE (not for a lessons-only review, which stores
     # no functions).
-    generalise_note = "" if lessons else _review_generalise_note(fm)
+    generalise_note = "" if lessons else _review_generalise_note(fm, gm)
     tools, storage_active_lines, dormant_lines = _build_storage_tools(
         actor=actor,
         ask_tools=ask_tools,

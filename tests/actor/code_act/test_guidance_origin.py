@@ -290,6 +290,63 @@ def test_functions_and_guidance_share_the_five_places(switches):
     assert guidance
 
 
+@_handle_project
+def test_the_review_scores_functions_as_the_shortlist_with_guidance(
+    switches,
+    monkeypatch,
+):
+    """``UNIFY_REVIEW_GENERALISE`` shows the score the gated shortlist showed.
+
+    Guidance origins weigh the requests' words in the shortlist, so the
+    review's list of functions stored for similar requests weighs them too.
+    """
+    from unify.actor import code_act_actor as caa
+    from unify.function_manager.function_manager import FunctionManager
+
+    switches()
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GENERALISE", True)
+    fm, gm = FunctionManager(), GuidanceManager()
+    _in_task(FIRST, lambda: fm.add_functions(implementations=_source("double", 2)))
+    for name, factor, request in OTHERS:
+        _in_task(
+            request,
+            lambda: fm.add_functions(implementations=_source(name, factor)),
+        )
+        _in_task(request, lambda: _add(gm, f"About {name}", f"Use {name}."))
+    _in_task(UNRELATED, lambda: _add(gm, "Dinners", "Plan the week first."))
+    gated = _in_task(
+        AGAIN,
+        lambda: fm._gated_shortlist_rows(0.175, 5, gm._origin_rows()),
+    )
+    shown = {r["name"]: r["similar_request"] for r in gated if r["kind"] == "function"}
+    assert "double" in shown
+    reviewed = _in_task(
+        AGAIN,
+        lambda: fm._similar_request_functions(0.175, 5, gm._origin_rows()),
+    )
+    # Guidance takes some of the shortlist's places; the functions both
+    # list carry the same score.
+    scores = {r["name"]: r["similar_request"] for r in reviewed}
+    assert {name: scores.get(name) for name in shown} == shown
+    # Weighed over the functions alone, the score would differ.
+    alone = _in_task(AGAIN, lambda: fm._similar_request_functions(0.175, 5))
+    assert {r["name"]: r["similar_request"] for r in alone}["double"] != shown["double"]
+    # The review's note asks with the guidance rows, and only while the
+    # switch is on.
+    asked = []
+
+    class _Fake:
+        def _similar_request_functions(self, *args):
+            asked.append(args)
+            return []
+
+    _in_task(AGAIN, lambda: caa._review_generalise_note(_Fake(), gm))
+    assert len(asked[-1]) == 3 and asked[-1][2] == gm._origin_rows()
+    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_ORIGIN", False)
+    _in_task(AGAIN, lambda: caa._review_generalise_note(_Fake(), gm))
+    assert len(asked[-1]) == 2
+
+
 def test_the_guidance_line_is_labelled():
     row = {
         "guidance_id": 7,
