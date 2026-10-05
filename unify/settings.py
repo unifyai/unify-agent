@@ -317,6 +317,16 @@ class ProductionSettings(BaseSettings):
     # generalised rather than duplicated -- and stores a short guidance
     # entry linked to the functions as well. Empty: as shipped.
     UNIFY_CURATION_DOCTRINE: str = ""
+    # The storage review is shown the stored functions saved while handling
+    # requests similar to this session's (``similar_request`` at least the
+    # ``UNIFY_SHORTLIST_GATE`` threshold when that is set, else 0.24), at
+    # most 3, each with its signature, score, call count and source, and is
+    # told that when the session did the same kind of task it can extend or
+    # correct one of them to cover this instance too rather than store a
+    # sibling. Needs ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``): an actor
+    # refuses to start without it. Nothing is listed when no function
+    # passes. Off: as shipped.
+    UNIFY_REVIEW_GENERALISE: bool = False
     # The actor's prompt states that actions the requester asks to be taken by
     # replying in a stated format are only ever the actor's own final reply:
     # they are not functions or primitives, and no code or sub-agent can take
@@ -726,6 +736,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_PROMPT_ACCURACY",
         "UNIFY_REVIEW_GATE",
+        "UNIFY_REVIEW_GENERALISE",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_STORE_ASYNC_CHECK",
