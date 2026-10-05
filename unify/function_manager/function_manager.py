@@ -1466,6 +1466,15 @@ class FunctionManager(BaseFunctionManager):
             if status == "updated" or status.startswith(("updated; ", "added")):
                 results[name] = f"{status}; warning: {warning}"
 
+        # UNIFY_STORE_ASYNC_CHECK: awaits of synchronous environment methods,
+        # in what was just written and across the stored library.
+        if self._async_check_enabled():
+            for name, warning in self._async_check_warnings(
+                list(dict.fromkeys(name for name, *_ in parsed)),
+                results,
+            ).items():
+                results[name] = f"{results[name]}; warning: {warning}"
+
         # Check for errors and raise if requested
         if raise_on_error:
             errors = {k: v for k, v in results.items() if v.startswith("error")}
@@ -1474,6 +1483,51 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(f"Failed to add function(s): {error_details}")
 
         return results
+
+    # ------------------------------------------------------------------ #
+    #  Awaited synchronous methods (UNIFY_STORE_ASYNC_CHECK)              #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _async_check_enabled() -> bool:
+        from . import store_async_check
+
+        return store_async_check.enabled()
+
+    def _async_check_warnings(
+        self,
+        names: List[str],
+        results: Dict[str, str],
+    ) -> Dict[str, str]:
+        """Warnings for the functions just stored that await a synchronous environment method.
+
+        Reads the stored library after the write, so the list of other
+        functions with the pattern is what a later search would load. Only
+        functions whose status says they were stored are warned; nothing is
+        refused.
+        """
+        from . import store_async_check
+
+        written = [
+            name
+            for name in names
+            if results.get(name, "").startswith(("added", "updated"))
+        ]
+        if not written:
+            return {}
+        sync_methods = store_async_check.synchronous_methods()
+        if not any(sync_methods.values()):
+            return {}
+        try:
+            sources = self._stored_sources()
+        except Exception as exc:
+            logger.warning(
+                "UNIFY_STORE_ASYNC_CHECK could not read the library: %s",
+                exc,
+            )
+            return {}
+        hits = store_async_check.library_hits(sources, sync_methods)
+        return store_async_check.warnings_for(written, hits)
 
     # ------------------------------------------------------------------ #
     #  Near-duplicate warning (UNIFY_STORE_DEDUPE=warn)                   #

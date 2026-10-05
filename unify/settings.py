@@ -122,6 +122,15 @@ class ProductionSettings(BaseSettings):
     # would load it; otherwise ``add_functions`` refuses it and says why.
     # Empty stores without the check.
     UNIFY_STORE_CHECK: str = ""
+    # On: after ``add_functions`` or ``patch_function`` stores a function,
+    # the stored library is read for ``await primitives.<namespace>.<method>(...)``
+    # where the registered environment method is synchronous (awaiting its
+    # plain return value raises TypeError when the function runs), and the
+    # result carries a warning naming each such line in the function just
+    # written and every other stored function with the same pattern. It
+    # informs and never refuses (unify/function_manager/store_async_check.py).
+    # Off stores as shipped.
+    UNIFY_STORE_ASYNC_CHECK: bool = False
     # On: a function or guidance entry is checked, before it is stored, for
     # identifiers of the session's own task instance: id-like tokens (hex
     # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
@@ -656,6 +665,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_GATE",
         "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
+        "UNIFY_STORE_ASYNC_CHECK",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
