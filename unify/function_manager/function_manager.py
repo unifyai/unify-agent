@@ -1113,6 +1113,10 @@ class FunctionManager(BaseFunctionManager):
         with db.transaction() as conn:
             conn.execute("DELETE FROM functions")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'functions'")
+        # UNIFY_ENTRY_RECORD: links to ids that will be given out again.
+        from . import entry_links
+
+        entry_links.clear()
         self._next_id = None
         self._in_process_sessions.clear()
 

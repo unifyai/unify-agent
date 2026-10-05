@@ -103,6 +103,12 @@ def drop(*, function_id: int | None = None, guidance_id: int | None = None) -> N
         logger.warning(f"entry links not removed: {type(exc).__name__}: {exc}")
 
 
+def clear() -> None:
+    """Remove every link (when the functions or the guidance are cleared and their ids restart)."""
+    if _exists():
+        db.execute(f"DELETE FROM {TABLE}")
+
+
 def links() -> Set[Tuple[int, int]]:
     """Every ``(function_id, guidance_id)`` link (the table is created and filled first)."""
     ensure()
@@ -138,6 +144,7 @@ def functions_of(guidance_id: int) -> List[int]:
 
 __all__ = [
     "TABLE",
+    "clear",
     "drop",
     "enabled",
     "ensure",

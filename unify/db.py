@@ -420,6 +420,11 @@ def clear() -> None:
         for table in USER_TABLES:
             conn.execute(f"DELETE FROM {table}")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+        # UNIFY_ENTRY_RECORD: the link table, which only that switch creates.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_links'",
+        ).fetchone():
+            conn.execute("DELETE FROM entry_links")
 
 
 __all__ = [

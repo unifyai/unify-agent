@@ -29,6 +29,16 @@ OTHER = "Summarise the customer feedback from last week in three bullets."
 
 
 @pytest.fixture(autouse=True)
+def fresh_store(monkeypatch, tmp_path):
+    """Each test on a store and request log of its own (no table another test made)."""
+    monkeypatch.setenv("UNIFY_STORE_PATH", str(tmp_path / "store.sqlite"))
+    monkeypatch.setenv("UNIFY_HOME", str(tmp_path / "home"))
+    db.reset_store()
+    yield
+    db.reset_store()
+
+
+@pytest.fixture(autouse=True)
 def fake_embeddings(monkeypatch):
     """Searches rank with a fake embedder: nothing reaches a model."""
     import hashlib

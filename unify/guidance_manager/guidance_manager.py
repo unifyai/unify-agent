@@ -339,6 +339,10 @@ class GuidanceManager(BaseGuidanceManager):
         with db.transaction() as conn:
             conn.execute("DELETE FROM guidance")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'guidance'")
+        # UNIFY_ENTRY_RECORD: links to ids that will be given out again.
+        from ..function_manager import entry_links
+
+        entry_links.clear()
 
     # -- Writes -----------------------------------------------------------------
 
