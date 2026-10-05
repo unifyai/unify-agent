@@ -6047,8 +6047,8 @@ class CodeActActor(BaseCodeActActor):
 
         if cell_state.enabled():
             cell_state.correct_tools(tools)
-        # UNIFY_CODE_ONLY_CELLS, UNIFY_PLAIN_CELL_OUTPUT: what the cell tool
-        # asks for and shows.
+        # UNIFY_CODE_ONLY_CELLS, UNIFY_PLAIN_CELL_OUTPUT, UNIFY_CODE_EXAMPLE_TURN:
+        # what the cell tool asks for, shows and exemplifies.
         from unify.actor import code_cells
 
         code_cells.correct_tools(tools, self.environments)

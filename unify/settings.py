@@ -417,6 +417,12 @@ class ProductionSettings(BaseSettings):
     # in, is the cell's ``Out:``. The cell tool's description says what the
     # output is. Off: as shipped.
     UNIFY_PLAIN_CELL_OUTPUT: bool = False
+    # On: execute_code's description ends with one worked turn, on no domain:
+    # a cell that loads data into a variable, a cell that computes on it and
+    # shows the value as its last expression, then a reply in the requester's
+    # format; it notes that taking an action the requester defines needs no
+    # cell. Off: as shipped.
+    UNIFY_CODE_EXAMPLE_TURN: bool = False
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome

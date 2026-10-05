@@ -1,38 +1,44 @@
-"""Symbolic: what the code-cell tool asks for and shows.
+"""Symbolic and sandboxed: what the code-cell tool asks for, shows and exemplifies.
 
 In the Python-tool-mode ARC LOW runs (af8958e5d) 54-66% of the model's cells
 were narration: a printed sentence, a comment or ``None``, with the reasoning
 in ``execute_code``'s required ``thought`` ("shown to the user as the
-rationale for this step") and no reasoning tokens, and each result came back
-as a JSON envelope of session metadata before what the cell printed. Two
+rationale for this step") and no reasoning tokens. Each result came back as a
+JSON envelope of session metadata before what the cell printed, and nothing
+showed a turn that computes in a cell, reads the output and replies. Three
 off-by-default switches (unify/actor/code_cells.py):
 
 * ``UNIFY_CODE_ONLY_CELLS``: ``code`` is the only required argument and there
   is no ``thought``; without primitives, no ``include_parent_chat_context``.
 * ``UNIFY_PLAIN_CELL_OUTPUT``: a result reads as a notebook cell's: stdout,
-  stderr, ``Out: <repr>``, the traceback (tests/actor/code_act/
-  test_plain_cell_output.py); here, the description that says so.
+  stderr, ``Out: <repr>``, the traceback.
+* ``UNIFY_CODE_EXAMPLE_TURN``: one worked turn, on no domain, in the tool's
+  description.
 
 The model, where there is one, is the scripted transport of
-tests/cache_discipline_helpers.py.
+tests/cache_discipline_helpers.py; the last tests' cells run in the real
+sandboxed worker.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from tests.helpers import _handle_project
-from unify.actor import core_surface
+from unify.actor import code_cells, core_surface
 from unify.common.llm_helpers import method_to_schema
 from unify.settings import ProductionSettings, SETTINGS
 
 SWITCHES = (
     "UNIFY_CODE_ONLY_CELLS",
     "UNIFY_PLAIN_CELL_OUTPUT",
+    "UNIFY_CODE_EXAMPLE_TURN",
 )
 
 
@@ -216,3 +222,121 @@ def test_the_plain_description_composes_with_stateful_cells(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_PLAIN_CELL_OUTPUT", True)
     on = _code_tool(_actor())["description"]
     assert "session_id" not in on and "``Out: <repr>``" in on
+
+
+# ── UNIFY_CODE_EXAMPLE_TURN ──────────────────────────────────────────────────
+
+# Words of the benchmarks the switch was found on; the turn must not use any.
+BENCHMARK_WORDS = re.compile(
+    r"\b(arc|grid|puzzle|demo|submit|task id|appworld|scienceworld|crafter)\b",
+    re.I,
+)
+
+
+@pytest.mark.parametrize("core", [False, True])
+def test_the_description_ends_with_one_worked_turn(workspace, core, monkeypatch):
+    shipped = _code_tool(_actor(), core=core)["description"]
+    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_EXAMPLE_TURN", True)
+    on = _code_tool(_actor(), core=core)["description"]
+    assert on.startswith(shipped.rstrip())
+    turn = on[len(shipped.rstrip()) :].strip()
+    assert turn == code_cells.EXAMPLE_TURN
+    assert turn.count("Example turn") == 1
+    assert "reply in the requester's format" in turn
+    assert "No cell is needed to take an action" in turn
+    assert not BENCHMARK_WORDS.search(turn), BENCHMARK_WORDS.search(turn)
+
+
+def test_the_example_runs_as_written():
+    """The two cells of the example compute what it says they show."""
+    blocks = re.findall(r"::\n\n((?:    .*\n?)+)", code_cells.EXAMPLE_TURN)
+    namespace: dict = {}
+    for block in blocks:
+        exec("\n".join(line[4:] for line in block.splitlines()), namespace)
+    assert namespace["total"] == pytest.approx(3 * 1.25 + 2 * 4.0)
+
+
+def test_core_keeps_the_turn_after_the_steering_section_is_removed(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_EXAMPLE_TURN", True)
+    on = _code_tool(_actor(), core=True)["description"]
+    assert "Steering while the block runs" not in on
+    assert on.rstrip().endswith("defines is taken by replying.")
+
+
+# ── all of them, in the real sandboxed worker ───────────────────────────────
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+@_handle_project
+@pytest.mark.parametrize("surface", ["", "core"])
+async def test_cells_in_the_sandboxed_worker_read_as_a_notebook(
+    world,  # noqa: F811
+    monkeypatch,
+    surface,
+):
+    """Lean prompt, worker Python, the lean fixes and the three switches on:
+    the tool asks for ``code`` only; the results carry what the cells printed,
+    their last values and the traceback, and no session metadata."""
+    from unify import db
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.guidance_manager.guidance_manager import GuidanceManager
+
+    if surface == "core":
+        (world["state"] / "store.sqlite").unlink()
+        db.reset_store()
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
+    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
+    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
+    for name in ("UNIFY_STATEFUL_CELLS", "UNIFY_PROMPT_TRIM", *SWITCHES):
+        monkeypatch.setattr(SETTINGS, name, True)
+    actor = _actor(
+        function_manager=FunctionManager(include_primitives=False),
+        guidance_manager=GuidanceManager(),
+        can_store=False,
+    )
+    replies = (
+        _cell('items = [("pen", 3, 1.25), ("pad", 2, 4.0)]'),
+        _cell(
+            "import sys\nprint('isolated', sys.flags.isolated)\n"
+            "total = sum(q * p for _, q, p in items)\ntotal",
+        ),
+        _cell("import sys\nprint('warn', file=sys.stderr)\n{'n': len(items)}"),
+        _cell("items[5]"),
+        lambda: h.completion(content="11.75"),
+    )
+    try:
+        with h.scripted(replies) as provider:
+            handle = await actor.act("What do the items cost?", persist=False)
+            result = await asyncio.wait_for(handle.result(), 150)
+    finally:
+        await actor.close()
+        if surface == "core":
+            db.reset_store()
+    assert result == "11.75"
+    tool = next(
+        t
+        for t in provider.requests[0]["tools"]
+        if t["function"]["name"] == "execute_code"
+    )["function"]
+    assert tool["parameters"]["required"] == ["code"]
+    assert set(tool["parameters"]["properties"]) == {"code", "language"}
+    assert code_cells.EXAMPLE_TURN.splitlines()[0] in tool["description"]
+    replies_seen = [
+        m["content"]
+        for m in provider.requests[-1]["messages"]
+        if m.get("role") == "tool"
+    ]
+    texts = [
+        "".join(b["text"] for b in c if b.get("type") == "text") for c in replies_seen
+    ]
+    assert texts[0] == "(no output)"
+    # The cells ran in the worker (``python -I``) and kept ``items``.
+    assert texts[1] == "isolated 1\nOut: 11.75"
+    assert texts[2] == "[stderr]\nwarn\nOut: {'n': 2}", texts[2]
+    assert "IndexError" in texts[3] and not texts[3].startswith("{"), texts[3]
+    for text in texts:
+        for word in ("session_created", "duration_ms", "state_mode", "--- stdout"):
+            assert word not in text, text

@@ -1,5 +1,5 @@
-"""What the code-cell tool asks for and shows: ``UNIFY_CODE_ONLY_CELLS`` and
-``UNIFY_PLAIN_CELL_OUTPUT``.
+"""What the code-cell tool asks for and shows: ``UNIFY_CODE_ONLY_CELLS``,
+``UNIFY_PLAIN_CELL_OUTPUT`` and ``UNIFY_CODE_EXAMPLE_TURN``.
 
 As shipped ``execute_code`` requires a ``thought``, "a brief, first-person,
 one-sentence explanation ... shown to the user as the rationale for this
@@ -21,6 +21,11 @@ by the tool loop's unknown-argument rule, naming the tool's parameters.
 :meth:`~unify.actor.execution.types.ExecutionResult.to_llm_content` then
 shows: what the cell printed, the last expression's value, the traceback.
 
+``UNIFY_CODE_EXAMPLE_TURN``: the description ends with one worked turn on no
+domain: bind the given data once, compute on it, show the value as the last
+expression, reply in the requester's format; an action the requester defines
+needs no cell.
+
 Each switch changes only the actor's own copy of the tool (the tools are built
 per actor), on the JSON surface and, since the core surface copies the same
 function, on ``UNIFY_TOOL_SURFACE=core``.
@@ -35,10 +40,12 @@ import re
 from typing import Any, Callable, Dict, Mapping
 
 __all__ = [
+    "EXAMPLE_TURN",
     "PLAIN_OUTPUT",
     "code_only",
     "correct_tools",
     "describe_output",
+    "example_turn",
     "plain_output",
 ]
 
@@ -55,6 +62,10 @@ def code_only() -> bool:
 
 def plain_output() -> bool:
     return _setting("UNIFY_PLAIN_CELL_OUTPUT")
+
+
+def example_turn() -> bool:
+    return _setting("UNIFY_CODE_EXAMPLE_TURN")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +104,45 @@ def describe_output(doc: str) -> str:
     doc = _OUTPUT_SECTION.sub(section, doc, count=1)
     # The workspace's bash bullet (unify/actor/workspace_tools.py).
     return _BASH_RESULT.sub(r"``Out:``\g<ws>is the exit status", doc, count=1)
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_CODE_EXAMPLE_TURN
+# ---------------------------------------------------------------------------
+
+#: The worked turn, at column 0 (indented to the description's own margin).
+EXAMPLE_TURN = """Example turn
+------------
+Cell 1 binds what the request gives, once; later cells use the
+name instead of copying the values again::
+
+    items = [("pen", 3, 1.25), ("pad", 2, 4.0)]
+
+Cell 2 computes on it and ends with the value to see, which the
+output shows::
+
+    total = sum(qty * price for _, qty, price in items)
+    total
+
+Then reply in the requester's format with what the cells showed.
+No cell is needed to take an action: an action the requester
+defines is taken by replying."""
+
+
+def _margin(doc: str) -> str:
+    """The indentation of *doc*'s body lines (its first line has none)."""
+    margins = [
+        len(line) - len(line.lstrip()) for line in doc.splitlines()[1:] if line.strip()
+    ]
+    return " " * (min(margins) if margins else 0)
+
+
+def with_example_turn(doc: str) -> str:
+    margin = _margin(doc)
+    turn = "\n".join(
+        (margin + line) if line else "" for line in EXAMPLE_TURN.splitlines()
+    )
+    return doc.rstrip() + "\n\n" + turn + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -151,12 +201,14 @@ def correct_tools(
     from unify.common.tool_spec import ToolSpec
 
     tool = tools.get("execute_code")
-    if tool is None or not (plain_output() or code_only()):
+    if tool is None or not (plain_output() or example_turn() or code_only()):
         return
     fn = tool.fn if isinstance(tool, ToolSpec) else tool
     doc = fn.__doc__ or ""
     if plain_output():
         doc = describe_output(doc)
+    if example_turn():
+        doc = with_example_turn(doc)
     if code_only():
         fn = _code_only_tool(
             fn,
