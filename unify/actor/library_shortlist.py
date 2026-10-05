@@ -45,6 +45,14 @@ request less the mean similarity to recent requests,
 :mod:`unify.actor.shortlist_lift`) once the stream has enough history, under
 its own header.
 
+``UNIFY_LISTING_PROVENANCE`` follows every listed entry, in either list, with
+an ``origin:`` line (:meth:`~unify.function_manager.task_origin.Marker.origin_line`);
+``UNIFY_LESSON_STATUS`` lists a guidance entry from a session whose answer was
+not accepted, or whose outcome is unknown, as unverified and without its
+first content line; ``UNIFY_LISTING_USAGE`` adds a function's call count and
+how the sessions of its last calls ended
+(:func:`~unify.function_manager.task_origin.listing_notes`).
+
 ``UNIFY_CORE_BIND_LISTED`` (core tool surface): the caller passes *bind*,
 which binds the listed functions in the sandbox as a read would and says
 which are ``async def``; either header then says how to call a listed
@@ -55,6 +63,8 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+from unify.function_manager import task_origin
 
 logger = logging.getLogger(__name__)
 
@@ -150,13 +160,29 @@ def _function_line(row: Dict[str, Any], is_async: bool = False) -> str:
         line += f": {summary}"
     if row.get("similar_request") is not None:
         line += f" [similar_request {row['similar_request']}]"
-    return line + _origin_suffix(row)
+    # UNIFY_LISTING_USAGE
+    usage = row.get(task_origin.USAGE)
+    if usage:
+        line += f" [{usage}]"
+    return line + _origin_suffix(row) + _origin_line(row)
 
 
 def _origin_suffix(row: Dict[str, Any]) -> str:
-    """``UNIFY_ORIGIN_PROVENANCE``: `` (<why>)`` when the row says why it is marked."""
+    """``UNIFY_ORIGIN_PROVENANCE``: `` (<why>)`` when the row says why it is marked.
+
+    Left out when the row has an ``origin:`` line (``UNIFY_LISTING_PROVENANCE``),
+    which says the same and more.
+    """
     why = row.get("origin")
+    if task_origin.ORIGIN_LINE in row:
+        return ""
     return f" ({why})" if isinstance(why, str) and why else ""
+
+
+def _origin_line(row: Dict[str, Any]) -> str:
+    """``UNIFY_LISTING_PROVENANCE``: the entry's ``origin:`` line, indented under it."""
+    text = row.get(task_origin.ORIGIN_LINE)
+    return f"\n  origin: {text}" if text else ""
 
 
 def _gated_function_line(row: Dict[str, Any], is_async: bool = False) -> str:
@@ -168,15 +194,22 @@ def _gated_function_line(row: Dict[str, Any], is_async: bool = False) -> str:
         line += f": {summary}"
     score = float(row.get("similar_request") or 0.0)
     calls = int(row.get("usage_calls") or 0)
+    # UNIFY_LISTING_USAGE: the call count with how its sessions ended.
+    usage = row.get(task_origin.USAGE) or f"used {calls}×"
     return (
-        line + f" [similar_request {score:.2f} · used {calls}×]" + _origin_suffix(row)
+        line
+        + f" [similar_request {score:.2f} · {usage}]"
+        + _origin_suffix(row)
+        + _origin_line(row)
     )
 
 
 def _gated_guidance_line(row: Dict[str, Any]) -> str:
     """``UNIFY_GUIDANCE_ORIGIN``: a guidance entry in the gated list."""
     score = float(row.get("similar_request") or 0.0)
-    return _guidance_line(row) + f" [similar_request {score:.2f}]"
+    line = _guidance_line(row)
+    head, sep, tail = line.partition("\n")
+    return head + f" [similar_request {score:.2f}]" + sep + tail
 
 
 def gate_rows(
@@ -235,10 +268,14 @@ def require_gate_prerequisites() -> None:
 
 def _guidance_line(row: Dict[str, Any]) -> str:
     line = f"- guidance {row.get('guidance_id')} `{_first_line(row.get('title'))}`"
+    # UNIFY_LESSON_STATUS: an unverified lesson's first line is not shown.
+    status = row.get(task_origin.LESSON)
+    if status:
+        return line + f" ({status})" + _origin_line(row)
     summary = _first_line(row.get("content"))
     if summary:
         line += f": {summary}"
-    return line
+    return line + _origin_line(row)
 
 
 def _lift_rows(
@@ -264,6 +301,35 @@ def _lift_rows(
         if callable(ranked):
             pool += [("guidance", row) for row in ranked(text, 1 << 30)]
     return shortlist_lift.rank(pool, text, chosen, k_list=k)
+
+
+def _with_notes(
+    rows: List[tuple[str, Dict[str, Any]]],
+    function_manager: Any,
+    guidance_manager: Any,
+) -> List[tuple[str, Dict[str, Any]]]:
+    """The listing switches' notes on each row (``UNIFY_LISTING_PROVENANCE`` and its siblings).
+
+    Scored as the gated list scores: over the stored functions and the
+    guidance entries with a recorded request.
+    """
+    library = getattr(function_manager, "_library_rows", None)
+    origins = getattr(guidance_manager, "_origin_rows", None)
+    functions = list(library()) if callable(library) else []
+    guidance = list(origins()) if callable(origins) else []
+    marker = task_origin.Marker([*functions, *guidance])
+    by_function = {row.get("function_id"): row for row in functions}
+    by_guidance = {row.get("guidance_id"): row for row in guidance}
+    out = []
+    for kind, row in rows:
+        if kind == "function":
+            stored = by_function.get(row.get("function_id")) or {}
+            source = {**stored, "name": row.get("name")}
+        else:
+            stored = by_guidance.get(row.get("guidance_id")) or {}
+            source = {**stored, "is_builtin": row.get("is_builtin")}
+        out.append((kind, {**row, **task_origin.listing_notes(marker, kind, source)}))
+    return out
 
 
 def shortlist_rows(
@@ -352,6 +418,8 @@ def shortlist_block(
                 guidance=guidance,
             )
         )
+        if rows and task_origin.listing_notes_enabled():
+            rows = _with_notes(rows, function_manager, guidance_manager)
     except Exception as exc:
         logger.debug(f"library shortlist unavailable: {type(exc).__name__}: {exc}")
         return None

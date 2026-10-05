@@ -22,11 +22,12 @@ def _origin_for(guidance_id: Optional[int]) -> Optional[str]:
     """``UNIFY_GUIDANCE_ORIGIN``: the entry's ``origin`` with the current request added.
 
     The JSON to store, or ``None`` while the switch is off or no request is
-    keyed (the column is then left as it is).
+    keyed (the column is then left as it is). ``UNIFY_LISTING_PROVENANCE``
+    and ``UNIFY_LESSON_STATUS`` record it too, for the shortlist's lines.
     """
     from ..function_manager import task_origin
 
-    if not task_origin.guidance_enabled():
+    if not task_origin.guidance_recorded():
         return None
     prior = None
     if guidance_id is not None:
@@ -684,12 +685,17 @@ class GuidanceManager(BaseGuidanceManager):
             limit=k,
             id_field="guidance_id",
         )
+        from ..function_manager import task_origin
+
+        notes = task_origin.listing_notes_enabled()
         return [
             {
                 "guidance_id": row.get("guidance_id"),
                 "title": row.get("title"),
                 "content": row.get("content"),
                 "_similarity": float(row.get("_similarity") or 0.0),
+                # UNIFY_LESSON_STATUS: a built-in entry is not a lesson.
+                **({"is_builtin": bool(row.get("is_builtin"))} if notes else {}),
             }
             for row in rows
         ]

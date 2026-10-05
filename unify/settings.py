@@ -691,6 +691,41 @@ class ProductionSettings(BaseSettings):
     # An actor refuses to start with this set and the shortlist off or
     # gated. Empty: as shipped.
     UNIFY_SHORTLIST_LIFT: str = ""
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): every function and
+    # guidance entry the shortlist lists (ranked or gated) is followed by an
+    # ``origin:`` line, whether or not it is marked ``similar_request``: the
+    # rare identifiers the request it was stored or written for shares with
+    # this one (UNIFY_ORIGIN_PROVENANCE's rule), or that it was this same
+    # request, or that they share none; and whether that session's answer
+    # was accepted or not (the checker's outcome, kept with UNIFY_OUTCOME,
+    # else the review's judgement, kept with UNIFY_REVIEW_OUTCOME) or its
+    # outcome is unknown. Guidance entries record the request they were
+    # written for as under UNIFY_GUIDANCE_ORIGIN (without its gated
+    # listing). UNIFY_ORIGIN_PROVENANCE's parenthesis is then left out of a
+    # listed line. It informs; nothing is hidden or asked. An actor refuses
+    # to start with this on and request records off. Off: as shipped.
+    UNIFY_LISTING_PROVENANCE: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a guidance entry the
+    # shortlist lists that was written in a session whose answer was not
+    # accepted, or whose outcome is unknown (no checker outcome or review
+    # judgement kept for any request it was written for), is listed with its
+    # title and ``(unverified: ...)`` saying which, and without its first
+    # content line, so no lesson of an unchecked session reads as a rule.
+    # Built-in entries are not lessons and are listed as shipped. Guidance
+    # records its requests as under UNIFY_LISTING_PROVENANCE. An actor
+    # refuses to start with this on and request records off. Off: as
+    # shipped.
+    UNIFY_LESSON_STATUS: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each call of a stored
+    # function keeps the request it ran under (a hash, the latest three per
+    # function, in ``<UNIFY_HOME>/request_log.sqlite``), and every function
+    # the shortlist lists shows how often it was called and how many of its
+    # last three recorded calls ran in a session whose answer was not
+    # accepted, or whose outcome is unknown (outcomes as for
+    # UNIFY_LISTING_PROVENANCE). It informs; nothing is hidden. An actor
+    # refuses to start with this on and request records off. Off: as
+    # shipped.
+    UNIFY_LISTING_USAGE: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -927,6 +962,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
         "UNIFY_GUIDANCE_LINKED_NAMES",
+        "UNIFY_LISTING_PROVENANCE",
+        "UNIFY_LESSON_STATUS",
+        "UNIFY_LISTING_USAGE",
         mode="before",
     )
     @classmethod

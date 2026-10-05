@@ -262,6 +262,45 @@ def provenance_enabled() -> bool:
     return enabled() and bool(getattr(SETTINGS, "UNIFY_ORIGIN_PROVENANCE", False))
 
 
+def listing_provenance_enabled() -> bool:
+    """``UNIFY_LISTING_PROVENANCE`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_LISTING_PROVENANCE", False))
+
+
+def lesson_status_enabled() -> bool:
+    """``UNIFY_LESSON_STATUS`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_LESSON_STATUS", False))
+
+
+def listing_usage_enabled() -> bool:
+    """``UNIFY_LISTING_USAGE`` (with request records on)."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_LISTING_USAGE", False))
+
+
+def listing_notes_enabled() -> bool:
+    """Whether any switch adds notes to the shortlist's lines."""
+    return (
+        listing_provenance_enabled()
+        or lesson_status_enabled()
+        or listing_usage_enabled()
+    )
+
+
+def guidance_recorded() -> bool:
+    """Whether guidance entries record their requests.
+
+    ``UNIFY_GUIDANCE_ORIGIN``, or a listing switch that shows what they were
+    written for (``UNIFY_LISTING_PROVENANCE``, ``UNIFY_LESSON_STATUS``).
+    """
+    return guidance_enabled() or listing_provenance_enabled() or lesson_status_enabled()
+
+
 def recurrence_enabled() -> bool:
     """``UNIFY_REVIEW_RECURRENCE`` (with request records on)."""
     from unify.settings import SETTINGS
@@ -277,7 +316,12 @@ def review_outcome_enabled() -> bool:
 
 
 def require_origin_link_prerequisites() -> None:
-    """Refuse ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE``, ``UNIFY_REVIEW_OUTCOME`` or ``UNIFY_GUIDANCE_ORIGIN`` without request records.
+    """Refuse a switch that reads or records under requests without request records.
+
+    ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE``,
+    ``UNIFY_REVIEW_OUTCOME``, ``UNIFY_GUIDANCE_ORIGIN``,
+    ``UNIFY_LISTING_PROVENANCE``, ``UNIFY_LESSON_STATUS`` and
+    ``UNIFY_LISTING_USAGE``.
 
     Each reads, keeps or records something under the requests that
     ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``) records; without them they
@@ -292,6 +336,9 @@ def require_origin_link_prerequisites() -> None:
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
         "UNIFY_GUIDANCE_ORIGIN",
+        "UNIFY_LISTING_PROVENANCE",
+        "UNIFY_LESSON_STATUS",
+        "UNIFY_LISTING_USAGE",
     ):
         if getattr(SETTINGS, name, False):
             raise ValueError(
@@ -342,11 +389,17 @@ def text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _checker_kept() -> bool:
+    return provenance_enabled() or listing_notes_enabled()
+
+
 def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
     """Keep the current request's outcome from *source*; whether it was kept.
 
     *source* :data:`CHECKER` is the outcome the environment posted
-    (``UNIFY_OUTCOME``), kept while ``UNIFY_ORIGIN_PROVENANCE`` is on;
+    (``UNIFY_OUTCOME``), kept while ``UNIFY_ORIGIN_PROVENANCE`` or a switch
+    that shows outcomes in the shortlist (``UNIFY_LISTING_PROVENANCE``,
+    ``UNIFY_LESSON_STATUS``, ``UNIFY_LISTING_USAGE``) is on;
     :data:`REVIEW` is the storage review's judgement from the conversation,
     kept while ``UNIFY_REVIEW_OUTCOME`` is on. *solved* is ``True`` or
     ``False``; anything else (unknown) keeps nothing. The latest outcome of
@@ -355,7 +408,7 @@ def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
     skipped with a warning.
     """
     task = _CURRENT.get()
-    allowed = {CHECKER: provenance_enabled, REVIEW: review_outcome_enabled}.get(source)
+    allowed = {CHECKER: _checker_kept, REVIEW: review_outcome_enabled}.get(source)
     if allowed is None or not allowed() or task is None or not isinstance(solved, bool):
         return False
     try:
@@ -584,6 +637,149 @@ def strip(row: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+# How a kept outcome reads, by (accepted, source).
+_OUTCOME_TEXT = {
+    (True, CHECKER): "the checker accepted that session's answer",
+    (False, CHECKER): "the checker did not accept that session's answer",
+    (True, REVIEW): "that session's answer was confirmed, as judged by its review",
+    (False, REVIEW): "that session's answer was rejected, as judged by its review",
+}
+
+
+def lesson_status(row: Dict[str, Any]) -> Optional[str]:
+    """``UNIFY_LESSON_STATUS``: why a guidance *row* is unverified, or ``None`` when every session that wrote it was accepted.
+
+    *row* carries the entry's origin as ``metadata``. Unverified when a
+    session that wrote it was not accepted (checker) or rejected (review),
+    else when one has no kept outcome or no request was recorded.
+    """
+    _, texts = _origins(row)
+    if not texts:
+        return "unverified: written in a session whose outcome is unknown"
+    outcomes = [origin_outcome(text) for text in texts]
+    if any(kept is not None and not kept[0] for kept in outcomes):
+        return "unverified: written after a session whose answer was not accepted"
+    if any(kept is None for kept in outcomes):
+        return "unverified: written in a session whose outcome is unknown"
+    return None
+
+
+CALLS_KEPT = 3
+"""``UNIFY_LISTING_USAGE``: the latest calls whose request each function keeps."""
+
+
+def record_call(name: str, text: Optional[str]) -> None:
+    """``UNIFY_LISTING_USAGE``: keep that stored function *name* ran under the request *text*.
+
+    The latest :data:`CALLS_KEPT` per function, in the request log's
+    ``function_calls`` table (created only by this switch). A call outside a
+    keyed request keeps nothing; a log that cannot be written is skipped.
+    """
+    if not name or not text:
+        return
+    try:
+        path = request_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(_connect_calls(path)) as conn, conn:
+            conn.execute(
+                "INSERT INTO function_calls (name, text_key) VALUES (?, ?)",
+                (name, text_key(text)),
+            )
+            conn.execute(
+                "DELETE FROM function_calls WHERE name = ? AND seq NOT IN (SELECT"
+                " seq FROM function_calls WHERE name = ? ORDER BY seq DESC LIMIT ?)",
+                (name, name, CALLS_KEPT),
+            )
+    except (OSError, sqlite3.Error) as exc:
+        logger.warning(f"function call not logged: {type(exc).__name__}: {exc}")
+
+
+def _connect_calls(path: Path) -> sqlite3.Connection:
+    conn = _connect_outcomes(path)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS function_calls (seq INTEGER PRIMARY KEY"
+        " AUTOINCREMENT, name TEXT NOT NULL, text_key TEXT NOT NULL)",
+    )
+    return conn
+
+
+def usage_note(name: str, calls: Any) -> str:
+    """``UNIFY_LISTING_USAGE``: ``used N×`` and how the sessions of its last recorded calls ended."""
+    count = int(calls or 0)
+    if count <= 0:
+        return "not called yet"
+    note = f"used {count}×"
+    path = request_log_path()
+    keys: List[str] = []
+    kept: Dict[tuple[str, str], bool] = {}
+    if path.exists():
+        try:
+            with closing(_connect_calls(path)) as conn:
+                keys = [
+                    key
+                    for (key,) in conn.execute(
+                        "SELECT text_key FROM function_calls WHERE name = ?"
+                        " ORDER BY seq DESC LIMIT ?",
+                        (name, CALLS_KEPT),
+                    )
+                ]
+                kept = (
+                    {
+                        (key, source): bool(solved)
+                        for key, source, solved in conn.execute(
+                            "SELECT text_key, source, solved FROM request_outcomes"
+                            f" WHERE text_key IN ({', '.join('?' for _ in keys)})",
+                            keys,
+                        )
+                    }
+                    if keys
+                    else {}
+                )
+        except sqlite3.Error as exc:
+            logger.warning(f"function calls not read: {type(exc).__name__}: {exc}")
+            keys = []
+    if not keys:
+        return note + "; the sessions of its calls were not recorded"
+    failed = unknown = 0
+    for key in keys:
+        verdict = kept.get((key, CHECKER), kept.get((key, REVIEW)))
+        if verdict is None:
+            unknown += 1
+        elif not verdict:
+            failed += 1
+    parts = [f"{failed} ran in a session whose answer was not accepted"]
+    if unknown:
+        parts.append(f"{unknown} with the outcome unknown")
+    return note + f"; of its last {len(keys)} recorded calls, " + ", ".join(parts)
+
+
+ORIGIN_LINE = "_origin_line"
+LESSON = "_lesson"
+USAGE = "_usage"
+
+
+def listing_notes(marker: "Marker", kind: str, row: Dict[str, Any]) -> Dict[str, str]:
+    """The notes the listing switches add to a listed entry's line, by key.
+
+    *row* is the stored entry with its origin as ``metadata`` (and, for a
+    function, ``name`` and ``usage_calls``; for guidance, ``is_builtin``).
+    :data:`ORIGIN_LINE` (``UNIFY_LISTING_PROVENANCE``, every entry),
+    :data:`LESSON` (``UNIFY_LESSON_STATUS``, an unverified guidance entry
+    that is not built in), :data:`USAGE` (``UNIFY_LISTING_USAGE``, a
+    function).
+    """
+    notes: Dict[str, str] = {}
+    if listing_provenance_enabled():
+        notes[ORIGIN_LINE] = marker.origin_line(row, kind=kind)
+    if kind == "guidance" and lesson_status_enabled() and not row.get("is_builtin"):
+        status = lesson_status(row)
+        if status:
+            notes[LESSON] = status
+    if kind == "function" and listing_usage_enabled():
+        notes[USAGE] = usage_note(str(row.get("name") or ""), row.get("usage_calls"))
+    return notes
+
+
 class Marker:
     """Marks the search rows of functions stored while handling a similar request.
 
@@ -661,23 +857,58 @@ class Marker:
                 )
         kept = origin_outcome(origin)
         if kept is not None:
-            accepted, source = kept
-            parts.append(
-                {
-                    (True, CHECKER): "the checker accepted that session's answer",
-                    (
-                        False,
-                        CHECKER,
-                    ): "the checker did not accept that session's answer",
-                    (True, REVIEW): (
-                        "that session's answer was confirmed, as judged by its review"
-                    ),
-                    (False, REVIEW): (
-                        "that session's answer was rejected, as judged by its review"
-                    ),
-                }[(accepted, source)],
-            )
+            parts.append(_OUTCOME_TEXT[kept])
         return "; ".join(parts) or None
+
+    def _closest_origin(self, row: Dict[str, Any]) -> Optional[tuple[bool, str]]:
+        """``(same, text)``: this same request, else the origin closest to it; ``None`` without one."""
+        task = self._task
+        keys, texts = _origins(row)
+        if task is not None and task.key in keys:
+            return True, task.text
+        if not texts:
+            return None
+        if task is None:
+            return False, texts[-1]
+        weights = self._token_weights(task)
+        return False, max(texts, key=lambda text: similarity(task.text, text, weights))
+
+    def origin_line(self, row: Dict[str, Any], *, kind: str = "function") -> str:
+        """``UNIFY_LISTING_PROVENANCE``: what *row* was stored (written) for, and how that session ended.
+
+        Always says something: whether the closest request it was recorded
+        under is this same request, shares rare identifiers with it
+        (:meth:`provenance`'s rule) or shares none, or that no request was
+        recorded; then the kept outcome of that session (the checker's,
+        else its review's) or that it is unknown.
+        """
+        verb = "written" if kind == "guidance" else "stored"
+        closest = self._closest_origin(row)
+        if closest is None:
+            return "no request recorded; outcome unknown"
+        same, origin = closest
+        if same:
+            where = f"{verb} while handling this same request"
+        else:
+            shared = (
+                shared_identifiers(self._task.text, origin, self._known_texts())
+                if self._task is not None
+                else []
+            )
+            where = (
+                f"{verb} while handling a request that also named "
+                + " and ".join(f"`{word}`" for word in shared)
+                if shared
+                else f"{verb} while handling another request (no rare identifier "
+                "in common)"
+            )
+        kept = origin_outcome(origin)
+        outcome = (
+            _OUTCOME_TEXT[kept]
+            if kept is not None
+            else "that session's outcome is unknown"
+        )
+        return f"{where}; {outcome}"
 
     def annotate(self, row: Dict[str, Any]) -> None:
         """Drop the origin fields from *row*; add ``similar_request`` when close enough.
