@@ -2829,6 +2829,7 @@ def _start_storage_check_loop(
             f"{stop_context_section}"
             f"{proactive_storage_section}"
             f"{_storage_needs_repair_note()}"
+            f"{generalise_note}"
             f"{origin_note}"
             f"{outcome_note}"
             f"{result_header}",
