@@ -82,6 +82,51 @@ USER_VISIBILITY_GUIDANCE = (
 )
 
 
+# UNIFY_PROMPT_TRIM: the guidance without the channels and messages a loop
+# does not have. Built from USER_VISIBILITY_GUIDANCE, so the parts kept are
+# word for word the shipped ones.
+_VISIBILITY_NOTIFY_ITEM = (
+    "2. Any notifications you emit (status updates, progress indicators, etc.)\n"
+)
+_VISIBILITY_CLARIFY_ITEM = (
+    "3. Any clarification requests you send asking for more information\n"
+)
+_VISIBILITY_FINAL_ITEM = (
+    "4. Your FINAL plain-text response at the end of this tool-use session\n"
+)
+_VISIBILITY_LIFECYCLE = "\n\nuser-role messages prefixed with `[steerable <call_id>]`"
+
+
+def trimmed_visibility_guidance(*, notify: bool, clarify: bool, lifecycle: bool) -> str:
+    """The User Visibility Context naming only what this loop has: the
+    notification and clarification channels, and the "[steerable ...]" /
+    "[askable ...]" announcements."""
+    text = USER_VISIBILITY_GUIDANCE
+    for part in (
+        _VISIBILITY_NOTIFY_ITEM,
+        _VISIBILITY_CLARIFY_ITEM,
+        _VISIBILITY_FINAL_ITEM,
+        _VISIBILITY_LIFECYCLE,
+    ):
+        if text.count(part) != 1:
+            raise ValueError(f"expected one occurrence of {part!r}")
+    items = [
+        "Their original request and any follow-up messages they send (interjections)",
+    ]
+    if notify:
+        items.append(_VISIBILITY_NOTIFY_ITEM[3:].rstrip("\n"))
+    if clarify:
+        items.append(_VISIBILITY_CLARIFY_ITEM[3:].rstrip("\n"))
+    items.append(_VISIBILITY_FINAL_ITEM[3:].rstrip("\n"))
+    numbered = "".join(f"{i}. {item}\n" for i, item in enumerate(items, 1))
+    head, _, rest = text.partition("1. ")
+    _, _, tail = rest.partition(_VISIBILITY_FINAL_ITEM)
+    text = head + numbered + tail
+    if not lifecycle:
+        text = text[: text.index(_VISIBILITY_LIFECYCLE)]
+    return text
+
+
 def _failure_text(exc: BaseException) -> str:
     """The text a caller reads for *exc*.
 
@@ -427,6 +472,8 @@ class ToolsData:
         completed_askable_tools: Optional[Dict[str, dict]] = None,
         call_counts: Optional[Dict[str, int]] = None,
         steering_tools: bool = True,
+        can_notify_user: Optional[bool] = None,
+        can_ask_user: Optional[bool] = None,
     ):
         self._client = client
         # False: the loop offers no wait/steer/ask_about_completed_tool, so
@@ -485,6 +532,21 @@ class ToolsData:
         self._lifecycle_notices: bool = (
             bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES) and self.steering_tools
         )
+        # UNIFY_PROMPT_TRIM, read once: the visibility guidance names only
+        # the channels to the user this loop has (send_notification, a
+        # clarification request), and an interjection alone appends it only
+        # when there is one.
+        self._prompt_trim: bool = bool(SETTINGS.UNIFY_PROMPT_TRIM)
+        self._can_notify_user: bool = (
+            "send_notification" in self.normalized
+            if can_notify_user is None
+            else bool(can_notify_user)
+        )
+        self._can_ask_user: bool = (
+            "request_clarification" in self.normalized
+            if can_ask_user is None
+            else bool(can_ask_user)
+        )
 
     def get_ask_tools(self) -> Dict[str, Callable]:
         """Snapshot of the currently available ``ask_*`` dynamic tools.
@@ -522,6 +584,8 @@ class ToolsData:
     async def _ensure_visibility_guidance_injected(
         self,
         msg_dispatcher: "LoopMessageDispatcher",
+        *,
+        interjection: bool = False,
     ) -> None:
         """Inject the user-visibility guidance before the first status-shaped
         tail message a user could mistake for an interjection.
@@ -543,12 +607,26 @@ class ToolsData:
         """
         if self._visibility_guidance_injected:
             return
+        content = USER_VISIBILITY_GUIDANCE
+        if self._prompt_trim:
+            # UNIFY_PROMPT_TRIM: with no channel to the user besides the
+            # final reply, an interjection is a message like the first, and
+            # there is nothing it could be confused with. A progress or
+            # clarification message still appends the guidance (it is what
+            # tells the model that message is not the user's).
+            if interjection and not (self._can_notify_user or self._can_ask_user):
+                return
+            content = trimmed_visibility_guidance(
+                notify=self._can_notify_user,
+                clarify=self._can_ask_user,
+                lifecycle=self._lifecycle_notices,
+            )
         await msg_dispatcher.append_msgs(
             [
                 {
                     "role": "system",
                     "_visibility_guidance": True,
-                    "content": USER_VISIBILITY_GUIDANCE,
+                    "content": content,
                 },
             ],
         )
