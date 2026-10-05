@@ -249,8 +249,17 @@ class PythonWorker:
         return msg
 
     async def _start(self) -> None:
+        from unify import environment
+
+        # The workspace venv is mounted (read-only) only if it exists when the
+        # sandbox starts, and the harness creates it on the first install --
+        # a stored function's dependency, while this worker runs. Created
+        # empty first, it is mounted now and the installer fills it in place.
+        venv = environment.environment_dir()
+        created = not venv.exists()
+        venv.mkdir(parents=True, exist_ok=True)
         # The policy as it is now: a restarted worker sees the current one.
-        policy = sandbox.build_policy()
+        policy = sandbox.build_policy(fresh=created)
         argv = [sys.executable, "-I", "-S", "-c", _BOOTSTRAP, str(Path(child.__file__))]
         env = sandbox.sandbox_env(policy)
         workspace = str(policy.workspace)

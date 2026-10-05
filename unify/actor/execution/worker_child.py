@@ -995,6 +995,8 @@ class Worker:
             **self._begin_fields(str(name), "run", (), kwargs),
         )
         token = reply.get("token") if isinstance(reply, dict) else None
+        # The harness may just have installed its dependencies.
+        importlib.invalidate_caches()
         if token is None:
             # A primitive, or a function this session defined: called as it is.
             out = self._resolve_name(name)(**kwargs)
