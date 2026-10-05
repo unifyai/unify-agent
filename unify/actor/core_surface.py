@@ -558,14 +558,7 @@ class FunctionLibrary:
 
     def _lookup(self, name: str) -> Optional[dict]:
         """The stored function ``name``, as the ``execute_function`` tool resolves it."""
-        fm = self._fm
-        get = getattr(fm, "_get_function_data_by_name", None)
-        data = get(name=name) if callable(get) else None
-        if data is None:
-            get_primitive = getattr(fm, "_get_stored_primitive_data_by_name", None)
-            if callable(get_primitive):
-                data = get_primitive(name=name)
-        return dict(data) if isinstance(data, Mapping) else None
+        return lookup_stored(self._fm, name)
 
     def _note_use(self, func_data: dict) -> None:
         note_use = getattr(self._fm, "_note_function_use", None)
@@ -689,30 +682,8 @@ class FunctionLibrary:
         }
 
     def _helpers(self, func_data: dict) -> List[dict]:
-        """The stored functions ``func_data`` calls, transitively, in the order
-        found: what ``functions.run`` defines beside it in the worker, as a
-        read that loads a function injects its ``depends_on`` (each name once,
-        so recursion and cycles end; primitives, dotted names and names the
-        library does not hold are left out, and fail as the call reaches them)."""
-        seen = {str(func_data.get("name"))}
-        queue = list(func_data.get("depends_on") or [])
-        found: List[dict] = []
-        while queue:
-            dep = queue.pop(0)
-            if not isinstance(dep, str) or not dep or "." in dep or dep in seen:
-                continue
-            seen.add(dep)
-            data = self._lookup(dep)
-            impl = data.get("implementation") if data else None
-            if (
-                data is None
-                or data.get("is_primitive")
-                or not (isinstance(impl, str) and impl.strip())
-            ):
-                continue
-            found.append({**data, "name": data.get("name") or dep})
-            queue.extend(data.get("depends_on") or [])
-        return found
+        """The stored functions ``func_data`` calls: :func:`stored_helpers`."""
+        return stored_helpers(func_data, self._lookup)
 
     async def _end(
         self,
@@ -745,6 +716,52 @@ class FunctionLibrary:
         if run.publish is not None:
             await run.publish(error)
         return reply
+
+
+def lookup_stored(fm: Any, name: str) -> Optional[dict]:
+    """The stored function ``name`` in ``fm``, as the ``execute_function`` tool
+    resolves it (a stored primitive when no function has the name)."""
+    get = getattr(fm, "_get_function_data_by_name", None)
+    data = get(name=name) if callable(get) else None
+    if data is None:
+        get_primitive = getattr(fm, "_get_stored_primitive_data_by_name", None)
+        if callable(get_primitive):
+            data = get_primitive(name=name)
+    return dict(data) if isinstance(data, Mapping) else None
+
+
+def stored_helpers(
+    func_data: Mapping[str, Any],
+    lookup: Callable[[str], Optional[dict]],
+    missing: Optional[List[str]] = None,
+) -> List[dict]:
+    """The stored functions ``func_data`` calls, transitively, in the order
+    found: what ``functions.run`` defines beside it in the worker, as a read
+    that loads a function injects its ``depends_on`` (each name once, so
+    recursion and cycles end; primitives, dotted names and names the library
+    does not hold are left out, and fail as the call reaches them). With
+    ``missing`` (a list), the names the library does not hold are added to it."""
+    seen = {str(func_data.get("name"))}
+    queue = list(func_data.get("depends_on") or [])
+    found: List[dict] = []
+    while queue:
+        dep = queue.pop(0)
+        if not isinstance(dep, str) or not dep or "." in dep or dep in seen:
+            continue
+        seen.add(dep)
+        data = lookup(dep)
+        impl = data.get("implementation") if data else None
+        if data is None and missing is not None:
+            missing.append(dep)
+        if (
+            data is None
+            or data.get("is_primitive")
+            or not (isinstance(impl, str) and impl.strip())
+        ):
+            continue
+        found.append({**data, "name": data.get("name") or dep})
+        queue.extend(data.get("depends_on") or [])
+    return found
 
 
 def _entry_name(source: str) -> Optional[str]:

@@ -998,7 +998,14 @@ class SessionExecutor:
         state_mode: StateMode,
         session_id: int | None,
         language: str = "python",
+        prepare: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
+        """Run ``code`` in the session ``state_mode`` and ``session_id`` name.
+
+        ``prepare`` (``UNIFY_FUNCTION_HELPERS``), when given, is called with
+        the namespace the cell runs in before it runs, to define names there:
+        they stay where the state mode keeps what a cell defines.
+        """
         if language == "bash":
             return await self._execute_shell(
                 code=code,
@@ -1049,6 +1056,8 @@ class SessionExecutor:
         bound = self._bound_sandbox(session_id)
         if state_mode == "stateful" and bound is not None:
             self._inject_fm_globals(bound)
+            if prepare is not None:
+                prepare(bound.global_state)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox (session 0), executing",
             )
@@ -1073,6 +1082,8 @@ class SessionExecutor:
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] sandbox created, injecting globals",
             )
             self._inject_fm_globals(sb)
+            if prepare is not None:
+                prepare(sb.global_state)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] globals injected, executing code",
             )
@@ -1113,6 +1124,8 @@ class SessionExecutor:
                 }
             sb = self._python_sessions[key]
             self._inject_fm_globals(sb)
+            if prepare is not None:
+                prepare(sb.global_state)
             res = await _execute_in_python_session(sb)
             meta = self._python_session_meta.get(key)
             if meta is not None:
@@ -1138,7 +1151,28 @@ class SessionExecutor:
                 # The session's variables live in its worker: the cell runs
                 # there against a copy of its namespace.
                 self._inject_fm_globals(base)
-                res = await _execute_in_python_session(base, scratch=True)
+                if prepare is None:
+                    res = await _execute_in_python_session(base, scratch=True)
+                else:
+                    # What prepare defines is the cell's, not the session's:
+                    # the session's own bindings come back afterwards.
+                    before = dict(base.global_state)
+                    prepare(base.global_state)
+                    defined = {
+                        name: value
+                        for name, value in base.global_state.items()
+                        if name not in before or before[name] is not value
+                    }
+                    try:
+                        res = await _execute_in_python_session(base, scratch=True)
+                    finally:
+                        for name, value in defined.items():
+                            if base.global_state.get(name) is not value:
+                                continue
+                            if name in before:
+                                base.global_state[name] = before[name]
+                            else:
+                                del base.global_state[name]
                 return {
                     **res,
                     "state_mode": state_mode,
@@ -1151,6 +1185,8 @@ class SessionExecutor:
                 # Shallow copy globals to allow read access while avoiding persistence.
                 sb.global_state.update(dict(base.global_state))
                 self._inject_fm_globals(sb)
+                if prepare is not None:
+                    prepare(sb.global_state)
                 res = await _execute_in_python_session(sb)
             finally:
                 try:

@@ -4687,12 +4687,17 @@ class CodeActActor(BaseCodeActActor):
                             {"language": _language} if _language != "python" else {}
                         )
                         try:
-                            out = await self._session_executor.execute(
-                                code=code,
-                                state_mode=state_mode,  # type: ignore[arg-type]
-                                session_id=session_id,
-                                **_lang_kw,
-                            )
+                            # UNIFY_FUNCTION_HELPERS: the worker's calls of
+                            # stored functions are recorded; nothing while off.
+                            from unify.actor import function_helpers
+
+                            with function_helpers.recording(self):
+                                out = await self._session_executor.execute(
+                                    code=code,
+                                    state_mode=state_mode,  # type: ignore[arg-type]
+                                    session_id=session_id,
+                                    **_lang_kw,
+                                )
                         except Exception as e:
                             exec_exc = e
                             tb = traceback.format_exc()
@@ -5248,16 +5253,30 @@ class CodeActActor(BaseCodeActActor):
                     else None
                 )
 
-                if isinstance(function_data, dict) and function_data.get(
-                    "dependencies",
+                # UNIFY_FUNCTION_HELPERS: the stored functions it calls,
+                # defined with it, their packages installed with its own;
+                # None while off.
+                from unify.actor import function_helpers
+
+                helpers = function_helpers.plan(self.function_manager, function_data)
+                if helpers is not None and helpers.dependencies:
+                    dependencies = helpers.dependencies
+                elif (
+                    helpers is None
+                    and isinstance(function_data, dict)
+                    and function_data.get("dependencies")
                 ):
+                    dependencies = list(function_data["dependencies"])
+                else:
+                    dependencies = []
+                if dependencies:
                     # The synthesized call runs the stored implementation
                     # in the sandbox, so its packages must be importable
                     # before the cell starts.
                     try:
                         await asyncio.to_thread(
                             environment.ensure,
-                            list(function_data["dependencies"]),
+                            dependencies,
                         )
                     except Exception as exc:
                         # The function's own install failed, whatever the
@@ -5416,11 +5435,21 @@ class CodeActActor(BaseCodeActActor):
                         _pcc_token = _PARENT_CHAT_CONTEXT.set(_parent_chat_context)
                         try:
                             try:
-                                with store_cases.tracing(case_pending):
+                                with (
+                                    store_cases.tracing(
+                                        case_pending,
+                                    ),
+                                    function_helpers.recording(self),
+                                ):
                                     out = await self._session_executor.execute(
                                         code=code,
                                         state_mode=state_mode,  # type: ignore[arg-type]
                                         session_id=session_id,
+                                        **(
+                                            {"prepare": helpers.define}
+                                            if helpers is not None and helpers.helpers
+                                            else {}
+                                        ),
                                     )
                                 _ef_log.debug(
                                     f"⏱️ [execute_function +{_ef_ms()}] sandbox.execute done",
@@ -5473,6 +5502,18 @@ class CodeActActor(BaseCodeActActor):
                                 f"Not counted against the stored function "
                                 f"`{function_name}`: {trust_fault}.\n"
                             )
+
+                    # UNIFY_FUNCTION_HELPERS: a helper the library no longer
+                    # holds is named.
+                    helper_note = (
+                        helpers.missing_note(out.get("error"))
+                        if helpers is not None
+                        else None
+                    )
+                    if helper_note is not None:
+                        out["error"] = (
+                            f"{str(out['error']).rstrip()}\n\n{helper_note}\n"
+                        )
 
                     # Enrich with session name.
                     if out.get("session_id") is not None:

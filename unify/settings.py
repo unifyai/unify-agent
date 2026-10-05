@@ -739,6 +739,17 @@ class ProductionSettings(BaseSettings):
     # callable from the next cell. A linked id with no stored function is left out (its
     # ``stale_reasons`` already say so). Off: as shipped.
     UNIFY_GUIDANCE_LINKED_NAMES: bool = False
+    # On: ``execute_function`` of a stored function defines the stored
+    # functions it calls, transitively and each once, in the namespace the
+    # call runs in (in process and under worker Python), and installs their
+    # declared dependencies with its own, as ``functions.run`` does under
+    # ``UNIFY_TOOL_SURFACE=core``; a helper the library no longer holds is
+    # named in the error. Under worker Python a stored function called by
+    # name (a helper, or one a read bound) is recorded as the in-process
+    # boundary wrapper records it: usage, trust, a case
+    # (unify/actor/function_helpers.py). Off: only the entry point is
+    # defined, so its helpers are a NameError until a read loads them.
+    UNIFY_FUNCTION_HELPERS: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue

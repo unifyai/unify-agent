@@ -511,7 +511,10 @@ class PythonWorker:
 
     def _manifest(self, shadow: Dict[str, Any]) -> dict:
         want: Dict[str, dict] = {}
-        record = _function_library(shadow.get("functions")) is not None
+        record = (
+            _function_library(shadow.get("functions")) is not None
+            or _helper_recorder() is not None
+        )
         for name, value in list(shadow.items()):
             if not isinstance(name, str) or name in _SKIP:
                 continue
@@ -640,6 +643,10 @@ class PythonWorker:
     def _library(self, shadow: Dict[str, Any]) -> Any:
         library = _function_library(shadow.get("functions"))
         if library is None or not self._exposed_remote("functions"):
+            # UNIFY_FUNCTION_HELPERS: calls by name, recorded off the core
+            # surface too, while the actor's call that runs this cell lasts.
+            library = _helper_recorder()
+        if library is None:
             raise BoundaryRefusal(
                 "stored functions are recorded only where the session's "
                 "`functions` library is exposed (UNIFY_TOOL_SURFACE=core)",
@@ -935,6 +942,14 @@ def _function_library(value: Any) -> Any:
     from unify.actor.core_surface import FunctionLibrary
 
     return value if isinstance(value, FunctionLibrary) else None
+
+
+def _helper_recorder() -> Any:
+    """The recorder of stored-function calls ``UNIFY_FUNCTION_HELPERS`` sets
+    for the call that runs this cell, else None."""
+    from unify.actor import function_helpers
+
+    return function_helpers.recorder()
 
 
 def _no_refs(value: Any, where: str) -> Any:
