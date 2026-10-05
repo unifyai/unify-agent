@@ -126,3 +126,144 @@ def test_the_setting_parses(value, expected):
         ProductionSettings(UNIFY_CURATION_DOCTRINE=value).UNIFY_CURATION_DOCTRINE
         == expected
     )
+
+
+# The minimal rulebook once said "Functions are `async def` and `await` their
+# calls". AppWorld's environment methods are synchronous, so the storage
+# review rewrote working calls as `await primitives.<app>.<api>(...)` and
+# stored 11 of 11 environment-calling functions that raise TypeError when run
+# from code (the compose rulebook stored 0 of 13). The rulebook now says to
+# await only what is asynchronous, and the environment note says which of the
+# registered methods are, from the callables themselves.
+
+
+def _sync_call(**kwargs):
+    return [kwargs]
+
+
+async def _async_call(**kwargs):
+    return [kwargs]
+
+
+class _AwaitableObject:
+    async def __call__(self, **kwargs):
+        return [kwargs]
+
+
+def _namespace(name: str, **calls):
+    from unify.function_manager.primitives import (
+        EnvironmentMethod,
+        EnvironmentNamespace,
+    )
+
+    return EnvironmentNamespace(
+        name=name,
+        methods=tuple(
+            EnvironmentMethod(name=method, call=call, effect="read")
+            for method, call in calls.items()
+        ),
+    )
+
+
+@pytest.fixture
+def registered():
+    from unify.function_manager.primitives import (
+        EnvironmentSurface,
+        register_environment,
+    )
+    from unify.function_manager.primitives.environment import (
+        clear_environment_namespaces,
+    )
+
+    def register(*namespaces):
+        clear_environment_namespaces()
+        register_environment(
+            EnvironmentSurface(namespaces=tuple(namespaces)),
+            source="tests:kinds",
+        )
+
+    clear_environment_namespaces()
+    yield register
+    clear_environment_namespaces()
+
+
+def test_minimal_awaits_only_what_is_asynchronous(monkeypatch):
+    flat = " ".join(_sections(monkeypatch, "minimal").split())
+    assert "Functions are `async def` and `await` their calls" not in flat
+    assert (
+        "Await only what is asynchronous: `query_llm(...)`, the "
+        "`primitives.actor` methods and stored functions defined with "
+        "`async def`"
+    ) in flat
+    assert "awaiting that value raises `TypeError`, so call it without `await`" in flat
+
+
+def test_minimal_says_a_synchronous_environment_is_synchronous(
+    monkeypatch,
+    registered,
+):
+    registered(_namespace("music", show_library=_sync_call, play=_sync_call))
+    text = " ".join(_sections(monkeypatch, "minimal").split())
+    assert "`primitives.music`" in text
+    assert (
+        "Every method of these namespaces is synchronous: it returns its value "
+        "directly, so call it without `await`."
+    ) in text
+
+
+def test_minimal_says_an_asynchronous_environment_is_asynchronous(
+    monkeypatch,
+    registered,
+):
+    registered(_namespace("web", fetch=_async_call, post=_AwaitableObject()))
+    text = " ".join(_sections(monkeypatch, "minimal").split())
+    assert "Every method of these namespaces is asynchronous: `await` it." in text
+    assert "synchronous: call" not in text
+
+
+def test_minimal_names_the_kinds_of_a_mixed_environment(monkeypatch, registered):
+    registered(
+        _namespace("music", show_library=_sync_call),
+        _namespace("web", fetch=_async_call),
+        _namespace("files", read=_sync_call, write=_sync_call, watch=_async_call),
+    )
+    text = " ".join(_sections(monkeypatch, "minimal").split())
+    assert (
+        "The methods of `primitives.music` are synchronous: call them without `await`."
+        in text
+    )
+    assert "The methods of `primitives.web` are asynchronous: `await` them." in text
+    assert (
+        "In `primitives.files`, `watch` is asynchronous (`await` it) and the "
+        "other methods are synchronous."
+    ) in text
+
+
+@pytest.mark.parametrize("doctrine", ["", "compose"])
+def test_other_rulebooks_carry_no_kinds_sentence(monkeypatch, registered, doctrine):
+    registered(_namespace("music", show_library=_sync_call))
+    text = _sections(monkeypatch, doctrine)
+    assert "`primitives.music`" in text
+    assert "synchronous" not in text
+
+
+def test_is_async_method_reads_the_callable():
+    import functools
+
+    from unify.function_manager.primitives import EnvironmentMethod
+    from unify.function_manager.primitives.environment import is_async_method
+
+    def kind(call):
+        return is_async_method(EnvironmentMethod(name="m", call=call, effect="read"))
+
+    @functools.wraps(_async_call)
+    def forwarding(**kwargs):
+        return _async_call(**kwargs)
+
+    assert kind(_async_call)
+    assert kind(_AwaitableObject())
+    assert kind(forwarding)
+    assert kind(functools.partial(_async_call, x=1))
+    assert not kind(_sync_call)
+    assert not kind(lambda **kw: kw)
+    assert not kind(functools.partial(_sync_call, x=1))

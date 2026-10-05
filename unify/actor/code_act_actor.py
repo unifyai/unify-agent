@@ -782,6 +782,64 @@ _STORAGE_WHAT_CAN_BE_STORED = (
 )
 
 
+def _environment_method_kinds(namespaces: tuple[Any, ...]) -> str:
+    """Which registered environment methods are asynchronous, read from the callables.
+
+    A method is asynchronous when calling it gives an awaitable
+    (``environment.is_async_method``); every other method returns its value
+    directly, so ``await`` on it raises ``TypeError``.
+    """
+    from unify.function_manager.primitives.environment import is_async_method
+
+    sync_only: list[str] = []
+    async_only: list[str] = []
+    mixed: list[str] = []
+    for namespace in namespaces:
+        kinds = {m.name: is_async_method(m) for m in namespace.methods}
+        label = f"`primitives.{namespace.name}`"
+        if not any(kinds.values()):
+            sync_only.append(label)
+        elif all(kinds.values()):
+            async_only.append(label)
+        else:
+            # Name the smaller group, so the sentence stays short.
+            is_async = sum(kinds.values()) <= len(kinds) / 2
+            named = sorted(name for name, kind in kinds.items() if kind is is_async)
+            listed = ", ".join(f"`{name}`" for name in named)
+            verb = "is" if len(named) == 1 else "are"
+            if is_async:
+                mixed.append(
+                    f"In {label}, {listed} {verb} asynchronous (`await` "
+                    f"{'it' if len(named) == 1 else 'them'}) and the other "
+                    "methods are synchronous.",
+                )
+            else:
+                mixed.append(
+                    f"In {label}, {listed} {verb} synchronous (no `await`) "
+                    "and the other methods are asynchronous.",
+                )
+    if not async_only and not mixed:
+        return (
+            "Every method of these namespaces is synchronous: it returns its "
+            "value directly, so call it without `await`."
+        )
+    if not sync_only and not mixed:
+        return "Every method of these namespaces is asynchronous: `await` it."
+    sentences: list[str] = []
+    if sync_only:
+        sentences.append(
+            f"The methods of {', '.join(sync_only)} are synchronous: call "
+            "them without `await`.",
+        )
+    if async_only:
+        sentences.append(
+            f"The methods of {', '.join(async_only)} are asynchronous: "
+            "`await` them.",
+        )
+    sentences.extend(mixed)
+    return " ".join(sentences)
+
+
 def _storage_environment_note() -> str:
     """The storage review's note on the environment's namespaces and the storage check.
 
@@ -805,6 +863,10 @@ def _storage_environment_note() -> str:
             "needs no import and no dependency for them. No other "
             "`primitives.*` name exists.",
         )
+        if _curation_doctrine_minimal():
+            # The minimal rulebook says to await only what is asynchronous;
+            # this says which of the environment's methods are.
+            parts.append(_environment_method_kinds(surface.namespaces))
         if surface.globals:
             listed = ", ".join(f"`{g}`" for g in sorted(surface.globals))
             parts.append(f"The environment also binds the sandbox globals {listed}.")
@@ -1039,9 +1101,14 @@ _STORAGE_MINIMAL_DOCTRINE = (
     "source and injected when it runs, so it needs no imports for them. A "
     "step that judged meaning in the trajectory (classifying, extracting, "
     "drafting) stays a `query_llm(...)` call in the stored function. "
-    "Functions are `async def` and `await` their calls: the runtime owns "
-    "the event loop, and a sync facade uses the injected "
-    "`run_coro_sync(factory)`. A function that imports a third-party "
+    "Await only what is asynchronous: `query_llm(...)`, the "
+    "`primitives.actor` methods and stored functions defined with "
+    "`async def`; a function that awaits one is itself `async def`. A "
+    "synchronous method returns its value directly, and awaiting that "
+    "value raises `TypeError`, so call it without `await`. The runtime "
+    "owns the event loop: synchronous code that must run a coroutine uses "
+    "the injected `run_coro_sync(factory)`, not `asyncio.run`. A function "
+    "that imports a third-party "
     "package is stored with `dependencies` set to the pip specifiers "
     "`install_python_packages` used; `FunctionManager_add_functions` "
     "refuses it without them.\n\n"

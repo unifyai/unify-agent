@@ -113,6 +113,27 @@ class EnvironmentNamespaceError(RuntimeError):
     """An environment's factory failed or returned a surface that does not validate."""
 
 
+def is_async_method(method: EnvironmentMethod) -> bool:
+    """Whether calling ``method`` gives an awaitable (a coroutine function, or wraps one).
+
+    Follows ``__wrapped__`` and a callable object's ``__call__``, so a
+    decorated coroutine function or an object with ``async def __call__``
+    counts as asynchronous. Everything else returns its value directly:
+    awaiting that value raises ``TypeError``.
+    """
+    call: Any = method.call
+    seen: set[int] = set()
+    while call is not None and id(call) not in seen:
+        if inspect.iscoroutinefunction(call):
+            return True
+        seen.add(id(call))
+        if not (inspect.isfunction(call) or inspect.ismethod(call)):
+            if inspect.iscoroutinefunction(getattr(type(call), "__call__", None)):
+                return True
+        call = getattr(call, "__wrapped__", None)
+    return False
+
+
 def method_docstring(namespace: str, method: EnvironmentMethod) -> str:
     """The docstring a method's primitive row and ``help()`` show.
 
@@ -513,6 +534,7 @@ __all__ = [
     "environment_namespace",
     "environment_namespaces",
     "environment_surface",
+    "is_async_method",
     "load_environment_namespaces",
     "method_docstring",
     "namespace_for_class_path",
