@@ -4478,6 +4478,12 @@ class CodeActActor(BaseCodeActActor):
                     )
             elif session_id is None:
                 session_id = 0
+        # UNIFY_STATEFUL_CELLS: one session, so read_only reads it.
+        if state_mode == "read_only" and session_id is None and not session_name:
+            from unify.actor import cell_state
+
+            if cell_state.enabled():
+                session_id = 0
 
         # If name + id are both set but not registered yet, register alias.
         if state_mode == "stateful" and session_name and session_id is not None:
@@ -6036,6 +6042,10 @@ class CodeActActor(BaseCodeActActor):
         # tool is given.
         if _TRIM_SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in self.environments:
             _hide_parent_chat_context(tools)
+        from unify.actor import cell_state
+
+        if cell_state.enabled():
+            cell_state.correct_tools(tools)
         return tools
 
     @functools.wraps(BaseCodeActActor.act, updated=())
