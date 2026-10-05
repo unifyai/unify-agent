@@ -1142,12 +1142,17 @@ def _resolve(fut: asyncio.Future, msg: dict) -> None:
 
 
 def _run_coro_sync(coro: Any, timeout: Optional[float] = None) -> Any:
-    """Drive *coro* to completion from synchronous code, under a running loop."""
+    """Drive *coro* to completion from synchronous code, under a running loop.
+
+    *coro* is a coroutine or, as the in-process ``run_coro_sync`` takes (and
+    the prompt documents), a factory of one, called on the thread that runs it.
+    """
     box: dict[str, Any] = {}
+    factory = callable(coro) and not inspect.isawaitable(coro)
 
     def runner() -> None:
         try:
-            box["value"] = asyncio.run(coro)
+            box["value"] = asyncio.run(coro() if factory else coro)
         except BaseException as exc:  # noqa: BLE001 - re-raised below
             box["error"] = exc
 

@@ -690,3 +690,39 @@ async def all_gone(pids: list[int], within: float = 10.0) -> bool:
             return False
         await asyncio.sleep(0.1)
     return True
+
+
+RUN_CORO_SYNC = (
+    "async def seven():\n"
+    "    return 7\n"
+    "def sync_facade():\n"
+    "    return run_coro_sync(seven) + run_coro_sync(seven())\n"
+    "sync_facade()"
+)
+
+
+@pytest.mark.asyncio
+async def test_run_coro_sync_takes_a_factory_or_a_coroutine_in_process():
+    ex, _ = executor_with_fakes()
+    try:
+        _, res = await run(ex, RUN_CORO_SYNC.replace("run_coro_sync(seven())", "7"))
+        assert res["error"] is None and res["result"] == 14, res["error"]
+    finally:
+        await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_run_coro_sync_takes_a_factory_or_a_coroutine_in_the_worker(
+    worker_world,
+):
+    """The prompt documents ``run_coro_sync(factory)``, which the in-process
+    helper takes; the worker's stand-in took only a coroutine and raised
+    ``ValueError: a coroutine was expected`` for a factory."""
+    ex, _ = executor_with_fakes()
+    try:
+        _, res = await run(ex, RUN_CORO_SYNC)
+        assert res["error"] is None, res["error"]
+        assert res["result"] == 14
+    finally:
+        await ex.close()
