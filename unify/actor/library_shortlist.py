@@ -372,6 +372,46 @@ def shortlist_rows(
     return [(kind, row) for _, _, kind, row in found[:k]]
 
 
+async def ashortlist_block(
+    function_manager: Any,
+    guidance_manager: Any,
+    request: Any,
+    *,
+    functions: bool = True,
+    guidance: bool = True,
+    gate: Optional[float] = None,
+    bind: Optional[Binder] = None,
+    judge_model: Optional[str] = None,
+) -> Optional[str]:
+    """:func:`shortlist_block`, with a model judging the evidence list's candidates.
+
+    ``UNIFY_EVIDENCE_LIST_MATCHER=judge`` (:func:`unify.actor.evidence_list.ablock`,
+    asking *judge_model*); otherwise exactly :func:`shortlist_block`.
+    """
+    from unify.actor import evidence_list
+
+    if evidence_list.judged():
+        return await evidence_list.ablock(
+            function_manager,
+            guidance_manager,
+            request_text(request),
+            functions=functions,
+            guidance=guidance,
+            bind=bind,
+            call_form=CALL_FORM,
+            judge_model=judge_model,
+        )
+    return shortlist_block(
+        function_manager,
+        guidance_manager,
+        request,
+        functions=functions,
+        guidance=guidance,
+        gate=gate,
+        bind=bind,
+    )
+
+
 def shortlist_block(
     function_manager: Any,
     guidance_manager: Any,
@@ -581,6 +621,7 @@ __all__ = [
     "gate_rows",
     "request_text",
     "require_gate_prerequisites",
+    "ashortlist_block",
     "shortlist_block",
     "shortlist_rows",
     "shortlisted_names",

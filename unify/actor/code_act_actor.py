@@ -6934,9 +6934,24 @@ class CodeActActor(BaseCodeActActor):
                 (shortlist_gate is None and not evidence)
                 or task_origin_token is not None
             ):
-                from unify.actor.library_shortlist import shortlist_block
+                from unify.actor.library_shortlist import (
+                    ashortlist_block,
+                    shortlist_block,
+                )
 
-                shortlist = shortlist_block(
+                # UNIFY_EVIDENCE_LIST_MATCHER=judge: the list asks a model,
+                # the session's own unless one is named.
+                shortlist_block_for = (
+                    functools.partial(
+                        ashortlist_block,
+                        judge_model=(
+                            SETTINGS.UNIFY_EVIDENCE_LIST_JUDGE_MODEL or client_model
+                        ),
+                    )
+                    if _evidence_list.judged()
+                    else shortlist_block
+                )
+                shortlist = shortlist_block_for(
                     self.function_manager,
                     self.guidance_manager,
                     request,
@@ -6957,6 +6972,8 @@ class CodeActActor(BaseCodeActActor):
                         else None
                     ),
                 )
+                if inspect.isawaitable(shortlist):
+                    shortlist = await shortlist
                 if shortlist:
                     first_message_parts.append(shortlist)
                 if lift_token is not None:

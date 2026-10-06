@@ -836,6 +836,23 @@ class ProductionSettings(BaseSettings):
     # refuses to start with this set and a prerequisite off, or with
     # UNIFY_SHORTLIST_LIFT. Empty: as shipped.
     UNIFY_EVIDENCE_LIST: str = ""
+    # ``judge``, with UNIFY_EVIDENCE_LIST: "seen before" is the same request
+    # only; the entries recorded under a request that shares a rare whole
+    # identifier with this one, and the entries whose cards (name, signature,
+    # description, the request it was stored for) are closest to the request
+    # by embedding, at most five, go to one model call that picks the one
+    # doing the request's job -- one parametric procedure would serve both --
+    # or none (unify/actor/evidence_judge.py; the prompt of the matching
+    # bake-off). The pick is listed as seen before and says a model judged
+    # it; nothing is listed as possibly related, and a failed call lists only
+    # the same request's entries. One embedding call and one model call per
+    # top-level task start. ``keys`` or empty: the keys and the statement
+    # floor, as UNIFY_EVIDENCE_LIST alone. An actor refuses to start with
+    # this set and UNIFY_EVIDENCE_LIST off.
+    UNIFY_EVIDENCE_LIST_MATCHER: str = ""
+    # The model UNIFY_EVIDENCE_LIST_MATCHER=judge asks, at low reasoning
+    # effort. Empty: the session's own model.
+    UNIFY_EVIDENCE_LIST_JUDGE_MODEL: str = ""
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a function or guidance
     # search whose query names a whole identifier (the shape
     # UNIFY_SIMILAR_REQUEST_IDENTIFIERS keeps) also finds the entries whose
@@ -1207,6 +1224,17 @@ class ProductionSettings(BaseSettings):
         if value == "on":
             return "on"
         return f"related:{k}" + ("" if floor is None else f":{floor:g}")
+
+    @field_validator("UNIFY_EVIDENCE_LIST_MATCHER", mode="before")
+    @classmethod
+    def parse_evidence_list_matcher(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "keys", "judge"):
+            raise ValueError(
+                "UNIFY_EVIDENCE_LIST_MATCHER must be empty, 'keys' or 'judge', "
+                f"not {v!r}",
+            )
+        return value
 
     @field_validator("UNIFY_PROTECT_VERIFIED", mode="before")
     @classmethod

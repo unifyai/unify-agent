@@ -29,6 +29,13 @@ the evidence behind each entry, and stays silent when nothing qualifies.
   then score, then accepted uses, then a function before a note (a
   procedure is shown with its guidelines), then newest; at most :data:`K`
   cards.
+* **Judged** (``UNIFY_EVIDENCE_LIST_MATCHER=judge``). Seen before is the
+  same request only; the entries recorded under a request sharing a rare
+  identifier with this one and the closest cards by embedding go to one
+  small model call that picks the one
+  doing this request's job, or none (:mod:`unify.actor.evidence_judge`). Its
+  pick is listed as seen before and says a model judged it; no cosine floor
+  lists anything.
 * **Possibly related** (claims nothing). At most *k* cards not seen before,
   by the cosine of the request with each entry's "use this when" statement
   (:mod:`unify.actor.related_shortlist`; written by the review, else a
@@ -89,6 +96,11 @@ def require_prerequisites() -> None:
     from unify.settings import SETTINGS
 
     if setting() is None:
+        if getattr(SETTINGS, "UNIFY_EVIDENCE_LIST_MATCHER", ""):
+            raise ValueError(
+                "UNIFY_EVIDENCE_LIST_MATCHER needs UNIFY_EVIDENCE_LIST: it "
+                "chooses how the list matches.",
+            )
         return
     if not SETTINGS.UNIFY_LIBRARY_SHORTLIST:
         raise ValueError(
@@ -255,7 +267,7 @@ class Match:
     rank: int
     score: float
     kind: str
-    how: str  # "origin", or the use: "call", "read", "relied"
+    how: str  # "origin", the use: "call", "read", "relied", or "judged"
     text: str
     shared: List[str] = field(default_factory=list)
     recurred: int = 0
@@ -450,8 +462,66 @@ class KeysAndStatements(Matcher):
         }
 
 
-MATCHERS: Dict[str, Callable[[], Matcher]] = {"keys": KeysAndStatements}
+class JudgeMatcher(KeysAndStatements):
+    """Seen before by the same request only; a model judges the other candidates (:func:`aselect`).
+
+    :meth:`related_scores` ranks by the embedded card (name, signature,
+    description and the request the entry was stored for) and feeds the
+    judge's candidates, never a listing of its own.
+    """
+
+    name = "judge"
+
+    def seen(self, lib, current_text, current_key, logged, uses, *, threshold):
+        return [
+            item
+            for item in entry_matches(
+                lib,
+                current_text,
+                current_key,
+                logged,
+                uses,
+                threshold=threshold,
+            )
+            if item[1].rank == 3
+        ]
+
+    def related_scores(self, lib, keys, request, *, embed):
+        import numpy as np
+
+        from unify.actor import evidence_judge
+
+        if not keys:
+            return {}
+        cards = {
+            key: evidence_judge.card_text(key[0], lib.entries[key]) for key in keys
+        }
+        texts = list(dict.fromkeys([request, *cards.values()]))
+        vectors = np.asarray(embed(texts), dtype=np.float32)
+        index = {text: i for i, text in enumerate(texts)}
+        q = vectors[index[request]]
+        return {
+            key: float(np.dot(q, vectors[index[text]])) for key, text in cards.items()
+        }
+
+
+MATCHERS: Dict[str, Callable[[], Matcher]] = {
+    "keys": KeysAndStatements,
+    "judge": JudgeMatcher,
+}
 """The matchers by name; the default is ``keys``."""
+
+
+def matcher_name() -> str:
+    """``UNIFY_EVIDENCE_LIST_MATCHER``, ``keys`` when unset."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_EVIDENCE_LIST_MATCHER", "") or "keys"
+
+
+def judged() -> bool:
+    """The evidence list is on and a model judges its candidates."""
+    return enabled() and matcher_name() == "judge"
 
 
 def statement(kind: str, row: Dict[str, Any]) -> Tuple[str, bool]:
@@ -487,8 +557,13 @@ def _why(match: Match) -> str:
         "call": "called",
         "read": "read",
         "relied": "relied on",
-    }[match.how]
-    if match.rank == 3:
+    }.get(match.how, "")
+    if match.how == "judged":
+        where = (
+            "a model judged that it does the same job as this request "
+            "(its inputs may differ)"
+        )
+    elif match.rank == 3:
         where = f"{verb} while handling this same request"
         if match.recurred:
             where += f" (asked {match.recurred} time{'s' if match.recurred != 1 else ''} before)"
@@ -636,6 +711,7 @@ class Listing:
     seen: List[Tuple[Card, Match]] = field(default_factory=list)
     related: List[Tuple[Card, str, bool, str]] = field(default_factory=list)
     scores: Dict[Key, float] = field(default_factory=dict)
+    verdict: Optional[Any] = None
 
 
 def select(
@@ -699,51 +775,119 @@ def select(
     return out
 
 
-def block(
+async def aselect(
+    lib: Library,
+    request: str,
+    current_text: str,
+    current_key: Optional[str],
+    logged: Sequence[str],
+    uses: Dict[Key, Any],
+    *,
+    threshold: float,
+    embed: Embed,
+    generate: Any,
+) -> Listing:
+    """:func:`select` with a model as the judge (``UNIFY_EVIDENCE_LIST_MATCHER=judge``).
+
+    The same request is seen before, as with the keys, and then decides
+    alone. Otherwise every entry recorded under a request that shares a rare
+    whole identifier with this one, and the closest cards by embedding, are
+    candidates, at most
+    :data:`unify.actor.evidence_judge.K`; the judge picks the one doing this
+    request's job, or none. Its pick heads a seen-before card that says a
+    model judged it. Nothing is listed as possibly related.
+    """
+    from unify.actor import evidence_judge
+
+    matcher = JudgeMatcher()
+    out = Listing()
+    shown: set = set()
+    matches = entry_matches(
+        lib,
+        current_text,
+        current_key,
+        logged,
+        uses,
+        threshold=threshold,
+    )
+    exact = {key: match for key, match, _ in matches if match.rank == 3}
+    # Identifier evidence only: similar wording (rank 1) on a stream of
+    # templated requests is mostly the shared instructions.
+    keyed = [(key, match) for key, match, _ in matches if match.rank == 2]
+    for card in choose_cards(lib, list(exact), K, shown):
+        match = exact[card.key()]
+        match.recurred = recurrence(match, current_text, logged, threshold=threshold)
+        out.seen.append((card, match))
+    pool = [key for key in lib.entries if key not in shown]
+    # The same request decides alone (in the bake-off that tier was right on
+    # all 66 of its firings): no embedding and no judge.
+    if out.seen or not pool:
+        return out
+    out.scores = matcher.related_scores(lib, pool, request, embed=embed)
+    candidates = evidence_judge.pool(
+        [key for key, _ in keyed],
+        out.scores,
+        exclude=sorted(shown),
+        include_keyed=evidence_judge.POOL_KEYED,
+    )
+    shared = (
+        {key: list(match.shared) for key, match in keyed if match.shared}
+        if evidence_judge.NAME_SHARED
+        else {}
+    )
+    out.verdict = await evidence_judge.decide(
+        request,
+        lib.entries,
+        candidates,
+        generate=generate,
+        shared=shared,
+    )
+    choice = out.verdict.choice
+    if choice is not None:
+        for card in choose_cards(lib, [choice], 1, shown):
+            out.seen.append(
+                (
+                    card,
+                    Match(
+                        1,
+                        float(out.verdict.confidence or 0.0),
+                        choice[0],
+                        "judged",
+                        evidence_judge.origin_text(lib.entries[choice]),
+                    ),
+                ),
+            )
+    return out
+
+
+def _inputs(
     function_manager: Any,
     guidance_manager: Any,
-    request_text: str,
     *,
-    functions: bool = True,
-    guidance: bool = True,
-    bind: Optional[Callable[[List[str]], Dict[str, bool]]] = None,
-    call_form: Optional[str] = None,
-    embed: Optional[Embed] = None,
-) -> Optional[str]:
-    """The evidence list for the current top-level task, or ``None`` (off, not top-level, or nothing qualifies)."""
-    from unify.actor import related_shortlist
-    from unify.common import embeddings
-    from unify.function_manager import entry_links, entry_record, task_origin
+    functions: bool,
+    guidance: bool,
+) -> Optional[Tuple[Library, Dict[Key, Any]]]:
+    """The library in scope and its use records, or ``None`` when it is empty."""
+    from unify.function_manager import entry_links, entry_record
 
-    chosen = setting()
-    current_text = task_origin.current_request()
-    if chosen is None or not request_text or current_text is None:
+    fn_rows = getattr(function_manager, "_evidence_rows", None)
+    note_rows = getattr(guidance_manager, "_evidence_rows", None)
+    functions_in = list(fn_rows()) if functions and callable(fn_rows) else []
+    notes_in = list(note_rows()) if guidance and callable(note_rows) else []
+    if not functions_in and not notes_in:
         return None
-    k, configured = chosen
-    try:
-        fn_rows = getattr(function_manager, "_evidence_rows", None)
-        note_rows = getattr(guidance_manager, "_evidence_rows", None)
-        functions_in = list(fn_rows()) if functions and callable(fn_rows) else []
-        notes_in = list(note_rows()) if guidance and callable(note_rows) else []
-        if not functions_in and not notes_in:
-            return None
-        lib = build_library(functions_in, notes_in, sorted(entry_links.links()))
-        uses = entry_record.uses_of(list(lib.entries))
-        listing = select(
-            lib,
-            request_text,
-            current_text,
-            task_origin.current(),
-            task_origin.logged_requests(),
-            uses,
-            k=k,
-            floor=related_shortlist.floor_for(embeddings.embedder().model, configured),
-            threshold=threshold(),
-            embed=embed or embeddings.embed,
-        )
-    except Exception as exc:  # an aid; the task starts without it
-        logger.debug(f"evidence list unavailable: {type(exc).__name__}: {exc}")
-        return None
+    lib = build_library(functions_in, notes_in, sorted(entry_links.links()))
+    return lib, entry_record.uses_of(list(lib.entries))
+
+
+def _text(
+    listing: Listing,
+    uses: Dict[Key, Any],
+    *,
+    bind: Optional[Callable[[List[str]], Dict[str, bool]]],
+    call_form: Optional[str],
+) -> Optional[str]:
+    """The list's text, with the seen-before functions bound first when *bind* is given."""
     bound: Dict[str, bool] = {}
     names = [
         str(row.get("name"))
@@ -765,6 +909,103 @@ def block(
         bound=bound,
         call_form=call_form if bound else None,
     )
+
+
+async def ablock(
+    function_manager: Any,
+    guidance_manager: Any,
+    request_text: str,
+    *,
+    functions: bool = True,
+    guidance: bool = True,
+    bind: Optional[Callable[[List[str]], Dict[str, bool]]] = None,
+    call_form: Optional[str] = None,
+    embed: Optional[Embed] = None,
+    generate: Any = None,
+    judge_model: Optional[str] = None,
+) -> Optional[str]:
+    """:func:`block` with a model as the judge; ``generate`` defaults to a client of *judge_model*."""
+    from unify.actor import evidence_judge
+    from unify.common import embeddings
+    from unify.function_manager import task_origin
+
+    current_text = task_origin.current_request()
+    if setting() is None or not request_text or current_text is None:
+        return None
+    try:
+        inputs = _inputs(
+            function_manager,
+            guidance_manager,
+            functions=functions,
+            guidance=guidance,
+        )
+        if inputs is None:
+            return None
+        lib, uses = inputs
+        listing = await aselect(
+            lib,
+            request_text,
+            current_text,
+            task_origin.current(),
+            task_origin.logged_requests(),
+            uses,
+            threshold=threshold(),
+            embed=embed or embeddings.embed,
+            generate=generate or evidence_judge.client_generate(judge_model),
+        )
+    except Exception as exc:  # an aid; the task starts without it
+        logger.debug(f"evidence list unavailable: {type(exc).__name__}: {exc}")
+        return None
+    return _text(listing, uses, bind=bind, call_form=call_form)
+
+
+def block(
+    function_manager: Any,
+    guidance_manager: Any,
+    request_text: str,
+    *,
+    functions: bool = True,
+    guidance: bool = True,
+    bind: Optional[Callable[[List[str]], Dict[str, bool]]] = None,
+    call_form: Optional[str] = None,
+    embed: Optional[Embed] = None,
+) -> Optional[str]:
+    """The evidence list for the current top-level task, or ``None`` (off, not top-level, or nothing qualifies)."""
+    from unify.actor import related_shortlist
+    from unify.common import embeddings
+    from unify.function_manager import task_origin
+
+    chosen = setting()
+    current_text = task_origin.current_request()
+    if chosen is None or not request_text or current_text is None:
+        return None
+    k, configured = chosen
+    try:
+        inputs = _inputs(
+            function_manager,
+            guidance_manager,
+            functions=functions,
+            guidance=guidance,
+        )
+        if inputs is None:
+            return None
+        lib, uses = inputs
+        listing = select(
+            lib,
+            request_text,
+            current_text,
+            task_origin.current(),
+            task_origin.logged_requests(),
+            uses,
+            k=k,
+            floor=related_shortlist.floor_for(embeddings.embedder().model, configured),
+            threshold=threshold(),
+            embed=embed or embeddings.embed,
+        )
+    except Exception as exc:  # an aid; the task starts without it
+        logger.debug(f"evidence list unavailable: {type(exc).__name__}: {exc}")
+        return None
+    return _text(listing, uses, bind=bind, call_form=call_form)
 
 
 def listed_names(block_text: Optional[str]) -> Dict[str, Dict[str, List[str]]]:
@@ -793,13 +1034,18 @@ __all__ = [
     "Match",
     "RELATED_HEADER",
     "SEEN_HEADER",
+    "JudgeMatcher",
     "KeysAndStatements",
     "MATCHERS",
     "Matcher",
+    "ablock",
+    "aselect",
     "block",
     "build_cards",
     "enabled",
+    "judged",
     "listed_names",
+    "matcher_name",
     "render",
     "require_prerequisites",
     "seen_before",
