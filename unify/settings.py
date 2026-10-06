@@ -1031,6 +1031,18 @@ class ProductionSettings(BaseSettings):
     # not offered and the prompt names the magics where it named the fields
     # (unify/actor/notebook_cells.py). On both tool surfaces.
     UNIFY_CODE_PROJECTION: str = ""
+    # "top_level": send the provider's encrypted reasoning items back. LiteLLM
+    # parses a response's non-standard message keys into
+    # ``provider_specific_fields``, so the ``reasoning_details`` OpenRouter
+    # returns (encrypted items and summaries) ride nested in the history Unify
+    # sends back, where OpenRouter ignores them: cross-turn reasoning
+    # continuity has been a no-op on the wire (replay probe, 6 Oct: input
+    # tokens identical with the items removed). With this value each new
+    # assistant message also carries its items as the top-level
+    # ``reasoning_details`` field, as prime-agent sends them. Messages already
+    # sent are never rewritten, so the cached prefix stays byte-stable. Off
+    # (""): as shipped.
+    UNIFY_REASONING_DELIVERY: str = ""
     # With UNIFY_TOOL_SURFACE=core and UNIFY_REVIEW_FORK, run the storage
     # review as a fork of the session too, instead of falling back to the
     # standalone librarian: the session's last request (its execute_code-only
@@ -1518,6 +1530,16 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "core"):
             raise ValueError(
                 f"UNIFY_TOOL_SURFACE must be empty or 'core', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REASONING_DELIVERY", mode="before")
+    @classmethod
+    def parse_reasoning_delivery(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "top_level"):
+            raise ValueError(
+                f"UNIFY_REASONING_DELIVERY must be empty or 'top_level', not {v!r}",
             )
         return value
 
