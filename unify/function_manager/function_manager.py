@@ -231,7 +231,7 @@ class _LineageTrackedFunction:
         return getattr(self._wrapped, name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        from . import run_summary, store_cases
+        from . import run_summary, store_cases, value_notice
 
         if store_cases.replaying():
             # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
@@ -269,7 +269,7 @@ class _LineageTrackedFunction:
         # Ensure synchronous work at call-time (if any) happens under the lineage frame.
         token_call = TOOL_LOOP_LINEAGE.set(hierarchy)
         try:
-            with store_cases.tracing(case):
+            with store_cases.tracing(case), value_notice.watching(case):
                 result = self._wrapped(*args, **kwargs)
         except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
@@ -292,7 +292,7 @@ class _LineageTrackedFunction:
             async def _await_and_finalize():
                 token_run = TOOL_LOOP_LINEAGE.set(hierarchy)
                 try:
-                    with store_cases.tracing(case):
+                    with store_cases.tracing(case), value_notice.watching(case):
                         value = await result
                 except Exception as exc:
                     if observer is not None:
@@ -422,7 +422,7 @@ class _InProcessFunctionProxy:
                 if asyncio.iscoroutine(result):
                     result = await result
                 return result
-            from . import run_summary, store_cases
+            from . import run_summary, store_cases, value_notice
 
             arguments = (
                 observer.before(self._raw_callable, args, kwargs)
@@ -431,7 +431,7 @@ class _InProcessFunctionProxy:
             )
             case = cases.begin(args, kwargs) if cases is not None else None
             try:
-                with store_cases.tracing(case):
+                with store_cases.tracing(case), value_notice.watching(case):
                     result = self._raw_callable(*args, **kwargs)
                     if asyncio.iscoroutine(result):
                         result = await result
@@ -3962,7 +3962,7 @@ class FunctionManager(BaseFunctionManager):
             else None
         )
         # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
-        from . import store_cases
+        from . import store_cases, value_notice
 
         cases = store_cases.CaseRecorder.for_function(func_data)
         case = cases.begin((), call_kwargs or {}) if cases is not None else None
@@ -3974,7 +3974,7 @@ class FunctionManager(BaseFunctionManager):
             if observer is not None:
                 observer.after(dict(arguments), exc)
             raise
-        with store_cases.tracing(case):
+        with store_cases.tracing(case), value_notice.watching(case):
             outcome = await self._execute_python_function(
                 implementation=implementation,
                 call_kwargs=call_kwargs or {},
@@ -3986,7 +3986,13 @@ class FunctionManager(BaseFunctionManager):
         if observer is not None:
             observer.after(arguments, outcome.get("error"))
         if cases is not None:
-            cases.end(case, result=outcome.get("result"), error=outcome.get("error"))
+            notice = cases.end(
+                case,
+                result=outcome.get("result"),
+                error=outcome.get("error"),
+            )
+            if notice:
+                outcome["stdout"] = (outcome.get("stdout") or "") + notice + "\n"
         return outcome
 
     # ------------------------------------------------------------------ #

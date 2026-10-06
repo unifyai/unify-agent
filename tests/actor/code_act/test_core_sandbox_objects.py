@@ -652,3 +652,84 @@ async def test_an_empty_result_notice_reaches_the_worker_cell_output(
     )
     assert out.count(line) == 1
     assert out.index("before\n") < out.index(line) < out.index("after\n")
+
+
+TOTAL_FOR = (
+    "def total_for(path: str, category: str) -> float:\n"
+    "    import csv, io, pathlib\n"
+    "    rows = list(csv.DictReader(io.StringIO(pathlib.Path(path).read_text())))\n"
+    "    return round(sum(float(r['amount']) for r in rows if r['category'] == category), 2)\n"
+)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+@_handle_project
+async def test_a_value_notice_reaches_the_worker_cell_output(
+    core_world,
+    music,
+    monkeypatch,
+    tmp_path,
+):
+    """``UNIFY_FUNCTION_VALUE_NOTICE``: the worker child notes the files a
+    stored function called by name reads and scans them for its arguments;
+    'meal' after an accepted 'meals' call gets one line in the cell's stdout."""
+    from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+    from unify.function_manager import task_origin
+    from unify.function_manager.function_manager import FunctionManager
+
+    for name in (
+        "UNIFY_FUNCTION_CASES",
+        "UNIFY_FUNCTION_SUMMARY",
+        "UNIFY_FUNCTION_VALUE_NOTICE",
+        "UNIFY_TASK_ORIGIN",
+        "UNIFY_ENTRY_RECORD",
+    ):
+        monkeypatch.setattr(SETTINGS, name, True)
+    fm = FunctionManager(include_primitives=False)
+    fm.add_functions(implementations=[TOTAL_FOR])
+    namespace: dict = {}
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    first = tmp_path / "q2.csv"
+    first.write_text("category,amount\nmeals,10\ntravel,11\nmeals,12\n")
+    origin = task_origin.enter("Total the meals spend.")
+    try:
+        assert namespace["total_for"](str(first), "meals") == 22.0
+        task_origin.record_outcome(True)
+    finally:
+        task_origin.leave(origin)
+
+    actor = _actor(function_manager=fm, can_store=False)
+    tools = actor.get_tools("act")
+    sandbox = PythonExecutionSession(environments={})
+    objects = core_surface.sandbox_objects(actor, policy=core_surface.WritePolicy())
+    sandbox.global_state.update(objects)
+    sandbox.core_globals = objects
+    token = _CURRENT_SANDBOX.set(sandbox)
+    origin = task_origin.enter("Total the meal spend for Q3.")
+    try:
+        found = await tools["execute_code"].fn(
+            thought="Find it.",
+            code="await functions.list()",
+        )
+        assert found.error is None, found.error
+        ran = await tools["execute_code"].fn(
+            thought="Call it by name.",
+            code=(
+                "open('q3.csv', 'w').write("
+                "'category,amount\\nmeals,10\\ntravel,11\\nmeals,12\\nmeals,13\\n')\n"
+                "total_for('q3.csv', 'meal')"
+            ),
+        )
+    finally:
+        task_origin.leave(origin)
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
+    assert ran.error is None and ran.result == 0
+    assert (
+        "[total_for: category='meal' occurs 0 times as a whole value in the files this "
+        "call read; in its one earlier accepted call it occurred 2 times. Closest values "
+        "now in column category: 'meals' (3).]"
+    ) in _stdout(ran)

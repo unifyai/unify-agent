@@ -75,11 +75,12 @@ CREATE TABLE IF NOT EXISTS function_runs (
     endpoints TEXT,
     args TEXT,
     result_kind TEXT,
-    result_empty INTEGER
+    result_empty INTEGER,
+    inputs TEXT
 )
 """
 #: Columns added after the table was first created, with their types.
-_ADDED = (("result_kind", "TEXT"), ("result_empty", "INTEGER"))
+_ADDED = (("result_kind", "TEXT"), ("result_empty", "INTEGER"), ("inputs", "TEXT"))
 
 
 def enabled() -> bool:
@@ -213,12 +214,13 @@ def record(
             json.dumps(_endpoints(calls), sort_keys=True),
             json.dumps(_arguments(pending), sort_keys=True),
             *((None, None) if error is not None else _shape_columns(result)),
+            _inputs_field(pending, error),
         )
         with closing(_connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO function_runs (function_id, source_hash, text_key, recorded_at,"
-                " trace_rule, trace_complete, errored, endpoints, args, result_kind, result_empty)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " trace_rule, trace_complete, errored, endpoints, args, result_kind, result_empty,"
+                " inputs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             conn.execute(
@@ -228,6 +230,16 @@ def record(
             )
     except Exception as exc:  # noqa: BLE001 - a summary must never break a call
         logger.warning("run summary not recorded: %s: %s", type(exc).__name__, exc)
+
+
+def _inputs_field(pending: Any, error: Any) -> Optional[str]:
+    """``UNIFY_FUNCTION_VALUE_NOTICE``'s scan of the call's reads, as kept (no argument values)."""
+    if error is not None:
+        return None
+    from . import value_notice
+
+    field = value_notice.row_field(pending)
+    return json.dumps(field, sort_keys=True) if field is not None else None
 
 
 def _shape_columns(value: Any) -> Tuple[str, Optional[int]]:

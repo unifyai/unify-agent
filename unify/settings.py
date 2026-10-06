@@ -368,6 +368,17 @@ class ProductionSettings(BaseSettings):
     # complete traces, none of unknown shape), one plain line follows the
     # call in the cell's output saying so, with no instruction. Off: no line.
     UNIFY_FUNCTION_EMPTY_NOTICE: bool = False
+    # With UNIFY_FUNCTION_SUMMARY on: while a recorded stored function runs,
+    # the files it opens for reading are noted, and when it returns they are
+    # scanned (bounded) for the values it matches on -- its short string
+    # arguments and the string literals its code compares against -- as
+    # whole values, never substrings. A value that matched in every earlier
+    # call of the same source whose request was accepted, and now occurs 0
+    # times, gets one plain line after the call, with the closest values of a
+    # small table column. Silent when the scan was cut short, the call started
+    # a process or read no files. Informational only: nothing enforces on it
+    # (unify/function_manager/value_notice.py). Off: no hook, scan or line.
+    UNIFY_FUNCTION_VALUE_NOTICE: bool = False
     # ``on``: the actor's prompt says that during the task it may store a
     # unit that ran and worked and repair a stored function that failed,
     # keeping its behaviour on the inputs it handled (a behaviour change gets
@@ -1180,6 +1191,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_CASES",
         "UNIFY_FUNCTION_SUMMARY",
         "UNIFY_FUNCTION_EMPTY_NOTICE",
+        "UNIFY_FUNCTION_VALUE_NOTICE",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",

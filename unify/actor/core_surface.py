@@ -665,9 +665,12 @@ class FunctionLibrary:
         token = next(self._ids)
         self._runs[token] = run
         entry = _entry_name(impl) or name
+        from unify.function_manager import value_notice
+
         return {
             "found": True,
             "token": token,
+            "watch": value_notice.worker_request(run.pending),
             "fn_name": entry,
             "source": impl if mode == "run" else None,
             "filename": function_source_filename(entry),
@@ -692,6 +695,7 @@ class FunctionLibrary:
         result: Any = None,
         error: Optional[str] = None,
         abandoned: bool = False,
+        inputs: Any = None,
     ) -> Dict[str, Any]:
         """Record how a call the worker ran ended; ``{"note": ...}`` when a
         failure is not held against the function, ``{"notice": ...}`` when a
@@ -705,6 +709,9 @@ class FunctionLibrary:
             run.pending.trace.closed = True
         if not steered:
             if run.recorder is not None:
+                from unify.function_manager import value_notice
+
+                value_notice.accept_worker_result(run.pending, inputs)
                 notice = run.recorder.end(run.pending, result=result, error=error)
                 if notice:
                     reply["notice"] = notice

@@ -767,10 +767,14 @@ class CaseRecorder:
         if _REPLAYING.get() or _QUIET.get():
             return None
         try:
-            return Pending(self, tuple(args), dict(kwargs or {}))
+            pending = Pending(self, tuple(args), dict(kwargs or {}))
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.debug("A call of %r was not recorded: %s", self.name, exc)
             return None
+        from . import value_notice
+
+        pending.value_plan = value_notice.plan(self, pending, args, kwargs or {})
+        return pending
 
     def end(
         self,
@@ -797,12 +801,19 @@ class CaseRecorder:
                 return None
             if error is not None and pending.caller_fault is not None:
                 return None
-            from . import run_summary
+            from . import run_summary, value_notice
 
-            notice = run_summary.empty_notice(self, result) if error is None else None
+            notices = (
+                [
+                    run_summary.empty_notice(self, result),
+                    value_notice.notice(self, pending),
+                ]
+                if error is None
+                else []
+            )
             _store(self, pending, result=result, error=error)
             run_summary.record(self, pending, result=result, error=error)
-            return notice
+            return "\n".join(n for n in notices if n) or None
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.warning("A case of %r was not recorded: %s", self.name, exc)
             return None
