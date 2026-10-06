@@ -258,6 +258,10 @@ def test_a_stored_function_called_inside_another_is_a_case_of_its_own(
     # the callee's environment calls are in both traces
     assert [c["call"] for c in outer.trace] == [c["call"] for c in inner.trace]
     assert len(outer.trace) == 2
+    # its write included, and the caller's trace is complete: the callee
+    # reached the environment only through `primitives`, which records
+    assert "music.remove_track" in [c["call"] for c in outer.trace]
+    assert outer.trace_complete and inner.trace_complete
 
 
 @_handle_project
