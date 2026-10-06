@@ -854,6 +854,47 @@ class ToolsData:
             self.pending.discard(task)
             self.info.pop(task, None)
 
+    async def cancel_pending_tasks_with_reply(
+        self,
+        content: str,
+        *,
+        assistant_meta,
+        msg_dispatcher,
+    ) -> list[str]:
+        """Cancel every pending call and give each *content* as its final reply.
+
+        For a loop that goes on after the cancellation (UNIFY_STEP_CAP_REPLY):
+        an unanswered call would be scheduled again before the next request,
+        and a pending placeholder would read as if its result were still to
+        come. The reply is delivered as a completed result would be, and is
+        remembered as one, so the call is not run again. Returns the call ids.
+        """
+        infos = [self.info.get(task) for task in list(self.pending)]
+        await self.cancel_pending_tasks()
+        answered: list[str] = []
+        for info in infos:
+            if info is None or info.call_id in self.completed_results:
+                continue
+            self.completed_results[info.call_id] = content
+            self._completed_tool_names[info.call_id] = info.name
+            placeholder = info.clarify_placeholder or info.tool_reply_msg
+            if placeholder is not None and self._mutable(placeholder):
+                placeholder["content"] = content
+                await msg_dispatcher.publish_to_event_bus([placeholder])
+            elif placeholder is not None:
+                await emit_completion_pair(content, info.call_id, msg_dispatcher)
+            else:
+                await insert_tool_message_after_assistant(
+                    assistant_meta,
+                    info.assistant_msg,
+                    create_tool_call_message(info.name, info.call_id, content),
+                    self._client,
+                    msg_dispatcher,
+                    bypass_watermark=True,
+                )
+            answered.append(info.call_id)
+        return answered
+
     def prune_over_quota_tool_calls(self, asst_msg: dict) -> None:
         """Remove, in place, the tool_calls of asst_msg that would exceed the
         per-tool quota. Calls that are not executed must not remain in the
