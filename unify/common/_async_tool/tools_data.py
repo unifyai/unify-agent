@@ -493,6 +493,8 @@ class ToolsData:
         can_ask_user: Optional[bool] = None,
     ):
         self._client = client
+        # Calls abandoned after a bounded cancel, held until they end.
+        self._abandoned: Set[asyncio.Task] = set()
         # UNIFY_BUDGET_FOOTER: a line to end each tool result with, or None.
         self.result_footer: Optional[Callable[[], Optional[str]]] = None
         # False: the loop offers no wait/steer/ask_about_completed_tool, so
@@ -899,9 +901,17 @@ class ToolsData:
     def active_count(self, task_name: str) -> int:
         return sum(1 for _t, _inf in self.info.items() if _inf.name == task_name)
 
-    async def cancel_pending_tasks(self):
+    async def cancel_pending_tasks(self, *, grace: Optional[float] = None) -> set:
+        """Cancel every pending call and wait for each to stop.
+
+        With *grace*, a call still running that long after its cancel (a
+        tool that ignores cancellation) is abandoned: it is dropped from the
+        loop's bookkeeping and left to end on its own, and the wait ends.
+        Returns the abandoned tasks.
+        """
         pending = list(self.pending)
         stopped = set()
+        abandoned: set = set()
 
         async def stop_handle(handle):
             result = handle.stop("loop cancelled")
@@ -939,17 +949,42 @@ class ToolsData:
                         prefix="⚠️",
                     )
 
+        async def bounded(waiting) -> bool:
+            """Await *waiting*, at most *grace* seconds; whether it ended."""
+            if grace is None:
+                await waiting
+                return True
+            future = asyncio.ensure_future(waiting)
+            done, _ = await asyncio.wait({future}, timeout=grace)
+            return bool(done)
+
         stops = stop_tasks()
         for task in pending:
             task.cancel()
         # Stop and cancel concurrently: an async stop can await its owned task.
         # A child's stop failure must not cancel sibling cleanup operations.
-        await asyncio.gather(*pending, join_stops(stops), return_exceptions=True)
-        # A factory may catch cancellation and return a newly owned handle.
-        await join_stops(stop_tasks())
+        if await bounded(
+            asyncio.gather(*pending, join_stops(stops), return_exceptions=True),
+        ):
+            # A factory may catch cancellation and return a newly owned handle.
+            await bounded(join_stops(stop_tasks()))
         for task in pending:
+            if not task.done():
+                abandoned.add(task)
+                # Held until it ends, so it is not garbage-collected while
+                # it runs; its result is never read.
+                self._abandoned.add(task)
+                task.add_done_callback(self._abandoned.discard)
             self.pending.discard(task)
             self.info.pop(task, None)
+        if abandoned:
+            self._logger.error(
+                f"{len(abandoned)} call(s) still running {grace:g}s after their "
+                "cancel were abandoned: "
+                + ", ".join(sorted(t.get_name() for t in abandoned)),
+                prefix="⚠️",
+            )
+        return abandoned
 
     async def cancel_pending_tasks_with_reply(
         self,
@@ -957,6 +992,7 @@ class ToolsData:
         *,
         assistant_meta,
         msg_dispatcher,
+        grace: Optional[float] = None,
     ) -> list[str]:
         """Cancel every pending call and give each *content* as its final reply.
 
@@ -965,26 +1001,34 @@ class ToolsData:
         and a pending placeholder would read as if its result were still to
         come. The reply is delivered as a completed result would be, and is
         remembered as one, so the call is not run again. Returns the call ids.
+        *grace* is as for :meth:`cancel_pending_tasks`; the reply to an
+        abandoned call says so.
         """
-        infos = [self.info.get(task) for task in list(self.pending)]
-        await self.cancel_pending_tasks()
+        by_task = {task: self.info.get(task) for task in list(self.pending)}
+        abandoned = await self.cancel_pending_tasks(grace=grace)
         answered: list[str] = []
-        for info in infos:
+        for task, info in by_task.items():
             if info is None or info.call_id in self.completed_results:
                 continue
-            self.completed_results[info.call_id] = content
+            reply = content
+            if task in abandoned:
+                reply += (
+                    f" It was still running {grace:g}s after the cancel and was "
+                    "abandoned; whatever it still does is not reported."
+                )
+            self.completed_results[info.call_id] = reply
             self._completed_tool_names[info.call_id] = info.name
             placeholder = info.clarify_placeholder or info.tool_reply_msg
             if placeholder is not None and self._mutable(placeholder):
-                placeholder["content"] = content
+                placeholder["content"] = reply
                 await msg_dispatcher.publish_to_event_bus([placeholder])
             elif placeholder is not None:
-                await emit_completion_pair(content, info.call_id, msg_dispatcher)
+                await emit_completion_pair(reply, info.call_id, msg_dispatcher)
             else:
                 await insert_tool_message_after_assistant(
                     assistant_meta,
                     info.assistant_msg,
-                    create_tool_call_message(info.name, info.call_id, content),
+                    create_tool_call_message(info.name, info.call_id, reply),
                     self._client,
                     msg_dispatcher,
                     bypass_watermark=True,

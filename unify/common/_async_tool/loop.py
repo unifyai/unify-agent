@@ -120,6 +120,11 @@ class ToolLoopRuntimeState:
     provider_error_retries: int = 0
 
 
+# How long a cancelled request waits for its running calls to stop before it
+# abandons them and still ends in its response (a tool that swallows the
+# cancellation would otherwise hold the response for as long as it runs).
+_CANCEL_GRACE_S = 2.0
+
 # A reply whose choice carries a provider error is sent again this many
 # times, after 1 s then 2 s (UniLLM's transient retry already ran inside
 # the call: the provider answered HTTP 200, so it saw no failure).
@@ -1664,6 +1669,7 @@ async def async_tool_loop_inner(
             "finished.",
             assistant_meta=assistant_meta,
             msg_dispatcher=_msg_dispatcher,
+            grace=_CANCEL_GRACE_S,
         )
         notice = (
             "🔚 Cancelled: the requester cancelled this request before it was "
