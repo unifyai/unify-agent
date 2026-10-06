@@ -1007,6 +1007,13 @@ class ProductionSettings(BaseSettings):
     # its checked outcome). Empty: both kinds, reviewed, as shipped. An actor
     # refuses to start with a kind set and UNIFY_INLINE_CURATION on.
     UNIFY_MEMORY_KIND: str = ""
+    # With UNIFY_CAPTURE_ACCEPTED: keep whether each function the review wrote
+    # returned its own request's answer when run on the values of the code
+    # behind that answer (returns / does not return / not run, and why), and
+    # show it as one line on the function's evidence record and in search
+    # results. Informs only (unify/function_manager/origin_replay.py). Off: no
+    # table, no line.
+    UNIFY_ORIGIN_REPLAY_STATUS: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1231,6 +1238,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_SUMMARY",
         "UNIFY_FUNCTION_EMPTY_NOTICE",
         "UNIFY_FUNCTION_VALUE_NOTICE",
+        "UNIFY_ORIGIN_REPLAY_STATUS",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",

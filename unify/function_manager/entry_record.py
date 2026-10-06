@@ -364,6 +364,13 @@ def record_text(
     if recurred:
         parts.append(recurred)
     parts += [status(kind, row, uses), use_phrase(kind, uses)]
+    # UNIFY_ORIGIN_REPLAY_STATUS: whether it returns its own request's answer.
+    if kind == "function":
+        from . import origin_replay
+
+        replay = origin_replay.line(row.get("function_id"), row.get("implementation"))
+        if replay:
+            parts.append(replay)
     # UNIFY_PROTECT_VERIFIED=versioned: changes kept beside the content.
     from .verified_guard import versions
 

@@ -453,8 +453,17 @@ def record_answering_call(fm: Any, name: str) -> Optional[str]:
             return None
         source = str(row["implementation"])
         depends_on = [d for d in row.get("depends_on") or [] if isinstance(d, str)]
+        from . import origin_replay
+
+        fid = row.get("function_id")
         calls = argument_sets(source, name, cell.bindings)
         if not calls:
+            origin_replay.record(
+                fid,
+                source,
+                origin_replay.NOT_RUN,
+                "its parameters do not take the values of the code behind the answer",
+            )
             return None
         why = sc._unreplayable(
             fm,
@@ -463,6 +472,7 @@ def record_answering_call(fm: Any, name: str) -> Optional[str]:
             dependencies=row.get("dependencies") or (),
         )
         if why is not None:
+            origin_replay.record(fid, source, origin_replay.NOT_RUN, str(why))
             return f"not run on the answer cell's values: {why}"
         wanted = cell.answer_tokens
         returned, why_not = False, ""
@@ -485,6 +495,7 @@ def record_answering_call(fm: Any, name: str) -> Optional[str]:
                 return None
             pending = recorder.begin(list(call["args"]), dict(call["kwargs"]))
             recorder.end(pending, result=value)
+            origin_replay.record(fid, source, origin_replay.RETURNS)
             shown = ", ".join(
                 f"{key}=<{type(val).__name__}>" for key, val in call["kwargs"].items()
             )
@@ -493,10 +504,12 @@ def record_answering_call(fm: Any, name: str) -> Optional[str]:
                 "returned the session's answer; that call is recorded as its case"
             )
         if not returned:
+            origin_replay.record(fid, source, origin_replay.NOT_RUN, why_not)
             return (
                 f"not run to the end on the answer cell's values ({why_not}); "
                 "no case recorded"
             )
+        origin_replay.record(fid, source, origin_replay.DIFFERS)
         return (
             "run on the answer cell's values, it did not return the session's "
             "answer; no case recorded"

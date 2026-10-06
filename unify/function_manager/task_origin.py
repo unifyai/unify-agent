@@ -335,10 +335,13 @@ def listing_usage_enabled() -> bool:
 
 def listing_notes_enabled() -> bool:
     """Whether any switch adds notes to the shortlist's lines."""
+    from . import origin_replay
+
     return (
         listing_provenance_enabled()
         or lesson_status_enabled()
         or listing_usage_enabled()
+        or origin_replay.enabled()
     )
 
 
@@ -939,6 +942,8 @@ def usage_note(name: str, calls: Any) -> str:
 ORIGIN_LINE = "_origin_line"
 LESSON = "_lesson"
 USAGE = "_usage"
+#: ``UNIFY_ORIGIN_REPLAY_STATUS``: whether a function returns its own request's answer.
+ORIGIN_REPLAY = "_origin_replay"
 
 
 def listing_notes(marker: "Marker", kind: str, row: Dict[str, Any]) -> Dict[str, str]:
@@ -960,6 +965,12 @@ def listing_notes(marker: "Marker", kind: str, row: Dict[str, Any]) -> Dict[str,
             notes[LESSON] = status
     if kind == "function" and listing_usage_enabled():
         notes[USAGE] = usage_note(str(row.get("name") or ""), row.get("usage_calls"))
+    if kind == "function":
+        from . import origin_replay
+
+        replay = origin_replay.line(row.get("function_id"), row.get("implementation"))
+        if replay:
+            notes[ORIGIN_REPLAY] = replay
     return notes
 
 
