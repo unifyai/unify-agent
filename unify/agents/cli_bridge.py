@@ -33,25 +33,36 @@ class CliBridge:
             self._emit({"type": "record", **entry.to_dict()})
 
     async def user_message(self, text: str) -> None:
-        record = self.pool.record
-        record.append(USER, text, mentions=[record.root])
-        if self._root_busy:
-            return
-        # A parked session takes a new request only through its request queue:
-        # hand it the block, which moves the cursor, so no boundary repeats it.
-        block = record.take_block(record.root)
-        if block:
-            self._root_busy = True
-            await self.handle.interject(block)
+        """A line from the driver: a ``user`` post (mentions resolved from the text)."""
+        self.pool.record.append_harness(USER, text, full_text_at="the driver's input")
+        if not self._root_busy:
+            await self._wake_if_waiting()
 
     def cancel_posted(self) -> None:
         root = self.pool.record.root
-        self.pool.record.append(USER, f"@{root} cancel", kind="cancel", mentions=[root])
+        self.pool.record.append_harness(
+            USER,
+            f"@{root} cancel",
+            kind="cancel",
+            mentions=[root],
+        )
 
     async def root_replied(self, text: str) -> None:
         """A persistent session's turn answered: record it, end its helpers."""
         await self.pool.finish_request(text, reason="the main agent replied")
         self._root_busy = False
+        # A message that arrived during the turn's last model call was not shown
+        # to it (the turn ended there); it is the session's next request.
+        await self._wake_if_waiting()
+
+    async def _wake_if_waiting(self) -> None:
+        # A parked session takes a new request only through its request queue:
+        # hand it the block, which moves the cursor, so no boundary repeats it.
+        record = self.pool.record
+        block = record.take_block(record.root)
+        if block:
+            self._root_busy = True
+            await self.handle.interject(block)
 
 
 def attach_bridge(handle: Any, emit: Callable[..., None]) -> Optional[CliBridge]:

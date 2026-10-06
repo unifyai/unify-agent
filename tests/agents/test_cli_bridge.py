@@ -112,3 +112,22 @@ async def test_the_act_driver_posts_messages_records_cancels_and_never_interject
     ]
     assert handle.interjected == [] and handle.cancelled == 1
     assert handle.stopped is not None
+
+
+@pytest.mark.asyncio
+async def test_a_long_line_is_posted_and_mentions_in_user_lines_resolve():
+    bridge, rec, _, _ = _bridge()
+    rec.add_agent("h1", spawner="root")
+    await bridge.user_message("x" * 40_000)
+    assert len(rec.entries[-1].text.encode()) <= 16 * 1024
+    await bridge.user_message("@h1 stop that")
+    assert rec.entries[-1].mentions == ("h1",)
+
+
+@pytest.mark.asyncio
+async def test_a_message_during_the_last_model_call_wakes_the_parked_session():
+    bridge, rec, handle, _ = _bridge()
+    await bridge.user_message("posted while the main agent finished")
+    await bridge.root_replied("the answer")
+    assert len(handle.interjected) == 1
+    assert "posted while the main agent finished" in handle.interjected[0]
