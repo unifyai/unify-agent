@@ -29,6 +29,13 @@ Pieces, in the order a request travels:
 * Under ``UNIFY_WORKSPACE_PYTHON=worker`` the request's text crosses the
   boundary (``worker.py``) and the worker builds its own ``Request`` from it,
   a fresh one for each cell (``worker_child.py``).
+
+A variable of the model's own named ``request`` (``request = {...}`` in HTTP
+code) is never replaced: the harness binds the name only while it is unbound
+or still holds a harness ``Request``, in process and in the worker alike. The
+model's value stays for the rest of the session; once the model deletes it,
+the next cell gets the current request again. Removal (a loop without a
+request) takes away only a harness ``Request``.
 """
 
 from __future__ import annotations
@@ -154,14 +161,22 @@ def record(slot: Optional[RequestSlot], message: Any) -> None:
 
 
 def install(namespace: dict) -> None:
-    """Before a cell: bind a fresh ``request``, or remove one, in *namespace*."""
+    """Before a cell: bind a fresh ``request``, or remove one, in *namespace*.
+
+    The name is taken only while it is unbound or holds a harness
+    ``Request``: a variable of the model's own named ``request`` is left as
+    it is.
+    """
     if not enabled():
         return
     from unify.actor.execution.worker_child import Request
 
+    held = namespace.get(GLOBAL)
+    ours = GLOBAL not in namespace or isinstance(held, Request)
     slot = _SLOT.get()
     if slot is None or slot.text is None:
-        if isinstance(namespace.get(GLOBAL), Request):
+        if isinstance(held, Request):
             del namespace[GLOBAL]
         return
-    namespace[GLOBAL] = Request(slot.text)
+    if ours:
+        namespace[GLOBAL] = Request(slot.text)

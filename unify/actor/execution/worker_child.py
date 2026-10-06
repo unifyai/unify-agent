@@ -242,7 +242,9 @@ class Request:
     ``request.text`` is the request's text, as you received it;
     ``request.data`` is the list of JSON objects and arrays it contains, in
     order of appearance. Each cell gets a fresh copy, so what a cell does to
-    it does not reach a later cell.
+    it does not reach a later cell. A variable of your own named ``request``
+    is never replaced; after ``del request`` the next cell has the current
+    request again.
     """
 
     __slots__ = ("_text", "_data")
@@ -1223,7 +1225,12 @@ class Worker:
     def apply_sync(self, sync: dict) -> None:
         for name in sync.get("remove") or []:
             obj = self.installed.pop(name, None)
-            if obj is not None and self.ns.get(name) is obj:
+            current = self.ns.get(name)
+            if obj is not None and (
+                current is obj
+                # UNIFY_BIND_REQUEST=on: any harness Request, as in process.
+                or (isinstance(obj, Request) and isinstance(current, Request))
+            ):
                 del self.ns[name]
         for name, desc in (sync.get("set") or {}).items():
             kind = desc.get("kind")
@@ -1256,8 +1263,13 @@ class Worker:
             elif kind == "local":
                 obj = self._local(desc["local"])
             elif kind == "request":
-                # UNIFY_BIND_REQUEST=on: renewed before each cell.
+                # UNIFY_BIND_REQUEST=on: renewed before each cell, and bound
+                # only where the model has no ``request`` of its own.
                 obj = Request(str(desc.get("text") or ""))
+                self.installed[name] = obj
+                if self._request_unclaimed(name):
+                    self.ns[name] = obj
+                continue
             elif kind == "import":
                 obj = self._import(desc["spec"])
             elif kind == "model":
@@ -1270,14 +1282,21 @@ class Worker:
             self.ns[name] = obj
             self.installed[name] = obj
 
+    def _request_unclaimed(self, name: str) -> bool:
+        """The name is unbound or holds a harness ``Request``, not a variable
+        of the model's own."""
+        return name not in self.ns or isinstance(self.ns[name], Request)
+
     def renew_requests(self) -> None:
         """UNIFY_BIND_REQUEST=on: each cell gets a fresh ``request``, so what
-        a cell did to it (or a rebinding of the name) does not last."""
+        a cell did to it does not last; a variable of the model's own named
+        ``request`` is left as it is."""
         for name, obj in list(self.installed.items()):
             if isinstance(obj, Request):
                 fresh = obj.renewed()
-                self.ns[name] = fresh
                 self.installed[name] = fresh
+                if self._request_unclaimed(name):
+                    self.ns[name] = fresh
 
     def variables(self) -> dict[str, str]:
         out: dict[str, str] = {}

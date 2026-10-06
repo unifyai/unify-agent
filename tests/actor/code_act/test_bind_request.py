@@ -356,15 +356,34 @@ async def _cell_checks(ex: SessionExecutor) -> None:
         )
         assert out.startswith("False 4\n")
         assert _seen(out)[0]["data"] == FIRST_DATA
-        # Rebinding the name lasts for that cell only.
-        out, res = await _run(ex, "request = 'mine'\nprint(request)")
-        assert out == "mine\n"
-        out, res = await _run(ex, REPORT_CELL)
-        assert _seen(out)[0]["text"] == FIRST
         # The next request replaces the first.
         slot.text = SECOND
         out, res = await _run(ex, REPORT_CELL)
         assert _seen(out) == [{"bound": True, "text": SECOND, "data": SECOND_DATA}]
+        slot.text = FIRST
+        # A variable of the model's own named ``request`` (HTTP code's
+        # ``request = {...}``) is left alone, in later cells and after the
+        # next request arrives.
+        out, res = await _run(ex, "request = {'url': 'x'}")
+        assert res["error"] is None
+        out, res = await _run(ex, "print(request)")
+        assert out == "{'url': 'x'}\n"
+        slot.text = SECOND
+        out, res = await _run(ex, "print(request)")
+        assert out == "{'url': 'x'}\n"
+        # Once the model deletes it, the next cell has the current request.
+        # (A cell of only ``del name`` for an earlier cell's name fails as
+        # shipped: the cell's wrapper declares ``global`` only for names the
+        # cell assigns, so the assignment makes ``del`` reach the global.)
+        out, res = await _run(ex, "request = None\ndel request")
+        assert res["error"] is None
+        out, res = await _run(ex, REPORT_CELL)
+        assert _seen(out) == [{"bound": True, "text": SECOND, "data": SECOND_DATA}]
+        # A cell's change to request.data still does not reach the next cell.
+        out, res = await _run(ex, "request.data.append('x')\nprint(len(request.data))")
+        assert out == "3\n"
+        out, res = await _run(ex, REPORT_CELL)
+        assert _seen(out)[0]["data"] == SECOND_DATA
     finally:
         bound_request.unbind(token)
     # A loop that answers no requester (the storage review) has none.

@@ -286,8 +286,10 @@ class ProductionSettings(BaseSettings):
     # list of JSON objects and arrays found in that text, in order of
     # appearance, parsed with the standard json module. Nothing else is
     # parsed. Each cell gets a fresh, read-only ``request`` (its attributes
-    # cannot be set; a cell's changes to ``request.data`` and a rebinding of
-    # the name last for that cell only). A loop that answers no requester
+    # cannot be set; a cell's changes to ``request.data`` last for that cell
+    # only). A variable of the model's own named ``request`` is never
+    # replaced; after ``del request`` the next cell has the current request
+    # again. A loop that answers no requester
     # (the storage review) has none. The prompt says so in one sentence in
     # its Sandbox Environment section; the tools are unchanged
     # (unify/common/_async_tool/bound_request.py). Empty: as shipped.
