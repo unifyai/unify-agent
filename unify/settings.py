@@ -164,6 +164,15 @@ class ProductionSettings(BaseSettings):
     # line is part of the new result, so no message already sent changes.
     # Off: as shipped.
     UNIFY_BUDGET_FOOTER: bool = False
+    # Seconds a loop waits on questions nobody answers before it says so.
+    # When every call a loop is waiting on is a question (its own
+    # request_clarification, say) and no answer has come for this long, the
+    # model gets a plain notice that no answer has arrived and takes its
+    # turn: it can continue without the answer or reply. The notice repeats
+    # after as long again. A sub-actor of a session that cannot ask, whose
+    # question only its own model reads, otherwise waits until the host's
+    # idle timeout. 0: no limit, as shipped.
+    UNIFY_PENDING_TIMEOUT_S: float = 0.0
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
@@ -1119,6 +1128,16 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
+
+    @field_validator("UNIFY_PENDING_TIMEOUT_S", mode="before")
+    @classmethod
+    def parse_pending_timeout(cls, v: Any) -> float:
+        value = float(v or 0)
+        if value < 0 or value != value:
+            raise ValueError(
+                f"UNIFY_PENDING_TIMEOUT_S must be 0 (off) or positive, not {v!r}",
+            )
+        return value
 
     @field_validator("UNIFY_STEP_CAP_REPLY", mode="before")
     @classmethod

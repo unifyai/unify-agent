@@ -4,6 +4,7 @@ import hashlib
 import json
 import inspect
 import copy
+import time
 from dataclasses import dataclass, field
 
 from typing import (
@@ -770,6 +771,11 @@ async def async_tool_loop_inner(
     _step_cap_mode = _CAP_SETTINGS.step_cap_reply()
     _step_cap_reply = bool(_step_cap_mode)
     _step_cap_last_word = _step_cap_mode == "last_word"
+    # UNIFY_PENDING_TIMEOUT_S: how long questions nobody answers may hold
+    # the loop before the model is told (0: as shipped, no limit).
+    _pending_timeout = float(getattr(_CAP_SETTINGS, "UNIFY_PENDING_TIMEOUT_S", 0) or 0)
+    # When each call's question was asked, or last reported unanswered.
+    _question_since: Dict[str, float] = {}
 
     timer: TimeoutTimer = TimeoutTimer(
         timeout=timeout,
@@ -1800,6 +1806,42 @@ async def async_tool_loop_inner(
                 pass
             break
 
+    def _unanswered_questions() -> list[str]:
+        """UNIFY_PENDING_TIMEOUT_S: the call ids of the questions holding the
+        loop, when every pending call is waiting for an answer (nothing else
+        can wake it but an answer or a message from outside); else none."""
+        if _pending_timeout <= 0 or not tools_data.pending:
+            return []
+        infos = [tools_data.info.get(t) for t in tools_data.pending]
+        if not all(getattr(i, "waiting_for_clarification", False) for i in infos):
+            return []
+        ids = [i.call_id for i in infos]
+        for call_id in ids:
+            _question_since.setdefault(call_id, time.monotonic())
+        return ids
+
+    async def _report_unanswered(call_ids: list[str]) -> None:
+        """Tell the model that no answer has arrived, and when it is due
+        to hear again. It decides what to do; nothing is cancelled."""
+        listed = ", ".join(call_ids)
+        await _msg_dispatcher.append_msgs(
+            [
+                loop_user_notice(
+                    f"No answer has arrived to the question of {listed} after "
+                    f"{_pending_timeout:g}s; there may be nobody to answer it. "
+                    "Continue without the answer, or reply.",
+                ),
+            ],
+        )
+        now = time.monotonic()
+        for call_id in call_ids:
+            _question_since[call_id] = now
+        logger.info(
+            f"Pending timeout: no answer to {listed} after "
+            f"{_pending_timeout:g}s; the model takes its turn",
+            prefix=ICONS["clarification"],
+        )
+
     async def _handle_clarification(
         src_task: asyncio.Task,
         question_payload: Any,
@@ -1817,6 +1859,7 @@ async def async_tool_loop_inner(
         tool_name = tools_data.info[src_task].name
 
         tools_data.info[src_task].waiting_for_clarification = True
+        _question_since[call_id] = time.monotonic()
 
         # Coalesce-then-freeze into a [clarification <call_id>] tail message,
         # never the tool_reply_msg pending stub, which stays byte-frozen once
@@ -2711,11 +2754,47 @@ async def async_tool_loop_inner(
                     _wait_timeout = (
                         _left if _wait_timeout is None else min(_wait_timeout, _left)
                     )
+                # UNIFY_PENDING_TIMEOUT_S: only questions are left to wait on.
+                _unanswered = _unanswered_questions()
+                _question_due: Optional[float] = None
+                if _unanswered:
+                    _question_due = max(
+                        0.0,
+                        min(_question_since[c] for c in _unanswered)
+                        + _pending_timeout
+                        - time.monotonic(),
+                    )
+                    _wait_timeout = (
+                        _question_due
+                        if _wait_timeout is None
+                        else min(_wait_timeout, _question_due)
+                    )
                 done, _ = await asyncio.wait(
                     waiters,
                     timeout=_wait_timeout,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+
+                if not done and _question_due is not None:
+                    _overdue = [
+                        c
+                        for c in _unanswered_questions()
+                        if time.monotonic() - _question_since[c]
+                        >= _pending_timeout - 0.001
+                    ]
+                    if _overdue:
+                        for aux in (
+                            interject_w,
+                            cancel_waiter,
+                            *clar_waiters.keys(),
+                            *notif_waiters.keys(),
+                        ):
+                            if not aux.done():
+                                aux.cancel()
+                                await asyncio.gather(aux, return_exceptions=True)
+                        await _report_unanswered(_overdue)
+                        llm_turn_required = True
+                        continue
 
                 if not done and _hold.declared and not timer.has_exceeded_time():
                     # The hold's time is up with calls still running; the top
