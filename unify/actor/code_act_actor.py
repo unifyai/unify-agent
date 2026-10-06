@@ -4469,6 +4469,13 @@ def _synthesize_python_call(
     return f"{preamble}{call_expr}"
 
 
+def _agents_mode() -> bool:
+    """``UNIFY_AGENTS=record``: the shared agent record is on."""
+    from unify import agents
+
+    return agents.enabled()
+
+
 class CodeActActor(BaseCodeActActor):
     """
     An actor that uses a conversational tool loop and a stateful code execution
@@ -4997,6 +5004,10 @@ class CodeActActor(BaseCodeActActor):
                     "thought": thought[:500],
                 },
             )
+            if _agents_mode():
+                # UNIFY_AGENTS=record: nothing reaches the model while its cell
+                # runs, so neither the heartbeat nor in-cell progress is wired.
+                _notification_up_q = None
             heartbeat_task: asyncio.Task[None] | None = None
             try:
                 heartbeat_task = asyncio.create_task(
@@ -5759,6 +5770,9 @@ class CodeActActor(BaseCodeActActor):
                         "session_name": session_name,
                     },
                 )
+                if _agents_mode():
+                    # UNIFY_AGENTS=record: as in execute_code.
+                    _notification_up_q = None
                 heartbeat_task: asyncio.Task[None] | None = None
                 try:
                     heartbeat_task = asyncio.create_task(

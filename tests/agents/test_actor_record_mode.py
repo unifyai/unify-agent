@@ -121,3 +121,55 @@ async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_res
     assert "posted during the model call" in block and "posted during the cell" in block
     first_msgs = requests[0]["messages"]
     assert msgs[: len(first_msgs)] == first_msgs
+
+
+async def _run_slow_cell(monkeypatch, tmp_path, mode):
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.agents import binding
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", mode)
+    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
+    actor = CodeActActor(
+        environments=actor_env.top_level_environments(),
+        tool_policy=None,
+    )
+    # A cell long enough for the code-step heartbeat to fire.
+    actor._active_work_heartbeat_interval_s = 0.2
+    actor._active_work_fallback_initial_delay_s = 0.3
+    replies = [
+        lambda: h.completion(
+            calls=[
+                (
+                    "execute_code",
+                    {
+                        "thought": "t",
+                        "code": "import asyncio\nawait asyncio.sleep(2)\n'ok'",
+                    },
+                ),
+            ],
+        ),
+        *_DONE * 3,
+    ]
+    try:
+        with h.scripted(replies) as provider:
+            handle = await actor.act(
+                "Answer the request.",
+                persist=False,
+                can_store=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), 60)
+    finally:
+        await actor.close()
+    return provider.requests, result
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_a_long_cell_never_wakes_the_model_in_record_mode(monkeypatch, tmp_path):
+    requests, result = await _run_slow_cell(monkeypatch, tmp_path, "record")
+    assert result == "done"
+    assert len(requests) == 2  # the cell's call, then one call after the cell ended
+    assert "Still working on the code step" not in json.dumps(requests)
+    msgs = requests[1]["messages"]
+    assert msgs[-1]["role"] == "tool" and "ok" in json.dumps(msgs[-1])
