@@ -359,9 +359,22 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
     stdin, stdout and stderr are one open file: every write the terminal
     could not take at once would then fail with BlockingIOError. Reading
     only once the descriptor is readable never blocks the loop.
+
+    When stdin is not a terminal it is the driver's message channel, and
+    nothing else in the process may read it. The channel is read from a
+    private copy while descriptor 0 becomes ``/dev/null``, so a subprocess
+    or thread that model code starts reads end of input, as in the
+    sandboxed worker, instead of waiting on, or taking, the driver's lines.
     """
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
+    moved_from = None
+    if not os.isatty(fd):
+        channel = os.dup(fd)
+        null = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null, fd)
+        os.close(null)
+        moved_from, fd = fd, channel
     reader = asyncio.StreamReader()
 
     def feed() -> None:
@@ -377,6 +390,9 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
         yield reader
     finally:
         loop.remove_reader(fd)
+        if moved_from is not None:
+            os.dup2(fd, moved_from)
+            os.close(fd)
 
 
 class Act:

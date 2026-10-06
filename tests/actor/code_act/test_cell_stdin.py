@@ -162,3 +162,71 @@ async def test_execute_function_help_with_no_arguments_returns(
     assert "help>" in json.dumps(out, default=str)
     time.sleep(WATCHDOG_S - elapsed + 0.5)
     assert harness_stdin.readline() == HOST_LINE
+
+
+# ── what a cell starts ─────────────────────────────────────────────────────
+# An empty ``sys.stdin`` covers code that reads it on the cell's own thread.
+# A subprocess the cell starts inherits descriptor 0 instead, and a thread
+# it starts does not inherit the cell's context, so both would still reach
+# the driver's channel. While ``unify act`` reads a channel that is not a
+# terminal, descriptor 0 is ``/dev/null`` and the channel is read from a
+# private copy.
+
+STARTED = {
+    "subprocess": (
+        "import subprocess\n"
+        "subprocess.run(['cat'], capture_output=True, text=True, timeout=30).stdout"
+    ),
+    "thread": (
+        "import sys, threading\n"
+        "got = []\n"
+        "t = threading.Thread(target=lambda: got.append(sys.stdin.readline()))\n"
+        "t.start(); t.join(30)\n"
+        "got"
+    ),
+}
+
+
+@pytest.fixture
+def driver_channel(monkeypatch):
+    """Descriptor 0 is a pipe holding the driver's next line, as under
+    ``unify act --jsonl``; the pipe closes after the watchdog, so a cell that
+    reads it still ends."""
+    read_fd, write_fd = os.pipe()
+    saved = os.dup(0)
+    os.dup2(read_fd, 0)
+    os.close(read_fd)
+    monkeypatch.setattr(sys, "stdin", open(0, closefd=False))
+    os.write(write_fd, HOST_LINE.encode())
+    watchdog = threading.Timer(WATCHDOG_S, os.close, (write_fd,))
+    watchdog.start()
+    yield
+    watchdog.join()
+    os.dup2(saved, 0)
+    os.close(saved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("started", sorted(STARTED))
+async def test_what_a_cell_starts_reads_end_of_input(
+    started,
+    driver_channel,
+    monkeypatch,
+):
+    import asyncio
+
+    from unify.cli import _stdin_reader
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    with _stdin_reader() as reader:
+        out, res, elapsed = await _run(STARTED[started])
+        assert res["error"] is None, res["error"]
+        assert (
+            elapsed < WATCHDOG_S
+        ), f"the {started} waited on the driver's channel ({elapsed:.1f}s)"
+        assert res["result"] in ("", [""]), res["result"]
+        # The driver's line is still the CLI's to read.
+        line = await asyncio.wait_for(reader.readline(), WATCHDOG_S * 2)
+        assert line.decode() == HOST_LINE
+    # Descriptor 0 is the channel again once the reader is done.
+    assert os.fstat(0).st_ino != os.stat(os.devnull).st_ino
