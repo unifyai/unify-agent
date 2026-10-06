@@ -68,6 +68,7 @@ from .tools_data import (
 )
 from .dynamic_tools_factory import DynamicToolFactory
 from . import cache_discipline as _cache_discipline
+from . import loop_stop as _loop_stop_mod
 from . import repeat_guard as _repeat_guard_mod
 from . import batch_wait as _batch_wait
 from . import cell_reply as _cell_reply
@@ -144,6 +145,8 @@ class ToolLoopRuntimeState:
     receipt_request: Optional[str] = None
     receipt_shown_for_request: bool = False
     receipt_draft: Optional[str] = None
+    # UNIFY_LOOP_STOP: requests ended for making no progress.
+    loop_stops: int = 0
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -892,6 +895,14 @@ async def async_tool_loop_inner(
         and bool(max_steps)
         and not raise_on_limit
     )
+    # UNIFY_LOOP_STOP: the no-progress calls in a row of the current request.
+    # A stop ends the request as the step limit does; with
+    # UNIFY_STEP_CAP_REPLY off it takes the last word, so it always replies.
+    _loop_stop = (
+        _loop_stop_mod.Tracker(_loop_stop_mod.threshold())
+        if _loop_stop_mod.enabled()
+        else None
+    )
     # UNIFY_PENDING_TIMEOUT_S: how long questions nobody answers may hold
     # the loop before the model is told (0: as shipped, no limit).
     _pending_timeout = float(getattr(_CAP_SETTINGS, "UNIFY_PENDING_TIMEOUT_S", 0) or 0)
@@ -1567,6 +1578,7 @@ async def async_tool_loop_inner(
         draft: Optional[str] = None,
         *,
         last_word: bool = False,
+        stop: Optional[_loop_stop_mod.Stop] = None,
     ) -> str:
         """
         Terminate gracefully when *timeout* or *max_steps* is exceeded and
@@ -1577,16 +1589,20 @@ async def async_tool_loop_inner(
         With *last_word* (UNIFY_STEP_CAP_REPLY=last_word at max_steps) the
         pending calls are answered as cancelled, the model is given one
         tool-less turn, and its answer, when it gives one, takes the place
-        of *draft*.
+        of *draft*. A loop stop (UNIFY_LOOP_STOP) passes its *stop* texts.
         """
         if last_word:
             await tools_data.cancel_pending_tasks_with_reply(
-                f"Cancelled: the step limit ({reason}) ended the request before "
-                "this call finished.",
+                (
+                    stop.cancelled
+                    if stop is not None
+                    else f"Cancelled: the step limit ({reason}) ended the request "
+                    "before this call finished."
+                ),
                 assistant_meta=assistant_meta,
                 msg_dispatcher=_msg_dispatcher,
             )
-            draft = await _last_word(reason) or draft
+            draft = await _last_word(reason, stop) or draft
         for task in list(tools_data.pending):
             with suppress(Exception):
                 inf = tools_data.info.get(task)
@@ -1624,7 +1640,10 @@ async def async_tool_loop_inner(
                     return _text
         return None
 
-    async def _last_word(reason: str) -> Optional[str]:
+    async def _last_word(
+        reason: str,
+        stop: Optional[_loop_stop_mod.Stop] = None,
+    ) -> Optional[str]:
         """UNIFY_STEP_CAP_REPLY=last_word: one tool-less turn at the step limit.
 
         Every call of the request has been answered. A loop-authored notice
@@ -1632,15 +1651,20 @@ async def async_tool_loop_inner(
         model is then called once with no tools offered (no tool_choice is
         forced). Returns the reply's text, or ``None`` when the call fails,
         is stopped, runs past the loop's timeout or gives no text: the
-        caller then uses the draft, so the request never ends silent.
+        caller then uses the draft, so the request never ends silent. A
+        loop stop (UNIFY_LOOP_STOP) passes its *stop* texts.
         """
         runtime_state.step_cap_last_word_turns += 1
         await _msg_dispatcher.append_msgs(
             [
                 loop_user_notice(
-                    f"The step limit for this request is reached ({reason}): "
-                    "no more tools can be called for it. Reply now with your "
-                    "best answer to the request.",
+                    (
+                        stop.notice
+                        if stop is not None
+                        else f"The step limit for this request is reached ({reason}): "
+                        "no more tools can be called for it. Reply now with your "
+                        "best answer to the request."
+                    ),
                 ),
             ],
         )
@@ -1688,13 +1712,16 @@ async def async_tool_loop_inner(
         if text is None:
             runtime_state.step_cap_last_word_fallbacks += 1
         logger.info(
-            "Step limit – last word: "
+            (stop.label if stop is not None else "Step limit")
+            + " – last word: "
             + ("answered" if text is not None else f"none ({why}); using the draft"),
             prefix=ICONS["early_exit"],
         )
         return text
 
-    async def _end_request_at_step_limit() -> None:
+    async def _end_request_at_step_limit(
+        stop: Optional[_loop_stop_mod.Stop] = None,
+    ) -> None:
         """UNIFY_STEP_CAP_REPLY in a persistent loop: end the request at max_steps.
 
         The pending calls are cancelled and answered as such, the reply says
@@ -1705,20 +1732,32 @@ async def async_tool_loop_inner(
         With ``last_word`` the model first gets one tool-less turn, and its
         answer is quoted in place of the draft; the transcript then holds
         the notice and that answer instead of the reply.
+
+        UNIFY_LOOP_STOP ends a request the same way, with its *stop* texts
+        and reply mode; it logs its own line.
         """
-        reason = f"max_steps ({max_steps}) exceeded"
+        reason = (
+            stop.reason if stop is not None else f"max_steps ({max_steps}) exceeded"
+        )
         draft = _request_draft()
         await tools_data.cancel_pending_tasks_with_reply(
-            f"Cancelled: the step limit ({reason}) ended the request before "
-            "this call finished.",
+            (
+                stop.cancelled
+                if stop is not None
+                else f"Cancelled: the step limit ({reason}) ended the request before "
+                "this call finished."
+            ),
             assistant_meta=assistant_meta,
             msg_dispatcher=_msg_dispatcher,
         )
-        answer = await _last_word(reason) if _step_cap_last_word else None
+        last_word = stop.last_word if stop is not None else _step_cap_last_word
+        answer = await _last_word(reason, stop) if last_word else None
         if answer is not None:
             draft = answer
         content = (
-            f"🔚 Stopped at the step limit: {reason}, so this request ended "
+            stop.headline
+            if stop is not None
+            else f"🔚 Stopped at the step limit: {reason}, so this request ended "
             "before it was finished. The session is still open: the next "
             "message starts a new request."
         )
@@ -1730,7 +1769,7 @@ async def async_tool_loop_inner(
             await _msg_dispatcher.append_msgs(
                 [{"role": "assistant", "content": content}],
             )
-        if log_steps:
+        if log_steps and stop is None:
             logger.info(
                 f"Step limit – {reason}; waiting for the next request",
                 prefix=ICONS["early_exit"],
@@ -1741,7 +1780,10 @@ async def async_tool_loop_inner(
         await _park_until_next_request()
         runtime_state.step_cap_compactions_in_request = 0
         timer.reset()
-        timer.start_request()
+        # Counting per request is UNIFY_STEP_CAP_REPLY's; a loop stop with
+        # it off keeps counting the whole loop, as shipped.
+        if _step_cap_reply:
+            timer.start_request()
 
     def _can_compact_at_step_limit() -> bool:
         """UNIFY_STEP_CAP_COMPACT: whether this loop's handle can compact it.
@@ -3620,6 +3662,41 @@ async def async_tool_loop_inner(
             # this step's assistant message and no model is asked. None
             # while the switch is off.
             _cell_reply_msg = _reply_slot.take() if _reply_slot is not None else None
+
+            # UNIFY_LOOP_STOP: K model calls in a row that made no progress
+            # end the request here, as the step limit would, instead of
+            # making another call. Before the boundary hook, so a record
+            # block is never consumed by a call that is not made.
+            if (
+                _loop_stop is not None
+                and _cell_reply_msg is None
+                and _loop_stop.observe(
+                    client.messages or [],
+                    in_flight=bool(tools_data.pending),
+                )
+            ):
+                _stop = _loop_stop_mod.Stop(
+                    k=_loop_stop.k,
+                    last_word=_step_cap_mode != "draft",
+                )
+                runtime_state.loop_stops += 1
+                logger.info(
+                    f"Loop stop – {_stop.reason}; ending the request with "
+                    + ("the model's last word" if _stop.last_word else "its draft"),
+                    prefix=ICONS["early_exit"],
+                )
+                _loop_stop.count = 0
+                if persist:
+                    await _end_request_at_step_limit(_stop)
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
+                return await _handle_limit_reached(
+                    _stop.reason,
+                    _request_draft(),
+                    last_word=_stop.last_word,
+                    stop=_stop,
+                )
 
             # UNIFY_AGENTS=record: what is new in the shared record for this
             # agent, appended after this turn's tool results. Reached only when

@@ -185,6 +185,26 @@ class ProductionSettings(BaseSettings):
     # question only its own model reads, otherwise waits until the host's
     # idle timeout. 0: no limit, as shipped.
     UNIFY_PENDING_TIMEOUT_S: float = 0.0
+    # ``on``: a request whose tool calls stop making progress ends early. A
+    # model call makes no progress when every tool call it makes either runs
+    # a Python cell that does nothing (only ``pass``, comments, prints of
+    # constant text, bare constants; magics ignored) or repeats one of the
+    # two calls before it in the request (tool and arguments without the
+    # thought; a cell's code without comments, whitespace or magics; string
+    # and number literals ignored) and gets the same result (times, ids and
+    # durations ignored). A result not known yet never counts, nor does a
+    # call made while other calls are still running. UNIFY_LOOP_STOP_K such
+    # calls in a row end the request as the step limit does under
+    # UNIFY_STEP_CAP_REPLY: ``draft`` quotes the request's latest draft;
+    # ``last_word``, and also an empty UNIFY_STEP_CAP_REPLY, first gives the
+    # model one tool-less turn to reply with its best answer. A persistent
+    # session then waits for the next request. Any other model call, and
+    # every requester message, starts the count again. Empty (also ``off``):
+    # as shipped.
+    UNIFY_LOOP_STOP: str = ""
+    # How many no-progress model calls in a row UNIFY_LOOP_STOP allows: a
+    # whole number, at least 1.
+    UNIFY_LOOP_STOP_K: int = 10
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
@@ -1343,6 +1363,29 @@ class ProductionSettings(BaseSettings):
         if value < 0 or value != value:
             raise ValueError(
                 f"UNIFY_PENDING_TIMEOUT_S must be 0 (off) or positive, not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_LOOP_STOP", mode="before")
+    @classmethod
+    def parse_loop_stop(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(f"UNIFY_LOOP_STOP must be empty, 'off' or 'on', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_LOOP_STOP_K", mode="before")
+    @classmethod
+    def parse_loop_stop_k(cls, v: Any) -> int:
+        if v is None or v == "":
+            return 10
+        value: Any = v
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            value = int(value.strip())
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"UNIFY_LOOP_STOP_K must be a whole number of at least 1, not {v!r}",
             )
         return value
 

@@ -300,6 +300,7 @@ def _cell_messages(code: str, output: str) -> list[dict]:
 
 def _session_texts(tools: dict) -> dict[str, str]:
     """What the model reads outside the system prompt and the rulebook."""
+    from unify.common._async_tool import loop_stop
     from unify.common._async_tool.repeat_guard import RepeatGuard
     from unify.function_manager import inline_curation, store_cases, store_verify
 
@@ -367,6 +368,10 @@ def _session_texts(tools: dict) -> dict[str, str]:
         "repeat guard": guard.check("the same reply"),
         # UNIFY_REPLY_RECEIPT: every wording a receipt can take.
         **_receipt_texts(),
+        # UNIFY_LOOP_STOP: the notice before the last word, and the reply.
+        "loop stop notice": loop_stop.Stop(k=10, last_word=True).notice,
+        "loop stop reply": loop_stop.Stop(k=10, last_word=True).headline,
+        "loop stop cancel": loop_stop.Stop(k=10, last_word=True).cancelled,
         "case refusal": store_cases.refusal("f", replays),
         "case report": store_cases.report("f", replays),
         "naming refusal": naming,

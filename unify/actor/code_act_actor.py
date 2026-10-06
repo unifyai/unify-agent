@@ -3522,6 +3522,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         if reply_receipt.enabled():
             runtime_state = getattr(self._inner, "_runtime_state", None)
             stats.update(reply_receipt.run_stats(runtime_state))
+        # UNIFY_LOOP_STOP: the requests ended for making no progress.
+        from unify.common._async_tool import loop_stop
+
+        if loop_stop.enabled():
+            runtime_state = getattr(self._inner, "_runtime_state", None)
+            stats.update(loop_stop.run_stats(runtime_state))
         return stats
 
     # ── Internal helpers ──────────────────────────────────────────────
