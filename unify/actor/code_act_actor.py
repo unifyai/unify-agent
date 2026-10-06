@@ -6,6 +6,7 @@ import functools
 import inspect
 import json
 import re
+import textwrap
 import traceback
 import types
 import uuid
@@ -26,6 +27,7 @@ from typing import (
 from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
+from unify.common._async_tool import cell_reply
 from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
 from unify import environment, sandbox
@@ -968,6 +970,20 @@ def _function_cases_enabled() -> bool:
     from unify.function_manager import store_cases
 
     return store_cases.enabled()
+
+
+# UNIFY_REPLY_CHANNEL=code+text: execute_function runs a stored function,
+# which returns its result rather than replying.
+_REPLY_REFUSED_IN_FUNCTION = (
+    "reply() cannot be called through execute_function, which runs a stored "
+    "function: call reply() in an execute_code cell"
+)
+_EXECUTE_CODE_REPLY_DOC = """
+Replying from a cell
+--------------------
+``reply(text)`` sends ``text`` (a str) as your reply and ends your turn,
+as replying with that text would; the cell stops there. For example
+``reply(answer)`` when the answer is in a variable."""
 
 
 _THOUGHT_REQUIRED = "always provide it."
@@ -3436,9 +3452,14 @@ class _StorageCheckHandle(SteerableToolHandle):
     @property
     def run_stats(self) -> dict[str, Any]:
         """Token accounting for the execution row (planning tokens for an agentic run)."""
-        if self._meter is None:
-            return {}
-        return {"tokens": self._meter.snapshot()["tokens"]}
+        stats = (
+            {} if self._meter is None else {"tokens": self._meter.snapshot()["tokens"]}
+        )
+        # UNIFY_REPLY_CHANNEL=code+text: the turns a cell's reply() ended.
+        if cell_reply.enabled():
+            runtime_state = getattr(self._inner, "_runtime_state", None)
+            stats.update(cell_reply.run_stats(runtime_state))
+        return stats
 
     # ── Internal helpers ──────────────────────────────────────────────
 
@@ -5090,6 +5111,15 @@ class CodeActActor(BaseCodeActActor):
         # UNIFY_THOUGHT_FIELD=optional: the schema does not require ``thought``.
         from unify.settings import SETTINGS as _THOUGHT_SETTINGS
 
+        # UNIFY_REPLY_CHANNEL=code+text: the description says a cell can reply.
+        if cell_reply.enabled():
+            execute_code.__doc__ = (
+                execute_code.__doc__.rstrip()
+                + "\n\n"
+                + textwrap.indent(_EXECUTE_CODE_REPLY_DOC.strip("\n"), " " * 12)
+                + "\n"
+            )
+
         if _THOUGHT_SETTINGS.UNIFY_THOUGHT_FIELD == "optional":
             _optional_thought(execute_code)
 
@@ -5753,6 +5783,8 @@ class CodeActActor(BaseCodeActActor):
                                         case_pending,
                                     ),
                                     function_helpers.recording(self),
+                                    # UNIFY_REPLY_CHANNEL: no reply() from here.
+                                    cell_reply.refused(_REPLY_REFUSED_IN_FUNCTION),
                                 ):
                                     out = await self._session_executor.execute(
                                         code=code,
@@ -7025,6 +7057,8 @@ class CodeActActor(BaseCodeActActor):
                 tool_policy=tool_policy,
                 response_format=response_format,
                 persist=persist,
+                # UNIFY_REPLY_CHANNEL=code+text: a cell's reply() ends a turn.
+                reply_channel=True,
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(

@@ -24,7 +24,7 @@ in the worker as one of:
   model-written body runs confined and only its primitive calls come back;
 * a **value** (plain data), sent once;
 * a **worker-local** stand-in (``display``, ``run_coro_sync``,
-  ``_around_cp``, ``SteerableToolHandle``);
+  ``_around_cp``, ``SteerableToolHandle``, ``reply``);
 * or **refused**, naming why, when none of these applies.
 
 Values cross as tagged JSON (worker_child.py explains why not pickle). A result
@@ -445,6 +445,9 @@ class PythonWorker:
             return {"kind": "local", "local": "run_coro_sync"}
         if value is SteerableToolHandle:
             return {"kind": "local", "local": "handle_class"}
+        if isinstance(value, child.Reply):
+            # UNIFY_REPLY_CHANNEL=code+text: the worker's own reply().
+            return {"kind": "local", "local": "reply"}
         if isinstance(value, types.ModuleType):
             spec = _importable(name, value)
             if spec is not None:
@@ -825,6 +828,14 @@ class PythonWorker:
 
         self._collect_parts(done.get("stdout") or [], stdout, display, TextPart)
         self._collect_parts(done.get("stderr") or [], stderr, None, TextPart)
+        replied = done.get("reply")
+        if isinstance(replied, dict):
+            # UNIFY_REPLY_CHANNEL=code+text: the cell called reply(); the
+            # session executor takes it as it takes one made in process.
+            raise child.CellReply(
+                str(replied.get("text", "")),
+                bool(replied.get("from_value", True)),
+            )
         if done.get("error"):
             if (
                 done.get("remote")

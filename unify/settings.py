@@ -255,6 +255,25 @@ class ProductionSettings(BaseSettings):
     # inert while UNIFY_REPLY_PROTOCOL_NOTE is off. The requester's own text
     # is never changed (unify/actor/prompt_builders.py). Empty: as shipped.
     UNIFY_REPLY_WORDING: str = ""
+    # ``code+text``: model code in a cell can send the turn's reply with
+    # ``reply(text)`` (in process and under UNIFY_WORKSPACE_PYTHON=worker).
+    # It takes only a ``str``, ends the cell at once (its output so far is
+    # kept), and the turn ends with exactly that text as the reply, as if the
+    # model had replied with it, without another model call (UniLLM strips
+    # the whitespace around a model's text; reply() keeps it). A second
+    # reply() in one turn, reply() inside a stored function or through
+    # execute_function, in a session that is not answering a requester (the
+    # storage review) or in a request whose answer is a ``final_response``
+    # call is refused with the reason.
+    # The prompt states it in one sentence where it states the reply rule,
+    # and the code tool's description mentions it. Which kind of reply ended
+    # a turn is recorded on its final assistant message (``_reply_source``:
+    # "cell" or "text"; ``_reply_from_value``: whether reply()'s argument was
+    # computed rather than a string literal), never sent to the model, and
+    # counted in the CLI's run stats (``replies_from_cell``,
+    # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
+    # Empty: replies are text only, as shipped.
+    UNIFY_REPLY_CHANNEL: str = ""
     # ``optional``: ``thought`` on execute_code and execute_function is no
     # longer required in their schemas and its description says it may be
     # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
@@ -1422,6 +1441,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "reason", "action_last"):
             raise ValueError(
                 "UNIFY_REPLY_WORDING must be empty, 'reason' or 'action_last', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REPLY_CHANNEL", mode="before")
+    @classmethod
+    def parse_reply_channel(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "text" else value
+        if value not in ("", "code+text"):
+            raise ValueError(
+                "UNIFY_REPLY_CHANNEL must be empty, 'text' or 'code+text', "
                 f"not {v!r}",
             )
         return value

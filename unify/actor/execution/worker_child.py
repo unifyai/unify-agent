@@ -86,6 +86,8 @@ _CASES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
 
 __all__ = [
     "BoundaryRefusal",
+    "CellReply",
+    "Reply",
     "MAX_DEPTH",
     "TAG",
     "decode",
@@ -96,6 +98,93 @@ __all__ = [
 
 class BoundaryRefusal(TypeError):
     """A value or attribute that cannot cross the worker boundary, named."""
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_REPLY_CHANNEL=code+text: reply(text) from a cell
+# ---------------------------------------------------------------------------
+# Defined here, with the standard library only, so the worker and the
+# in-process sandbox share one implementation (the harness side is
+# unify/common/_async_tool/cell_reply.py).
+
+#: Every stored function is compiled under ``<function:NAME>``
+#: (unify/function_manager/source_labels.py).
+STORED_FUNCTION_PREFIX = "<function:"
+
+
+class CellReply(BaseException):
+    """Raised by ``reply(text)``: the cell ends and *text* is the turn's reply.
+
+    A ``BaseException``, so a cell's ``except Exception`` does not swallow it.
+    """
+
+    def __init__(self, text: str, from_value: bool) -> None:
+        super().__init__("reply() ended the cell")
+        self.text = text
+        self.from_value = from_value
+
+
+def stored_function_on_stack(frame: Any) -> Optional[str]:
+    """The name of a stored function running below *frame*, if any."""
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        if filename.startswith(STORED_FUNCTION_PREFIX) and filename.endswith(">"):
+            return filename[len(STORED_FUNCTION_PREFIX) : -1]
+        frame = frame.f_back
+    return None
+
+
+class Reply:
+    """reply(text): send ``text`` as your reply and end your turn.
+
+    ``text`` must be a str; it is sent exactly as given, as if you had
+    replied with it. The cell stops at the call (what it printed so far is
+    kept) and no later step of the turn runs. One reply per turn; not
+    available inside a stored function, which returns its result to the cell
+    instead.
+    """
+
+    def __init__(self, precheck: Optional[Callable[[], None]] = None) -> None:
+        self._precheck = precheck
+        self._used = False
+
+    def __call__(self, text: str) -> None:
+        self._send(text, True, sys._getframe(1))
+
+    def _literal_reply(self, text: str) -> None:
+        """``reply("...")`` with the text written out in the call."""
+        self._send(text, False, sys._getframe(1))
+
+    def new_cell(self) -> None:
+        self._used = False
+
+    def _send(self, text: Any, from_value: bool, caller: Any) -> None:
+        if not isinstance(text, str):
+            raise TypeError(
+                f"reply() takes a str, not {type(text).__name__}: pass the exact "
+                "text of your reply, e.g. reply(str(value)) or "
+                "reply(json.dumps(obj))",
+            )
+        name = stored_function_on_stack(caller)
+        if name is not None:
+            raise RuntimeError(
+                f"reply() cannot be called inside a stored function ({name}): "
+                "return the text from the function and call reply() in the cell",
+            )
+        if self._used:
+            raise RuntimeError(
+                "reply() was already called in this turn; a turn has one reply",
+            )
+        if self._precheck is not None:
+            self._precheck()
+        if self._precheck is None:
+            # In the worker the harness checks the turn; this cell's own
+            # second call is refused here.
+            self._used = True
+        raise CellReply(text, from_value)
+
+    def __repr__(self) -> str:
+        return "<reply(text): send text as your reply and end your turn>"
 
 
 def short_repr(value: Any, limit: int = MAX_REPR) -> str:
@@ -474,6 +563,9 @@ class Worker:
         self._stdout: list[dict] = []
         self._stderr: list[dict] = []
         self._real_print = builtins.print
+        # UNIFY_REPLY_CHANNEL=code+text: the cells' reply(); the harness
+        # checks the turn when the cell reports its reply.
+        self.reply = Reply()
 
     # -- channel -------------------------------------------------------------
     def send(self, msg: dict) -> None:
@@ -773,6 +865,8 @@ class Worker:
             return _run_coro_sync
         if which == "handle_class":
             return SteerableToolHandle
+        if which == "reply":
+            return self.reply
         raise BoundaryRefusal(f"unknown worker-local name {which!r}")
 
     async def _around_cp(self, label: str, awaitable: Any) -> Any:
@@ -1087,6 +1181,8 @@ class Worker:
         error_type: Optional[str] = None
         remote = False
         message = ""
+        reply: Optional[dict] = None
+        self.reply.new_cell()
         try:
             self.apply_sync(msg.get("sync") or {})
             ns = dict(self.ns) if msg.get("scratch") else self.ns
@@ -1095,6 +1191,8 @@ class Worker:
                 result = await ns["__exec_wrapper"]()
             finally:
                 ns.pop("__exec_wrapper", None)
+        except CellReply as replied:
+            reply = {"text": replied.text, "from_value": replied.from_value}
         except BaseException as exc:  # noqa: BLE001 - every failure is the cell's
             error = _format_cell_error(exc)
             error_type = type(exc).__name__
@@ -1118,6 +1216,7 @@ class Worker:
                 "message": message,
                 "stdout": self._stdout,
                 "stderr": self._stderr,
+                **({"reply": reply} if reply is not None else {}),
             },
         )
 

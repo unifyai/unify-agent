@@ -393,18 +393,28 @@ def _reply_protocol_note_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# UNIFY_REPLY_WORDING: the reply rule
+# UNIFY_REPLY_WORDING and UNIFY_REPLY_CHANNEL: the reply rule
 # ---------------------------------------------------------------------------
 # Where the prompt states that the answer is a reply without a tool call, it
 # can say in one sentence that a reply may carry reasoning before its answer
-# or action, so thinking or announcing a step needs no cell. The sentences
-# around it are made consistent with it; the requester's own text is never
+# or action, so thinking or announcing a step needs no cell, and in one more
+# that a cell can send the reply with ``reply(text)``. The sentences around
+# them are made consistent with them; the requester's own text is never
 # changed. Every text below is built from the shipped one, which is returned
 # unchanged while the switches are off.
 
 _REPLY_REASON = (
     "You may reason in your reply before its final answer or action; you do "
     "not need a cell to think or to announce a step."
+)
+# UNIFY_REPLY_CHANNEL=code+text: a cell can send the reply.
+_REPLY_FROM_CELL = (
+    "You can also reply from a cell with `reply(text)`, for example "
+    "`reply(answer)` when the answer is in a variable; it ends your turn."
+)
+_NOTE_FROM_CELL = (
+    "A cell's `reply(text)` is your reply too: `reply(action)` takes the "
+    "action and ends your turn."
 )
 _WRAP = 72
 
@@ -415,9 +425,18 @@ def _reply_wording() -> str:
     return SETTINGS.UNIFY_REPLY_WORDING
 
 
+def _reply_from_cell() -> bool:
+    from unify.common._async_tool import cell_reply
+
+    return cell_reply.enabled()
+
+
 def _reply_rule_additions() -> list[str]:
     """The sentences that follow the statement of the reply rule."""
-    return [_REPLY_REASON] if _reply_wording() == "reason" else []
+    added = [_REPLY_REASON] if _reply_wording() == "reason" else []
+    if _reply_from_cell():
+        added.append(_REPLY_FROM_CELL)
+    return added
 
 
 def _refill(text: str, *, indent: str = "") -> str:
@@ -508,6 +527,8 @@ def _reply_protocol_note() -> str:
     take_one = _NOTE_TAKE_ONE
     if _reply_wording() in ("reason", "action_last"):
         take_one = _NOTE_ACTION_LAST
+    if _reply_from_cell():
+        take_one = f"{take_one} {_NOTE_FROM_CELL}"
     if take_one == _NOTE_TAKE_ONE:
         return _REPLY_PROTOCOL_NOTE
     heading, body = _REPLY_PROTOCOL_NOTE.split("\n\n", 1)

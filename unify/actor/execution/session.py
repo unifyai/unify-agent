@@ -418,6 +418,14 @@ class PythonExecutionSession:
         # Expose sandbox metadata to user code (best-effort; callers may ignore).
         self.global_state["__sandbox_id__"] = self.id
 
+        # UNIFY_REPLY_CHANNEL=code+text: reply(text) sends the turn's reply.
+        from unify.common._async_tool import cell_reply
+
+        if cell_reply.enabled():
+            from .worker_child import Reply
+
+            self.global_state["reply"] = Reply(precheck=cell_reply.precheck)
+
         # UNIFY_WORKSPACE_PYTHON=worker: cells run in this child process and
         # ``global_state`` holds only what the harness provides them.
         self._worker: Optional["PythonWorker"] = None
@@ -536,7 +544,10 @@ class PythonExecutionSession:
         scratch: bool = False,
     ) -> dict:
         """Run one cell in the sandbox; the caller holds ``_execution_lock``."""
+        from unify.common._async_tool import cell_reply
+
         from .worker import KILLED_NOTE, WorkerCellError
+        from .worker_child import CellReply
 
         result = None
         error = None
@@ -595,6 +606,11 @@ class PythonExecutionSession:
                 except Exception:
                     # Best-effort only; if rewriting fails, proceed with original code.
                     pass
+
+                # UNIFY_REPLY_CHANNEL=code+text: a reply of a literal string
+                # is marked, so the turn records whether its text was computed.
+                if cell_reply.enabled():
+                    code = cell_reply.mark_literal_replies(code)
 
                 is_empty_or_comment_only = all(
                     line.strip() == "" or line.strip().startswith("#")
@@ -805,6 +821,11 @@ class PythonExecutionSession:
 
             except ExecutionStopped as stopped:
                 result = stopped.outcome
+            except CellReply as replied:
+                # UNIFY_REPLY_CHANNEL=code+text: the cell ends here, its output
+                # kept; the loop sends the reply unless it is refused.
+                result = None
+                error = cell_reply.deliver(replied.text, replied.from_value)
             except asyncio.TimeoutError:
                 error = f"Python execution timed out after {timeout}s"
                 if worker is not None:

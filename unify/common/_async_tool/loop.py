@@ -69,6 +69,7 @@ from .dynamic_tools_factory import DynamicToolFactory
 from . import cache_discipline as _cache_discipline
 from . import repeat_guard as _repeat_guard_mod
 from . import batch_wait as _batch_wait
+from . import cell_reply as _cell_reply
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
@@ -118,6 +119,10 @@ class ToolLoopRuntimeState:
     # Replies dropped and sent again because their choice carried a
     # provider error.
     provider_error_retries: int = 0
+    # UNIFY_REPLY_CHANNEL=code+text: turns a cell's reply() ended, and those
+    # whose text was a computed value rather than a string literal.
+    replies_from_cell: int = 0
+    replies_from_value: int = 0
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -558,6 +563,7 @@ async def async_tool_loop_inner(
     first_message_context: Optional[str] = None,
     steering_tools: bool = True,
     compression_tools_on_demand: bool = False,
+    reply_channel: bool = False,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -713,6 +719,13 @@ async def async_tool_loop_inner(
         out of the tool list (``UNIFY_CACHE_DISCIPLINE``'s fixed list
         included), so the list holds only the caller's tools.
 
+    reply_channel : ``bool``, default ``False``
+        ``True`` (the actor's task loop, ``UNIFY_REPLY_CHANNEL=code+text``): a
+        cell's ``reply(text)`` ends the turn with that text as the reply, as
+        a text reply would, without another model call (``cell_reply.py``).
+        Ignored while the switch is off and in a loop whose answer is a
+        response tool's.
+
     Returns
     -------
     str
@@ -782,6 +795,12 @@ async def async_tool_loop_inner(
         )
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
+    # UNIFY_REPLY_CHANNEL=code+text: this loop's slot for a cell's reply,
+    # ``None`` for a loop that takes none; nothing is set while it is off.
+    _reply_token = _cell_reply.bind(
+        reply_channel and _rf_norm is None and multi_handle_coordinator is None,
+    )
+    _reply_slot = _cell_reply.current() if _reply_token is not None else None
     _discipline = _cache_discipline.enabled()
     # UNIFY_REPEAT_GUARD: a persistent session's replies and the requester
     # messages that answered them, to hold back a reply already answered.
@@ -1701,6 +1720,9 @@ async def async_tool_loop_inner(
         top of the loop, which processes either.
         """
         _outer = outer_handle_container[0] if outer_handle_container else None
+        # UNIFY_REPLY_CHANNEL=code+text: the next request starts with no reply.
+        if _reply_slot is not None:
+            _reply_slot.clear()
 
         # A parked turn's chain of thought is never consulted again:
         # the next dispatch starts from a fresh user interjection, so
@@ -3388,16 +3410,22 @@ async def async_tool_loop_inner(
             if cancel_event.is_set():
                 continue
 
+            # UNIFY_REPLY_CHANNEL=code+text: a cell called reply(); its text is
+            # this step's assistant message and no model is asked. None
+            # while the switch is off.
+            _cell_reply_msg = _reply_slot.take() if _reply_slot is not None else None
+
             logger.debug(
                 f"[setup +{_setup_elapsed()}] ready for LLM call (step={runtime_state.step_index}, {len(tmp_tools)} tools)",
             )
-            if log_steps:
+            if log_steps and _cell_reply_msg is None:
                 logger.begin_thinking()
 
-            await to_event_bus(
-                {"role": "assistant", "_thinking_in_flight": True},
-                cfg,
-            )
+            if _cell_reply_msg is None:
+                await to_event_bus(
+                    {"role": "assistant", "_thinking_in_flight": True},
+                    cfg,
+                )
 
             # Set only by patient mode below, to keep hold of the assistant
             # message this step produced.
@@ -3406,7 +3434,20 @@ async def async_tool_loop_inner(
             # The model speaks now, so a declared wait is over.
             _hold.release()
 
-            if interrupt_llm_with_interjections:
+            if _cell_reply_msg is not None:
+                # The reply goes in as the model's text reply would, and the
+                # step goes on from here exactly as for one (section F).
+                deferred_llm_turn = False
+                client.append_messages([_cell_reply_msg])
+                _full_completion = None
+                runtime_state.replies_from_cell += 1
+                if _cell_reply_msg[_cell_reply.FROM_VALUE_KEY]:
+                    runtime_state.replies_from_value += 1
+                logger.info(
+                    "A cell's reply() ends the turn; no model call",
+                    prefix=ICONS["completed"],
+                )
+            elif interrupt_llm_with_interjections:
                 # ––––– pre-emptive mode: the LLM step races the pending
                 # tools, interjections, cancellation, clarifications and
                 # notifications –––––––––––––––––––––––––––––––––––––––––
@@ -3824,6 +3865,13 @@ async def async_tool_loop_inner(
                 if _patient_asst_msg is not None
                 else client.messages[-1]
             )
+            # UNIFY_REPLY_CHANNEL=code+text: a text reply is recorded as one.
+            if (
+                _reply_slot is not None
+                and not msg.get("tool_calls")
+                and _cell_reply.SOURCE_KEY not in msg
+            ):
+                _cell_reply.stamp(msg, source="text", from_value=False)
             await to_event_bus(msg, cfg)
 
             # Update context threshold from the LLM response usage data.
@@ -5299,6 +5347,7 @@ async def async_tool_loop_inner(
         await tools_data.cancel_pending_tasks()
         raise
     finally:
+        _cell_reply.unbind(_reply_token)
         # A loop stopped before its first LLM step still logs its stop.
         if log_steps:
             logger.flush_deferred()

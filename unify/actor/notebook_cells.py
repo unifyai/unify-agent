@@ -658,7 +658,8 @@ def _closing(structured: bool) -> str:
     """What a cell is for, and how the model answers.
 
     UNIFY_REPLY_WORDING=reason: a cell is not for thinking or announcing a
-    step, since a reply may carry reasoning."""
+    step, since a reply may carry reasoning. UNIFY_REPLY_CHANNEL=code+text:
+    a cell can send the reply with ``reply(text)``."""
     from unify.settings import SETTINGS
 
     cell = "A cell is for computing."
@@ -670,6 +671,12 @@ def _closing(structured: bool) -> str:
     if structured:
         return f"{cell} You answer by calling `final_response`."
     answer = "You answer, and take any action the requester defines, by replying."
+    if SETTINGS.UNIFY_REPLY_CHANNEL == "code+text":
+        # UNIFY_REPLY_CHANNEL=code+text: a cell can send the reply.
+        answer = (
+            "You answer, and take any action the requester defines, by "
+            "replying, or from a cell with `reply(text)`, which ends your turn."
+        )
     return f"{cell} {answer}"
 
 

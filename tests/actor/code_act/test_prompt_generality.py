@@ -105,6 +105,7 @@ SWITCH_SETS = {
         "UNIFY_CODE_FIRST": True,
         "UNIFY_FUNCTION_CASES": True,
         "UNIFY_REPLY_WORDING": "reason",
+        "UNIFY_REPLY_CHANNEL": "code+text",
     },
     "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
     "doctrine and note": {
@@ -141,6 +142,7 @@ SWITCH_SETS = {
         "UNIFY_CODE_FIRST": True,
         "UNIFY_FUNCTION_CASES": True,
         "UNIFY_REPLY_WORDING": "reason",
+        "UNIFY_REPLY_CHANNEL": "code+text",
     },
 }
 SWITCH_OFF = {
@@ -157,6 +159,7 @@ SWITCH_OFF = {
     "UNIFY_DELEGATION": "on",
     "UNIFY_REVIEW_GATE": False,
     "UNIFY_REPLY_WORDING": "",
+    "UNIFY_REPLY_CHANNEL": "",
 }
 
 PROMPT_MODES = {
