@@ -694,3 +694,70 @@ def test_the_sessions_run_stats_count_loop_stops_only_when_on(monkeypatch):
     assert _StorageCheckHandle.run_stats.fget(handle) == {}
     monkeypatch.setattr(SETTINGS, "UNIFY_LOOP_STOP", "on")
     assert _StorageCheckHandle.run_stats.fget(handle) == {"loop_stops": 2}
+
+
+# ── beside the step-cap compaction and the reply receipt ─────────────────
+
+
+def _is_compactor(messages: list) -> bool:
+    return any(
+        m.get("role") == "system"
+        and "You are a context compactor" in str(m.get("content"))
+        for m in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_loop_stop_never_compacts(loop_stop, monkeypatch):
+    """UNIFY_STEP_CAP_COMPACT compacts at the step limit only: a loop stop
+    is not one, so it ends the request with its own reply."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_COMPACT", "on")
+    model = _Model(_then_reply(lambda n: _code("print('')"), 50))
+    (stopped, answered), stats = await _session(model, CONTINUE, max_steps=40)
+
+    assert stopped == f"{_headline()}\n\nBest current answer:\n{LAST_WORD}"
+    assert answered == f"done: {CONTINUE}"
+    assert not any(_is_compactor(r["messages"]) for r in model.requests)
+    assert (stats.step_cap_compactions, stats.loop_stops) == (0, 1)
+
+
+ZERO = "The total is **0**."
+
+
+@pytest.mark.asyncio
+async def test_the_last_word_after_a_loop_stop_gets_no_receipt(loop_stop, monkeypatch):
+    """As at the step limit, the last word is the request's reply: the
+    receipt is shown only on a reply that would end a turn by itself."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_RECEIPT", "on")
+
+    def plan(request: str, n: int):
+        if request == TASK and n < 50:
+            return _code("print('')")
+        return None
+
+    model = _Model(plan, last_word=ZERO)
+
+    async def reply_zero(*, shared_session=None, client=None, **kw):
+        messages = kw.get("messages") or []
+        # The next request, before and after its receipt (whose notice
+        # reaches the model without its mark).
+        if kw.get("tools") and any(m.get("content") == CONTINUE for m in messages):
+            return h.completion(content=ZERO)
+        return await model(shared_session=shared_session, client=client, **kw)
+
+    with h.scripted(()):
+        _install(reply_zero)
+        handle = _start()
+        stopped = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
+        receipts_at_stop = handle._runtime_state.receipts_shown
+        # The control: a reply of zero that ends a turn by itself gets one.
+        await handle.interject(CONTINUE)
+        answered = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
+        stats = handle._runtime_state
+        await handle.stop()
+        await asyncio.wait_for(handle.result(), BOUND)
+
+    assert stopped == f"{_headline()}\n\nBest current answer:\n{ZERO}"
+    assert receipts_at_stop == 0
+    assert answered == ZERO
+    assert (stats.receipts_shown, stats.loop_stops) == (1, 1)
