@@ -116,6 +116,24 @@ class ToolLoopRuntimeState:
     step_cap_last_word_fallbacks: int = 0
 
 
+def _budget_footer(timer: TimeoutTimer, max_steps: int) -> Optional[str]:
+    """UNIFY_BUDGET_FOOTER: the steps left, once within the cap's last tenth.
+
+    The cap counts messages, so a tool call and its result take two steps.
+    Earlier than the last tenth the line would only add bytes to every
+    result of a long request; inside it, a request at the default cap (300)
+    still has some ten tool rounds in which to finish.
+    """
+    left = timer.remaining_msgs()
+    if left is None or left > max(1, -(-max_steps // 10)):
+        return None
+    return (
+        f"[step budget] {left} of {max_steps} steps left before the step limit "
+        "stops this request (each message is a step: a tool call and its "
+        "result take two)."
+    )
+
+
 def _parse_tool_policy_result(
     result: Any,
 ) -> Tuple[str, Dict[str, Callable], bool]:
@@ -971,6 +989,8 @@ async def async_tool_loop_inner(
     logger.debug(
         f"[setup +{_setup_elapsed()}] ToolsData ready ({len(tools_data.normalized)} tools)",
     )
+    if max_steps and bool(getattr(_CAP_SETTINGS, "UNIFY_BUDGET_FOOTER", False)):
+        tools_data.result_footer = lambda: _budget_footer(timer, max_steps)
 
     _alias_lookup = {
         name: spec.display_label

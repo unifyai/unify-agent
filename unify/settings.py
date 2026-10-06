@@ -157,6 +157,13 @@ class ProductionSettings(BaseSettings):
     # the draft, and the draft when the call fails or returns no text.
     # Empty (also ``false``/``0``/``no``/``off``): as shipped.
     UNIFY_STEP_CAP_REPLY: str = ""
+    # Close to ``max_steps`` (within its last tenth), every tool result ends
+    # with one line giving the steps left before the limit stops the request
+    # (counted as the limit counts them: per request under
+    # UNIFY_STEP_CAP_REPLY, else over the whole loop). It informs only; the
+    # line is part of the new result, so no message already sent changes.
+    # Off: as shipped.
+    UNIFY_BUDGET_FOOTER: bool = False
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
@@ -1106,6 +1113,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LISTING_USAGE",
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
+        "UNIFY_BUDGET_FOOTER",
         mode="before",
     )
     @classmethod

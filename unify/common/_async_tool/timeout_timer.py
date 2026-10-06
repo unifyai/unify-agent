@@ -26,6 +26,15 @@ class TimeoutTimer:
         """Count max_steps from here: a persistent loop's next request."""
         self._request_base = self._message_count_offset + len(self._client.messages)
 
+    def remaining_msgs(self) -> Optional[int]:
+        """Messages left before ``has_exceeded_msgs``; ``None`` with no cap."""
+        if self._max_steps is None:
+            return None
+        count = (
+            self._message_count_offset + len(self._client.messages) - self._request_base
+        )
+        return max(self._max_steps - count, 0)
+
     def remaining_time(self) -> Optional[float]:
         if self._timeout is None:
             return None
