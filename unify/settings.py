@@ -530,6 +530,16 @@ class ProductionSettings(BaseSettings):
     # three-line pointer instead of the docs, which ``help(primitives.actor.act)``
     # returns in the sandbox.
     UNIFY_DELEGATION: str = "on"
+    # The shared agent record. ``record``: every agent of a run, the user (or
+    # the benchmark driving the run) and the harness talk through one
+    # append-only thread, read only at turn boundaries; the steering tools,
+    # interjections that cancel calls, clarification and notification
+    # channels, lifecycle notices and primitives.actor are not used, and
+    # ``agents.spawn`` starts helpers. Empty: as shipped.
+    UNIFY_AGENTS: str = ""
+    # Tunables for UNIFY_AGENTS=record, ``key=value,…`` (unify/agents/options.py).
+    # Empty: the documented defaults.
+    UNIFY_AGENTS_OPTIONS: str = ""
     # ``lean``: an actor prompt for a non-interactive session (one requester,
     # no reader of progress notifications), which describes the session's
     # mechanisms and states few rules. It opens with the role and the
@@ -1391,6 +1401,23 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_PROMPT_PROFILE must be empty or 'lean', not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_AGENTS", mode="before")
+    @classmethod
+    def parse_agents(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "record"):
+            raise ValueError(f"UNIFY_AGENTS must be empty or 'record', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_AGENTS_OPTIONS", mode="before")
+    @classmethod
+    def parse_agents_options(cls, v: Any) -> str:
+        from unify.agents.options import parse_options
+
+        text = str(v or "").strip()
+        parse_options(text)
+        return text
 
     @field_validator("UNIFY_DELEGATION", mode="before")
     @classmethod
