@@ -34,6 +34,13 @@ _current_stdout: contextvars.ContextVar[Any] = contextvars.ContextVar(
 _current_stderr: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "sandbox_current_stderr",
 )
+# A cell's stdin: always empty. The process's own stdin is the harness's
+# (``unify act --jsonl`` takes its messages there), and a cell runs on the
+# event loop's thread, so a cell that read it would wait, with the whole
+# process, for a line only the host can send, and then take that line.
+_current_stdin: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "sandbox_current_stdin",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +102,11 @@ class StreamRouter:
     def flush(self) -> None:
         return self._get_stream().flush()
 
+    def __iter__(self) -> Any:
+        # ``for line in sys.stdin``: iteration is looked up on the type, so
+        # __getattr__ does not forward it.
+        return iter(self._get_stream())
+
     def __getattr__(self, name: str) -> Any:
         """Forward any unknown attribute to the current stream."""
         return getattr(self._get_stream(), name)
@@ -121,6 +133,12 @@ def _ensure_stream_router_installed() -> None:
     and other frameworks may replace sys.stdout between tests.
     """
     global _stream_router_installed, _original_stdout, _original_stderr
+
+    # stdin is routed on its own: something may replace one stream and not
+    # the other. A process with no stdin (None) has nothing a cell could
+    # wait on, and keeps it.
+    if sys.stdin is not None and not isinstance(sys.stdin, StreamRouter):
+        sys.stdin = StreamRouter(_current_stdin, sys.stdin)  # type: ignore[assignment]
 
     # Check if sys.stdout is still our StreamRouter (pytest may have replaced it)
     if isinstance(sys.stdout, StreamRouter):
@@ -238,6 +256,9 @@ def capture_sandbox_output():
 
     stdout_stream_token = _current_stdout.set(stdout_stream)
     stderr_stream_token = _current_stderr.set(stderr_stream)
+    # Reading it returns end of input at once: ``input()`` raises EOFError,
+    # ``help()`` ends, ``sys.stdin.read()`` is "".
+    stdin_token = _current_stdin.set(io.StringIO(""))
 
     display_fn = _make_display(_stdout_parts)
 
@@ -248,3 +269,4 @@ def capture_sandbox_output():
         _stderr_parts.reset(stderr_token)
         _current_stdout.reset(stdout_stream_token)
         _current_stderr.reset(stderr_stream_token)
+        _current_stdin.reset(stdin_token)
