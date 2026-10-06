@@ -252,8 +252,12 @@ class ProductionSettings(BaseSettings):
     # ``action_last``: only the reply-protocol note changes: its "to take
     # one, end your turn with exactly that reply" becomes "End your turn with
     # a reply whose last line is the action; you may reason before it.";
-    # inert while UNIFY_REPLY_PROTOCOL_NOTE is off. The requester's own text
-    # is never changed (unify/actor/prompt_builders.py). Empty: as shipped.
+    # inert while UNIFY_REPLY_PROTOCOL_NOTE is off. Experimental: the 6 Oct
+    # trigger replay found the ``action_last`` note raises first-move no-op
+    # cells by +0.18 [+0.06, +0.30] (no single sentence was the trigger;
+    # imitating the session's own history dominated). The requester's own
+    # text is never changed (unify/actor/prompt_builders.py). Empty: as
+    # shipped.
     UNIFY_REPLY_WORDING: str = ""
     # ``code+text``: model code in a cell can send the turn's reply with
     # ``reply(text)`` (in process and under UNIFY_WORKSPACE_PYTHON=worker).
