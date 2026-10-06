@@ -364,7 +364,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_FUNCTION_SUMMARY: bool = False
     # With UNIFY_FUNCTION_SUMMARY on: when a stored function returns empty
     # ([], {}, "", None or 0) and every earlier call of the same source whose
-    # request was accepted returned something non-empty (at least two, from
+    # request was accepted returned something non-empty (at least one, from
     # complete traces, none of unknown shape), one plain line follows the
     # call in the cell's output saying so, with no instruction. Off: no line.
     UNIFY_FUNCTION_EMPTY_NOTICE: bool = False

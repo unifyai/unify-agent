@@ -5,9 +5,10 @@ still runs; it just returns nothing, and an answer built on it reads as
 plausible. With the switch on, a call that returns empty (``[]``, ``{}``,
 ``""``, ``None`` or 0), where every earlier call of the same source whose
 request was accepted returned something non-empty, is followed by one plain
-line in the cell's output. It needs at least two accepted earlier calls from
-complete traces; an accepted empty call, or one of unknown shape, keeps it
-silent. Functions run in-process against a fake registered environment; no
+line in the cell's output, saying how many calls it rests on. It needs at
+least one accepted earlier call from a complete trace (a recurring job is
+often met once before: a first visit, then a return); an accepted empty
+call, or one of unknown shape, keeps it silent. Functions run in-process against a fake registered environment; no
 model or network is called.
 """
 
@@ -113,9 +114,19 @@ def test_a_zero_is_remarked_on_as_a_number(notice_on, music_env):
 
 
 @_handle_project
-def test_one_accepted_call_is_not_enough(notice_on, music_env):
+def test_one_accepted_call_is_enough_and_the_line_says_so(notice_on, music_env):
     fn = _function("track_ids_since", IDS_SINCE)
     _in_cell("Which tracks are from 2000 on?", fn, 2000, solved=True)
+    _, out = _in_cell("Which tracks are from 2030 on?", fn, 2030)
+    assert out == (
+        "[track_ids_since returned an empty list here. Its one earlier call "
+        "whose request was accepted returned a non-empty list.]\n"
+    )
+
+
+@_handle_project
+def test_a_first_call_says_nothing(notice_on, music_env):
+    fn = _function("track_ids_since", IDS_SINCE)
     _, out = _in_cell("Which tracks are from 2030 on?", fn, 2030)
     assert out == ""
 

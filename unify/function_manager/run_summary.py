@@ -58,7 +58,9 @@ ROWS_KEPT = 200
 #: Distinct argument values counted per parameter before "many".
 DISTINCT_CAP = 50
 #: Accepted earlier calls (from complete traces) needed before an empty result is remarked on.
-EMPTY_MIN_ACCEPTED = 2
+#: One: a job that recurs is often met once before (a first visit and a return), and the
+#: line states how many calls it rests on.
+EMPTY_MIN_ACCEPTED = 1
 
 _TABLE = """
 CREATE TABLE IF NOT EXISTS function_runs (
@@ -279,7 +281,11 @@ def empty_notice(recorder: Any, result: Any) -> Optional[str]:
         )
         return (
             f"[{recorder.name} returned {_EMPTY_WORDS.get(kind, 'an empty value')} here. "
-            f"Each of its {len(accepted)} earlier calls whose request was accepted returned {earlier}.]"
+            + (
+                f"Its one earlier call whose request was accepted returned {earlier}.]"
+                if len(accepted) == 1
+                else f"Each of its {len(accepted)} earlier calls whose request was accepted returned {earlier}.]"
+            )
         )
     except Exception as exc:  # noqa: BLE001 - a notice must never break a call
         logger.warning(
