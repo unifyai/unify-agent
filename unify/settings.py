@@ -1023,6 +1023,14 @@ class ProductionSettings(BaseSettings):
     # outcome arrived instead of the stop notice of a persistent session.
     # Off: no outcome is taken and the review is as shipped.
     UNIFY_OUTCOME: bool = False
+    # When a host ends a persistent session normally (``unify act``'s /quit,
+    # ``{"quit": true}`` or end of input) and no outcome channel applies
+    # (UNIFY_OUTCOME), the storage review's "Final Result" is the agent's last
+    # reply, followed by one line saying the host then ended the session,
+    # instead of the loop's stop notice ("processed stopped early, no
+    # result"), which read as a session that failed. Any other stop, and a
+    # session with no reply yet, keeps the notice. Off: as shipped.
+    UNIFY_REVIEW_LAST_REPLY: bool = False
     # ``lessons``: a run whose outcome says it failed (``solved`` false, with
     # UNIFY_OUTCOME), or whose admission verdict is ``{"admit": "lessons"}``,
     # is reviewed with function writes refused and guidance writes allowed,
@@ -1245,6 +1253,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
+        "UNIFY_REVIEW_LAST_REPLY",
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_PROMPT_ACCURACY",

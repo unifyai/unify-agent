@@ -2367,6 +2367,53 @@ SESSION_ENDED = "session ended"
 # UNIFY_OUTCOME when the agent's last reply had no text.
 _STOPPED_NOTICE = "processed stopped early, no result"
 _EMPTY_REPLY = "(the agent's last reply had no text)"
+# UNIFY_REVIEW_LAST_REPLY: the line after the last reply of a session its host
+# ended normally.
+_HOST_ENDED_NOTE = "(The host then ended the session; no outcome was posted.)"
+
+
+def review_final_result(
+    original_result: Any,
+    *,
+    last_reply: Optional[str],
+    stop_reason: Optional[str],
+    outcome_active: bool,
+    reply_at_outcome: Optional[str],
+    last_reply_switch: bool,
+) -> str:
+    """The "Final Result" a session's storage review reads.
+
+    Pure: the live handle and a replay of a recorded session decide alike.
+    ``original_result`` is what the session's task loop returned (for a
+    persistent session ended by a stop, ``_STOPPED_NOTICE``); ``last_reply``
+    the content of its latest ``response`` notification (None before the
+    first); ``stop_reason`` the reason of the stop that ended it (None when
+    nothing stopped it); ``outcome_active`` whether UNIFY_OUTCOME gave the
+    session an outcome channel, and ``reply_at_outcome`` the reply an
+    outcome arrived after; ``last_reply_switch`` is UNIFY_REVIEW_LAST_REPLY.
+
+    As shipped it is the session's result. With an outcome channel it is the
+    reply the outcome arrived after or, with no outcome, the last reply in
+    place of the stop notice. Otherwise, with ``last_reply_switch``, a session
+    its host ended normally (``SESSION_ENDED``) reads its last reply and one
+    line saying the host then ended it; every other end keeps its result.
+    """
+    result = str(original_result)
+    if outcome_active:
+        if reply_at_outcome is not None:
+            return reply_at_outcome or _EMPTY_REPLY
+        if result == _STOPPED_NOTICE and last_reply is not None:
+            return last_reply or _EMPTY_REPLY
+        return result
+    if (
+        last_reply_switch
+        and result == _STOPPED_NOTICE
+        and stop_reason == SESSION_ENDED
+        and last_reply is not None
+    ):
+        return f"{last_reply or _EMPTY_REPLY}\n\n{_HOST_ENDED_NOTE}"
+    return result
+
 
 # The largest admission verdict read; anything bigger is not a verdict.
 _STORE_ADMISSION_MAX_BYTES = 65536
@@ -3446,6 +3493,11 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._outcome: Optional[dict] = None
         self._last_reply: Optional[str] = None
         self._reply_at_outcome: Optional[str] = None
+        # UNIFY_REVIEW_LAST_REPLY: the agent's last reply is kept without an
+        # outcome channel too, for the review of a session its host ended.
+        from unify.settings import SETTINGS
+
+        self._review_last_reply = bool(SETTINGS.UNIFY_REVIEW_LAST_REPLY)
         from unify import outcome as outcome_mod
 
         if outcome_mod.enabled():
@@ -3501,7 +3553,7 @@ class _StorageCheckHandle(SteerableToolHandle):
             while True:
                 notif = await source.next_notification()
                 if (
-                    self.outcome_session_id is not None
+                    (self.outcome_session_id is not None or self._review_last_reply)
                     and isinstance(notif, dict)
                     and notif.get("type") == "response"
                 ):
@@ -3542,21 +3594,15 @@ class _StorageCheckHandle(SteerableToolHandle):
         )
 
     def _review_final_result(self) -> str:
-        """The "Final Result" the storage review reads.
-
-        As shipped it is the session's result, which for a persistent
-        session ended by a stop is the loop's stop notice. With
-        ``UNIFY_OUTCOME`` it is the agent's last reply before the outcome
-        arrived, or, with no outcome, its last reply in place of that notice.
-        """
-        result = str(self._original_result)
-        if self.outcome_session_id is None:
-            return result
-        if self._reply_at_outcome is not None:
-            return self._reply_at_outcome or _EMPTY_REPLY
-        if result == _STOPPED_NOTICE and self._last_reply is not None:
-            return self._last_reply or _EMPTY_REPLY
-        return result
+        """The "Final Result" the storage review reads (see :func:`review_final_result`)."""
+        return review_final_result(
+            self._original_result,
+            last_reply=self._last_reply,
+            stop_reason=self._stop_reason,
+            outcome_active=self.outcome_session_id is not None,
+            reply_at_outcome=self._reply_at_outcome,
+            last_reply_switch=self._review_last_reply,
+        )
 
     def _note_turn_boundary(self, latest_response: str) -> None:
         """Schedule a mid-session storage review for a completed turn.
