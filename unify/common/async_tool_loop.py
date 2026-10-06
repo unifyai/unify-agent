@@ -245,6 +245,15 @@ class SteerableToolHandle(ABC):
         stop or wait for all in-flight tools to complete, then respond.
         """
 
+    async def cancel_request(self, reason: Optional[str] = None) -> bool:
+        """End the running request of a persistent task, keeping the task.
+
+        For a host (``unify act --jsonl``'s ``{"cancel": true}``); not a
+        steering action. Returns whether the cancel was delivered; a handle
+        that serves no persistent requests has none to cancel.
+        """
+        return False
+
     @abstractmethod
     async def pause(self) -> Optional[str]:
         """Pause this task temporarily without cancelling it.
@@ -793,6 +802,22 @@ class AsyncToolLoopHandle(SteerableToolHandle):
             self._cancel_event.set()
         with suppress(Exception):
             self._stop_event.set()
+
+    @functools.wraps(SteerableToolHandle.cancel_request, updated=())
+    async def cancel_request(self, reason: Optional[str] = None) -> bool:
+        # The loop takes the cancel at its next wake-up: a model call in
+        # flight is cancelled by it, as an interjection's is, and the drain
+        # ends the request (a persistent loop) or ignores it (a parked loop
+        # has no request running; a loop that is not persistent is stopped
+        # with stop()). Nothing after a stop.
+        if self._task.done() or self._cancel_event.is_set():
+            return False
+        _label = getattr(self, "_log_label", None) or self._loop_id
+        LOGGER.info(
+            f"{ICONS['interjection']} [{_label}] Cancel of the request requested",
+        )
+        self._queue.put_nowait({"_cancel_request": {"reason": reason}})
+        return True
 
     def _set_base_tool_pause_events(self, running: bool) -> None:
         """Toggle the pause events of base (non-steerable) tools directly.

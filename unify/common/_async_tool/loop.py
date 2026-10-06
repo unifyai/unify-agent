@@ -1477,6 +1477,44 @@ async def async_tool_loop_inner(
         timer.reset()
         timer.start_request()
 
+    async def _end_request_on_cancel(reason: Optional[str]) -> None:
+        """A persistent loop's requester cancelled the running request.
+
+        The step in flight was already cancelled by the wake-up that brought
+        the cancel. The pending calls are cancelled and answered as such (so
+        none is scheduled again), the transcript says the request was
+        cancelled, the request ends in its response (the text drafted for it
+        so far, marked cancelled) and the loop parks for the next request.
+        """
+        draft = _request_draft()
+        await tools_data.cancel_pending_tasks_with_reply(
+            "Cancelled: the requester cancelled the request before this call "
+            "finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        notice = (
+            "🔚 Cancelled: the requester cancelled this request before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+        if reason:
+            notice += f"\n\nReason given: {reason}"
+        await _msg_dispatcher.append_msgs([{"role": "assistant", "content": notice}])
+        logger.info(
+            "Request cancelled by the requester; waiting for the next request",
+            prefix=ICONS["early_exit"],
+        )
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        if _outer is not None and hasattr(_outer, "_notification_q"):
+            await _outer._notification_q.put(
+                {"type": "response", "content": draft or "", "cancelled": True},
+            )
+        await _park_until_next_request()
+        timer.reset()
+        if _step_cap_reply:
+            timer.start_request()
+
     async def _park_until_next_request() -> None:
         """Park a persistent loop until its next request arrives.
 
@@ -1549,6 +1587,15 @@ async def async_tool_loop_inner(
                 break
 
             interjection = interject_waiter.result()
+
+            # A cancel with no request running has nothing to end: the
+            # last request already ended in its response.
+            if isinstance(interjection, dict) and "_cancel_request" in interjection:
+                logger.info(
+                    "Persist mode: cancel ignored, no request is running",
+                    prefix=ICONS["pause"],
+                )
+                continue
 
             # Transcript-note sentinels append the loop-authored note
             # and stay in persist wait; the model reads it on its next
@@ -2177,10 +2224,16 @@ async def async_tool_loop_inner(
             # are in flight.
             _suppress_persist_response = False
             _had_interjections = False
+            _cancel_request: Optional[dict] = None
             while True:
                 try:
                     extra = interject_queue.get_nowait()
                 except asyncio.QueueEmpty:
+                    break
+                # The requester cancelled the running request. What was
+                # queued after the cancel stays queued for the next request.
+                if isinstance(extra, dict) and "_cancel_request" in extra:
+                    _cancel_request = dict(extra.get("_cancel_request") or {})
                     break
                 _is_sentinel = isinstance(extra, dict) and (
                     "_mirror" in extra
@@ -2439,6 +2492,22 @@ async def async_tool_loop_inner(
             # only to be thrown away.
             if cancel_event.is_set():
                 raise asyncio.CancelledError
+
+            # A cancelled request ends here and the loop waits for the next.
+            # Only a persistent loop serves more than one request; a loop
+            # that is not persistent is ended with stop().
+            if _cancel_request is not None:
+                if persist:
+                    await _end_request_on_cancel(_cancel_request.get("reason"))
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    llm_turn_required = False
+                    deferred_llm_turn = False
+                    continue
+                logger.info(
+                    "Cancel ignored: the loop is not persistent (stop() ends it)",
+                    prefix=ICONS["pause"],
+                )
 
             # ── A. Wait for a tool completion, cancellation, interjection,
             #       clarification or notification ────────────────────────
@@ -3276,7 +3345,12 @@ async def async_tool_loop_inner(
                         )
                     if not llm_task.done():
                         _cancel_cause = (
-                            "interjection"
+                            (
+                                "cancel"
+                                if isinstance(_interjection, dict)
+                                and "_cancel_request" in _interjection
+                                else "interjection"
+                            )
                             if interject_w in done and not _patient_interjection
                             else (
                                 "clarification"

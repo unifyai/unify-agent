@@ -3994,6 +3994,13 @@ class _StorageCheckHandle(SteerableToolHandle):
         if handle is not None:
             await handle.stop(reason=reason, **kwargs)
 
+    async def cancel_request(self, reason: Optional[str] = None) -> bool:
+        # Only the task loop serves requests; the storage review that runs
+        # after the session has none to cancel.
+        if self._phase != "task":
+            return False
+        return await self._inner.cancel_request(reason)
+
     async def pause(self, **kwargs) -> Optional[str]:
         self._pause_requested = True
         handle = self._active_handle
