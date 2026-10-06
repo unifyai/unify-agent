@@ -739,6 +739,10 @@ class PythonWorker:
                 msg = await self._read()
                 op = msg.get("op")
                 if op in _SERVED:
+                    # Each request runs in a copy of the running cell's
+                    # context, so what the harness scoped to the cell with a
+                    # ContextVar (an environment observer, a case recording)
+                    # is in force for it, as for an in-process cell.
                     task = asyncio.create_task(self._serve(msg, shadow))
                     tasks.add(task)
                     task.add_done_callback(tasks.discard)
@@ -917,16 +921,18 @@ def _async_callable(fn: Any) -> bool:
 
 def _environment_global(name: str, value: Any) -> bool:
     """Whether *value* is the global ``name`` a registered environment binds
-    (``UNIFY_ENV_NAMESPACES``); modules are imported as they are."""
+    (``UNIFY_ENV_NAMESPACES``), or the proxy that observes its calls
+    (primitives/observers.py); modules are imported as they are."""
     if isinstance(value, types.ModuleType):
         return False
     from unify.function_manager.primitives.environment import environment_globals
+    from unify.function_manager.primitives.observers import proxy_target
 
     try:
         bound = environment_globals()
     except Exception:  # noqa: BLE001 - an environment that fails to load binds nothing
         return False
-    return name in bound and bound[name] is value
+    return name in bound and bound[name] is proxy_target(value)
 
 
 def _core_surface() -> bool:
