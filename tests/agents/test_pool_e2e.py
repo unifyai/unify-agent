@@ -85,10 +85,13 @@ async def _run(scripts, monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
+    # As record mode will be screened: on lean-all, whose discovery gate is off
+    # (the shipped gate forces a library search before any reply).
     for key, value in {
         "UNIFY_AGENTS": "record",
         "UNIFY_WORKSPACE": "sandboxed",
         "UNIFY_WORKSPACE_PYTHON": "worker",
+        "UNIFY_DISCOVERY_GATE": False,
     }.items():
         monkeypatch.setattr(SETTINGS, key, value)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
@@ -131,11 +134,12 @@ async def test_fan_out_wait_and_reply(monkeypatch, tmp_path):
     scripts = {"root": root, "h1": [_text("3 rows")], "h2": [_text("5 rows")]}
     provider, result, pool = await _run(scripts, monkeypatch, tmp_path)
     assert result == "a: 3 rows; b: 5 rows"
+    seen = [(e.seq, e.author, e.kind, e.text[:120]) for e in pool.record.entries]
     replies = [(e.author, e.mentions) for e in pool.record.entries if e.kind == "reply"]
-    assert ("h1", ("root",)) in replies and ("h2", ("root",)) in replies
+    assert ("h1", ("root",)) in replies and ("h2", ("root",)) in replies, seen
     assert ("root", ("user",)) in replies
     assert len(provider.by_agent["root"]) == 2  # waiting cost no model call
-    assert "primitives.actor" not in json.dumps(provider.by_agent["h1"][0])
+    assert "primitives.actor" not in json.dumps(provider.by_agent["h1"][0], default=str)
 
 
 async def test_a_helper_cannot_spawn_or_post_as_someone_else(monkeypatch, tmp_path):
@@ -165,7 +169,7 @@ async def test_a_helper_cannot_spawn_or_post_as_someone_else(monkeypatch, tmp_pa
         monkeypatch,
         tmp_path,
     )
-    helper_seen = json.dumps(provider.by_agent["h1"][-1]["messages"])
+    helper_seen = json.dumps(provider.by_agent["h1"][-1]["messages"], default=str)
     assert "only the main agent can start helpers" in helper_seen
     hello = [e for e in pool.record.entries if e.text == "@root hello"]
     assert hello and hello[0].author == "h1"
