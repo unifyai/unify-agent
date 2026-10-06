@@ -15,7 +15,8 @@ Harness -> worker::
 
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
      "help": bool}
-    {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool}
+    {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
+     "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
     {"op": "reply", "id": k, "error": {"type", "module", "message", "args"}}
 
@@ -36,7 +37,8 @@ run by ``functions.run``, or called by name, runs here and the harness records
 the call between its begin and its end. While one runs, every request carries
 ``"cases": [token, ...]``, the recordings it belongs to, so the harness adds
 the environment calls it serves to those cases.
-    {"op": "done", "id": n, "result": ..., "error": str | None, ...}
+    {"op": "done", "id": n, "result": ..., "error": str | None, ...,
+     "inventory": str | None}                 (when the exec asked for it)
 
 Values cross as JSON with a few tagged forms (``{"__unify__": tag, ...}``):
 tuples, sets, bytes, non-string dictionary keys, dates and times, decimals,
@@ -91,11 +93,13 @@ _CASES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
 __all__ = [
     "BoundaryRefusal",
     "CellReply",
+    "Inventory",
     "Reply",
     "Request",
     "MAX_DEPTH",
     "TAG",
     "decode",
+    "describe_value",
     "json_values",
     "encode",
     "short_repr",
@@ -297,6 +301,239 @@ def type_name(value: Any) -> str:
     if module in ("builtins", "") or module.startswith("__sandbox"):
         return name
     return f"{module}.{name}"
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_VARIABLE_INVENTORY=on: the variables a session's cells bound, in a line
+# ---------------------------------------------------------------------------
+# Defined here, with the standard library only, so a cell's namespace is
+# described the same way in the worker and in the in-process sandbox (the
+# harness side is unify/actor/execution/session.py).
+
+INVENTORY_LABEL = "[variables]"
+INVENTORY_NAMES = 12
+INVENTORY_CHARS = 400
+#: A scalar's or string's value is shown when its repr is at most this long.
+_VALUE_CHARS = 24
+#: An int this wide is described by its width, not its digits.
+_BIG_INT_BITS = 128
+#: A list or tuple this long is not scanned for equal rows.
+_ROW_SCAN = 10_000
+_SIGNATURE_CHARS = 40
+#: The harness's names in a cell; never listed, even after a cell rebinds one.
+HARNESS_NAMES = frozenset(
+    {
+        "primitives",
+        "request",
+        "reply",
+        "record",
+        "agents",
+        "display",
+        "functions",
+        "guidance",
+        "steering",
+        "help",
+        "install",
+    },
+)
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _cell_written(value: Any) -> bool:
+    """A function or class defined by cell code in a session's namespace,
+    not a stored function the harness compiled there (``<function:NAME>``)."""
+    module = getattr(value, "__module__", None)
+    if not (isinstance(module, str) and module.startswith("__sandbox_")):
+        return False
+    if isinstance(value, type):
+        return True
+    try:
+        code = getattr(inspect.unwrap(value), "__code__", None)
+    except ValueError:
+        return False
+    filename = getattr(code, "co_filename", "")
+    return isinstance(filename, str) and not filename.startswith(
+        STORED_FUNCTION_PREFIX,
+    )
+
+
+def _signature(fn: Any) -> str:
+    kind = "async function" if inspect.iscoroutinefunction(fn) else "function"
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return kind
+    names = []
+    for param in params:
+        if param.kind is param.VAR_POSITIONAL:
+            names.append(f"*{param.name}")
+        elif param.kind is param.VAR_KEYWORD:
+            names.append(f"**{param.name}")
+        else:
+            names.append(param.name)
+    return f"{kind}({_clip(', '.join(names), _SIGNATURE_CHARS)})"
+
+
+def _rows(value: Any) -> str:
+    """``N``, or ``NxM`` for N rows (lists or tuples) of equal length M."""
+    count = len(value)
+    if 0 < count <= _ROW_SCAN and isinstance(value[0], (list, tuple)):
+        width = len(value[0])
+        if all(isinstance(row, (list, tuple)) and len(row) == width for row in value):
+            return f"{count}x{width}"
+    return str(count)
+
+
+def _array(value: Any, cls: type) -> Optional[str]:
+    """A numpy or pandas value: its shape, and its dtype where it has one."""
+    shape = getattr(value, "shape", None)
+    if not isinstance(shape, tuple) or not all(isinstance(n, int) for n in shape):
+        return None
+    if not shape:
+        return f"{cls.__name__} = {_clip(str(value), _VALUE_CHARS)}"
+    text = f"{cls.__name__}[{'x'.join(str(n) for n in shape)}]"
+    if hasattr(cls, "dtype"):
+        text += f" {getattr(value, 'dtype', '')}"
+    return text
+
+
+def describe_value(value: Any) -> Optional[str]:
+    """*value*'s type and a short shape, without printing it whole.
+
+    A scalar, or a string whose repr is short, shows its value (``int =
+    3``, ``str = 'abc'``); a longer string, bytes, a list, tuple or set its
+    length (``str[120]``, ``list[3]``), a list or tuple of equal rows its
+    rows and columns (``list[10x10]``), a dict its key count (``dict[4
+    keys]``), a numpy or pandas value its shape and dtype; a function or
+    class a cell defined its kind (``function(grid, k)``, ``class``); any
+    other object its type's name. None: not a variable to list (a module, or
+    a callable the cell did not define).
+    """
+    cls = type(value)
+    if inspect.ismodule(value):
+        return None
+    if isinstance(value, type) or inspect.isfunction(value):
+        if not _cell_written(value):
+            return None
+        return "class" if isinstance(value, type) else _signature(value)
+    module = getattr(cls, "__module__", "") or ""
+    if callable(value) and not module.startswith("__sandbox_"):
+        return None
+    name = cls.__name__
+    if module.split(".")[0] in ("numpy", "pandas"):
+        # Before the scalars: numpy's float64 is a float.
+        return _array(value, cls) or name
+    if value is None:
+        return "None"
+    if isinstance(value, int):
+        if not isinstance(value, bool) and value.bit_length() > _BIG_INT_BITS:
+            return f"{name} ({value.bit_length()} bits)"
+        return f"{name} = {_clip(repr(value), _VALUE_CHARS)}"
+    if isinstance(value, (float, complex)):
+        return f"{name} = {_clip(repr(value), _VALUE_CHARS)}"
+    if isinstance(value, str):
+        if len(value) <= _VALUE_CHARS:
+            text = repr(value)
+            if len(text) <= _VALUE_CHARS + 2:
+                return f"{name} = {text}"
+        return f"{name}[{len(value)}]"
+    if isinstance(value, (bytes, bytearray, set, frozenset)):
+        return f"{name}[{len(value)}]"
+    if isinstance(value, dict):
+        return f"{name}[{len(value)} keys]"
+    if isinstance(value, (list, tuple)):
+        return f"{name}[{_rows(value)}]"
+    return name
+
+
+def render_inventory(entries: list) -> str:
+    """The line for *entries* (``(name, description)``, in order)."""
+    head = INVENTORY_LABEL + " "
+    parts: list = []
+    used = len(head)
+    for index, (name, text) in enumerate(entries):
+        if len(parts) == INVENTORY_NAMES:
+            break
+        piece = f"{name}: {text}"
+        rest = len(entries) - index - 1
+        tail = len(f"; …and {rest} more") if rest else 0
+        cost = (2 if parts else 0) + len(piece)
+        if used + cost + tail > INVENTORY_CHARS:
+            break
+        parts.append(piece)
+        used += cost
+    line = head + "; ".join(parts)
+    more = len(entries) - len(parts)
+    if more:
+        line += ("; " if parts else "") + f"…and {more} more"
+    return line
+
+
+class Inventory:
+    """The variables one session's cells bound, as a line for the cell's result.
+
+    Around each cell the caller takes :meth:`snapshot` of the namespace and
+    then calls :meth:`after_cell`: a name whose value the cell bound or
+    rebound is the cell's, and its most recent binding (or change of shape)
+    orders the line. A name the cell did not bind (the harness's) is never
+    listed. The line is returned only when the listed names or their
+    descriptions differ from the last line returned.
+    """
+
+    def __init__(self) -> None:
+        self._cell = 0
+        self._bound: dict = {}  # name -> the cell that last bound or reshaped it
+        self._shapes: dict = {}  # name -> its description after that cell
+        self._shown: frozenset = frozenset()
+
+    @staticmethod
+    def snapshot(ns: dict) -> dict:
+        return {name: id(value) for name, value in list(ns.items())}
+
+    def after_cell(
+        self,
+        ns: dict,
+        before: dict,
+        installed: Optional[dict] = None,
+    ) -> Optional[str]:
+        self._cell += 1
+        for name, value in list(ns.items()):
+            if not isinstance(name, str) or name.startswith("_"):
+                continue
+            if name in HARNESS_NAMES:
+                continue
+            if before.get(name) != id(value):
+                self._bound[name] = self._cell
+        entries: dict = {}
+        for name in list(self._bound):
+            if name not in ns:
+                del self._bound[name]
+                self._shapes.pop(name, None)
+                continue
+            value = ns[name]
+            if installed and installed.get(name) is value:
+                continue
+            try:
+                text = describe_value(value)
+            except Exception:  # noqa: BLE001 - a value's own code failed
+                text = type(value).__name__
+            if text is None:
+                continue
+            if self._shapes.get(name, text) != text:
+                self._bound[name] = self._cell
+            self._shapes[name] = text
+            entries[name] = text
+        shown = frozenset(entries.items())
+        if shown == self._shown:
+            return None
+        self._shown = shown
+        if not entries:
+            return None
+        order = sorted(entries, key=lambda n: (-self._bound[n], n))
+        return render_inventory([(n, entries[n]) for n in order])
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +1125,8 @@ class Worker:
         # UNIFY_REPLY_CHANNEL=code+text: the cells' reply(); the harness
         # checks the turn when the cell reports its reply.
         self.reply = Reply()
+        # UNIFY_VARIABLE_INVENTORY=on: what this namespace's cells bound.
+        self.inventory = Inventory()
 
     # -- channel -------------------------------------------------------------
     def send(self, msg: dict) -> None:
@@ -1565,15 +1804,29 @@ class Worker:
         message = ""
         reply: Optional[dict] = None
         self.reply.new_cell()
+        # UNIFY_VARIABLE_INVENTORY=on: asked only for a cell that keeps
+        # what it binds.
+        listing = bool(msg.get("inventory")) and not msg.get("scratch")
+        inventory: Optional[str] = None
         try:
             self.apply_sync(msg.get("sync") or {})
             self.renew_requests()
             ns = dict(self.ns) if msg.get("scratch") else self.ns
+            before = Inventory.snapshot(ns) if listing else None
             try:
                 exec(compile(msg["source"], "<string>", "exec"), ns)
                 result = await ns["__exec_wrapper"]()
             finally:
                 ns.pop("__exec_wrapper", None)
+                if before is not None:
+                    try:
+                        inventory = self.inventory.after_cell(
+                            ns,
+                            before,
+                            self.installed,
+                        )
+                    except Exception:  # noqa: BLE001 - never the cell's error
+                        inventory = None
         except CellReply as replied:
             reply = {"text": replied.text, "from_value": replied.from_value}
         except BaseException as exc:  # noqa: BLE001 - every failure is the cell's
@@ -1600,6 +1853,7 @@ class Worker:
                 "stdout": self._stdout,
                 "stderr": self._stderr,
                 **({"reply": reply} if reply is not None else {}),
+                **({"inventory": inventory} if listing else {}),
             },
         )
 

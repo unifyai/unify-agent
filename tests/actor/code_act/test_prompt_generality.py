@@ -107,6 +107,7 @@ SWITCH_SETS = {
         "UNIFY_REPLY_WORDING": "reason",
         "UNIFY_REPLY_CHANNEL": "code+text",
         "UNIFY_BIND_REQUEST": "on",
+        "UNIFY_VARIABLE_INVENTORY": "on",
     },
     "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
     "doctrine and note": {
@@ -145,6 +146,7 @@ SWITCH_SETS = {
         "UNIFY_REPLY_WORDING": "reason",
         "UNIFY_REPLY_CHANNEL": "code+text",
         "UNIFY_BIND_REQUEST": "on",
+        "UNIFY_VARIABLE_INVENTORY": "on",
     },
 }
 SWITCH_OFF = {
@@ -163,6 +165,7 @@ SWITCH_OFF = {
     "UNIFY_REPLY_WORDING": "",
     "UNIFY_REPLY_CHANNEL": "",
     "UNIFY_BIND_REQUEST": "",
+    "UNIFY_VARIABLE_INVENTORY": "",
 }
 
 PROMPT_MODES = {
@@ -332,11 +335,47 @@ def _session_texts(tools: dict) -> dict[str, str]:
         "_INLINE_ONLY_BULLET": pb._INLINE_ONLY_BULLET,
         "store_verify.doctrine()": store_verify.doctrine(),
         "_inline_function_bullet()": pb._inline_function_bullet(tools),
+        # UNIFY_VARIABLE_INVENTORY: the harness's words around the model's
+        # own names (every kind of description, and the overflow).
+        "variable inventory": _inventory_line(),
         **lint_texts,
     }
     assert all(texts.values()), [k for k, v in texts.items() if not v]
     assert not any("because None" in v for v in texts.values())
     return texts
+
+
+def _inventory_line() -> str:
+    from unify.actor.execution.worker_child import (
+        describe_value,
+        render_inventory,
+    )
+
+    ns = {"__name__": "__sandbox_lint__"}
+    exec("def f(a, *b, **c):\n    pass\nclass K:\n    pass\n", ns)
+    values = [
+        3,
+        2.5,
+        True,
+        None,
+        "short",
+        "x" * 100,
+        b"xy",
+        [1, 2],
+        [[1, 2], [3, 4]],
+        (1,),
+        {"a": 1},
+        {1},
+        frozenset(),
+        10**100,
+        ns["f"],
+        ns["K"],
+        ns["K"](),
+    ]
+    entries = [(f"v{i}", describe_value(v)) for i, v in enumerate(values)]
+    assert all(text for _, text in entries)
+    # Every description, and the line with its overflow.
+    return "; ".join(text for _, text in entries) + "\n" + render_inventory(entries)
 
 
 # ── the lint itself ──────────────────────────────────────────────────────

@@ -214,6 +214,8 @@ class PythonWorker:
         self._base: Dict[str, Any] = {}
         self._restart_note: Optional[str] = None
         self.pid: Optional[int] = None
+        # UNIFY_VARIABLE_INVENTORY=on: the line the last cell's run returned.
+        self.inventory: Optional[str] = None
 
     # -- lifecycle -------------------------------------------------------------
     @property
@@ -775,13 +777,16 @@ class PythonWorker:
         stdout: List[Any],
         stderr: List[Any],
         display: Optional[Callable[[Any], None]] = None,
+        inventory: bool = False,
     ) -> Any:
         """Run one wrapped cell (``async def __exec_wrapper(): ...``) in the worker.
 
         Output parts are appended to *stdout* / *stderr*. Returns the cell's
         result; raises :class:`WorkerCellError` with the worker's traceback,
         ``ControlledInterruption`` when a steering probe interrupted the cell,
-        or ``asyncio.TimeoutError`` after killing the worker.
+        or ``asyncio.TimeoutError`` after killing the worker. With
+        *inventory* (UNIFY_VARIABLE_INVENTORY), :attr:`inventory` is then
+        the line the worker computed from its namespace, or None.
         """
         from unify.function_manager.steering import ControlledInterruption
 
@@ -799,6 +804,7 @@ class PythonWorker:
                     TextPart,
                 )
         cid = next(self._ids)
+        self.inventory = None
         try:
             await self._send(
                 {
@@ -807,6 +813,7 @@ class PythonWorker:
                     "source": source,
                     "sync": self._manifest(shadow),
                     "scratch": scratch,
+                    **({"inventory": True} if inventory else {}),
                 },
             )
             if timeout is None:
@@ -831,6 +838,8 @@ class PythonWorker:
                 "variables, imports and definitions are reset.",
             ) from None
 
+        listed = done.get("inventory")
+        self.inventory = listed if isinstance(listed, str) else None
         self._collect_parts(done.get("stdout") or [], stdout, display, TextPart)
         self._collect_parts(done.get("stderr") or [], stderr, None, TextPart)
         replied = done.get("reply")

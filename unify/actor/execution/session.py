@@ -32,6 +32,7 @@ from unify.common._async_tool import time_context
 from unify.common.hierarchical_logger import DEFAULT_ICON
 from unify.common.tool_errors import ToolInputError
 
+from . import worker_child as child
 from .capture import _stdout_parts, capture_sandbox_output
 from unify.function_manager.steering import (
     DEFAULT_TOOL_NAMESPACES,
@@ -130,6 +131,13 @@ async def _await_orphan_sandbox_handles(
 
 
 logger = logging.getLogger(__name__)
+
+
+def inventory_enabled() -> bool:
+    """UNIFY_VARIABLE_INVENTORY=on: a cell's result lists the session's variables."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_VARIABLE_INVENTORY == "on"
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +493,10 @@ class PythonExecutionSession:
         # ``global_state`` holds only what the harness provides them.
         self._worker: Optional["PythonWorker"] = None
 
+        # UNIFY_VARIABLE_INVENTORY=on: what this session's cells bound in
+        # process (a worker keeps its own).
+        self._inventory: Any = None
+
         # UNIFY_TOOL_SURFACE=core: the harness objects of the act() this
         # sandbox belongs to (``functions``, ``guidance``, ``install``, ...),
         # which its other sessions get too (SessionExecutor._inject_fm_globals).
@@ -558,6 +570,7 @@ class PythonExecutionSession:
         *,
         timeout: float | None = None,
         scratch: bool = False,
+        inventory: bool = False,
     ) -> dict:
         """
         Executes a string of Python code within the sandbox's stateful environment.
@@ -575,6 +588,11 @@ class PythonExecutionSession:
         ``scratch`` (worker sessions only) runs the cell against a shallow copy
         of the worker's namespace and discards it, which is what
         ``state_mode="read_only"`` means there.
+
+        ``inventory`` (UNIFY_VARIABLE_INVENTORY): the result also carries
+        ``inventory``, the line naming the variables this session's cells
+        have bound, when it changed since the last one (not for a scratch
+        cell, which keeps nothing).
         """
         queued_at = time.perf_counter()
         async with self._execution_lock:
@@ -589,6 +607,7 @@ class PythonExecutionSession:
                 code,
                 timeout=timeout,
                 scratch=scratch,
+                inventory=inventory and not scratch,
             )
 
     async def _execute_exclusively(
@@ -597,6 +616,7 @@ class PythonExecutionSession:
         *,
         timeout: float | None,
         scratch: bool = False,
+        inventory: bool = False,
     ) -> dict:
         """Run one cell in the sandbox; the caller holds ``_execution_lock``."""
         from unify.common._async_tool import bound_request, cell_reply
@@ -606,6 +626,8 @@ class PythonExecutionSession:
 
         result = None
         error = None
+        # UNIFY_VARIABLE_INVENTORY: the line for this cell, if any.
+        listed: Optional[str] = None
         worker = self._python_worker()
 
         with capture_sandbox_output() as (stdout_parts, stderr_parts, display_fn):
@@ -842,6 +864,13 @@ class PythonExecutionSession:
 
                 spawned_handles: list[Any] = []
                 spawned_token = _SANDBOX_SPAWNED_HANDLES.set(spawned_handles)
+                # UNIFY_VARIABLE_INVENTORY: what the namespace held before
+                # the cell, so what the cell bound can be told apart.
+                before = (
+                    child.Inventory.snapshot(self.global_state)
+                    if inventory and worker is None
+                    else None
+                )
 
                 async def _exec_wrapped(wrapped: str) -> Any:
                     """Define ``__exec_wrapper`` from *wrapped* and await it."""
@@ -854,6 +883,7 @@ class PythonExecutionSession:
                             stdout=stdout_parts,
                             stderr=stderr_parts,
                             display=display_fn,
+                            **({"inventory": True} if inventory else {}),
                         )
                     exec(wrapped, self.global_state)
                     execution = self.global_state["__exec_wrapper"]()
@@ -891,6 +921,10 @@ class PythonExecutionSession:
                         result=result,
                     )
                 finally:
+                    if before is not None:
+                        listed = self._list_variables(before)
+                    elif inventory and worker is not None:
+                        listed = worker.inventory
                     _SANDBOX_SPAWNED_HANDLES.reset(spawned_token)
                     if _orig_prims is not None:
                         self.global_state["primitives"] = _orig_prims
@@ -916,12 +950,29 @@ class PythonExecutionSession:
                 if "__exec_wrapper" in self.global_state:
                     del self.global_state["__exec_wrapper"]
 
-        return {
+        out = {
             "stdout": stdout_parts,
             "stderr": stderr_parts,
             "result": result,
             "error": error,
         }
+        if listed is not None:
+            out["inventory"] = listed
+        return out
+
+    def _list_variables(self, before: Dict[str, int]) -> Optional[str]:
+        """UNIFY_VARIABLE_INVENTORY: the line after an in-process cell, or None."""
+        if self._inventory is None:
+            self._inventory = child.Inventory()
+        try:
+            return self._inventory.after_cell(
+                self.global_state,
+                before,
+                self.core_globals,
+            )
+        except Exception:  # noqa: BLE001 - never the cell's error
+            logger.debug("variable inventory failed", exc_info=True)
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -1098,12 +1149,18 @@ class SessionExecutor:
         session_id: int | None,
         language: str = "python",
         prepare: Optional[Callable[[Dict[str, Any]], None]] = None,
+        inventory: bool = False,
     ) -> Dict[str, Any]:
         """Run ``code`` in the session ``state_mode`` and ``session_id`` name.
 
         ``prepare`` (``UNIFY_FUNCTION_HELPERS``), when given, is called with
         the namespace the cell runs in before it runs, to define names there:
         they stay where the state mode keeps what a cell defines.
+
+        ``inventory`` (``UNIFY_VARIABLE_INVENTORY``): a stateful cell's result
+        carries ``inventory`` when the session's variables changed since the
+        line last shown; a stateless or read-only cell keeps nothing, so its
+        result never does.
         """
         if language == "bash":
             return await self._execute_shell(
@@ -1134,11 +1191,13 @@ class SessionExecutor:
         async def _execute_in_python_session(
             sb: PythonExecutionSession,
             scratch: bool = False,
+            listing: bool = False,
         ) -> Dict[str, Any]:
             from unify import sandbox
 
+            listing_kw = {"inventory": True} if listing else {}
             if not sandbox.enabled():
-                return await sb.execute(code, timeout=self._timeout)
+                return await sb.execute(code, timeout=self._timeout, **listing_kw)
             # In process, the cell runs here and what it starts through
             # subprocess, os.system or asyncio runs in the sandbox; in a worker
             # the cell is confined whole and this confines what the harness
@@ -1150,7 +1209,7 @@ class SessionExecutor:
                         timeout=self._timeout,
                         scratch=True,
                     )
-                return await sb.execute(code, timeout=self._timeout)
+                return await sb.execute(code, timeout=self._timeout, **listing_kw)
 
         bound = self._bound_sandbox(session_id)
         if state_mode == "stateful" and bound is not None:
@@ -1160,7 +1219,7 @@ class SessionExecutor:
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox (session 0), executing",
             )
-            res = await _execute_in_python_session(bound)
+            res = await _execute_in_python_session(bound, listing=inventory)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox done",
             )
@@ -1225,7 +1284,7 @@ class SessionExecutor:
             self._inject_fm_globals(sb)
             if prepare is not None:
                 prepare(sb.global_state)
-            res = await _execute_in_python_session(sb)
+            res = await _execute_in_python_session(sb, listing=inventory)
             meta = self._python_session_meta.get(key)
             if meta is not None:
                 meta["last_used"] = datetime.now(timezone.utc).isoformat()

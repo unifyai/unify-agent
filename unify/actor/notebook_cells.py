@@ -493,8 +493,10 @@ class NotebookCellResult(ExecutionResult):
     :meth:`to_llm_content` differs: what the cell printed, then ``[stderr]``
     and its text, then ``Out: <repr>`` of the last expression's value, then
     the traceback. A note on the call (``UNIFY_PLACEHOLDER_NOTE``) comes
-    first and what steered the block last, when anything did. No session or
-    timing metadata. A result that is or holds a steerable handle keeps the
+    first and what steered the block after the traceback, when anything did,
+    then the line naming the session's variables
+    (``UNIFY_VARIABLE_INVENTORY``), when it changed. No session or timing
+    metadata. A result that is or holds a steerable handle keeps the
     shipped rendering while the loop adopts it.
     """
 
@@ -532,6 +534,8 @@ class NotebookCellResult(ExecutionResult):
         }
         if steered:
             text(f"[steering] {json.dumps(self.steering, default=str)}\n")
+        if self.inventory is not None:
+            text(f"{self.inventory}\n")
         blocks = parts_to_llm_content(parts)
         if not blocks:
             return [{"type": "text", "text": "(no output)"}]

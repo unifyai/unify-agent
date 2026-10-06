@@ -294,6 +294,23 @@ class ProductionSettings(BaseSettings):
     # its Sandbox Environment section; the tools are unchanged
     # (unify/common/_async_tool/bound_request.py). Empty: as shipped.
     UNIFY_BIND_REQUEST: str = ""
+    # ``on``: an ``execute_code`` cell that ran in a persistent session ends
+    # its result with one line naming the variables that session's cells
+    # have bound, each with its type and a short shape (length, rows x
+    # columns of a list of equal rows, key count, an array's shape and
+    # dtype; a scalar's or short string's value, truncated), most recently
+    # bound first: at most 12 names and 400 characters, then "…and N more".
+    # It comes only when those names or their shapes changed since the last
+    # line shown, and never when there are none; a stateless or read-only
+    # cell keeps nothing, so its result has none. Names a cell did not bind
+    # are left out (primitives, request, reply, the libraries, injected
+    # stored functions), as are modules and names starting with ``_``. No
+    # value is printed whole. It is computed where the cell ran (in process
+    # or in the UNIFY_WORKSPACE_PYTHON=worker child), is the tool's own
+    # result (a UNIFY_BUDGET_FOOTER line still comes after it), and the
+    # prompt and tools are unchanged (unify/actor/execution/worker_child.py
+    # ``Inventory``). Empty: results as shipped.
+    UNIFY_VARIABLE_INVENTORY: str = ""
     # ``optional``: ``thought`` on execute_code and execute_function is no
     # longer required in their schemas and its description says it may be
     # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
@@ -1590,6 +1607,17 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_BIND_REQUEST must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_VARIABLE_INVENTORY", mode="before")
+    @classmethod
+    def parse_variable_inventory(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_VARIABLE_INVENTORY must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 

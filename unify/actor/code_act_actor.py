@@ -44,6 +44,7 @@ from unify.actor.execution import (
     _PARENT_CHAT_CONTEXT,
     _validate_execution_params,
 )
+from unify.actor.execution.session import inventory_enabled
 from unify.common.async_tool_loop import (
     AsyncToolLoopHandle,
     SteerableToolHandle,
@@ -5108,6 +5109,10 @@ class CodeActActor(BaseCodeActActor):
                         _lang_kw = (
                             {"language": _language} if _language != "python" else {}
                         )
+                        # UNIFY_VARIABLE_INVENTORY: a cell that keeps what it
+                        # binds ends its result with the session's variables.
+                        if _language == "python" and inventory_enabled():
+                            _lang_kw["inventory"] = True
                         try:
                             # UNIFY_FUNCTION_HELPERS: the worker's calls of
                             # stored functions are recorded; nothing while off.
