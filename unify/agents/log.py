@@ -14,11 +14,18 @@ from unify.transcripts import scrub
 class RecordLog:
     """``<run>.jsonl`` holds the entries; ``<run>.cursors.jsonl`` what each agent was shown."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, create: bool) -> None:
+        """``create=True`` makes a new record and fails if the file exists, so two
+        runs can never write into one file; ``create=False`` reopens an existing
+        record (a resume) and fails if there is none."""
         self.path = Path(path)
         self.cursor_path = self.path.with_name(f"{self.path.stem}.cursors.jsonl")
         self._lock = threading.Lock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if create:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            os.close(os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        elif not self.path.exists():
+            raise FileNotFoundError(f"no record to resume at {self.path}")
 
     def append(self, entry: Entry) -> None:
         self._append_line(self.path, json.dumps(entry.to_dict(), ensure_ascii=False))

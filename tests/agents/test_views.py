@@ -61,7 +61,7 @@ async def test_wait_returns_dicts():
 
 @pytest.mark.asyncio
 async def test_agents_view_spawns_as_its_owner():
-    async def start(name, spawner, task, task_seq):
+    async def start(name, spawner, request, request_seq):
         return "ok"
 
     rec = Record(None, options=Options(min_post_interval_s=0))

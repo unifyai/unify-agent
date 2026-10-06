@@ -49,7 +49,12 @@ class Pool:
     def _helpers(self) -> list[str]:
         return [n for n, p in self.record.participants.items() if p.spawner is not None]
 
-    async def spawn(self, spawner: str, task: str, name: Optional[str] = None) -> str:
+    async def spawn(
+        self,
+        spawner: str,
+        request: str,
+        name: Optional[str] = None,
+    ) -> str:
         rec, opts = self.record, self.record.options
         if spawner != rec.root:
             raise PermissionError("only the main agent can start helpers in this run")
@@ -57,9 +62,11 @@ class Pool:
             raise PermissionError(self._spawn_refusal)
         if opts.max_total == 0:
             raise PermissionError("starting helpers is off in this run")
-        task = str(task or "")
-        if len("".join(task.split())) < 16 or _PLACEHOLDER.match(task):
-            raise ValueError("the task must say what to do (at least 16 characters)")
+        request = str(request or "")
+        if len("".join(request.split())) < 16 or _PLACEHOLDER.match(request):
+            raise ValueError(
+                "the request must say what to do (at least 16 characters)",
+            )
         live = [n for n in rec.live_agents() if n != rec.root]
         if len(live) >= opts.max_live:
             raise RuntimeError(
@@ -82,18 +89,24 @@ class Pool:
                 "in use",
             )
         rec.add_agent(name, spawner=spawner)
-        entry, _ = rec.append(spawner, f"@{name} {task}")
-        rec.participants[name].task_seq = entry.seq
+        entry, _ = rec.append(spawner, f"@{name} {request}")
+        rec.participants[name].request_seq = entry.seq
         self._tasks[name] = asyncio.get_running_loop().create_task(
-            self._run(name, spawner, task, entry.seq),
+            self._run(name, spawner, request, entry.seq),
             name=f"unify-agents:{name}",
         )
         return name
 
-    async def _run(self, name: str, spawner: str, task: str, task_seq: int) -> None:
+    async def _run(
+        self,
+        name: str,
+        spawner: str,
+        request: str,
+        request_seq: int,
+    ) -> None:
         participant = self.record.participants[name]
         try:
-            text = await self._start_helper(name, spawner, task, task_seq)
+            text = await self._start_helper(name, spawner, request, request_seq)
         except asyncio.CancelledError:
             if participant.state == "running":
                 participant.state = "stopped"
@@ -135,7 +148,7 @@ class Pool:
             {
                 "name": p.name,
                 "state": p.state,
-                "task_seq": p.task_seq,
+                "request_seq": p.request_seq,
                 "last_seq": p.last_seq,
             }
             for p in self.record.participants.values()

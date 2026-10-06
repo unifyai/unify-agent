@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,9 @@ from unify.agents.options import Options
 from unify.transcripts import scrub
 
 logger = logging.getLogger(__name__)
+
+# The harness's notices about a helper's end (pool.py writes them).
+_SYSTEM_END = re.compile(r"^@\S+ (\S+) (ended without replying|stopped)")
 
 USER = "user"
 HARNESS = "harness"
@@ -48,7 +52,7 @@ class Participant:
     role: str  # "user" | "harness" | "agent"
     spawner: Optional[str] = None
     state: str = "running"  # running | replied | stopped | failed | lost
-    task_seq: Optional[int] = None
+    request_seq: Optional[int] = None
     last_seq: Optional[int] = None
     cursor: int = 0
     returned: set[int] = field(default_factory=set)
@@ -94,9 +98,49 @@ class Record:
         }
         if log is not None:
             self.entries, cursors = log.load()
+            self._restore_participants()
             for name, upto in cursors.items():
                 if name in self.participants:
                     self.participants[name].cursor = upto
+
+    def _restore_participants(self) -> None:
+        """Every agent name a reloaded record has seen stays taken, in its last state.
+
+        A helper still running when the record was last written is ``lost``: it is
+        not resumed, and its name is never given to another agent of this run.
+        """
+        for e in self.entries:
+            for name in (e.author, *e.mentions):
+                if name not in self.participants and name != ALL:
+                    self.participants[name] = Participant(name, "agent", state="lost")
+            if e.author in self.participants:
+                self.participants[e.author].last_seq = e.seq
+            if e.kind == "post" and e.mentions:
+                target = self.participants[e.mentions[0]]
+                if (
+                    target.name != self.root
+                    and target.role == "agent"
+                    and target.request_seq is None
+                    and e.text.startswith(f"@{target.name} ")
+                ):
+                    target.spawner, target.request_seq = e.author, e.seq
+            elif e.kind == "reply" and e.author != self.root:
+                self.participants[e.author].state = "replied"
+            elif e.kind == "cancel":
+                for name in e.mentions:
+                    if name != self.root and self.participants[name].state == "lost":
+                        self.participants[name].state = "stopped"
+            elif e.kind == "system" and e.author == HARNESS:
+                ended = _SYSTEM_END.match(e.text)
+                if ended and ended.group(1) in self.participants:
+                    helper = self.participants[ended.group(1)]
+                    if helper.state == "lost":
+                        helper.state = (
+                            "failed" if ended.group(2) == "ended" else "stopped"
+                        )
+        for p in self.participants.values():
+            if p.role == "agent" and p.name != self.root and p.spawner is None:
+                p.spawner = self.root
 
     @property
     def path(self) -> Optional[Path]:

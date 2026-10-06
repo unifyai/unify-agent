@@ -10,7 +10,7 @@ from unify.agents.record import HARNESS, USER, PostRefused, Record
 
 
 def _record(tmp_path=None, **opts):
-    log = RecordLog(tmp_path / "run.jsonl") if tmp_path else None
+    log = RecordLog(tmp_path / "run.jsonl", create=True) if tmp_path else None
     ticks = iter(range(10_000))
     rec = Record(
         log,
@@ -28,7 +28,10 @@ def test_sequence_numbers_are_global_and_the_file_matches_memory(tmp_path):
     for i in range(5):
         rec.append("root" if i % 2 else "h1", f"n{i}")
     assert [e.seq for e in rec.entries] == [1, 2, 3, 4, 5]
-    reloaded = Record(RecordLog(tmp_path / "run.jsonl"), options=Options())
+    reloaded = Record(
+        RecordLog(tmp_path / "run.jsonl", create=False),
+        options=Options(),
+    )
     assert reloaded.entries == rec.entries
 
 
@@ -147,7 +150,7 @@ def test_take_block_advances_the_cursor_and_logs_it(tmp_path):
     block = rec.take_block("root")
     assert "#1 h1: @root first" in block
     assert rec.take_block("root") is None
-    assert RecordLog(tmp_path / "run.jsonl").load()[1] == {"root": 1}
+    assert RecordLog(tmp_path / "run.jsonl", create=False).load()[1] == {"root": 1}
 
 
 def test_entries_not_for_me_wait_and_are_counted_in_the_next_block():

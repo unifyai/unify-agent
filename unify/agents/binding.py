@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import secrets
+import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ ROOT = "root"
 PROMPT_SECTION = (
     "### Team record\n"
     "You may work with other agents through one shared record. "
-    "`await agents.spawn(task)` starts a helper and returns its name; use it only "
+    "`await agents.spawn(request)` starts a helper and returns its name; use it only "
     "for parts of the work that are independent of each other. "
     '`record.post("@name ...")` writes to the record; `await record.wait(timeout)` '
     "waits inside a cell for entries that mention you; `record.read()` reads it. "
@@ -44,14 +43,14 @@ _LAST_ROOT: list[Optional[Pool]] = [None]
 def helper_request(
     name: str,
     spawner: str,
-    task: str,
-    task_seq: int,
+    request: str,
+    request_seq: int,
     path: Optional[Path],
 ) -> str:
     where = f" The record's file is {path}." if path else ""
     return (
         f"You are `{name}`, a helper in a team. `{spawner}` asked you (record entry "
-        f"#{task_seq}):\n\n{task}\n\nYour reply goes to `{spawner}`.{where}"
+        f"#{request_seq}):\n\n{request}\n\nYour reply goes to `{spawner}`.{where}"
     )
 
 
@@ -62,8 +61,9 @@ def records_dir() -> Path:
 
 
 def _run_id() -> str:
+    """A UTC stamp and 128 random bits: unique across processes, sandboxes and hosts."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{stamp}-{os.getpid()}-{secrets.token_hex(3)}"
+    return f"{stamp}-{uuid.uuid4().hex}"
 
 
 def spawn_permitted() -> tuple[bool, str]:
@@ -107,8 +107,8 @@ async def _start_helper(
     pool: Pool,
     name: str,
     spawner: str,
-    task: str,
-    task_seq: int,
+    request: str,
+    request_seq: int,
 ) -> str:
     """Run one helper as a sub-actor bounded by the spawner's grants; return its reply."""
     from unify.actor.environments.actor import _build_inner_actor
@@ -127,7 +127,7 @@ async def _start_helper(
     token = _CURRENT.set((pool, name))
     try:
         handle = await actor.act(
-            helper_request(name, spawner, task, task_seq, pool.record.path),
+            helper_request(name, spawner, request, request_seq, pool.record.path),
             guidelines=guidelines,
             persist=False,
             can_store=False,
@@ -155,7 +155,7 @@ def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
             AgentsView(pool, name),
         )
     record = Record(
-        RecordLog(records_dir() / f"{_run_id()}.jsonl"),
+        RecordLog(records_dir() / f"{_run_id()}.jsonl", create=True),
         options=current_options(),
         root=ROOT,
         user_reads=user_reads,
@@ -163,8 +163,8 @@ def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
     allowed, why = spawn_permitted()
     pool: Pool
 
-    async def start(name: str, spawner: str, task: str, task_seq: int) -> str:
-        return await _start_helper(pool, name, spawner, task, task_seq)
+    async def start(name: str, spawner: str, request: str, request_seq: int) -> str:
+        return await _start_helper(pool, name, spawner, request, request_seq)
 
     pool = Pool(record, start_helper=start, spawn_allowed=allowed, spawn_refusal=why)
     entry, _ = record.append(USER, str(request or ""), mentions=[ROOT])

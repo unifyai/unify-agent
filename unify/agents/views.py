@@ -88,9 +88,9 @@ class RecordView:
 class AgentsView:
     """Helpers for independent parts of the work.
 
-    await agents.spawn(task, name=None)   start a helper; returns its name at once
+    await agents.spawn(request, name=None)  start a helper; returns its name at once
     agents.stop(name, reason="")          stop a helper you started
-    agents.list()                         your helpers: name, state, task_seq, last_seq
+    agents.list()                         your helpers: name, state, request_seq, last_seq
 
     A helper's answer arrives as a `reply` entry that mentions you.
     """
@@ -99,8 +99,8 @@ class AgentsView:
         self._pool = pool
         self._name = name
 
-    async def spawn(self, task: str, *, name: Optional[str] = None) -> str:
-        return await self._pool.spawn(self._name, task, name)
+    async def spawn(self, request: str, *, name: Optional[str] = None) -> str:
+        return await self._pool.spawn(self._name, request, name)
 
     def stop(self, name: str, reason: str = "") -> None:
         self._pool.stop(self._name, name, reason)
