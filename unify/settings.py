@@ -585,6 +585,20 @@ class ProductionSettings(BaseSettings):
     # argument; the prompt names no cell mode and no session tool
     # (unify/actor/cell_state.py). Off: as shipped.
     UNIFY_STATEFUL_CELLS: bool = False
+    # A cell runs as the body of an async wrapper function, and a name it
+    # binds reaches the session only if the wrapper declares it global. On:
+    # the declaration is every name Python's symbol table finds the cell's
+    # own scope binding (under if/for/while/with/try/except/match, a walrus,
+    # also in a comprehension, del, nested def and class), and an annotated
+    # assignment there drops its annotation (an annotated name cannot be
+    # declared global, so today the whole cell is a SyntaxError); nested
+    # functions, classes, lambdas and comprehensions keep their own names.
+    # This is what the prompt promises ("a notebook"). If the symbol table
+    # cannot be built, the declaration is as shipped. Off: only names bound
+    # by top-level assignments, imports, defs and classes are kept; any other
+    # is lost when the cell ends (a later cell gets NameError), as shipped.
+    # Read per cell; in-process and worker cells alike.
+    UNIFY_CELL_SCOPE_FIX: bool = True
     # Prompt text describes only what the session has. On: an interjection
     # does not append the "User Visibility Context" message when the model
     # has no channel to the user besides its final reply (no
@@ -1258,6 +1272,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_SEARCH_IDENTIFIERS",
         "UNIFY_BUDGET_FOOTER",
         "UNIFY_EVIDENCE_LEDGER",
+        "UNIFY_CELL_SCOPE_FIX",
         mode="before",
     )
     @classmethod

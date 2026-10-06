@@ -11,6 +11,7 @@ import asyncio
 import ast
 import contextvars
 import logging
+import symtable
 import sys
 import time
 import traceback
@@ -375,6 +376,60 @@ def _validate_execution_params(
     return None
 
 
+class _Unannotate(ast.NodeTransformer):
+    """Drop the annotation of each assignment to a plain name in the cell's
+    own scope: ``x: T = v`` becomes ``x = v`` and ``x: T`` (which binds
+    nothing) becomes ``pass``. Python refuses to declare an annotated name
+    global, so these are the cell's only bindings the wrapper could not keep.
+    Nested functions, classes and lambdas are left as written."""
+
+    changed = False
+
+    def _leave(self, node: ast.AST) -> ast.AST:
+        return node
+
+    visit_FunctionDef = visit_AsyncFunctionDef = _leave  # noqa: N815
+    visit_ClassDef = visit_Lambda = _leave  # noqa: N815
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:  # noqa: N802
+        if not isinstance(node.target, ast.Name):
+            return node
+        self.changed = True
+        if node.value is None:
+            return ast.copy_location(ast.Pass(), node)
+        return ast.copy_location(
+            ast.Assign(targets=[node.target], value=node.value),
+            node,
+        )
+
+
+def _cell_bound_names(body: str) -> set[str] | None:
+    """Every name *body* binds in its own scope when run as the body of
+    ``__exec_wrapper``, as Python's symbol table sees it.
+
+    That is what has to be declared global for the names to outlive the
+    cell: assignments anywhere in the cell's scope (under if/for/while/with/
+    try/match, as a for, with or except target, a walrus, also one inside a
+    comprehension), del, imports, defs and classes. A name the cell itself
+    declares global is not local and is left to its own statement. On
+    Python 3.12+ a comprehension's loop variable is reported here too (its
+    scope is inlined); declaring it global changes nothing, since the
+    comprehension still binds it in its own scope. ``None`` when the table
+    cannot be built (the cell does not compile as a wrapper body).
+    """
+    source = "async def __exec_wrapper():\n" + "".join(
+        f"    {ln}\n" for ln in body.splitlines()
+    )
+    try:
+        table = symtable.symtable(source, "<cell>", "exec")
+    except (SyntaxError, ValueError):
+        return None
+    for child in table.get_children():
+        if child.get_name() == "__exec_wrapper":
+            return {sym.get_name() for sym in child.get_symbols() if sym.is_local()}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PythonExecutionSession
 # ---------------------------------------------------------------------------
@@ -623,6 +678,17 @@ class PythonExecutionSession:
                     code += "\npass"
 
                 tree = ast.parse(code)
+                # UNIFY_CELL_SCOPE_FIX: keep every name the cell binds, as a
+                # notebook does. Off: only top-level bindings, as shipped.
+                from unify.settings import SETTINGS
+
+                scope_fix = SETTINGS.UNIFY_CELL_SCOPE_FIX
+                if scope_fix:
+                    unannotate = _Unannotate()
+                    tree = unannotate.visit(tree)
+                    if unannotate.changed:
+                        ast.fix_missing_locations(tree)
+                        code = ast.unparse(tree)
                 top_level_assign_targets = set()
                 for node in tree.body:
                     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
@@ -658,6 +724,11 @@ class PythonExecutionSession:
                     tree.body[-1] = ast.Return(value=tree.body[-1].value)
                     ast.fix_missing_locations(tree)
                     code = ast.unparse(tree)
+
+                if scope_fix:
+                    bound = _cell_bound_names(code)
+                    if bound is not None:
+                        top_level_assign_targets = bound
 
                 # Steering only exists while a call is in flight. The session
                 # arrives by context rather than on this object, because the
