@@ -708,9 +708,16 @@ class _ActorRunner:
 
 
 def delegation_mode() -> str:
-    """``UNIFY_DELEGATION``: ``on`` (as shipped), ``off`` or ``on_demand``."""
+    """``UNIFY_DELEGATION``: ``on`` (as shipped), ``off`` or ``on_demand``.
+
+    ``UNIFY_AGENTS=record`` reads as ``off``: helpers come from
+    ``agents.spawn``, never from ``primitives.actor``.
+    """
+    from unify import agents
     from unify.settings import SETTINGS
 
+    if agents.enabled():
+        return "off"
     return SETTINGS.UNIFY_DELEGATION
 
 

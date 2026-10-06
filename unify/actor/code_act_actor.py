@@ -6418,6 +6418,18 @@ class CodeActActor(BaseCodeActActor):
             "wait for the user to provide instructions via interjection."
         )
 
+        # UNIFY_AGENTS=record: this act() joins its run's shared record, as the
+        # main agent or as the helper a pool started. Off: nothing is bound.
+        from unify.agents.binding import bind_for_act
+
+        _agents = bind_for_act(
+            request=str(request or ""),
+            user_reads=bool(clarification_enabled),
+        )
+        if _agents is not None:
+            # A question to the requester is a record post in this mode.
+            clarification_enabled = False
+
         # Clarification queues for sandbox env injection (managers called from
         # execute_code). Separate from the tool-loop clarification_queues below:
         # auto-created env queues are unread on the CM→act path, so the loop
@@ -7088,13 +7100,19 @@ class CodeActActor(BaseCodeActActor):
                 if seen_before:
                     _evidence_ledger.bind(sandbox, seen_before)
                     first_message_parts.append(_evidence_ledger.line(seen_before))
+            if _agents is not None:
+                sandbox.global_state.update(_agents.globals())
+                if isinstance(getattr(sandbox, "core_globals", None), dict):
+                    sandbox.core_globals.update(_agents.globals())
+                first_message_parts.append(_agents.prompt_section())
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
                 tools,
                 loop_id=f"CodeActActor.act",
-                parent_chat_context=_parent_chat_context,
-                interrupt_llm_with_interjections=True,
+                parent_chat_context=(_parent_chat_context if _agents is None else None),
+                # UNIFY_AGENTS=record: nothing that arrives races the model call.
+                interrupt_llm_with_interjections=_agents is None,
                 log_steps=True,
                 tool_policy=tool_policy,
                 response_format=response_format,
@@ -7117,15 +7135,22 @@ class CodeActActor(BaseCodeActActor):
                 # under UNIFY_TOOL_SURFACE=core.
                 on_notify=(
                     None
-                    if SETTINGS.lean_prompt() or core_session is not None
+                    if SETTINGS.lean_prompt()
+                    or core_session is not None
+                    or _agents is not None
                     else _on_notify
                 ),
                 **(
                     {
-                        "steering_tools": core_session.steering,
+                        "steering_tools": core_session.steering and _agents is None,
                         "compression_tools_on_demand": True,
                     }
                     if core_session is not None
+                    else ({"steering_tools": False} if _agents is not None else {})
+                ),
+                **(
+                    {"on_turn_boundary": _agents.on_turn_boundary}
+                    if _agents is not None
                     else {}
                 ),
                 **(
@@ -7157,7 +7182,12 @@ class CodeActActor(BaseCodeActActor):
 
         async def _result_with_cleanup() -> str:
             try:
-                return await _original_result()
+                result = await _original_result()
+                # UNIFY_AGENTS=record: the main agent's answer ends its request;
+                # helpers still running are stopped and checked to have ended.
+                if _agents is not None and _agents.name == "root" and not persist:
+                    await _agents.pool.finish_request(str(result))
+                return result
             finally:
                 await _cleanup()
 
@@ -7165,6 +7195,8 @@ class CodeActActor(BaseCodeActActor):
 
         # Update agent context with handle reference
         new_ctx.handle = handle
+        if _agents is not None:
+            handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
 
         # Wrap in StorageCheckHandle for post-completion function review. A
         # persistent session is reviewed once, when it ends (its stop is a
