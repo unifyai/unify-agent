@@ -347,3 +347,24 @@ def test_the_mode_parses_and_refuse_is_the_old_switch():
     assert ProductionSettings().UNIFY_PROTECT_VERIFIED == ""
     with pytest.raises(ValueError):
         ProductionSettings(UNIFY_PROTECT_VERIFIED="sometimes")
+
+
+def test_versioned_refuses_to_start_with_nothing_to_accept_a_session(monkeypatch):
+    """With neither the checker's outcome nor the review's judgement kept, no version could ever be promoted."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROTECT_VERIFIED", "versioned")
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_OUTCOME", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", False)
+    with pytest.raises(
+        ValueError,
+        match="needs UNIFY_REVIEW_OUTCOME=1 or UNIFY_OUTCOME=1",
+    ):
+        verified_guard.require_prerequisites()
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_OUTCOME", True)
+    verified_guard.require_prerequisites()
+    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_OUTCOME", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", True)
+    verified_guard.require_prerequisites()
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROTECT_VERIFIED", "refuse")
+    monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", False)
+    verified_guard.require_prerequisites()  # refuse needs no acceptance source

@@ -6309,6 +6309,10 @@ class CodeActActor(BaseCodeActActor):
 
         _evidence_list.require_prerequisites()
         evidence = _evidence_list.enabled()
+        # UNIFY_PROTECT_VERIFIED=versioned: refuse it with nothing to accept a session.
+        from unify.function_manager import verified_guard as _verified_guard
+
+        _verified_guard.require_prerequisites()
         if _GATE_SETTINGS.UNIFY_REVIEW_GENERALISE and not _task_origin.enabled():
             raise ValueError(
                 "UNIFY_REVIEW_GENERALISE needs UNIFY_TASK_ORIGIN=1 (or "

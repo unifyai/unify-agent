@@ -71,6 +71,29 @@ def versioned() -> bool:
     return mode() == VERSIONED
 
 
+def require_prerequisites() -> None:
+    """Refuse ``versioned`` with nothing that could ever accept a session.
+
+    A version replaces the content only when its session's answer is kept
+    as accepted: the checker's outcome (``UNIFY_OUTCOME``) or the storage
+    review's judgement (``UNIFY_REVIEW_OUTCOME``). With neither, no version
+    would ever be promoted and the mode would silently refuse every change.
+    """
+    from unify.settings import SETTINGS
+
+    if not versioned():
+        return
+    if not (
+        getattr(SETTINGS, "UNIFY_REVIEW_OUTCOME", False)
+        or getattr(SETTINGS, "UNIFY_OUTCOME", False)
+    ):
+        raise ValueError(
+            "UNIFY_PROTECT_VERIFIED=versioned needs UNIFY_REVIEW_OUTCOME=1 or "
+            "UNIFY_OUTCOME=1: a kept version replaces the content only when "
+            "its session is accepted, and without either nothing would say so.",
+        )
+
+
 def current_key() -> Optional[str]:
     text = task_origin.current_request()
     return task_origin.text_key(text) if text else None
@@ -294,6 +317,7 @@ __all__ = [
     "enabled",
     "mode",
     "promote_for",
+    "require_prerequisites",
     "promoted",
     "protected",
     "refusal",
