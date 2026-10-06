@@ -1173,6 +1173,7 @@ def start_async_tool_loop(
     steering_tools: bool = True,
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
+    on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for
@@ -1192,6 +1193,9 @@ def start_async_tool_loop(
 
     steering_tools, compression_tools_on_demand, reply_channel : bool
         See ``async_tool_loop_inner``; the defaults are as shipped.
+
+    on_turn_boundary : optional coroutine function
+        See ``async_tool_loop_inner``; ``None`` (as shipped) adds nothing.
 
     timeout : int | None, default None
         Activity-based timeout in seconds. When ``None`` (default), no
@@ -1325,6 +1329,7 @@ def start_async_tool_loop(
                 steering_tools=steering_tools,
                 compression_tools_on_demand=compression_tools_on_demand,
                 reply_channel=reply_channel,
+                on_turn_boundary=on_turn_boundary,
             )
         except asyncio.CancelledError:
             raise
@@ -1414,6 +1419,7 @@ def start_async_tool_loop(
         "steering_tools": steering_tools,
         "compression_tools_on_demand": compression_tools_on_demand,
         "reply_channel": reply_channel,
+        "on_turn_boundary": on_turn_boundary,
     }
 
     with suppress(Exception):

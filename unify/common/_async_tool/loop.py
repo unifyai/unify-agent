@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 
 from typing import (
+    Awaitable,
     Dict,
     Union,
     Callable,
@@ -564,6 +565,7 @@ async def async_tool_loop_inner(
     steering_tools: bool = True,
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
+    on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -725,6 +727,12 @@ async def async_tool_loop_inner(
         a text reply would, without another model call (``cell_reply.py``).
         Ignored while the switch is off and in a loop whose answer is a
         response tool's.
+    on_turn_boundary : optional coroutine function, default ``None``
+        Called just before each model call, after every tool result (and any
+        footer) is appended. A non-empty string it returns is appended as one
+        loop-authored user message. Never called while a model call or a tool
+        runs, nor after a turn has ended, so nothing it returns can race or
+        cancel a call (``UNIFY_AGENTS=record``). ``None``: as shipped.
 
     Returns
     -------
@@ -3414,6 +3422,17 @@ async def async_tool_loop_inner(
             # this step's assistant message and no model is asked. None
             # while the switch is off.
             _cell_reply_msg = _reply_slot.take() if _reply_slot is not None else None
+
+            # UNIFY_AGENTS=record: what is new in the shared record for this
+            # agent, appended after this turn's tool results. Reached only when
+            # a model call is about to be made, so never after a turn has ended
+            # (a cell's reply() above ends it with no model call).
+            if on_turn_boundary is not None and _cell_reply_msg is None:
+                _record_block = await on_turn_boundary()
+                if _record_block:
+                    await _msg_dispatcher.append_msgs(
+                        [loop_user_notice(_record_block, _record_block=True)],
+                    )
 
             logger.debug(
                 f"[setup +{_setup_elapsed()}] ready for LLM call (step={runtime_state.step_index}, {len(tmp_tools)} tools)",
