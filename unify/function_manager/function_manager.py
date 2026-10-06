@@ -3616,13 +3616,7 @@ class FunctionManager(BaseFunctionManager):
             for row in self._rows(self._compositional_scope())
         ]
 
-    def _shortlist_rows(
-        self,
-        text: str,
-        k: int,
-        *,
-        pool: bool = False,
-    ) -> List[Dict[str, Any]]:
+    def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
         """``UNIFY_LIBRARY_SHORTLIST``: the *k* stored functions closest to *text*.
 
         Ranked as ``search_functions`` ranks them (similarity, then the
@@ -3631,9 +3625,6 @@ class FunctionManager(BaseFunctionManager):
         counts no hit: the harness, not the model, asked. Rows carry
         ``name``, ``argspec``, ``docstring``, ``_similarity`` and, under
         ``UNIFY_TRY_FIRST``, ``similar_request``.
-
-        With *pool* (``UNIFY_SHORTLIST_LIFT``) every function the activation
-        ranking keeps is returned, *k* aside, for the caller to rank.
         """
         if not str(text or "").strip() or k <= 0:
             return []
@@ -3642,8 +3633,6 @@ class FunctionManager(BaseFunctionManager):
             return []
         marker = task_origin.Marker(library)
         settings = self.activation_settings
-        if pool:
-            k = len(library)
         fetch = (
             min(
                 max(k + 4, k * settings.search_overfetch_factor),
@@ -3652,8 +3641,6 @@ class FunctionManager(BaseFunctionManager):
             if settings.enabled
             else k
         )
-        if pool:
-            fetch = len(library)
         ranked = rank_by_similarity(
             library,
             {field: text for field in SEARCHED_FUNCTION_FIELDS},

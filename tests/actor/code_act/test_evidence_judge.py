@@ -336,7 +336,6 @@ def judge_switches(monkeypatch):
         monkeypatch.setattr(SETTINGS, "UNIFY_EVIDENCE_LIST_MATCHER", matcher)
         monkeypatch.setattr(SETTINGS, "UNIFY_ENTRY_RECORD", record)
         monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", True)
-        monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_LIFT", "")
 
     return set_
 
@@ -425,7 +424,6 @@ def actor_switches(monkeypatch):
             "UNIFY_EVIDENCE_LIST": "on",
             "UNIFY_EVIDENCE_LIST_MATCHER": matcher,
             "UNIFY_ENTRY_RECORD": True,
-            "UNIFY_SHORTLIST_LIFT": "",
             "UNIFY_SHORTLIST_GATE": "",
             "UNIFY_SHORTLIST_RELATED": "",
             "UNIFY_TASK_ORIGIN": True,

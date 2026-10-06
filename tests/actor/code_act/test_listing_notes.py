@@ -9,7 +9,7 @@ identifiers its request shares with this one, and that session's outcome
 or that it is unknown); a lesson from an unaccepted or unchecked session
 listed as unverified without its first line; and a function's calls with
 how the sessions of its last three ended. They inform; nothing is hidden or
-asked. Embeddings come from the concept fake of ``test_shortlist_lift``;
+asked. Embeddings come from the concept fake of ``shortlist_world``;
 requests are captured at unillm's transport, so nothing leaves the process.
 """
 
@@ -19,7 +19,7 @@ import re
 
 import pytest
 
-from tests.actor.code_act.test_shortlist_lift import (  # noqa: F401 (fixture)
+from tests.actor.code_act.shortlist_world import (  # noqa: F401 (fixture)
     EARLIER,
     GENERIC,
     GENERIC_TITLE,
@@ -38,7 +38,6 @@ from tests.actor.code_act.test_shortlist_lift import (  # noqa: F401 (fixture)
 )
 from tests.helpers import _handle_project
 from unify.actor import library_shortlist as ls
-from unify.actor import shortlist_lift
 from unify.function_manager import task_origin
 from unify.settings import SETTINGS
 
@@ -47,7 +46,6 @@ from unify.settings import SETTINGS
 def switches(monkeypatch):
     def set_(
         *,
-        lift="",
         origin=False,
         provenance=False,
         lesson=False,
@@ -58,7 +56,6 @@ def switches(monkeypatch):
         review_outcome=False,
     ):
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
-        monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_LIFT", lift)
         monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_GATE", gate)
         monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", origin)
         monkeypatch.setattr(SETTINGS, "UNIFY_TRY_FIRST", False)
@@ -329,19 +326,18 @@ def test_usage_records_nothing_while_off(switches):
 # ── composition ──────────────────────────────────────────────────────────
 
 
-def test_lift_and_notes_with_the_bound_core_list(switches, computed, monkeypatch):
-    """``UNIFY_CORE_BIND_LISTED``: the lifted list's functions are bound and the header says how to call."""
+def test_notes_with_the_bound_core_list(switches, computed, monkeypatch):
+    """``UNIFY_CORE_BIND_LISTED``: the listed functions are bound and the header says how to call."""
     from unify.function_manager.function_manager import FunctionManager
     from unify.guidance_manager.guidance_manager import GuidanceManager
 
-    switches(lift="recent:3", origin=True, provenance=True)
+    switches(origin=True, provenance=True)
     fm = FunctionManager(include_primitives=False)
     gm = GuidanceManager()
     _in_task(ROTATE, lambda: fm.add_functions(implementations=_rotate_source()))
     _in_task(ROTATE, lambda: gm.add_guidance(title=GENERIC_TITLE, content=GENERIC))
-    for request in EARLIER:  # each earlier task start ranks and is kept
+    for request in EARLIER:  # each earlier task start ranks
         _in_task(request, lambda: ls.shortlist_block(fm, gm, request))
-        shortlist_lift.log_request(ls.request_text(request))
     bound: list[list[str]] = []
 
     def bind(names):
@@ -352,7 +348,7 @@ def test_lift_and_notes_with_the_bound_core_list(switches, computed, monkeypatch
         ROTATE_AGAIN,
         lambda: ls.shortlist_block(fm, gm, ROTATE_AGAIN, bind=bind),
     )
-    assert block.startswith(ls._LIFT_HEADER_CALL)
+    assert block.startswith(ls._HEADER_CALL)
     assert ls.CALL_FORM in block.splitlines()[0]
     assert bound == [["rotate_table"]]
     assert (

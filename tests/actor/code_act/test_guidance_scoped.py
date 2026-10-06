@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from tests.actor.code_act.test_listing_notes import switches  # noqa: F401 (fixture)
-from tests.actor.code_act.test_shortlist_lift import (  # noqa: F401 (fixture)
+from tests.actor.code_act.shortlist_world import (  # noqa: F401 (fixture)
     EARLIER,
     ROTATE,
     _seed,
@@ -58,13 +58,7 @@ def test_scoped_guidance_rule_is_in_the_rulebook_only_when_on(
 @pytest.mark.timeout(240)
 @_handle_project
 async def test_all_switches_with_the_lean_profile(switches, computed, monkeypatch):
-    switches(
-        lift="recent:3",
-        origin=True,
-        provenance=True,
-        lesson=True,
-        usage=True,
-    )
+    switches(origin=True, provenance=True, lesson=True, usage=True)
     monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_SCOPED", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "minimal")
@@ -72,11 +66,12 @@ async def test_all_switches_with_the_lean_profile(switches, computed, monkeypatc
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", True)
     firsts = await _stream([*EARLIER, ROTATE], seed=lambda a: _seed(a, under=ROTATE))
     block = _block(firsts[-1])
-    assert block.startswith(ls._LIFT_HEADER)
+    assert block.startswith(ls._HEADER)
     lines = block.splitlines()[1:]
-    assert lines[0].startswith("- function `rotate_table(table)`")
-    assert lines[0].endswith("[not called yet]")
-    assert lines[1] == (
+    function = lines.index(next(ln for ln in lines if ln.startswith("- function")))
+    assert lines[function].startswith("- function `rotate_table(table)`")
+    assert lines[function].endswith("[not called yet]")
+    assert lines[function + 1] == (
         "  origin: stored while handling this same request; that session's "
         "outcome is unknown"
     )

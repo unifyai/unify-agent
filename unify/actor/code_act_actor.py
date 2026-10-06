@@ -6300,10 +6300,6 @@ class CodeActActor(BaseCodeActActor):
         # UNIFY_ORIGIN_PROVENANCE, UNIFY_REVIEW_RECURRENCE: refuse a switch
         # that could never say anything.
         _task_origin.require_origin_link_prerequisites()
-        # UNIFY_SHORTLIST_LIFT: refuse a ranking with no list to rank.
-        from unify.actor import shortlist_lift as _shortlist_lift
-
-        _shortlist_lift.require_prerequisites()
         # UNIFY_EVIDENCE_LIST: refuse a list with nothing to read.
         from unify.actor import evidence_list as _evidence_list
 
@@ -6918,9 +6914,6 @@ class CodeActActor(BaseCodeActActor):
         # sub-agent, started inside a keyed task, keeps the key of the task
         # it works for.
         task_origin_token = _task_origin.enter(request)
-        # UNIFY_SHORTLIST_LIFT: a top-level task (not a sub-agent) keeps its
-        # request for later lists to compare with.
-        lift_token = _shortlist_lift.enter()
         # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
@@ -6980,10 +6973,6 @@ class CodeActActor(BaseCodeActActor):
                     shortlist = await shortlist
                 if shortlist:
                     first_message_parts.append(shortlist)
-                if lift_token is not None:
-                    from unify.actor.library_shortlist import request_text
-
-                    _shortlist_lift.log_request(request_text(request))
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
@@ -7035,7 +7024,6 @@ class CodeActActor(BaseCodeActActor):
         except BaseException:
             _instance_lint.leave(instance_token)
             _task_origin.leave(task_origin_token)
-            _shortlist_lift.leave(lift_token)
             raise
         finally:
             current_run_meter.reset(meter_token)
@@ -7088,7 +7076,6 @@ class CodeActActor(BaseCodeActActor):
 
         _instance_lint.leave(instance_token)
         _task_origin.leave(task_origin_token)
-        _shortlist_lift.leave(lift_token)
         return handle
 
     async def close(self):

@@ -91,7 +91,7 @@ def enabled() -> bool:
 
 
 def require_prerequisites() -> None:
-    """Refuse ``UNIFY_EVIDENCE_LIST`` without what it reads, or with a ranking it replaces."""
+    """Refuse ``UNIFY_EVIDENCE_LIST`` without what it reads."""
     from unify.function_manager import entry_record, task_origin
     from unify.settings import SETTINGS
 
@@ -116,11 +116,6 @@ def require_prerequisites() -> None:
         raise ValueError(
             "UNIFY_EVIDENCE_LIST needs UNIFY_ENTRY_RECORD=1: every card shows "
             "the entry's record.",
-        )
-    if SETTINGS.shortlist_lift() is not None:
-        raise ValueError(
-            "UNIFY_EVIDENCE_LIST replaces the ranked shortlist; turn "
-            "UNIFY_SHORTLIST_LIFT off.",
         )
 
 

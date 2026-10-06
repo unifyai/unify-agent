@@ -103,11 +103,10 @@ def embed_calls(monkeypatch, tmp_path):
 
 @pytest.fixture
 def switches(monkeypatch):
-    def set_(*, evidence=f"related:1:{FLOOR}", record=True, origin=True, lift=""):
+    def set_(*, evidence=f"related:1:{FLOOR}", record=True, origin=True):
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
         monkeypatch.setattr(SETTINGS, "UNIFY_EVIDENCE_LIST", evidence)
         monkeypatch.setattr(SETTINGS, "UNIFY_ENTRY_RECORD", record)
-        monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_LIFT", lift)
         monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_GATE", "")
         monkeypatch.setattr(SETTINGS, "UNIFY_SHORTLIST_RELATED", "")
         monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", origin)
@@ -460,7 +459,6 @@ def test_the_switch_parses_and_refuses_bad_values():
         ({"UNIFY_LIBRARY_SHORTLIST": False}, "UNIFY_LIBRARY_SHORTLIST"),
         ({"UNIFY_TASK_ORIGIN": False}, "UNIFY_TASK_ORIGIN"),
         ({"UNIFY_ENTRY_RECORD": False}, "UNIFY_ENTRY_RECORD"),
-        ({"UNIFY_SHORTLIST_LIFT": "recent:4"}, "UNIFY_SHORTLIST_LIFT"),
     ],
 )
 def test_the_list_refuses_to_start_without_what_it_reads(

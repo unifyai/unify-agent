@@ -40,11 +40,6 @@ shares with this one, or that it was this same request, and whether the
 checker accepted that session's answer when that was recorded
 (:meth:`~unify.function_manager.task_origin.Marker.provenance`).
 
-``UNIFY_SHORTLIST_LIFT`` ranks the embedding list by lift (similarity to this
-request less the mean similarity to recent requests,
-:mod:`unify.actor.shortlist_lift`) once the stream has enough history, under
-its own header.
-
 ``UNIFY_LISTING_PROVENANCE`` follows every listed entry, in either list, with
 an ``origin:`` line (:meth:`~unify.function_manager.task_origin.Marker.origin_line`);
 ``UNIFY_LESSON_STATUS`` lists a guidance entry from a session whose answer was
@@ -117,15 +112,6 @@ _GATED_HEADER_WITH_GUIDANCE_CALL = (
     "this one (similar_request: overlap of the two requests' words, 1 is the "
     "same request; used: times called). Read or call any of them if useful; "
     f"{CALL_FORM}:"
-)
-# UNIFY_SHORTLIST_LIFT: the list ranked by lift.
-_LIFT_HEADER = (
-    "Library entries that match this request more closely than recent "
-    "requests, closest first (read or call any of them if useful):"
-)
-_LIFT_HEADER_CALL = (
-    "Library entries that match this request more closely than recent "
-    f"requests, closest first (read or call any of them if useful; {CALL_FORM}):"
 )
 _ASYNC_MARK = " (async)"
 
@@ -286,31 +272,6 @@ def _guidance_line(row: Dict[str, Any]) -> str:
     return line + _origin_line(row)
 
 
-def _lift_rows(
-    function_manager: Any,
-    guidance_manager: Any,
-    text: str,
-    chosen: Any,
-    *,
-    k: int,
-    functions: bool,
-    guidance: bool,
-) -> Optional[List[tuple[str, Dict[str, Any]]]]:
-    """``UNIFY_SHORTLIST_LIFT``: every candidate ranked by lift; ``None`` to rank as shipped."""
-    from unify.actor import shortlist_lift
-
-    pool: List[tuple[str, Dict[str, Any]]] = []
-    if functions and function_manager is not None:
-        ranked = getattr(function_manager, "_shortlist_rows", None)
-        if callable(ranked):
-            pool += [("function", row) for row in ranked(text, k, pool=True)]
-    if guidance and guidance_manager is not None:
-        ranked = getattr(guidance_manager, "_shortlist_rows", None)
-        if callable(ranked):
-            pool += [("guidance", row) for row in ranked(text, 1 << 30)]
-    return shortlist_lift.rank(pool, text, chosen, k_list=k)
-
-
 def _with_notes(
     rows: List[tuple[str, Dict[str, Any]]],
     function_manager: Any,
@@ -461,33 +422,13 @@ def shortlist_block(
             functions=functions,
             guidance=guidance,
         )
-    from unify.actor import shortlist_lift
-
-    text = request_text(request)
-    lifted = None
     try:
-        # UNIFY_SHORTLIST_LIFT: ranked by lift once the stream has history.
-        chosen = shortlist_lift.spec()
-        if chosen is not None and text:
-            lifted = _lift_rows(
-                function_manager,
-                guidance_manager,
-                text,
-                chosen,
-                k=K,
-                functions=functions,
-                guidance=guidance,
-            )
-        rows = (
-            lifted
-            if lifted is not None
-            else shortlist_rows(
-                function_manager,
-                guidance_manager,
-                text,
-                functions=functions,
-                guidance=guidance,
-            )
+        rows = shortlist_rows(
+            function_manager,
+            guidance_manager,
+            request_text(request),
+            functions=functions,
+            guidance=guidance,
         )
         if rows and task_origin.listing_notes_enabled():
             rows = _with_notes(rows, function_manager, guidance_manager)
@@ -505,11 +446,7 @@ def shortlist_block(
         )
         for kind, row in rows
     ]
-    call = bind is not None and bool(bound)
-    if lifted is not None:
-        header = _LIFT_HEADER_CALL if call else _LIFT_HEADER
-    else:
-        header = _HEADER_CALL if call else _HEADER
+    header = _HEADER_CALL if bind is not None and bound else _HEADER
     return "\n".join([header, *lines])
 
 

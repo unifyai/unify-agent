@@ -216,34 +216,4 @@ def embed(texts: Sequence[str]) -> np.ndarray:
     return np.stack([found[digest] for digest in hashes])
 
 
-def text_hash(text: str) -> str:
-    """The key a text's vector is cached under."""
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-def cached_vectors(hashes: Sequence[str]) -> dict[str, np.ndarray]:
-    """The cached vectors of the embedder in use for *hashes* (:func:`text_hash`), by hash.
-
-    Reads the cache only: a hash with no vector is left out and nothing is
-    embedded.
-    """
-    wanted = list(dict.fromkeys(hashes))
-    found: dict[str, np.ndarray] = {}
-    if not wanted:
-        return found
-    model = embedder().model
-    with closing(_connect()) as conn:
-        for start in range(0, len(wanted), 500):
-            found.update(_stored(conn, model, wanted[start : start + 500]))
-    return found
-
-
-__all__ = [
-    "Embedder",
-    "LOCAL",
-    "OPENROUTER",
-    "cached_vectors",
-    "embed",
-    "embedder",
-    "text_hash",
-]
+__all__ = ["Embedder", "LOCAL", "OPENROUTER", "embed", "embedder"]
