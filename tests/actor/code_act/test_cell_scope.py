@@ -57,9 +57,27 @@ def fix(request, monkeypatch):
     return request.param
 
 
+class FakeFiles:
+    async def search(self, query, limit=3):
+        return {"hits": [f"{query}-{i}" for i in range(limit)]}
+
+
+class FakePrimitives:
+    def __init__(self) -> None:
+        self.files = FakeFiles()
+
+
+class FakeEnvironment:
+    def __init__(self) -> None:
+        self._instance = FakePrimitives()
+
+    def get_instance(self):
+        return self._instance
+
+
 @contextlib.asynccontextmanager
-async def executor():
-    ex = SessionExecutor(environments={}, timeout=60)
+async def executor(environments=None):
+    ex = SessionExecutor(environments=environments or {}, timeout=60)
     try:
         yield ex
     finally:
@@ -188,6 +206,62 @@ async def test_del_removes_an_earlier_cells_name(where, fix):
             "not associated with a value"
         )
         assert after["result"] is True
+
+
+# A cell that calls the injected primitives, and what it prints.
+USES_PRIMITIVES = "r = await primitives.files.search('q', limit=1)\nprint(r['hits'])"
+USED = "['q-0']\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_del_cannot_remove_the_injected_primitives(where, fix):
+    async with executor({"primitives": FakeEnvironment()}) as ex:
+        deleted = await run(ex, "del primitives")
+        used = await run(ex, USES_PRIMITIVES)
+        # The same cell goes on to use them after the deletion fails.
+        same_cell = await run(
+            ex,
+            "try:\n    del primitives\nexcept NameError:\n    pass\n" + USES_PRIMITIVES,
+        )
+    if fix:
+        # The shadowing guard renames the deletion too: the cell never bound
+        # a `_primitives_local`, so there is nothing to delete.
+        assert last_line(deleted["error"]).startswith(
+            "NameError: name '_primitives_local' is not defined",
+        )
+        assert parts_to_text(same_cell["stdout"]) == USED, same_cell["error"]
+    else:
+        assert last_line(deleted["error"]) == (
+            "UnboundLocalError: cannot access local variable 'primitives' "
+            "where it is not associated with a value"
+        )
+        assert last_line(same_cell["error"]).startswith("UnboundLocalError")
+    assert parts_to_text(used["stdout"]) == USED, used["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_del_of_a_shadowing_primitives_removes_only_the_cells_copy(
+    where,
+    fix,
+):
+    async with executor({"primitives": FakeEnvironment()}) as ex:
+        bound = await run(ex, "primitives = 1")
+        deleted = await run(ex, "del primitives")
+        local = await run(ex, has("_primitives_local"))
+        used = await run(ex, USES_PRIMITIVES)
+    assert bound["error"] is None, bound["error"]
+    if fix:
+        assert deleted["error"] is None, deleted["error"]
+        assert local["result"] is False
+    else:
+        assert last_line(deleted["error"]) == (
+            "UnboundLocalError: cannot access local variable 'primitives' "
+            "where it is not associated with a value"
+        )
+        assert local["result"] is True
+    assert parts_to_text(used["stdout"]) == USED, used["error"]
 
 
 NESTED = {

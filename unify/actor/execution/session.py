@@ -616,6 +616,17 @@ class PythonExecutionSession:
             bound_request.install(self.global_state)
 
             try:
+                from unify.settings import SETTINGS
+
+                # UNIFY_CELL_SCOPE_FIX: keep every name the cell binds, as a
+                # notebook does. Off: only top-level bindings, as shipped.
+                scope_fix = SETTINGS.UNIFY_CELL_SCOPE_FIX
+                # With it on, a cell's `del` reaches the session's globals,
+                # so the guard below renames deletions as well as
+                # assignments: `del primitives` deletes the cell's own
+                # `_primitives_local`, never the injected `primitives`.
+                guarded = (ast.Store, ast.Del) if scope_fix else (ast.Store,)
+
                 # Guardrails: prevent agent code from accidentally shadowing critical
                 # injected environment globals (common failure mode in LLM-generated code).
                 #
@@ -632,11 +643,9 @@ class PythonExecutionSession:
                         }
 
                         def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
-                            # Only rewrite *assignments* (Store context). Loads are preserved.
-                            if (
-                                isinstance(node.ctx, ast.Store)
-                                and node.id in self._REMAP
-                            ):
+                            # Only rewrite *assignments* (Store context, and Del
+                            # with UNIFY_CELL_SCOPE_FIX). Loads are preserved.
+                            if isinstance(node.ctx, guarded) and node.id in self._REMAP:
                                 return ast.copy_location(
                                     ast.Name(id=self._REMAP[node.id], ctx=node.ctx),
                                     node,
@@ -678,11 +687,6 @@ class PythonExecutionSession:
                     code += "\npass"
 
                 tree = ast.parse(code)
-                # UNIFY_CELL_SCOPE_FIX: keep every name the cell binds, as a
-                # notebook does. Off: only top-level bindings, as shipped.
-                from unify.settings import SETTINGS
-
-                scope_fix = SETTINGS.UNIFY_CELL_SCOPE_FIX
                 if scope_fix:
                     unannotate = _Unannotate()
                     tree = unannotate.visit(tree)

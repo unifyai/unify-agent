@@ -594,7 +594,9 @@ class ProductionSettings(BaseSettings):
     # declared global, so today the whole cell is a SyntaxError); nested
     # functions, classes, lambdas and comprehensions keep their own names.
     # This is what the prompt promises ("a notebook"). If the symbol table
-    # cannot be built, the declaration is as shipped. Off: only names bound
+    # cannot be built, the declaration is as shipped. A `del primitives` is
+    # renamed like an assignment to it (`del _primitives_local`), so a cell
+    # cannot delete the injected global. Off: only names bound
     # by top-level assignments, imports, defs and classes are kept; any other
     # is lost when the cell ends (a later cell gets NameError), as shipped.
     # Read per cell; in-process and worker cells alike.
