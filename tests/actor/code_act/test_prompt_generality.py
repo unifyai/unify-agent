@@ -258,6 +258,46 @@ def _rulebook() -> dict[str, str]:
     return texts
 
 
+def _receipt_texts() -> dict[str, str]:
+    """Every line a reply receipt can show (UNIFY_REPLY_RECEIPT)."""
+    from unify.common._async_tool import reply_receipt as rr
+
+    error = '{"error": "Traceback (most recent call last):\\nValueError: boom"}'
+    caught = "try:\n    f()\nexcept Exception as e:\n    print(f'Error: {e}')"
+    replies = {
+        "zero": "The total is **0**.",
+        "empty": "{}",
+        "nan": "The mean is NaN.",
+        "null": '{"total": null}',
+        "same items": "`[3, 3, 3]`",
+        "identical": "[[1, 2], [3, 4]]",
+    }
+    texts = {
+        f"reply receipt ({name})": rr.receipt(reply, "In:\n1 2\n3 4", [])
+        for name, reply in replies.items()
+    }
+    raised = [{"role": "user", "content": "q"}, *_cell_messages("x = d[1]", error)]
+    texts["reply receipt (raised)"] = rr.receipt("It is **7**.", "q", raised)
+    texts["reply receipt (caught)"] = rr.receipt(
+        "It is **7**.",
+        "q",
+        [{"role": "user", "content": "q"}, *_cell_messages(caught, "Error: gone")],
+    )
+    return texts
+
+
+def _cell_messages(code: str, output: str) -> list[dict]:
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "execute_code", "arguments": json.dumps({"code": code})},
+    }
+    return [
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": output},
+    ]
+
+
 def _session_texts(tools: dict) -> dict[str, str]:
     """What the model reads outside the system prompt and the rulebook."""
     from unify.common._async_tool.repeat_guard import RepeatGuard
@@ -325,6 +365,8 @@ def _session_texts(tools: dict) -> dict[str, str]:
             discovery_gate=True,
         ),
         "repeat guard": guard.check("the same reply"),
+        # UNIFY_REPLY_RECEIPT: every wording a receipt can take.
+        **_receipt_texts(),
         "case refusal": store_cases.refusal("f", replays),
         "case report": store_cases.report("f", replays),
         "naming refusal": naming,
