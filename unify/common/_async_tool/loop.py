@@ -1414,6 +1414,151 @@ async def async_tool_loop_inner(
             logger.info(f"Early exit – {reason}", prefix=ICONS["early_exit"])
         return notice["content"]
 
+    async def _park_until_next_request() -> None:
+        """Park a persistent loop until its next request arrives.
+
+        Returns when an interjection that starts a request is back on the
+        queue, or when the loop is stopped; the caller then resumes at the
+        top of the loop, which processes either.
+        """
+        _outer = outer_handle_container[0] if outer_handle_container else None
+
+        # A parked turn's chain of thought is never consulted again:
+        # the next dispatch starts from a fresh user interjection, so
+        # provider reasoning payloads (encrypted blobs, reasoning
+        # summaries) on every completed assistant message are pure
+        # re-billed bulk from here on. Shed them now rather than
+        # waiting for a storage review to cover the span — reviews
+        # lag turns, and the lag is paid on every call in between.
+        # UNIFY_CACHE_DISCIPLINE keeps them: shedding rewrites every
+        # sent assistant message, so the next call starts cold.
+        try:
+            _shed = 0
+            _shed_from = [] if _discipline else client.messages or []
+            for _m in _shed_from:
+                if isinstance(_m, dict) and _m.get("role") == "assistant":
+                    _shed += strip_reasoning_payloads(_m)
+            if _shed:
+                _rebaseline_watermark_hash(client)
+        except Exception:
+            pass
+
+        logger.info(
+            "Persist mode: waiting for next interjection...",
+            prefix=ICONS["pause"],
+        )
+        try:
+            from ...events.manager_event_logging import (
+                publish_persist_session_phase,
+            )
+
+            await publish_persist_session_phase(_outer, "awaiting_input")
+        except Exception:
+            pass
+        while True:
+            cancel_waiter = asyncio.create_task(
+                cancel_event.wait(),
+                name="PersistCancelWait",
+            )
+            interject_waiter = asyncio.create_task(
+                interject_queue.get(),
+                name="PersistInterjectWait",
+            )
+            done, pending = await asyncio.wait(
+                {cancel_waiter, interject_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for p in pending:
+                p.cancel()
+                await asyncio.gather(p, return_exceptions=True)
+
+            # stop() queues its mirror before it sets cancel_event,
+            # so the waiter may already have taken it. Whatever the
+            # waiter took goes back to the head of the queue, where
+            # the drain records the mirror and the check after the
+            # drain ends the loop.
+            if cancel_event.is_set():
+                if interject_waiter in done:
+                    _requeue_at_front(
+                        interject_queue,
+                        interject_waiter.result(),
+                    )
+                break
+
+            interjection = interject_waiter.result()
+
+            # Transcript-note sentinels append the loop-authored note
+            # and stay in persist wait; the model reads it on its next
+            # granted turn.
+            if isinstance(interjection, dict) and "_transcript_note" in interjection:
+                try:
+                    _note = str(
+                        (interjection.get("_transcript_note") or {}).get(
+                            "text",
+                        )
+                        or "",
+                    )
+                    if _note:
+                        await _msg_dispatcher.append_msgs(
+                            [loop_user_notice(_note)],
+                        )
+                except Exception:
+                    pass
+                continue
+
+            # Transcript-compaction sentinels: the covered turns were
+            # consolidated by a storage review; shed their raw tool
+            # payloads and stay in persist wait.
+            if isinstance(interjection, dict) and "_compact_transcript" in interjection:
+                try:
+                    _n = int(
+                        (interjection.get("_compact_transcript") or {}).get(
+                            "reviewed_messages",
+                        )
+                        or 0,
+                    )
+                    if _n > 0 and not _discipline:
+                        compact_reviewed_messages(client, _n)
+                except Exception:
+                    pass
+                continue
+
+            # Mirror sentinels are transcript-only (no user message).
+            # Process them in-place and stay in persist wait — resuming
+            # the full loop would trigger an LLM call with a trailing
+            # assistant message, which strict models reject.
+            if isinstance(interjection, dict) and "_mirror" in interjection:
+                try:
+                    _ms = interjection.get("_mirror") or {}
+                    _m = _ms.get("method")
+                    _kw = _ms.get("kwargs") or {}
+                    if isinstance(_m, str) and _m:
+                        merged = dict(_kw if isinstance(_kw, dict) else {})
+                        for _key in ("_custom", "_aliases", "_fallback"):
+                            if _key in _ms:
+                                merged[_key] = _ms[_key]
+                        await _synthesize_mirrored_helper_calls(_m, merged)
+                except Exception:
+                    pass
+                continue
+
+            # A real interjection goes back on the queue for the
+            # normal drain path.
+            try:
+                await interject_queue.put(interjection)
+                logger.info(
+                    "Persist mode: interjection received, resuming loop",
+                    prefix=ICONS["resume"],
+                )
+                from ...events.manager_event_logging import (
+                    publish_persist_session_phase,
+                )
+
+                await publish_persist_session_phase(_outer, "resumed")
+            except Exception:
+                pass
+            break
+
     async def _handle_clarification(
         src_task: asyncio.Task,
         question_payload: Any,
@@ -4693,147 +4838,7 @@ async def async_tool_loop_inner(
                 _persist_response_content = None
                 _persist_response_emitted = False
 
-                # A parked turn's chain of thought is never consulted again:
-                # the next dispatch starts from a fresh user interjection, so
-                # provider reasoning payloads (encrypted blobs, reasoning
-                # summaries) on every completed assistant message are pure
-                # re-billed bulk from here on. Shed them now rather than
-                # waiting for a storage review to cover the span — reviews
-                # lag turns, and the lag is paid on every call in between.
-                # UNIFY_CACHE_DISCIPLINE keeps them: shedding rewrites every
-                # sent assistant message, so the next call starts cold.
-                try:
-                    _shed = 0
-                    _shed_from = [] if _discipline else client.messages or []
-                    for _m in _shed_from:
-                        if isinstance(_m, dict) and _m.get("role") == "assistant":
-                            _shed += strip_reasoning_payloads(_m)
-                    if _shed:
-                        _rebaseline_watermark_hash(client)
-                except Exception:
-                    pass
-
-                logger.info(
-                    "Persist mode: waiting for next interjection...",
-                    prefix=ICONS["pause"],
-                )
-                try:
-                    from ...events.manager_event_logging import (
-                        publish_persist_session_phase,
-                    )
-
-                    await publish_persist_session_phase(_outer, "awaiting_input")
-                except Exception:
-                    pass
-                while True:
-                    cancel_waiter = asyncio.create_task(
-                        cancel_event.wait(),
-                        name="PersistCancelWait",
-                    )
-                    interject_waiter = asyncio.create_task(
-                        interject_queue.get(),
-                        name="PersistInterjectWait",
-                    )
-                    done, pending = await asyncio.wait(
-                        {cancel_waiter, interject_waiter},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for p in pending:
-                        p.cancel()
-                        await asyncio.gather(p, return_exceptions=True)
-
-                    # stop() queues its mirror before it sets cancel_event,
-                    # so the waiter may already have taken it. Whatever the
-                    # waiter took goes back to the head of the queue, where
-                    # the drain records the mirror and the check after the
-                    # drain ends the loop.
-                    if cancel_event.is_set():
-                        if interject_waiter in done:
-                            _requeue_at_front(
-                                interject_queue,
-                                interject_waiter.result(),
-                            )
-                        break
-
-                    interjection = interject_waiter.result()
-
-                    # Transcript-note sentinels append the loop-authored note
-                    # and stay in persist wait; the model reads it on its next
-                    # granted turn.
-                    if (
-                        isinstance(interjection, dict)
-                        and "_transcript_note" in interjection
-                    ):
-                        try:
-                            _note = str(
-                                (interjection.get("_transcript_note") or {}).get(
-                                    "text",
-                                )
-                                or "",
-                            )
-                            if _note:
-                                await _msg_dispatcher.append_msgs(
-                                    [loop_user_notice(_note)],
-                                )
-                        except Exception:
-                            pass
-                        continue
-
-                    # Transcript-compaction sentinels: the covered turns were
-                    # consolidated by a storage review; shed their raw tool
-                    # payloads and stay in persist wait.
-                    if (
-                        isinstance(interjection, dict)
-                        and "_compact_transcript" in interjection
-                    ):
-                        try:
-                            _n = int(
-                                (interjection.get("_compact_transcript") or {}).get(
-                                    "reviewed_messages",
-                                )
-                                or 0,
-                            )
-                            if _n > 0 and not _discipline:
-                                compact_reviewed_messages(client, _n)
-                        except Exception:
-                            pass
-                        continue
-
-                    # Mirror sentinels are transcript-only (no user message).
-                    # Process them in-place and stay in persist wait — resuming
-                    # the full loop would trigger an LLM call with a trailing
-                    # assistant message, which strict models reject.
-                    if isinstance(interjection, dict) and "_mirror" in interjection:
-                        try:
-                            _ms = interjection.get("_mirror") or {}
-                            _m = _ms.get("method")
-                            _kw = _ms.get("kwargs") or {}
-                            if isinstance(_m, str) and _m:
-                                merged = dict(_kw if isinstance(_kw, dict) else {})
-                                for _key in ("_custom", "_aliases", "_fallback"):
-                                    if _key in _ms:
-                                        merged[_key] = _ms[_key]
-                                await _synthesize_mirrored_helper_calls(_m, merged)
-                        except Exception:
-                            pass
-                        continue
-
-                    # A real interjection goes back on the queue for the
-                    # normal drain path.
-                    try:
-                        await interject_queue.put(interjection)
-                        logger.info(
-                            "Persist mode: interjection received, resuming loop",
-                            prefix=ICONS["resume"],
-                        )
-                        from ...events.manager_event_logging import (
-                            publish_persist_session_phase,
-                        )
-
-                        await publish_persist_session_phase(_outer, "resumed")
-                    except Exception:
-                        pass
-                    break
+                await _park_until_next_request()
 
                 timer.reset()
                 continue  # Back to top of loop to process the interjection
