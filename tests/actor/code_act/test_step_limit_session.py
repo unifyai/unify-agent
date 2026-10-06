@@ -213,3 +213,72 @@ async def test_on_the_step_limit_ends_the_request_and_the_session_goes_on(
     assert any(
         m.get("role") == "assistant" and m.get("content") == capped for m in turn
     )
+
+
+RESTART = "Context was compressed. Continue from where you left off."
+
+
+class _CompactingModel(_Model):
+    """As _Model; the compactor returns at once, and after a compaction
+    the session replies with its draft."""
+
+    async def __call__(self, *, shared_session=None, client=None, **kw):
+        messages = kw.get("messages") or []
+        if any(
+            m.get("role") == "system"
+            and "You are a context compactor" in str(m.get("content"))
+            for m in messages
+        ):
+            self.requests.append(messages)
+            return h.completion(content="Compacted.")
+        restarted = any(
+            m.get("role") == "user" and RESTART in str(m.get("content"))
+            for m in messages
+        )
+        if (
+            restarted
+            and not _is_review(messages)
+            and FOLLOW_UP not in _last_request_text(messages)
+        ):
+            self.requests.append(messages)
+            return h.completion(content=DRAFT)
+        return await super().__call__(shared_session=shared_session, **kw)
+
+
+@pytest.mark.asyncio
+async def test_compact_at_the_step_limit_and_the_session_goes_on(
+    jsonl_session,
+    monkeypatch,
+):
+    """UNIFY_STEP_CAP_COMPACT=on, the step limit counting the whole session:
+    the session compacts its conversation at the limit and answers, so the
+    host sees no stop notice and has nothing to restart."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_REPLY", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_STEP_CAP_COMPACT", "on")
+    # Room for the system messages a compacted conversation starts with.
+    monkeypatch.setattr(sys.modules[__name__], "MAX_STEPS", 17)
+    session, lines, send = jsonl_session
+    model = _CompactingModel()
+    with h.scripted(()):
+        import unillm.clients.uni_llm as uni_llm
+
+        uni_llm._acompletion_with_transient_retry = model
+        run = asyncio.create_task(session.run(TASK))
+        await _until(lambda: "response" in _types(lines), 2)
+        send({"message": FOLLOW_UP})
+        await _until(lambda: _types(lines).count("response") == 2, 2)
+        send({"quit": True})
+        code = await asyncio.wait_for(run, 20)
+
+    assert code == 0
+    assert _types(lines) == ["response", "response", "result", "ended"]
+    first, second = (line["content"] for line in lines if line["type"] == "response")
+    assert (first, second) == (DRAFT, FINAL)
+    assert not any("🔚" in json.dumps(line, ensure_ascii=False) for line in lines)
+    compactions = [
+        r for r in model.requests if "You are a context compactor" in json.dumps(r)
+    ]
+    assert len(compactions) == 1
+    # The follow-up was answered from the compacted conversation.
+    (turn,) = [r for r in model.requests if _last_request_text(r) == FOLLOW_UP]
+    assert any(RESTART in str(m.get("content")) for m in turn)

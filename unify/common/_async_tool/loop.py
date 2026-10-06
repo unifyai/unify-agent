@@ -125,12 +125,24 @@ class ToolLoopRuntimeState:
     # whose text was a computed value rather than a string literal.
     replies_from_cell: int = 0
     replies_from_value: int = 0
+    # UNIFY_STEP_CAP_COMPACT: compactions at the step limit, in all and in
+    # the current request, the ones that failed or ran out of time, and the
+    # compacted context a loop leaves its handle to restart from
+    # (``AsyncToolLoopHandle._compact_context``'s result).
+    step_cap_compactions: int = 0
+    step_cap_compactions_in_request: int = 0
+    step_cap_compaction_failures: int = 0
+    step_cap_compacted: Optional[tuple] = None
 
 
 # How long a cancelled request waits for its running calls to stop before it
 # abandons them and still ends in its response (a tool that swallows the
 # cancellation would otherwise hold the response for as long as it runs).
 _CANCEL_GRACE_S = 2.0
+
+# UNIFY_STEP_CAP_COMPACT: how many times one request may be compacted at the
+# step limit; at its next limit the limit stops it as without the switch.
+STEP_CAP_COMPACTIONS = 2
 
 # A reply whose choice carries a provider error is sent again this many
 # times, after 1 s then 2 s (UniLLM's transient retry already ran inside
@@ -851,6 +863,15 @@ async def async_tool_loop_inner(
     _step_cap_mode = _CAP_SETTINGS.step_cap_reply()
     _step_cap_reply = bool(_step_cap_mode)
     _step_cap_last_word = _step_cap_mode == "last_word"
+    # UNIFY_STEP_CAP_COMPACT=on: at max_steps a loop that can compress its
+    # context compacts it, and the request goes on from the compacted
+    # context (at most STEP_CAP_COMPACTIONS times a request). Off: as shipped.
+    _step_cap_compact = (
+        getattr(_CAP_SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") == "on"
+        and bool(enable_compression)
+        and bool(max_steps)
+        and not raise_on_limit
+    )
     # UNIFY_PENDING_TIMEOUT_S: how long questions nobody answers may hold
     # the loop before the model is told (0: as shipped, no limit).
     _pending_timeout = float(getattr(_CAP_SETTINGS, "UNIFY_PENDING_TIMEOUT_S", 0) or 0)
@@ -1694,8 +1715,127 @@ async def async_tool_loop_inner(
         if _outer is not None and hasattr(_outer, "_notification_q"):
             await _outer._notification_q.put({"type": "response", "content": content})
         await _park_until_next_request()
+        runtime_state.step_cap_compactions_in_request = 0
         timer.reset()
         timer.start_request()
+
+    def _can_compact_at_step_limit() -> bool:
+        """UNIFY_STEP_CAP_COMPACT: whether this loop's handle can compact it.
+
+        The handle must be this loop's own (it shares the runtime state), as
+        it restarts the loop from what the compaction returns.
+        """
+        if not _step_cap_compact:
+            return False
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        return getattr(_outer, "_runtime_state", None) is runtime_state and callable(
+            getattr(_outer, "_compact_context", None),
+        )
+
+    def _request_cancel_queued() -> bool:
+        """Whether the requester's cancel of the request waits in the queue."""
+        return any(
+            isinstance(item, dict) and "_cancel_request" in item
+            for item in list(getattr(interject_queue, "_queue", None) or ())
+        )
+
+    async def _until_request_cancel() -> None:
+        while not _request_cancel_queued():
+            await asyncio.sleep(0.05)
+
+    async def _compact_at_step_limit() -> str:
+        """UNIFY_STEP_CAP_COMPACT: compact the context at max_steps.
+
+        Returns ``"compacted"`` when the handle's context compression (the
+        one a full context gets) returned a compacted context; the caller
+        then ends this loop with the compression signal, and the handle
+        restarts it from that context, the request going on with its steps
+        counted from there. Calls still running are cancelled and answered
+        as such first, since a restarted loop cannot collect them.
+
+        ``"defer"``: the turn ends without a model call first (a cell's
+        reply() is waiting to be taken, or the requester's cancel of the
+        request is queued), so nothing is compacted for it; the caller goes
+        on with the step. ``"limit"``: the limit applies as without the
+        switch, because the loop cannot compact, the request was compacted
+        STEP_CAP_COMPACTIONS times, or the compaction failed or ran past the
+        loop's timeout. A stop of the loop during the compaction cancels it
+        and stops the loop.
+        """
+        if not _can_compact_at_step_limit():
+            return "limit"
+        if (_reply_slot is not None and _reply_slot.replied) or (
+            persist and _request_cancel_queued()
+        ):
+            return "defer"
+        if runtime_state.step_cap_compactions_in_request >= STEP_CAP_COMPACTIONS:
+            return "limit"
+        runtime_state.step_cap_compactions_in_request += 1
+        reason = f"max_steps ({max_steps}) exceeded"
+        await tools_data.cancel_pending_tasks_with_reply(
+            f"Cancelled: the step limit ({reason}) was reached before this "
+            "call finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        logger.info(
+            f"Step limit – {reason}; compacting the conversation "
+            f"({runtime_state.step_cap_compactions_in_request} of "
+            f"{STEP_CAP_COMPACTIONS} for this request)",
+            prefix=ICONS["early_exit"],
+        )
+        _outer = outer_handle_container[0]
+        compaction = asyncio.create_task(
+            _outer._compact_context(),
+            name="StepCapCompaction",
+        )
+        stopped = asyncio.create_task(cancel_event.wait(), name="CancelEventWait")
+        watchers = [stopped]
+        if persist:
+            watchers.append(
+                asyncio.create_task(
+                    _until_request_cancel(),
+                    name="RequestCancelWait",
+                ),
+            )
+        try:
+            done, _ = await asyncio.wait(
+                {compaction, *watchers},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (compaction, *watchers):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(compaction, *watchers, return_exceptions=True)
+        if stopped in done:
+            raise asyncio.CancelledError
+        if compaction in done and not compaction.cancelled():
+            if compaction.exception() is None:
+                runtime_state.step_cap_compacted = compaction.result()
+                runtime_state.step_cap_compactions += 1
+                logger.info(
+                    "Step limit – compacted; the request goes on",
+                    prefix=ICONS["early_exit"],
+                )
+                return "compacted"
+            why = f"{type(compaction.exception()).__name__}: {compaction.exception()}"
+        elif any(task in done for task in watchers[1:]):
+            logger.info(
+                "Step limit – compaction stopped: the requester cancelled the "
+                "request",
+                prefix=ICONS["early_exit"],
+            )
+            return "defer"
+        else:
+            why = f"no result in {timeout}s"
+        runtime_state.step_cap_compaction_failures += 1
+        logger.info(
+            f"Step limit – compaction failed ({why}); stopping at the limit",
+            prefix=ICONS["early_exit"],
+        )
+        return "limit"
 
     async def _end_request_on_cancel(reason: Optional[str]) -> None:
         """A persistent loop's requester cancelled the running request.
@@ -1732,6 +1872,7 @@ async def async_tool_loop_inner(
                 {"type": "response", "content": draft or "", "cancelled": True},
             )
         await _park_until_next_request()
+        runtime_state.step_cap_compactions_in_request = 0
         timer.reset()
         if _step_cap_reply:
             timer.start_request()
@@ -2451,16 +2592,24 @@ async def async_tool_loop_inner(
                 )
 
             if timer.has_exceeded_msgs():
-                if _step_cap_reply and persist:
-                    await _end_request_at_step_limit()
-                    _persist_response_content = None
-                    _persist_response_emitted = False
-                    continue
-                return await _handle_limit_reached(
-                    f"max_steps ({max_steps}) exceeded",
-                    _request_draft() if _step_cap_reply else None,
-                    last_word=_step_cap_last_word,
+                # UNIFY_STEP_CAP_COMPACT: compact and go on, or take the
+                # step that ends the turn first; else the limit applies.
+                _at_limit = (
+                    await _compact_at_step_limit() if _step_cap_compact else "limit"
                 )
+                if _at_limit == "compacted":
+                    return _COMPRESSION_SIGNAL
+                if _at_limit == "limit":
+                    if _step_cap_reply and persist:
+                        await _end_request_at_step_limit()
+                        _persist_response_content = None
+                        _persist_response_emitted = False
+                        continue
+                    return await _handle_limit_reached(
+                        f"max_steps ({max_steps}) exceeded",
+                        _request_draft() if _step_cap_reply else None,
+                        last_word=_step_cap_last_word,
+                    )
 
             # Outstanding assistant tool_calls missing replies are repaired
             # before any new user interjection is appended. Only the latest
@@ -5221,7 +5370,9 @@ async def async_tool_loop_inner(
                     f"timeout ({timeout}s) exceeded",
                 )
 
-            if timer.has_exceeded_msgs():
+            # UNIFY_STEP_CAP_COMPACT: a reply given at the limit is the
+            # request's answer; a loop that can compact goes on to give it.
+            if timer.has_exceeded_msgs() and not _can_compact_at_step_limit():
                 if _step_cap_reply and persist:
                     await _end_request_at_step_limit()
                     _persist_response_content = None
@@ -5368,6 +5519,7 @@ async def async_tool_loop_inner(
                 _persist_response_emitted = False
 
                 await _park_until_next_request()
+                runtime_state.step_cap_compactions_in_request = 0
 
                 timer.reset()
                 if _step_cap_reply:

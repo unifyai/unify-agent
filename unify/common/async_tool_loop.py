@@ -932,9 +932,12 @@ class AsyncToolLoopHandle(SteerableToolHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
 
-        n_archived, restart_messages, restart_tools, restart_message, forked = (
-            await self._compact_context(cfg)
-        )
+        # UNIFY_STEP_CAP_COMPACT: the loop compacted the context itself at
+        # its step limit, before it ended; otherwise it is compacted here.
+        at_step_limit = self._runtime_state.step_cap_compacted
+        self._runtime_state.step_cap_compacted = None
+        compacted = at_step_limit or await self._compact_context(cfg)
+        n_archived, restart_messages, restart_tools, restart_message, forked = compacted
         self._client._messages = restart_messages
         if not forked:
             self._client._system_message = None
@@ -945,9 +948,13 @@ class AsyncToolLoopHandle(SteerableToolHandle):
         # rebuilt list happening to be shorter than the old watermark.
         self._client._sent_watermark = 0
         self._client._sent_watermark_hash = None
-        self._runtime_state.message_count_offset += n_archived - len(
-            self._client._messages,
-        )
+        if at_step_limit is not None:
+            # The step limit counts from the compacted conversation.
+            self._runtime_state.message_count_offset = 0
+        else:
+            self._runtime_state.message_count_offset += n_archived - len(
+                self._client._messages,
+            )
 
         outer_handle_container: list = [None]
         _parent = cfg["parent_lineage"] or TOOL_LOOP_LINEAGE.get([])

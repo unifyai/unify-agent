@@ -157,6 +157,18 @@ class ProductionSettings(BaseSettings):
     # the draft, and the draft when the call fails or returns no text.
     # Empty (also ``false``/``0``/``no``/``off``): as shipped.
     UNIFY_STEP_CAP_REPLY: str = ""
+    # ``on``: a loop that can compress its context (the actor's task loop)
+    # compacts it when it reaches ``max_steps`` instead of stopping, with the
+    # same compression a full context gets, and the same request goes on in
+    # the same loop, its steps counted from the compacted conversation. Calls
+    # still running are cancelled and answered as such first. A request is
+    # compacted at most twice; at its third limit, or when the compaction
+    # fails or runs past the loop's timeout, the limit stops it as it would
+    # without this switch (with UNIFY_STEP_CAP_REPLY's reply when that is on).
+    # A reply the request has already given (a text reply, or a cell's
+    # reply()) is given, not compacted for. A loop without compression is
+    # unchanged. Empty (also ``off``): as shipped.
+    UNIFY_STEP_CAP_COMPACT: str = ""
     # Close to ``max_steps`` (within its last tenth), every tool result ends
     # with one line giving the steps left before the limit stops the request
     # (counted as the limit counts them: per request under
@@ -1325,6 +1337,17 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_STEP_CAP_REPLY must be empty, 'draft' or 'last_word' "
                 f"(or a boolean, true meaning 'draft'), not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_STEP_CAP_COMPACT", mode="before")
+    @classmethod
+    def parse_step_cap_compact(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_STEP_CAP_COMPACT must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 
