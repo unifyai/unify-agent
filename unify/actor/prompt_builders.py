@@ -365,6 +365,11 @@ _INCREMENTAL_NO_CLARIFY = "and review it before scaling;"
 
 
 def _execution_rules(can_clarify: bool) -> str:
+    # UNIFY_REPLY_WORDING: rule 6 states the reply rule.
+    return _final_answer_rule(_shipped_execution_rules(can_clarify))
+
+
+def _shipped_execution_rules(can_clarify: bool) -> str:
     if can_clarify or not _prompt_accuracy_enabled():
         return _EXECUTION_RULES
     text = _unified(_EXECUTION_RULES, _RULE_5_CLARIFY, _RULE_5_NO_CLARIFY)
@@ -385,6 +390,129 @@ def _reply_protocol_note_enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE)
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_REPLY_WORDING: the reply rule
+# ---------------------------------------------------------------------------
+# Where the prompt states that the answer is a reply without a tool call, it
+# can say in one sentence that a reply may carry reasoning before its answer
+# or action, so thinking or announcing a step needs no cell. The sentences
+# around it are made consistent with it; the requester's own text is never
+# changed. Every text below is built from the shipped one, which is returned
+# unchanged while the switches are off.
+
+_REPLY_REASON = (
+    "You may reason in your reply before its final answer or action; you do "
+    "not need a cell to think or to announce a step."
+)
+_WRAP = 72
+
+
+def _reply_wording() -> str:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_REPLY_WORDING
+
+
+def _reply_rule_additions() -> list[str]:
+    """The sentences that follow the statement of the reply rule."""
+    return [_REPLY_REASON] if _reply_wording() == "reason" else []
+
+
+def _refill(text: str, *, indent: str = "") -> str:
+    return textwrap.fill(
+        " ".join(text.split()),
+        width=_WRAP,
+        subsequent_indent=indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+_LEAN_ROLE_REPLY_RULE = (
+    "Your answer is your final reply: a message without a tool call. When\n"
+    "the requester defines a format for replies (a JSON object, a keyword, a\n"
+    "fixed template), each reply follows that format exactly."
+)
+
+
+def _lean_role() -> str:
+    """The lean profile's role, with the reply rule as the switches word it."""
+    added = _reply_rule_additions()
+    if not added:
+        return _LEAN_ROLE
+    governs = (
+        "the answer or action in each reply"
+        if _reply_wording() == "reason"
+        else "each reply"
+    )
+    rule = " ".join(
+        [
+            "Your answer is your final reply: a message without a tool call.",
+            *added,
+            "When the requester defines a format for replies (a JSON object, "
+            f"a keyword, a fixed template), {governs} follows that format "
+            "exactly.",
+        ],
+    )
+    return _unified(_LEAN_ROLE, _LEAN_ROLE_REPLY_RULE, _refill(rule))
+
+
+_RULE_6_FINAL_ANSWER = (
+    "6. **Final answer**: when the request is fully addressed, you **MUST**\n"
+    "   provide the final answer directly as a tool-less assistant message\n"
+    "   — never via a tool call. End it with a brief **Uncertainties**\n"
+    "   section listing the judgment calls you were least confident about\n"
+    "   (only decisions that could materially affect the output)."
+)
+
+
+def _final_answer_rule(text: str) -> str:
+    """The shipped execution rules with the reply rule as the switches word it."""
+    added = _reply_rule_additions()
+    if not added:
+        return text
+    directly = "" if _reply_wording() == "reason" else "directly "
+    rule = " ".join(
+        [
+            "6. **Final answer**: when the request is fully addressed, you "
+            f"**MUST** provide the final answer {directly}as a tool-less "
+            "assistant message — never via a tool call.",
+            *added,
+            "End it with a brief **Uncertainties** section listing the "
+            "judgment calls you were least confident about (only decisions "
+            "that could materially affect the output).",
+        ],
+    )
+    return _unified(text, _RULE_6_FINAL_ANSWER, _refill(rule, indent="   "))
+
+
+_NOTE_TAKE_ONE = (
+    "They are not functions, tools or `primitives.*` methods, and no code, "
+    "search or sub-agent can take them for you: to take one, end your turn "
+    "with exactly that reply."
+)
+# UNIFY_REPLY_WORDING=action_last (and =reason): the action ends the reply,
+# and reasoning may come before it.
+_NOTE_ACTION_LAST = (
+    "They are not functions, tools or `primitives.*` methods. "
+    "Requester-defined actions can only be taken by your reply, not by code, "
+    "search or sub-agents. End your turn with a reply whose last line is the "
+    "action; you may reason before it."
+)
+
+
+def _reply_protocol_note() -> str:
+    """UNIFY_REPLY_PROTOCOL_NOTE's text, as the switches word it."""
+    take_one = _NOTE_TAKE_ONE
+    if _reply_wording() in ("reason", "action_last"):
+        take_one = _NOTE_ACTION_LAST
+    if take_one == _NOTE_TAKE_ONE:
+        return _REPLY_PROTOCOL_NOTE
+    heading, body = _REPLY_PROTOCOL_NOTE.split("\n\n", 1)
+    body = _unified(" ".join(body.split()), _NOTE_TAKE_ONE, take_one)
+    return f"{heading}\n\n{_refill(body)}"
 
 
 # UNIFY_CODE_FIRST: compute a computable result with a program.
@@ -1453,9 +1581,9 @@ def build_code_act_prompt(
         lean = _lean_profile()
         if lean:
             # The requester's reply format first.
-            parts.append(_LEAN_ROLE)
+            parts.append(_lean_role())
             if _reply_protocol_note_enabled():
-                parts.append(_REPLY_PROTOCOL_NOTE)
+                parts.append(_reply_protocol_note())
         else:
             parts.append(
                 "### Role\n\n"
@@ -1482,7 +1610,7 @@ def build_code_act_prompt(
             parts.append(_PYTHON_FIRST)
             parts.append(_execution_rules(can_clarify))
             if _reply_protocol_note_enabled():
-                parts.append(_REPLY_PROTOCOL_NOTE)
+                parts.append(_reply_protocol_note())
         if _code_first_enabled():
             parts.append(_CODE_FIRST)
         parts.append(
@@ -1623,9 +1751,9 @@ def _build_core_prompt(
     can_clarify = core.clarification
     parts: list[str] = []
     if lean:
-        parts.append(_LEAN_ROLE)
+        parts.append(_lean_role())
         if _reply_protocol_note_enabled():
-            parts.append(_REPLY_PROTOCOL_NOTE)
+            parts.append(_reply_protocol_note())
     else:
         parts.append(
             "### Role\n\n"
@@ -1655,7 +1783,7 @@ def _build_core_prompt(
     else:
         parts.append(core_surface.execution_rules(_execution_rules(can_clarify)))
         if _reply_protocol_note_enabled():
-            parts.append(_REPLY_PROTOCOL_NOTE)
+            parts.append(_reply_protocol_note())
     if _code_first_enabled():
         parts.append(
             _unified(_CODE_FIRST, _CORE_CODE_FIRST_TAIL, _CORE_CODE_FIRST_TAIL_PYTHON),

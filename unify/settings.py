@@ -239,6 +239,22 @@ class ProductionSettings(BaseSettings):
     # (a variable holding a token, say) by name, and that
     # ``execute_function`` takes literal values only. Empty: as shipped.
     UNIFY_EXECUTE_FUNCTION_HINT: str = ""
+    # How the actor's system prompt words the reply rule. ``reason``: where
+    # the prompt states that the answer is a reply without a tool call (the
+    # lean profile's role, the shipped profile's final-answer rule, on both
+    # tool surfaces) it adds "You may reason in your reply before its final
+    # answer or action; you do not need a cell to think or to announce a
+    # step.", the lean role says the requester's format governs the answer or
+    # action in a reply rather than the whole reply, the notebook cell's
+    # description (UNIFY_CODE_PROJECTION=notebook) says a cell is not for
+    # thinking or announcing a step, and the reply-protocol note (when
+    # UNIFY_REPLY_PROTOCOL_NOTE is on) reads as under ``action_last``.
+    # ``action_last``: only the reply-protocol note changes: its "to take
+    # one, end your turn with exactly that reply" becomes "End your turn with
+    # a reply whose last line is the action; you may reason before it.";
+    # inert while UNIFY_REPLY_PROTOCOL_NOTE is off. The requester's own text
+    # is never changed (unify/actor/prompt_builders.py). Empty: as shipped.
+    UNIFY_REPLY_WORDING: str = ""
     # ``optional``: ``thought`` on execute_code and execute_function is no
     # longer required in their schemas and its description says it may be
     # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
@@ -1396,6 +1412,17 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "neutral"):
             raise ValueError(
                 f"UNIFY_EXECUTE_FUNCTION_HINT must be empty or 'neutral', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REPLY_WORDING", mode="before")
+    @classmethod
+    def parse_reply_wording(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "reason", "action_last"):
+            raise ValueError(
+                "UNIFY_REPLY_WORDING must be empty, 'reason' or 'action_last', "
+                f"not {v!r}",
             )
         return value
 

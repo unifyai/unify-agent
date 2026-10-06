@@ -650,15 +650,27 @@ def describe(
             "yields, so prefer async calls in work that may need correcting "
             "partway through.",
         )
-    out.append(
-        (
-            "A cell is for computing. You answer by calling `final_response`."
-            if structured
-            else "A cell is for computing. You answer, and take any action the "
-            "requester defines, by replying."
-        ),
-    )
+    out.append(_closing(structured))
     return "\n\n".join(out)
+
+
+def _closing(structured: bool) -> str:
+    """What a cell is for, and how the model answers.
+
+    UNIFY_REPLY_WORDING=reason: a cell is not for thinking or announcing a
+    step, since a reply may carry reasoning."""
+    from unify.settings import SETTINGS
+
+    cell = "A cell is for computing."
+    if SETTINGS.UNIFY_REPLY_WORDING == "reason":
+        cell = (
+            "A cell is for computing, not for thinking or announcing a step: "
+            "you can reason in your reply."
+        )
+    if structured:
+        return f"{cell} You answer by calling `final_response`."
+    answer = "You answer, and take any action the requester defines, by replying."
+    return f"{cell} {answer}"
 
 
 def _runtime_language_kwarg(fn: Callable[..., Any]) -> Optional[str]:

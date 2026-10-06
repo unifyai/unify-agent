@@ -104,6 +104,7 @@ SWITCH_SETS = {
         "UNIFY_TRY_FIRST": True,
         "UNIFY_CODE_FIRST": True,
         "UNIFY_FUNCTION_CASES": True,
+        "UNIFY_REPLY_WORDING": "reason",
     },
     "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
     "doctrine and note": {
@@ -124,6 +125,10 @@ SWITCH_SETS = {
         "UNIFY_FUNCTION_PATCH": True,
     },
     "lean": {"UNIFY_PROMPT_PROFILE": "lean"},
+    "reply wording action last": {
+        "UNIFY_REPLY_WORDING": "action_last",
+        "UNIFY_REPLY_PROTOCOL_NOTE": True,
+    },
     "lean, on, delegation on demand": {
         "UNIFY_PROMPT_PROFILE": "lean",
         "UNIFY_DELEGATION": "on_demand",
@@ -135,6 +140,7 @@ SWITCH_SETS = {
         "UNIFY_TRY_FIRST": True,
         "UNIFY_CODE_FIRST": True,
         "UNIFY_FUNCTION_CASES": True,
+        "UNIFY_REPLY_WORDING": "reason",
     },
 }
 SWITCH_OFF = {
@@ -150,6 +156,7 @@ SWITCH_OFF = {
     "UNIFY_PROMPT_PROFILE": "",
     "UNIFY_DELEGATION": "on",
     "UNIFY_REVIEW_GATE": False,
+    "UNIFY_REPLY_WORDING": "",
 }
 
 PROMPT_MODES = {
