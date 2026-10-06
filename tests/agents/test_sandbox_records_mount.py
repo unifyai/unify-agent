@@ -9,7 +9,8 @@ def test_off_mounts_no_records(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFY_HOME", str(tmp_path))
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
     policy = sandbox.build_policy(fresh=True)
-    assert not any("records" in str(p) for p in policy.readonly_state)
+    records = str((tmp_path / "records").resolve())
+    assert not any(str(p).startswith(records) for p in policy.readonly_state)
     assert not (tmp_path / "records").exists()
 
 
@@ -21,7 +22,9 @@ def test_record_mode_mounts_only_the_current_runs_record(tmp_path, monkeypatch):
     earlier = binding.bind_for_act(request="an earlier run", user_reads=False)
     current = binding.bind_for_act(request="this run", user_reads=False)
     policy = sandbox.build_policy(fresh=True)
-    mounted = [p for p in policy.readonly_state if "records" in str(p)]
+    # (Matched by folder, not by name: a test's own store file may carry "records".)
+    records = str((tmp_path / "records").resolve())
+    mounted = [p for p in policy.readonly_state if str(p).startswith(records)]
     assert mounted == [current.pool.record.path.parent.resolve()]
     assert earlier.pool.record.path.parent.resolve() not in policy.readonly_state
     assert current.pool.record.path.name == "record.jsonl"
