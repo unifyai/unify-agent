@@ -22,16 +22,30 @@ import contextlib
 import json
 import asyncio
 import os
+import select
 import shutil
+import signal
 import sys
+import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 BOOT_TIMEOUT_SECONDS = 300.0
+# A cancelled request whose response has not come this long after the cancel
+# line was read, while model code holds the event loop's thread (a cell
+# running time.sleep, say), has that code interrupted; tried this many times.
+CANCEL_INTERRUPT_GRACE_S = 2.0
+CANCEL_INTERRUPT_TRIES = 3
+_CANCEL_INTERRUPT_SIGNAL = getattr(signal, "SIGUSR2", None)
+
+
+class CellInterrupted(Exception):
+    """Raised in a cell that held the event loop past a host's cancel."""
+
 
 HELP = """\
 Type a message and press Enter. The assistant keeps working on anything you
@@ -357,7 +371,61 @@ class Chat:
 
 
 @contextlib.contextmanager
-def _stdin_reader() -> Iterator[asyncio.StreamReader]:
+def _channel_pump(
+    loop: asyncio.AbstractEventLoop,
+    fd: int,
+    reader: asyncio.StreamReader,
+    on_line: Callable[[bytes], None] | None,
+) -> Iterator[None]:
+    """Read *fd* on a thread into *reader* while the block runs.
+
+    The thread owns no descriptor: it stops (within 0.1 s) before the
+    caller closes *fd*, so it never reads a number the process reused.
+    """
+    stop = threading.Event()
+
+    def deliver(callback, *args) -> None:
+        try:
+            loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError:  # the loop is closed
+            stop.set()
+
+    def pump() -> None:
+        partial = b""
+        while not stop.is_set():
+            try:
+                ready, _, _ = select.select([fd], [], [], 0.1)
+                if not ready:
+                    continue
+                data = os.read(fd, 65536)
+            except OSError:
+                data = b""
+            if not data:
+                deliver(reader.feed_eof)
+                return
+            if on_line is not None:
+                partial += data
+                *lines, partial = partial.split(b"\n")
+                for line in lines:
+                    try:
+                        on_line(line)
+                    except Exception:
+                        pass
+            deliver(reader.feed_data, data)
+
+    thread = threading.Thread(target=pump, name="act-stdin", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(5)
+
+
+@contextlib.contextmanager
+def _stdin_reader(
+    on_line: Callable[[bytes], None] | None = None,
+) -> Iterator[asyncio.StreamReader]:
     """Stream stdin into a reader on the running loop, leaving stdin blocking.
 
     A pipe transport would switch stdin to non-blocking, and a terminal's
@@ -370,6 +438,11 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
     private copy while descriptor 0 becomes ``/dev/null``, so a subprocess
     or thread that model code starts reads end of input, as in the
     sandboxed worker, instead of waiting on, or taking, the driver's lines.
+
+    That channel is read on its own thread, which hands the bytes to the
+    loop in order, so a line is read even while model code holds the
+    loop's thread; *on_line* sees each complete line there first (a host's
+    cancel must be seen while the loop cannot take it).
     """
     loop = asyncio.get_running_loop()
     fd = sys.stdin.fileno()
@@ -381,6 +454,14 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
         os.close(null)
         moved_from, fd = fd, channel
     reader = asyncio.StreamReader()
+    if moved_from is not None:
+        try:
+            with _channel_pump(loop, fd, reader, on_line):
+                yield reader
+        finally:
+            os.dup2(fd, moved_from)
+            os.close(fd)
+        return
 
     def feed() -> None:
         data = os.read(fd, 65536)
@@ -395,9 +476,6 @@ def _stdin_reader() -> Iterator[asyncio.StreamReader]:
         yield reader
     finally:
         loop.remove_reader(fd)
-        if moved_from is not None:
-            os.dup2(fd, moved_from)
-            os.close(fd)
 
 
 class Act:
@@ -413,6 +491,10 @@ class Act:
         # of input); a persistent session whose result arrives without it
         # ended on its own.
         self._stop_requested = False
+        # A host's cancel the loop has not answered yet (see _escalate).
+        self._cancel_answered = threading.Event()
+        self._cancel_answered.set()
+        self._main_thread = threading.main_thread().ident
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -466,6 +548,7 @@ class Act:
                 continue
             kind = notif.get("type", "")
             if kind == "response":
+                self._cancel_answered.set()
                 # A persist-mode turn finished; its answer is the result of the
                 # follow-up the user typed.
                 if self._args.jsonl:
@@ -510,7 +593,7 @@ class Act:
 
     async def _read_lines(self) -> None:
         """Route typed lines: answer a pending question, else steer the actor."""
-        with _stdin_reader() as reader:
+        with _stdin_reader(on_line=self._on_channel_line) as reader:
             while not self._closing.is_set():
                 raw = await reader.readline()
                 if not raw:
@@ -544,6 +627,7 @@ class Act:
                             line = "/quit"
                         else:
                             if not await self._handle.cancel_request():
+                                self._cancel_answered.set()
                                 self._progress(
                                     "cancel ignored: the session takes no more requests",
                                 )
@@ -553,6 +637,9 @@ class Act:
                         if not isinstance(message, str) or not message:
                             continue
                         line = message
+                        # A new message: an earlier cancel is settled, or
+                        # was ignored (none ran), and needs no escalation.
+                        self._cancel_answered.set()
                 if line in {"/quit", "/exit", "/q"}:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
@@ -568,6 +655,84 @@ class Act:
                     )
                     continue
                 await self._handle.interject(line)
+
+    # ── cancel escalation ────────────────────────────────────────────────
+    # The loop takes a cancel at once, cancelling the model call and the
+    # tool calls in flight, and ends the request in its response line
+    # ("cancelled": true), which is the acknowledgement. Two things can hold
+    # that line: a tool that ignores its cancellation (the loop abandons it
+    # after a grace, see ToolsData.cancel_pending_tasks) and model code that
+    # holds the event loop's thread, so the loop never even reads the
+    # cancel. For the second, the channel's reader thread sees the cancel,
+    # and when no response has come after CANCEL_INTERRUPT_GRACE_S it raises
+    # CellInterrupted in the cell running on the main thread, if one is.
+    # Code blocked in C that never returns to the interpreter cannot be
+    # interrupted in process; the sandboxed worker (a process, killed on
+    # cancel) can.
+
+    def _on_channel_line(self, raw: bytes) -> None:
+        """On the reader thread: arm the escalation for a host's cancel."""
+        if not (self._args.jsonl and self._args.persist):
+            return
+        if b"cancel" not in raw:
+            return
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            return
+        if not isinstance(item, dict) or not item.get("cancel"):
+            return
+        self._cancel_answered.clear()
+        self._arm_escalation(CANCEL_INTERRUPT_TRIES)
+
+    def _arm_escalation(self, tries: int) -> None:
+        timer = threading.Timer(
+            CANCEL_INTERRUPT_GRACE_S,
+            self._escalate,
+            (tries,),
+        )
+        timer.daemon = True
+        timer.start()
+
+    def _escalate(self, tries: int) -> None:
+        if self._cancel_answered.is_set() or _CANCEL_INTERRUPT_SIGNAL is None:
+            return
+        try:
+            signal.pthread_kill(self._main_thread, _CANCEL_INTERRUPT_SIGNAL)
+        except (OSError, ValueError):
+            return
+        if tries > 1:
+            self._arm_escalation(tries - 1)
+
+    def _interrupt_cell(self, signum, frame) -> None:
+        """The signal's handler, on the main thread: interrupt a cell."""
+        if self._cancel_answered.is_set():
+            return
+        while frame is not None:
+            if frame.f_code.co_name == "__exec_wrapper":
+                raise CellInterrupted(
+                    "the requester cancelled the request while this cell held "
+                    "the session; it was interrupted",
+                )
+            frame = frame.f_back
+
+    @contextlib.contextmanager
+    def _cancel_escalation(self) -> Iterator[None]:
+        """Install the cell interrupt for a persistent jsonl session."""
+        if not (
+            self._args.jsonl
+            and self._args.persist
+            and _CANCEL_INTERRUPT_SIGNAL is not None
+            and threading.current_thread() is threading.main_thread()
+        ):
+            yield
+            return
+        previous = signal.signal(_CANCEL_INTERRUPT_SIGNAL, self._interrupt_cell)
+        try:
+            yield
+        finally:
+            self._cancel_answered.set()
+            signal.signal(_CANCEL_INTERRUPT_SIGNAL, previous)
 
     @staticmethod
     def _outcome_enabled() -> bool:
@@ -604,6 +769,10 @@ class Act:
     # ── run ──────────────────────────────────────────────────────────────
 
     async def run(self, request: str) -> int:
+        with self._cancel_escalation():
+            return await self._run(request)
+
+    async def _run(self, request: str) -> int:
         await self.start()
         args = self._args
         interactive = sys.stdin.isatty()
