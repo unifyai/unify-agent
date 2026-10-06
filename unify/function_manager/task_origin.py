@@ -84,6 +84,10 @@ logged requests share can be told from its own (:func:`line_keys`).
 corpus does and counts, for the storage review, the earlier logged requests
 whose ``similar_request`` to the current one reaches a threshold
 (:func:`recurrence`).
+
+``UNIFY_EVIDENCE_LEDGER`` logs every top-level request as the stream corpus
+does, so a later request finds the evidence kept under the earlier ones
+(:mod:`unify.actor.evidence_ledger`).
 """
 
 from __future__ import annotations
@@ -245,7 +249,13 @@ def enter(request: Any) -> Optional[contextvars.Token]:
         return None
     task = _Task(key=key, text=bounded_text(request))
     related = _related_enabled()
-    if _stream_corpus() or recurrence_enabled() or related or _records_requests():
+    if (
+        _stream_corpus()
+        or recurrence_enabled()
+        or related
+        or _records_requests()
+        or _ledger_enabled()
+    ):
         _log_request(task)
     if related:
         _log_request_lines(task.key, line_keys(request))
@@ -276,6 +286,13 @@ def _records_requests() -> bool:
     return bool(getattr(SETTINGS, "UNIFY_ENTRY_RECORD", False)) or bool(
         getattr(SETTINGS, "UNIFY_PROTECT_VERIFIED", False),
     )
+
+
+def _ledger_enabled() -> bool:
+    """``UNIFY_EVIDENCE_LEDGER``: requests are logged, so a return finds the evidence of earlier ones."""
+    from unify.settings import SETTINGS
+
+    return bool(getattr(SETTINGS, "UNIFY_EVIDENCE_LEDGER", False))
 
 
 def guidance_enabled() -> bool:
@@ -358,8 +375,8 @@ def require_origin_link_prerequisites() -> None:
 
     ``UNIFY_ORIGIN_PROVENANCE``, ``UNIFY_REVIEW_RECURRENCE``,
     ``UNIFY_REVIEW_OUTCOME``, ``UNIFY_GUIDANCE_ORIGIN``,
-    ``UNIFY_LISTING_PROVENANCE``, ``UNIFY_LESSON_STATUS`` and
-    ``UNIFY_LISTING_USAGE``.
+    ``UNIFY_LISTING_PROVENANCE``, ``UNIFY_LESSON_STATUS``,
+    ``UNIFY_LISTING_USAGE`` and ``UNIFY_EVIDENCE_LEDGER``.
 
     Each reads, keeps or records something under the requests that
     ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``) records; without them they
@@ -380,6 +397,7 @@ def require_origin_link_prerequisites() -> None:
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
         "UNIFY_PROTECT_VERIFIED",
+        "UNIFY_EVIDENCE_LEDGER",
     ):
         if getattr(SETTINGS, name, False):
             raise ValueError(

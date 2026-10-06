@@ -3393,9 +3393,15 @@ class _StorageCheckHandle(SteerableToolHandle):
         turn_reviews_enabled: bool = False,
         persist: bool = False,
         skip_review: Optional[str] = None,
+        evidence_session: Optional[Any] = None,
     ) -> None:
         self._inner = inner
         self._actor = actor
+        # UNIFY_EVIDENCE_LEDGER: the request this session's messages are kept
+        # under, taken when the handle is built (a caller's task, such as the
+        # CLI's stdin reader, does not carry the request's context). None
+        # (off, or a sub-agent): nothing is kept.
+        self._evidence_session = evidence_session
         # Why no review follows the task (UNIFY_INLINE_CURATION=only); None
         # reviews as shipped.
         self._skip_review = skip_review
@@ -4269,6 +4275,14 @@ class _StorageCheckHandle(SteerableToolHandle):
             )
             return None
         handle = self._active_handle
+        if self._evidence_session is not None and self._phase == "task":
+            from unify.actor import evidence_ledger
+
+            evidence_ledger.record(
+                evidence_ledger.MESSAGE,
+                message,
+                key=self._evidence_session,
+            )
         if handle is not None:
             return await handle.interject(
                 message,
@@ -6378,6 +6392,9 @@ class CodeActActor(BaseCodeActActor):
 
         _evidence_list.require_prerequisites()
         evidence = _evidence_list.enabled()
+        # UNIFY_EVIDENCE_LEDGER: refused above without request records.
+        from unify.actor import evidence_ledger as _evidence_ledger
+
         # UNIFY_PROTECT_VERIFIED=versioned: refuse it with nothing to accept a session.
         from unify.function_manager import verified_guard as _verified_guard
 
@@ -6919,6 +6936,9 @@ class CodeActActor(BaseCodeActActor):
         _clar_queues = None
         _on_clar_req = None
         _on_clar_ans = None
+        # UNIFY_EVIDENCE_LEDGER: the session this task's evidence is kept
+        # under (set below, once the request is keyed); None keeps nothing.
+        _ledger_session = None
         if clarification_enabled:
             # (None, None) still injects request_clarification; the tool then
             # uses per-call hidden queues so CM sees handle._clar_q events.
@@ -6944,6 +6964,8 @@ class CodeActActor(BaseCodeActActor):
                     )
                 except Exception:
                     pass
+                if _ledger_session is not None:
+                    _ledger_session.question(q)
 
             async def _on_clar_ans(ans: str):
                 try:
@@ -6961,6 +6983,8 @@ class CodeActActor(BaseCodeActActor):
                     )
                 except Exception:
                     pass
+                if _ledger_session is not None:
+                    _ledger_session.answer(ans)
 
         async def _on_notify(message: str):
             try:
@@ -6987,6 +7011,13 @@ class CodeActActor(BaseCodeActActor):
         # sub-agent, started inside a keyed task, keeps the key of the task
         # it works for.
         task_origin_token = _task_origin.enter(request)
+        # UNIFY_EVIDENCE_LEDGER: a top-level task keeps what arrives after
+        # its request under it (a sub-agent keeps nothing).
+        ledger_token = (
+            _evidence_ledger.enter() if task_origin_token is not None else None
+        )
+        if ledger_token is not None:
+            _ledger_session = _evidence_ledger.current_session()
         # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
@@ -7046,6 +7077,17 @@ class CodeActActor(BaseCodeActActor):
                     shortlist = await shortlist
                 if shortlist:
                     first_message_parts.append(shortlist)
+            # UNIFY_EVIDENCE_LEDGER: the evidence kept while handling earlier
+            # requests like this one, as plain data in the sandbox, and one
+            # sentence saying it is there. Nothing found, nothing bound.
+            if _ledger_session is not None:
+                seen_before = _evidence_ledger.earlier(
+                    _ledger_session.text,
+                    session=_ledger_session,
+                )
+                if seen_before:
+                    _evidence_ledger.bind(sandbox, seen_before)
+                    first_message_parts.append(_evidence_ledger.line(seen_before))
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
@@ -7098,6 +7140,7 @@ class CodeActActor(BaseCodeActActor):
             )
         except BaseException:
             _instance_lint.leave(instance_token)
+            _evidence_ledger.leave(ledger_token)
             _task_origin.leave(task_origin_token)
             raise
         finally:
@@ -7143,6 +7186,7 @@ class CodeActActor(BaseCodeActActor):
                 ),
                 persist=bool(persist),
                 **({"skip_review": _INLINE_ONLY_REASON} if inline_only else {}),
+                evidence_session=_ledger_session,
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not
@@ -7150,6 +7194,7 @@ class CodeActActor(BaseCodeActActor):
             self._live_storage_handles.add(handle)
 
         _instance_lint.leave(instance_token)
+        _evidence_ledger.leave(ledger_token)
         _task_origin.leave(task_origin_token)
         return handle
 

@@ -925,6 +925,23 @@ class ProductionSettings(BaseSettings):
     # prompt changes. An actor refuses to start with this set and request
     # records off. Empty: as shipped.
     UNIFY_PROTECT_VERIFIED: str = ""
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a top-level session keeps
+    # the evidence that arrived after its request -- every message that came
+    # in later (demonstrations, feedback, a follow-up) and every clarification
+    # question with its answer -- redacted (no credential is stored), cut to
+    # 16,000 characters an item and 64,000 a session, under its request in
+    # the ``evidence`` table of ``<UNIFY_HOME>/request_log.sqlite`` (the latest
+    # 2,000 items; unify/actor/evidence_ledger.py). Every top-level request is
+    # logged, as UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it. A later
+    # session whose request is the same as, or shares a rare whole
+    # identifier with, an earlier logged one gets that evidence as plain
+    # data, ``seen_before`` in the sandbox (the earlier request's opening,
+    # which visit, kind, content and age; newest first, at most 40 items and
+    # 48,000 characters), and one sentence in its first message saying so.
+    # No instruction to check anything: it informs. Nothing found, nothing
+    # bound or said. Never in a sub-agent. An actor refuses to start with
+    # this on and request records off. Off: as shipped.
+    UNIFY_EVIDENCE_LEDGER: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1180,6 +1197,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
         "UNIFY_BUDGET_FOOTER",
+        "UNIFY_EVIDENCE_LEDGER",
         mode="before",
     )
     @classmethod
