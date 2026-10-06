@@ -392,7 +392,13 @@ class ProductionSettings(BaseSettings):
     # decisions the trajectory settled made inside the code, no instance
     # literals, and an existing function for the same kind of task
     # generalised rather than duplicated -- and stores a short guidance
-    # entry linked to the functions as well. Empty: as shipped.
+    # entry linked to the functions as well. ``balanced``: the ``minimal``
+    # rulebook with functions and guidance on equal footing ("What To
+    # Keep"): a function carries what code can repeat, a note what code
+    # cannot, linked when they go together; a note is held to a function's
+    # discipline (reusable, general-purpose, distilled as a superset: one
+    # rule with its conditions as parameters, covering earlier cases rather
+    # than a sibling, one subject, no instance values). Empty: as shipped.
     UNIFY_CURATION_DOCTRINE: str = ""
     # The storage review is shown the stored functions saved while handling
     # requests similar to this session's (``similar_request`` at least the
@@ -1330,10 +1336,10 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_curation_doctrine(cls, v: Any) -> str:
         value = str(v or "").strip().lower()
-        if value not in ("", "compose", "minimal", "functions_first"):
+        if value not in ("", "compose", "minimal", "functions_first", "balanced"):
             raise ValueError(
-                "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal' "
-                f"or 'functions_first', not {v!r}",
+                "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal', "
+                f"'functions_first' or 'balanced', not {v!r}",
             )
         return value
 

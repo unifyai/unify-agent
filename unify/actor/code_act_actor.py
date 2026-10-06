@@ -1076,21 +1076,37 @@ def _review_framing_unified() -> bool:
 
 
 def _curation_doctrine_compose() -> bool:
-    """The compose doctrine's framing applies (``compose``, ``minimal``, ``functions_first``).
+    """The compose doctrine's framing applies (``compose``, ``minimal``, ``functions_first``, ``balanced``).
 
-    ``functions_first`` keeps the compose opening, instructions frame and
-    update-first order, and replaces the compose rules themselves.
+    ``functions_first`` and ``balanced`` keep the compose opening,
+    instructions frame and update-first order, and replace the compose rules
+    themselves.
     """
     from unify.settings import SETTINGS
 
-    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("compose", "minimal", "functions_first")
+    return SETTINGS.UNIFY_CURATION_DOCTRINE in (
+        "compose",
+        "minimal",
+        "functions_first",
+        "balanced",
+    )
 
 
 def _curation_doctrine_minimal() -> bool:
-    """The minimal rulebook applies (``minimal``, or ``functions_first``, which keeps it)."""
+    """The minimal rulebook applies (``minimal``, or ``functions_first`` / ``balanced``, which keep it)."""
     from unify.settings import SETTINGS
 
-    return SETTINGS.UNIFY_CURATION_DOCTRINE in ("minimal", "functions_first")
+    return SETTINGS.UNIFY_CURATION_DOCTRINE in (
+        "minimal",
+        "functions_first",
+        "balanced",
+    )
+
+
+def _curation_doctrine_balanced() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_CURATION_DOCTRINE == "balanced"
 
 
 def _curation_doctrine_functions_first() -> bool:
@@ -1283,9 +1299,84 @@ _STORAGE_FUNCTIONS_FIRST_STEP_3 = (
 )
 
 
+# UNIFY_CURATION_DOCTRINE=balanced: functions and guidance on equal footing
+# (retrieval design study, 5 Oct, section 2.5). ``functions_first`` fixed
+# reviews that kept only a note after a solved, code-produced answer, and its
+# rules for functions stay; but it ranks one kind first, a bet on the domain
+# (the ScienceWorld stores checked held guidance only), and asks nothing of a
+# note's reuse. On the 5 Oct Continual-ARC paper-protocol run notes were
+# written as single-instance anecdotes, one note gathered three tasks' rules,
+# and one puzzle ended with six entries. Here a note is held to a function's
+# discipline: reusable, general, conditioned on when it applies, one subject,
+# one note subsuming related cases rather than a sibling beside it.
+_STORAGE_BALANCED_DOCTRINE = (
+    "## What To Keep\n\n"
+    "The next task of this kind should start from what this one learned. "
+    "Two kinds of entry carry it, on equal footing and often as a pair; "
+    "each is written to be reused, not to record this one instance.\n\n"
+    "- **A function carries what code can repeat**: the procedure that "
+    "produced this result, written so that the next task of this kind can "
+    "run it in one call. Its inputs are what that task will be given; what "
+    "varies between instances is a parameter or is read from the input; "
+    "choices this trajectory settled are made inside the code; no value "
+    "that belongs only to this instance appears in it. It raises a clear "
+    "error on an input outside what the trajectory handled, and calls the "
+    "smaller stored functions it builds on instead of copying them.\n"
+    "- **A guidance note carries what code cannot**: when a procedure "
+    "applies and when it does not, what to pass and what it assumes, a "
+    "condition or preference the requester cares about, a judgement the "
+    "work needed, and an approach that failed and what worked instead.\n\n"
+    "Notes, like functions, are reusable, general-purpose and distilled as "
+    "supersets. A note is written with the same discipline as a function:\n\n"
+    "- **General, with its conditions.** It states the rule for the kind "
+    "of task, with the conditions under which it holds as its parameters "
+    "(when this holds, do that; when it does not, this other thing), not "
+    "the story of this instance. No value that belongs only to this "
+    "instance (its data, identifiers or answer) appears in it.\n"
+    "- **A superset, not a sibling.** When the library already holds a "
+    "note on this kind of task, rewrite that note so that one rule covers "
+    "its earlier cases and this one, stating what differs between them as "
+    "a condition, rather than adding a second note beside it. A note that "
+    "is wrong for this case is corrected, not appended to.\n"
+    "- **One subject.** A note covers one kind of task or one decision. A "
+    "lesson about a different kind of task goes in a note of its own, even "
+    "when the subjects sound related: it is not appended to a note written "
+    "for other tasks, and unrelated rules are not gathered into one "
+    "general note.\n"
+    "- **Linked.** When a note says when or how to use a function, link "
+    "them (`function_ids`), so each is listed with the other.\n\n"
+    "Ask both questions of the trajectory: which steps would the next task "
+    "of this kind repeat, and what would the next session need to know to "
+    "choose and use them, or to do what code cannot? A note alone is right "
+    "when the work could not be written as code; a function alone is right "
+    "when its docstring tells a caller everything. A lesson about how this "
+    "agent works in general (its tools, its reply format) is not a lesson "
+    "about the task.\n\n"
+    "Prefer what the trajectory confirmed. A note or function from a "
+    "session whose result was not confirmed describes what was tried and "
+    "what happened, not a rule, and says so.\n\n"
+)
+_STORAGE_BALANCED_GUIDANCE = (
+    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
+    "uses through `function_ids`) is prose for what code cannot carry, "
+    "kept reusable on the same terms as a function (What To Keep, below)."
+    "\n\n"
+)
+_STORAGE_BALANCED_STEP_3 = (
+    "3. Decide what the next task of this kind needs: the function for the "
+    "procedure that produced the result and the smaller functions it "
+    "composes, the note that says when and how to use it or carries what "
+    "code cannot, and the changes that let an existing entry of either kind "
+    "cover this instance instead of a sibling beside it. Retire the entries "
+    "a generalisation supersedes.\n"
+)
+
+
 def _storage_compose_note() -> str:
     """The compose doctrine (``compose``, ``minimal``), the functions-first doctrine
-    (``functions_first``); else empty."""
+    (``functions_first``), the balanced doctrine (``balanced``); else empty."""
+    if _curation_doctrine_balanced():
+        return _STORAGE_BALANCED_DOCTRINE
     if _curation_doctrine_functions_first():
         return _STORAGE_FUNCTIONS_FIRST_DOCTRINE
     return _STORAGE_COMPOSE_DOCTRINE if _curation_doctrine_compose() else ""
@@ -1338,9 +1429,13 @@ def _storage_doctrine_sections() -> str:
     """The rulebook sections before the instructions, per ``UNIFY_CURATION_DOCTRINE``."""
     if _curation_doctrine_minimal():
         guidance = (
-            _STORAGE_FUNCTIONS_FIRST_GUIDANCE
-            if _curation_doctrine_functions_first()
-            else _STORAGE_MINIMAL_GUIDANCE
+            _STORAGE_BALANCED_GUIDANCE
+            if _curation_doctrine_balanced()
+            else (
+                _STORAGE_FUNCTIONS_FIRST_GUIDANCE
+                if _curation_doctrine_functions_first()
+                else _STORAGE_MINIMAL_GUIDANCE
+            )
         )
         return (
             f"{_STORAGE_MINIMAL_WHAT}"
@@ -1581,9 +1676,13 @@ def _storage_base_instructions() -> str:
     start = _STORAGE_BASE_INSTRUCTIONS.index("3. Decide")
     end = _STORAGE_BASE_INSTRUCTIONS.index("4. **Delete")
     step_3 = (
-        _STORAGE_FUNCTIONS_FIRST_STEP_3
-        if _curation_doctrine_functions_first()
-        else _STORAGE_COMPOSE_STEP_3
+        _STORAGE_BALANCED_STEP_3
+        if _curation_doctrine_balanced()
+        else (
+            _STORAGE_FUNCTIONS_FIRST_STEP_3
+            if _curation_doctrine_functions_first()
+            else _STORAGE_COMPOSE_STEP_3
+        )
     )
     return (
         _STORAGE_BASE_INSTRUCTIONS[:start] + step_3 + _STORAGE_BASE_INSTRUCTIONS[end:]

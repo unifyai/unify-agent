@@ -119,6 +119,10 @@ SWITCH_SETS = {
         "UNIFY_CURATION_DOCTRINE": "minimal",
         "UNIFY_FUNCTION_PATCH": True,
     },
+    "balanced doctrine": {
+        "UNIFY_CURATION_DOCTRINE": "balanced",
+        "UNIFY_FUNCTION_PATCH": True,
+    },
     "lean": {"UNIFY_PROMPT_PROFILE": "lean"},
     "lean, on, delegation on demand": {
         "UNIFY_PROMPT_PROFILE": "lean",
