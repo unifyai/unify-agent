@@ -198,10 +198,20 @@ def driver_channel(monkeypatch):
     os.close(read_fd)
     monkeypatch.setattr(sys, "stdin", open(0, closefd=False))
     os.write(write_fd, HOST_LINE.encode())
-    watchdog = threading.Timer(WATCHDOG_S, os.close, (write_fd,))
+    closed = threading.Event()
+
+    def close_channel() -> None:
+        os.close(write_fd)
+        closed.set()
+
+    watchdog = threading.Timer(WATCHDOG_S, close_channel)
     watchdog.start()
     yield
+    # A test that ended before the watchdog has nothing left to free.
+    watchdog.cancel()
     watchdog.join()
+    if not closed.is_set():
+        os.close(write_fd)
     os.dup2(saved, 0)
     os.close(saved)
 
