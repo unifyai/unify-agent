@@ -290,6 +290,23 @@ class ProductionSettings(BaseSettings):
     # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
     # Empty: replies are text only, as shipped.
     UNIFY_REPLY_CHANNEL: str = ""
+    # ``on``: a text reply that would end a turn of a loop answering a
+    # requester (the actor's task loop; also a cell's ``reply()`` under
+    # UNIFY_REPLY_CHANNEL) is first checked for two facts: its answer is
+    # degenerate (0, NaN, None, null, empty, a list whose items are all the
+    # same, or a JSON value of four or more items identical to one in the
+    # request's JSON), or the last computing cell since the requester's
+    # message raised, or a cell caught and printed an error, and the reply
+    # mentions no error. When one holds and no receipt was shown for this
+    # request, the turn does not end: the facts (at most 3 lines, no
+    # instruction) are appended as one loop-authored message and the model is
+    # called again; its next text reply ends the turn as it is. At most one
+    # receipt per request; none at the step limit, on a cancel, or with
+    # fewer than three steps left. A persistent session's response is only
+    # the final reply. Counted in the CLI's run stats (``receipts_shown``,
+    # ``receipts_revised``) (unify/common/_async_tool/reply_receipt.py).
+    # Empty: as shipped.
+    UNIFY_REPLY_RECEIPT: str = ""
     # ``on``: model code in a cell reads the current request as ``request``
     # (in process and under UNIFY_WORKSPACE_PYTHON=worker): ``request.text``
     # is the requester's latest message, the request or a later message of a
@@ -1641,6 +1658,17 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_VARIABLE_INVENTORY must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REPLY_RECEIPT", mode="before")
+    @classmethod
+    def parse_reply_receipt(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_REPLY_RECEIPT must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 

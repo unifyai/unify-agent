@@ -27,7 +27,7 @@ from typing import (
 from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
-from unify.common._async_tool import cell_reply
+from unify.common._async_tool import cell_reply, reply_receipt
 from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
 from unify import environment, sandbox
@@ -3518,6 +3518,10 @@ class _StorageCheckHandle(SteerableToolHandle):
         if cell_reply.enabled():
             runtime_state = getattr(self._inner, "_runtime_state", None)
             stats.update(cell_reply.run_stats(runtime_state))
+        # UNIFY_REPLY_RECEIPT=on: the receipts shown, and the replies revised.
+        if reply_receipt.enabled():
+            runtime_state = getattr(self._inner, "_runtime_state", None)
+            stats.update(reply_receipt.run_stats(runtime_state))
         return stats
 
     # ── Internal helpers ──────────────────────────────────────────────

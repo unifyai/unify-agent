@@ -72,6 +72,7 @@ from . import repeat_guard as _repeat_guard_mod
 from . import batch_wait as _batch_wait
 from . import cell_reply as _cell_reply
 from . import bound_request as _bound_request
+from . import reply_receipt as _reply_receipt
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
@@ -133,6 +134,16 @@ class ToolLoopRuntimeState:
     step_cap_compactions_in_request: int = 0
     step_cap_compaction_failures: int = 0
     step_cap_compacted: Optional[tuple] = None
+    # UNIFY_REPLY_RECEIPT=on: receipts shown, and replies after one that
+    # differ from the draft it was shown on. The rest is the current
+    # request's state, kept here so a restart after compression keeps it:
+    # the requester's latest text, whether this request had its receipt,
+    # and the draft awaiting the reply after it.
+    receipts_shown: int = 0
+    receipts_revised: int = 0
+    receipt_request: Optional[str] = None
+    receipt_shown_for_request: bool = False
+    receipt_draft: Optional[str] = None
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -740,7 +751,8 @@ async def async_tool_loop_inner(
         cell's ``reply(text)`` ends the turn with that text as the reply, as
         a text reply would, without another model call (``cell_reply.py``).
         Ignored while the switch is off and in a loop whose answer is a
-        response tool's.
+        response tool's. The same loops get ``UNIFY_REPLY_RECEIPT``'s
+        receipt on a reply that would end a turn (``reply_receipt.py``).
     on_turn_boundary : optional coroutine function, default ``None``
         Called just before each model call, after every tool result (and any
         footer) is appended. A non-empty string it returns is appended as one
@@ -834,6 +846,14 @@ async def async_tool_loop_inner(
     # read as ``request``; ``None`` for a loop that answers no requester.
     _request_token = _bound_request.bind(bind_request)
     _request_slot = _bound_request.current() if _request_token is not None else None
+    # UNIFY_REPLY_RECEIPT=on: a reply that would end a turn of a loop that
+    # answers a requester with text is checked first (section F).
+    _receipt_on = (
+        _reply_receipt.enabled()
+        and reply_channel
+        and _rf_norm is None
+        and multi_handle_coordinator is None
+    )
     _discipline = _cache_discipline.enabled()
     # UNIFY_REPEAT_GUARD: a persistent session's replies and the requester
     # messages that answered them, to hold back a reply already answered.
@@ -1034,6 +1054,10 @@ async def async_tool_loop_inner(
     # UNIFY_BIND_REQUEST=on: the request as the requester wrote it, without
     # the session context put before it below.
     _bound_request.record_first(_request_slot, message)
+    # UNIFY_REPLY_RECEIPT=on: the request the receipt reads JSON values from
+    # (a restart after compression keeps its predecessor's).
+    if _receipt_on and runtime_state.receipt_request is None:
+        runtime_state.receipt_request = _bound_request.text_of(message)
     if isinstance(message, list):
         # A list of content blocks (no 'role') becomes one user message;
         # anything else is a pre-structured list of chat messages/strings.
@@ -1888,6 +1912,10 @@ async def async_tool_loop_inner(
         # UNIFY_REPLY_CHANNEL=code+text: the next request starts with no reply.
         if _reply_slot is not None:
             _reply_slot.clear()
+        # UNIFY_REPLY_RECEIPT=on: and may have a receipt of its own.
+        if _receipt_on:
+            runtime_state.receipt_shown_for_request = False
+            runtime_state.receipt_draft = None
 
         # A parked turn's chain of thought is never consulted again:
         # the next dispatch starts from a fresh user interjection, so
@@ -2874,6 +2902,8 @@ async def async_tool_loop_inner(
                     # UNIFY_BIND_REQUEST=on: the requester's message is now
                     # the current request.
                     _bound_request.record(_request_slot, _msg_text)
+                    if _receipt_on:
+                        runtime_state.receipt_request = _msg_text
                     _user_content = (
                         time_ctx.prefix_user_message(_msg_text)
                         if time_ctx is not None
@@ -5452,6 +5482,54 @@ async def async_tool_loop_inner(
                         prefix=ICONS["llm_error"],
                     )
                     return notice["content"]
+
+            # ── UNIFY_REPLY_RECEIPT=on ───────────────────────────────────
+            # A reply that would end the turn is checked once per request.
+            # When a check holds, the facts are appended as one loop-authored
+            # message and the model speaks again (the turn-boundary hook runs
+            # before that call as before any); its next text reply ends the
+            # turn as it is. None at the step limit (it returned above), on a
+            # cancel (a cancelled request never reaches here) or with too few
+            # steps left for the receipt and the reply after it.
+            if _receipt_on and final_content is not None:
+                if runtime_state.receipt_draft is not None:
+                    if _reply_receipt.revised(
+                        runtime_state.receipt_draft,
+                        final_content,
+                    ):
+                        runtime_state.receipts_revised += 1
+                    runtime_state.receipt_draft = None
+                elif (
+                    not runtime_state.receipt_shown_for_request
+                    and _persist_response_content is None
+                    and _reply_receipt.has_room(timer.remaining_msgs())
+                ):
+                    _receipt_text = _reply_receipt.receipt(
+                        final_content,
+                        runtime_state.receipt_request,
+                        client.messages,
+                    )
+                    if _receipt_text is not None:
+                        runtime_state.receipt_shown_for_request = True
+                        runtime_state.receipt_draft = final_content
+                        runtime_state.receipts_shown += 1
+                        logger.info(
+                            "Reply receipt: showing the facts before the reply "
+                            "ends the turn",
+                            prefix=ICONS["interjection"],
+                        )
+                        await _msg_dispatcher.append_msgs(
+                            [
+                                loop_user_notice(
+                                    _receipt_text,
+                                    **{_reply_receipt.MARKER: True},
+                                ),
+                            ],
+                        )
+                        _persist_response_content = None
+                        _persist_response_emitted = False
+                        llm_turn_required = True
+                        continue
 
             # ── Multi-handle mode ────────────────────────────────────────
             if multi_handle_coordinator is not None:
