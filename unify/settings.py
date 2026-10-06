@@ -999,6 +999,14 @@ class ProductionSettings(BaseSettings):
     # bound or said. Never in a sub-agent. An actor refuses to start with
     # this on and request records off. Off: as shipped.
     UNIFY_EVIDENCE_LEDGER: bool = False
+    # Keep what a session learned in one form only (unify/actor/memory_kind.py):
+    # ``functions``: the storage review may write no guidance; ``notes``: it
+    # may write no function; ``examples``: no review runs, and the harness
+    # keeps the session verbatim as one "Worked example" guidance entry (the
+    # request, the code cell whose output the answer repeats, the answer and
+    # its checked outcome). Empty: both kinds, reviewed, as shipped. An actor
+    # refuses to start with a kind set and UNIFY_INLINE_CURATION on.
+    UNIFY_MEMORY_KIND: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1371,6 +1379,17 @@ class ProductionSettings(BaseSettings):
         if value == "on":
             return "on"
         return f"related:{k}" + ("" if floor is None else f":{floor:g}")
+
+    @field_validator("UNIFY_MEMORY_KIND", mode="before")
+    @classmethod
+    def parse_memory_kind(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "functions", "notes", "examples"):
+            raise ValueError(
+                "UNIFY_MEMORY_KIND must be empty, 'functions', 'notes' or "
+                f"'examples', not {v!r}",
+            )
+        return value
 
     @field_validator("UNIFY_EVIDENCE_LIST_MATCHER", mode="before")
     @classmethod

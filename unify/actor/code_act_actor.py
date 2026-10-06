@@ -2927,6 +2927,13 @@ def _start_storage_check_loop_inner(
         for name in refused_tools:
             tools.pop(name, None)
             lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
+    # UNIFY_MEMORY_KIND: the review keeps one kind of entry only.
+    from unify.actor import memory_kind as _memory_kind
+
+    memory_kind_now = _memory_kind.kind()
+    for name in _memory_kind.refused_tools(memory_kind_now):
+        if tools.pop(name, None) is not None:
+            lesson_rules.setdefault(name, _memory_kind.RULES[memory_kind_now])
     outcome_note = _storage_review_outcome_note(outcome, lessons=lessons)
 
     # ── Build prompt ──────────────────────────────────────────────────
@@ -3942,6 +3949,30 @@ class _StorageCheckHandle(SteerableToolHandle):
                 )
 
             self._phase = "storage"
+
+            # UNIFY_MEMORY_KIND=examples: no review; the session is kept as one
+            # worked example, verbatim.
+            from unify.actor import memory_kind as _memory_kind
+
+            if _memory_kind.kind() == "examples":
+                kept = await asyncio.to_thread(
+                    _memory_kind.store_example,
+                    self._actor,
+                    request=None,
+                    trajectory=trajectory,
+                    answer=self._reply_at_outcome,
+                    outcome=self._outcome,
+                )
+                await self._notification_q.put(
+                    {
+                        "type": "storage_review_skipped",
+                        "message": (
+                            "no review (UNIFY_MEMORY_KIND=examples): "
+                            + ("kept a worked example" if kept else "nothing kept")
+                        ),
+                    },
+                )
+                return
 
             # A mid-session turn review still in flight finishes first: its
             # summary joins ``proactive_storage_summaries``, so the final
@@ -6436,6 +6467,10 @@ class CodeActActor(BaseCodeActActor):
         from unify.function_manager import verified_guard as _verified_guard
 
         _verified_guard.require_prerequisites()
+        # UNIFY_MEMORY_KIND: one form of memory; refuse the actor's own writes.
+        from unify.actor import memory_kind as _memory_kind
+
+        _memory_kind.require_prerequisites()
         if _GATE_SETTINGS.UNIFY_REVIEW_GENERALISE and not _task_origin.enabled():
             raise ValueError(
                 "UNIFY_REVIEW_GENERALISE needs UNIFY_TASK_ORIGIN=1 (or "
