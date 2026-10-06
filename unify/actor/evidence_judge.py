@@ -41,7 +41,17 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +72,71 @@ MAX_COMPLETION_TOKENS = 1500
 #: id was the only thing that found the entry.
 POOL_KEYED = True
 NAME_SHARED = True
+
+# ``UNIFY_EVIDENCE_LIST_MATCHER=judge2``: two pools (the MEMORY judge replay's
+# v5 policy, artifacts memory-a-v1/judge-replay/scripts/jr_v5.py). The entries
+# sharing an evidence identifier with the request are judged alone, so a
+# generic note cannot out-compete them, and their pick is listed from
+# ``C_K``; the closest other cards are judged apart and their pick is listed
+# only from ``C_R``. On seen ARC runs this kept the same-puzzle hit (96%) and
+# cut listings where nothing fits from 71% to 9%.
+C_K = 50.0
+C_R = 90.0
+#: An identifier is an environment token when it is in more than this share of
+#: the earlier logged requests, once at least ENV_MIN_EARLIER are logged.
+ENV_SHARE = 0.5
+ENV_MIN_EARLIER = 4
+_SPAN = re.compile(
+    r"https?://\S+|[^\s'\"`<>()\[\]{},;]*[/\\][^\s'\"`<>()\[\]{},;]*",
+)
+_LETTERS = re.compile(r"[A-Za-z]+")
+#: Letter runs that make a token a number with a unit, a date or a time.
+UNITS = frozenset(
+    {
+        # time
+        *"ms s sec secs second seconds min mins minute minutes h hr hrs hour hours".split(),
+        *"d day days wk wks week weeks mo mos month months y yr yrs year years".split(),
+        *"am pm night nights q t w h1 fy".split(),
+        # months
+        *"jan feb mar apr may jun jul aug sep sept oct nov dec january february".split(),
+        *"march april june july august september october november december".split(),
+        # ordinals
+        *"st nd rd th".split(),
+        # size, distance, mass, volume, data, screen, rate, money multipliers
+        *"mm cm m km mi mile miles ft in inch inches mg g kg lb lbs oz ml l".split(),
+        *"kb mb gb tb kbps mbps gbps px pt em dpi x hz khz mhz ghz k bn".split(),
+        *"percent pct person people page pages seat seats item items".split(),
+    },
+)
+
+
+def unit_token(word: str) -> bool:
+    """True for a number with a unit, a date or a time (``30-minute``, ``3rd``, ``Q3``): no evidence of a job."""
+    runs = [r.lower() for r in _LETTERS.findall(word)]
+    return bool(runs) and bool(re.search(r"\d", word)) and all(r in UNITS for r in runs)
+
+
+def environment_tokens(request: str, earlier: Sequence[str]) -> Set[str]:
+    """Identifiers (lower case) of *request* that describe its environment, not its job.
+
+    Those inside a file path or URL in the request (a username in a home
+    directory), and those in more than ``ENV_SHARE`` of the earlier logged
+    requests once ``ENV_MIN_EARLIER`` are logged (a standing line every
+    request carries).
+    """
+    from unify.function_manager import task_origin
+
+    out: Set[str] = set()
+    for span in _SPAN.findall(request):
+        out.update(task_origin.identifiers(span).keys())
+    earlier = list(earlier)
+    if len(earlier) >= ENV_MIN_EARLIER:
+        sets = [set(task_origin.identifiers(text)) for text in earlier]
+        for low in task_origin.identifiers(request):
+            if sum(1 for found in sets if low in found) > ENV_SHARE * len(sets):
+                out.add(low)
+    return out
+
 
 # Verbatim from the matching bake-off (scripts/mb_prompts.py, JUDGE_B).
 PROMPT = """A new request has arrived for an AI assistant. Below it are up to 5 entries (stored functions or notes)

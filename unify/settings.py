@@ -924,7 +924,12 @@ class ProductionSettings(BaseSettings):
     # the same request's entries. One embedding call and one model call per
     # top-level task start. ``keys`` or empty: the keys and the statement
     # floor, as UNIFY_EVIDENCE_LIST alone. An actor refuses to start with
-    # this set and UNIFY_EVIDENCE_LIST off.
+    # this set and UNIFY_EVIDENCE_LIST off. ``judge2``: two pools -- the
+    # entries sharing an evidence identifier with the request (not a number
+    # with a unit, a date, a time, or a token of its paths or of most
+    # requests) are judged alone and their pick listed from confidence 50;
+    # the closest other cards are judged apart and their pick listed only
+    # from 90, so a generic note cannot crowd out the request's own entry.
     UNIFY_EVIDENCE_LIST_MATCHER: str = ""
     # The model UNIFY_EVIDENCE_LIST_MATCHER=judge asks, at low reasoning
     # effort. Empty: the session's own model.
@@ -1345,9 +1350,9 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_evidence_list_matcher(cls, v: Any) -> str:
         value = str(v or "").strip().lower()
-        if value not in ("", "keys", "judge"):
+        if value not in ("", "keys", "judge", "judge2"):
             raise ValueError(
-                "UNIFY_EVIDENCE_LIST_MATCHER must be empty, 'keys' or 'judge', "
+                "UNIFY_EVIDENCE_LIST_MATCHER must be empty, 'keys', 'judge' or 'judge2', "
                 f"not {v!r}",
             )
         return value

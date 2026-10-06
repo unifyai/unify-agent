@@ -503,6 +503,7 @@ class JudgeMatcher(KeysAndStatements):
 MATCHERS: Dict[str, Callable[[], Matcher]] = {
     "keys": KeysAndStatements,
     "judge": JudgeMatcher,
+    "judge2": JudgeMatcher,
 }
 """The matchers by name; the default is ``keys``."""
 
@@ -516,7 +517,7 @@ def matcher_name() -> str:
 
 def judged() -> bool:
     """The evidence list is on and a model judges its candidates."""
-    return enabled() and matcher_name() == "judge"
+    return enabled() and matcher_name() in ("judge", "judge2")
 
 
 def statement(kind: str, row: Dict[str, Any]) -> Tuple[str, bool]:
@@ -794,6 +795,18 @@ async def aselect(
     """
     from unify.actor import evidence_judge
 
+    if matcher_name() == "judge2":
+        return await _aselect_two_pools(
+            lib,
+            request,
+            current_text,
+            current_key,
+            logged,
+            uses,
+            threshold=threshold,
+            embed=embed,
+            generate=generate,
+        )
     matcher = JudgeMatcher()
     out = Listing()
     shown: set = set()
@@ -846,6 +859,124 @@ async def aselect(
                     Match(
                         1,
                         float(out.verdict.confidence or 0.0),
+                        choice[0],
+                        "judged",
+                        evidence_judge.origin_text(lib.entries[choice]),
+                    ),
+                ),
+            )
+    return out
+
+
+async def _aselect_two_pools(
+    lib: Library,
+    request: str,
+    current_text: str,
+    current_key: Optional[str],
+    logged: Sequence[str],
+    uses: Dict[Key, Any],
+    *,
+    threshold: float,
+    embed: Embed,
+    generate: Any,
+) -> Listing:
+    """:func:`aselect` with two pools (``UNIFY_EVIDENCE_LIST_MATCHER=judge2``).
+
+    The same request is seen before without a judge. The entries recorded
+    under a request sharing an *evidence* identifier with this one -- not a
+    number with a unit, a date or a time, nor an environment token
+    (:func:`unify.actor.evidence_judge.environment_tokens`) -- are judged
+    alone, at most ``K``, and their pick is listed from
+    :data:`~unify.actor.evidence_judge.C_K`. The closest ``K`` other cards
+    are judged apart, and their pick is listed only from
+    :data:`~unify.actor.evidence_judge.C_R`: a generic entry that fits many
+    requests a little cannot crowd out the one sharing the request's
+    identifier, and is listed only when the judge is sure.
+    """
+    from unify.actor import evidence_judge
+
+    matcher = JudgeMatcher()
+    out = Listing()
+    shown: set = set()
+    matches = entry_matches(
+        lib,
+        current_text,
+        current_key,
+        logged,
+        uses,
+        threshold=threshold,
+    )
+    exact = {key: match for key, match, _ in matches if match.rank == 3}
+    for card in choose_cards(lib, list(exact), K, shown):
+        match = exact[card.key()]
+        match.recurred = recurrence(match, current_text, logged, threshold=threshold)
+        out.seen.append((card, match))
+    environment = evidence_judge.environment_tokens(
+        request,
+        [text for text in logged if text != current_text],
+    )
+    keyed: Dict[Key, List[str]] = {}
+    for key, match, _ in matches:
+        if match.rank != 2 or key in exact:
+            continue
+        evidence = [
+            word
+            for word in match.shared
+            if not evidence_judge.unit_token(word) and word.lower() not in environment
+        ]
+        if evidence:
+            keyed[key] = evidence
+    picks: List[Tuple[Key, float]] = []
+    kpool = [key for key in keyed if key not in shown][: evidence_judge.K]
+    if kpool:
+        verdict = await evidence_judge.decide(
+            request,
+            lib.entries,
+            kpool,
+            generate=generate,
+            shared=keyed,
+        )
+        out.verdict = verdict
+        if (
+            verdict.choice is not None
+            and (verdict.confidence or 0) >= evidence_judge.C_K
+        ):
+            picks.append((verdict.choice, float(verdict.confidence or 0.0)))
+    pool = [
+        key
+        for key in lib.entries
+        if key not in shown and key not in exact and key not in keyed
+    ]
+    if pool:
+        out.scores = matcher.related_scores(lib, pool, request, embed=embed)
+        rpool = evidence_judge.pool(
+            [],
+            out.scores,
+            exclude=sorted(shown),
+            include_keyed=False,
+        )
+        if rpool:
+            verdict = await evidence_judge.decide(
+                request,
+                lib.entries,
+                rpool,
+                generate=generate,
+            )
+            if out.verdict is None or not picks:
+                out.verdict = verdict
+            if (
+                verdict.choice is not None
+                and (verdict.confidence or 0) >= evidence_judge.C_R
+            ):
+                picks.append((verdict.choice, float(verdict.confidence or 0.0)))
+    for choice, confidence in picks:
+        for card in choose_cards(lib, [choice], 1, shown):
+            out.seen.append(
+                (
+                    card,
+                    Match(
+                        1,
+                        confidence,
                         choice[0],
                         "judged",
                         evidence_judge.origin_text(lib.entries[choice]),
