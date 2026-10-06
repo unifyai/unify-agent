@@ -712,7 +712,10 @@ class Pending:
         ):
             # Calls made through such a global bypass the recorder, so the
             # trace may miss some: a replay that runs past it is inconclusive.
+            # So may the trace of every stored function this one runs inside
+            # (recording now, so active), or a caller would read "complete".
             self.trace.partial = True
+            _mark_incomplete()
 
     def _redacted_positional(self, signature: Any, args: List[Any]) -> List[Any]:
         """Positional ``args`` with the ones bound to a credential-named parameter replaced."""

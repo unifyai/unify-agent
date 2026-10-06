@@ -857,3 +857,65 @@ def test_switch_off_records_nothing_and_overwrites_as_shipped(cases_off, music_e
     assert all("cases" not in row for row in fm.filter_functions())
     assert "error" in fm.retire_case(function_name="double", case_id=1, why="x")
     assert _row_count() == 0
+
+
+# --------------------------------------------------------------------------- #
+#  Calls through an environment global, nested                                 #
+# --------------------------------------------------------------------------- #
+
+USES_GLOBAL = "def fetch_greeting() -> str:\n    return apis.greeting()\n"
+CALLS_IT = "def shout_greeting() -> str:\n    return fetch_greeting().upper()\n"
+
+
+@pytest.fixture
+def global_env():
+    """An environment that also binds a raw global, ``apis``, whose calls bypass the recorder."""
+    clear_environment_namespaces()
+    apis = SimpleNamespace(greeting=lambda: "hello")
+    register_environment(
+        EnvironmentSurface(namespaces=(), globals={"apis": apis}),
+        source="tests:global",
+    )
+    from unify.function_manager import function_manager as fm_module
+
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+    yield apis
+    clear_environment_namespaces()
+    fm_module._PRIMITIVES_SEEDED_FOR.clear()
+
+
+@_handle_project
+def test_a_caller_of_a_function_using_an_environment_global_is_recorded_as_incomplete(
+    cases_on,
+    global_env,
+):
+    """The callee's calls through ``apis`` are not recorded, so neither trace is complete.
+
+    Before, only the function whose own source named ``apis`` was marked; its
+    caller's case read "complete, no environment calls" and so looked pure.
+    """
+    fm = _FM()
+    fm.add_functions(implementations=[USES_GLOBAL, CALLS_IT])
+    namespace = {"apis": global_env}
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    assert namespace["shout_greeting"]() == "HELLO"
+    (inner,) = _cases(fm, "fetch_greeting")
+    (outer,) = _cases(fm, "shout_greeting")
+    assert inner.trace_complete is False
+    assert outer.trace_complete is False
+
+
+@_handle_project
+def test_a_caller_of_a_pure_function_stays_complete(cases_on, global_env):
+    fm = _FM()
+    fm.add_functions(
+        implementations=[
+            DOUBLE,
+            "def quadruple(x: int) -> int:\n    return double(double(x))\n",
+        ],
+    )
+    namespace = {"apis": global_env}
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    assert namespace["quadruple"](2) == 8
+    (outer,) = _cases(fm, "quadruple")
+    assert outer.trace == () and outer.trace_complete
