@@ -4089,10 +4089,12 @@ class FunctionManager(BaseFunctionManager):
         else:  # stateless
             globals_dict = create_base_globals()
 
-        # Globals a registered environment binds, as the sandbox has them.
+        # Globals a registered environment binds, as the sandbox has them
+        # (proxied while a feature that observes environment calls is on).
         from .primitives.environment import environment_globals
+        from .primitives.observers import observed_globals
 
-        for env_name, env_value in environment_globals().items():
+        for env_name, env_value in observed_globals(environment_globals()).items():
             globals_dict.setdefault(env_name, env_value)
 
         # Inject all extra namespaces into globals (always, since they may

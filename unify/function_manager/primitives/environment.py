@@ -196,9 +196,24 @@ def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]
     # nothing is recording while the switch is off.
     from unify.function_manager import store_cases
 
+    # The observer seam (observers.py): with no observer pushed the call takes
+    # the path below unchanged; with one, the same path runs inside its
+    # before/after hooks unless an observer intercepts it.
+    from . import observers
+
+    def env_call(args: tuple, kwargs: Dict[str, Any]) -> "observers.EnvCall":
+        return observers.EnvCall(
+            namespace=namespace,
+            method=method.name,
+            effect=method.effect,
+            args=args,
+            kwargs=kwargs,
+            via="primitives",
+        )
+
     if inspect.iscoroutinefunction(call):
 
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        async def run_async(args: tuple, kwargs: Dict[str, Any]) -> Any:
             if store_cases.recording():
                 return await store_cases.observe_primitive_async(
                     namespace,
@@ -209,9 +224,19 @@ def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]
                 )
             return await call(*args, **kwargs)
 
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            active = observers.current()
+            if active:
+                return await observers.dispatch_async(
+                    active,
+                    env_call(args, kwargs),
+                    lambda: run_async(args, kwargs),
+                )
+            return await run_async(args, kwargs)
+
     else:
 
-        def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+        def run(args: tuple, kwargs: Dict[str, Any]) -> Any:
             if store_cases.recording():
                 return store_cases.observe_primitive(
                     namespace,
@@ -221,6 +246,16 @@ def _documented(namespace: str, method: EnvironmentMethod) -> Callable[..., Any]
                     kwargs,
                 )
             return call(*args, **kwargs)
+
+        def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+            active = observers.current()
+            if active:
+                return observers.dispatch(
+                    active,
+                    env_call(args, kwargs),
+                    lambda: run(args, kwargs),
+                )
+            return run(args, kwargs)
 
     wrapper.__name__ = method.name
     wrapper.__qualname__ = f"primitives.{namespace}.{method.name}"

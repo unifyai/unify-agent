@@ -270,10 +270,13 @@ def create_execution_globals() -> Dict[str, Any]:
     globals_dict["unillm"] = unillm
 
     # Globals a registered environment binds beside its namespaces; never in
-    # place of one of the above.
+    # place of one of the above. While a feature that observes environment
+    # calls is on, each is a proxy whose calls reach the observers
+    # (primitives/observers.py); otherwise the registered object itself.
     from unify.function_manager.primitives.environment import environment_globals
+    from unify.function_manager.primitives.observers import observed_globals
 
-    for name, value in environment_globals().items():
+    for name, value in observed_globals(environment_globals()).items():
         globals_dict.setdefault(name, value)
 
     return globals_dict
