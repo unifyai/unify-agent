@@ -1014,6 +1014,13 @@ class ProductionSettings(BaseSettings):
     # results. Informs only (unify/function_manager/origin_replay.py). Off: no
     # table, no line.
     UNIFY_ORIGIN_REPLAY_STATUS: bool = False
+    # Show the storage review, in its prompt, the library entries closest to
+    # its session in full: the stored functions the session called, then the
+    # functions and guidance entries whose cards are closest to its request
+    # (at most five of each), with signature, description, the request each
+    # was stored for and its source or content. The review keeps every tool;
+    # this only spares lookups (unify/actor/review_shortlist.py). Off: as shipped.
+    UNIFY_REVIEW_SHORTLIST: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1239,6 +1246,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_EMPTY_NOTICE",
         "UNIFY_FUNCTION_VALUE_NOTICE",
         "UNIFY_ORIGIN_REPLAY_STATUS",
+        "UNIFY_REVIEW_SHORTLIST",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",

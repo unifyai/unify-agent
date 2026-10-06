@@ -2912,6 +2912,10 @@ def _start_storage_check_loop_inner(
     # UNIFY_REVIEW_GENERALISE (not for a lessons-only review, which stores
     # no functions).
     generalise_note = "" if lessons else _review_generalise_note(fm, gm)
+    # UNIFY_REVIEW_SHORTLIST: the library entries closest to this session, in full.
+    from unify.actor import review_shortlist as _review_shortlist
+
+    generalise_note += _review_shortlist.section(fm, gm, trajectory)
     tools, storage_active_lines, dormant_lines = _build_storage_tools(
         actor=actor,
         ask_tools=ask_tools,
