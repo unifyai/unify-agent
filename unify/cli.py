@@ -81,7 +81,10 @@ session as {"quit": true} does. Progress still goes to stderr. With
 UNIFY_OUTCOME on, a stdin line {"outcome": {...}} gives the session its
 checked outcome for the storage review (see unify/outcome.py) and is
 answered with {"type": "outcome", "accepted": ...}; with it off such a line
-is ignored.
+is ignored. With UNIFY_AGENTS=record a message is posted to the run's shared
+record and reaches the actor at its next step instead of interrupting it,
+and each record entry that mentions @user is written out as
+{"type": "record", ...} (a "record>" line without --jsonl).
 """
 
 
@@ -485,6 +488,8 @@ class Act:
         self._args = args
         self._actor = None
         self._handle = None
+        # UNIFY_AGENTS=record: routes lines into the shared record (None: off).
+        self._bridge = None
         self._pending_clarifications: asyncio.Queue[dict] = asyncio.Queue()
         self._closing = asyncio.Event()
         # Set once the session is asked to end (/quit, {"quit": true}, end
@@ -540,6 +545,17 @@ class Act:
         """One JSON line on stdout (``--jsonl``)."""
         print(json.dumps(payload, default=str), flush=True)
 
+    def _emit_record(self, **entry: object) -> None:
+        """A record entry that mentions @user (UNIFY_AGENTS=record)."""
+        if self._args.jsonl:
+            self._emit(**entry)
+        else:
+            print(
+                f"\nrecord> #{entry.get('seq')} {entry.get('author')}: "
+                f"{entry.get('text')}",
+                flush=True,
+            )
+
     async def _watch_notifications(self) -> None:
         while not self._closing.is_set():
             notif = await self._handle.next_notification()
@@ -560,6 +576,8 @@ class Act:
                     )
                 else:
                     print(f"\n{notif.get('content', '')}\n", flush=True)
+                if self._bridge is not None:
+                    await self._bridge.root_replied(str(notif.get("content", "")))
             elif kind in ("storage_review_complete", "turn_storage_review_complete"):
                 verdict = "stored" if notif.get("success") else "storage review failed"
                 if self._args.jsonl:
@@ -622,6 +640,8 @@ class Act:
                     if item.get("quit"):
                         line = "/quit"
                     elif item.get("cancel"):
+                        if self._bridge is not None:
+                            self._bridge.cancel_posted()
                         # A one-shot session's request is the session.
                         if not self._args.persist:
                             line = "/quit"
@@ -647,6 +667,10 @@ class Act:
                     self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
+                if self._bridge is not None:
+                    # UNIFY_AGENTS=record: a post, read at the next boundary.
+                    await self._bridge.user_message(line)
+                    continue
                 if not self._pending_clarifications.empty():
                     clar = await self._pending_clarifications.get()
                     await self._handle.answer_clarification(
@@ -786,6 +810,9 @@ class Act:
             can_store=not args.no_store,
             clarification_enabled=clarify,
         )
+        from unify.agents.cli_bridge import attach_bridge
+
+        self._bridge = attach_bridge(self._handle, self._emit_record)
         watchers = [
             asyncio.create_task(self._watch_notifications()),
             asyncio.create_task(self._watch_clarifications()),
