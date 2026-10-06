@@ -544,7 +544,7 @@ class PythonExecutionSession:
         scratch: bool = False,
     ) -> dict:
         """Run one cell in the sandbox; the caller holds ``_execution_lock``."""
-        from unify.common._async_tool import cell_reply
+        from unify.common._async_tool import bound_request, cell_reply
 
         from .worker import KILLED_NOTE, WorkerCellError
         from .worker_child import CellReply
@@ -556,6 +556,9 @@ class PythonExecutionSession:
         with capture_sandbox_output() as (stdout_parts, stderr_parts, display_fn):
             # Inject display function into globals
             self.global_state["display"] = display_fn
+            # UNIFY_BIND_REQUEST=on: a fresh ``request`` for the running
+            # loop's current request (none in a loop without one).
+            bound_request.install(self.global_state)
 
             try:
                 # Guardrails: prevent agent code from accidentally shadowing critical

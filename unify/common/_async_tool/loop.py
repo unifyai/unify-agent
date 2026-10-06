@@ -71,6 +71,7 @@ from . import cache_discipline as _cache_discipline
 from . import repeat_guard as _repeat_guard_mod
 from . import batch_wait as _batch_wait
 from . import cell_reply as _cell_reply
+from . import bound_request as _bound_request
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
@@ -566,6 +567,7 @@ async def async_tool_loop_inner(
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    bind_request: Any = False,
 ) -> str:
     r"""
     Run an interactive function-calling dialogue between an LLM and a set of
@@ -734,6 +736,13 @@ async def async_tool_loop_inner(
         runs, nor after a turn has ended, so nothing it returns can race or
         cancel a call (``UNIFY_AGENTS=record``). ``None``: as shipped.
 
+    bind_request : ``bool`` or ``RequestSlot``, default ``False``
+        ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
+        requester's latest message is the current request a cell reads as
+        ``request`` (``bound_request.py``); the handle passes its own slot,
+        which a restart after compression keeps. Ignored while the switch is
+        off; any other loop's cells have no ``request``.
+
     Returns
     -------
     str
@@ -809,6 +818,10 @@ async def async_tool_loop_inner(
         reply_channel and _rf_norm is None and multi_handle_coordinator is None,
     )
     _reply_slot = _cell_reply.current() if _reply_token is not None else None
+    # UNIFY_BIND_REQUEST=on: this loop's current request, which its cells
+    # read as ``request``; ``None`` for a loop that answers no requester.
+    _request_token = _bound_request.bind(bind_request)
+    _request_slot = _bound_request.current() if _request_token is not None else None
     _discipline = _cache_discipline.enabled()
     # UNIFY_REPEAT_GUARD: a persistent session's replies and the requester
     # messages that answered them, to hold back a reply already answered.
@@ -997,6 +1010,9 @@ async def async_tool_loop_inner(
 
     # ── Seeded batch ─────────────────────────────────────────────────────
     seeded_batch = None
+    # UNIFY_BIND_REQUEST=on: the request as the requester wrote it, without
+    # the session context put before it below.
+    _bound_request.record_first(_request_slot, message)
     if isinstance(message, list):
         # A list of content blocks (no 'role') becomes one user message;
         # anything else is a pre-structured list of chat messages/strings.
@@ -2706,6 +2722,9 @@ async def async_tool_loop_inner(
                         loop_user_notice(ctx_cont_content, _ctx_header=True),
                     )
                 if _msg_text:
+                    # UNIFY_BIND_REQUEST=on: the requester's message is now
+                    # the current request.
+                    _bound_request.record(_request_slot, _msg_text)
                     _user_content = (
                         time_ctx.prefix_user_message(_msg_text)
                         if time_ctx is not None
@@ -5367,6 +5386,7 @@ async def async_tool_loop_inner(
         raise
     finally:
         _cell_reply.unbind(_reply_token)
+        _bound_request.unbind(_request_token)
         # A loop stopped before its first LLM step still logs its stop.
         if log_steps:
             logger.flush_deferred()

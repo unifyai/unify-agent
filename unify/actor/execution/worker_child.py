@@ -92,9 +92,11 @@ __all__ = [
     "BoundaryRefusal",
     "CellReply",
     "Reply",
+    "Request",
     "MAX_DEPTH",
     "TAG",
     "decode",
+    "json_values",
     "encode",
     "short_repr",
 ]
@@ -189,6 +191,93 @@ class Reply:
 
     def __repr__(self) -> str:
         return "<reply(text): send text as your reply and end your turn>"
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_BIND_REQUEST=on: the current request as ``request`` in a cell
+# ---------------------------------------------------------------------------
+# Defined here, with the standard library only, so the worker and the
+# in-process sandbox read a request the same way (the harness side is
+# unify/common/_async_tool/bound_request.py).
+
+_JSON_DECODER = json.JSONDecoder()
+_JSON_OPEN = re.compile(r"[\[{]")
+
+
+def json_values(text: str) -> list:
+    """Every top-level JSON object and array in *text*, parsed, in order.
+
+    The text is scanned from the left: at each ``{`` or ``[`` the standard
+    json module reads one value; a value read is kept and the scan goes on
+    after it. Where no valid value starts, the scan goes on from the point
+    where the text stopped being JSON. So a fenced block and JSON written in
+    prose are found alike, a nested array is one value (the outermost),
+    brackets inside a JSON string belong to the string, invalid JSON is
+    ignored (with any value inside it before the point where it fails), and
+    the scan takes time linear in the text. Brackets nested deeper than the
+    json module reads end the scan. Scalars outside an object or array are
+    not collected.
+    """
+    values: list = []
+    index = 0
+    while True:
+        found = _JSON_OPEN.search(text, index)
+        if found is None:
+            return values
+        start = found.start()
+        try:
+            value, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            index = max(exc.pos, start + 1)
+            continue
+        except RecursionError:
+            return values
+        values.append(value)
+        index = end
+
+
+class Request:
+    """request: the current request, read-only.
+
+    ``request.text`` is the request's text, as you received it;
+    ``request.data`` is the list of JSON objects and arrays it contains, in
+    order of appearance. Each cell gets a fresh copy, so what a cell does to
+    it does not reach a later cell.
+    """
+
+    __slots__ = ("_text", "_data")
+
+    def __init__(self, text: str) -> None:
+        object.__setattr__(self, "_text", str(text))
+        object.__setattr__(self, "_data", json_values(self._text))
+
+    @property
+    def text(self) -> str:
+        return self._text
+
+    @property
+    def data(self) -> list:
+        return self._data
+
+    def renewed(self) -> "Request":
+        """A fresh copy, for the next cell."""
+        return Request(self._text)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(
+            f"request is read-only: request.{name} cannot be set; copy what you "
+            "need into a variable of your own",
+        )
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError(f"request is read-only: request.{name} cannot be deleted")
+
+    def __repr__(self) -> str:
+        count = len(self._data)
+        return (
+            f"<request: {len(self._text)} characters of text (request.text), "
+            f"{count} JSON value{'' if count == 1 else 's'} in request.data>"
+        )
 
 
 def short_repr(value: Any, limit: int = MAX_REPR) -> str:
@@ -1166,6 +1255,9 @@ class Worker:
                 )
             elif kind == "local":
                 obj = self._local(desc["local"])
+            elif kind == "request":
+                # UNIFY_BIND_REQUEST=on: renewed before each cell.
+                obj = Request(str(desc.get("text") or ""))
             elif kind == "import":
                 obj = self._import(desc["spec"])
             elif kind == "model":
@@ -1177,6 +1269,15 @@ class Worker:
                 obj = _Refused(name, str(desc.get("reason") or "it cannot cross"))
             self.ns[name] = obj
             self.installed[name] = obj
+
+    def renew_requests(self) -> None:
+        """UNIFY_BIND_REQUEST=on: each cell gets a fresh ``request``, so what
+        a cell did to it (or a rebinding of the name) does not last."""
+        for name, obj in list(self.installed.items()):
+            if isinstance(obj, Request):
+                fresh = obj.renewed()
+                self.ns[name] = fresh
+                self.installed[name] = fresh
 
     def variables(self) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -1447,6 +1548,7 @@ class Worker:
         self.reply.new_cell()
         try:
             self.apply_sync(msg.get("sync") or {})
+            self.renew_requests()
             ns = dict(self.ns) if msg.get("scratch") else self.ns
             try:
                 exec(compile(msg["source"], "<string>", "exec"), ns)

@@ -24,7 +24,8 @@ in the worker as one of:
   model-written body runs confined and only its primitive calls come back;
 * a **value** (plain data), sent once;
 * a **worker-local** stand-in (``display``, ``run_coro_sync``,
-  ``_around_cp``, ``SteerableToolHandle``, ``reply``);
+  ``_around_cp``, ``SteerableToolHandle``, ``reply``), or the current
+  ``request``, built in the worker from its text;
 * or **refused**, naming why, when none of these applies.
 
 Values cross as tagged JSON (worker_child.py explains why not pickle). A result
@@ -448,6 +449,9 @@ class PythonWorker:
         if isinstance(value, child.Reply):
             # UNIFY_REPLY_CHANNEL=code+text: the worker's own reply().
             return {"kind": "local", "local": "reply"}
+        if isinstance(value, child.Request):
+            # UNIFY_BIND_REQUEST=on: the worker builds its own from the text.
+            return {"kind": "request", "text": value.text}
         if isinstance(value, types.ModuleType):
             spec = _importable(name, value)
             if spec is not None:

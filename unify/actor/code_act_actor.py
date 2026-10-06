@@ -7156,6 +7156,8 @@ class CodeActActor(BaseCodeActActor):
                 persist=persist,
                 # UNIFY_REPLY_CHANNEL=code+text: a cell's reply() ends a turn.
                 reply_channel=True,
+                # UNIFY_BIND_REQUEST=on: a cell reads the request as ``request``.
+                bind_request=True,
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(

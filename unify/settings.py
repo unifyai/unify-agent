@@ -278,6 +278,20 @@ class ProductionSettings(BaseSettings):
     # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
     # Empty: replies are text only, as shipped.
     UNIFY_REPLY_CHANNEL: str = ""
+    # ``on``: model code in a cell reads the current request as ``request``
+    # (in process and under UNIFY_WORKSPACE_PYTHON=worker): ``request.text``
+    # is the requester's latest message, the request or a later message of a
+    # persistent session, as the model reads it (without the session context
+    # the harness opens the first message with); ``request.data`` is the
+    # list of JSON objects and arrays found in that text, in order of
+    # appearance, parsed with the standard json module. Nothing else is
+    # parsed. Each cell gets a fresh, read-only ``request`` (its attributes
+    # cannot be set; a cell's changes to ``request.data`` and a rebinding of
+    # the name last for that cell only). A loop that answers no requester
+    # (the storage review) has none. The prompt says so in one sentence in
+    # its Sandbox Environment section; the tools are unchanged
+    # (unify/common/_async_tool/bound_request.py). Empty: as shipped.
+    UNIFY_BIND_REQUEST: str = ""
     # ``optional``: ``thought`` on execute_code and execute_function is no
     # longer required in their schemas and its description says it may be
     # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
@@ -1537,6 +1551,17 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_REPLY_WORDING must be empty, 'reason' or 'action_last', "
                 f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_BIND_REQUEST", mode="before")
+    @classmethod
+    def parse_bind_request(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_BIND_REQUEST must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 

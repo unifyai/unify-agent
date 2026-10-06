@@ -106,6 +106,7 @@ SWITCH_SETS = {
         "UNIFY_FUNCTION_CASES": True,
         "UNIFY_REPLY_WORDING": "reason",
         "UNIFY_REPLY_CHANNEL": "code+text",
+        "UNIFY_BIND_REQUEST": "on",
     },
     "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
     "doctrine and note": {
@@ -143,6 +144,7 @@ SWITCH_SETS = {
         "UNIFY_FUNCTION_CASES": True,
         "UNIFY_REPLY_WORDING": "reason",
         "UNIFY_REPLY_CHANNEL": "code+text",
+        "UNIFY_BIND_REQUEST": "on",
     },
 }
 SWITCH_OFF = {
@@ -160,6 +162,7 @@ SWITCH_OFF = {
     "UNIFY_REVIEW_GATE": False,
     "UNIFY_REPLY_WORDING": "",
     "UNIFY_REPLY_CHANNEL": "",
+    "UNIFY_BIND_REQUEST": "",
 }
 
 PROMPT_MODES = {
@@ -452,7 +455,12 @@ def test_the_switched_texts_are_in_the_prompt_they_lint(monkeypatch, actor_tools
         can_store=True,
         inline_curation="on",
     )
-    for text in (pb._TRY_FIRST_NOTE, pb._CODE_FIRST, "**Functions, during the task**"):
+    for text in (
+        pb._TRY_FIRST_NOTE,
+        pb._CODE_FIRST,
+        "**Functions, during the task**",
+        pb._BIND_REQUEST_LINE,
+    ):
         assert text in prompt
 
 

@@ -20,6 +20,7 @@ from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
 from .llm_client import fork_llm_client, new_llm_client
 from ._async_tool import cache_discipline as _cache_discipline
+from ._async_tool import bound_request as _bound_request
 from unify import transcripts
 from ._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from ._async_tool.event_bus_util import to_event_bus
@@ -1174,6 +1175,7 @@ def start_async_tool_loop(
     compression_tools_on_demand: bool = False,
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    bind_request: bool = False,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for
@@ -1191,7 +1193,7 @@ def start_async_tool_loop(
         Text that opens the loop's first user message, and the message that
         restarts it after compression (see ``async_tool_loop_inner``).
 
-    steering_tools, compression_tools_on_demand, reply_channel : bool
+    steering_tools, compression_tools_on_demand, reply_channel, bind_request : bool
         See ``async_tool_loop_inner``; the defaults are as shipped.
 
     on_turn_boundary : optional coroutine function
@@ -1253,6 +1255,9 @@ def start_async_tool_loop(
     pause_event = asyncio.Event()
     pause_event.set()  # start un-paused
     runtime_state = ToolLoopRuntimeState()
+    # UNIFY_BIND_REQUEST=on: the loop's current request, kept by the handle
+    # so a loop restarted after compression keeps it.
+    request_slot = _bound_request.new_slot(bind_request)
 
     # Mutable container through which the inner loop reaches the outer handle
     # once it exists.
@@ -1330,6 +1335,7 @@ def start_async_tool_loop(
                 compression_tools_on_demand=compression_tools_on_demand,
                 reply_channel=reply_channel,
                 on_turn_boundary=on_turn_boundary,
+                bind_request=request_slot,
             )
         except asyncio.CancelledError:
             raise
@@ -1420,6 +1426,7 @@ def start_async_tool_loop(
         "compression_tools_on_demand": compression_tools_on_demand,
         "reply_channel": reply_channel,
         "on_turn_boundary": on_turn_boundary,
+        "bind_request": request_slot,
     }
 
     with suppress(Exception):

@@ -570,7 +570,37 @@ _SUB_ACTOR_DIAL = textwrap.dedent("""
 """).lstrip()
 
 
+# UNIFY_BIND_REQUEST=on: a cell reads the current request as ``request``
+# (unify/common/_async_tool/bound_request.py), said once, before the table of
+# the injected globals.
+_BIND_REQUEST_LINE = (
+    "The current request is available in cells as `request`: `request.text`\n"
+    "is its text and `request.data` the JSON values it contains, in order."
+)
+_GLOBALS_TABLE = "| Global | What it is |"
+
+
+def _with_bound_request(section: str) -> str:
+    from unify.common._async_tool import bound_request
+
+    if not bound_request.enabled():
+        return section
+    return section.replace(
+        f"\n\n{_GLOBALS_TABLE}",
+        f"\n\n{_BIND_REQUEST_LINE}\n\n{_GLOBALS_TABLE}",
+        1,
+    )
+
+
 def _build_sandbox_environment_section(*, has_primitives: bool) -> str:
+    """The sandbox section; UNIFY_BIND_REQUEST=on says a cell reads the
+    request as ``request``, before the table of globals."""
+    return _with_bound_request(
+        _shipped_sandbox_environment_section(has_primitives=has_primitives),
+    )
+
+
+def _shipped_sandbox_environment_section(*, has_primitives: bool) -> str:
     """One table of the actually injected sandbox globals + query_llm doctrine.
 
     The globals table mirrors ``create_execution_globals()``
