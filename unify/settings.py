@@ -239,6 +239,12 @@ class ProductionSettings(BaseSettings):
     # (a variable holding a token, say) by name, and that
     # ``execute_function`` takes literal values only. Empty: as shipped.
     UNIFY_EXECUTE_FUNCTION_HINT: str = ""
+    # ``optional``: ``thought`` on execute_code and execute_function is no
+    # longer required in their schemas and its description says it may be
+    # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
+    # ``thought`` field, so only execute_function changes. Empty: required,
+    # as shipped.
+    UNIFY_THOUGHT_FIELD: str = ""
     # On: a function or guidance entry is checked, before it is stored, for
     # identifiers of the session's own task instance: id-like tokens (hex
     # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
@@ -1390,6 +1396,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "neutral"):
             raise ValueError(
                 f"UNIFY_EXECUTE_FUNCTION_HINT must be empty or 'neutral', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_THOUGHT_FIELD", mode="before")
+    @classmethod
+    def parse_thought_field(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "required" else value
+        if value not in ("", "optional"):
+            raise ValueError(
+                "UNIFY_THOUGHT_FIELD must be empty, 'required' or 'optional', "
+                f"not {v!r}",
             )
         return value
 

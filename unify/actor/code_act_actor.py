@@ -970,6 +970,39 @@ def _function_cases_enabled() -> bool:
     return store_cases.enabled()
 
 
+_THOUGHT_REQUIRED = "always provide it."
+_THOUGHT_OPTIONAL = "you may leave it out."
+
+
+def _optional_thought(fn: Callable[..., Any]) -> None:
+    """UNIFY_THOUGHT_FIELD=optional: *fn*'s ``thought`` is not required.
+
+    The schema is read from the signature and the ``Annotated`` description,
+    so both are replaced on the function: ``thought`` gets the default the
+    loop already backfills (``llm_soft_required``), every parameter becomes
+    keyword-only so a required one may follow it (the loop calls tools by
+    keyword), and the description says it may be left out. The docstring's
+    "Always provide it." follows."""
+    from typing import get_args
+
+    sig = inspect.signature(fn)
+    hint = fn.__annotations__["thought"]
+    base, description = get_args(hint)
+    hint = Annotated[base, description.replace(_THOUGHT_REQUIRED, _THOUGHT_OPTIONAL)]
+    params = []
+    for param in sig.parameters.values():
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            params.append(param)
+            continue
+        if param.name == "thought":
+            param = param.replace(default="", annotation=hint)
+        params.append(param.replace(kind=param.KEYWORD_ONLY))
+    fn.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
+    fn.__annotations__ = {**fn.__annotations__, "thought": hint}
+    if fn.__doc__:
+        fn.__doc__ = fn.__doc__.replace("Always provide it.", "You may leave it out.")
+
+
 # UNIFY_REVIEW_GENERALISE: the review sees the functions stored for requests
 # like this one, so that a second instance of a task generalises the first
 # instance's function instead of storing a sibling. On the 5 Oct ARC LOW runs
@@ -5054,6 +5087,12 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     pass
 
+        # UNIFY_THOUGHT_FIELD=optional: the schema does not require ``thought``.
+        from unify.settings import SETTINGS as _THOUGHT_SETTINGS
+
+        if _THOUGHT_SETTINGS.UNIFY_THOUGHT_FIELD == "optional":
+            _optional_thought(execute_code)
+
         # ───────────────────────── Package installation tool ────────────────── #
 
         async def install_python_packages(
@@ -5963,6 +6002,8 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     return "execute_function"
 
+            if _THOUGHT_SETTINGS.UNIFY_THOUGHT_FIELD == "optional":
+                _optional_thought(execute_function)
             tools["execute_function"] = ToolSpec(
                 fn=execute_function,
                 display_label=_ef_display_label,
