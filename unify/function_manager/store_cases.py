@@ -794,6 +794,9 @@ class CaseRecorder:
             if error is not None and pending.caller_fault is not None:
                 return
             _store(self, pending, result=result, error=error)
+            from . import run_summary
+
+            run_summary.record(self, pending, error=error)
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.warning("A case of %r was not recorded: %s", self.name, exc)
 

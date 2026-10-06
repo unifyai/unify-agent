@@ -23,6 +23,7 @@ from unify.settings import SETTINGS
 NEW_SWITCHES = {
     "UNIFY_FUNCTION_PATCH": False,
     "UNIFY_FUNCTION_CASES": False,
+    "UNIFY_FUNCTION_SUMMARY": False,
     "UNIFY_INLINE_CURATION": "",
     "UNIFY_STORE_DEDUPE": "",
     "UNIFY_STORE_TRUST": "",

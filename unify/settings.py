@@ -353,6 +353,15 @@ class ProductionSettings(BaseSettings):
     # (unify/function_manager/store_cases.py). Off: nothing is recorded or
     # replayed and every tool is as shipped.
     UNIFY_FUNCTION_CASES: bool = False
+    # With UNIFY_FUNCTION_CASES on, every recorded call of a stored function
+    # also leaves one small row (store home, function_runs.sqlite): per
+    # environment endpoint, calls made and items per answer; a digest per
+    # argument; whether the trace is complete; and its request. Cases keep
+    # only the latest few calls, so facts over many runs come from these
+    # rows, summarised when read over the calls whose request was accepted
+    # (unify/function_manager/run_summary.py). Missing evidence reads
+    # "unknown". Nothing is shown to the agent yet. Off: no table, no row.
+    UNIFY_FUNCTION_SUMMARY: bool = False
     # ``on``: the actor's prompt says that during the task it may store a
     # unit that ran and worked and repair a stored function that failed,
     # keeping its behaviour on the inputs it handled (a behaviour change gets
@@ -1163,6 +1172,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_SIMILAR_REQUEST_IDENTIFIERS",
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",
+        "UNIFY_FUNCTION_SUMMARY",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",
