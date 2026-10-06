@@ -4476,6 +4476,29 @@ def _agents_mode() -> bool:
     return agents.enabled()
 
 
+async def _end_agents_request(
+    agents_binding,
+    *,
+    reply: Optional[str] = None,
+    reason: str = "",
+) -> None:
+    """UNIFY_AGENTS=record: end the main agent's request in its record.
+
+    With a reply, the reply is recorded and running helpers are stopped;
+    without one, the helpers are stopped with ``reason``. Only the main agent
+    ends a request, and a failure here never costs the caller its result.
+    """
+    if agents_binding is None or agents_binding.name != "root":
+        return
+    try:
+        if reply is not None:
+            await agents_binding.pool.finish_request(reply)
+        else:
+            await agents_binding.pool.close(reason)
+    except Exception:
+        logger.warning("could not end the request in the agent record", exc_info=True)
+
+
 class CodeActActor(BaseCodeActActor):
     """
     An actor that uses a conversational tool loop and a stateful code execution
@@ -7193,14 +7216,29 @@ class CodeActActor(BaseCodeActActor):
 
         # Wrap result() to run cleanup when the loop finishes
         _original_result = handle.result
+        _loop_handle = handle
 
         async def _result_with_cleanup() -> str:
             try:
-                result = await _original_result()
+                try:
+                    result = await _original_result()
+                except BaseException:
+                    await _end_agents_request(
+                        _agents,
+                        reason="the main agent's run failed",
+                    )
+                    raise
                 # UNIFY_AGENTS=record: the main agent's answer ends its request;
-                # helpers still running are stopped and checked to have ended.
-                if _agents is not None and _agents.name == "root" and not persist:
-                    await _agents.pool.finish_request(str(result))
+                # helpers still running are stopped and checked to have ended. A
+                # stopped run or a finished session has no answer to record.
+                stop_event = getattr(_loop_handle, "_stop_event", None)
+                if persist or (stop_event is not None and stop_event.is_set()):
+                    await _end_agents_request(
+                        _agents,
+                        reason="the main agent's session ended or was stopped",
+                    )
+                else:
+                    await _end_agents_request(_agents, reply=str(result))
                 return result
             finally:
                 await _cleanup()
@@ -7242,6 +7280,9 @@ class CodeActActor(BaseCodeActActor):
         _instance_lint.leave(instance_token)
         _evidence_ledger.leave(ledger_token)
         _task_origin.leave(task_origin_token)
+        if _agents is not None:
+            # The handle the caller holds (the storage wrapper by default).
+            handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
         return handle
 
     async def close(self):

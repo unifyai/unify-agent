@@ -173,3 +173,116 @@ async def test_a_long_cell_never_wakes_the_model_in_record_mode(monkeypatch, tmp
     assert "Still working on the code step" not in json.dumps(requests)
     msgs = requests[1]["messages"]
     assert msgs[-1]["role"] == "tool" and "ok" in json.dumps(msgs[-1])
+
+
+def _fake_helper(pool, name="h9"):
+    """A helper that never ends unless it is stopped."""
+    pool.record.add_agent(name, spawner="root")
+    pool._tasks[name] = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
+    return pool._tasks[name]
+
+
+async def _actor(monkeypatch, tmp_path):
+    from unify.actor.code_act_actor import CodeActActor
+    from unify.agents import binding
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "record")
+    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
+    return CodeActActor(
+        environments=actor_env.top_level_environments(),
+        tool_policy=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_a_stored_session_handle_carries_the_pool(monkeypatch, tmp_path):
+    # The CLI's default (storage on) wraps the loop's handle for the review.
+    actor = await _actor(monkeypatch, tmp_path)
+    try:
+        with h.scripted(_DONE * 12):
+            handle = await actor.act(
+                "Answer the request.",
+                persist=False,
+                can_store=True,
+                clarification_enabled=False,
+            )
+            assert getattr(handle, "agents_pool", None) is not None
+            await asyncio.wait_for(handle.result(), 120)
+    finally:
+        await actor.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_a_stopped_main_agent_stops_its_helpers_and_records_no_reply(
+    monkeypatch,
+    tmp_path,
+):
+    from unify.agents.binding import current_root_pool
+
+    actor = await _actor(monkeypatch, tmp_path)
+    helper = {}
+
+    def first():
+        helper["task"] = _fake_helper(current_root_pool())
+        return h.completion(
+            calls=[
+                (
+                    "execute_code",
+                    {"thought": "t", "code": "import asyncio\nawait asyncio.sleep(5)"},
+                ),
+            ],
+        )
+
+    try:
+        with h.scripted([first, *_DONE * 3]):
+            handle = await actor.act(
+                "Answer the request.",
+                persist=False,
+                can_store=False,
+                clarification_enabled=False,
+            )
+            await asyncio.sleep(1.0)
+            await handle.stop("the user stopped it")
+            await asyncio.wait_for(handle.result(), 60)
+    finally:
+        await actor.close()
+    pool = current_root_pool()
+    assert helper["task"].done()
+    kinds = [(e.author, e.kind) for e in pool.record.entries]
+    assert ("root", "reply") not in kinds
+    notice = [e.text for e in pool.record.entries if e.kind == "system"]
+    assert notice and "stopped" in notice[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_a_turn_ended_by_a_cells_reply_gets_no_block_and_no_model_call(
+    monkeypatch,
+    tmp_path,
+):
+    from unify.agents.binding import current_root_pool
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
+    actor = await _actor(monkeypatch, tmp_path)
+
+    def first():
+        current_root_pool().record.append("user", "posted during the last call")
+        return h.completion(
+            calls=[("execute_code", {"thought": "t", "code": "reply('final answer')"})],
+        )
+
+    try:
+        with h.scripted([first]) as provider:
+            handle = await actor.act(
+                "Answer the request.",
+                persist=False,
+                can_store=False,
+                clarification_enabled=False,
+            )
+            result = await asyncio.wait_for(handle.result(), 60)
+    finally:
+        await actor.close()
+    assert result == "final answer" and len(provider.requests) == 1
+    assert "posted during the last call" not in json.dumps(provider.requests)
