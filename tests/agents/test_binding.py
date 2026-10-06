@@ -22,7 +22,8 @@ def test_the_first_act_is_the_main_agent_and_has_seen_the_request(record_mode):
     rec = b.pool.record
     assert b.name == "root" and rec.entries[0].author == "user"
     assert rec.participants["root"].cursor == 1
-    assert rec.path.parent.name == "records" and rec.path.exists()
+    assert rec.path.parent.parent.name == "records" and rec.path.exists()
+    assert rec.path.name == "record.jsonl"  # one folder per run
     assert set(b.globals()) == {"record", "agents"}
     assert binding.current_root_pool() is b.pool
 

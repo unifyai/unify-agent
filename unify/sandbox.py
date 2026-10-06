@@ -282,6 +282,19 @@ def _notices_dir() -> Path:
     return _NOTICES_DIR
 
 
+def _current_run_records() -> Optional[Path]:
+    """UNIFY_AGENTS=record: the folder holding this run's record, if one is open."""
+    from unify.settings import SETTINGS
+
+    if getattr(SETTINGS, "UNIFY_AGENTS", "") != "record":
+        return None
+    from unify.agents.binding import current_root_pool
+
+    pool = current_root_pool()
+    path = pool.record.path if pool is not None else None
+    return Path(os.path.realpath(path.parent)) if path is not None else None
+
+
 def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     """The policy for the current settings and filesystem.
 
@@ -306,6 +319,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", ""),
             getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0),
             getattr(SETTINGS, "UNIFY_AGENTS", ""),
+            str(_current_run_records() or ""),
         )
         if (
             not fresh
@@ -322,11 +336,9 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         if getattr(SETTINGS, "UNIFY_TRANSCRIPTS", False):
             # Mounted only if present, and sessions pointed at it must find it.
             (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
-        # UNIFY_AGENTS=record: cells may read (grep, tail) the run records, as
-        # transcripts; only the harness writes them.
-        records = state_dir / "records" if SETTINGS.UNIFY_AGENTS == "record" else None
-        if records is not None:
-            records.mkdir(parents=True, exist_ok=True)
+        # UNIFY_AGENTS=record: cells may read (grep, tail) their own run's record,
+        # as transcripts; never another run's, and only the harness writes it.
+        records = _current_run_records() if SETTINGS.UNIFY_AGENTS == "record" else None
         readonly = [
             p
             for p in (

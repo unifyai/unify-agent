@@ -155,7 +155,7 @@ def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
             AgentsView(pool, name),
         )
     record = Record(
-        RecordLog(records_dir() / f"{_run_id()}.jsonl", create=True),
+        RecordLog(records_dir() / _run_id() / "record.jsonl", create=True),
         options=current_options(),
         root=ROOT,
         user_reads=user_reads,
