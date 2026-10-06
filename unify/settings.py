@@ -74,6 +74,24 @@ def _evidence_list(value: Any) -> Optional[tuple[int, Optional[float]]]:
     return k, floor
 
 
+def _step_cap_reply_mode(v: Any) -> Optional[str]:
+    """``UNIFY_STEP_CAP_REPLY`` as ``""``, ``"draft"`` or ``"last_word"``.
+
+    The switch was a bool, so the bool spellings keep their meaning (true is
+    ``"draft"``). ``None`` for anything else.
+    """
+    if isinstance(v, bool) or v is None:
+        return "draft" if v else ""
+    value = str(v).strip().lower()
+    if value in ("", "false", "0", "no", "off"):
+        return ""
+    if value in ("draft", "true", "1", "yes", "on"):
+        return "draft"
+    if value == "last_word":
+        return "last_word"
+    return None
+
+
 def _shortlist_gate_threshold(value: Any) -> Optional[float]:
     """The threshold of a ``similar_request:<t>`` gate; ``None`` when empty or invalid."""
     signal, sep, raw = str(value or "").strip().lower().partition(":")
@@ -131,7 +149,14 @@ class ProductionSettings(BaseSettings):
     # counts the messages of one request instead of the whole session). A
     # loop that is not persistent still ends at the limit, its stop notice
     # followed by that draft. Off: as shipped.
-    UNIFY_STEP_CAP_REPLY: bool = False
+    # ``draft`` (also ``true``/``1``/``yes``/``on``, as when this was a bool)
+    # is the behaviour above. ``last_word``: the same, except that before the
+    # reply the model is given one model call with no tools offered, after a
+    # notice that the request's step limit is reached and it should reply now
+    # with its best answer; the stop reply carries that answer in place of
+    # the draft, and the draft when the call fails or returns no text.
+    # Empty (also ``false``/``0``/``no``/``off``): as shipped.
+    UNIFY_STEP_CAP_REPLY: str = ""
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
@@ -1087,6 +1112,17 @@ class ProductionSettings(BaseSettings):
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
 
+    @field_validator("UNIFY_STEP_CAP_REPLY", mode="before")
+    @classmethod
+    def parse_step_cap_reply(cls, v: Any) -> str:
+        value = _step_cap_reply_mode(v)
+        if value is None:
+            raise ValueError(
+                "UNIFY_STEP_CAP_REPLY must be empty, 'draft' or 'last_word' "
+                f"(or a boolean, true meaning 'draft'), not {v!r}",
+            )
+        return value
+
     @field_validator("UNIFY_STORE_CHECK", mode="before")
     @classmethod
     def parse_store_check(cls, v: Any) -> str:
@@ -1389,6 +1425,10 @@ class ProductionSettings(BaseSettings):
                 f"not {v!r}",
             )
         return value
+
+    def step_cap_reply(self) -> str:
+        """The ``UNIFY_STEP_CAP_REPLY`` mode: ``""``, ``"draft"`` or ``"last_word"``."""
+        return _step_cap_reply_mode(self.UNIFY_STEP_CAP_REPLY) or ""
 
     def prompt_accuracy(self) -> bool:
         """Whether the UNIFY_PROMPT_ACCURACY fixes apply (the switch, or the lean profile)."""
