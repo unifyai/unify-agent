@@ -168,8 +168,11 @@ def _install(model) -> None:
 
 
 def _start(*, persist: bool = True, max_steps: int = 300, **kwargs):
+    """The actor's task loop: it answers a requester, and no loop started it."""
     from unify.common.async_tool_loop import start_async_tool_loop
 
+    kwargs.setdefault("reply_channel", True)
+    kwargs.setdefault("bind_request", True)
     return start_async_tool_loop(
         h.new_client(),
         TASK,
@@ -404,6 +407,44 @@ async def test_the_count_starts_again_with_each_request(loop_stop):
 
     assert replies == [f"done: {TASK}", f"done: {CONTINUE}", "done: And again."]
     assert stats.loop_stops == 0
+
+
+async def _one_shot(model, **kwargs) -> str:
+    with h.scripted(()):
+        _install(model)
+        handle = _start(persist=False, **kwargs)
+        return await asyncio.wait_for(handle.result(), BOUND)
+
+
+@pytest.mark.asyncio
+async def test_a_sub_agents_loop_never_stops(loop_stop):
+    """A loop started inside another loop's call (a sub-agent): its lineage
+    names its parent, and the actor hands it the parent's conversation."""
+    from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE
+
+    model = _Model(_then_reply(lambda n: _code("print('')"), K + 5))
+    token = TOOL_LOOP_LINEAGE.set(["CodeActActor.act(ab12)"])
+    try:
+        assert await _one_shot(model) == f"done: {TASK}"
+    finally:
+        TOOL_LOOP_LINEAGE.reset(token)
+    assert model.tool_turns() == K + 6
+    assert model.toolless == []
+
+    model = _Model(_then_reply(lambda n: _code("print('')"), K + 5))
+    assert await _one_shot(model, parent_chat_context=[]) == f"done: {TASK}"
+    assert model.tool_turns() == K + 6
+
+
+@pytest.mark.asyncio
+async def test_a_loop_that_answers_no_requester_never_stops(loop_stop):
+    """A review, its fork, a routing question: no reply channel."""
+    model = _Model(_then_reply(lambda n: _code("print('')"), K + 5))
+    result = await _one_shot(model, reply_channel=False, bind_request=False)
+
+    assert result == f"done: {TASK}"
+    assert model.tool_turns() == K + 6
+    assert model.toolless == []
 
 
 @pytest.mark.asyncio

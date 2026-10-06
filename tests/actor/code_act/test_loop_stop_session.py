@@ -134,6 +134,9 @@ class _Actor:
             timeout=30,
             persist=persist,
             max_steps=300,
+            # As the actor starts its task loop.
+            reply_channel=True,
+            bind_request=True,
         )
         return _StorageCheckHandle(inner=inner, actor=self._actor, persist=persist)
 

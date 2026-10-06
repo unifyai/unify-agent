@@ -898,9 +898,17 @@ async def async_tool_loop_inner(
     # UNIFY_LOOP_STOP: the no-progress calls in a row of the current request.
     # A stop ends the request as the step limit does; with
     # UNIFY_STEP_CAP_REPLY off it takes the last word, so it always replies.
+    # Only in a task loop that answers a requester with text (as the reply
+    # receipt) and that no other loop started (as UNIFY_PROMPT_ACCURACY's
+    # test for a parent): never in a sub-agent, a review or its fork.
     _loop_stop = (
         _loop_stop_mod.Tracker(_loop_stop_mod.threshold())
         if _loop_stop_mod.enabled()
+        and reply_channel
+        and _rf_norm is None
+        and multi_handle_coordinator is None
+        and parent_chat_context is None
+        and len(cfg.lineage) < 2
         else None
     )
     # UNIFY_PENDING_TIMEOUT_S: how long questions nobody answers may hold

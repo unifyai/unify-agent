@@ -185,7 +185,9 @@ class ProductionSettings(BaseSettings):
     # question only its own model reads, otherwise waits until the host's
     # idle timeout. 0: no limit, as shipped.
     UNIFY_PENDING_TIMEOUT_S: float = 0.0
-    # ``on``: a request whose tool calls stop making progress ends early. A
+    # ``on``: a request to the actor's task loop (the one that answers the
+    # requester; never a sub-agent's, a review's or its fork's) whose tool
+    # calls stop making progress ends early. A
     # model call makes no progress when every tool call it makes either runs
     # a Python cell that does nothing (only ``pass``, comments, prints of
     # constant text, bare constants; magics ignored) or repeats one of the
