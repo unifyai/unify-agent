@@ -115,6 +115,41 @@ class ToolLoopRuntimeState:
     # limit, and how many of them gave no answer (the draft was used).
     step_cap_last_word_turns: int = 0
     step_cap_last_word_fallbacks: int = 0
+    # Replies dropped and sent again because their choice carried a
+    # provider error.
+    provider_error_retries: int = 0
+
+
+# A reply whose choice carries a provider error is sent again this many
+# times, after 1 s then 2 s (UniLLM's transient retry already ran inside
+# the call: the provider answered HTTP 200, so it saw no failure).
+_PROVIDER_ERROR_RETRIES = 2
+_PROVIDER_ERROR_BACKOFF_S = 1.0
+
+
+def _completion_provider_error(completion: Any) -> Optional[str]:
+    """The provider error a completion's first choice carries, if any.
+
+    OpenRouter reports an upstream failure part-way through a reply as HTTP
+    200 with ``finish_reason: "error"`` and ``choices[0].error`` (e.g. 502
+    "Stream ended before a terminal response event"). LiteLLM maps the
+    finish reason to ``stop`` and keeps the original under the choice's
+    ``provider_specific_fields``; the content is null, partial, or (after
+    UniLLM's postprocessing) the reasoning summary.
+    """
+    try:
+        choice = completion.choices[0]
+    except Exception:
+        return None
+    fields = getattr(choice, "provider_specific_fields", None)
+    if not isinstance(fields, dict):
+        fields = {}
+    error = fields.get("error") or getattr(choice, "error", None)
+    if fields.get("native_finish_reason") != "error" and not error:
+        return None
+    if isinstance(error, dict):
+        return f"{error.get('code', '?')}: {error.get('message', 'error')}"
+    return str(error or "finish_reason error")
 
 
 def _budget_footer(timer: TimeoutTimer, max_steps: int) -> Optional[str]:
@@ -2149,6 +2184,8 @@ async def async_tool_loop_inner(
     # True whenever the LLM must get an immediate turn before the loop waits
     # again (user interjection, clarification answer, etc.).
     llm_turn_required = False
+    # Consecutive replies of this turn dropped for a provider error.
+    _provider_error_retries = 0
     # UNIFY_WAIT_FOR_BATCH: the calls a turn declared with wait(until="all"),
     # held until they have all finished or the hold's time is up.
     _wait_for_batch = _batch_wait.enabled()
@@ -3736,6 +3773,42 @@ async def async_tool_loop_inner(
                     raise Exception(
                         f"LLM call failed: {type(e).__name__}: {e}",
                     ) from e
+
+            # A reply the provider marked as failed (OpenRouter's HTTP 200
+            # with a choice error, which LiteLLM maps to finish_reason
+            # "stop") is not the model's turn: it is dropped and the same
+            # turn is sent again, a bounded number of times.
+            _provider_error = _completion_provider_error(_full_completion)
+            if _provider_error is not None and _patient_asst_msg is None:
+                _failed = (client.messages or [None])[-1]
+                if (
+                    _provider_error_retries < _PROVIDER_ERROR_RETRIES
+                    and isinstance(_failed, dict)
+                    and _failed.get("role") == "assistant"
+                    and is_mutable(client, _failed)
+                ):
+                    _provider_error_retries += 1
+                    runtime_state.provider_error_retries += 1
+                    client.messages.pop()
+                    _backoff = _PROVIDER_ERROR_BACKOFF_S * 2 ** (
+                        _provider_error_retries - 1
+                    )
+                    logger.error(
+                        f"Provider error in the model's reply ({_provider_error}); "
+                        f"sending the turn again in {_backoff:g}s (retry "
+                        f"{_provider_error_retries}/{_PROVIDER_ERROR_RETRIES})",
+                        prefix=ICONS["early_exit"],
+                    )
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(cancel_event.wait(), _backoff)
+                    llm_turn_required = True
+                    continue
+                logger.error(
+                    f"Provider error in the model's reply ({_provider_error}); "
+                    "retries spent, the reply is kept as it is",
+                    prefix=ICONS["early_exit"],
+                )
+            _provider_error_retries = 0
 
             # Normally the step's assistant message is the tail. Patient mode
             # ingests tool results after it lands, which can append a synthetic

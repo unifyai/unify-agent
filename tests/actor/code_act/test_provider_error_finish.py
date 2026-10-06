@@ -198,25 +198,37 @@ def _responses(lines: list[dict]) -> list[str]:
     return [line["content"] for line in lines if line["type"] == "response"]
 
 
-# What the session answers first, by what its first calls return. The
+# What the session answers first, by what its first calls return, and the
+# session calls made before that answer. The
 # first step is gated (``tool_choice="required"``, as in the recorded run),
 # so a reply without a tool call gets unillm's one tool-choice retry. When
-# the retry fails the same way, unillm accepts the failed reply as it is:
-# its partial text, or, with no text, its reasoning summary promoted to
-# content. Nothing marks the turn as failed; that is pinned here as shipped,
-# not as what it should be.
+# the retry fails the same way, unillm hands the loop the failed reply (its
+# partial text, or, with no text, its reasoning summary promoted to
+# content), still marked with the provider's error. The loop drops such a
+# reply and sends the turn again, at most twice; only when every attempt
+# fails is the failed reply kept, as shipped.
+ERRORS = 6  # two attempts of unillm's per loop attempt, three loop attempts
 CASES = {
-    "no-text": ([None], AFTER),
-    "partial-text": ([PARTIAL], AFTER),
-    "no-text-twice": ([None, None], REASONING),
-    "partial-text-twice": ([PARTIAL, PARTIAL], PARTIAL),
+    "no-text": ([None], AFTER, 2),
+    "partial-text": ([PARTIAL], AFTER, 2),
+    "no-text-twice": ([None, None], AFTER, 4),
+    "partial-text-twice": ([PARTIAL, PARTIAL], AFTER, 4),
+    "no-text-always": ([None] * ERRORS, REASONING, ERRORS),
+    "partial-text-always": ([PARTIAL] * ERRORS, PARTIAL, ERRORS),
 }
+
+
+@pytest.fixture(autouse=True)
+def quick_backoff(monkeypatch):
+    from unify.common._async_tool import loop
+
+    monkeypatch.setattr(loop, "_PROVIDER_ERROR_BACKOFF_S", 0.01)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", sorted(CASES))
 async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
-    contents, expected_first = CASES[case]
+    contents, expected_first, calls_before_answer = CASES[case]
     session, lines, send = jsonl_session
     model = _Model([error_finish(c) for c in contents])
     with h.scripted(()):
@@ -255,3 +267,26 @@ async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
     first, answered = _responses(lines)
     assert first == expected_first
     assert answered == FINAL
+    # A dropped reply's turn is sent again unchanged: same messages, tools
+    # and tool choice as the turn whose reply failed.
+    session_calls = [r for r in model.requests if not _is_review(r["messages"])]
+    turn = session_calls[0]
+    for retry in session_calls[2:calls_before_answer:2]:
+        for key in ("messages", "tools", "tool_choice"):
+            assert retry.get(key) == turn.get(key), key
+    # The follow-up's gated step takes two calls (its text answer gets the
+    # tool-choice retry too), as shipped.
+    assert len(session_calls) == calls_before_answer + 2
+
+
+def test_only_a_reply_marked_by_the_provider_counts_as_failed():
+    from unify.common._async_tool.loop import _completion_provider_error
+
+    assert _completion_provider_error(error_finish()) == (
+        "502: Stream ended before a terminal response event"
+    )
+    assert _completion_provider_error(error_finish(PARTIAL)) is not None
+    # A normal reply, with text or tool calls, is not.
+    assert _completion_provider_error(h.completion(content=FINAL)) is None
+    assert _completion_provider_error(h.completion(calls=[("wait", {})])) is None
+    assert _completion_provider_error(None) is None
