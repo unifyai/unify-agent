@@ -932,26 +932,12 @@ class AsyncToolLoopHandle(SteerableToolHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
 
-        n_archived = len(self._client.messages)
-        forked = (
-            await self._summarise_as_fork(cfg) if _cache_discipline.enabled() else None
+        n_archived, restart_messages, restart_tools, restart_message, forked = (
+            await self._compact_context(cfg)
         )
-        if forked is not None:
-            restart_messages, restart_tools, restart_message = forked
-            self._client._messages = restart_messages
-        else:
-            result = await compress_and_rebuild(
-                self._compression,
-                self._client.messages,
-                self._client.endpoint,
-                dict(cfg["tools"]),
-            )
-            self._client._messages = result.system_msgs
+        self._client._messages = restart_messages
+        if not forked:
             self._client._system_message = None
-            restart_tools = result.tools
-            restart_message = (
-                "Context was compressed. Continue from where you left off."
-            )
 
         # A compression rebuild is a deliberate full-cache sacrifice: the
         # transcript it replaces no longer exists, so nothing in the new one
@@ -1005,6 +991,43 @@ class AsyncToolLoopHandle(SteerableToolHandle):
             f"{ICONS.get('completed', '✓')} [{self._log_label}] "
             f"Context compressed (pass #{self._compression.count}), "
             f"archived {n_archived} messages, new loop started.",
+        )
+
+    async def _compact_context(
+        self,
+        cfg: Optional[dict] = None,
+    ) -> tuple[int, list[dict], dict, str, bool]:
+        """Compress the context for a restart, leaving the transcript as it is.
+
+        Returns ``(messages archived, restart messages, restart tools,
+        restart message, forked)``; ``forked`` is ``True`` when the summary
+        came from a fork (``UNIFY_CACHE_DISCIPLINE``), which keeps the
+        client's system message. Raises when compression fails.
+        """
+        cfg = cfg if cfg is not None else self._loop_config
+        if cfg is None:
+            raise RuntimeError(
+                "Cannot compress: loop config was not stored on the handle.",
+            )
+        n_archived = len(self._client.messages)
+        forked = (
+            await self._summarise_as_fork(cfg) if _cache_discipline.enabled() else None
+        )
+        if forked is not None:
+            restart_messages, restart_tools, restart_message = forked
+            return n_archived, restart_messages, restart_tools, restart_message, True
+        result = await compress_and_rebuild(
+            self._compression,
+            self._client.messages,
+            self._client.endpoint,
+            dict(cfg["tools"]),
+        )
+        return (
+            n_archived,
+            result.system_msgs,
+            result.tools,
+            "Context was compressed. Continue from where you left off.",
+            False,
         )
 
     async def _summarise_as_fork(
