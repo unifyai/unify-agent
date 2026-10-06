@@ -231,7 +231,7 @@ class _LineageTrackedFunction:
         return getattr(self._wrapped, name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        from . import store_cases
+        from . import run_summary, store_cases
 
         if store_cases.replaying():
             # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
@@ -305,7 +305,7 @@ class _LineageTrackedFunction:
                 if observer is not None:
                     observer.after(arguments, None)
                 if cases is not None:
-                    cases.end(case, result=value)
+                    run_summary.show_in_cell_output(cases.end(case, result=value))
                 return value
 
             return _await_and_finalize()
@@ -313,7 +313,7 @@ class _LineageTrackedFunction:
         if observer is not None:
             observer.after(arguments, None)
         if cases is not None:
-            cases.end(case, result=result)
+            run_summary.show_in_cell_output(cases.end(case, result=result))
         return result
 
 
@@ -422,7 +422,7 @@ class _InProcessFunctionProxy:
                 if asyncio.iscoroutine(result):
                     result = await result
                 return result
-            from . import store_cases
+            from . import run_summary, store_cases
 
             arguments = (
                 observer.before(self._raw_callable, args, kwargs)
@@ -444,7 +444,7 @@ class _InProcessFunctionProxy:
             if observer is not None:
                 observer.after(arguments, None)
             if cases is not None:
-                cases.end(case, result=result)
+                run_summary.show_in_cell_output(cases.end(case, result=result))
             return result
 
         # For stateless and read_only, use execute_function with appropriate

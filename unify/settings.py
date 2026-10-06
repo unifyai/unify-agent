@@ -362,6 +362,12 @@ class ProductionSettings(BaseSettings):
     # (unify/function_manager/run_summary.py). Missing evidence reads
     # "unknown". Nothing is shown to the agent yet. Off: no table, no row.
     UNIFY_FUNCTION_SUMMARY: bool = False
+    # With UNIFY_FUNCTION_SUMMARY on: when a stored function returns empty
+    # ([], {}, "", None or 0) and every earlier call of the same source whose
+    # request was accepted returned something non-empty (at least two, from
+    # complete traces, none of unknown shape), one plain line follows the
+    # call in the cell's output saying so, with no instruction. Off: no line.
+    UNIFY_FUNCTION_EMPTY_NOTICE: bool = False
     # ``on``: the actor's prompt says that during the task it may store a
     # unit that ran and worked and repair a stored function that failed,
     # keeping its behaviour on the inputs it handled (a behaviour change gets
@@ -1173,6 +1179,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_PATCH",
         "UNIFY_FUNCTION_CASES",
         "UNIFY_FUNCTION_SUMMARY",
+        "UNIFY_FUNCTION_EMPTY_NOTICE",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",

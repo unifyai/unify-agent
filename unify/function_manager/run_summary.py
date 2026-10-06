@@ -20,18 +20,33 @@ endpoint count is reported only over complete traces. Rows exist only from
 this switch on, recorded under the rule that marks a caller incomplete when a
 function it runs reads an environment global.
 
-Nothing here is shown to the agent; readers of the summary (a later listing
-fact) decide what to show. Off: no table, no row, no read.
+Each row also keeps the shape of the value the call returned: its kind
+(list, dict, text, number, none, bool, other) and whether it was empty
+(``[]``, ``{}``, ``""``, ``None`` or 0); "other" values (objects, a worker's
+opaque values) have no known emptiness.
+
+The summary itself is never shown to the agent. One fact built on it is,
+under its own switch, ``UNIFY_FUNCTION_EMPTY_NOTICE``: when a call returns
+empty, and every earlier call of the same source whose request was accepted
+returned something non-empty (at least ``EMPTY_MIN_ACCEPTED`` of them from
+complete traces, none of unknown shape), one plain line follows the call's
+output saying so. It states what happened and asks for nothing. A stale
+constant in a reused function (a category, a date, a file name that no longer
+matches) typically shows up this way: the function still runs and returns
+nothing, and the answer built on it reads as plausible.
+
+Off: no table, no row, no read, no line.
 """
 
 from __future__ import annotations
 
+import decimal
 import hashlib
 import json
 import logging
 import sqlite3
 from contextlib import closing
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +57,8 @@ TRACE_RULE = 2
 ROWS_KEPT = 200
 #: Distinct argument values counted per parameter before "many".
 DISTINCT_CAP = 50
+#: Accepted earlier calls (from complete traces) needed before an empty result is remarked on.
+EMPTY_MIN_ACCEPTED = 2
 
 _TABLE = """
 CREATE TABLE IF NOT EXISTS function_runs (
@@ -54,9 +71,13 @@ CREATE TABLE IF NOT EXISTS function_runs (
     trace_complete INTEGER,
     errored INTEGER,
     endpoints TEXT,
-    args TEXT
+    args TEXT,
+    result_kind TEXT,
+    result_empty INTEGER
 )
 """
+#: Columns added after the table was first created, with their types.
+_ADDED = (("result_kind", "TEXT"), ("result_empty", "INTEGER"))
 
 
 def enabled() -> bool:
@@ -79,6 +100,10 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_TABLE)
+    have = {row[1] for row in conn.execute("PRAGMA table_info(function_runs)")}
+    for name, kind in _ADDED:
+        if name not in have:
+            conn.execute(f"ALTER TABLE function_runs ADD COLUMN {name} {kind}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS function_runs_fid ON function_runs(function_id)",
     )
@@ -134,7 +159,34 @@ def _arguments(pending: Any) -> Optional[Dict[str, str]]:
     return out
 
 
-def record(recorder: Any, pending: Any, *, error: Any = None) -> None:
+def result_shape(value: Any) -> Tuple[str, Optional[bool]]:
+    """``(kind, empty)`` of a returned value; ``empty`` is ``None`` when a value of that kind cannot be called empty."""
+    if value is None:
+        return "none", True
+    if isinstance(value, bool):
+        return "bool", None
+    if isinstance(value, (int, float, decimal.Decimal)):
+        return "number", value == 0
+    if isinstance(value, (str, bytes)):
+        return "text", len(value) == 0
+    if isinstance(value, Mapping):
+        return "dict", len(value) == 0
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return "list", len(value) == 0
+    return "other", None
+
+
+def _source_hash(recorder: Any) -> str:
+    return hashlib.sha256(str(recorder.source).encode()).hexdigest()
+
+
+def record(
+    recorder: Any,
+    pending: Any,
+    *,
+    result: Any = None,
+    error: Any = None,
+) -> None:
     """Leave one row for a finished recorded call (no-op while off); never raises."""
     if not enabled() or pending is None:
         return
@@ -150,7 +202,7 @@ def record(recorder: Any, pending: Any, *, error: Any = None) -> None:
         text = task_origin.current_request()
         row = (
             int(recorder.function_id),
-            hashlib.sha256(str(recorder.source).encode()).hexdigest(),
+            _source_hash(recorder),
             task_origin.text_key(text) if text else None,
             db.now_iso(),
             TRACE_RULE,
@@ -158,12 +210,13 @@ def record(recorder: Any, pending: Any, *, error: Any = None) -> None:
             int(error is not None),
             json.dumps(_endpoints(calls), sort_keys=True),
             json.dumps(_arguments(pending), sort_keys=True),
+            *((None, None) if error is not None else _shape_columns(result)),
         )
         with closing(_connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO function_runs (function_id, source_hash, text_key, recorded_at,"
-                " trace_rule, trace_complete, errored, endpoints, args)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " trace_rule, trace_complete, errored, endpoints, args, result_kind, result_empty)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 row,
             )
             conn.execute(
@@ -173,6 +226,81 @@ def record(recorder: Any, pending: Any, *, error: Any = None) -> None:
             )
     except Exception as exc:  # noqa: BLE001 - a summary must never break a call
         logger.warning("run summary not recorded: %s: %s", type(exc).__name__, exc)
+
+
+def _shape_columns(value: Any) -> Tuple[str, Optional[int]]:
+    kind, empty = result_shape(value)
+    return kind, None if empty is None else int(empty)
+
+
+_EMPTY_WORDS = {
+    "none": "None",
+    "number": "0",
+    "text": "an empty string",
+    "dict": "an empty dict",
+    "list": "an empty list",
+}
+
+
+def empty_notice(recorder: Any, result: Any) -> Optional[str]:
+    """The line shown after a call that returned empty where every accepted earlier call did not; else ``None``.
+
+    Only earlier calls of the same source count. It needs at least
+    ``EMPTY_MIN_ACCEPTED`` accepted ones from complete traces; any accepted
+    call that returned empty, or a value of unknown shape, keeps it silent.
+    Never raises.
+    """
+    from unify.settings import SETTINGS
+
+    if not getattr(SETTINGS, "UNIFY_FUNCTION_EMPTY_NOTICE", False) or not enabled():
+        return None
+    kind, empty = result_shape(result)
+    if not empty:
+        return None
+    try:
+        with closing(_connect()) as conn:
+            rows = conn.execute(
+                "SELECT text_key, trace_complete, result_kind, result_empty FROM function_runs"
+                " WHERE function_id = ? AND source_hash = ? AND trace_rule >= ? AND errored = 0",
+                (int(recorder.function_id), _source_hash(recorder), TRACE_RULE),
+            ).fetchall()
+        outcomes = _accepted(sorted({r[0] for r in rows if r[0]}))
+        accepted = [r for r in rows if r[0] and outcomes.get(r[0]) is True]
+        if any(r[3] is None or r[3] for r in accepted):
+            return None
+        complete = sum(1 for r in accepted if r[1])
+        if complete < EMPTY_MIN_ACCEPTED:
+            return None
+        kinds = {r[2] for r in accepted}
+        earlier = (
+            f"a non-empty {kind}"
+            if kinds == {kind} and kind in ("list", "dict")
+            else ("a non-zero number" if kinds == {"number"} else "a non-empty value")
+        )
+        return (
+            f"[{recorder.name} returned {_EMPTY_WORDS.get(kind, 'an empty value')} here. "
+            f"Each of its {len(accepted)} earlier calls whose request was accepted returned {earlier}.]"
+        )
+    except Exception as exc:  # noqa: BLE001 - a notice must never break a call
+        logger.warning(
+            "empty-result notice not computed: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return None
+
+
+def show_in_cell_output(line: Optional[str]) -> None:
+    """Append ``line`` to the running sandbox cell's captured stdout (in-process execution); no-op outside a cell."""
+    if not line:
+        return
+    try:
+        from unify.actor.execution import capture
+
+        capture._stdout_parts.get()
+    except (ImportError, LookupError):
+        return
+    capture.StreamLike(capture._stdout_parts).write(line + "\n")
 
 
 def _accepted(text_keys: List[str]) -> Dict[str, Optional[bool]]:
@@ -296,4 +424,15 @@ def summary(
     return out
 
 
-__all__ = ["ROWS_KEPT", "TRACE_RULE", "enabled", "item_count", "record", "summary"]
+__all__ = [
+    "EMPTY_MIN_ACCEPTED",
+    "ROWS_KEPT",
+    "TRACE_RULE",
+    "empty_notice",
+    "enabled",
+    "item_count",
+    "record",
+    "result_shape",
+    "show_in_cell_output",
+    "summary",
+]

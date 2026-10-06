@@ -694,7 +694,8 @@ class FunctionLibrary:
         abandoned: bool = False,
     ) -> Dict[str, Any]:
         """Record how a call the worker ran ended; ``{"note": ...}`` when a
-        failure is not held against the function."""
+        failure is not held against the function, ``{"notice": ...}`` when a
+        line follows a returned call (``UNIFY_FUNCTION_EMPTY_NOTICE``)."""
         run = self._runs.pop(token, None) if isinstance(token, int) else None
         if run is None:
             return {}
@@ -704,7 +705,9 @@ class FunctionLibrary:
             run.pending.trace.closed = True
         if not steered:
             if run.recorder is not None:
-                run.recorder.end(run.pending, result=result, error=error)
+                notice = run.recorder.end(run.pending, result=result, error=error)
+                if notice:
+                    reply["notice"] = notice
             if run.observer is not None:
                 run.observer.after(run.arguments, error)
                 fault = getattr(run.arguments, "caller_fault", None)

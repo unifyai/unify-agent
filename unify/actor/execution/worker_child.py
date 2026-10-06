@@ -993,6 +993,12 @@ class Worker:
             except Exception:  # noqa: BLE001 - a note never replaces the error
                 pass
 
+    def _show_notice(self, reply: Any) -> None:
+        """Print the harness's line about a returned call into this cell's output."""
+        notice = reply.get("notice") if isinstance(reply, dict) else None
+        if notice:
+            self._write(self._stdout, str(notice).rstrip("\n") + "\n")
+
     def call_recorded(self, fn: "_StoredFunction", args: tuple, kwargs: dict) -> Any:
         """A direct call of a stored function, recorded by the harness as the
         in-process boundary wrapper records one."""
@@ -1017,7 +1023,9 @@ class Worker:
         _CASES.reset(mark)
         if inspect.isawaitable(result):
             return self._finish_recorded(token, result)
-        self.request_sync("fn_end", **self._end_fields(token, result=result))
+        self._show_notice(
+            self.request_sync("fn_end", **self._end_fields(token, result=result))[0],
+        )
         return result
 
     async def _finish_recorded(self, token: int, awaitable: Any) -> Any:
@@ -1033,7 +1041,11 @@ class Worker:
             self._add_note(exc, reply)
             raise
         _CASES.reset(mark)
-        await self.request_async("fn_end", **self._end_fields(token, result=value))
+        reply, _ = await self.request_async(
+            "fn_end",
+            **self._end_fields(token, result=value),
+        )
+        self._show_notice(reply)
         return value
 
     def _resolve_name(self, name: str) -> Any:

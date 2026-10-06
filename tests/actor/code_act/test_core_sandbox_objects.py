@@ -574,3 +574,81 @@ def test_environment_texts_name_the_search_the_session_has(music, monkeypatch, s
         assert "`FunctionManager_search_functions`" in namespaces
         assert "(or call it via `execute_function`)" in delegation
         assert "FunctionManager_search_functions or help" in hint
+
+
+IDS_SINCE = (
+    "def track_ids_since(year: int) -> list:\n"
+    "    return [t['id'] for t in primitives.music.list_tracks() if t['year'] >= year]\n"
+)
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+@_handle_project
+async def test_an_empty_result_notice_reaches_the_worker_cell_output(
+    core_world,
+    music,
+    monkeypatch,
+):
+    """``UNIFY_FUNCTION_EMPTY_NOTICE``: a stored function called by name in the
+    worker that returns empty, after two accepted non-empty calls, is followed
+    by one line in that cell's stdout, as in-process."""
+    from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
+    from unify.function_manager import task_origin
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.function_manager.primitives.environment import namespace_object
+
+    for name in (
+        "UNIFY_FUNCTION_CASES",
+        "UNIFY_FUNCTION_SUMMARY",
+        "UNIFY_FUNCTION_EMPTY_NOTICE",
+        "UNIFY_TASK_ORIGIN",
+        "UNIFY_ENTRY_RECORD",
+    ):
+        monkeypatch.setattr(SETTINGS, name, True)
+    fm = FunctionManager(include_primitives=False)
+    fm.add_functions(implementations=[IDS_SINCE])
+    primitives = SimpleNamespace(music=namespace_object("music"))
+    namespace = {"primitives": primitives}
+    fm.list_functions(_return_callable=True, _namespace=namespace)
+    for year in (2000, 1980):
+        origin = task_origin.enter(f"Which tracks are from {year} on?")
+        try:
+            assert namespace["track_ids_since"](year)
+            task_origin.record_outcome(True)
+        finally:
+            task_origin.leave(origin)
+
+    actor = _actor(function_manager=fm, can_store=False)
+    tools = actor.get_tools("act")
+    sandbox = PythonExecutionSession(environments={})
+    sandbox.global_state["primitives"] = primitives
+    objects = core_surface.sandbox_objects(actor, policy=core_surface.WritePolicy())
+    sandbox.global_state.update(objects)
+    sandbox.core_globals = objects
+    token = _CURRENT_SANDBOX.set(sandbox)
+    origin = task_origin.enter("Which tracks are from 2030 on?")
+    try:
+        found = await tools["execute_code"].fn(
+            thought="Find it.",
+            code="await functions.list()",
+        )
+        assert found.error is None, found.error
+        ran = await tools["execute_code"].fn(
+            thought="Call it by name.",
+            code="print('before'); found = track_ids_since(2030); print('after'); found",
+        )
+    finally:
+        task_origin.leave(origin)
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+        await actor.close()
+    assert ran.error is None and ran.result == []
+    out = _stdout(ran)
+    line = (
+        "[track_ids_since returned an empty list here. Each of its 2 earlier calls "
+        "whose request was accepted returned a non-empty list.]\n"
+    )
+    assert out.count(line) == 1
+    assert out.index("before\n") < out.index(line) < out.index("after\n")
