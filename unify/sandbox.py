@@ -305,6 +305,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             os.getcwd(),
             getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", ""),
             getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0),
+            getattr(SETTINGS, "UNIFY_AGENTS", ""),
         )
         if (
             not fresh
@@ -321,10 +322,16 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         if getattr(SETTINGS, "UNIFY_TRANSCRIPTS", False):
             # Mounted only if present, and sessions pointed at it must find it.
             (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
+        # UNIFY_AGENTS=record: cells may read (grep, tail) the run records, as
+        # transcripts; only the harness writes them.
+        records = state_dir / "records" if SETTINGS.UNIFY_AGENTS == "record" else None
+        if records is not None:
+            records.mkdir(parents=True, exist_ok=True)
         readonly = [
             p
             for p in (
                 state_dir / "transcripts",
+                *((records,) if records is not None else ()),
                 store,
                 Path(f"{store}-wal"),
                 Path(f"{store}-shm"),
