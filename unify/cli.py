@@ -388,6 +388,10 @@ class Act:
         self._handle = None
         self._pending_clarifications: asyncio.Queue[dict] = asyncio.Queue()
         self._closing = asyncio.Event()
+        # Set once the session is asked to end (/quit, {"quit": true}, end
+        # of input); a persistent session whose result arrives without it
+        # ended on its own.
+        self._stop_requested = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -487,6 +491,7 @@ class Act:
                     if self._args.persist:
                         from unify.actor.code_act_actor import SESSION_ENDED
 
+                        self._stop_requested = True
                         await self._handle.stop(SESSION_ENDED)
                     return
                 line = raw.decode(errors="replace").strip()
@@ -516,6 +521,7 @@ class Act:
                     from unify.actor.code_act_actor import SESSION_ENDED
 
                     self._progress("session ended; reviewing the work for storage")
+                    self._stop_requested = True
                     await self._handle.stop(SESSION_ENDED)
                     return
                 if not self._pending_clarifications.empty():
@@ -594,9 +600,25 @@ class Act:
             if reader is not None and not args.persist:
                 reader.cancel()
 
+        # A persistent session's result arrives when the session ends. Unless
+        # it was asked to end, its task loop ended on its own (at a step or
+        # time limit): there is no session left to take a follow-up, so input
+        # stops here and the session ends as after /quit, with its review and
+        # an "ended" line, rather than reading messages it never answers.
+        ended_on_its_own = args.persist and not self._stop_requested
+        if ended_on_its_own and reader is not None:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+            reader = None
+
         self._print_result(result)
 
-        if args.persist:
+        if ended_on_its_own:
+            self._progress(
+                "the actor stopped on its own and takes no follow-ups; "
+                "reviewing the work for storage",
+            )
+        elif args.persist:
             self._progress("actor is waiting; type a follow-up, /quit to end")
             if reader is not None:
                 await reader
