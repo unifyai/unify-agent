@@ -679,3 +679,49 @@ def test_origin_capture_reads_a_bash_cell_as_bash(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", "notebook")
     cells = origin_capture._code_cells(messages)
     assert [(c[1], c[2]) for c in cells] == [("echo hi", "bash"), ("x = 1", "python")]
+
+
+# ── %%what_if, as described ─────────────────────────────────────────────────
+
+
+def test_the_what_if_line_says_what_the_copy_discards(monkeypatch):
+    from unify.actor.execution import worker
+
+    monkeypatch.setattr(worker, "enabled", lambda: False)
+    in_process = nb.describe(ALL, steering=False, structured=False)
+    assert "the names it binds are discarded" in in_process
+    assert "changes in place" in in_process and "stays changed" in in_process
+    assert "its changes are discarded" not in in_process
+    monkeypatch.setattr(worker, "enabled", lambda: True)
+    in_worker = nb.describe(ALL, steering=False, structured=False)
+    assert "its changes are discarded" in in_worker
+    assert "stays changed" not in in_worker
+
+
+def test_in_process_a_what_if_discards_bindings_and_keeps_in_place_changes(
+    monkeypatch,
+):
+    """What the in-process line promises is what ``read_only`` does there."""
+    from unify.actor.execution.session import SessionExecutor
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+
+    async def run() -> Any:
+        ex = SessionExecutor(environments={}, timeout=None)
+        try:
+            await ex.execute(code="x = [1]\ny = 1", state_mode="stateful", session_id=0)
+            await ex.execute(
+                code="x.append(2)\ny = 5\nz = 3",
+                state_mode="read_only",
+                session_id=0,
+            )
+            res = await ex.execute(
+                code="(x, y, 'z' in dir())",
+                state_mode="stateful",
+                session_id=0,
+            )
+            return res["result"]
+        finally:
+            await ex.close()
+
+    assert asyncio.run(run()) == ([1, 2], 1, False)

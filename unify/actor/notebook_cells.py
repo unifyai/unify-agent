@@ -602,10 +602,22 @@ def describe(
             "environment, where they stay; the rest of the cell then runs.",
         )
     if caps.sessions:
+        from unify.actor.execution.worker import enabled as worker_enabled
+
+        # The worker runs a what-if on a full copy of the notebook. In process
+        # the copy holds the same objects (as `read_only` always has), so only
+        # what the cell binds is discarded; say so rather than promise more.
+        what_if = (
+            "- `%%what_if` runs it on a copy of this notebook; its changes are "
+            "discarded."
+            if worker_enabled()
+            else "- `%%what_if` runs it on a copy of this notebook's names: the "
+            "names it binds are discarded, but an object it changes in place "
+            "(say, a list it appends to) stays changed."
+        )
         magics += [
             "- `%%scratch` runs the cell in a fresh namespace that nothing keeps.",
-            "- `%%what_if` runs it on a copy of this notebook; its changes are "
-            "discarded.",
+            what_if,
             "- `%%session NAME` runs it in a separate notebook called NAME "
             "(created on first use).",
             "- `%sessions` lists the notebooks and their variables.",
