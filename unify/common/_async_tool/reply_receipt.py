@@ -16,9 +16,10 @@ its JSON values, parsed as ``request.data`` is under UNIFY_BIND_REQUEST):
   a bold, backticked or fenced value; the value after "is", "total", "="
   or ":"; for a reply holding a JSON object, its value field with the most
   scalars) is 0, NaN, None, null, empty, or a list of two or more identical
-  scalars; or that answer, a list of lists, is identical to a table in the
-  request: a block of two or more lines of integers of one length in its
-  text, or a list of lists in its JSON values. Other fields of a JSON reply
+  scalars; or that answer, a list of lists, is identical to the request's
+  last table in document order: a block of two or more lines of integers of
+  one length in its text, or a list of lists in its JSON values (an earlier
+  table is an example or a placeholder). Other fields of a JSON reply
   are not checked (the gate never measured them), and a list of identical
   rows is not "every item the same": the gate dropped the single-colour
   rule.
@@ -245,24 +246,55 @@ def _row(line: str) -> Optional[list[int]]:
     return None
 
 
-def number_tables(text: str) -> list[list[list[int]]]:
-    """Every rectangular block of integers in *text*: two or more consecutive
-    lines of integers, all of one length, each read as a list of ints."""
-    tables: list[list[list[int]]] = []
+def _number_tables_at(text: str) -> list[tuple[int, list[list[int]]]]:
+    """Every rectangular block of integers in *text*, with the offset of its
+    first line."""
+    tables: list[tuple[int, list[list[int]]]] = []
     run: list[list[int]] = []
-    for line in (text or "").splitlines() + [""]:
+    run_at = offset = 0
+    for line in (text or "").splitlines(keepends=True) + [""]:
         row = _row(line)
         if row is not None and run and len(row) == len(run[0]):
             run.append(row)
-            continue
-        if len(run) >= 2:
-            tables.append(run)
-        run = [row] if row is not None else []
+        else:
+            if len(run) >= 2:
+                tables.append((run_at, run))
+            run, run_at = ([row] if row is not None else []), offset
+        offset += len(line)
     return tables
 
 
+def number_tables(text: str) -> list[list[list[int]]]:
+    """Every rectangular block of integers in *text*: two or more consecutive
+    lines of integers, all of one length, each read as a list of ints."""
+    return [table for _, table in _number_tables_at(text)]
+
+
+def _json_values_at(text: str) -> list[tuple[int, Any]]:
+    """``json_values`` (the parse of UNIFY_BIND_REQUEST's ``request.data``)
+    with the offset each value starts at."""
+    from unify.actor.execution.worker_child import _JSON_DECODER, _JSON_OPEN
+
+    values: list[tuple[int, Any]] = []
+    index = 0
+    while True:
+        found = _JSON_OPEN.search(text, index)
+        if found is None:
+            return values
+        start = found.start()
+        try:
+            value, end = _JSON_DECODER.raw_decode(text, start)
+        except json.JSONDecodeError as exc:
+            index = max(exc.pos, start + 1)
+            continue
+        except RecursionError:
+            return values
+        values.append((start, value))
+        index = end
+
+
 def _json_tables(values: Iterable[Any], into: list) -> list:
-    """Every list of lists at any depth of *values*."""
+    """Every list of lists at any depth of *values*, in document order."""
     for value in values:
         if isinstance(value, dict):
             _json_tables(value.values(), into)
@@ -274,11 +306,29 @@ def _json_tables(values: Iterable[Any], into: list) -> list:
 
 
 def request_tables(request: Optional[str]) -> list:
-    """The request's tables: its blocks of integers in text, and every list of
-    lists in its JSON values."""
+    """The table an answer is compared with: the request's last table in
+    document order, a block of integer rows in its text or a list of lists
+    in its JSON values, as a list of at most one.
+
+    An earlier table is an example or a placeholder of the format (an action
+    object written out with a made-up value, say), not the input the request
+    is about: in the replay of the logged replies every answer identical to
+    its request's input matched the last table, and comparing only the last
+    lost none of them.
+    """
     if not request or len(request) > MAX_REQUEST_CHARS:
         return []
-    return number_tables(request) + _json_tables(json_values(request), [])
+    found: list[tuple[int, int, Any]] = [
+        (at, 0, table) for at, table in _number_tables_at(request)
+    ]
+    for at, value in _json_values_at(request):
+        # Nested tables of one value follow it in document order.
+        found += [
+            (at, i + 1, table) for i, table in enumerate(_json_tables([value], []))
+        ]
+    if not found:
+        return []
+    return [max(found, key=lambda item: item[:2])[2]]
 
 
 # ---------------------------------------------------------------------------

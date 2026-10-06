@@ -316,8 +316,9 @@ class ProductionSettings(BaseSettings):
     # requester (the actor's task loop; also a cell's ``reply()`` under
     # UNIFY_REPLY_CHANNEL) is first checked for two facts: its answer is
     # degenerate (0, NaN, None, null, empty, a list whose items are all the
-    # same, or a JSON value of four or more items identical to one in the
-    # request's JSON), or the last computing cell since the requester's
+    # same, or a list of lists identical to the request's last table, a
+    # block of integer rows in its text or a list of lists in its JSON,
+    # whichever comes last), or the last computing cell since the requester's
     # message raised, or a cell caught and printed an error, and the reply
     # mentions no error. When one holds and no receipt was shown for this
     # request, the turn does not end: the facts (at most 3 lines, no

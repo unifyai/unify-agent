@@ -166,7 +166,7 @@ def test_an_answer_identical_to_a_json_table_in_the_request_is_named():
     request = "Input: " + json.dumps({"input": GRID})
     assert _lines(COPIED, request) == [IDENTICAL]
     # At any depth of the request's JSON.
-    nested = json.dumps({"cases": [{"in": GRID, "out": [[0]]}]})
+    nested = json.dumps({"cases": [{"out": [[0]], "in": GRID}]})
     assert _lines(COPIED, nested) == [IDENTICAL]
     assert _lines(OTHER, request) == []
     # Only a list of lists is compared: an option or a coordinate the request
@@ -176,6 +176,53 @@ def test_an_answer_identical_to_a_json_table_in_the_request_is_named():
     assert _lines('{"action": "move", "to": [1, 2]}', menu) == []
     # Plain numbers in prose are not a table.
     assert _lines("The answer is 7.", "Compute 3 + 4 = 7.") == []
+
+
+PLACEHOLDER = [[0, 1, 2], [3, 4, 5]]
+
+
+def _submit(rows) -> str:
+    return json.dumps({"action": "submit", "grid": rows})
+
+
+def test_only_the_requests_last_table_is_compared():
+    """A request that writes out its reply format with a made-up value (a
+    placeholder) before its input: the placeholder is an earlier table, so a
+    reply equal to it is not called a copy; the input is the last table."""
+    request = (
+        "Reply with one action object, for example "
+        + _submit(PLACEHOLDER)
+        + ".\nTest input (3x3):\n1 2 0\n0 1 2\n2 0 1\n"
+    )
+    assert _lines(_submit(PLACEHOLDER), request) == []
+    assert _lines(_submit(GRID), request) == [IDENTICAL]
+    # The same grid fires when it is the last table.
+    last = request + "Test input (2x3):\n0 1 2\n3 4 5\n"
+    assert _lines(_submit(PLACEHOLDER), last) == [IDENTICAL]
+    assert _lines(_submit(GRID), last) == []
+    # Earlier example tables in text never fire; the last one does.
+    examples = (
+        "Example input:\n1 1\n2 2\nExample output:\n3 3\n4 4\n"
+        "Input:\n5 6\n7 8\nReply with the output."
+    )
+    assert _lines(_submit([[1, 1], [2, 2]]), examples) == []
+    assert _lines(_submit([[3, 3], [4, 4]]), examples) == []
+    assert _lines(_submit([[5, 6], [7, 8]]), examples) == [IDENTICAL]
+    # And in JSON, in document order.
+    cases = json.dumps(
+        {
+            "train": [{"input": [[1, 1], [2, 2]], "output": [[3, 3], [4, 4]]}],
+            "test": [{"input": [[5, 6], [7, 8]]}],
+        },
+    )
+    assert _lines(_submit([[3, 3], [4, 4]]), cases) == []
+    assert _lines(_submit([[5, 6], [7, 8]]), cases) == [IDENTICAL]
+    # A JSON table after the text tables is the last one.
+    assert _lines(_submit(GRID), examples + " " + json.dumps({"input": GRID})) == [
+        IDENTICAL,
+    ]
+    assert rr.request_tables(examples) == [[[5, 6], [7, 8]]]
+    assert rr.request_tables("no tables here") == []
 
 
 # ── C4_last: an error the reply does not mention ─────────────────────────

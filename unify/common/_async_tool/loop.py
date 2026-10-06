@@ -1073,7 +1073,7 @@ async def async_tool_loop_inner(
     # UNIFY_BIND_REQUEST=on: the request as the requester wrote it, without
     # the session context put before it below.
     _bound_request.record_first(_request_slot, message)
-    # UNIFY_REPLY_RECEIPT=on: the request the receipt reads JSON values from
+    # UNIFY_REPLY_RECEIPT=on: the request the receipt reads tables from
     # (a restart after compression keeps its predecessor's).
     if _receipt_on and runtime_state.receipt_request is None:
         runtime_state.receipt_request = _bound_request.text_of(message)
