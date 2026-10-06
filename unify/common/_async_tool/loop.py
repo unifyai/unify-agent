@@ -739,6 +739,12 @@ async def async_tool_loop_inner(
 
         configured_max_steps = _SETTINGS.UNIFY_MAX_TOOL_LOOP_STEPS
         max_steps = configured_max_steps if configured_max_steps > 0 else None
+    # UNIFY_STEP_CAP_REPLY: reaching max_steps in a persistent loop ends the
+    # request, not the loop, and every stop at the limit quotes the latest
+    # draft of the request's answer. Off: as shipped.
+    from unify.settings import SETTINGS as _CAP_SETTINGS
+
+    _step_cap_reply = bool(getattr(_CAP_SETTINGS, "UNIFY_STEP_CAP_REPLY", False))
 
     timer: TimeoutTimer = TimeoutTimer(
         timeout=timeout,
@@ -1388,12 +1394,12 @@ async def async_tool_loop_inner(
             )
         await _msg_dispatcher.append_msgs([initial_user_msg])
 
-    async def _handle_limit_reached(reason: str) -> str:
+    async def _handle_limit_reached(reason: str, draft: Optional[str] = None) -> str:
         """
         Terminate gracefully when *timeout* or *max_steps* is exceeded and
         `raise_on_limit` is *False*: stop every pending tool (via
         handle.stop() when available), cancel the tasks, and append a short
-        assistant notice.
+        assistant notice, followed by *draft* when one is given.
         """
         for task in list(tools_data.pending):
             with suppress(Exception):
@@ -1407,12 +1413,69 @@ async def async_tool_loop_inner(
 
         notice = {
             "role": "assistant",
-            "content": f"🔚 Terminating early: {reason}",
+            "content": f"🔚 Terminating early: {reason}"
+            + (f"\n\nBest current answer:\n{draft}" if draft is not None else ""),
         }
         await _msg_dispatcher.append_msgs([notice])
         if log_steps:
             logger.info(f"Early exit – {reason}", prefix=ICONS["early_exit"])
         return notice["content"]
+
+    def _request_draft() -> Optional[str]:
+        """The latest reply text drafted for the current request, if any.
+
+        Walks back to the request's own message, a genuine user turn (a
+        loop-authored notice is not one), as the empty-final-answer guard
+        does: text before it answered something else.
+        """
+        for _msg in reversed(client.messages or []):
+            _role = _msg.get("role")
+            if _role == "user" and not is_loop_authored_message(_msg):
+                return None
+            if _role == "assistant":
+                _text = extract_substantive_text(_msg.get("content"))
+                if _text:
+                    return _text
+        return None
+
+    async def _end_request_at_step_limit() -> None:
+        """UNIFY_STEP_CAP_REPLY in a persistent loop: end the request at max_steps.
+
+        The pending calls are cancelled and answered as such, the reply says
+        the request stopped at the step limit and quotes its latest draft,
+        and the loop parks for the next request, whose steps are counted
+        from its own message. The reply also stays in the transcript, so
+        the model reads on the next request where the last one stopped.
+        """
+        reason = f"max_steps ({max_steps}) exceeded"
+        draft = _request_draft()
+        await tools_data.cancel_pending_tasks_with_reply(
+            f"Cancelled: the step limit ({reason}) ended the request before "
+            "this call finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        content = (
+            f"🔚 Stopped at the step limit: {reason}, so this request ended "
+            "before it was finished. The session is still open: the next "
+            "message starts a new request."
+        )
+        if draft is not None:
+            content += f"\n\nBest current answer:\n{draft}"
+        else:
+            content += "\n\nNo reply text was drafted for this request."
+        await _msg_dispatcher.append_msgs([{"role": "assistant", "content": content}])
+        if log_steps:
+            logger.info(
+                f"Step limit – {reason}; waiting for the next request",
+                prefix=ICONS["early_exit"],
+            )
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        if _outer is not None and hasattr(_outer, "_notification_q"):
+            await _outer._notification_q.put({"type": "response", "content": content})
+        await _park_until_next_request()
+        timer.reset()
+        timer.start_request()
 
     async def _park_until_next_request() -> None:
         """Park a persistent loop until its next request arrives.
@@ -2078,8 +2141,14 @@ async def async_tool_loop_inner(
                 )
 
             if timer.has_exceeded_msgs():
+                if _step_cap_reply and persist:
+                    await _end_request_at_step_limit()
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
                 return await _handle_limit_reached(
                     f"max_steps ({max_steps}) exceeded",
+                    _request_draft() if _step_cap_reply else None,
                 )
 
             # Outstanding assistant tool_calls missing replies are repaired
@@ -4700,8 +4769,14 @@ async def async_tool_loop_inner(
                 )
 
             if timer.has_exceeded_msgs():
+                if _step_cap_reply and persist:
+                    await _end_request_at_step_limit()
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
                 return await _handle_limit_reached(
                     f"max_steps ({max_steps}) exceeded",
+                    _request_draft() if _step_cap_reply else None,
                 )
 
             final_content = extract_substantive_text(msg["content"])
@@ -4841,6 +4916,8 @@ async def async_tool_loop_inner(
                 await _park_until_next_request()
 
                 timer.reset()
+                if _step_cap_reply:
+                    timer.start_request()
                 continue  # Back to top of loop to process the interjection
 
             # final_content is non-empty here (or the loop returned earlier

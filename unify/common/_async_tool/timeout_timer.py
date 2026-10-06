@@ -17,7 +17,14 @@ class TimeoutTimer:
         self._max_steps = max_steps
         self._raise_on_limit = raise_on_limit
         self._message_count_offset = message_count_offset
+        # Messages before the current request, which max_steps does not
+        # count once start_request() has been called (UNIFY_STEP_CAP_REPLY).
+        self._request_base = 0
         self.reset()
+
+    def start_request(self) -> None:
+        """Count max_steps from here: a persistent loop's next request."""
+        self._request_base = self._message_count_offset + len(self._client.messages)
 
     def remaining_time(self) -> Optional[float]:
         if self._timeout is None:
@@ -50,7 +57,9 @@ class TimeoutTimer:
         if self._max_steps is None:
             return False
 
-        logical_message_count = self._message_count_offset + len(self._client.messages)
+        logical_message_count = (
+            self._message_count_offset + len(self._client.messages) - self._request_base
+        )
         ret = logical_message_count >= self._max_steps
         if self._raise_on_limit and ret:
             raise RuntimeError(

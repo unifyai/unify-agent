@@ -81,6 +81,17 @@ class ProductionSettings(BaseSettings):
     # that genuinely needs more can pass ``max_steps`` explicitly. Set to 0 to
     # restore unbounded iteration.
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
+    # Reaching ``max_steps`` ends the loop with a stop notice, so a persistent
+    # session (``unify act --persist``) that reaches it takes no further
+    # messages. Set true and, in a persistent session, the limit ends only
+    # the current request: the reply says the session stopped at its step
+    # limit and quotes the latest reply text it drafted for the request, the
+    # pending tool calls are cancelled and answered as such, and the next
+    # message starts a request with its own ``max_steps`` (the limit then
+    # counts the messages of one request instead of the whole session). A
+    # loop that is not persistent still ends at the limit, its stop notice
+    # followed by that draft. Off: as shipped.
+    UNIFY_STEP_CAP_REPLY: bool = False
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
