@@ -7,26 +7,14 @@ import re
 from typing import Awaitable, Callable, Optional
 
 from unify.agents.entry import MAX_TEXT_BYTES, RESERVED_NAMES, valid_name
-from unify.agents.record import HARNESS, USER, Record
+from unify.agents.record import HARNESS, USER, PostRefused, Record
+from unify.transcripts import scrub
 
 StartHelper = Callable[[str, str, str, int], Awaitable[str]]
 _PLACEHOLDER = re.compile(
     r"^\s*(no-?op|n/?a|not applicable|none|nothing|todo|tbd)\s*[.!]?\s*$",
     re.I,
 )
-
-
-def _fit(text: str) -> str:
-    """A reply cut to the record's limit, saying where the rest is."""
-    data = text.encode("utf-8")
-    if len(data) <= MAX_TEXT_BYTES:
-        return text
-    note = (
-        f"\n[cut: {len(data)} bytes in all; the full reply is in this helper's "
-        "transcript]"
-    )
-    room = MAX_TEXT_BYTES - len(note.encode("utf-8"))
-    return data[:room].decode("utf-8", errors="ignore") + note
 
 
 class Pool:
@@ -88,9 +76,25 @@ class Pool:
                 "and dashes, not user, harness, all or root, and not a name already "
                 "in use",
             )
-        rec.add_agent(name, spawner=spawner)
-        entry, _ = rec.append(spawner, f"@{name} {request}")
-        rec.participants[name].request_seq = entry.seq
+        text = f"@{name} {request}"
+        size = len(scrub(text).encode("utf-8"))
+        if size > MAX_TEXT_BYTES:
+            raise PostRefused(
+                f"the request is {size} bytes with its mention and the limit is "
+                f"{MAX_TEXT_BYTES}; write it to a file and give the helper its path",
+            )
+        if len(rec.entries) >= opts.max_entries:
+            raise PostRefused(f"the record is full ({opts.max_entries} entries)")
+        participant = rec.add_agent(name, spawner=spawner)
+        try:
+            entry, _ = rec.append(spawner, text)
+        except Exception:
+            # The name stays taken (it is never reused); the helper never ran.
+            participant.state = "failed"
+            raise
+        participant.request_seq = entry.seq
+        # The helper's first message already carries its request.
+        rec.set_cursor(name, entry.seq)
         self._tasks[name] = asyncio.get_running_loop().create_task(
             self._run(name, spawner, request, entry.seq),
             name=f"unify-agents:{name}",
@@ -113,7 +117,7 @@ class Pool:
             raise
         except Exception as exc:
             participant.state = "failed"
-            self.record.append(
+            self.record.append_harness(
                 HARNESS,
                 f"@{spawner} {name} ended without replying: {type(exc).__name__}: {exc}",
                 kind="system",
@@ -121,11 +125,12 @@ class Pool:
             )
             return
         participant.state = "replied"
-        self.record.append(
+        self.record.append_harness(
             name,
-            _fit(str(text or "")),
+            str(text or ""),
             kind="reply",
             mentions=[spawner],
+            full_text_at="this helper's transcript",
         )
 
     def stop(self, by: str, name: str, reason: str = "") -> None:
@@ -137,7 +142,7 @@ class Pool:
         if participant.state != "running":
             return
         text = f"@{name} stop" + (f": {reason}" if reason else "")
-        self.record.append(by, text, kind="cancel", mentions=[name])
+        self.record.append_harness(by, text, kind="cancel", mentions=[name])
         participant.state = "stopped"
         task = self._tasks.get(name)
         if task is not None:
@@ -162,11 +167,12 @@ class Pool:
         reason: str = "the main agent replied",
     ) -> dict[str, str]:
         """Record the main agent's reply to the user, then end every helper still running."""
-        self.record.append(
+        self.record.append_harness(
             self.record.root,
-            _fit(str(reply_text or "")),
+            str(reply_text or ""),
             kind="reply",
             mentions=[USER],
+            full_text_at="the session's result",
         )
         return await self.close(reason)
 
@@ -176,7 +182,7 @@ class Pool:
             participant = self.record.participants[name]
             if not task.done() and participant.state == "running":
                 participant.state = "stopped"
-                self.record.append(
+                self.record.append_harness(
                     HARNESS,
                     f"@{participant.spawner} {name} stopped: {reason}",
                     kind="system",

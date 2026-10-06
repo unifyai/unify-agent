@@ -155,3 +155,35 @@ async def test_close_stops_running_helpers_and_verifies():
     kinds = [(e.author, e.kind) for e in pool.record.entries]
     assert ("root", "reply") in kinds and kinds.count(("harness", "system")) == 2
     assert pool.record.entries[2].mentions == ("user",)
+
+
+@pytest.mark.asyncio
+async def test_a_helper_reply_is_kept_when_the_record_is_full():
+    pool = _pool(_replies("the answer"), max_entries=1)
+    await pool.spawn("root", REQUEST)
+    got = await pool.record.wait_for("root", timeout=5)
+    assert [(e.author, e.kind) for e in got] == [("h1", "reply")]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_spawn_takes_no_name_and_no_slot():
+    pool = _pool(_replies("x"))
+    with pytest.raises(Exception):
+        await pool.spawn("root", "x" * 16_384, name="big")
+    assert "big" not in pool.record.participants
+    assert pool.record.live_agents() == ["root"]
+
+
+@pytest.mark.asyncio
+async def test_a_helper_is_not_shown_its_own_request_again():
+    gate = asyncio.Event()
+
+    async def start(name, spawner, request, request_seq):
+        await gate.wait()
+        return "ok"
+
+    pool = _pool(start)
+    await pool.spawn("root", REQUEST)
+    assert pool.record.take_block("h1") is None
+    gate.set()
+    await pool.close("test over")

@@ -46,6 +46,16 @@ class PostRefused(ValueError):
     """A post the record does not accept; the message says why and what to do instead."""
 
 
+def fit_text(text: str, full_text_at: str) -> str:
+    """``text`` cut to the entry limit, saying where the whole of it is."""
+    data = text.encode("utf-8")
+    if len(data) <= MAX_TEXT_BYTES:
+        return text
+    note = f"\n[cut: {len(data)} bytes in all; the full text is in {full_text_at}]"
+    room = MAX_TEXT_BYTES - len(note.encode("utf-8"))
+    return data[:room].decode("utf-8", errors="ignore") + note
+
+
 @dataclass
 class Participant:
     name: str
@@ -196,10 +206,56 @@ class Record:
         kind: str = "post",
         mentions: Optional[list[str]] = None,
     ) -> tuple[Entry, list[str]]:
-        """Accept one entry; return it and the @-names that matched nobody."""
+        """Accept one entry; return it and the @-names that matched nobody.
+
+        For posts that come from model code: an entry over the size limit, or
+        one past the record's entry limit, is refused with the reason.
+        """
+        return self._accept(author, text, kind=kind, mentions=mentions, fit_at=None)
+
+    def append_harness(
+        self,
+        author: str,
+        text: str,
+        *,
+        kind: str = "post",
+        mentions: Optional[list[str]] = None,
+        full_text_at: str = "the harness log",
+    ) -> Entry:
+        """An entry the harness writes for a participant (a request, a reply, a
+        cancel, a notice). It is never refused: a long text is cut to fit, with a
+        note saying where the whole of it is, and the entry limit does not apply,
+        so an answer or a stop is never lost."""
+        entry, _ = self._accept(
+            author,
+            text,
+            kind=kind,
+            mentions=mentions,
+            fit_at=full_text_at,
+        )
+        return entry
+
+    def set_cursor(self, name: str, upto: int) -> None:
+        """Mark entries up to ``upto`` as already seen by ``name`` (kept on disk)."""
+        with self._lock:
+            self.participants[name].cursor = upto
+            if self.log is not None:
+                self.log.append_cursor(name, upto)
+
+    def _accept(
+        self,
+        author: str,
+        text: str,
+        *,
+        kind: str,
+        mentions: Optional[list[str]],
+        fit_at: Optional[str],
+    ) -> tuple[Entry, list[str]]:
         if kind not in KINDS:
             raise PostRefused(f"unknown kind {kind!r}; use one of {', '.join(KINDS)}")
         text = scrub(str(text))
+        if fit_at is not None:
+            text = fit_text(text, fit_at)
         size = len(text.encode("utf-8"))
         if size > MAX_TEXT_BYTES:
             raise PostRefused(
@@ -207,7 +263,7 @@ class Record:
                 "write long content to a file and post its path",
             )
         with self._lock:
-            if len(self.entries) >= self.options.max_entries:
+            if fit_at is None and len(self.entries) >= self.options.max_entries:
                 raise PostRefused(
                     f"the record is full ({self.options.max_entries} entries)",
                 )

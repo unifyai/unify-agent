@@ -169,3 +169,55 @@ def test_listeners_see_each_entry_once():
     rec.add_listener(seen.append)
     rec.append(HARNESS, "notice", kind="system", mentions=["root"])
     assert [e.seq for e in seen] == [1]
+
+
+def test_harness_entries_are_fitted_not_refused():
+    rec = _record()
+    entry = rec.append_harness("user", "é" * 20_000, full_text_at="the first message")
+    assert len(entry.text.encode()) <= 16 * 1024
+    assert "cut" in entry.text and "the first message" in entry.text
+
+
+def test_harness_entries_ignore_the_entry_limit():
+    rec = _record(max_entries=1)
+    rec.append("root", "a")
+    entry = rec.append_harness("h1", "the reply", kind="reply", mentions=["root"])
+    assert entry.seq == 2
+
+
+def test_a_harness_entry_is_scrubbed_before_it_is_measured(monkeypatch):
+    secret = "sk-test-0123456789"  # pragma: allowlist secret
+    monkeypatch.setenv("LONG_NAMED_SERVICE_API_KEY_FOR_TESTS", secret)
+    rec = _record()
+    text = (
+        secret + " "
+    ) * 1500  # under the cap raw, over it once each value is redacted
+    entry = rec.append_harness("h1", text, kind="reply", mentions=["root"])
+    assert len(entry.text.encode()) <= 16 * 1024 and secret not in entry.text
+
+
+def test_concurrent_posts_keep_one_order_in_memory_and_file(tmp_path):
+    import threading
+
+    rec = _record(tmp_path)
+
+    def post(author):
+        for i in range(50):
+            rec.append(author, f"{author} {i}")
+
+    threads = [
+        threading.Thread(target=post, args=(a,)) for a in ("root", "h1", "h2", "user")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert [e.seq for e in rec.entries] == list(range(1, 201))
+    assert RecordLog(tmp_path / "run.jsonl", create=False).load()[0] == rec.entries
+
+
+def test_set_cursor_is_remembered_by_a_reload(tmp_path):
+    rec = _record(tmp_path)
+    rec.append("user", "the request")
+    rec.set_cursor("root", 1)
+    assert RecordLog(tmp_path / "run.jsonl", create=False).load()[1] == {"root": 1}

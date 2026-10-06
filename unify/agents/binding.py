@@ -167,7 +167,12 @@ def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
         return await _start_helper(pool, name, spawner, request, request_seq)
 
     pool = Pool(record, start_helper=start, spawn_allowed=allowed, spawn_refusal=why)
-    entry, _ = record.append(USER, str(request or ""), mentions=[ROOT])
-    record.participants[ROOT].cursor = entry.seq
+    entry = record.append_harness(
+        USER,
+        str(request or ""),
+        full_text_at="the main agent's first message",
+    )
+    # The main agent's first message is the request itself.
+    record.set_cursor(ROOT, entry.seq)
     _LAST_ROOT[0] = pool
     return Binding(pool, ROOT, RecordView(record, ROOT), AgentsView(pool, ROOT))

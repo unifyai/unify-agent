@@ -71,3 +71,17 @@ def test_the_prompt_section_states_the_rules():
     ):
         assert words in text
     assert "example" not in text.lower()
+
+
+def test_a_long_request_still_binds(record_mode):
+    b = binding.bind_for_act(request="ä" * 30_000, user_reads=False)
+    entry = b.pool.record.entries[0]
+    assert entry.author == "user" and len(entry.text.encode()) <= 16 * 1024
+    assert "cut" in entry.text
+
+
+def test_the_main_agents_first_cursor_is_written(record_mode):
+    from unify.agents.log import RecordLog
+
+    b = binding.bind_for_act(request="Count rows", user_reads=False)
+    assert RecordLog(b.pool.record.path, create=False).load()[1] == {"root": 1}
