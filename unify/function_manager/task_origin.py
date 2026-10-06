@@ -475,10 +475,16 @@ def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
                 " request_outcomes ORDER BY seq DESC LIMIT ?)",
                 (OUTCOME_LOG_SIZE,),
             )
-        return True
     except (OSError, sqlite3.Error) as exc:
         logger.warning(f"request outcome not written: {type(exc).__name__}: {exc}")
         return False
+    # UNIFY_PROTECT_VERIFIED=versioned: an accepted session's unverified
+    # versions replace the content they were kept beside.
+    if solved and _records_requests():
+        from . import verified_guard
+
+        verified_guard.promote_for(text_key(task.text))
+    return True
 
 
 def origin_outcome(text: str) -> Optional[tuple[bool, str]]:

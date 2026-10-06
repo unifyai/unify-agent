@@ -154,6 +154,18 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
 # The fields a search query is compared with, per function row.
 SEARCHED_FUNCTION_FIELDS = ("name", "docstring")
 
+# UNIFY_PROTECT_VERIFIED=versioned: the fields an unverified version keeps.
+VERSION_FIELDS = (
+    "argspec",
+    "docstring",
+    "implementation",
+    "depends_on",
+    "third_party_imports",
+    "dependencies",
+    "precondition",
+    "stale_reasons",
+)
+
 # UNIFY_FUNCTION_PATCH: the reason ``function_history`` records for an
 # overwrite. ``patch_function`` sets it around its ``add_functions`` call; a
 # plain ``add_functions(overwrite=True)`` records the default.
@@ -1308,6 +1320,8 @@ class FunctionManager(BaseFunctionManager):
         # UNIFY_FUNCTION_CASES: what replaying an updated function's recorded
         # cases found, reported with its "updated" status.
         case_reports: Dict[str, str] = {}
+        # UNIFY_PROTECT_VERIFIED=versioned: (function_id, metadata) with a version kept.
+        versions_kept: List[Tuple[int, Dict[str, Any]]] = []
         # UNIFY_STORE_INSTANCE_LINT: docstrings that name this task instance.
         instance_warnings: Dict[str, str] = {}
 
@@ -1414,6 +1428,32 @@ class FunctionManager(BaseFunctionManager):
                 # session's answer is not known to be accepted; otherwise this
                 # session wrote the content.
                 if verified_guard.enabled():
+                    status = (
+                        verified_guard.protected("function", name, prior)
+                        if prior is not None
+                        else None
+                    )
+                    if status is not None and verified_guard.versioned():
+                        # Kept beside the content as an unverified version.
+                        versions_kept.append(
+                            (
+                                int(prior["function_id"]),
+                                verified_guard.with_version(
+                                    prior.get("metadata"),
+                                    {
+                                        k: entry_data[k]
+                                        for k in VERSION_FIELDS
+                                        if k in entry_data
+                                    },
+                                ),
+                            ),
+                        )
+                        results[name] = "kept; " + verified_guard.version_note(
+                            "function",
+                            name,
+                            status,
+                        )
+                        continue
                     why = (
                         verified_guard.refusal(
                             "function",
@@ -1505,6 +1545,13 @@ class FunctionManager(BaseFunctionManager):
                     name = log_id_to_name.get(log_id)
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
+
+        # UNIFY_PROTECT_VERIFIED=versioned: the versions kept beside verified
+        # content (the content and its history are left as they are).
+        if versions_kept:
+            with db.transaction():
+                for function_id, metadata in versions_kept:
+                    self._update_function(function_id, {"metadata": metadata})
 
         # UNIFY_STORE_TRUST: an overwrite (a patch included) starts the
         # function's trust over on probation, keeping its failure history.

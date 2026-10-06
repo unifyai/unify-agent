@@ -445,8 +445,11 @@ class GuidanceManager(BaseGuidanceManager):
                 )
             ]
         # UNIFY_PROTECT_VERIFIED: a verified entry stays while this
-        # session's answer is not known to be accepted.
-        self._refuse_unverified_change(guidance_id, "update")
+        # session's answer is not known to be accepted (refused, or kept
+        # beside it as an unverified version).
+        kept = self._unverified_change(guidance_id, updates, title, content)
+        if kept is not None:
+            return kept
         # UNIFY_GUIDANCE_ORIGIN: the request this revision was written for.
         origin = _origin_for(guidance_id)
         if origin is not None:
@@ -463,6 +466,54 @@ class GuidanceManager(BaseGuidanceManager):
             entry_links.set_guidance_links(guidance_id, updates["function_ids"])
         return _with_warning(
             {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}},
+            _instance_warning(title, content),
+        )
+
+    @staticmethod
+    def _unverified_change(
+        guidance_id: int,
+        updates: Dict[str, Any],
+        title: Optional[str],
+        content: Optional[str],
+    ) -> Optional[ToolOutcome]:
+        """``UNIFY_PROTECT_VERIFIED``: the outcome when the change is not applied as asked; ``None`` to apply it.
+
+        ``versioned``: the change is kept as an unverified version. ``refuse``:
+        raises.
+        """
+        from ..function_manager import verified_guard
+
+        if not verified_guard.enabled():
+            return None
+        prior = _stored_origin(guidance_id) or {}
+        row = {"guidance_id": guidance_id, "metadata": prior}
+        status = verified_guard.protected("guidance", guidance_id, row)
+        if status is None:
+            return None
+        if not verified_guard.versioned():
+            GuidanceManager._refuse_unverified_change(guidance_id, "update")
+            return None
+        fields = {
+            k: v
+            for k, v in updates.items()
+            if k in ("title", "content", "function_ids")
+        }
+        db.execute(
+            "UPDATE guidance SET origin = ? WHERE guidance_id = ?",
+            (db.dumps(verified_guard.with_version(prior, fields)), int(guidance_id)),
+        )
+        return _with_warning(
+            {
+                "outcome": "guidance kept; change stored as an unverified version",
+                "details": {
+                    "guidance_id": guidance_id,
+                    "note": verified_guard.version_note(
+                        "guidance",
+                        guidance_id,
+                        status,
+                    ),
+                },
+            },
             _instance_warning(title, content),
         )
 
@@ -614,6 +665,10 @@ class GuidanceManager(BaseGuidanceManager):
             updated = self.update_guidance(guidance_id=guidance_id, content=patched)
         finally:
             _UPDATE_REASON.reset(token)
+        # UNIFY_PROTECT_VERIFIED=versioned: kept as a version, not patched.
+        if str(updated.get("outcome", "")).startswith("guidance kept"):
+            updated["details"]["edits"] = report
+            return updated
         return _with_warning(
             {
                 "outcome": "guidance patched",

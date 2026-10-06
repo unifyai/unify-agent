@@ -837,17 +837,21 @@ class ProductionSettings(BaseSettings):
     # identifiers they share; an identifier every recorded request names is
     # ignored. A query without one ranks as shipped. Off: as shipped.
     UNIFY_SEARCH_IDENTIFIERS: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each function and guidance
-    # entry records which session wrote its current content, and a session
-    # whose answer is not known to be accepted (the checker's outcome, else
-    # the storage review's judgement; not accepted, or not known yet) never
-    # replaces, patches or deletes a verified entry another session wrote
-    # (written in an accepted session, or called or relied on in a later
-    # one): the change is not applied and the writer is told why
-    # (unify/function_manager/verified_guard.py). Its own entries are listed
-    # unverified until accepted. No prompt changes. An actor refuses to
-    # start with this on and request records off. Off: as shipped.
-    UNIFY_PROTECT_VERIFIED: bool = False
+    # ``refuse`` (also 1/true/on) or ``versioned``, with UNIFY_TASK_ORIGIN (or
+    # UNIFY_TRY_FIRST): each function and guidance entry records which session
+    # wrote its current content, and a session whose answer is not known to
+    # be accepted (the checker's outcome, else the storage review's judgement;
+    # not accepted, or not known yet) never replaces or patches a verified
+    # entry another session wrote (written in an accepted session, or called
+    # or relied on in a later accepted one), nor deletes it
+    # (unify/function_manager/verified_guard.py). ``refuse``: the change is
+    # not applied and the writer is told why. ``versioned``: the change is
+    # kept beside the entry as an unverified version (at most three, in its
+    # metadata or hidden guidance origin; nothing is listed beside it), and
+    # replaces the content as soon as its session's answer is accepted. No
+    # prompt changes. An actor refuses to start with this set and request
+    # records off. Empty: as shipped.
+    UNIFY_PROTECT_VERIFIED: str = ""
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -1090,7 +1094,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LISTING_USAGE",
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
-        "UNIFY_PROTECT_VERIFIED",
         mode="before",
     )
     @classmethod
@@ -1198,6 +1201,21 @@ class ProductionSettings(BaseSettings):
         if value == "on":
             return "on"
         return f"related:{k}" + ("" if floor is None else f":{floor:g}")
+
+    @field_validator("UNIFY_PROTECT_VERIFIED", mode="before")
+    @classmethod
+    def parse_protect_verified(cls, v: Any) -> str:
+        value = str(v if v is not None else "").strip().lower()
+        if value in ("", "false", "0", "off", "no"):
+            return ""
+        if value in ("refuse", "true", "1", "on", "yes"):
+            return "refuse"
+        if value == "versioned":
+            return "versioned"
+        raise ValueError(
+            "UNIFY_PROTECT_VERIFIED must be empty, 'refuse' (or 1) or "
+            f"'versioned', not {v!r}",
+        )
 
     @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
     @classmethod

@@ -364,6 +364,15 @@ def record_text(
     if recurred:
         parts.append(recurred)
     parts += [status(kind, row, uses), use_phrase(kind, uses)]
+    # UNIFY_PROTECT_VERIFIED=versioned: changes kept beside the content.
+    from .verified_guard import versions
+
+    pending = versions(row.get("metadata"))
+    if pending:
+        noun = "version" if len(pending) == 1 else "versions"
+        parts.append(
+            f"{len(pending)} unverified {noun} from later sessions kept beside it",
+        )
     return "; ".join(parts)
 
 
