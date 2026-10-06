@@ -55,14 +55,19 @@ press Enter. With --persist the actor stays alive after answering: each
 further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
-follow-up, which may span lines) or {"quit": true}; each stdout line is
-{"type": "result" | "response" | "question" | "storage" | "ended", ...}.
-With --persist every turn ends in one "response" line as the actor starts
-waiting, its content empty when the turn produced no text. Progress still
-goes to stderr. With UNIFY_OUTCOME on, a stdin line {"outcome": {...}}
-gives the session its checked outcome for the storage review (see
-unify/outcome.py) and is answered with {"type": "outcome", "accepted": ...};
-with it off such a line is ignored.
+follow-up, which may span lines), {"cancel": true} or {"quit": true}; each
+stdout line is {"type": "result" | "response" | "question" | "storage" |
+"ended", ...}. With --persist every turn ends in one "response" line as the
+actor starts waiting, its content empty when the turn produced no text.
+{"cancel": true} ends the running turn at once and keeps the session: the
+model call and the tool calls still running are cancelled, and the turn's
+"response" line says "cancelled": true, its content the text the turn had
+drafted; with no turn running it is ignored. Without --persist it ends the
+session as {"quit": true} does. Progress still goes to stderr. With
+UNIFY_OUTCOME on, a stdin line {"outcome": {...}} gives the session its
+checked outcome for the storage review (see unify/outcome.py) and is
+answered with {"type": "outcome", "accepted": ...}; with it off such a line
+is ignored.
 """
 
 
@@ -464,7 +469,12 @@ class Act:
                 # A persist-mode turn finished; its answer is the result of the
                 # follow-up the user typed.
                 if self._args.jsonl:
-                    self._emit(type="response", content=notif.get("content", ""))
+                    extra = {"cancelled": True} if notif.get("cancelled") else {}
+                    self._emit(
+                        type="response",
+                        content=notif.get("content", ""),
+                        **extra,
+                    )
                 else:
                     print(f"\n{notif.get('content', '')}\n", flush=True)
             elif kind in ("storage_review_complete", "turn_storage_review_complete"):
@@ -528,6 +538,16 @@ class Act:
                         continue
                     if item.get("quit"):
                         line = "/quit"
+                    elif item.get("cancel"):
+                        # A one-shot session's request is the session.
+                        if not self._args.persist:
+                            line = "/quit"
+                        else:
+                            if not await self._handle.cancel_request():
+                                self._progress(
+                                    "cancel ignored: the session takes no more requests",
+                                )
+                            continue
                     else:
                         message = item.get("message")
                         if not isinstance(message, str) or not message:
