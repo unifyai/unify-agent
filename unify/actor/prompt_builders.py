@@ -130,6 +130,79 @@ _SEARCH_WHEN_USEFUL = (
     "the task genuinely requires multi-step composition."
 )
 
+# UNIFY_EXECUTE_FUNCTION_HINT=neutral: where the prompt prefers
+# ``execute_function`` for one exact call, it states what each tool can pass
+# instead. ``execute_function`` takes literal JSON, so a value held in a
+# session variable (a token, say) can only reach a stored function by name
+# through ``execute_code``.
+_EXECUTE_EITHER = (
+    "Either `execute_code` or `execute_function` can run a stored function.\n"
+    "`execute_code` can pass live session values by name, such as a variable\n"
+    "holding a token; `execute_function` takes literal values only."
+)
+_EXECUTE_FUNCTION_HINTS = (
+    # _FUNCTION_AND_GUIDANCE_LIBRARY and _ALWAYS_SEARCH_FIRST
+    (
+        "function via `execute_function`, follow relevant guidance.",
+        "function, follow relevant guidance.",
+    ),
+    (
+        "choose the minimal correct execution path —\n"
+        "if the request or discovery step already identifies one exact function\n"
+        "or primitive call, use `execute_function`; use `execute_code` only\n"
+        "when the task genuinely requires multi-step composition.",
+        "choose an execution path.\n" + _EXECUTE_EITHER,
+    ),
+    # _SEARCH_WHEN_USEFUL
+    (
+        "you find, call a relevant function via `execute_function` and follow\n",
+        "you find, call a relevant function and follow\n",
+    ),
+    (
+        "via update/re-link. Choose the minimal correct execution path — if the\n"
+        "request or a search result already identifies one exact function or\n"
+        "primitive call, use `execute_function`; use `execute_code` only when\n"
+        "the task genuinely requires multi-step composition.",
+        "via update/re-link. " + _EXECUTE_EITHER,
+    ),
+    # _DISCOVERY_FIRST_POLICY
+    (
+        "2. Then choose the minimal correct execution path:\n"
+        "   if one exact function or primitive call is enough, use execute_function;\n"
+        "   use execute_code only when the task genuinely needs multi-step\n"
+        "   composition, branching, iteration, or combining intermediate results.",
+        "2. Then choose an execution path. " + _EXECUTE_EITHER.replace("\n", "\n   "),
+    ),
+    # _TOOL_SELECTION
+    (
+        "- One exact function or primitive call is\n"
+        '  `execute_function(function_name="...", call_kwargs={...})`. Reach\n'
+        "  for `execute_code` only for genuine multi-step composition\n"
+        "  (branching, loops, combining intermediate results); a\n"
+        "  `print()`, `await handle.result()`, or temporary variable around a\n"
+        "  single call is boilerplate, not composition.",
+        "- Either tool can run a stored function or primitive:\n"
+        '  `execute_function(function_name="...", call_kwargs={...})` takes\n'
+        "  literal values only; `execute_code` can also pass live session\n"
+        "  values by name, such as a variable holding a token.",
+    ),
+)
+
+
+def _execute_function_hint_neutral() -> bool:
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_EXECUTE_FUNCTION_HINT == "neutral"
+
+
+def _neutral_execution_hints(text: str) -> str:
+    """*text* with every ``execute_function`` preference it holds made neutral."""
+    for old, new in _EXECUTE_FUNCTION_HINTS:
+        if old in text:
+            text = _unified(text, old, new)
+    return text
+
+
 _TOOL_SELECTION = textwrap.dedent("""
     ### Tool Selection: `execute_function` vs `execute_code`
 
@@ -1276,7 +1349,10 @@ def build_code_act_prompt(
         if rules_and_examples:
             parts.append(rules_and_examples)
 
-    return "\n\n".join(p for p in parts if p and p.strip())
+    prompt = "\n\n".join(p for p in parts if p and p.strip())
+    if has_execute_code and _execute_function_hint_neutral():
+        prompt = _neutral_execution_hints(prompt)
+    return prompt
 
 
 # ---------------------------------------------------------------------------

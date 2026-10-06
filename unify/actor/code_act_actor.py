@@ -1697,6 +1697,9 @@ def _correct_tool_docs(tools: Dict[str, Any]) -> None:
     if SETTINGS.lean_prompt():
         rewrites.extend(_LEAN_TOOL_DOCS)
         rewrites.append(_LEAN_INSTALL_DOC)
+    elif SETTINGS.UNIFY_EXECUTE_FUNCTION_HINT == "neutral":
+        # The same two preference passages as the lean profile drops.
+        rewrites.extend(_LEAN_TOOL_DOCS)
     if not rewrites and not placeholder_note.enabled():
         return
     for name in ("execute_code", "execute_function", "install_python_packages"):

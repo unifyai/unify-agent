@@ -151,6 +151,13 @@ class ProductionSettings(BaseSettings):
     # (unify/actor/placeholder_note.py). Off: results and description as
     # shipped.
     UNIFY_PLACEHOLDER_NOTE: bool = False
+    # ``neutral``: the prompt and the code tools' descriptions stop preferring
+    # ``execute_function`` for one exact call ("use ``execute_code`` only
+    # when ..."). Where they said so they say that either tool can run a
+    # stored function, that ``execute_code`` can pass live session values
+    # (a variable holding a token, say) by name, and that
+    # ``execute_function`` takes literal values only. Empty: as shipped.
+    UNIFY_EXECUTE_FUNCTION_HINT: str = ""
     # On: a function or guidance entry is checked, before it is stored, for
     # identifiers of the session's own task instance: id-like tokens (hex
     # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
@@ -1019,6 +1026,16 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal' "
                 f"or 'functions_first', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_EXECUTE_FUNCTION_HINT", mode="before")
+    @classmethod
+    def parse_execute_function_hint(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "neutral"):
+            raise ValueError(
+                f"UNIFY_EXECUTE_FUNCTION_HINT must be empty or 'neutral', not {v!r}",
             )
         return value
 
