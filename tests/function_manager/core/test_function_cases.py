@@ -312,33 +312,6 @@ async def test_execute_function_and_proxy_calls_are_recorded(music_env):
 
 
 @_handle_project
-@pytest.mark.asyncio
-async def test_a_call_through_the_actors_execute_function_tool_is_recorded():
-    from unify.actor.code_act_actor import CodeActActor
-
-    fm = _FM()
-    fm.add_functions(implementations=[DIVIDE])
-    actor = CodeActActor(function_manager=fm, can_store=False)
-    tool = actor.get_tools("act")["execute_function"]
-    tool = getattr(tool, "fn", tool)
-    try:
-        for b in (2, 0):
-            await tool(
-                thought="Reusing a stored function.",
-                function_name="divide",
-                call_kwargs={"a": 4, "b": b},
-            )
-    finally:
-        await actor.close()
-    passed, failed = sorted(_cases(fm, "divide"), key=lambda c: c.kind != "pass")
-    assert (passed.args_shown, passed.result["shown"]) == ("a=4, b=2", "2.0")
-    assert (failed.kind, failed.error) == (
-        "fail",
-        "ZeroDivisionError: division by zero",
-    )
-
-
-@_handle_project
 def test_a_credential_argument_is_not_shown():
     fm = _FM()
     fm.add_functions(

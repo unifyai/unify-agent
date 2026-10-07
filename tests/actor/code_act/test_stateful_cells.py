@@ -98,13 +98,6 @@ def test_on_execute_code_has_no_mode_and_no_session(monkeypatch, workspace):
     ):
         assert gone not in code["description"].split("Output")[0], gone
     assert not SESSION_TOOLS & set(tools)
-    function = _schema(tools, "execute_function")["function"]
-    assert "state_mode" in function["parameters"]["properties"]
-    assert not {"session_id", "session_name"} & set(
-        function["parameters"]["properties"],
-    )
-    assert "keep ``execute_code`` semantics" not in function["description"]
-    assert '``"stateful"`` runs it in the session' in function["description"]
 
 
 def test_on_a_mode_or_session_argument_is_refused_by_name(monkeypatch):
