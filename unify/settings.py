@@ -932,6 +932,16 @@ class ProductionSettings(BaseSettings):
     # The review is told it may. A name no cell defines is that entry's
     # error. Off: as shipped.
     UNIFY_STORE_FROM_SESSION: bool = False
+    # On: for a top-level task, every environment call (``primitives.<ns>``
+    # or a raw environment global such as AppWorld's ``apis``) is recorded in
+    # ``<UNIFY_HOME>/env_cards.sqlite`` by its path, argument names, outcome
+    # and response shape (never argument values or credentials), and the
+    # task's first message lists, for the groups the request names or most
+    # earlier sessions used, at most five facts earlier sessions verified:
+    # how a method was called and what came back, and a failed call with the
+    # one that then worked (env-memory-v1: AppWorld net -11% of task USD).
+    # Off: as shipped.
+    UNIFY_ENV_CARDS: bool = False
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
     # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
     # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
@@ -1360,6 +1370,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_ORIGIN_PROVENANCE",
         "UNIFY_CAPTURE_ACCEPTED",
         "UNIFY_STORE_FROM_SESSION",
+        "UNIFY_ENV_CARDS",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
         "UNIFY_GUIDANCE_ORIGIN",
