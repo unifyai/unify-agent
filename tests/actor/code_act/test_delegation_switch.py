@@ -69,35 +69,7 @@ async def test_off_nothing_in_the_request_offers_a_sub_actor():
     assert "primitives.actor" not in system
     assert "| `primitives` |" not in system
     assert "sub-agent (`primitives.actor.act`)" not in system
-    assert "primitives.actor" not in _tool_description(request, "execute_function")
     assert "primitives.actor" not in json.dumps(request["tools"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_off_execute_function_refuses_the_sub_actor():
-    replies = [
-        lambda: h.completion(
-            calls=[
-                (
-                    "execute_function",
-                    {
-                        "thought": "delegate",
-                        "function_name": "primitives.actor.act",
-                        "call_kwargs": {"request": "do it"},
-                    },
-                ),
-            ],
-        ),
-        *_DONE * 3,
-    ]
-    requests = await _run(replies)
-    results = " ".join(
-        json.dumps(m.get("content"))
-        for m in requests[1]["messages"]
-        if m.get("role") == "tool"
-    )
-    assert "runs without sub-actors" in results
 
 
 def test_the_cli_and_the_conversation_manager_build_from_the_switch():

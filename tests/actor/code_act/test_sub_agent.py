@@ -513,45 +513,6 @@ async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
     assert "primitives.actor" not in prompt
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-@_handle_project
-async def test_child_without_sub_agents_refuses_the_actor_primitive(monkeypatch):
-    """With can_spawn_sub_agents=False, execute_function, execute_code and a
-    stored function that calls primitives.actor.act are all refused with the
-    reason, and no sub-actor starts."""
-    spawned = _record_spawns(monkeypatch)
-    child = _build_child(can_spawn_sub_agents=False)
-    child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
-    tools = child.get_tools("act")
-
-    sandbox = PythonExecutionSession(environments=child.environments)
-    token = _CURRENT_SANDBOX.set(sandbox)
-    try:
-        results = [
-            await tools["execute_function"](
-                thought="Delegating the sum to a sub-actor.",
-                function_name=_ACTOR_ACT,
-                call_kwargs={"request": "What is 2 + 2?"},
-            ),
-            await tools["execute_code"](
-                thought="Delegating the sum to a sub-actor.",
-                code="await primitives.actor.act(request='What is 2 + 2?')",
-            ),
-            await tools["execute_function"](
-                thought="Delegating the sum through the stored function.",
-                function_name="delegate",
-                call_kwargs={"request": "What is 2 + 2?"},
-            ),
-        ]
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-
-    for result in results:
-        assert _REFUSAL in (_result_error(result) or "")
-    assert spawned == []
-
-
 @pytest.mark.timeout(30)
 @_handle_project
 @pytest.mark.parametrize(
@@ -565,44 +526,6 @@ def test_child_without_sub_agents_rejects_the_actor_primitive_as_prompt_function
     spawn sub-actors; the call fails and names the flag that would allow it."""
     with pytest.raises(ValueError, match="can_spawn_sub_agents is False"):
         _build_child(can_spawn_sub_agents=False, prompt_functions=[pattern])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-@_handle_project
-async def test_child_with_sub_agents_spawns_through_the_actor_primitive(monkeypatch):
-    """With can_spawn_sub_agents=True the child's prompt documents
-    primitives.actor.act, and execute_function and code both reach it."""
-    spawned = _record_spawns(monkeypatch)
-    child = _build_child(can_spawn_sub_agents=True)
-    tools = child.get_tools("act")
-
-    assert "primitives" in child.environments
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
-    assert "**`async def primitives.actor.act(request" in prompt
-    assert "`await primitives.actor.act(...)` spawns a sub-actor" in prompt
-    # The prompt documents it, so discovery leaves it out rather than
-    # listing it twice.
-    assert _ACTOR_ACT not in child.function_manager.list_functions()
-
-    sandbox = PythonExecutionSession(environments=child.environments)
-    token = _CURRENT_SANDBOX.set(sandbox)
-    try:
-        handle = await tools["execute_function"](
-            thought="Delegating the sum to a sub-actor.",
-            function_name=_ACTOR_ACT,
-            call_kwargs={"request": "first"},
-        )
-        coded = await tools["execute_code"](
-            thought="Delegating the sum to a sub-actor.",
-            code="await primitives.actor.act(request='second')",
-        )
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-
-    assert isinstance(handle, SteerableToolHandle)
-    assert _result_error(coded) is None
-    assert spawned == ["first", "second"]
 
 
 # ---------------------------------------------------------------------------

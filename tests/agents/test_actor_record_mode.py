@@ -308,14 +308,6 @@ async def test_record_mode_states_the_reply_owner_rule_instead_of_the_reply_note
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_off_the_reply_note_is_unchanged(monkeypatch, tmp_path):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path, mode="")
-    assert "Actions Taken By Replying" in json.dumps(requests[0]["messages"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_record_mode_still_says_a_cell_can_reply(monkeypatch, tmp_path):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")

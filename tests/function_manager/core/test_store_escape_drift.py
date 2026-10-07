@@ -252,7 +252,6 @@ async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[st
     from unify.actor import code_act_actor as caa
     from unify.actor import review_gate
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", False)
     monkeypatch.setattr(caa, "_library_counts", lambda *_a, **_k: (1, 0))
     actor = caa.CodeActActor()
     reviewed = {"calls": 0}
