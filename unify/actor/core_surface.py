@@ -4,8 +4,7 @@ As shipped the actor sends 31 JSON tool schemas, about 11.7k tokens, with every
 request: the function and guidance libraries alone are 16 of them, though the
 harness's own design is that everything is code. With the switch on the model
 sees ``execute_code`` (and ``final_response`` when the caller set a response
-format, and the loop's steering tools only for an actor that can start
-sub-actors); everything else is a Python object in the sandbox:
+format); everything else is a Python object in the sandbox:
 
 * ``functions`` -- search, filter, list, get, run, add, patch, delete, retire and
   reconcile_dependencies over the function library;
@@ -115,11 +114,10 @@ def require_prerequisites(*, can_compose: bool) -> None:
 
 def offers_steering(environments: Mapping[str, Any]) -> bool:
     """Whether the loop's steering tools (``wait``, ``steer``,
-    ``ask_about_completed_tool``) are offered: only to an actor that can
-    delegate to sub-actors, whose calls run alongside its own."""
-    from unify.actor.prompt_builders import _injects_actor_primitives
-
-    return _injects_actor_primitives(environments)
+    ``ask_about_completed_tool``) are offered: never. The loop has none (a
+    turn's calls run in order, each to completion), so neither the prompt
+    nor ``execute_code``'s description names them, sub-actors or not."""
+    return False
 
 
 # ---------------------------------------------------------------------------
