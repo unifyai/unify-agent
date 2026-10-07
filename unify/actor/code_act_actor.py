@@ -68,7 +68,7 @@ from unify.function_manager import task_origin as _task_origin
 from unify.function_manager import entry_record as _entry_record
 from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
-from unify.actor.prompt_builders import build_code_act_prompt, build_session_context
+from unify.actor.prompt_builders import build_code_act_prompt
 from unify.events.manager_event_logging import log_manager_call
 from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from unify.common.hierarchical_logger import log_boundary_event
@@ -988,39 +988,6 @@ as replying with that text would; the cell stops there. For example
 ``reply(answer)`` when the answer is in a variable."""
 
 
-_THOUGHT_REQUIRED = "always provide it."
-_THOUGHT_OPTIONAL = "you may leave it out."
-
-
-def _optional_thought(fn: Callable[..., Any]) -> None:
-    """UNIFY_THOUGHT_FIELD=optional: *fn*'s ``thought`` is not required.
-
-    The schema is read from the signature and the ``Annotated`` description,
-    so both are replaced on the function: ``thought`` gets the default the
-    loop already backfills (``llm_soft_required``), every parameter becomes
-    keyword-only so a required one may follow it (the loop calls tools by
-    keyword), and the description says it may be left out. The docstring's
-    "Always provide it." follows."""
-    from typing import get_args
-
-    sig = inspect.signature(fn)
-    hint = fn.__annotations__["thought"]
-    base, description = get_args(hint)
-    hint = Annotated[base, description.replace(_THOUGHT_REQUIRED, _THOUGHT_OPTIONAL)]
-    params = []
-    for param in sig.parameters.values():
-        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-            params.append(param)
-            continue
-        if param.name == "thought":
-            param = param.replace(default="", annotation=hint)
-        params.append(param.replace(kind=param.KEYWORD_ONLY))
-    fn.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
-    fn.__annotations__ = {**fn.__annotations__, "thought": hint}
-    if fn.__doc__:
-        fn.__doc__ = fn.__doc__.replace("Always provide it.", "You may leave it out.")
-
-
 # UNIFY_REVIEW_GENERALISE: the review sees the functions stored for requests
 # like this one, so that a second instance of a task generalises the first
 # instance's function instead of storing a sibling. On the 5 Oct ARC LOW runs
@@ -1171,47 +1138,22 @@ def _review_opening_is_neutral() -> bool:
     return _review_framing_unified() or _curation_doctrine_compose()
 
 
-def _review_reasoning_effort() -> str:
-    """``UNIFY_REVIEW_REASONING_EFFORT``: the storage review's effort, or ""."""
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_REVIEW_REASONING_EFFORT
-
-
-def _review_model() -> str:
-    """``UNIFY_REVIEW_MODEL``: the storage review's endpoint, or ""."""
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_REVIEW_MODEL
-
-
 def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
-    """A standalone storage review's client: the actor's model, as shipped.
-
-    ``UNIFY_REVIEW_MODEL`` replaces the model and
-    ``UNIFY_REVIEW_REASONING_EFFORT`` the effort. The effort is set on the
-    built client, so it holds even where a default model's paired effort
-    would override one passed to :func:`new_llm_client`.
-    """
-    client = new_llm_client(
-        _review_model() or actor._model,
+    """A standalone storage review's client: the actor's model, as shipped."""
+    return new_llm_client(
+        actor._model,
         purpose="planning",
         origin=origin,
     )
-    effort = _review_reasoning_effort()
-    if effort:
-        client.set_reasoning_effort(effort)
-    return client
 
 
 def _review_gate_client(actor: "CodeActActor") -> Any:
     """The ``UNIFY_REVIEW_GATE`` call's client: the review's model, at ``low``
-    effort unless ``UNIFY_REVIEW_REASONING_EFFORT`` sets the review's."""
+    effort."""
     from unify.actor import review_gate
 
     client = _storage_review_client(actor, origin=review_gate.ORIGIN)
-    if not _review_reasoning_effort():
-        client.set_reasoning_effort(review_gate.GATE_EFFORT)
+    client.set_reasoning_effort(review_gate.GATE_EFFORT)
     return client
 
 
@@ -1219,9 +1161,7 @@ def _review_gate_fork_client(fork_source: dict) -> Any:
     """The ``UNIFY_REVIEW_GATE_FORK`` call's client: a fork of the session's.
 
     It keeps the session's model, effort and cache affinity key, so its
-    request differs from the session's last only in what it appends;
-    ``UNIFY_REVIEW_REASONING_EFFORT`` sets the effort, as for a forked
-    review.
+    request differs from the session's last only in what it appends.
     """
     from unify.actor import review_gate
 
@@ -1231,9 +1171,6 @@ def _review_gate_fork_client(fork_source: dict) -> Any:
         purpose="planning",
         messages=fork_source["messages"],
     )
-    effort = _review_reasoning_effort()
-    if effort:
-        client.set_reasoning_effort(effort)
     return client
 
 
@@ -1935,9 +1872,6 @@ def _correct_tool_docs(
     if SETTINGS.lean_prompt():
         rewrites.extend(_LEAN_TOOL_DOCS)
         rewrites.append(_LEAN_INSTALL_DOC)
-    elif SETTINGS.UNIFY_EXECUTE_FUNCTION_HINT == "neutral":
-        # The same two preference passages as the lean profile drops.
-        rewrites.extend(_LEAN_TOOL_DOCS)
     if SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in (environments or {}):
         rewrites.extend(_TRIM_NO_PRIMITIVES_DOC)
     if not rewrites and not placeholder_note.enabled():
@@ -2765,14 +2699,6 @@ def _session_fork_source(
     client = getattr(inner, "_client", None)
     if client is None:
         return None, "the session has no LLM client"
-    review_model = _review_model()
-    session_model = getattr(client, "endpoint", None)
-    if review_model and review_model != session_model:
-        return None, (
-            f"UNIFY_REVIEW_MODEL is {review_model}, not the session's "
-            f"{session_model}, and a fork can only reuse the session's cache "
-            "on its own model"
-        )
     if getattr(getattr(inner, "_compression", None), "count", 0):
         return None, "the session's history was compressed"
     last = cache_discipline.last_sent_request(client)
@@ -2840,11 +2766,6 @@ def _start_storage_review_fork(
         purpose="planning",
         messages=fork_source["messages"],
     )
-    # UNIFY_REVIEW_REASONING_EFFORT: the fork's requests differ from the
-    # session's only in effort; messages, tools and affinity key are its own.
-    effort = _review_reasoning_effort()
-    if effort:
-        client.set_reasoning_effort(effort)
     first_choice = fork_source.get("tool_choice")
     first_choice = first_choice if isinstance(first_choice, str) else "auto"
     # The list's ask_about_completed_tool is the loop's own, over the review's
@@ -5236,9 +5157,6 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     pass
 
-        # UNIFY_THOUGHT_FIELD=optional: the schema does not require ``thought``.
-        from unify.settings import SETTINGS as _THOUGHT_SETTINGS
-
         # UNIFY_REPLY_CHANNEL=code+text: the description says a cell can reply.
         if cell_reply.enabled():
             execute_code.__doc__ = (
@@ -5247,9 +5165,6 @@ class CodeActActor(BaseCodeActActor):
                 + textwrap.indent(_EXECUTE_CODE_REPLY_DOC.strip("\n"), " " * 12)
                 + "\n"
             )
-
-        if _THOUGHT_SETTINGS.UNIFY_THOUGHT_FIELD == "optional":
-            _optional_thought(execute_code)
 
         # ───────────────────────── Package installation tool ────────────────── #
 
@@ -6166,8 +6081,6 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     return "execute_function"
 
-            if _THOUGHT_SETTINGS.UNIFY_THOUGHT_FIELD == "optional":
-                _optional_thought(execute_function)
             tools["execute_function"] = ToolSpec(
                 fn=execute_function,
                 display_label=_ef_display_label,
@@ -6880,9 +6793,6 @@ class CodeActActor(BaseCodeActActor):
         from unify.common._async_tool import cache_discipline
         from unify.settings import SETTINGS
 
-        # UNIFY_PROMPT_CLOCK=message: the clock and the filesystem context
-        # open the first user message instead of ending the system prompt.
-        clock_in_message = SETTINGS.UNIFY_PROMPT_CLOCK == "message"
         # The default policy's discovery-first gate; UNIFY_DISCOVERY_GATE off
         # leaves the library searches to the model (no gated or forced turn).
         default_policy = self.tool_policy is _USE_DEFAULT
@@ -6908,8 +6818,6 @@ class CodeActActor(BaseCodeActActor):
             **({"library_read_only": True} if admission_gated else {}),
             **({"inline_curation": inline_mode} if inline_mode else {}),
         )
-        if clock_in_message:
-            prompt_kwargs["session_sections"] = False
         if core_session is not None:
             prompt_kwargs["core"] = core_session.prompt
         system_prompt = build_code_act_prompt(**prompt_kwargs)
@@ -6919,10 +6827,9 @@ class CodeActActor(BaseCodeActActor):
         if cache_discipline.enabled() and cache_discipline.affinity_scope() == (
             "static"
         ):
-            static_system_prompt = (
-                system_prompt
-                if clock_in_message
-                else build_code_act_prompt(**prompt_kwargs, session_sections=False)
+            static_system_prompt = build_code_act_prompt(
+                **prompt_kwargs,
+                session_sections=False,
             )
         if notebook_cells.enabled() and "execute_code" in base_tools:
             # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
@@ -6933,12 +6840,9 @@ class CodeActActor(BaseCodeActActor):
                     static_system_prompt,
                 )
         # What opens the session's first user message (first_message_context),
-        # in this order: the session sections (UNIFY_PROMPT_CLOCK=message: the
-        # clock, then the filesystem context), then the library's size
-        # (UNIFY_LIBRARY_SNAPSHOT), then a rule and the request.
+        # in this order: the library's size (UNIFY_LIBRARY_SNAPSHOT), then a
+        # rule and the request.
         first_message_parts: list[str] = []
-        if clock_in_message:
-            first_message_parts.append(build_session_context(base_tools))
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
             f"({len(system_prompt)} chars, {len(base_tools)} tools)",

@@ -275,33 +275,6 @@ class ProductionSettings(BaseSettings):
     # (unify/actor/placeholder_note.py). Off: results and description as
     # shipped.
     UNIFY_PLACEHOLDER_NOTE: bool = True
-    # ``neutral``: the prompt and the code tools' descriptions stop preferring
-    # ``execute_function`` for one exact call ("use ``execute_code`` only
-    # when ..."). Where they said so they say that either tool can run a
-    # stored function, that ``execute_code`` can pass live session values
-    # (a variable holding a token, say) by name, and that
-    # ``execute_function`` takes literal values only. Empty: as shipped.
-    UNIFY_EXECUTE_FUNCTION_HINT: str = ""
-    # How the actor's system prompt words the reply rule. ``reason``: where
-    # the prompt states that the answer is a reply without a tool call (the
-    # lean profile's role, the shipped profile's final-answer rule, on both
-    # tool surfaces) it adds "You may reason in your reply before its final
-    # answer or action; you do not need a cell to think or to announce a
-    # step.", the lean role says the requester's format governs the answer or
-    # action in a reply rather than the whole reply, the notebook cell's
-    # description (UNIFY_CODE_PROJECTION=notebook) says a cell is not for
-    # thinking or announcing a step, and the reply-protocol note (when
-    # UNIFY_REPLY_PROTOCOL_NOTE is on) reads as under ``action_last``.
-    # ``action_last``: only the reply-protocol note changes: its "to take
-    # one, end your turn with exactly that reply" becomes "End your turn with
-    # a reply whose last line is the action; you may reason before it.";
-    # inert while UNIFY_REPLY_PROTOCOL_NOTE is off. Experimental: the 6 Oct
-    # trigger replay found the ``action_last`` note raises first-move no-op
-    # cells by +0.18 [+0.06, +0.30] (no single sentence was the trigger;
-    # imitating the session's own history dominated). The requester's own
-    # text is never changed (unify/actor/prompt_builders.py). Empty: as
-    # shipped.
-    UNIFY_REPLY_WORDING: str = ""
     # ``code+text``: model code in a cell can send the turn's reply with
     # ``reply(text)`` (in process and under UNIFY_WORKSPACE_PYTHON=worker).
     # It takes only a ``str``, ends the cell at once (its output so far is
@@ -372,12 +345,6 @@ class ProductionSettings(BaseSettings):
     # prompt and tools are unchanged (unify/actor/execution/worker_child.py
     # ``Inventory``). Empty: results as shipped.
     UNIFY_VARIABLE_INVENTORY: str = ""
-    # ``optional``: ``thought`` on execute_code and execute_function is no
-    # longer required in their schemas and its description says it may be
-    # left out. Under UNIFY_CODE_PROJECTION=notebook execute_code has no
-    # ``thought`` field, so only execute_function changes. Empty: required,
-    # as shipped.
-    UNIFY_THOUGHT_FIELD: str = ""
     # On: a function or guidance entry is checked, before it is stored, for
     # identifiers of the session's own task instance: id-like tokens (hex
     # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
@@ -542,14 +509,6 @@ class ProductionSettings(BaseSettings):
     # the same. The session's first user message starts with one line giving
     # both counts at task start. Off: as shipped.
     UNIFY_LIBRARY_SNAPSHOT: bool = True
-    # Where the actor's per-session prompt sections go: the clock (minute
-    # resolution) and the filesystem context (workspace paths). Empty: at the
-    # tail of the system prompt, as shipped, so the system prompt differs
-    # from minute to minute and workspace to workspace. ``message``: the same
-    # sections, sampled once per session, open the session's first user
-    # message (and the message that restarts a compressed session), so the
-    # system prompt is the same for every session of one configuration.
-    UNIFY_PROMPT_CLOCK: str = ""
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -726,16 +685,6 @@ class ProductionSettings(BaseSettings):
     # or it ended with unanswered tool calls, the gate is asked standalone and
     # the log says why. Ignored without UNIFY_REVIEW_GATE. Off: as shipped.
     UNIFY_REVIEW_GATE_FORK: bool = False
-    # The actor's prompt asks it to compute a result that can be computed
-    # with a program and answer with the program's output instead of a
-    # result worked out in text, with judgment steps kept as query_llm calls
-    # inside the program, so that a solved task leaves a program the review
-    # can store. It does not ask the actor to check the program against
-    # examples it was given: stored functions are checked mechanically
-    # (UNIFY_FUNCTION_CASES replays their recorded calls). Conversational and single-step requests, and tasks one
-    # stored function or primitive call completes, are answered as before.
-    # Off: as shipped.
-    UNIFY_CODE_FIRST: bool = False
     # The loop's `wait` tool takes ``until="all"``: a turn that calls several
     # tools and adds wait(until="all") is woken once, when every call from
     # that turn has finished, instead of when the first one does (a turn
@@ -1146,20 +1095,6 @@ class ProductionSettings(BaseSettings):
     # context compression the compressed context points at the file
     # (unify/transcripts.py). Off: nothing is written.
     UNIFY_TRANSCRIPTS: bool = True
-    # Reasoning effort of every storage review (forked, standalone, after a
-    # turn, or asked for mid-task): one of the efforts unillm forwards
-    # (``none``, ``low``, ``medium``, ``high``, ``xhigh``, ``max``). A forked
-    # review sends the session's messages and tools unchanged and keeps its
-    # cache affinity key; only the effort of its requests differs. Empty: each
-    # review runs at the effort it gets as shipped.
-    UNIFY_REVIEW_REASONING_EFFORT: str = ""
-    # Model of every storage review, as a unillm endpoint
-    # (``provider/model@host``). A model other than the session's cannot share
-    # its cache, so with UNIFY_REVIEW_FORK the review runs standalone and the
-    # log says why. Without UNIFY_REVIEW_REASONING_EFFORT it runs at the
-    # effort a client named for a model gets (``high``). Empty: the review
-    # uses the actor's model, as shipped.
-    UNIFY_REVIEW_MODEL: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
@@ -1359,7 +1294,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
         "UNIFY_REVIEW_GATE_FORK",
-        "UNIFY_CODE_FIRST",
         "UNIFY_STORE_INSTANCE_LINT",
         "UNIFY_STORE_ASYNC_CHECK",
         "UNIFY_PLACEHOLDER_NOTE",
@@ -1569,16 +1503,6 @@ class ProductionSettings(BaseSettings):
             f"'versioned', not {v!r}",
         )
 
-    @field_validator("UNIFY_PROMPT_CLOCK", mode="before")
-    @classmethod
-    def parse_prompt_clock(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "message"):
-            raise ValueError(
-                f"UNIFY_PROMPT_CLOCK must be empty or 'message', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_PROMPT_PROFILE", mode="before")
     @classmethod
     def parse_prompt_profile(cls, v: Any) -> str:
@@ -1663,28 +1587,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_REVIEW_REASONING_EFFORT", mode="before")
-    @classmethod
-    def parse_review_reasoning_effort(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in _REVIEW_EFFORTS:
-            raise ValueError(
-                "UNIFY_REVIEW_REASONING_EFFORT must be empty or one of "
-                f"{', '.join(_REVIEW_EFFORTS[1:])}, not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_REVIEW_MODEL", mode="before")
-    @classmethod
-    def parse_review_model(cls, v: Any) -> str:
-        value = str(v or "").strip()
-        if value and "@" not in value:
-            raise ValueError(
-                "UNIFY_REVIEW_MODEL must be empty or a unillm endpoint "
-                f"('provider/model@host'), not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_REVIEW_FRAMING", mode="before")
     @classmethod
     def parse_review_framing(cls, v: Any) -> str:
@@ -1703,27 +1605,6 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal', "
                 f"'functions_first' or 'balanced', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_EXECUTE_FUNCTION_HINT", mode="before")
-    @classmethod
-    def parse_execute_function_hint(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "neutral"):
-            raise ValueError(
-                f"UNIFY_EXECUTE_FUNCTION_HINT must be empty or 'neutral', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_REPLY_WORDING", mode="before")
-    @classmethod
-    def parse_reply_wording(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "reason", "action_last"):
-            raise ValueError(
-                "UNIFY_REPLY_WORDING must be empty, 'reason' or 'action_last', "
-                f"not {v!r}",
             )
         return value
 
@@ -1768,18 +1649,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "code+text"):
             raise ValueError(
                 "UNIFY_REPLY_CHANNEL must be empty, 'text' or 'code+text', "
-                f"not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_THOUGHT_FIELD", mode="before")
-    @classmethod
-    def parse_thought_field(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        value = "" if value == "required" else value
-        if value not in ("", "optional"):
-            raise ValueError(
-                "UNIFY_THOUGHT_FIELD must be empty, 'required' or 'optional', "
                 f"not {v!r}",
             )
         return value

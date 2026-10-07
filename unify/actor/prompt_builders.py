@@ -131,78 +131,6 @@ _SEARCH_WHEN_USEFUL = (
     "the task genuinely requires multi-step composition."
 )
 
-# UNIFY_EXECUTE_FUNCTION_HINT=neutral: where the prompt prefers
-# ``execute_function`` for one exact call, it states what each tool can pass
-# instead. ``execute_function`` takes literal JSON, so a value held in a
-# session variable (a token, say) can only reach a stored function by name
-# through ``execute_code``.
-_EXECUTE_EITHER = (
-    "Either `execute_code` or `execute_function` can run a stored function.\n"
-    "`execute_code` can pass live session values by name, such as a variable\n"
-    "holding a token; `execute_function` takes literal values only."
-)
-_EXECUTE_FUNCTION_HINTS = (
-    # _FUNCTION_AND_GUIDANCE_LIBRARY and _ALWAYS_SEARCH_FIRST
-    (
-        "function via `execute_function`, follow relevant guidance.",
-        "function, follow relevant guidance.",
-    ),
-    (
-        "choose the minimal correct execution path —\n"
-        "if the request or discovery step already identifies one exact function\n"
-        "or primitive call, use `execute_function`; use `execute_code` only\n"
-        "when the task genuinely requires multi-step composition.",
-        "choose an execution path.\n" + _EXECUTE_EITHER,
-    ),
-    # _SEARCH_WHEN_USEFUL
-    (
-        "you find, call a relevant function via `execute_function` and follow\n",
-        "you find, call a relevant function and follow\n",
-    ),
-    (
-        "via update/re-link. Choose the minimal correct execution path — if the\n"
-        "request or a search result already identifies one exact function or\n"
-        "primitive call, use `execute_function`; use `execute_code` only when\n"
-        "the task genuinely requires multi-step composition.",
-        "via update/re-link. " + _EXECUTE_EITHER,
-    ),
-    # _DISCOVERY_FIRST_POLICY
-    (
-        "2. Then choose the minimal correct execution path:\n"
-        "   if one exact function or primitive call is enough, use execute_function;\n"
-        "   use execute_code only when the task genuinely needs multi-step\n"
-        "   composition, branching, iteration, or combining intermediate results.",
-        "2. Then choose an execution path. " + _EXECUTE_EITHER.replace("\n", "\n   "),
-    ),
-    # _TOOL_SELECTION
-    (
-        "- One exact function or primitive call is\n"
-        '  `execute_function(function_name="...", call_kwargs={...})`. Reach\n'
-        "  for `execute_code` only for genuine multi-step composition\n"
-        "  (branching, loops, combining intermediate results); a\n"
-        "  `print()`, `await handle.result()`, or temporary variable around a\n"
-        "  single call is boilerplate, not composition.",
-        "- Either tool can run a stored function or primitive:\n"
-        '  `execute_function(function_name="...", call_kwargs={...})` takes\n'
-        "  literal values only; `execute_code` can also pass live session\n"
-        "  values by name, such as a variable holding a token.",
-    ),
-)
-
-
-def _execute_function_hint_neutral() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_EXECUTE_FUNCTION_HINT == "neutral"
-
-
-def _neutral_execution_hints(text: str) -> str:
-    """*text* with every ``execute_function`` preference it holds made neutral."""
-    for old, new in _EXECUTE_FUNCTION_HINTS:
-        if old in text:
-            text = _unified(text, old, new)
-    return text
-
 
 _TOOL_SELECTION = textwrap.dedent("""
     ### Tool Selection: `execute_function` vs `execute_code`
@@ -398,20 +326,14 @@ def _reply_protocol_note_enabled() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# UNIFY_REPLY_WORDING and UNIFY_REPLY_CHANNEL: the reply rule
+# UNIFY_REPLY_CHANNEL: the reply rule
 # ---------------------------------------------------------------------------
 # Where the prompt states that the answer is a reply without a tool call, it
-# can say in one sentence that a reply may carry reasoning before its answer
-# or action, so thinking or announcing a step needs no cell, and in one more
-# that a cell can send the reply with ``reply(text)``. The sentences around
-# them are made consistent with them; the requester's own text is never
-# changed. Every text below is built from the shipped one, which is returned
-# unchanged while the switches are off.
+# can say in one more sentence that a cell can send the reply with
+# ``reply(text)``. The sentences around it are made consistent with it; the
+# requester's own text is never changed. Every text below is built from the
+# shipped one, which is returned unchanged while the switch is off.
 
-_REPLY_REASON = (
-    "You may reason in your reply before its final answer or action; you do "
-    "not need a cell to think or to announce a step."
-)
 # UNIFY_REPLY_CHANNEL=code+text: a cell can send the reply.
 _REPLY_FROM_CELL = (
     "You can also reply from a cell with `reply(text)`, for example "
@@ -424,12 +346,6 @@ _NOTE_FROM_CELL = (
 _WRAP = 72
 
 
-def _reply_wording() -> str:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_REPLY_WORDING
-
-
 def _reply_from_cell() -> bool:
     from unify.common._async_tool import cell_reply
 
@@ -438,7 +354,7 @@ def _reply_from_cell() -> bool:
 
 def _reply_rule_additions() -> list[str]:
     """The sentences that follow the statement of the reply rule."""
-    added = [_REPLY_REASON] if _reply_wording() == "reason" else []
+    added: list[str] = []
     if _reply_from_cell():
         added.append(_REPLY_FROM_CELL)
     return added
@@ -466,11 +382,7 @@ def _lean_role() -> str:
     added = _reply_rule_additions()
     if not added:
         return _LEAN_ROLE
-    governs = (
-        "the answer or action in each reply"
-        if _reply_wording() == "reason"
-        else "each reply"
-    )
+    governs = "each reply"
     rule = " ".join(
         [
             "Your answer is your final reply: a message without a tool call.",
@@ -497,7 +409,7 @@ def _final_answer_rule(text: str) -> str:
     added = _reply_rule_additions()
     if not added:
         return text
-    directly = "" if _reply_wording() == "reason" else "directly "
+    directly = "directly "
     rule = " ".join(
         [
             "6. **Final answer**: when the request is fully addressed, you "
@@ -517,21 +429,11 @@ _NOTE_TAKE_ONE = (
     "search or sub-agent can take them for you: to take one, end your turn "
     "with exactly that reply."
 )
-# UNIFY_REPLY_WORDING=action_last (and =reason): the action ends the reply,
-# and reasoning may come before it.
-_NOTE_ACTION_LAST = (
-    "They are not functions, tools or `primitives.*` methods. "
-    "Requester-defined actions can only be taken by your reply, not by code, "
-    "search or sub-agents. End your turn with a reply whose last line is the "
-    "action; you may reason before it."
-)
 
 
 def _reply_protocol_note() -> str:
     """UNIFY_REPLY_PROTOCOL_NOTE's text, as the switches word it."""
     take_one = _NOTE_TAKE_ONE
-    if _reply_wording() in ("reason", "action_last"):
-        take_one = _NOTE_ACTION_LAST
     if _reply_from_cell():
         take_one = f"{take_one} {_NOTE_FROM_CELL}"
     if take_one == _NOTE_TAKE_ONE:
@@ -539,30 +441,6 @@ def _reply_protocol_note() -> str:
     heading, body = _REPLY_PROTOCOL_NOTE.split("\n\n", 1)
     body = _unified(" ".join(body.split()), _NOTE_TAKE_ONE, take_one)
     return f"{heading}\n\n{_refill(body)}"
-
-
-# UNIFY_CODE_FIRST: compute a computable result with a program.
-_CODE_FIRST = textwrap.dedent("""
-    ### Compute With Code
-
-    When a result can be computed — transforming data, applying a rule,
-    querying or updating a system through its API — compute it with a
-    program in `execute_code` rather than by hand, and answer with its
-    output; actions with side effects still go step by step, as
-    Incremental Execution says. Keep judgment steps (classifying, wording,
-    reading something ambiguous) as `query_llm(...)` calls inside the
-    program. A working program can be stored and reused on the next
-    similar task; reasoning done only in text cannot. If one stored
-    function or primitive call is the whole task, call it as Tool
-    Selection says; answer without code only when the request is
-    conversational or a single obvious step.
-""").strip()
-
-
-def _code_first_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_CODE_FIRST)
 
 
 _SUB_ACTOR_DIAL = textwrap.dedent("""
@@ -1667,8 +1545,6 @@ def build_code_act_prompt(
             parts.append(_execution_rules(can_clarify))
             if _reply_protocol_note_enabled():
                 parts.append(_reply_protocol_note())
-        if _code_first_enabled():
-            parts.append(_CODE_FIRST)
         parts.append(
             (
                 _LEAN_INCREMENTAL_EXECUTION
@@ -1749,8 +1625,6 @@ def build_code_act_prompt(
             parts.append(rules_and_examples)
 
     prompt = "\n\n".join(p for p in parts if p and p.strip())
-    if has_execute_code and _execute_function_hint_neutral():
-        prompt = _neutral_execution_hints(prompt)
     return prompt
 
 
@@ -1768,8 +1642,6 @@ _CORE_SANDBOX_SEARCH_PYTHON = (
     "`await functions.search(...)`, then read live docs in-sandbox with\n"
     "`help(...)`"
 )
-_CORE_CODE_FIRST_TAIL = "call it as Tool\nSelection says;"
-_CORE_CODE_FIRST_TAIL_PYTHON = "call it in one\ncell;"
 
 
 # The lean rules' pointer to the session tools, which the core surface does not have.
@@ -1840,10 +1712,6 @@ def _build_core_prompt(
         parts.append(core_surface.execution_rules(_execution_rules(can_clarify)))
         if _reply_protocol_note_enabled():
             parts.append(_reply_protocol_note())
-    if _code_first_enabled():
-        parts.append(
-            _unified(_CODE_FIRST, _CORE_CODE_FIRST_TAIL, _CORE_CODE_FIRST_TAIL_PYTHON),
-        )
     parts.append(
         _LEAN_INCREMENTAL_EXECUTION if lean else _incremental_execution(can_clarify),
     )
