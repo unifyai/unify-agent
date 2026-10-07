@@ -270,24 +270,17 @@ def test_off_everything_is_stored_as_shipped(drift, monkeypatch):
 # ── through the actor's storage review ───────────────────────────────────
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_the_review_is_refused_a_doubled_write_of_its_sessions_cell(
-    drift,
-    monkeypatch,
-):
+async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[str]:
+    """Run a scripted session whose one cell is *session_cell*; its review makes *review_calls*.
+
+    Returns the review's tool results (as the model read them).
+    """
     from unify.actor import code_act_actor as caa
     from unify.actor import review_gate
 
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(caa, "_library_counts", lambda *_a, **_k: (1, 0))
-    session_cell = (
-        "names = ['Bruno', 'Chloe']\nprint(''.join(n+'\\n' for n in names))\n"
-    )
-    review_calls = [
-        ("FunctionManager_add_functions", {"implementations": [DOUBLED]}),
-    ]
     actor = caa.CodeActActor()
     reviewed = {"calls": 0}
     try:
@@ -301,7 +294,7 @@ async def test_the_review_is_refused_a_doubled_write_of_its_sessions_cell(
                     reviewed["calls"] += 1
                     if reviewed["calls"] == 1:
                         return h.completion(calls=review_calls)
-                    return h.completion(content="nothing stored")
+                    return h.completion(content="done")
                 actor_turns = sum(
                     1
                     for r in provider.requests
@@ -325,10 +318,80 @@ async def test_the_review_is_refused_a_doubled_write_of_its_sessions_cell(
         if r["messages"][0]["content"].startswith("You are a skill librarian.")
     ]
     assert len(reviews) >= 2
-    results = [
-        str(m["content"])
-        for m in reviews[-1]["messages"]
-        if m["role"] == "tool" and "write_names" in str(m["content"])
-    ]
+    return [str(m["content"]) for m in reviews[-1]["messages"] if m["role"] == "tool"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_the_review_is_refused_a_doubled_write_of_its_sessions_cell(
+    drift,
+    monkeypatch,
+):
+    session_cell = (
+        "names = ['Bruno', 'Chloe']\nprint(''.join(n+'\\n' for n in names))\n"
+    )
+    results = await _review(
+        monkeypatch,
+        session_cell,
+        [("FunctionManager_add_functions", {"implementations": [DOUBLED]})],
+    )
+    results = [t for t in results if "write_names" in t]
     assert any("one extra backslash at each escape" in t for t in results), results
     assert _stored("write_names") is None
+
+
+# ── with UNIFY_STORE_FROM_SESSION: a name stores the cell's own source ────
+
+# The session defines the function in a cell and runs it.
+SESSION_DEF = r"""def join_names(names):
+    return "".join(name + "\n" for name in names)
+"""
+SESSION_CELL = SESSION_DEF + "\nprint(join_names(['Bruno', 'Chloe']))\n"
+# The same function retyped by the review, one escape level up.
+RETYPED = SESSION_DEF.replace('"\\n"', '"\\\\n"')
+
+
+@pytest.fixture
+def by_name(drift, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_FROM_SESSION", True)
+
+
+def test_the_pair_sources_are_one_escape_level_apart():
+    assert '"\\n"' in SESSION_DEF and '"\\\\n"' in RETYPED
+    assert ed.drifted(RETYPED, ed.cell_literals([SESSION_CELL]))
+    assert ed.drifted(SESSION_DEF, ed.cell_literals([SESSION_CELL])) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_both_on_a_function_stored_by_name_is_the_cells_and_passes(
+    by_name,
+    monkeypatch,
+):
+    results = await _review(
+        monkeypatch,
+        SESSION_CELL,
+        [("FunctionManager_add_functions", {"implementations": ["join_names"]})],
+    )
+    assert any('"join_names": "added"' in t for t in results), results
+    assert not any("one extra backslash" in t for t in results), results
+    assert _stored("join_names")["implementation"] == SESSION_DEF
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_both_on_a_retyped_source_with_one_more_escape_is_refused(
+    by_name,
+    monkeypatch,
+):
+    results = await _review(
+        monkeypatch,
+        SESSION_CELL,
+        [("FunctionManager_add_functions", {"implementations": [RETYPED]})],
+    )
+    assert any(
+        "'join_names' was not stored, because its source writes "
+        '`"\\\\n"` where the session\'s own code wrote `"\\n"`' in t
+        for t in results
+    ), results
+    assert _stored("join_names") is None
