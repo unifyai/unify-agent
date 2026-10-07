@@ -65,11 +65,19 @@ async def test_the_session_continues_from_the_summary_with_the_same_prefix(on):
     assert h.request_bytes(restarted)["tools"] == h.request_bytes(first)["tools"]
     assert "unpack_messages" not in h.request_bytes(restarted)["tools"]
     user = [m for m in restarted["messages"] if m["role"] == "user"]
-    assert user[-1]["content"] == (
+    # The summary, the restart notice and (UNIFY_TRANSCRIPTS, on by default)
+    # the line naming the session's transcript file.
+    from unify import transcripts
+
+    restart, pointer = user[-1]["content"].rsplit("\n\n", 1)
+    assert restart == (
         "## Compressed Prior Context\n"
         f"{h.SUMMARY}\n\n"
         "Context was compressed. Continue from where you left off."
     )
+    directory = str(transcripts.transcripts_dir())
+    assert pointer.startswith(f"The full history of this session is at {directory}/")
+    assert pointer.endswith(".jsonl; search it with grep/rg if you need details.")
 
 
 @pytest.mark.asyncio
