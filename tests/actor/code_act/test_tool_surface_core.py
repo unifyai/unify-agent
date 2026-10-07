@@ -4,8 +4,7 @@ As shipped the actor sends 31 JSON tool schemas with every request (about
 11.7k tokens; 18,898 fixed tokens with the system prompt on an ARC first
 call), though its own design is that everything is code: the function and
 guidance libraries alone are 16 of the tools. With the switch on, the model
-sees ``execute_code`` (plus ``final_response`` with a response format, and
-the loop's steering tools only for an actor that can start sub-actors); the
+sees ``execute_code`` (plus ``final_response`` with a response format); the
 libraries are the sandbox's ``functions`` and ``guidance`` objects,
 ``functions.run`` replaces ``execute_function``, and ``install``,
 ``read_file``, ``grep`` and ``request_clarification`` are awaitables there.
@@ -185,10 +184,9 @@ async def test_with_the_switch_off_the_session_keeps_every_json_tool(monkeypatch
         "GuidanceManager_search",
         "install_python_packages",
         "compress_context",
-        "wait",
-        "steer",
     ):
         assert name in names, name
+    assert not {"wait", "steer", "ask_about_completed_tool"} & set(names)
     assert "### Sandbox Objects" not in requests[0]["messages"][0]["content"]
 
 
@@ -196,7 +194,9 @@ async def test_with_the_switch_off_the_session_keeps_every_json_tool(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 @_handle_project
-async def test_steering_tools_come_only_with_sub_actors(core_world):
+async def test_no_steering_tools_even_with_sub_actors(core_world):
+    """The loop has no steering tools: an actor that can start sub-actors
+    sends execute_code alone, and its prompt names no steering."""
     from unify.actor.environments import ActorEnvironment
 
     actor = _actor(can_store=False, environments=[ActorEnvironment()])
@@ -204,13 +204,8 @@ async def test_steering_tools_come_only_with_sub_actors(core_world):
         _result, requests = await _act(actor, (lambda: h.completion(content="done"),))
     finally:
         await actor.close()
-    assert _tool_names(requests[0]) == [
-        "execute_code",
-        "wait",
-        "steer",
-        "ask_about_completed_tool",
-    ]
-    assert "### Responding to a steering checkpoint" in (
+    assert _tool_names(requests[0]) == ["execute_code"]
+    assert "### Responding to a steering checkpoint" not in (
         requests[0]["messages"][0]["content"]
     )
 
