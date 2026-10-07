@@ -1393,7 +1393,6 @@ class FunctionManager(BaseFunctionManager):
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
 
-
         for name, report in case_reports.items():
             if results.get(name) == "updated":
                 results[name] = f"updated; {report}"

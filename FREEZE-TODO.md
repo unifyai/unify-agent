@@ -16,47 +16,13 @@ This branch is the overhauled Unify harness. **Lean-all is the base config, in P
   - provider-key tests carry `requires_provider_key`: skipped by name without a key, and failing under `UNIFY_TEST_REQUIRE_PROVIDER_KEY=1` if the key is missing.
 - **Untouched:** ordinary context compression and `unify/conversation_manager/`.
 
-## Remaining research switches (44)
+## Remaining research switches (17)
 
-`tests/test_no_research_switches.py` lists them until they are gone. The order matters: each group depends on the one before.
+Groups 1–5 of the first list (the lexical and per-task-review memory cluster; the function summary and notices; INLINE_CURATION; REVIEW_FAILED and its lessons path; OUTCOME and STORE_TRUST) were removed in follow-up PRs after the freeze push.
 
-### 1. The lexical and per-task-review memory cluster (about 6k lines)
+What is left is the tool-surface tangle below. `tests/test_no_research_switches.py` lists these switches until they are gone.
 
-**Switches:** TASK_ORIGIN, TRY_FIRST, SIMILAR_REQUEST_IDENTIFIERS, SIMILAR_REQUEST_CORPUS, SHORTLIST_GATE, SHORTLIST_RELATED, LISTING_PROVENANCE, LISTING_USAGE, ORIGIN_PROVENANCE, GUIDANCE_ORIGIN, LESSON_STATUS, ENTRY_RECORD, EVIDENCE_LIST, EVIDENCE_LIST_MATCHER, EVIDENCE_LIST_JUDGE_MODEL, SEARCH_IDENTIFIERS, PROTECT_VERIFIED, EVIDENCE_LEDGER, REVIEW_RECURRENCE, REVIEW_OUTCOME.
-
-**Modules:**
-- `function_manager/task_origin.py`, `entry_record.py`, `entry_links.py` (also imported by `db.py`), `verified_guard.py`;
-- `actor/evidence_list.py`, `evidence_judge.py`, `evidence_ledger.py`, `related_shortlist.py`, `review_outcome.py`.
-
-**How:**
-- Delete leaves first: `evidence_judge` → `evidence_list` → `related_shortlist` → `evidence_ledger`. Then the branches in actor, function_manager, guidance_manager and `db.py`. Then `task_origin`.
-- First check what the kept, non-gated `library_shortlist.py` needs from `task_origin` (`Marker`, `gate_rows`). The test helpers `shortlist_world.py` and `library_world.py` use `task_origin.enter/leave/record_outcome`, so they need a plain request context instead.
-- `function_manager/primitives/observers._SWITCHES` can drop `UNIFY_EVIDENCE_LEDGER`.
-- Commit `5399c6ffe` (on the unpushed `hl-interim-c-20261007`) fixed an ordering bug in the LISTING_USAGE call log. It is not carried here, because that code goes in this step.
-
-### 2. FUNCTION_SUMMARY, FUNCTION_EMPTY_NOTICE, FUNCTION_VALUE_NOTICE
-
-They are woven into:
-- `store_cases.CaseRecorder` (`value_notice.plan` / `notice`, `run_summary.empty_notice` / `record`);
-- `function_manager.py`, `core_surface.py` and `execution/worker_child.py`.
-
-Check what the case-replay gate reads from `run_summary` before deleting `run_summary.py` / `value_notice.py`.
-
-### 3. INLINE_CURATION
-
-About 29 call sites: `core_surface`, `prompt_builders._inline_library_section`, `function_manager.store_check_forced`, and `code_act_actor` (`inline_mode`, `inline_only`, `_INLINE_ONLY_REASON`).
-
-### 4. REVIEW_FAILED (baked off) and the lessons path
-
-- Delete `outcome.review_failed_mode`, `LESSON_*`, the `lessons` parameter through the storage-review builders, and the `lessons_mode` block in `_StorageCheckHandle`.
-- `test_outcome_channel::test_a_lessons_verdict_does_not_admit` assumes an `{"admit": "lessons"}` verdict still reads as not admitted. Keep that behaviour, or delete the test.
-
-### 5. OUTCOME (baked on) and STORE_TRUST (baked off)
-
-- **OUTCOME:** `outcome.enabled()` callers in `code_act_actor.py`, `cli.py` and `review_gate.py`. After that, `review_final_result`'s `outcome_active` is always True.
-- **STORE_TRUST:** the ramp path in `store_trust.py`. Keep `looks_like_placeholder` and `credential_key`, which other modules use.
-
-### 6. The tool-surface tangle (prompt building)
+### 1. The tool-surface tangle (prompt building)
 
 **Switches:** PROMPT_PROFILE (lean), DISCOVERY_GATE (off), DELEGATION (off), AGENTS (record) + AGENTS_OPTIONS, CACHE_DISCIPLINE, REVIEW_FORK + REVIEW_FORK_CORE, TOOL_SURFACE (core) with CORE_BIND_LISTED, CORE_CALL_EXAMPLE, GUIDANCE_LINKED_NAMES and FUNCTION_HELPERS, WORKSPACE (sandboxed), WORKSPACE_PYTHON (worker), LIBRARY_SHORTLIST, TRANSCRIPTS.
 
@@ -67,7 +33,7 @@ About 29 call sites: `core_surface`, `prompt_builders._inline_library_section`, 
 - `core_surface` refuses any non-core combination, so the switch can simply go.
 - **CACHE_DISCIPLINE also selects the compression fork summary. That part must stay,** as a fixed constant inside the compression module.
 
-### 7. Leftovers from the JSON-tool removal
+### 2. Leftovers from the JSON-tool removal
 - `close_session` / `close_all_sessions`, which two WIP tests still pin;
 - `_synthesize_python_call`;
 - `placeholder_note.py`, whose only effect was on `execute_function`, so it is now dead;
@@ -76,7 +42,7 @@ About 29 call sites: `core_surface`, `prompt_builders._inline_library_section`, 
 - `execution/session.py` still names `close_session` in an error message;
 - `install_python_packages` and the workspace `read_file` / `grep` JSON tools.
 
-### 8. The loop (a design task, not a strip)
+### 3. The loop (a design task, not a strip)
 
 **What stays, and why:** the steerable-handle machinery (steer/wait/ask, check_status, pending placeholders, multi_handle, interjection channels). `conversation_manager` runs its brain through `start_async_tool_loop` and imports `SteerableToolHandle`, and an interjection into a running `execute_code` cell goes through the steering patcher.
 
