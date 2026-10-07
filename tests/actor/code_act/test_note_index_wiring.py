@@ -166,6 +166,27 @@ async def test_on_the_section_is_in_the_first_message_and_its_function_is_not_ca
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
 @_handle_project
+@pytest.mark.parametrize("solved", [False, True])
+async def test_on_a_note_whose_writer_the_checker_did_not_accept_is_labelled(
+    on,
+    embed_calls,
+    monkeypatch,
+    solved,
+):
+    # The checker's outcome is kept in the request log (a listing switch keeps it).
+    monkeypatch.setattr(SETTINGS, "UNIFY_ORIGIN_PROVENANCE", True)
+    actor = caa.CodeActActor()
+    _seed(actor, EXPLODE, "explode_payments")
+    assert _in_task(WRITTEN_FOR, lambda: task_origin.record_outcome(solved))
+    _result, requests = await _act(actor, SIMILAR, [_done()] * 8)
+    first = _first_user(requests[0])
+    heading = re.search(r"^### Note \d+: Card payments.*$", first, re.M).group(0)
+    assert heading.endswith(ni.FAILED_WRITER) is (not solved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+@_handle_project
 async def test_on_a_sub_agent_gets_no_section(on, embed_calls):
     actor = caa.CodeActActor()
     _seed(actor, EXPLODE, "explode_payments")

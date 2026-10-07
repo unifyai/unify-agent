@@ -70,6 +70,17 @@ def on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_NOTE_INDEX", True)
 
 
+@pytest.fixture(autouse=True)
+def outcomes(monkeypatch):
+    """The kept outcome of each writer's session, by its request (unknown unless set)."""
+    from unify.function_manager import entry_record
+
+    kept: dict[str, bool] = {}
+    by_key = lambda: {task_origin.text_key(t): v for t, v in kept.items()}
+    monkeypatch.setattr(entry_record, "outcome_of_key", lambda key: by_key().get(key))
+    return kept
+
+
 @pytest.fixture
 def warnings(monkeypatch):
     """The note index's warnings (unify's loggers do not reach pytest's capture)."""
@@ -265,8 +276,9 @@ def test_the_linked_functions_are_listed_and_bound_and_never_called(on):
     assert ni.CALL_FORM.strip() in text
     lines = text.splitlines()
     at = lines.index("### Note 7: Card payments")
-    assert lines[at + 1 : at + 5] == [
+    assert lines[at + 1 : at + 6] == [
         "Amounts are negative.",
+        'Written for: "Total my card payments."',
         "Functions it links:",
         "- `total_payments(x)` (loaded): Total card payments.",
         "- `refund_payment(x)` (loaded): Refund one payment.",
@@ -323,7 +335,11 @@ def test_an_unlinked_function_stands_in_by_its_own_request_and_nothing_is_writte
         "### Note 9: Trips",
     ]
     lines = text.splitlines()
-    assert lines[lines.index(heads[0]) + 1] == "- `refund_invoice(x)` (loaded)"
+    at = lines.index(heads[0])
+    assert lines[at + 1 : at + 3] == [
+        'Written for: "Refund invoice 12."',
+        "- `refund_invoice(x)` (loaded)",
+    ]
     assert bind.names == [["refund_invoice", "plan_trip"]]
     assert bind.calls == []
     index = ni.build_index(functions, notes)
@@ -383,18 +399,31 @@ def test_a_failing_binder_leaves_the_section_without_loaded_marks(on):
 # ── evidence already kept ────────────────────────────────────────────────
 
 
-def test_the_listing_switches_evidence_is_shown_for_each_function(on, monkeypatch):
+def test_only_recorded_cases_are_shown_and_no_lexical_evidence_is_used(
+    on,
+    monkeypatch,
+):
+    """The lead's rule: nothing shown is chosen or described by shared words."""
     from unify.function_manager import entry_record, store_cases
 
-    monkeypatch.setattr(entry_record, "enabled", lambda: False)
-    monkeypatch.setattr(task_origin, "listing_notes_enabled", lambda: True)
-    monkeypatch.setattr(
-        task_origin,
-        "listing_notes",
-        lambda marker, kind, row: {
-            task_origin.ORIGIN_LINE: f"{kind} {row.get('name') or row.get('guidance_id')} origin",
-        },
-    )
+    monkeypatch.setattr(SETTINGS, "UNIFY_TASK_ORIGIN", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_ENTRY_RECORD", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_LISTING_PROVENANCE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_LISTING_USAGE", True)
+
+    def lexical(*_a, **_k):
+        raise AssertionError("a lexical evidence helper was called")
+
+    for owner, name in (
+        (task_origin, "listing_notes"),
+        (task_origin, "shared_identifiers"),
+        (task_origin, "similarity"),
+        (task_origin, "token_weights"),
+        (entry_record, "record_text"),
+        (entry_record, "recurrence_phrase"),
+        (task_origin.Marker, "origin_line"),
+    ):
+        monkeypatch.setattr(owner, name, lexical)
     monkeypatch.setattr(store_cases, "enabled", lambda: True)
 
     def summaries(rows):
@@ -407,11 +436,91 @@ def test_the_listing_switches_evidence_is_shown_for_each_function(on, monkeypatc
     notes = [_note(4, "Payments", "x", function_ids=[1], origin="Total payments.")]
     lines = _section(functions, notes, "Total payments.").splitlines()
     at = lines.index("- `total_payments(x)`: Total card payments.")
-    assert lines[at + 1 : at + 3] == [
-        "  function total_payments origin",
-        "  cases: total_payments(1) -> 2",
+    assert lines[at + 1 :] == ["  cases: total_payments(1) -> 2"]
+
+
+def test_the_written_for_line_is_the_latest_request_clipped(on):
+    long = "Refund invoice " + "x" * 400
+    note = _note(1, "Refunds", "x")
+    note["metadata"] = {task_origin.REQUESTS_FIELD: ["Plan my trip.", long]}
+    lines = _section([], [note], "Plan my trip.").splitlines()
+    (written,) = [ln for ln in lines if ln.startswith("Written for: ")]
+    # The latest request, not the closest one; at most 200 characters.
+    assert written.startswith('Written for: "Refund invoice xxx')
+    assert len(written) == len('Written for: ""') + ni.WRITTEN_FOR_CHARS
+
+
+# ── the trust label (ADR-16 (e)) ─────────────────────────────────────────
+
+
+def test_a_note_whose_last_writer_was_not_accepted_is_labelled(on, outcomes):
+    notes = [
+        _note(1, "Failed", "x", origin="Total my payment."),
+        _note(2, "Accepted", "y", origin="Total my payment and refund."),
+        _note(3, "Unknown", "z", origin="Total my payment and refund my invoice."),
     ]
-    assert "guidance 4 origin" in lines
+    outcomes["Total my payment."] = False
+    outcomes["Total my payment and refund."] = True
+    heads = _headings(_section([], notes, "Total my payment."))
+    assert heads == [
+        f"### Note 1: Failed {ni.FAILED_WRITER}",
+        "### Note 2: Accepted",
+        "### Note 3: Unknown",
+    ]
+
+
+def test_only_the_latest_writer_counts(on, outcomes):
+    note = _note(1, "Payments", "x")
+    note["metadata"] = {
+        task_origin.REQUESTS_FIELD: ["Total my payment.", "Total my payment again."],
+    }
+    outcomes["Total my payment."] = False
+    outcomes["Total my payment again."] = True
+    assert ni.FAILED_WRITER not in _section([], [note], "Total my payment.")
+    outcomes["Total my payment."] = True
+    outcomes["Total my payment again."] = False
+    assert ni.FAILED_WRITER in _section([], [note], "Total my payment.")
+
+
+def test_the_session_that_wrote_the_current_content_is_the_writer(on, outcomes):
+    from unify.function_manager import verified_guard
+
+    note = _note(1, "Payments", "x", origin="Total my payment again.")
+    outcomes["Total my payment again."] = True
+    outcomes["Total my payment."] = False
+    note["metadata"][verified_guard.FIELD] = task_origin.text_key("Total my payment.")
+    assert ni.FAILED_WRITER in _section([], [note], "Total my payment.")
+
+
+def test_a_stand_in_whose_function_writer_failed_is_labelled(on, outcomes):
+    functions = [
+        _fn(1, "refund_invoice", "Refund an invoice.", origin="Refund invoice 12."),
+    ]
+    outcomes["Refund invoice 12."] = False
+    heads = _headings(_section(functions, [], "Refund invoice 40."))
+    assert heads == [f"### {ni.STAND_IN}: Refund an invoice. {ni.FAILED_WRITER}"]
+
+
+def test_the_label_never_hides_or_reranks(on, outcomes):
+    notes = [
+        _note(i + 1, f"Note {i + 1}", "x", origin=r)
+        for i, r in enumerate(
+            [
+                "Total my payment and refund my invoice.",
+                "Total my payment and refund.",
+                "Total my payment.",
+                "Plan a trip.",
+            ],
+        )
+    ]
+    request = "Total my payment and refund my invoice."
+    before = [h.split(" (")[0] for h in _headings(_section([], notes, request))]
+    for note in notes:
+        outcomes[note["metadata"][task_origin.REQUESTS_FIELD][0]] = False
+    after = _headings(_section([], notes, request))
+    assert all(h.endswith(ni.FAILED_WRITER) for h in after)
+    assert [h[: -len(ni.FAILED_WRITER) - 1] for h in after] == before
+    assert len(after) == ni.K_NOTES
 
 
 # ── prerequisites and wording ────────────────────────────────────────────

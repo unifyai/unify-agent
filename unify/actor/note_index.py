@@ -26,11 +26,18 @@ With the switch on, for a top-level task:
   by shared words or identifiers, and an embedding failure falls back to
   nothing.
 * **Showing.** One section in the first message: each note's title and
-  content (clipped), and the functions it links with their signatures and
-  first docstring lines, each with the evidence the listing switches
-  already keep (its record under ``UNIFY_ENTRY_RECORD``, else the
-  ``UNIFY_LISTING_*`` notes; its recorded cases under
-  ``UNIFY_FUNCTION_CASES``). Nothing new is computed for it.
+  content (clipped), the latest request it was written for (clipped), and
+  the functions it links with their signatures and first docstring lines,
+  each with its recorded cases under ``UNIFY_FUNCTION_CASES``. Nothing is
+  chosen or described by shared words or identifiers.
+* **Trust label** (ADR-16 (e)). A note (or a stand-in's function) whose
+  latest writer's session is recorded as not accepted -- the checker's
+  outcome, else the storage review's, kept under that session's request
+  (:func:`unify.function_manager.task_origin.record_outcome`) -- says
+  :data:`FAILED_WRITER`. The latest writer is the session that wrote its
+  current content (``UNIFY_PROTECT_VERIFIED``), else the latest request its
+  origin records. An unknown outcome says nothing. The label informs; it
+  never hides or re-ranks an entry.
 * **Attachment.** The linked functions are bound in the sandbox as a
   library read binds one (:meth:`unify.actor.core_surface.FunctionLibrary._bind_names`,
   the mechanism of ``UNIFY_CORE_BIND_LISTED``). The harness never calls
@@ -58,6 +65,8 @@ MAX_FUNCTIONS = 10
 CONTENT_CHARS = 600
 """A note's content is clipped to this many characters."""
 _LINE_CHARS = 140
+WRITTEN_FOR_CHARS = 200
+"""The request a note was written for is clipped to this many characters."""
 
 HEADER = "## Notes From Earlier Requests\n\n"
 INTRO = (
@@ -71,6 +80,7 @@ CALL_FORM = (
     "directly, `name(...)`, if it fits (await one marked async)."
 )
 STAND_IN = "a stored function's own note (no note was written for it)"
+FAILED_WRITER = "(written by a session whose answer was not accepted)"
 
 #: ``embed(texts) -> unit vectors``, one row per text.
 Embed = Callable[[Sequence[str]], Any]
@@ -116,6 +126,10 @@ class Note:
     functions: List[str] = field(default_factory=list)
     row: Optional[Dict[str, Any]] = None  # the guidance row; None for a stand-in
     newest: int = 0
+    #: The row whose origin records its writers: the note's, or a stand-in's function's.
+    source: Optional[Dict[str, Any]] = None
+    #: Its latest writer's session is recorded as not accepted (set after ranking).
+    failed_writer: bool = False
 
     @property
     def stand_in(self) -> bool:
@@ -172,6 +186,7 @@ def build_index(
                 functions=names,
                 row=row,
                 newest=int(row.get("guidance_id") or 0),
+                source=row,
             ),
         )
     for row in sorted(functions, key=lambda r: int(r.get("function_id") or 0)):
@@ -186,6 +201,7 @@ def build_index(
                 origins=origins,
                 functions=[name],
                 newest=int(row.get("function_id") or 0),
+                source=row,
             ),
         )
     return index
@@ -221,59 +237,37 @@ def rank(
 # ── the evidence already kept ────────────────────────────────────────────
 
 
-def _evidence(
-    shown: Sequence[Dict[str, Any]],
-    notes: Sequence[Dict[str, Any]],
-    library: Sequence[Dict[str, Any]],
-    guidance: Sequence[Dict[str, Any]],
-) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-    """``(lines by function name, lines by guidance id)`` from the switches that keep them; empty when all are off."""
-    from unify.function_manager import entry_record, store_cases, task_origin
+def failed_writer(row: Dict[str, Any]) -> bool:
+    """Whether the session that last wrote *row* is recorded as not accepted.
 
-    by_fn: Dict[str, List[str]] = {str(r.get("name")): [] for r in shown}
-    by_note: Dict[str, List[str]] = {str(r.get("guidance_id")): [] for r in notes}
-    recording = entry_record.enabled()
-    listing = task_origin.listing_notes_enabled()
-    if recording or listing:
-        marker = task_origin.Marker([*library, *guidance])
-        uses = (
-            entry_record.uses_of(
-                [(entry_record.FUNCTION, name) for name in by_fn]
-                + [(entry_record.GUIDANCE, gid) for gid in by_note],
-            )
-            if recording
-            else {}
-        )
-        for kind, rows, out in (
-            (entry_record.FUNCTION, shown, by_fn),
-            (entry_record.GUIDANCE, notes, by_note),
-        ):
-            for row in rows:
-                ident = entry_record.ident_of(kind, row)
-                if recording:
-                    text = entry_record.record_text(
-                        marker,
-                        kind,
-                        row,
-                        uses.get((kind, ident)),
-                    )
-                    out[ident].append(f"record: {text}")
-                else:
-                    out[ident] += [
-                        note
-                        for note in task_origin.listing_notes(
-                            marker,
-                            kind,
-                            row,
-                        ).values()
-                        if note
-                    ]
-    if store_cases.enabled():
-        rows = store_cases.with_summaries([dict(row) for row in shown])
-        for row in rows:
-            if row.get("cases"):
-                by_fn[str(row.get("name"))].append(f"cases: {row['cases']}")
-    return by_fn, by_note
+    The writer is the session that wrote its current content
+    (``UNIFY_PROTECT_VERIFIED``), else the latest request its origin
+    records; its outcome is looked up by that request's hash (the checker's,
+    else the review's). Unknown is ``False``.
+    """
+    from unify.function_manager import entry_record, task_origin
+    from unify.function_manager.verified_guard import content_by
+
+    key = content_by(row)
+    if not key:
+        origins = _origins(row)
+        if not origins:
+            return False
+        key = task_origin.text_key(origins[-1])
+    return entry_record.outcome_of_key(key) is False
+
+
+def _cases(shown: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """``UNIFY_FUNCTION_CASES``: each shown function's recorded cases, by name; empty when off."""
+    from unify.function_manager import store_cases
+
+    out: Dict[str, List[str]] = {}
+    if not store_cases.enabled():
+        return out
+    for row in store_cases.with_summaries([dict(row) for row in shown]):
+        if row.get("cases"):
+            out.setdefault(str(row.get("name")), []).append(f"cases: {row['cases']}")
+    return out
 
 
 # ── text ─────────────────────────────────────────────────────────────────
@@ -290,25 +284,25 @@ def render(
     *,
     bound: Optional[Dict[str, bool]] = None,
     fn_lines: Optional[Dict[str, List[str]]] = None,
-    note_lines: Optional[Dict[str, List[str]]] = None,
 ) -> str:
     """The section's text; ``""`` when nothing is selected."""
     if not selected:
         return ""
     bound = bound or {}
     fn_lines = fn_lines or {}
-    note_lines = note_lines or {}
     blocks = [INTRO + (CALL_FORM if bound else "")]
     shown: set = set()
     for note, _score in selected:
+        label = f" {FAILED_WRITER}" if note.failed_writer else ""
         if note.stand_in:
-            lines = [f"### {STAND_IN}: {note.title or note.functions[0]}"]
+            lines = [f"### {STAND_IN}: {note.title or note.functions[0]}{label}"]
         else:
             gid = str(note.row.get("guidance_id"))
-            lines = [f"### Note {gid}: {note.title}"]
+            lines = [f"### Note {gid}: {note.title}{label}"]
             if note.content:
                 lines.append(note.content)
-            lines += note_lines.get(gid, [])
+        written = _clip(" ".join(note.origins[-1].split()), WRITTEN_FOR_CHARS)
+        lines.append(f'Written for: "{written}"')
         names = note.functions[:MAX_FUNCTIONS]
         if names and not note.stand_in:
             lines.append("Functions it links:")
@@ -409,12 +403,10 @@ def _section(
             name for note, _ in selected for name in note.functions[:MAX_FUNCTIONS]
         ),
     )
-    fn_lines, note_lines = _evidence(
-        [by_name[name] for name in names],
-        [note.row for note, _ in selected if note.row is not None],
-        library,
-        notes_in,
-    )
+    fn_lines = _cases([by_name[name] for name in names])
+    # ADR-16 (e): after ranking, so the label never moves an entry.
+    for note, _ in selected:
+        note.failed_writer = failed_writer(note.source or {})
     bound: Dict[str, bool] = {}
     if bind is not None and names:
         try:
@@ -429,7 +421,6 @@ def _section(
         by_name,
         bound=bound,
         fn_lines=fn_lines,
-        note_lines=note_lines,
     )
 
 
@@ -455,6 +446,7 @@ def binder(actor: Any, sandbox: Any, core_session: Any = None) -> Optional[Binde
 
 __all__ = [
     "CALL_FORM",
+    "FAILED_WRITER",
     "HEADER",
     "INTRO",
     "K_NOTES",
@@ -464,6 +456,7 @@ __all__ = [
     "binder",
     "build_index",
     "enabled",
+    "failed_writer",
     "rank",
     "render",
     "require_prerequisites",
