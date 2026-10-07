@@ -555,7 +555,8 @@ def test_the_review_gets_the_tool_and_one_sentence_only_while_set(
 
 
 @_handle_project
-def test_off_stores_the_hard_coded_function_as_shipped(monkeypatch):
+def test_off_stores_the_hard_coded_function_as_shipped(monkeypatch, phone_env):
+    # phone_env: the storage check (baked in) needs primitives.phone to exist.
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "", raising=False)
     store_verify.reset()
     fm = FunctionManager()
