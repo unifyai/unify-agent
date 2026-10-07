@@ -686,7 +686,6 @@ class PythonWorker:
                     result=self.decode(msg.get("result"), shadow),
                     error=msg.get("error"),
                     abandoned=bool(msg.get("abandoned")),
-                    inputs=msg.get("inputs"),
                 ),
             )
             return

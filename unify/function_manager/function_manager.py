@@ -209,7 +209,7 @@ class _LineageTrackedFunction:
         return getattr(self._wrapped, name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        from . import run_summary, store_cases, value_notice
+        from . import store_cases
 
         if store_cases.replaying():
             # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
@@ -241,7 +241,7 @@ class _LineageTrackedFunction:
         # Ensure synchronous work at call-time (if any) happens under the lineage frame.
         token_call = TOOL_LOOP_LINEAGE.set(hierarchy)
         try:
-            with store_cases.tracing(case), value_notice.watching(case):
+            with store_cases.tracing(case):
                 result = self._wrapped(*args, **kwargs)
         except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
@@ -262,7 +262,7 @@ class _LineageTrackedFunction:
             async def _await_and_finalize():
                 token_run = TOOL_LOOP_LINEAGE.set(hierarchy)
                 try:
-                    with store_cases.tracing(case), value_notice.watching(case):
+                    with store_cases.tracing(case):
                         value = await result
                 except Exception as exc:
                     if cases is not None:
@@ -271,13 +271,13 @@ class _LineageTrackedFunction:
                 finally:
                     TOOL_LOOP_LINEAGE.reset(token_run)
                 if cases is not None:
-                    run_summary.show_in_cell_output(cases.end(case, result=value))
+                    cases.end(case, result=value)
                 return value
 
             return _await_and_finalize()
 
         if cases is not None:
-            run_summary.show_in_cell_output(cases.end(case, result=result))
+            cases.end(case, result=result)
         return result
 
 
@@ -383,18 +383,18 @@ class _InProcessFunctionProxy:
                 if asyncio.iscoroutine(result):
                     result = await result
                 return result
-            from . import run_summary, store_cases, value_notice
+            from . import store_cases
 
             case = cases.begin(args, kwargs)
             try:
-                with store_cases.tracing(case), value_notice.watching(case):
+                with store_cases.tracing(case):
                     result = self._raw_callable(*args, **kwargs)
                     if asyncio.iscoroutine(result):
                         result = await result
             except Exception as exc:
                 cases.end(case, error=exc)
                 raise
-            run_summary.show_in_cell_output(cases.end(case, result=result))
+            cases.end(case, result=result)
             return result
 
         # For stateless and read_only, use execute_function with appropriate
@@ -3338,12 +3338,12 @@ class FunctionManager(BaseFunctionManager):
             raise ValueError(f"Function '{function_name}' has no implementation")
 
         # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
-        from . import store_cases, value_notice
+        from . import store_cases
 
         cases = store_cases.CaseRecorder.for_function(func_data)
         case = cases.begin((), call_kwargs or {}) if cases is not None else None
         environment.ensure(func_data.get("dependencies") or [])
-        with store_cases.tracing(case), value_notice.watching(case):
+        with store_cases.tracing(case):
             outcome = await self._execute_python_function(
                 implementation=implementation,
                 call_kwargs=call_kwargs or {},
@@ -3353,13 +3353,11 @@ class FunctionManager(BaseFunctionManager):
                 _parent_chat_context=_parent_chat_context,
             )
         if cases is not None:
-            notice = cases.end(
+            cases.end(
                 case,
                 result=outcome.get("result"),
                 error=outcome.get("error"),
             )
-            if notice:
-                outcome["stdout"] = (outcome.get("stdout") or "") + notice + "\n"
         return outcome
 
     # ------------------------------------------------------------------ #

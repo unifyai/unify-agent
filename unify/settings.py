@@ -256,32 +256,6 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
-    # With UNIFY_FUNCTION_CASES on, every recorded call of a stored function
-    # also leaves one small row (store home, function_runs.sqlite): per
-    # environment endpoint, calls made and items per answer; a digest per
-    # argument; whether the trace is complete; and its request. Cases keep
-    # only the latest few calls, so facts over many runs come from these
-    # rows, summarised when read over the calls whose request was accepted
-    # (unify/function_manager/run_summary.py). Missing evidence reads
-    # "unknown". Nothing is shown to the agent yet. Off: no table, no row.
-    UNIFY_FUNCTION_SUMMARY: bool = False
-    # With UNIFY_FUNCTION_SUMMARY on: when a stored function returns empty
-    # ([], {}, "", None or 0) and every earlier call of the same source whose
-    # request was accepted returned something non-empty (at least one, from
-    # complete traces, none of unknown shape), one plain line follows the
-    # call in the cell's output saying so, with no instruction. Off: no line.
-    UNIFY_FUNCTION_EMPTY_NOTICE: bool = False
-    # With UNIFY_FUNCTION_SUMMARY on: while a recorded stored function runs,
-    # the files it opens for reading are noted, and when it returns they are
-    # scanned (bounded) for the values it matches on -- its short string
-    # arguments and the string literals its code compares against -- as
-    # whole values, never substrings. A value that matched in every earlier
-    # call of the same source whose request was accepted, and now occurs 0
-    # times, gets one plain line after the call, with the closest values of a
-    # small table column. Silent when the scan was cut short, the call started
-    # a process or read no files. Informational only: nothing enforces on it
-    # (unify/function_manager/value_notice.py). Off: no hook, scan or line.
-    UNIFY_FUNCTION_VALUE_NOTICE: bool = False
     # ``on``: the actor's prompt says that during the task it may store a
     # unit that ran and worked and repair a stored function that failed,
     # keeping its behaviour on the inputs it handled (a behaviour change gets
@@ -584,9 +558,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
-        "UNIFY_FUNCTION_SUMMARY",
-        "UNIFY_FUNCTION_EMPTY_NOTICE",
-        "UNIFY_FUNCTION_VALUE_NOTICE",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",

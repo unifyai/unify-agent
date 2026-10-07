@@ -55,9 +55,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import builtins
-import contextlib
 import contextvars
-import csv
 import datetime as _dt
 import decimal
 import importlib
@@ -71,7 +69,6 @@ import re
 import sys
 import tempfile
 import threading
-import time
 import traceback
 from typing import Any, Callable, Optional
 
@@ -872,233 +869,6 @@ async def _ready(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Input watch (UNIFY_FUNCTION_VALUE_NOTICE)
-# ---------------------------------------------------------------------------
-# Which files a recorded stored function opens for reading, and how often given
-# values occur in them as whole values. Stdlib only: the harness imports this
-# file for in-process calls, and the worker runs it inside bubblewrap for its
-# own. What it sees is informational: code in the same process can open files
-# where the hook does not look or alter what it records, so nothing may ever
-# enforce on it.
-
-#: Files scanned per call, bytes read per file, seconds per scan.
-WATCH_MAX_FILES = 8
-WATCH_MAX_BYTES = 4 * 1024 * 1024
-WATCH_SECONDS = 2.0
-#: Distinct values a column may hold for its values to be offered as closest.
-WATCH_DISTINCT = 50
-#: Files noted per call.
-WATCH_MAX_NOTED = 64
-_CODE_SUFFIXES = (".py", ".pyc", ".pyi", ".so", ".pth", ".typed")
-_TABLE_SUFFIXES = {".csv": ",", ".tsv": "\t"}
-_JSON_SUFFIXES = (".json", ".jsonl", ".ndjson")
-
-
-class InputWatch:
-    """The files one call opened for reading, and whether it started a process."""
-
-    __slots__ = ("files", "shelled")
-
-    def __init__(self) -> None:
-        self.files: list = []
-        self.shelled = False
-
-
-_WATCH: contextvars.ContextVar[Optional[InputWatch]] = contextvars.ContextVar(
-    "unify_input_watch",
-    default=None,
-)
-_HOOKED: list = []
-_HOOK_LOCK = threading.Lock()
-
-
-def _not_data(path: str) -> bool:
-    if path.endswith(_CODE_SUFFIXES) or path.startswith(("/proc/", "/sys/", "/dev/")):
-        return True
-    for root in {sys.prefix, sys.base_prefix, sys.exec_prefix}:
-        if root and path.startswith(root.rstrip(os.sep) + os.sep):
-            return True
-    return False
-
-
-def _reads(mode: Any, flags: Any) -> bool:
-    if isinstance(mode, str):
-        return "r" in mode and "+" not in mode
-    if isinstance(flags, int):
-        return flags & os.O_ACCMODE == os.O_RDONLY
-    return False
-
-
-def _audit(event: str, args: tuple) -> None:
-    watch = _WATCH.get()
-    if watch is None:
-        return
-    try:
-        if event == "open":
-            path, mode, flags = (tuple(args) + (None, None, None))[:3]
-            if isinstance(path, int) or not _reads(mode, flags):
-                return
-            path = os.path.abspath(os.fsdecode(os.fspath(path)))
-            if (
-                not _not_data(path)
-                and path not in watch.files
-                and len(watch.files) < WATCH_MAX_NOTED
-            ):
-                watch.files.append(path)
-        elif event in ("subprocess.Popen", "os.system", "os.posix_spawn") or (
-            event.startswith(("os.exec", "os.spawn", "os.fork"))
-        ):
-            watch.shelled = True
-    except Exception:  # noqa: BLE001 - an audit hook must never raise
-        pass
-
-
-@contextlib.contextmanager
-def watching_inputs() -> Any:
-    """Note the files opened for reading in this context (the hook is installed once per process)."""
-    with _HOOK_LOCK:
-        if not _HOOKED:
-            sys.addaudithook(_audit)
-            _HOOKED.append(True)
-    watch = InputWatch()
-    token = _WATCH.set(watch)
-    try:
-        yield watch
-    finally:
-        _WATCH.reset(token)
-        # A call made inside another reads for it too.
-        outer = _WATCH.get()
-        if outer is not None:
-            outer.files.extend(f for f in watch.files if f not in outer.files)
-            del outer.files[WATCH_MAX_NOTED:]
-            outer.shelled = outer.shelled or watch.shelled
-
-
-@contextlib.contextmanager
-def _maybe_watching(wanted: Optional[dict]) -> Any:
-    """:func:`watching_inputs` when the harness asked for a scan, else nothing (``None``)."""
-    if not wanted:
-        yield None
-        return
-    with watching_inputs() as watch:
-        yield watch
-
-
-def _scanned(wanted: Optional[dict], watch: Optional[InputWatch]) -> Optional[dict]:
-    """The scan the harness asked for, of the files ``watch`` saw; never raises."""
-    if not wanted or watch is None:
-        return None
-    try:
-        result = count_values(
-            list(watch.files),
-            [v for v in wanted.get("values") or [] if isinstance(v, str)],
-            tuple(c for c in wanted.get("columns") or [] if isinstance(c, str)),
-        )
-        result["shelled"] = watch.shelled
-        return result
-    except Exception:  # noqa: BLE001 - a scan must never break a call
-        return None
-
-
-def _json_scalars(value: Any, key: str, out: list) -> None:
-    if isinstance(value, dict):
-        for k, v in value.items():
-            out.append((str(k), "(key)"))
-            _json_scalars(v, str(k), out)
-    elif isinstance(value, list):
-        for v in value:
-            _json_scalars(v, key, out)
-    elif isinstance(value, str):
-        out.append((value.strip(), key))
-
-
-def count_values(
-    paths: list,
-    values: list,
-    columns: tuple = (),
-) -> dict:
-    """How often each of ``values`` occurs in ``paths`` as a whole value.
-
-    A whole value is a table cell (``.csv``/``.tsv``), a JSON string or key, or
-    a whole word in any other text, never a substring ("meal" does not occur in
-    "meals"). For each table column in ``columns`` the distinct values and
-    their counts come back too, unless the column holds more than
-    ``WATCH_DISTINCT``. Bounded: ``WATCH_MAX_FILES`` files, ``WATCH_MAX_BYTES``
-    each, ``WATCH_SECONDS`` in all; ``sampled`` says when a bound cut it short,
-    so a zero count from it means nothing. Binary files are skipped.
-    """
-    wanted = [v for v in dict.fromkeys(values) if isinstance(v, str) and v.strip()]
-    counts = {v: 0 for v in wanted}
-    where: dict = {v: set() for v in wanted}
-    distinct: dict = {str(c): {} for c in columns}
-    crowded: set = set()
-    words = {v: re.compile(r"(?<!\w)" + re.escape(v) + r"(?!\w)") for v in wanted}
-    deadline = time.monotonic() + WATCH_SECONDS
-    sampled = len(paths) > WATCH_MAX_FILES
-    scanned = []
-    for path in paths[:WATCH_MAX_FILES]:
-        if time.monotonic() > deadline:
-            sampled = True
-            break
-        try:
-            with open(path, "rb") as handle:
-                raw = handle.read(WATCH_MAX_BYTES + 1)
-        except OSError:
-            continue
-        if b"\x00" in raw[:4096]:
-            continue
-        if len(raw) > WATCH_MAX_BYTES:
-            sampled = True
-            raw = raw[:WATCH_MAX_BYTES]
-        text = raw.decode("utf-8", errors="replace")
-        scanned.append(os.path.basename(path))
-        suffix = os.path.splitext(path)[1].lower()
-        if suffix in _TABLE_SUFFIXES:
-            reader = csv.reader(io.StringIO(text), delimiter=_TABLE_SUFFIXES[suffix])
-            names = [h.strip() for h in next(reader, None) or []]
-            for row in reader:
-                for index, cell in enumerate(row):
-                    cell = cell.strip()
-                    column = names[index] if index < len(names) else f"#{index}"
-                    if cell in counts:
-                        counts[cell] += 1
-                        where[cell].add(column)
-                    if column in distinct and column not in crowded:
-                        seen = distinct[column]
-                        seen[cell] = seen.get(cell, 0) + 1
-                        if len(seen) > WATCH_DISTINCT:
-                            crowded.add(column)
-                            seen.clear()
-            continue
-        if suffix in _JSON_SUFFIXES:
-            scalars: list = []
-            try:
-                if suffix == ".json":
-                    _json_scalars(json.loads(text), "", scalars)
-                else:
-                    for line in text.splitlines():
-                        if line.strip():
-                            _json_scalars(json.loads(line), "", scalars)
-            except ValueError:
-                scalars = []
-            else:
-                for value, key in scalars:
-                    if value in counts:
-                        counts[value] += 1
-                        where[value].add(key)
-                continue
-        for value, pattern in words.items():
-            counts[value] += len(pattern.findall(text))
-    return {
-        "files": scanned,
-        "sampled": sampled,
-        "counts": counts,
-        "where": {v: sorted(w) for v, w in where.items()},
-        "distinct": {c: d for c, d in distinct.items() if c not in crowded},
-    }
-
-
-# ---------------------------------------------------------------------------
 # The worker
 # ---------------------------------------------------------------------------
 
@@ -1566,32 +1336,13 @@ class Worker:
         token: int,
         result: Any = None,
         error: Optional[BaseException] = None,
-        inputs: Optional[dict] = None,
     ) -> dict:
         if error is None:
-            fields = {"token": token, "result": self._record_value(result)}
-            if inputs is not None:
-                fields["inputs"] = inputs
-            return fields
+            return {"token": token, "result": self._record_value(result)}
         if not isinstance(error, Exception):
             # Cancelled or stopped: the call says nothing about the function.
             return {"token": token, "abandoned": True}
         return {"token": token, "error": _format_cell_error(error)}
-
-    @staticmethod
-    def _add_note(error: BaseException, reply: Any) -> None:
-        note = reply.get("note") if isinstance(reply, dict) else None
-        if note and isinstance(error, Exception):
-            try:
-                error.add_note(str(note))
-            except Exception:  # noqa: BLE001 - a note never replaces the error
-                pass
-
-    def _show_notice(self, reply: Any) -> None:
-        """Print the harness's line about a returned call into this cell's output."""
-        notice = reply.get("notice") if isinstance(reply, dict) else None
-        if notice:
-            self._write(self._stdout, str(notice).rstrip("\n") + "\n")
 
     def call_recorded(self, fn: "_StoredFunction", args: tuple, kwargs: dict) -> Any:
         """A direct call of a stored function, recorded by the harness as the
@@ -1604,57 +1355,29 @@ class Worker:
         token = reply.get("token") if isinstance(reply, dict) else None
         if token is None:
             return raw(*args, **kwargs)
-        wanted = reply.get("watch") if isinstance(reply.get("watch"), dict) else None
         mark = _CASES.set(_CASES.get() + (token,))
         try:
-            with _maybe_watching(wanted) as watch:
-                result = raw(*args, **kwargs)
+            result = raw(*args, **kwargs)
         except BaseException as exc:
             _CASES.reset(mark)
-            self._add_note(
-                exc,
-                self.request_sync("fn_end", **self._end_fields(token, error=exc))[0],
-            )
+            self.request_sync("fn_end", **self._end_fields(token, error=exc))
             raise
         _CASES.reset(mark)
         if inspect.isawaitable(result):
-            return self._finish_recorded(token, result, wanted)
-        self._show_notice(
-            self.request_sync(
-                "fn_end",
-                **self._end_fields(
-                    token,
-                    result=result,
-                    inputs=_scanned(wanted, watch),
-                ),
-            )[0],
-        )
+            return self._finish_recorded(token, result)
+        self.request_sync("fn_end", **self._end_fields(token, result=result))
         return result
 
-    async def _finish_recorded(
-        self,
-        token: int,
-        awaitable: Any,
-        wanted: Optional[dict] = None,
-    ) -> Any:
+    async def _finish_recorded(self, token: int, awaitable: Any) -> Any:
         mark = _CASES.set(_CASES.get() + (token,))
         try:
-            with _maybe_watching(wanted) as watch:
-                value = await awaitable
+            value = await awaitable
         except BaseException as exc:
             _CASES.reset(mark)
-            reply, _ = await self.request_async(
-                "fn_end",
-                **self._end_fields(token, error=exc),
-            )
-            self._add_note(exc, reply)
+            await self.request_async("fn_end", **self._end_fields(token, error=exc))
             raise
         _CASES.reset(mark)
-        reply, _ = await self.request_async(
-            "fn_end",
-            **self._end_fields(token, result=value, inputs=_scanned(wanted, watch)),
-        )
-        self._show_notice(reply)
+        await self.request_async("fn_end", **self._end_fields(token, result=value))
         return value
 
     def _resolve_name(self, name: str) -> Any:
@@ -1743,11 +1466,7 @@ class Worker:
                 out = await out
         except BaseException as exc:
             _CASES.reset(mark)
-            end, _ = await self.request_async(
-                "fn_end",
-                **self._end_fields(token, error=exc),
-            )
-            self._add_note(exc, end)
+            await self.request_async("fn_end", **self._end_fields(token, error=exc))
             raise
         _CASES.reset(mark)
         await self.request_async("fn_end", **self._end_fields(token, result=out))

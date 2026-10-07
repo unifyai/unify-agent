@@ -765,9 +765,6 @@ class CaseRecorder:
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.debug("A call of %r was not recorded: %s", self.name, exc)
             return None
-        from . import value_notice
-
-        pending.value_plan = value_notice.plan(self, pending, args, kwargs or {})
         return pending
 
     def end(
@@ -776,41 +773,24 @@ class CaseRecorder:
         *,
         result: Any = None,
         error: Any = None,
-    ) -> Optional[str]:
-        """Store the call as a case: returned (``error`` is ``None``) or raised.
-
-        Returns the line to show after the call, if any
-        (``UNIFY_FUNCTION_EMPTY_NOTICE``); ``None`` otherwise.
-        """
+    ) -> None:
+        """Store the call as a case: returned (``error`` is ``None``) or raised."""
         if pending is None:
-            return None
+            return
         pending.trace.closed = True
         try:
             from .steering import ExecutionStopped, active_session
 
             if isinstance(error, ExecutionStopped):
-                return None
+                return
             steering = active_session()
             if steering is not None and getattr(steering, "messages", None):
-                return None
+                return
             if error is not None and pending.caller_fault is not None:
-                return None
-            from . import run_summary, value_notice
-
-            notices = (
-                [
-                    run_summary.empty_notice(self, result),
-                    value_notice.notice(self, pending),
-                ]
-                if error is None
-                else []
-            )
+                return
             _store(self, pending, result=result, error=error)
-            run_summary.record(self, pending, result=result, error=error)
-            return "\n".join(n for n in notices if n) or None
         except Exception as exc:  # noqa: BLE001 - recording must never break a call
             logger.warning("A case of %r was not recorded: %s", self.name, exc)
-            return None
 
 
 @contextlib.contextmanager
