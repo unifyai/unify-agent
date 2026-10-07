@@ -27,7 +27,7 @@ from tests.helpers import _handle_project
 from unify.function_manager import instance_lint
 from unify.function_manager.function_manager import FunctionManager
 from unify.guidance_manager.guidance_manager import GuidanceManager
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 ARC = (
     "New instance. Task id: task-7a4cf12e\n"
@@ -43,14 +43,7 @@ APPWORLD = (
 
 @pytest.fixture
 def lint(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-
-    def set_(on: bool) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_STORE_INSTANCE_LINT", on)
-
-    return set_
 
 
 def _in_task(request, fn):
@@ -95,7 +88,6 @@ def test_tokens_are_the_instance_identifiers_not_the_domain_words(lint):
 
 
 def test_a_sub_agent_keeps_the_tokens_of_its_task(lint):
-    lint(True)
 
     def nested():
         inner = instance_lint.enter("Sub-task: look at order 99887766.")
@@ -114,7 +106,6 @@ def test_a_sub_agent_keeps_the_tokens_of_its_task(lint):
 
 @_handle_project
 def test_on_a_name_with_the_task_alias_is_refused(lint):
-    lint(True)
     source = "def solve_task_7a4cf12e(grid: list) -> list:\n    return grid\n"
     status = _in_task(ARC, lambda: _add(source))
     assert status.startswith("error: 'solve_task_7a4cf12e' was not stored"), status
@@ -124,7 +115,6 @@ def test_on_a_name_with_the_task_alias_is_refused(lint):
 
 @_handle_project
 def test_on_a_task_id_shaped_name_is_refused_whatever_the_request(lint):
-    lint(True)
     for source in (
         "def solve_task_0badc0de(grid: list) -> list:\n    return grid\n",
         "def run_3f2b8c1e_9a4d_4c2b_8e1f_0a9b8c7d6e5f() -> int:\n    return 1\n",
@@ -135,7 +125,6 @@ def test_on_a_task_id_shaped_name_is_refused_whatever_the_request(lint):
 
 @_handle_project
 def test_on_a_docstring_with_the_task_alias_is_stored_with_a_warning(lint):
-    lint(True)
     source = (
         "def mirror_rows(grid: list) -> list:\n"
         '    """Mirror each row, as task-7a4cf12e needs."""\n'
@@ -148,7 +137,6 @@ def test_on_a_docstring_with_the_task_alias_is_stored_with_a_warning(lint):
 
 @_handle_project
 def test_on_a_quoted_instance_value_hard_coded_in_code_is_refused(lint):
-    lint(True)
     literal = (
         "def make_playlist(songs: list) -> dict:\n"
         '    return {"title": "R&B Recommendation", "songs": songs}\n'
@@ -167,7 +155,6 @@ def test_on_a_quoted_instance_value_hard_coded_in_code_is_refused(lint):
 
 @_handle_project
 def test_on_domain_words_and_parameters_are_stored(lint):
-    lint(True)
     source = (
         "def spotify_playlist_from_grid(title: str, songs: list) -> dict:\n"
         '    """Make a Spotify playlist with the grid of songs; reply with its playlist_id."""\n'
@@ -183,7 +170,6 @@ def test_on_domain_words_and_parameters_are_stored(lint):
 
 @_handle_project
 def test_on_a_patch_is_checked_like_any_write(lint):
-    lint(True)
     fm = FunctionManager()
     base = "def make_playlist(title: str) -> dict:\n    return {'title': title}\n"
     assert fm.add_functions(implementations=[base]) == {"make_playlist": "added"}
@@ -211,8 +197,6 @@ def test_on_a_patch_is_checked_like_any_write(lint):
 def test_on_with_recorded_cases_a_change_reports_both(lint, monkeypatch):
     # UNIFY_FUNCTION_CASES reports the replay with the status; the warning
     # comes after it, and a patch returns each under its own key.
-    lint(True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     fm = FunctionManager()
     base = "def make_playlist(title: str) -> dict:\n    return {'title': title}\n"
     fm.add_functions(implementations=[base])
@@ -243,22 +227,11 @@ def test_on_with_recorded_cases_a_change_reports_both(lint, monkeypatch):
     assert "task-7a4cf12e" in patched["warning"]
 
 
-@_handle_project
-def test_off_the_same_functions_are_stored_as_shipped(lint):
-    lint(False)
-    named = "def solve_task_7a4cf12e(grid: list) -> list:\n    return grid\n"
-    literal = "def make_playlist() -> str:\n    return 'R&B Recommendation'\n"
-    assert _in_task(ARC, lambda: _add(named)) == "added"
-    assert _in_task(APPWORLD, lambda: _add(literal)) == "added"
-    assert instance_lint.current().ids == ()
-
-
 # ── guidance ─────────────────────────────────────────────────────────────
 
 
 @_handle_project
 def test_on_guidance_naming_the_instance_is_stored_with_a_warning(lint):
-    lint(True)
     gm = GuidanceManager()
 
     added = _in_task(
@@ -293,16 +266,6 @@ def test_on_guidance_naming_the_instance_is_stored_with_a_warning(lint):
         lambda: gm.add_guidance(title="Spotify", content="Take the title as given."),
     )
     assert "warning" not in clean
-
-
-@_handle_project
-def test_off_guidance_has_no_warning(lint):
-    lint(False)
-    added = _in_task(
-        ARC,
-        lambda: GuidanceManager().add_guidance(title="t", content="For task-7a4cf12e."),
-    )
-    assert "warning" not in added
 
 
 # ── through the actor ────────────────────────────────────────────────────
@@ -358,7 +321,6 @@ async def test_on_the_actor_and_its_review_are_refused_the_alias(
     store,
     monkeypatch,
 ):
-    lint(True)
     # The scripted session may end before the tool's result is sent back, so
     # the refusal is read where it is made.
     refused = []
@@ -374,12 +336,3 @@ async def test_on_the_actor_and_its_review_are_refused_the_alias(
     assert "'7a4cf12e'" in refused[0][1]
     assert "mirror_7a4cf12e" not in FunctionManager().list_functions()
     assert not instance_lint.current()
-
-
-def test_the_setting_defaults_on():
-    # On by default since the code freeze (lean-all).
-    assert ProductionSettings().UNIFY_STORE_INSTANCE_LINT is True
-    assert (
-        ProductionSettings(UNIFY_STORE_INSTANCE_LINT="1").UNIFY_STORE_INSTANCE_LINT
-        is True
-    )

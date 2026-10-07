@@ -32,7 +32,7 @@ from tests import cache_discipline_helpers as h
 from tests.helpers import _handle_project
 from unify.function_manager import escape_drift as ed
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 # The session's own working cell (source text, as the model typed it).
 CELL = r"""names = ['Bruno Silva', 'Chloe Martin']
@@ -107,9 +107,7 @@ def _trajectory(*cells: str) -> list[dict]:
 
 @pytest.fixture
 def drift(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_ESCAPE_DRIFT_CHECK", "on")
 
 
 def _add(source: str, *cells: str) -> str:
@@ -122,20 +120,6 @@ def _add(source: str, *cells: str) -> str:
 def _stored(name: str):
     fm = FunctionManager(include_primitives=False)
     return fm.list_functions(include_implementations=True).get(name)
-
-
-# ── the switch ───────────────────────────────────────────────────────────
-
-
-def test_the_switch_is_on_by_default_and_validated(monkeypatch):
-    # On by default since the code freeze.
-    assert ProductionSettings.model_fields["UNIFY_ESCAPE_DRIFT_CHECK"].default == "on"
-    for value, parsed in (("", ""), ("off", ""), ("ON", "on"), (" on ", "on")):
-        monkeypatch.setenv("UNIFY_ESCAPE_DRIFT_CHECK", value)
-        assert ProductionSettings().UNIFY_ESCAPE_DRIFT_CHECK == parsed
-    monkeypatch.setenv("UNIFY_ESCAPE_DRIFT_CHECK", "warn")
-    with pytest.raises(ValueError, match="UNIFY_ESCAPE_DRIFT_CHECK"):
-        ProductionSettings()
 
 
 # ── the rule ────────────────────────────────────────────────────────────
@@ -237,7 +221,6 @@ def test_raise_on_error_raises_with_the_refusal(drift):
 
 @_handle_project
 def test_a_patch_that_doubles_an_escape_is_refused(drift, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     fm = FunctionManager(include_primitives=False)
     with ed.reviewing(_trajectory(CELL)):
         assert fm.add_functions(implementations=[CLEAN]) == {"write_names": "added"}
@@ -258,16 +241,6 @@ def test_a_patch_that_doubles_an_escape_is_refused(drift, monkeypatch):
     assert _stored("write_names")["implementation"] == CLEAN
 
 
-@_handle_project
-def test_off_everything_is_stored_as_shipped(drift, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_ESCAPE_DRIFT_CHECK", "")
-    assert _add(DOUBLED, CELL) == "added"
-    assert _stored("write_names")["implementation"] == DOUBLED
-    # Off, the review's cells are not even read.
-    with ed.reviewing(_trajectory(CELL)):
-        assert ed.current() is None
-
-
 # ── through the actor's storage review ───────────────────────────────────
 
 
@@ -280,7 +253,6 @@ async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[st
     from unify.actor import review_gate
 
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(caa, "_library_counts", lambda *_a, **_k: (1, 0))
     actor = caa.CodeActActor()
     reviewed = {"calls": 0}
@@ -353,8 +325,8 @@ RETYPED = SESSION_DEF.replace('"\\n"', '"\\\\n"')
 
 
 @pytest.fixture
-def by_name(drift, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_FROM_SESSION", True)
+def by_name(drift):
+    return None
 
 
 def test_the_pair_sources_are_one_escape_level_apart():
