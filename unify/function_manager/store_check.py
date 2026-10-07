@@ -242,6 +242,8 @@ def unresolved(
             found = importlib.util.find_spec(module) is not None
         except (ImportError, ValueError):
             found = False
+        if not found:
+            found = _in_workspace_environment(module)
         if found:
             continue
         if module in sandbox_globals:
@@ -260,6 +262,16 @@ def unresolved(
                 f"declare the pip package that provides it in `dependencies`",
             )
     return problems
+
+
+def _in_workspace_environment(module: str) -> bool:
+    """With Python in the sandboxed worker, whether the workspace environment
+    (which the worker imports from, and this process does not) holds
+    *module*; found by path, nothing imported. In process the environment is
+    already on ``sys.path``."""
+    from unify import environment
+
+    return not environment.imports_in_process() and environment.holds_module(module)
 
 
 __all__ = [

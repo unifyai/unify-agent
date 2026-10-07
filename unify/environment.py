@@ -3,9 +3,16 @@
 Third-party packages the assistant needs are installed into a single virtual
 environment under the store home (``<UNIFY_HOME>/venv``). Its ``site-packages``
 is appended to ``sys.path`` — after unify's own packages, so unify's
-dependencies always win — and everything runs in-process. Nothing is ever
+dependencies always win — of the process cells run in. Nothing is ever
 removed from it: a package installed during one task is importable in every
 later task and session.
+
+With Python in the sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``) that
+process is the worker, which puts the environment on its own path
+(unify/actor/execution/worker.py). The harness, which holds the provider
+credentials, then never imports from it: :func:`activate` refuses, and
+:func:`missing` reads the installed distributions' metadata from the
+environment's path without putting it on ``sys.path``.
 
 A stored function records the packages it imports as PEP 508 requirement
 strings (its ``dependencies``); :func:`ensure` installs whichever of them
@@ -85,6 +92,14 @@ def site_packages() -> Path:
     return environment_dir() / "lib" / version / "site-packages"
 
 
+def imports_in_process() -> bool:
+    """Whether cells run in this process, which then imports the environment's
+    packages; ``False`` with Python in the sandboxed worker."""
+    from unify.actor.execution import worker
+
+    return not worker.enabled()
+
+
 def activate() -> Path | None:
     """Put the environment's packages on ``sys.path`` if it exists.
 
@@ -92,7 +107,17 @@ def activate() -> Path | None:
     ``None`` otherwise. Idempotent and cheap, so it runs at the start of every
     trajectory: an environment populated by an earlier session is importable
     before the first cell runs.
+
+    Raises ``RuntimeError`` with Python in the sandboxed worker: what an
+    install put there would be importable by the harness (for example
+    through ``importlib.metadata.entry_points()`` discovery).
     """
+    if not imports_in_process():
+        raise RuntimeError(
+            "The harness does not import from the workspace environment: with "
+            "Python in the sandboxed worker only the worker, confined, imports "
+            "what is installed there",
+        )
     packages = site_packages()
     if not packages.is_dir():
         return None
@@ -174,7 +199,7 @@ def _create() -> Path:
                 env=installer_env(),
             )
     site_packages().mkdir(parents=True, exist_ok=True)
-    return activate()
+    return activate() if imports_in_process() else site_packages()
 
 
 def _check_specifiers(specifiers: List[str]) -> None:
@@ -238,20 +263,61 @@ def parse_requirement(specifier: str) -> Requirement:
     return Requirement(specifier)
 
 
+def _worker_path() -> List[str]:
+    """The path the worker imports from: this process's, then the environment."""
+    packages = str(site_packages())
+    return [p for p in sys.path if p and p != packages] + [packages]
+
+
+def _installed_version(name: str, path: Optional[List[str]]) -> str:
+    """The version of the distribution *name* found on *path* (``sys.path`` if
+    ``None``), read from its metadata; nothing is imported."""
+    if path is None:
+        return importlib.metadata.version(name)
+    found = next(iter(importlib.metadata.distributions(name=name, path=path)), None)
+    if found is None:
+        raise importlib.metadata.PackageNotFoundError(name)
+    return found.version
+
+
 def missing(specifiers: List[str]) -> List[str]:
-    """The subset of *specifiers* not satisfied by an installed distribution."""
-    activate()
+    """The subset of *specifiers* not satisfied by an installed distribution.
+
+    With Python in the sandboxed worker the distributions are looked up on the
+    worker's path by their metadata; the environment never joins this
+    process's ``sys.path``.
+    """
+    path: Optional[List[str]] = None
+    if imports_in_process():
+        activate()
+    else:
+        path = _worker_path()
     absent: List[str] = []
     for specifier in specifiers:
         requirement = parse_requirement(specifier)
         try:
-            version = importlib.metadata.version(requirement.name)
+            version = _installed_version(requirement.name, path)
         except importlib.metadata.PackageNotFoundError:
             absent.append(specifier)
             continue
         if not requirement.specifier.contains(version, prereleases=True):
             absent.append(specifier)
     return absent
+
+
+def holds_module(module: str) -> bool:
+    """Whether the environment holds the top-level *module*, found by path
+    without importing anything or touching ``sys.path``."""
+    import importlib.machinery
+
+    try:
+        spec = importlib.machinery.PathFinder.find_spec(
+            module,
+            [str(site_packages())],
+        )
+    except (ImportError, ValueError):
+        return False
+    return spec is not None
 
 
 def ensure(specifiers: List[str]) -> None:

@@ -17,6 +17,7 @@ from unify import environment
 from unify.actor.code_act_actor import CodeActActor
 from unify.actor.execution import parts_to_text
 from unify.function_manager.function_manager import FunctionManager
+from unify.settings import SETTINGS
 
 # Absent from the runtime's own environment, so an install has to happen.
 _ABSENT_PACKAGE = "humanize"
@@ -44,6 +45,15 @@ def workspace_home(unify_home, monkeypatch):
     _forget_absent_package()
     yield unify_home
     _forget_absent_package()
+
+
+@pytest.fixture
+def in_process(monkeypatch):
+    """Cells in this process (``UNIFY_WORKSPACE_PYTHON`` empty): the harness
+    then imports from the environment and runs stored functions itself. With
+    Python in the sandboxed worker it does neither
+    (test_bind_load_confinement.py)."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +93,9 @@ def test_dependencies_are_recorded_on_the_function():
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_execute_function_runs_a_function_with_satisfied_dependencies():
+async def test_execute_function_runs_a_function_with_satisfied_dependencies(
+    in_process,
+):
     """A dependency the runtime already provides needs no install."""
     fm = FunctionManager()
     fm.add_functions(
@@ -109,13 +121,66 @@ def test_missing_reports_only_unsatisfied_specifiers(workspace_home):
     assert environment.missing([_ABSENT_PACKAGE]) == [_ABSENT_PACKAGE]
 
 
-def test_activate_is_a_no_op_until_the_environment_exists(workspace_home):
+def test_activate_is_a_no_op_until_the_environment_exists(workspace_home, in_process):
     assert environment.activate() is None
     assert not environment.environment_dir().exists()
 
 
+@pytest.fixture
+def installed(tmp_path, monkeypatch):
+    """An environment holding one package, with its dist-info."""
+    packages = tmp_path / "venv-site-packages"
+    package = packages / "bindprobe"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("LOADED_IN = 'somewhere'\n")
+    info = packages / "bindprobe-1.2.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: bindprobe\nVersion: 1.2\n",
+    )
+    monkeypatch.setattr(environment, "site_packages", lambda: packages)
+    yield packages
+    if str(packages) in sys.path:
+        sys.path.remove(str(packages))
+    sys.modules.pop("bindprobe", None)
+
+
+def test_with_python_in_the_worker_the_harness_reads_the_environment_by_path(
+    workspace_home,
+    installed,
+    monkeypatch,
+):
+    """The harness holds the provider credentials, so it never imports what
+    an install put in the environment: only the worker does."""
+    from unify.function_manager import store_check
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
+    assert environment.missing(["bindprobe>=1", "bindprobe>=2"]) == ["bindprobe>=2"]
+    assert environment.missing(["packaging>=20"]) == []
+    environment.ensure(["bindprobe==1.2"])
+    with pytest.raises(RuntimeError, match="workspace environment"):
+        environment.activate()
+    # The store check still sees what the worker can import from there.
+    assert store_check._in_workspace_environment("bindprobe")
+    assert not store_check._in_workspace_environment("bindprobe_absent")
+    assert str(installed) not in sys.path
+    with pytest.raises(ImportError):
+        importlib.import_module("bindprobe")
+
+
+def test_in_process_the_environment_joins_sys_path(
+    workspace_home,
+    installed,
+    in_process,
+):
+    assert environment.missing(["bindprobe==1.2"]) == []
+    assert str(installed) in sys.path
+    assert importlib.import_module("bindprobe").LOADED_IN == "somewhere"
+
+
 @pytest.mark.timeout(180)
-def test_install_makes_a_package_importable_in_process(workspace_home):
+def test_install_makes_a_package_importable_in_process(workspace_home, in_process):
     outcome = environment.install([_ABSENT_PACKAGE])
     assert outcome["success"], outcome["stderr"]
     assert outcome["packages"] == [_ABSENT_PACKAGE]
@@ -131,9 +196,14 @@ def test_install_makes_a_package_importable_in_process(workspace_home):
 @_handle_project
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-async def test_execute_function_installs_missing_dependencies(workspace_home):
+async def test_execute_function_installs_missing_dependencies(
+    workspace_home,
+    monkeypatch,
+):
     """A stored function's dependencies are ensured before it runs."""
     fm = FunctionManager()
+    # Stored with Python in the worker, whose store check installs nothing
+    # (in process it loads the function, installing its dependencies).
     fm.add_functions(
         implementations=(
             "def humanise(n: int) -> str:\n"
@@ -143,6 +213,7 @@ async def test_execute_function_installs_missing_dependencies(workspace_home):
         dependencies=[_ABSENT_PACKAGE],
     )
     assert environment.missing([_ABSENT_PACKAGE]) == [_ABSENT_PACKAGE]
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
 
     result = await fm.execute_function(
         function_name="humanise",

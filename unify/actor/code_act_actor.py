@@ -4803,8 +4803,10 @@ class CodeActActor(BaseCodeActActor):
             f"⏱️ [CodeActActor.act +{_act_ms()}] actor slot ready, creating sandbox",
         )
         # Packages installed by earlier tasks and sessions are importable
-        # before the first cell runs.
-        environment.activate()
+        # before the first cell runs: here only where cells run in this
+        # process; the sandboxed worker puts them on its own path.
+        if environment.imports_in_process():
+            environment.activate()
         sandbox = PythonExecutionSession(environments=sandbox_envs)
         token = _CURRENT_SANDBOX.set(sandbox)
         env_token = _CURRENT_ENVIRONMENTS.set(sandbox_envs)
