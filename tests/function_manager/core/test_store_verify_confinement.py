@@ -2,10 +2,8 @@
 
 A verifier (the factory ``UNIFY_STORE_VERIFY`` names) runs a candidate by
 loading it (``Candidate.load``: its stored callees injected, its ``def``
-executed) and calling it, in the process that asks: the harness, both for the
-review's ``FunctionManager_check_function`` and for a re-check before a stored
-function is reused (``store_trust.maybe_recheck``, which a cell's call reaches
-through the worker's boundary). With Python in the sandboxed worker that would
+executed) and calling it, in the process that asks: the harness, for the
+review's ``FunctionManager_check_function``. With Python in the sandboxed worker that would
 run model-written code outside the sandbox, beside the credentials, so the
 verifier is refused there. These tests watch the two places a stored ``def``
 is executed in this process (``_create_in_process_callable`` and
@@ -20,7 +18,7 @@ import types
 import pytest
 
 from tests.helpers import _handle_project
-from unify.function_manager import store_trust, store_verify
+from unify.function_manager import store_verify
 from unify.settings import SETTINGS
 
 DOUBLE = (
@@ -96,30 +94,6 @@ def worker_python(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
 
-def _reuse(monkeypatch, fm):
-    """A stored ``double`` on probation, about to be reused: a re-check is due."""
-    monkeypatch.setattr(
-        store_trust,
-        "trust",
-        lambda function_id: store_trust.Trust(
-            function_id=function_id,
-            name="double",
-            state=store_trust.PROBATION,
-            source_hash=store_trust.sha256(DOUBLE),
-            dependency_hash="",
-            effect_class="read",
-        ),
-    )
-    recorded: list[dict] = []
-    monkeypatch.setattr(
-        store_trust,
-        "record",
-        lambda function_id, **kw: recorded.append(kw),
-    )
-    func_data = {"function_id": 1, "name": "double", "implementation": DOUBLE}
-    return store_trust.maybe_recheck(fm, func_data, {"x": 21}), recorded
-
-
 def test_the_verifier_is_refused_with_python_in_the_worker(tiny, worker_python):
     with pytest.raises(store_verify.StoreVerifyError, match="UNIFY_WORKSPACE_PYTHON"):
         store_verify.verifier()
@@ -143,27 +117,12 @@ def test_check_function_executes_nothing_with_python_in_the_worker(
 
 
 @_handle_project
-def test_a_reuse_recheck_executes_nothing_with_python_in_the_worker(
-    tiny,
-    worker_python,
-    executed,
-    monkeypatch,
-):
-    from unify.function_manager.function_manager import FunctionManager
-
-    verdict, recorded = _reuse(monkeypatch, FunctionManager(include_primitives=False))
-    assert executed == [], f"the harness executed {executed} before a reuse"
-    assert verdict is None and recorded == []
-    assert all(not v.asked for v in tiny), [v.asked for v in tiny]
-
-
-@_handle_project
 def test_with_python_in_process_the_verifier_still_runs_the_candidate(
     tiny,
     executed,
     monkeypatch,
 ):
-    """Where cells run in this process anyway, the check and the re-check run as before."""
+    """Where cells run in this process anyway, the check runs the candidate as before."""
     from unify.function_manager.function_manager import FunctionManager
 
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
@@ -171,7 +130,3 @@ def test_with_python_in_process_the_verifier_still_runs_the_candidate(
     out = fm.check_function(implementation=DOUBLE, call_kwargs={"x": 21})
     assert out["passed"] is True, out
     assert "double" in executed
-    executed.clear()
-    verdict, recorded = _reuse(monkeypatch, fm)
-    assert verdict is not None and verdict.ok and "double" in executed
-    assert "recheck double" in tiny[0].asked
