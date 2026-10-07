@@ -330,7 +330,11 @@ def test_actor_prompt_and_review_doctrine_unchanged_when_nothing_registered():
 
     clear_environment_namespaces()
     assert registered_environments() == []
-    assert _storage_environment_note() == ""
+    # The note always states the storage check (baked in); it names no
+    # namespace when nothing is registered.
+    note = _storage_environment_note()
+    assert "checks each function before storing it" in note
+    assert "registered its own namespaces" not in note
     assert "The one `primitives.*` surface." in ActorEnvironment().get_prompt_context()
 
 

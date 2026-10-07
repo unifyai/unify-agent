@@ -99,7 +99,9 @@ def test_unified_the_actor_is_told_it_curates_after_the_task(persist):
     prompt = _prompt(persist)
     assert "dedicated review extracts" not in prompt
     assert "dedicated skill-consolidation process" not in prompt
-    assert "curation step that follows the task" in prompt
+    # A persistent session's curation step follows each turn.
+    follows = "the turn" if persist else "the task"
+    assert f"curation step that follows {follows}" in prompt
     if persist:
         assert "curate the libraries from your\ntrajectory yourself" in prompt
     else:
