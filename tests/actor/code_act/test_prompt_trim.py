@@ -68,8 +68,10 @@ def trim(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", True)
 
 
-def test_off_by_default():
-    assert SETTINGS.UNIFY_PROMPT_TRIM is False
+def test_on_by_default():
+    # Baked on at the code freeze: under the default core surface it still
+    # trims the SteerableToolHandle row and include_parent_chat_context.
+    assert SETTINGS.UNIFY_PROMPT_TRIM is True
 
 
 def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):

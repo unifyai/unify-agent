@@ -700,7 +700,7 @@ class ProductionSettings(BaseSettings):
     # code tools do not offer include_parent_chat_context (only primitives
     # read the conversation it passes); and the session tools are named only
     # where they are offered. Off: as shipped.
-    UNIFY_PROMPT_TRIM: bool = False
+    UNIFY_PROMPT_TRIM: bool = True
     # Before the storage review that follows a session, one tool-free call
     # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
     # sets the review's) reads the end of the trajectory, the checked outcome
