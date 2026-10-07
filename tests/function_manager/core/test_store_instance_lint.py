@@ -164,7 +164,8 @@ def test_on_domain_words_and_parameters_are_stored(lint):
     assert _in_task(APPWORLD, lambda: _add(source)) == "added"
     assert (
         _in_task(ARC, lambda: _add(source.replace("def spotify", "def x_spotify")))
-        == "added"
+        # UNIFY_STORE_DEDUPE=warn (baked in): the copy is stored with a warning.
+        .startswith("added; warning: 'x_spotify_playlist_from_grid' is nearly")
     )
 
 

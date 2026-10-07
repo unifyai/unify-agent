@@ -579,7 +579,11 @@ async def test_renaming_and_deleting_a_helper_the_entry_point_uses(library):
         # until it is deleted, and the entry point still calls it.
         renamed = PARSE.replace("def parse_pairs(", "def parse_key_values(")
         out = await cells(f"await functions.add({renamed!r})")
-        assert out.result == {"parse_key_values": "added"}, out
+        # UNIFY_STORE_DEDUPE=warn (baked in): the renamed copy is stored with
+        # a near-duplicate warning naming the original.
+        (status,) = out.result.values()
+        assert list(out.result) == ["parse_key_values"], out
+        assert status.startswith("added; warning: 'parse_key_values' is nearly"), out
         out = await cells(f"await functions.run('summarize_pairs', text={TEXT!r})")
         assert out.result == SUMMARY, out.error
         # Deleting the helper but keeping its callers marks them stale ...
