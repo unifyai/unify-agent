@@ -858,6 +858,101 @@ async def test_11_a_message_submitted_during_a_cell_waits_for_the_boundary():
     assert "slept" in _text(second[tool_at]["content"])
 
 
+def _drive(coro) -> None:
+    """Run a handle method that never suspends (submit, cancel_request) now,
+    without yielding to the loop."""
+    try:
+        coro.send(None)
+    except StopIteration:
+        pass
+    else:  # pragma: no cover - the method suspended
+        raise AssertionError("expected the call to complete without awaiting")
+
+
+def _user_texts(messages: list[dict]) -> list[str]:
+    return [
+        _text(m.get("content"))
+        for m in messages
+        if m.get("role") == "user" and not m.get("_loop_authored")
+    ]
+
+
+async def test_11_messages_sent_during_the_final_call_are_the_next_request_in_order():
+    """A message sent while the request's final model call runs is the
+    session's next request (the current one is answered first); two such
+    messages keep the order they were sent in."""
+    holder: list = []
+
+    def _answer_and_send(_messages):
+        _drive(holder[0].submit("MESSAGE-A"))
+        _drive(holder[0].submit("MESSAGE-B"))
+        return _reply("First answer.")
+
+    model = _Model([_answer_and_send, _reply("Second answer."), _reply("unused")])
+    async with _actor() as actor:
+        with _scripted(model):
+            handle = await _act(actor, "First request.", persist=True)
+            holder.append(handle)
+            first = await _next_response(handle)
+            second = await _next_response(handle)
+            await handle.stop("done")
+            await asyncio.wait_for(handle.result(), 30)
+    assert (first["content"], second["content"]) == ("First answer.", "Second answer.")
+    texts = _user_texts(model.requests[1])
+    assert [t for t in texts if t.startswith("MESSAGE-")] == ["MESSAGE-A", "MESSAGE-B"]
+    assert not first.get("cancelled") and not second.get("cancelled")
+
+
+@pytest.mark.parametrize("cancel_first", [False, True])
+async def test_11_a_cancel_queued_as_a_request_ends_is_dropped(cancel_first):
+    """A cancel still queued when a request ends was sent for that request:
+    it is dropped, and a message queued beside it is the next request,
+    answered and not cancelled."""
+    model = _Model([_reply("First answer."), _reply("Answer to A."), _reply("unused")])
+    async with _actor() as actor:
+        with _scripted(model):
+            handle = await _act(actor, "First request.", persist=True)
+            put = handle._notification_q.put
+            sent: list = []
+
+            async def _put(item):
+                # Just as the first request ends in its response, before
+                # the loop parks.
+                if item.get("type") == "response" and not sent:
+                    sent.append(True)
+                    if cancel_first:
+                        _drive(handle.cancel_request("too late"))
+                    _drive(handle.submit("MESSAGE-A"))
+                    if not cancel_first:
+                        _drive(handle.cancel_request("too late"))
+                await put(item)
+
+            handle._notification_q.put = _put
+            first = await _next_response(handle)
+            second = await _next_response(handle)
+            await handle.stop("done")
+            await asyncio.wait_for(handle.result(), 30)
+    assert first["content"] == "First answer."
+    assert second == {"type": "response", "content": "Answer to A."}
+    assert "MESSAGE-A" in _user_texts(model.requests[1])
+    assert len(model.requests) == 2
+
+
+async def test_11_requeue_at_front_keeps_the_queue_order():
+    """What a parked session takes off its queue goes back ahead of the rest."""
+    from unify.common._async_tool.loop import _requeue_at_front
+
+    queue: asyncio.Queue = asyncio.Queue()
+    for item in ("first", "second", "third"):
+        queue.put_nowait(item)
+    _requeue_at_front(queue, queue.get_nowait())
+    assert [queue.get_nowait() for _ in range(queue.qsize())] == [
+        "first",
+        "second",
+        "third",
+    ]
+
+
 # ── 12. loop stop ──────────────────────────────────────────────────────────
 
 
