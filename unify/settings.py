@@ -178,15 +178,6 @@ class ProductionSettings(BaseSettings):
     # reply()) is given, not compacted for. A loop without compression is
     # unchanged. Empty (also ``off``): as shipped.
     UNIFY_STEP_CAP_COMPACT: str = ""
-    # Seconds a loop waits on questions nobody answers before it says so.
-    # When every call a loop is waiting on is a question (its own
-    # request_clarification, say) and no answer has come for this long, the
-    # model gets a plain notice that no answer has arrived and takes its
-    # turn: it can continue without the answer or reply. The notice repeats
-    # after as long again. A sub-actor of a session that cannot ask, whose
-    # question only its own model reads, otherwise waits until the host's
-    # idle timeout. 0: no limit, as shipped.
-    UNIFY_PENDING_TIMEOUT_S: float = 0.0
     # ``on``: a request to the actor's task loop (the one that answers the
     # requester; never a sub-agent's, a review's or its fork's) whose tool
     # calls stop making progress ends early. A
@@ -1022,16 +1013,6 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
-
-    @field_validator("UNIFY_PENDING_TIMEOUT_S", mode="before")
-    @classmethod
-    def parse_pending_timeout(cls, v: Any) -> float:
-        value = float(v or 0)
-        if value < 0 or value != value:
-            raise ValueError(
-                f"UNIFY_PENDING_TIMEOUT_S must be 0 (off) or positive, not {v!r}",
-            )
-        return value
 
     @field_validator("UNIFY_LOOP_STOP", mode="before")
     @classmethod
