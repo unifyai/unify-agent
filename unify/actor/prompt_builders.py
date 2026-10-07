@@ -387,9 +387,14 @@ def _incremental_execution(can_clarify: bool) -> str:
 
 
 def _reply_protocol_note_enabled() -> bool:
+    from unify import agents
     from unify.settings import SETTINGS
 
-    return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE)
+    # UNIFY_AGENTS=record: the record enforces the note's rule (only the asked
+    # agent may reply; a helper cannot take the requester's action), and the
+    # team-record section states it in its last sentence, so the note, which
+    # also tells the model not to delegate, is not sent (design v2 §5.2).
+    return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE) and not agents.enabled()
 
 
 # ---------------------------------------------------------------------------

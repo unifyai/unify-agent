@@ -286,3 +286,43 @@ async def test_a_turn_ended_by_a_cells_reply_gets_no_block_and_no_model_call(
         await actor.close()
     assert result == "final answer" and len(provider.requests) == 1
     assert "posted during the last call" not in json.dumps(provider.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("lean", ["lean", ""])
+async def test_record_mode_states_the_reply_owner_rule_instead_of_the_reply_note(
+    monkeypatch,
+    tmp_path,
+    lean,
+):
+    # Design v2 §5.2: the record enforces the rule the note states ("only the
+    # asked agent may reply; helpers cannot take the requester's action"), so
+    # the note, which also tells the model not to delegate, is not sent.
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", lean)
+    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path)
+    sent = json.dumps(requests[0]["messages"])
+    assert "Actions Taken By Replying" not in sent
+    assert "only you can answer them" in sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_off_the_reply_note_is_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
+    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path, mode="")
+    assert "Actions Taken By Replying" in json.dumps(requests[0]["messages"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_record_mode_still_says_a_cell_can_reply(monkeypatch, tmp_path):
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
+    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
+    requests, _, _ = await _run(_DONE, monkeypatch, tmp_path)
+    sent = json.dumps(requests[0]["messages"])
+    assert "Actions Taken By Replying" not in sent
+    assert "reply(text)" in sent
