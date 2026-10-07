@@ -2031,7 +2031,8 @@ class FunctionManager(BaseFunctionManager):
         dependencies: Sequence[str] = (),
     ) -> Any:
         """The ``store_verify.Candidate`` a verifier runs: ``source`` loaded as a search loads it, into a
-        scratch namespace whose ``primitives`` the verifier supplies."""
+        scratch namespace whose ``primitives`` the verifier supplies. Its loader refuses with Python in the
+        sandboxed worker, where model-written code must not run in this process."""
         from . import store_verify
 
         entry = {
@@ -2046,6 +2047,15 @@ class FunctionManager(BaseFunctionManager):
             primitives: Any,
             extra_globals: Optional[Dict[str, Any]] = None,
         ) -> Callable[..., Any]:
+            from unify.actor.execution import worker as python_worker
+
+            if python_worker.enabled():
+                # Loading executes the def (defaults, decorators) and returns
+                # a callable of this process: never with Python in the worker.
+                raise RuntimeError(
+                    f"'{name}' is not loaded in the harness's process: with Python "
+                    f"in the sandboxed worker, model-written code runs only there",
+                )
             scratch = create_execution_globals()
             for env_name, env_value in dict(extra_globals or {}).items():
                 scratch[env_name] = env_value

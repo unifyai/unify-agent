@@ -503,8 +503,11 @@ async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
     music,
     monkeypatch,
 ):
-    """The recorded case replays (with its environment answers) against a
-    new source, and a change that does something else is refused."""
+    """The recorded case blocks a change of the function. With Python in the
+    sandboxed worker it is not replayed (a replay would execute the new
+    source in the harness; test_case_replay_confinement), so a case that
+    returned refuses the change until it is stored under a new name or the
+    case is retired."""
     outs, _records, _used, _installs = await _reuse(
         monkeypatch,
         music,
@@ -521,8 +524,8 @@ async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
         raise_on_error=False,
     )
     assert out["remove_tracks_before"].startswith(
-        "error: 'remove_tracks_before' was not changed: the new source does "
-        "something else on 1 recorded call(s) that worked before:",
+        "error: 'remove_tracks_before' was not changed: 1 recorded call(s) that "
+        "worked before could not be checked against the new source:",
     )
 
 

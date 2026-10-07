@@ -26,7 +26,10 @@ not run twice), so this switch records them and replays the record:
   environment, the network or a model: ``query_llm`` and the namespaces nobody recorded raise inside the
   replay, which makes the case *inconclusive*, as does a function that reads the clock or randomness, imports
   a module that is not plainly deterministic, or needs packages, and a replay that takes longer than
-  :data:`REPLAY_TIMEOUT_S`;
+  :data:`REPLAY_TIMEOUT_S`. A replay executes the new source in this process, so with Python in the
+  sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``) nothing is replayed: a case that returned is
+  *not replayed* and refuses the change like a divergence (the same two ways on), and a case that raised
+  is inconclusive, so model-written code never runs beside the credentials;
 - **policy**: a case that diverges, returns something else or now raises refuses the change, naming the case,
   how it differs, and the two ways on: store the new behaviour under a new name (and say in the old entry's
   docstring that it is superseded, or delete it), or retire the case with a reason
@@ -1072,6 +1075,13 @@ DIVERGED = "diverged"
 INCONCLUSIVE = "inconclusive"
 NOW_PASSES = "now passes"
 STILL_FAILS = "still fails"
+NOT_REPLAYED = "not replayed"
+"""A case that returned, not replayed because a replay would execute the new source in this process."""
+
+IN_WORKER_REASON = (
+    "not replayed: a replay executes the new source in the harness's process, and with "
+    "Python in the sandboxed worker model-written code runs only in the worker"
+)
 
 
 @dataclass(frozen=True)
@@ -1436,6 +1446,21 @@ def replay(
     found = cases(function_id)
     if not found:
         return []
+    from unify.actor.execution import worker as python_worker
+
+    if python_worker.enabled():
+        # Executing the new source here would run model-written code outside
+        # the sandbox, beside the credentials. A case that returned blocks the
+        # change instead (refusal); one that raised never blocks.
+        return [
+            Replay(
+                case,
+                NOT_REPLAYED if case.kind == PASS else INCONCLUSIVE,
+                IN_WORKER_REASON,
+            )
+            for case in found
+            if not (case.kind == FAIL and case.trace)
+        ]
     why = _unreplayable(
         fm,
         source=source,
@@ -1479,12 +1504,21 @@ def _listed(name: str, replays: List[Replay]) -> str:
 def refusal(name: str, replays: List[Replay]) -> Optional[str]:
     """The error that refuses the change when a case that returned now behaves differently; else ``None``."""
     diverged = [r for r in replays if r.status == DIVERGED]
-    if not diverged:
+    unreplayed = [r for r in replays if r.status == NOT_REPLAYED]
+    if not diverged and not unreplayed:
         return None
+    if diverged:
+        what = (
+            f"the new source does something else on {len(diverged)} recorded "
+            f"call(s) that worked before:\n{_listed(name, diverged)}"
+        )
+    else:
+        what = (
+            f"{len(unreplayed)} recorded call(s) that worked before could not be "
+            f"checked against the new source:\n{_listed(name, unreplayed)}"
+        )
     return (
-        f"'{name}' was not changed: the new source does something else on "
-        f"{len(diverged)} recorded call(s) that worked before:\n"
-        f"{_listed(name, diverged)}\n"
+        f"'{name}' was not changed: {what}\n"
         f"If the behaviour is meant to change, store the new behaviour under a new "
         f"name and mark '{name}' as superseded (say so in its docstring, or delete "
         f"it), because callers written against it still expect the old behaviour. If "
@@ -1520,8 +1554,10 @@ def report(name: str, replays: List[Replay]) -> str:
 __all__ = [
     "Case",
     "CaseRecorder",
+    "IN_WORKER_REASON",
     "MAX_FAILING",
     "MAX_PASSING",
+    "NOT_REPLAYED",
     "Pending",
     "Replay",
     "cases",
