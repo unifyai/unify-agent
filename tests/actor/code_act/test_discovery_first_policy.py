@@ -17,8 +17,14 @@ from unify.actor.environments.actor import ActorEnvironment
 from unify.actor.simulated import _StaticAnswerHandle
 from unify.function_manager.function_manager import FunctionManager
 from unify.guidance_manager.guidance_manager import GuidanceManager
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = [pytest.mark.eval, pytest.mark.llm_call]
+# as_shipped: deleted in step 4 (UNIFY_DISCOVERY_GATE's gate path)
+pytestmark = [
+    pytest.mark.eval,
+    pytest.mark.llm_call,
+    pytest.mark.usefixtures("as_shipped"),
+]
 
 
 def _assistant_tool_names(history: list[dict]) -> list[str]:

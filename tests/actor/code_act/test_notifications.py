@@ -5,8 +5,11 @@ import pytest
 
 from unify.actor.code_act_actor import CodeActActor
 from unify.events.active_work import ACTIVE_WORK
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
+# as_shipped: deleted in step 5 (notifications, replaced by the agent record)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(120)

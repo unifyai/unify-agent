@@ -17,8 +17,11 @@ from unify.common.async_tool_loop import (
     AsyncToolLoopHandle,
 )
 from unify.common.llm_client import new_llm_client
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 async def test_llm_uses_ask_about_completed_tool_after_inner_completes(llm_config):
@@ -134,6 +137,8 @@ async def test_llm_uses_ask_about_completed_tool_after_inner_completes(llm_confi
     )
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 async def test_ask_about_completed_tool_with_multiple_completed_tools(llm_config):
@@ -233,6 +238,8 @@ async def test_ask_about_completed_tool_with_multiple_completed_tools(llm_config
     ), f"Final reply should mention alpha_secret_value=42, but got: {final_result!r}"
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 async def test_ask_about_completed_tool_unused_without_completed_steerable_tools(

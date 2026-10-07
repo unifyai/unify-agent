@@ -11,8 +11,10 @@ from tests.helpers import (
     DEFAULT_TIMEOUT,
     _unique_token,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (steerable handles)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 
 # ────────────────────────────────────────────────────────────────────────────

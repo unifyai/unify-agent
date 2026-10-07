@@ -36,8 +36,10 @@ from tests.async_helpers import (
     _wait_for_condition,
     _steer_call_action,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (steering a running tool)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 
 # --------------------------------------------------------------------------- #

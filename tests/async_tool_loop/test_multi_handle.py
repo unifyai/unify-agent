@@ -25,6 +25,7 @@ from unify.common._async_tool.tagging import (
     tag_message_with_request,
     format_request_cancelled_notice,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # --------------------------------------------------------------------------- #
 #  UNIT TESTS – Request State Module                                          #
@@ -317,6 +318,8 @@ async def test_multi_handle_add_request_after_close():
 # --------------------------------------------------------------------------- #
 
 
+# as_shipped: deleted in step 5 (multi-handle coordination)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -340,6 +343,8 @@ async def test_multi_handle_single_request_baseline(llm_config):
     assert "4" in result
 
 
+# as_shipped: deleted in step 5 (multi-handle coordination)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -375,6 +380,8 @@ async def test_multi_handle_two_requests_sequential(llm_config):
     assert "17" in result1
 
 
+# as_shipped: deleted in step 5 (multi-handle coordination)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -415,6 +422,8 @@ async def test_multi_handle_stop_one_request(llm_config):
     assert "hello" in result1.lower()
 
 
+# as_shipped: deleted in step 5 (multi-handle coordination)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project

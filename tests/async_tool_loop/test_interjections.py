@@ -31,8 +31,10 @@ from tests.async_helpers import (
     _is_synthetic_check_status_stub,
     _is_synthetic_check_status_tool_msg,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (interjections)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 
 # --------------------------------------------------------------------------- #

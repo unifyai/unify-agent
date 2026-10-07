@@ -23,8 +23,10 @@ from unify.actor.code_act_actor import _synthesize_python_call
 from unify.actor.execution.session import PythonExecutionSession
 from unify.function_manager.steering import SteeringSession, use_session
 from unify.function_manager.steering_patcher import build_patch_author
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.eval
+# as_shipped: deleted in step 5 (steering)
+pytestmark = [pytest.mark.eval, pytest.mark.usefixtures("as_shipped")]
 
 
 class _Comms:

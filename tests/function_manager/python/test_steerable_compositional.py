@@ -11,6 +11,7 @@ import pytest
 
 from unify.common.async_tool_loop import SteerableToolHandle
 from unify.function_manager.execution_env import create_execution_globals
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
 class _ImmediateHandle(SteerableToolHandle):
@@ -211,6 +212,8 @@ async def typed_steerable_procedure(goal: str) -> SteerableToolHandle:
 # ────────────────────────────────────────────────────────────────────────────
 
 
+# as_shipped: deleted in step 5 (steerable stored functions)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 async def test_compositional_function_returns_codeact_actor_handle():

@@ -9,12 +9,15 @@ from unify.actor.code_act_actor import CodeActActor
 from unify.actor.environments.actor import ActorEnvironment
 from unify.actor.execution.session import PythonExecutionSession, _PARENT_CHAT_CONTEXT
 from unify.actor.simulated import _StaticAnswerHandle
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
 class SecretModel(BaseModel):
     secret: int = Field(description="The secret number from context.")
 
 
+# as_shipped: deleted in step 5 (parent chat context for primitives)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(300)
@@ -117,6 +120,8 @@ class _SpyRunner:
 # ────────────────────────────────────────────────────────────────────────────
 
 
+# as_shipped: deleted in step 5 (parent chat context for primitives)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
@@ -161,6 +166,8 @@ async def test_execute_function_forwards_parent_chat_context(monkeypatch):
             pass
 
 
+# as_shipped: deleted in step 5 (parent chat context for primitives)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call

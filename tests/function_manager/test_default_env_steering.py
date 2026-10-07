@@ -24,6 +24,7 @@ from unify.function_manager.steering import (
     current_session,
     use_session,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 IMPLEMENTATION = (
     "async def notify_vendors(vendors):\n"
@@ -328,6 +329,8 @@ async def test_primitives_are_restored_when_the_session_had_none():
 
 
 # ── a real model, on this path ─────────────────────────────────────────────
+# as_shipped: deleted in step 5 (steering)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 async def test_real_model_corrects_a_directly_executed_function():

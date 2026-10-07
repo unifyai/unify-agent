@@ -30,8 +30,10 @@ from unify.actor.execution import ExecutionResult
 from unify.common.async_tool_loop import SteerableToolHandle
 from unify.common.llm_helpers import method_to_schema
 from unify.function_manager.function_manager import FunctionManager
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (execute_function and steerable handles)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -32,8 +32,10 @@ from tests.async_helpers import (
     real_tool_messages,
     any_tool_message_content_contains,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (steerable handles)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  Unit tests for _extract_nested_handle

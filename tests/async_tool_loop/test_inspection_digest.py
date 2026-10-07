@@ -26,6 +26,7 @@ from unify.common.async_tool_loop import AsyncToolLoopHandle, start_async_tool_l
 from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.common.tool_spec import llm_soft_required
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
 class _DummyClient:
@@ -511,6 +512,8 @@ async def test_digest_caps_turn_count_with_elision_marker():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (asking completed steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 async def test_digest_ask_answers_librarian_question_shapes(llm_config):

@@ -26,8 +26,14 @@ from unify.conversation_manager.events import UnifyMessageReceived
 from unify.conversation_manager.domains.brain_action_tools import (
     get_handle_paused_state,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = [pytest.mark.integration, pytest.mark.eval]
+# as_shipped: deleted in step 5 (steerable handles through the conversation manager)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.eval,
+    pytest.mark.usefixtures("as_shipped"),
+]
 
 
 @pytest.mark.asyncio

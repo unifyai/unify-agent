@@ -16,8 +16,10 @@ from tests.async_helpers import (
     first_assistant_tool_call,
     last_plain_assistant_message,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (notifications of steerable handles)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 # ──────────────────────────────────────────────────────────────────────────
 # Small helpers

@@ -27,8 +27,11 @@ from unify.common._async_tool.context_tracker import LoopContextState
 from unify.common._async_tool.messages import loop_user_notice
 from tests.helpers import _handle_project
 from unify.common.llm_client import new_llm_client
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -82,6 +85,8 @@ async def test_chat_context_propagation(llm_config) -> None:
     )
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -117,6 +122,8 @@ async def test_chat_context_propagation_never(llm_config) -> None:
     assert captured_ctx[0] == [], "Context should be empty in NEVER mode"
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -158,6 +165,8 @@ async def test_chat_context_propagation_llm_decides_include(llm_config) -> None:
     assert combined[0]["content"] == "root-level-context-marker"
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -197,6 +206,8 @@ async def test_chat_context_propagation_llm_decides_exclude(llm_config) -> None:
     assert captured_ctx[0] == [], "Context should be empty when LLM excludes it"
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -447,6 +458,8 @@ async def test_ask_inspection_prompt_redacts_image_payloads(monkeypatch) -> None
     assert "<omitted>" in parent_ctx
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -729,6 +742,8 @@ class TestLoopContextState:
 # =============================================================================
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -1127,6 +1142,8 @@ def test_context_injection_defaults_off_when_arg_omitted():
 # =============================================================================
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -1212,6 +1229,8 @@ async def test_interjection_context_continuation_message_structure(llm_config) -
     ), "Context continuation messages should be filtered out of cur_msgs"
 
 
+# as_shipped: deleted in step 5 (parent chat context and interjections)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project

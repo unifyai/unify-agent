@@ -17,6 +17,7 @@ from unify.common.llm_client import new_llm_client
 from tests.async_helpers import (
     _wait_for_tool_request,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
 class CustomArgsHandle(SteerableToolHandle):
@@ -108,6 +109,8 @@ def client(llm_config):
     return new_llm_client(**llm_config)
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -172,6 +175,8 @@ async def test_dynamic_helper_args_are_exposed_and_forwarded(client):
     }
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project
@@ -226,6 +231,8 @@ async def test_custom_abort_finishes_nested(client):
     assert _has_aborted_tool_message(msgs)
 
 
+# as_shipped: deleted in step 5 (steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @_handle_project

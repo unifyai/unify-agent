@@ -18,6 +18,7 @@ from unify.actor.environments.actor import ActorEnvironment, _ActorRunner
 from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
 from unify.actor.prompt_builders import build_code_act_prompt
 from unify.common.async_tool_loop import SteerableToolHandle
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Symbolic tests — environment installation and gating
@@ -235,6 +236,8 @@ def test_actor_accessible_via_primitives_class():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
@@ -259,6 +262,8 @@ async def test_actor_act_returns_steerable_handle():
             pass
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
@@ -656,6 +661,8 @@ async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
@@ -693,6 +700,8 @@ async def test_actor_completes_simple_task():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call

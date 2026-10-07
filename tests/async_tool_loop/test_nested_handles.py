@@ -25,8 +25,10 @@ from tests.async_helpers import (
     last_plain_assistant_message,
     real_tool_messages,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (nested steerable handles)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 # (prefix-based wait helpers moved to tests/async_tool_loop/async_helpers.py)
 

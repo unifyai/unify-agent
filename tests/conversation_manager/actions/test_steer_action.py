@@ -31,11 +31,13 @@ from unify.conversation_manager.events import (
     ActorHandleStarted,
     UnifyMessageReceived,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # Actions stay in-flight indefinitely with steps=None, duration=None.
 # Tests verify steering tools were called - actions are completed via
 # trigger_completion() in test cleanup.
-pytestmark = [pytest.mark.eval]
+# as_shipped: deleted in step 5 (steering)
+pytestmark = [pytest.mark.eval, pytest.mark.usefixtures("as_shipped")]
 
 # ---------------------------------------------------------------------------
 #  Ask steering tests - querying action status

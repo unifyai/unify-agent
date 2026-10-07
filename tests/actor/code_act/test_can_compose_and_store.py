@@ -6,6 +6,7 @@ import pytest
 from tests.actor.code_act.conftest import make_fm_mock
 from unify.actor.code_act_actor import CodeActActor
 from unify.function_manager.function_manager import FunctionManager
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # can_compose=False — symbolic tests
@@ -39,6 +40,8 @@ async def test_code_act_can_compose_false_requires_function_manager():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (the execute_function JSON tool)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
@@ -101,6 +104,8 @@ async def test_code_act_can_compose_false_executes_best_matching_function():
             pass
 
 
+# as_shipped: deleted in step 5 (the execute_function JSON tool)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
@@ -152,6 +157,8 @@ async def test_code_act_can_compose_false_no_functions_match():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (the FunctionManager JSON tools)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(300)

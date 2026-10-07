@@ -5,8 +5,10 @@ import pytest
 from unify.actor.code_act_actor import CodeActActor
 
 from .conftest import wait_for_turn_completion
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (interjections, replaced by the agent record)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 
 @pytest.mark.asyncio

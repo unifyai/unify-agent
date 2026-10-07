@@ -28,6 +28,7 @@ from unify.actor.code_act_actor import (
     _STORAGE_WHAT_CAN_BE_STORED,
     _start_proactive_storage_loop,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Reusable GuidanceManager stand-in (same as test_storage_function_and_guidance)
@@ -208,6 +209,8 @@ async def test_store_skills_tool_absent_without_guidance_manager():
             pass
 
 
+# as_shipped: deleted in step 5 (store_skills as a JSON tool on every turn)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
@@ -254,6 +257,8 @@ async def test_store_skills_filtered_when_can_store_false():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (store_skills as a JSON tool on every turn)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(120)

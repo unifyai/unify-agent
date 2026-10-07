@@ -17,6 +17,7 @@ from unify.common._async_tool import loop as _loop
 from unify.common._async_tool.utils import get_handle_paused_state
 from unify.common.async_tool_loop import AsyncToolLoopHandle, start_async_tool_loop
 from unify.common.llm_client import new_llm_client
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 _STOPPED = "processed stopped early, no result"
 
@@ -190,6 +191,8 @@ async def test_stop_while_paused_with_a_tool_running_records_the_steer(
     }
 
 
+# as_shipped: deleted in step 5 (steer(stop) of steerable handles)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.llm_call
 @pytest.mark.asyncio
 async def test_stop_while_persist_waits_logs_the_stop(
