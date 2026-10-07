@@ -247,8 +247,6 @@ class Runtime:
                 _notification_up_q=None,
                 _clarification_up_q=None,
                 _clarification_down_q=None,
-                _interject_queue=None,
-                _pause_event=None,
                 _parent_chat_context=None,
             ):
                 return self._record(locals())
@@ -265,8 +263,6 @@ class Runtime:
                 _notification_up_q=None,
                 _clarification_up_q=None,
                 _clarification_down_q=None,
-                _interject_queue=None,
-                _pause_event=None,
                 _parent_chat_context=None,
                 _language: str = "python",
             ):
@@ -388,8 +384,6 @@ def test_hidden_channels_reach_the_runtime_untouched():
         "_notification_up_q": asyncio.Queue(),
         "_clarification_up_q": asyncio.Queue(),
         "_clarification_down_q": asyncio.Queue(),
-        "_interject_queue": asyncio.Queue(),
-        "_pause_event": asyncio.Event(),
         "_parent_chat_context": [{"role": "user", "content": "hi"}],
     }
 
