@@ -1222,6 +1222,20 @@ async def async_tool_loop_inner(
             getattr(_outer, "_compact_context", None),
         )
 
+    def _drop_queued_cancels() -> int:
+        """Take every queued request cancel off the queue, keeping the order
+        of the rest; how many were dropped."""
+        kept, dropped = [], 0
+        while not interject_queue.empty():
+            item = interject_queue.get_nowait()
+            if isinstance(item, dict) and "_cancel_request" in item:
+                dropped += 1
+            else:
+                kept.append(item)
+        for item in kept:
+            interject_queue.put_nowait(item)
+        return dropped
+
     def _request_cancel_queued() -> bool:
         """Whether the requester's cancel of the request waits in the queue."""
         return any(
@@ -1379,6 +1393,17 @@ async def async_tool_loop_inner(
         if _reply_slot is not None:
             _reply_slot.clear()
 
+        # A cancel still queued was sent for the request that has just
+        # ended (it came after that request's last call), so it has nothing
+        # to cancel; a message queued around it is the next request.
+        _dropped = _drop_queued_cancels()
+        if _dropped:
+            logger.info(
+                f"Persist mode: {_dropped} cancel(s) ignored, the request "
+                "they were sent for has ended",
+                prefix=ICONS["pause"],
+            )
+
         # A parked turn's chain of thought is never consulted again:
         # the next dispatch starts from a fresh user interjection, so
         # provider reasoning payloads (encrypted blobs, reasoning
@@ -1485,9 +1510,10 @@ async def async_tool_loop_inner(
                     pass
                 continue
 
-            # The next request goes back on the queue for the drain.
+            # The next request goes back to the head of the queue, ahead of
+            # anything sent after it, so the drain takes them in order.
             try:
-                await interject_queue.put(interjection)
+                _requeue_at_front(interject_queue, interjection)
                 logger.info(
                     "Persist mode: interjection received, resuming loop",
                     prefix=ICONS["resume"],
