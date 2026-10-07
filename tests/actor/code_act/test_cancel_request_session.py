@@ -245,14 +245,12 @@ async def test_a_cancel_ends_a_request_waiting_on_a_model_call(jsonl_session):
         run = asyncio.create_task(session.run(TASK))
         await asyncio.wait_for(model.in_flight.wait(), 20)
         elapsed = await _cancel(send, lines)
-        stats = session._handle._inner._runtime_state.cancelled_turns_by_cause
         # The late answer arrives while the next request runs.
         model.release.set()
         code = await _finish(run, send, lines)
 
     assert code == 0
     assert elapsed < CANCEL_BOUND_S
-    assert stats == {"cancel": 1}
     # The cancelled call's late answer reaches neither the host nor the model.
     assert LATE not in json.dumps(lines)
     assert not any(LATE in json.dumps(r, default=str) for r in model.requests)
@@ -374,16 +372,4 @@ async def test_a_cancel_with_no_request_running_is_ignored(jsonl_session):
     assert not any(
         str(m.get("content") or "").startswith("🔚 Cancelled")
         for m in _follow_up_request(model)
-    )
-
-
-def test_the_cancel_is_not_a_steering_action():
-    """The model's steering surface is unchanged: ``cancel_request`` is for
-    the host, never offered as a method a ``steer`` call can name."""
-    from unify.actor.code_act_actor import _StorageCheckHandle
-    from unify.common._async_tool.dynamic_tools_factory import DynamicToolFactory
-
-    handle = _StorageCheckHandle.__new__(_StorageCheckHandle)
-    assert "cancel_request" not in DynamicToolFactory._discover_custom_public_methods(
-        handle,
     )

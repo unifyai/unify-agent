@@ -178,8 +178,8 @@ class ToolLoopHandle(ABC):
     has ended, ``stop(reason)`` ends it (cancelling the model call or tool
     call in flight), and ``submit(text)`` queues the requester's next message,
     which the loop appends at its next turn boundary (a persistent session's
-    next request). Nothing a caller does interrupts a model call or a tool
-    call except ``stop``. The event methods carry what a running call sends
+    next request). Only ``stop`` (and, for a persistent session, its request's
+    ``cancel_request``) interrupts a model call or a tool call. The event methods carry what a running call sends
     the requester: progress notifications, the turn responses of a persistent
     session, and the questions a cell asks with ``request_clarification``.
     """
@@ -290,11 +290,11 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             self._stop_event.set()
 
     async def cancel_request(self, reason: Optional[str] = None) -> bool:
-        # The loop takes the cancel at its next boundary or, while a tool
-        # call runs, at once (the call is cancelled and answered as such); a
-        # model call in flight runs to its end first. A persistent loop ends
-        # the request; a parked loop has none running, and a loop that is not
-        # persistent is stopped with stop(). Nothing after a stop.
+        # A persistent loop takes the cancel at once: the model call or tool
+        # call in flight is cancelled (a call is answered as cancelled) and
+        # the request ends in its response. A parked loop has no request
+        # running, and a loop that is not persistent is stopped with stop().
+        # Nothing after a stop.
         if self._task.done() or self._cancel_event.is_set():
             return False
         _label = getattr(self, "_log_label", None) or self._loop_id
