@@ -14,7 +14,6 @@ import pytest
 from tests.actor.code_act import test_outcome_channel as toc
 from tests.actor.code_act.test_outcome_channel import switches  # noqa: F401 (fixture)
 from unify.function_manager import session_source as ss
-from unify.settings import SETTINGS
 
 
 def _carrying_note(requests):
@@ -26,7 +25,6 @@ async def test_on_the_review_is_told_and_resolves_against_the_session(
     monkeypatch,
     switches,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_FROM_SESSION", True)
     entered = []
     real = ss.reviewing
 
@@ -41,10 +39,3 @@ async def test_on_the_review_is_told_and_resolves_against_the_session(
     assert _carrying_note(requests)
     assert len(entered) == 1
     assert any("Send the email to Kim" in str(m.get("content")) for m in entered[0])
-
-
-@pytest.mark.asyncio
-async def test_off_the_review_is_told_nothing(monkeypatch, switches):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_FROM_SESSION", False)
-    _note, requests, _handle, _ = await toc._persistent_review()
-    assert requests and not _carrying_note(requests)

@@ -14,10 +14,8 @@ from __future__ import annotations
 
 import re
 
-import pytest
 
 from unify.actor import prompt_builders as pb
-from unify.settings import SETTINGS
 
 
 def _prompt() -> str:
@@ -31,8 +29,7 @@ def _prompt() -> str:
     )
 
 
-def test_on_the_note_follows_the_execution_rules(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+def test_the_note_follows_the_execution_rules():
     prompt = _prompt()
     assert pb._REPLY_PROTOCOL_NOTE in prompt
     assert (
@@ -44,23 +41,7 @@ def test_on_the_note_follows_the_execution_rules(monkeypatch):
     assert _prompt().split("### Current Time")[0] == prompt.split("### Current Time")[0]
 
 
-def test_off_the_prompt_is_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", False)
-    prompt = _prompt()
-    assert "### Actions Taken By Replying" not in prompt
-
-
 def test_the_note_names_no_benchmark_or_action():
     words = set(re.findall(r"[a-z]+", pb._REPLY_PROTOCOL_NOTE.lower()))
     for word in ("arc", "demo", "demos", "grid", "submit", "appworld", "scienceworld"):
         assert word not in words
-
-
-@pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
-def test_the_setting_parses_booleans(value, expected):
-    from unify.settings import ProductionSettings
-
-    assert (
-        ProductionSettings(UNIFY_REPLY_PROTOCOL_NOTE=value).UNIFY_REPLY_PROTOCOL_NOTE
-        is expected
-    )
