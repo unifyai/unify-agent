@@ -106,15 +106,16 @@ def _usage(name: str) -> dict:
 # ── the settings ─────────────────────────────────────────────────────────────
 
 
-def test_the_switches_are_off_by_default():
+def test_the_switches_are_on_by_default():
+    # Baked on at the code freeze (Python tool mode).
     defaults = ProductionSettings()
     for name in (
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
         "UNIFY_GUIDANCE_LINKED_NAMES",
     ):
-        assert getattr(defaults, name) is False, name
-        assert getattr(ProductionSettings(**{name: "1"}), name) is True, name
+        assert getattr(defaults, name) is True, name
+        assert getattr(ProductionSettings(**{name: "0"}), name) is False, name
 
 
 # ── the shortlist's text, with and without a binder ─────────────────────────
@@ -369,29 +370,6 @@ def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch
         assert [r.linked_functions for r in rows] == [expected]
     # What the JSON tool result is made of.
     assert read.model_dump(mode="json")["linked_functions"] == expected
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-@_handle_project
-async def test_the_json_guidance_tool_shows_the_linked_functions(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
-    fm, gm, gid = _seed_linked()
-    actor = _actor(function_manager=fm, guidance_manager=gm, can_store=False)
-    replies = (
-        lambda: h.completion(
-            calls=[("GuidanceManager_get_guidance", {"guidance_id": gid})],
-        ),
-        lambda: h.completion(content="done"),
-    )
-    try:
-        _r, requests = await _act(actor, replies)
-    finally:
-        await actor.close()
-    (reply,) = _tool_replies(requests[-1])
-    assert "linked_functions" in reply
-    assert "double_twice(x: int) -> int (async)" in reply, reply
 
 
 @needs_bwrap

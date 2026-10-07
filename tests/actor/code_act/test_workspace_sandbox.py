@@ -34,9 +34,10 @@ from unify.settings import ProductionSettings, SETTINGS
 # ── settings ────────────────────────────────────────────────────────────────
 
 
-def test_settings_default_off_and_reject_unknown_values():
+def test_settings_default_sandboxed_and_reject_unknown_values():
     s = ProductionSettings()
-    assert s.UNIFY_WORKSPACE == "" and s.UNIFY_WORKSPACE_NETWORK == ""
+    # The workspace is sandboxed by default since the code freeze.
+    assert s.UNIFY_WORKSPACE == "sandboxed" and s.UNIFY_WORKSPACE_NETWORK == ""
     assert s.UNIFY_WORKSPACE_PROXY_PORT == 0
     assert ProductionSettings(UNIFY_WORKSPACE="Sandboxed").UNIFY_WORKSPACE == (
         "sandboxed"
