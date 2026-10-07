@@ -184,10 +184,10 @@ async def _late_message(
                     notifications.append(notification)
                     if notification.get("type") == "response":
                         break
-                await handle.interject(OBSERVATION)
+                await handle.submit(OBSERVATION)
             result = await asyncio.wait_for(handle.result(), 20)
             await asyncio.wait_for(in_flight.wait(), 20)
-            await handle.interject(FEEDBACK)
+            await handle.submit(FEEDBACK)
             sent.set()
             while True:
                 notification = await asyncio.wait_for(handle.next_notification(), 20)
@@ -322,7 +322,7 @@ async def test_a_live_persistent_session_still_takes_its_messages(switches):
                 if notification.get("type") == "response":
                     responses.append(notification)
                     if len(responses) == 1:
-                        await handle.interject(FEEDBACK)
+                        await handle.submit(FEEDBACK)
             assert not handle._task_done_event.is_set()
             await handle.stop("test over")
             await asyncio.wait_for(handle._lifecycle_task, 20)

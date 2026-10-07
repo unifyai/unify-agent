@@ -227,7 +227,7 @@ async def test_on_the_session_is_compacted_and_goes_on(switches):
         handle = _start(drive=True)
         answers.append((await _response(handle))["content"])
         for _ in range(10):
-            await handle.interject(CONTINUE)
+            await handle.submit(CONTINUE)
             answers.append((await _response(handle))["content"])
             if model.compactor_calls == 2:
                 break
@@ -335,7 +335,7 @@ async def test_on_with_cap_reply_a_long_request_is_compacted_and_answered(switch
         _install(model)
         handle = _start(drive=True)
         first = (await _response(handle))["content"]
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         second = (await _response(handle))["content"]
         await _close(handle)
     assert (first, second) == (FINAL, FINAL_2)
@@ -353,9 +353,9 @@ async def test_on_with_cap_reply_the_third_limit_replies_and_the_next_request_ha
         handle = _start(drive=True)
         capped = (await _response(handle))["content"]
         after_first = model.compactor_calls
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
-        await handle.interject(LOOP_AGAIN)
+        await handle.submit(LOOP_AGAIN)
         capped_again = (await _response(handle))["content"]
         await _close(handle)
     assert capped.startswith(STOPPED.format(MAX_STEPS))
@@ -403,7 +403,7 @@ async def test_on_with_cap_reply_a_failed_compaction_replies_and_the_session_goe
         _install(model)
         handle = _start(drive=True)
         capped = (await _response(handle))["content"]
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
         await _close(handle)
     assert capped.startswith(STOPPED.format(MAX_STEPS))
@@ -465,7 +465,7 @@ async def test_on_a_cancelled_request_during_a_compaction_ends_the_request(
         await asyncio.wait_for(started.wait(), WAIT)
         assert await handle.cancel_request("enough")
         cancelled = await _response(handle)
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
         state = handle._runtime_state
         await _close(handle)
@@ -528,7 +528,7 @@ async def test_on_a_reply_from_a_cell_at_the_limit_ends_the_turn(switches):
         replied = (await _response(handle))["content"]
         compacted_before = model.compactor_calls
         at_reply = len(handle.get_history())
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
         await _close(handle)
     assert replied == REPLY

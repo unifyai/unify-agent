@@ -19,11 +19,7 @@ from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
 from unify.common.tool_spec import ToolSpec
 from tests.helpers import _handle_project
-from tests.async_helpers import (
-    _wait_for_condition,
-    _wait_for_tool_request,
-    make_gated_async_tool,
-)
+from tests.async_helpers import _wait_for_condition
 
 pytestmark = pytest.mark.llm_call
 
@@ -131,7 +127,6 @@ async def test_handle_state_preserved_after_compression(llm_config, monkeypatch)
     )
 
     orig_queue = handle._queue
-    orig_pause = handle._pause_event
     orig_cancel = handle._cancel_event
     orig_stop = handle._stop_event
 
@@ -139,7 +134,6 @@ async def test_handle_state_preserved_after_compression(llm_config, monkeypatch)
 
     assert handle._compression.count >= 1
     assert handle._queue is orig_queue
-    assert handle._pause_event is orig_pause
     assert handle._cancel_event is orig_cancel
     assert handle._stop_event is orig_stop
     assert result is not None
@@ -197,60 +191,6 @@ async def test_nested_inner_compression_outer_unaffected(llm_config, monkeypatch
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_compression_blocked_while_tool_in_flight(llm_config, monkeypatch):
-    """compress_context must not appear while another tool is still running."""
-    trigger, reset, check = _make_threshold_trigger()
-    monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
-
-    async def _compress_and_reset(messages, endpoint, **kwargs):
-        reset()
-        return await _mock_compress(messages, endpoint)
-
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_and_reset)
-
-    add = _make_add(trigger)
-    gate, raw_gated = make_gated_async_tool(return_value="gated-done")
-
-    async def gated():
-        """A long-running tool."""
-        return await raw_gated()
-
-    client = new_llm_client(**llm_config)
-    client.set_system_message(
-        "You are in a test. Follow the steps exactly:\n"
-        "1. Call `add` with a=2, b=3.\n"
-        "2. Call `gated` with no arguments.\n"
-        "3. Report both results.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="Go",
-        tools={"add": add, "gated": gated},
-        timeout=120,
-        max_parallel_tool_calls=1,
-    )
-
-    result_task = asyncio.create_task(handle.result())
-
-    await _wait_for_tool_request(client, "gated")
-    await handle.interject("status check")
-
-    await _wait_for_condition(
-        _msg_contains(client, "cannot start new tools"),
-        poll=0.1,
-        timeout=60,
-    )
-
-    gate.set()
-
-    result = await result_task
-    assert result is not None
-    assert handle._compression.count >= 1
-
-
-@pytest.mark.asyncio
-@_handle_project
 async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
     """When threshold fires with no pending tools, only compress_context is callable."""
     trigger, reset, check = _make_threshold_trigger()
@@ -297,48 +237,6 @@ async def test_no_new_tools_when_threshold_triggered(llm_config, monkeypatch):
                     name == "compress_context"
                 ), f"Expected only compress_context after threshold, got {name}"
 
-    assert result is not None
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_pause_carries_over_during_compression(llm_config, monkeypatch):
-    """Pause set during the compression window is respected by the new loop."""
-    trigger, reset, check = _make_threshold_trigger()
-    monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
-
-    handle_ref: dict = {}
-
-    async def _compress_with_pause(messages, endpoint, **kwargs):
-        h = handle_ref.get("handle")
-        if h:
-            h._pause_event.clear()
-        reset()
-        return await _mock_compress(messages, endpoint)
-
-    monkeypatch.setattr(_cc_mod, "compress_messages", _compress_with_pause)
-
-    add = _make_add(trigger)
-    client = new_llm_client(**llm_config)
-    client.set_system_message(_SYS)
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="Add the numbers",
-        tools={"add": add},
-        timeout=120,
-        max_parallel_tool_calls=1,
-    )
-    handle_ref["handle"] = handle
-
-    result_task = asyncio.create_task(handle.result())
-
-    await _wait_compression(handle)
-
-    assert not handle._pause_event.is_set(), "New loop should start paused"
-
-    await handle.resume()
-    result = await result_task
     assert result is not None
 
 
@@ -899,23 +797,19 @@ async def test_compression_restart_omits_parent_chat_context(monkeypatch):
         "parent_chat_context": parent_ctx,
         "max_consecutive_failures": 3,
         "prune_tool_duplicates": True,
-        "interrupt_llm_with_interjections": True,
         "propagate_chat_context": True,
         "caller_description": None,
         "log_steps": False,
         "max_steps": None,
         "timeout": None,
         "raise_on_limit": False,
-        "include_class_in_dynamic_tool_names": False,
         "tool_policy": None,
         "preprocess_msgs": None,
         "response_format": None,
         "max_parallel_tool_calls": None,
         "persist": False,
-        "multi_handle_coordinator": None,
         "prompt_caching": False,
         "time_awareness": False,
-        "extra_ask_tools": None,
         "enable_compression": True,
         "extra_compression_tools": None,
         "clarification_queues": None,

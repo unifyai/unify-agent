@@ -194,7 +194,7 @@ async def _session(model, *requests: str, **kwargs) -> tuple[list[str], object]:
             (await asyncio.wait_for(h._next_response(handle), BOUND))["content"],
         ]
         for request in requests:
-            await handle.interject(request)
+            await handle.submit(request)
             responses.append(
                 (await asyncio.wait_for(h._next_response(handle), BOUND))["content"],
             )

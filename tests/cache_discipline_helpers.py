@@ -3,11 +3,7 @@
 The clients are real ``unillm`` clients; only their transport
 (``litellm.acompletion`` behind unillm's retry wrapper) is replaced, so every
 request is recorded exactly as unillm would send it and nothing leaves the
-process. The scenarios use only APIs that exist upstream, so the requests a
-scenario sends with every switch off can be recorded on the upstream commit
-and replayed here as the equivalence baseline (``cache_discipline_golden.json``,
-written by ``python -m tests.cache_discipline_helpers --record``). The actor's
-first request under the default settings is pinned by
+process. The actor's first request under the default settings is pinned by
 ``tests/actor/code_act/test_baked_prompt_golden.py``.
 """
 
@@ -20,14 +16,12 @@ import itertools
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from openai.types.chat import ChatCompletion
 
 MODEL = "openai/gpt-5.6-sol@openrouter"
 _CALL_SEQ = itertools.count()
-GOLDEN = Path(__file__).with_name("cache_discipline_golden.json")
 _TRANSPORT = "unillm.clients.uni_llm._acompletion_with_transient_retry"
 
 
@@ -409,7 +403,7 @@ INTERRUPT_REPLIES = (
 
 
 async def scenario_interrupt() -> tuple[str, dict, list[dict]]:
-    """The pre-emptive dispatch path: one code call, then the answer."""
+    """One code call, then the answer."""
     counter: dict = {}
     tools = make_tools(counter)
     with scripted(INTERRUPT_REPLIES) as provider:
@@ -617,19 +611,3 @@ SCENARIOS = {
 
 # Scenarios whose requests all belong to one conversation.
 ONE_SESSION = ("gate", "threshold", "interrupt", "persist", "compress")
-
-
-async def record_all() -> dict:
-    out = {}
-    for name, scenario in SCENARIOS.items():
-        _result, _counter, requests = await scenario()
-        out[name] = [request_bytes(r) for r in requests]
-    return out
-
-
-if __name__ == "__main__":  # pragma: no cover - maintenance entry point
-    import sys
-
-    if "--record" in sys.argv:
-        GOLDEN.write_text(json.dumps(asyncio.run(record_all()), indent=1) + "\n")
-        print(f"wrote {GOLDEN}")

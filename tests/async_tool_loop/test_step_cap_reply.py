@@ -98,7 +98,7 @@ async def test_off_a_persistent_loop_ends_at_the_limit_as_shipped(cap_reply):
         assert result == f"🔚 Terminating early: max_steps ({MAX_STEPS}) exceeded"
         assert handle.done()
         # Nothing is left to answer a later message.
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         await asyncio.sleep(0.5)
     assert not any(_last_request(r) == CONTINUE for r in model.requests)
 
@@ -114,7 +114,7 @@ async def test_on_the_limit_ends_the_request_and_the_next_one_is_answered(cap_re
         handle = _start({"look": look}, persist=True)
         capped = (await h._next_response(handle))["content"]
         first_request_calls = len(model.requests)
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await h._next_response(handle))["content"]
         assert not handle.done()
         await handle.stop()
@@ -149,7 +149,7 @@ async def test_on_every_request_has_its_own_limit(cap_reply):
         handle = _start({"look": look}, persist=True)
         first = (await h._next_response(handle))["content"]
         calls_first = len(model.requests)
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         second = (await h._next_response(handle))["content"]
         calls_second = len(model.requests) - calls_first
         await handle.stop()
@@ -203,7 +203,7 @@ async def test_on_a_call_in_flight_is_cancelled_answered_and_not_run_again(cap_r
         uni_llm._acompletion_with_transient_retry = model
         handle = _start({"look": look, "slow": slow}, persist=True, max_steps=5)
         capped = (await h._next_response(handle))["content"]
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await h._next_response(handle))["content"]
         await handle.stop()
         await asyncio.wait_for(handle.result(), 20)

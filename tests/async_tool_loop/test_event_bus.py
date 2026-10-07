@@ -18,10 +18,8 @@ from unify.common.async_tool_loop import (
     start_async_tool_loop,
 )
 from unify.common._async_tool.loop import async_tool_loop_inner
-from tests.async_helpers import _wait_for_next_assistant_response_event
 from tests.helpers import _handle_project, capture_events
 from unify.common.llm_client import new_llm_client
-from unify.events.event_bus import EVENT_BUS
 
 _SUFFIX_RE = re.compile(r"\(([0-9a-f]{4})\)$")
 
@@ -67,9 +65,6 @@ async def test_basic_event_flow(llm_config) -> None:
         "After the tool returns, reply with exactly the tool result text.",
     )
 
-    pause_event = asyncio.Event()
-    pause_event.set()  # start un-paused
-
     async with capture_events("ToolLoop") as captured_events:
         await async_tool_loop_inner(
             client=client,
@@ -77,7 +72,6 @@ async def test_basic_event_flow(llm_config) -> None:
             tools={"echo": echo},
             interject_queue=asyncio.Queue(),
             cancel_event=asyncio.Event(),
-            pause_event=pause_event,
             prune_tool_duplicates=True,
             time_awareness=False,
         )
@@ -148,7 +142,7 @@ async def test_interjection_publishes_user_event(llm_config) -> None:
             max_consecutive_failures=1,
         )
 
-        await handle.interject(interjected_turn)
+        await handle.submit(interjected_turn)
 
         # We don't need to verify model output - just let it complete
         await handle.result()
@@ -205,9 +199,6 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
         "After the tool returns, reply with the tool result.",
     )
 
-    pause_event = asyncio.Event()
-    pause_event.set()
-
     async with capture_events("ToolLoop") as captured_events:
         await async_tool_loop_inner(
             client=client,
@@ -215,7 +206,6 @@ async def test_tool_result_content_is_not_placeholder(llm_config) -> None:
             tools={"deterministic_tool": deterministic_tool},
             interject_queue=asyncio.Queue(),
             cancel_event=asyncio.Event(),
-            pause_event=pause_event,
             prune_tool_duplicates=True,
         )
 
@@ -258,215 +248,3 @@ def _extract_suffix(hierarchy_label: str) -> str | None:
     """Extract the trailing 4-hex-char suffix from a hierarchy_label."""
     m = _SUFFIX_RE.search(hierarchy_label)
     return m.group(1) if m else None
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_publishes_boundary_events(llm_config) -> None:
-    """ask() on a running handle should publish incoming + outgoing
-    ManagerMethod events with method='ask' and a unique calling_id."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    # Wait for the loop to produce its first response
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask_handle = await handle.ask("What are you doing?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-
-    # Stop the parent loop
-    await handle.stop()
-
-    ask_events = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-
-    incoming = [e for e in ask_events if e.payload.get("phase") == "incoming"]
-    outgoing = [e for e in ask_events if e.payload.get("phase") == "outgoing"]
-
-    assert (
-        len(incoming) >= 1
-    ), f"Expected incoming ask boundary event, got {len(incoming)}"
-    assert (
-        len(outgoing) >= 1
-    ), f"Expected outgoing ask boundary event, got {len(outgoing)}"
-
-    # Both should share the same calling_id
-    ask_call_id = incoming[0].calling_id
-    assert ask_call_id, "ask boundary event should have a calling_id"
-    assert any(
-        e.calling_id == ask_call_id for e in outgoing
-    ), "Outgoing ask event should share the incoming calling_id"
-
-    # display_label should be present
-    assert incoming[0].payload.get("display_label") == "Answering question"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_sibling_hierarchy(llm_config) -> None:
-    """The ask boundary hierarchy should be a sibling of the parent loop,
-    not nested under it. It shares the parent's parent lineage."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        loop_id="TestManager.act",
-        parent_lineage=[],
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask_handle = await handle.ask("What status?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert incoming, "No incoming ask boundary event found"
-
-    hierarchy = incoming[0].payload.get("hierarchy", [])
-    # Parent loop_id = "TestManager.act" with parent_lineage = []
-    # So parent's hierarchy = ["TestManager.act"]
-    # Sibling lineage = parent's parent = [] (nothing above)
-    # Ask hierarchy = [*sibling_lineage, "Question(...)"] = ["Question(...)"]
-    assert (
-        len(hierarchy) == 1
-    ), f"Expected sibling hierarchy of length 1, got {hierarchy}"
-    assert hierarchy[0].startswith(
-        "Question(",
-    ), f"Expected Question(...), got {hierarchy[0]}"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_multiple_distinguishable(llm_config) -> None:
-    """Two ask() calls on the same handle should produce distinct
-    calling_ids and hierarchy_labels."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with capture_events("ManagerMethod") as mm_events:
-        ask1 = await handle.ask("Question one?")
-        await ask1.result()
-        ask2 = await handle.ask("Question two?")
-        await ask2.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert len(incoming) >= 2, f"Expected 2 incoming ask events, got {len(incoming)}"
-
-    call_ids = [e.calling_id for e in incoming]
-    assert len(set(call_ids)) == len(
-        call_ids,
-    ), f"ask() calling_ids should be unique, got: {call_ids}"
-
-    suffixes = [_extract_suffix(e.payload.get("hierarchy_label", "")) for e in incoming]
-    assert len(set(suffixes)) == len(
-        suffixes,
-    ), f"ask() hierarchy_label suffixes should be unique, got: {suffixes}"
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_ask_boundary_suffix_matches_sub_loop(llm_config) -> None:
-    """The ask boundary's hierarchy_label suffix should match the
-    sub-loop's ToolLoop hierarchy_label suffix."""
-    client = new_llm_client(**llm_config).set_system_message(
-        "You are a test agent. Acknowledge messages briefly.",
-    )
-
-    handle = start_async_tool_loop(
-        client=client,
-        message="do something",
-        tools={},
-        persist=True,
-        max_consecutive_failures=1,
-    )
-
-    await _wait_for_next_assistant_response_event(client)
-
-    async with (
-        capture_events("ManagerMethod") as mm_events,
-        capture_events("ToolLoop") as tl_events,
-    ):
-        ask_handle = await handle.ask("What are you doing?")
-        await ask_handle.result()
-
-    EVENT_BUS.join_published()
-    await handle.stop()
-
-    # Find the ask boundary incoming event
-    ask_incoming = [
-        e
-        for e in mm_events
-        if e.payload.get("method") == "ask"
-        and e.payload.get("phase") == "incoming"
-        and "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-    assert ask_incoming, "No incoming ask boundary event found"
-
-    boundary_suffix = _extract_suffix(
-        ask_incoming[0].payload.get("hierarchy_label", ""),
-    )
-    assert boundary_suffix, "Could not extract suffix from ask boundary event"
-
-    # Find ToolLoop events from the ask sub-loop (contain "Question(" in hierarchy_label)
-    ask_tl_events = [
-        e for e in tl_events if "Question(" in e.payload.get("hierarchy_label", "")
-    ]
-
-    if ask_tl_events:
-        tl_suffix = _extract_suffix(ask_tl_events[0].payload.get("hierarchy_label", ""))
-        assert tl_suffix == boundary_suffix, (
-            f"Suffix mismatch: boundary=({boundary_suffix}), "
-            f"sub-loop ToolLoop=({tl_suffix})"
-        )

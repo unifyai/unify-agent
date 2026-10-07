@@ -8,13 +8,11 @@ switch on the list is computed once and sent unchanged; what a turn does not
 allow is refused at call time with the rule that masks it.
 
 The requests are captured at unillm's transport (see
-``tests/cache_discipline_helpers.py``); with the switch off they must be the
-bytes the upstream commit sends for the same script.
+``tests/cache_discipline_helpers.py``).
 """
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -42,18 +40,6 @@ def _tool_reply(requests: list[dict], call_id: str) -> str:
     raise AssertionError(f"no tool reply for {call_id}")
 
 
-# ── off: exactly as upstream ─────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", sorted(h.SCENARIOS))
-async def test_off_every_request_is_byte_identical_to_upstream(discipline, scenario):
-    discipline(False)
-    golden = json.loads(h.GOLDEN.read_text())[scenario]
-    _result, _counter, requests = await h.SCENARIOS[scenario]()
-    assert [h.request_bytes(r) for r in requests] == golden
-
-
 # ── on ───────────────────────────────────────────────────────────────────
 
 
@@ -78,10 +64,6 @@ async def test_on_the_list_holds_every_tool_in_a_fixed_order(discipline):
         "execute_code",
         # compress_context even on the eager gate turn that withholds it
         "compress_context",
-        # the loop's own static surface, in the loop's order
-        "wait",
-        "steer",
-        "ask_about_completed_tool",
     ]
 
 
@@ -101,7 +83,7 @@ async def test_on_a_masked_call_is_refused_with_the_rule_and_not_run(discipline)
     assert "the libraries are searched first" in refusal
     assert (
         "Available now: `FunctionManager_search_functions`, "
-        "`GuidanceManager_search`, `ask_about_completed_tool`, `steer`, `wait`."
+        "`GuidanceManager_search`."
     ) in refusal
     assert "refused rather than removed" in refusal
     # The gate was still open on the turn after the refusal.
@@ -116,7 +98,7 @@ async def test_on_a_context_full_turn_allows_only_compress_context(discipline):
     assert counter == {"execute_code": 1}
     refusal = _tool_reply(requests, "call_1")
     assert "the context window is nearly full" in refusal
-    assert "Available now: `ask_about_completed_tool`, `compress_context`" in refusal
+    assert "Available now: `compress_context`" in refusal
     assert "execute_code" in _names(requests[1])
 
 
@@ -155,7 +137,6 @@ async def test_on_a_refused_call_does_not_satisfy_a_gate(discipline):
             tools,
             "Do the task.",
             tool_policy=h.gate_policy,
-            interrupt_llm_with_interjections=False,
         )
     assert result == "done"
     assert "FunctionManager_add_functions" not in counter
@@ -194,7 +175,6 @@ async def test_on_the_list_survives_a_later_turn_that_shows_fewer_tools(discipli
             tools,
             "Do the task.",
             tool_policy=narrowing,
-            interrupt_llm_with_interjections=False,
         )
     assert counter == {"GuidanceManager_search": 1}
     assert "searching is over" in _tool_reply(provider.requests, "call_1")
