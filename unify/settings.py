@@ -8,7 +8,6 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
-import math
 from typing import Any, Optional
 
 import unillm
@@ -34,46 +33,6 @@ def _parse_bool(v: Any) -> bool:
     return bool(v)
 
 
-def _shortlist_related(value: Any) -> Optional[tuple[int, Optional[float]]]:
-    """``(k, floor)`` of a ``statement:<k>[:<floor>]`` value; ``None`` when empty or invalid."""
-    parts = [part.strip() for part in str(value or "").strip().lower().split(":")]
-    if len(parts) not in (2, 3) or parts[0] != "statement":
-        return None
-    try:
-        k = int(parts[1])
-        floor = float(parts[2]) if len(parts) == 3 else None
-    except ValueError:
-        return None
-    if not 1 <= k <= 2:
-        return None
-    if floor is not None and (not math.isfinite(floor) or not -1 <= floor < 1):
-        return None
-    return k, floor
-
-
-def _evidence_list(value: Any) -> Optional[tuple[int, Optional[float]]]:
-    """``(k, floor)`` of an ``on`` / ``related:<k>[:<floor>]`` value; ``None`` when empty or invalid.
-
-    ``on`` is ``related:1`` (floor ``None``: the embedder's default).
-    """
-    text = str(value or "").strip().lower()
-    if text == "on":
-        return 1, None
-    parts = [part.strip() for part in text.split(":")]
-    if len(parts) not in (2, 3) or parts[0] != "related":
-        return None
-    try:
-        k = int(parts[1])
-        floor = float(parts[2]) if len(parts) == 3 else None
-    except ValueError:
-        return None
-    if not 0 <= k <= 2:
-        return None
-    if floor is not None and (not math.isfinite(floor) or not -1 <= floor < 1):
-        return None
-    return k, floor
-
-
 def _step_cap_reply_mode(v: Any) -> Optional[str]:
     """``UNIFY_STEP_CAP_REPLY`` as ``""``, ``"draft"`` or ``"last_word"``.
 
@@ -90,20 +49,6 @@ def _step_cap_reply_mode(v: Any) -> Optional[str]:
     if value == "last_word":
         return "last_word"
     return None
-
-
-def _shortlist_gate_threshold(value: Any) -> Optional[float]:
-    """The threshold of a ``similar_request:<t>`` gate; ``None`` when empty or invalid."""
-    signal, sep, raw = str(value or "").strip().lower().partition(":")
-    if not sep or signal.strip() != "similar_request":
-        return None
-    try:
-        threshold = float(raw)
-    except ValueError:
-        return None
-    if not math.isfinite(threshold) or not 0 < threshold <= 1:
-        return None
-    return threshold
 
 
 class ProductionSettings(BaseSettings):
@@ -474,262 +419,12 @@ class ProductionSettings(BaseSettings):
     # embedding similarity (no model call; primitives and lapsed functions
     # left out; no search hit counted) and lists the closest five, functions
     # and guidance together, one line each, in the task's first user message:
-    # a function's name, signature, first docstring line and, under
-    # UNIFY_TRY_FIRST, similar_request; a guidance entry's id, title and first
-    # content line. The list is written once, after the UNIFY_LIBRARY_SNAPSHOT
-    # line, and asks nothing: reading, calling or searching stays the model's
-    # choice, and no turn is forced. An empty or unranked library adds
+    # a function's name, signature and first docstring line; a guidance
+    # entry's id, title and first content line. The list is written once,
+    # after the UNIFY_LIBRARY_SNAPSHOT line, and asks nothing: reading,
+    # calling or searching stays the model's choice, and no turn is forced. An empty or unranked library adds
     # nothing. Off: as shipped.
     UNIFY_LIBRARY_SHORTLIST: bool = True
-    # The actor's prompt asks it to use what is free before an action that
-    # costs something (a paid request, a scored submission, an irreversible
-    # effect): run a stored function that fits on inputs it already has and
-    # act on its result when it works. A function stored while handling a
-    # request records that request in its metadata (a hash, and a copy of at
-    # most 4,000 characters, never shown in library results), and a search
-    # adds ``similar_request: <score>`` to its result when the current
-    # request is close to one it was stored from: 1 for the same text, or a
-    # weighted overlap of their letter and digit runs, each weighted by its
-    # rarity among the library's requests, of at least 0.24
-    # (unify/function_manager/task_origin.py). Off: as shipped.
-    UNIFY_TRY_FIRST: bool = False
-    # The request records and ``similar_request`` marks of UNIFY_TRY_FIRST
-    # without its prompt paragraph: a function stored while handling a
-    # request records that request, and a search (or the library
-    # shortlist) from a similar request shows ``similar_request: <score>``,
-    # but the prompt says nothing about using free things before paid ones.
-    # UNIFY_TRY_FIRST alone keeps both, as before. Off: as shipped.
-    UNIFY_TASK_ORIGIN: bool = False
-    # ``similar_request`` also compares whole identifiers: an ASCII word of 6
-    # or more letters, digits, ``_`` or ``-`` mixing letters and digits (a
-    # task id, a hash) is a token of its own beside the letter and digit runs
-    # it is split into, so a shared id counts as one rare token. A request
-    # without such a word scores exactly as before. Off: as shipped.
-    UNIFY_SIMILAR_REQUEST_IDENTIFIERS: bool = False
-    # ``stream``: ``similar_request`` weighs tokens by their rarity among the
-    # last 200 distinct top-level requests this home has handled (a log in
-    # ``<UNIFY_HOME>/request_log.sqlite``, kept across restarts), as well as
-    # the library's origin requests and the current one. A sub-agent's
-    # request is not logged. With only the library's few origin requests, a
-    # word that two of them share weighs nothing, so a function stored for
-    # one or two requests rarely scores above 0. Empty: the weights come from
-    # the library's origin requests and the current one, as shipped.
-    UNIFY_SIMILAR_REQUEST_CORPUS: str = ""
-    # ``similar_request:<t>`` (0 < t <= 1), with UNIFY_LIBRARY_SHORTLIST and
-    # UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): the shortlist lists only stored
-    # functions recorded under a request whose ``similar_request`` to the
-    # current one is at least t, at most five, ranked by that score, then by
-    # how often each was called, then newest first, one line each:
-    # ``function `name(sig)`: first docstring line [similar_request 0.31 ·
-    # used 4×]``. No embedding is computed; the activation ranking and the
-    # hiding of lapsed functions are not applied; guidance (which records no
-    # origin unless UNIFY_GUIDANCE_ORIGIN) and functions without an origin
-    # record are never listed. Only
-    # a top-level task gets the list (a sub-agent's score would be its
-    # caller's request's). The list is written once in the first message and
-    # the model can still search. An actor refuses to start with the gate
-    # set and either companion switch off. Empty: the shortlist ranks by
-    # embedding similarity, as shipped.
-    UNIFY_SHORTLIST_GATE: str = ""
-    # ``statement:<k>`` (k 1 or 2), or ``statement:<k>:<floor>``, with
-    # UNIFY_SHORTLIST_GATE: after the gated list, under its own header
-    # ("Possibly related (judge whether the intent matches; ...)"), at most k
-    # more stored functions (and guidance entries with a recorded origin,
-    # UNIFY_GUIDANCE_ORIGIN) that the gated list did not list, ranked by the
-    # cosine of the request's distinct lines (those fewer than half of the
-    # earlier logged requests contain) with each entry's "use this when"
-    # statement, one embedding call per task start. No score is shown and no
-    # match asserted; an entry under the floor (default per embedder, in
-    # unify/actor/related_shortlist.py) is left out. Each line shows the
-    # statement and a bounded copy of the request the entry was stored for.
-    # The storage review writes the statement of each entry it adds or
-    # updates (one ``use_when <name>: ...`` line in its reply), kept only
-    # without this task's identifiers; an entry without one gets a template
-    # from its name and docstring, labelled so. Never in a sub-agent; under
-    # UNIFY_TOOL_SURFACE=core these functions are not bound. An actor refuses
-    # to start with this set and the gate off. Empty: as shipped.
-    UNIFY_SHORTLIST_RELATED: str = ""
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a stored function marked
-    # ``similar_request`` (in a search result, the library shortlist or the
-    # gated shortlist) also says why: the whole identifiers (6 or more ASCII
-    # letters, digits, ``_`` or ``-``, mixing letters and digits) that the
-    # request it was stored from shares with the current one, rarest first,
-    # at most two, leaving out any every known request has; or that it was
-    # stored for this same request. With UNIFY_OUTCOME, a session's checked
-    # outcome (``solved``) is kept under its request in
-    # ``<UNIFY_HOME>/request_log.sqlite``, and the line adds whether the
-    # checker accepted the answer of the session the function was stored
-    # from. Only the shared identifiers and that verdict are shown, never the
-    # origin request. An actor refuses to start with this on and request
-    # records off. Off: as shipped.
-    UNIFY_ORIGIN_PROVENANCE: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
-    # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
-    # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
-    # its gate are told how many earlier logged requests score at least the
-    # gate threshold (UNIFY_SHORTLIST_GATE, else 0.24) of ``similar_request``
-    # against this one, and the closest score. An actor refuses to start with
-    # this on and request records off. Off: as shipped.
-    UNIFY_REVIEW_RECURRENCE: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): the storage review that
-    # follows a session, and its gate, also state whether the conversation
-    # shows the session's final answer was confirmed or rejected by the
-    # requester or the environment, or neither, judged by the model from the
-    # conversation alone (unify/actor/review_outcome.py: one JSON line ending
-    # the review's reply, one more key in the gate's). The judgement is kept
-    # under the session's request in ``<UNIFY_HOME>/request_log.sqlite`` (the
-    # review's, else the gate's; unknown keeps nothing), where
-    # UNIFY_ORIGIN_PROVENANCE reads it. Nothing in the conversation is parsed
-    # by the harness. An actor refuses to start with this on and request
-    # records off. Off: as shipped.
-    UNIFY_REVIEW_OUTCOME: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a guidance entry added or
-    # updated while handling a request records that request as a stored
-    # function does (its key and a copy of at most 4,000 characters, the
-    # latest three), in the guidance table's ``origin`` column (added, empty,
-    # to a store created before it). No guidance read returns it. With
-    # UNIFY_SHORTLIST_GATE the gated shortlist scores such entries by
-    # ``similar_request`` as it scores functions (the same threshold; the
-    # five places shared), listing each as ``guidance <id> `title`: first
-    # content line [similar_request 0.31]``. Off: nothing is recorded and the
-    # gated shortlist lists functions only, as shipped.
-    UNIFY_GUIDANCE_ORIGIN: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): every function and
-    # guidance entry the shortlist lists (ranked or gated) is followed by an
-    # ``origin:`` line, whether or not it is marked ``similar_request``: the
-    # rare identifiers the request it was stored or written for shares with
-    # this one (UNIFY_ORIGIN_PROVENANCE's rule), or that it was this same
-    # request, or that they share none; and whether that session's answer
-    # was accepted or not (the checker's outcome, kept with UNIFY_OUTCOME,
-    # else the review's judgement, kept with UNIFY_REVIEW_OUTCOME) or its
-    # outcome is unknown. Guidance entries record the request they were
-    # written for as under UNIFY_GUIDANCE_ORIGIN (without its gated
-    # listing). UNIFY_ORIGIN_PROVENANCE's parenthesis is then left out of a
-    # listed line. It informs; nothing is hidden or asked. An actor refuses
-    # to start with this on and request records off. Off: as shipped.
-    UNIFY_LISTING_PROVENANCE: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a guidance entry the
-    # shortlist lists that was written in a session whose answer was not
-    # accepted, or whose outcome is unknown (no checker outcome or review
-    # judgement kept for any request it was written for), is listed with its
-    # title and ``(unverified: ...)`` saying which, and without its first
-    # content line, so no lesson of an unchecked session reads as a rule.
-    # Built-in entries are not lessons and are listed as shipped. Guidance
-    # records its requests as under UNIFY_LISTING_PROVENANCE. An actor
-    # refuses to start with this on and request records off. Off: as
-    # shipped.
-    UNIFY_LESSON_STATUS: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each call of a stored
-    # function keeps the request it ran under (a hash, the latest three per
-    # function, in ``<UNIFY_HOME>/request_log.sqlite``), and every function
-    # the shortlist lists shows how often it was called and how many of its
-    # last three recorded calls ran in a session whose answer was not
-    # accepted, or whose outcome is unknown (outcomes as for
-    # UNIFY_LISTING_PROVENANCE). It informs; nothing is hidden. An actor
-    # refuses to start with this on and request records off. Off: as
-    # shipped.
-    UNIFY_LISTING_USAGE: bool = False
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): one record for every stored
-    # entry, function or guidance (unify/function_manager/entry_record.py).
-    # Guidance records the requests it was written for as under
-    # UNIFY_GUIDANCE_ORIGIN (and joins the gated shortlist, the possibly
-    # related tier and the review's similar-request section like a
-    # function). Each session that called a stored function, read a guidance
-    # entry (get_guidance) or, as its storage review judged, relied on an
-    # entry keeps a hash of its request against that entry (the latest five
-    # sessions per entry and kind of use, in
-    # ``<UNIFY_HOME>/request_log.sqlite``; the review's own reads and calls
-    # are not counted). The storage review names the entries the trajectory
-    # followed or called in one JSON key, ``relied_on``. Function search rows
-    # and guidance reads and search results then carry ``record``: what the
-    # entry was stored for (this same request, shared rare identifiers, or
-    # another request), how that session ended, its status (verified when
-    # written in an accepted session or relied on in a later accepted one;
-    # else unverified) and its use with how those sessions ended. It
-    # informs; nothing is hidden. An actor refuses to start with this on and
-    # request records off. Off: as shipped.
-    UNIFY_ENTRY_RECORD: bool = False
-    # ``on`` or ``related:<k>[:<floor>]`` (k 0 to 2), with
-    # UNIFY_LIBRARY_SHORTLIST and UNIFY_ENTRY_RECORD: the shortlist becomes an
-    # evidence list (unify/actor/evidence_list.py). Functions and guidance
-    # entries are independent and may be linked many to many; a listed entry
-    # is a card with what it links (a function with its notes, or a note with
-    # the functions it guides). "Seen before" lists at most five cards whose
-    # recorded requests (where they were stored, or sessions that used them)
-    # are this same request, share a rare whole identifier with it, or reach
-    # ``similar_request`` of the UNIFY_SHORTLIST_GATE threshold (else 0.175);
-    # no embedding. "Possibly related (no match is claimed)" lists at most k
-    # more (``on``: 1) by the cosine of the whole request with each entry's
-    # "use this when" statement, at or above the floor (default per embedder,
-    # as UNIFY_SHORTLIST_RELATED). Every card shows why it is listed, how the
-    # session it came from ended, its status and its use; a note's first line
-    # is shown with its status, never hidden. Nothing that qualifies, no
-    # list. Never in a sub-agent. Under UNIFY_TOOL_SURFACE=core with
-    # UNIFY_CORE_BIND_LISTED, only "seen before" functions are bound. An actor
-    # refuses to start with this set and a prerequisite off. Empty: as
-    # shipped.
-    UNIFY_EVIDENCE_LIST: str = ""
-    # ``judge``, with UNIFY_EVIDENCE_LIST: "seen before" is the same request
-    # only; the entries recorded under a request that shares a rare whole
-    # identifier with this one, and the entries whose cards (name, signature,
-    # description, the request it was stored for) are closest to the request
-    # by embedding, at most five, go to one model call that picks the one
-    # doing the request's job -- one parametric procedure would serve both --
-    # or none (unify/actor/evidence_judge.py; the prompt of the matching
-    # bake-off). The pick is listed as seen before and says a model judged
-    # it; nothing is listed as possibly related, and a failed call lists only
-    # the same request's entries. One embedding call and one model call per
-    # top-level task start. ``keys`` or empty: the keys and the statement
-    # floor, as UNIFY_EVIDENCE_LIST alone. An actor refuses to start with
-    # this set and UNIFY_EVIDENCE_LIST off. ``judge2``: two pools -- the
-    # entries sharing an evidence identifier with the request (not a number
-    # with a unit, a date, a time, or a token of its paths or of most
-    # requests) are judged alone and their pick listed from confidence 50;
-    # the closest other cards are judged apart and their pick listed only
-    # from 90, so a generic note cannot crowd out the request's own entry.
-    UNIFY_EVIDENCE_LIST_MATCHER: str = ""
-    # The model UNIFY_EVIDENCE_LIST_MATCHER=judge asks, at low reasoning
-    # effort. Empty: the session's own model.
-    UNIFY_EVIDENCE_LIST_JUDGE_MODEL: str = ""
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a function or guidance
-    # search whose query names a whole identifier (the shape
-    # UNIFY_SIMILAR_REQUEST_IDENTIFIERS keeps) also finds the entries whose
-    # recorded requests name it, listed first and marked with the
-    # identifiers they share; an identifier every recorded request names is
-    # ignored. A query without one ranks as shipped. Off: as shipped.
-    UNIFY_SEARCH_IDENTIFIERS: bool = False
-    # ``refuse`` (also 1/true/on) or ``versioned``, with UNIFY_TASK_ORIGIN (or
-    # UNIFY_TRY_FIRST): each function and guidance entry records which session
-    # wrote its current content, and a session whose answer is not known to
-    # be accepted (the checker's outcome, else the storage review's judgement;
-    # not accepted, or not known yet) never replaces or patches a verified
-    # entry another session wrote (written in an accepted session, or called
-    # or relied on in a later accepted one), nor deletes it
-    # (unify/function_manager/verified_guard.py). ``refuse``: the change is
-    # not applied and the writer is told why. ``versioned``: the change is
-    # kept beside the entry as an unverified version (at most three, in its
-    # metadata or hidden guidance origin; nothing is listed beside it), and
-    # replaces the content as soon as its session's answer is accepted. No
-    # prompt changes. An actor refuses to start with this set and request
-    # records off. Empty: as shipped.
-    UNIFY_PROTECT_VERIFIED: str = ""
-    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): a top-level session keeps
-    # the evidence that arrived after its request -- every message that came
-    # in later (demonstrations, feedback, a follow-up) and every clarification
-    # question with its answer -- redacted (no credential is stored), cut to
-    # 16,000 characters an item and 64,000 a session, under its request in
-    # the ``evidence`` table of ``<UNIFY_HOME>/request_log.sqlite`` (the latest
-    # 2,000 items; unify/actor/evidence_ledger.py). Every top-level request is
-    # logged, as UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it. A later
-    # session whose request is the same as, or shares a rare whole
-    # identifier with, an earlier logged one gets that evidence as plain
-    # data, ``seen_before`` in the sandbox (the earlier request's opening,
-    # which visit, kind, content and age; newest first, at most 40 items and
-    # 48,000 characters), and one sentence in its first message saying so.
-    # No instruction to check anything: it informs. Nothing found, nothing
-    # bound or said. Never in a sub-agent. An actor refuses to start with
-    # this on and request records off. Off: as shipped.
-    UNIFY_EVIDENCE_LEDGER: bool = False
     # Take the session's checked outcome from the environment (unify/outcome.py:
     # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
     # ``unify act --jsonl``), held in memory, never in a file. The storage review
@@ -915,9 +610,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
-        "UNIFY_TRY_FIRST",
-        "UNIFY_TASK_ORIGIN",
-        "UNIFY_SIMILAR_REQUEST_IDENTIFIERS",
         "UNIFY_FUNCTION_SUMMARY",
         "UNIFY_FUNCTION_EMPTY_NOTICE",
         "UNIFY_FUNCTION_VALUE_NOTICE",
@@ -928,19 +620,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_OUTCOME",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
-        "UNIFY_ORIGIN_PROVENANCE",
-        "UNIFY_REVIEW_RECURRENCE",
-        "UNIFY_REVIEW_OUTCOME",
-        "UNIFY_GUIDANCE_ORIGIN",
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
         "UNIFY_GUIDANCE_LINKED_NAMES",
-        "UNIFY_LISTING_PROVENANCE",
-        "UNIFY_LESSON_STATUS",
-        "UNIFY_LISTING_USAGE",
-        "UNIFY_ENTRY_RECORD",
-        "UNIFY_SEARCH_IDENTIFIERS",
-        "UNIFY_EVIDENCE_LEDGER",
         "UNIFY_CELL_SCOPE_FIX",
         mode="before",
     )
@@ -1004,88 +686,6 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_INLINE_CURATION must be empty, 'on' or 'only', not {v!r}",
             )
         return value
-
-    @field_validator("UNIFY_SIMILAR_REQUEST_CORPUS", mode="before")
-    @classmethod
-    def parse_similar_request_corpus(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "stream"):
-            raise ValueError(
-                f"UNIFY_SIMILAR_REQUEST_CORPUS must be empty or 'stream', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_SHORTLIST_GATE", mode="before")
-    @classmethod
-    def parse_shortlist_gate(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if not value:
-            return ""
-        threshold = _shortlist_gate_threshold(value)
-        if threshold is None:
-            raise ValueError(
-                "UNIFY_SHORTLIST_GATE must be empty or 'similar_request:<t>' "
-                f"with 0 < t <= 1, not {v!r}",
-            )
-        return f"similar_request:{threshold:g}"
-
-    @field_validator("UNIFY_SHORTLIST_RELATED", mode="before")
-    @classmethod
-    def parse_shortlist_related(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if not value:
-            return ""
-        parsed = _shortlist_related(value)
-        if parsed is None:
-            raise ValueError(
-                "UNIFY_SHORTLIST_RELATED must be empty, 'statement:<k>' or "
-                f"'statement:<k>:<floor>' with k 1 or 2 and -1 <= floor < 1, not {v!r}",
-            )
-        k, floor = parsed
-        return f"statement:{k}" + ("" if floor is None else f":{floor:g}")
-
-    @field_validator("UNIFY_EVIDENCE_LIST", mode="before")
-    @classmethod
-    def parse_evidence_list(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if not value:
-            return ""
-        parsed = _evidence_list(value)
-        if parsed is None:
-            raise ValueError(
-                "UNIFY_EVIDENCE_LIST must be empty, 'on' or 'related:<k>' / "
-                f"'related:<k>:<floor>' with k 0 to 2 and -1 <= floor < 1, not {v!r}",
-            )
-        k, floor = parsed
-        if value == "on":
-            return "on"
-        return f"related:{k}" + ("" if floor is None else f":{floor:g}")
-
-    @field_validator("UNIFY_EVIDENCE_LIST_MATCHER", mode="before")
-    @classmethod
-    def parse_evidence_list_matcher(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "keys", "judge", "judge2"):
-            raise ValueError(
-                "UNIFY_EVIDENCE_LIST_MATCHER must be empty, 'keys', 'judge' or 'judge2', "
-                f"not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_PROTECT_VERIFIED", mode="before")
-    @classmethod
-    def parse_protect_verified(cls, v: Any) -> str:
-        value = str(v if v is not None else "").strip().lower()
-        if value in ("", "false", "0", "off", "no"):
-            return ""
-        if value in ("refuse", "true", "1", "on", "yes"):
-            return "refuse"
-        if value == "versioned":
-            return "versioned"
-        raise ValueError(
-            "UNIFY_PROTECT_VERIFIED must be empty, 'refuse' (or 1) or "
-            f"'versioned', not {v!r}",
-        )
 
     @field_validator("UNIFY_PROMPT_PROFILE", mode="before")
     @classmethod
@@ -1254,18 +854,6 @@ class ProductionSettings(BaseSettings):
     def lean_prompt(self) -> bool:
         """``UNIFY_PROMPT_PROFILE=lean``."""
         return self.UNIFY_PROMPT_PROFILE == "lean"
-
-    def shortlist_gate_threshold(self) -> Optional[float]:
-        """The ``UNIFY_SHORTLIST_GATE`` threshold; ``None`` when the gate is off."""
-        return _shortlist_gate_threshold(self.UNIFY_SHORTLIST_GATE)
-
-    def evidence_list(self) -> Optional[tuple[int, Optional[float]]]:
-        """``(k, floor)`` of ``UNIFY_EVIDENCE_LIST``'s possibly related tier; ``None`` when off."""
-        return _evidence_list(self.UNIFY_EVIDENCE_LIST)
-
-    def shortlist_related(self) -> Optional[tuple[int, Optional[float]]]:
-        """``(k, floor)`` of ``UNIFY_SHORTLIST_RELATED`` (floor ``None``: the embedder's); ``None`` when off."""
-        return _shortlist_related(self.UNIFY_SHORTLIST_RELATED)
 
     model_config = SettingsConfigDict(
         env_file=".env",
