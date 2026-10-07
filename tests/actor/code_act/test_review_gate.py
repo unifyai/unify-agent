@@ -227,19 +227,6 @@ async def test_off_no_gate_and_the_review_runs(monkeypatch):
     assert _review_requests(requests)
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_the_gate_takes_the_review_effort_when_set(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_REASONING_EFFORT", "medium")
-    requests = await _session(
-        monkeypatch,
-        gate=True,
-        gate_reply='{"review": false, "reason": "x"}',
-    )
-    (gate_request,) = _gate_requests(requests)
-    assert gate_request["reasoning_effort"] == "medium"
-
-
 # ── an empty library ────────────────────────────────────────────────
 
 

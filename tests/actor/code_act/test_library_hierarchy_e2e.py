@@ -195,8 +195,8 @@ async def test_a_hierarchy_stored_from_code_is_found_from_code_in_another_proces
 async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
     """What ``functions.add`` refuses (a third-party import without a declared
     dependency, a dangerous call, two functions in one source, an invalid
-    requirement) and what it stores with a warning (the async check, the
-    instance lint) reaches the cell as it reaches the JSON tool."""
+    requirement) and what it stores with a warning (the instance lint)
+    reaches the cell as it reaches the JSON tool."""
     from unify.function_manager import instance_lint
     from unify.function_manager.primitives import (
         EnvironmentMethod,
@@ -208,7 +208,6 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
         clear_environment_namespaces,
     )
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ASYNC_CHECK", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_INSTANCE_LINT", True)
     clear_environment_namespaces()
     register_environment(
@@ -262,7 +261,6 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
         status = out.result["count_items"]
         assert status.startswith("added"), status
         assert "warning" in status and "task-7a4cf12e" in status, status
-        assert "primitives.shop.list_items" in status, status
         # A name that already exists is skipped unless overwritten.
         out = await cells(
             "await functions.add('async def count_items() -> int:\\n    return 0\\n')",

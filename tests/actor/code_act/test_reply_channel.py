@@ -44,10 +44,6 @@ NOTE_FROM_CELL = (
     "A cell's `reply(text)` is your reply too: `reply(action)` takes the "
     "action and ends your turn."
 )
-REASON = (
-    "You may reason in your reply before its final answer or action; you do "
-    "not need a cell to think or to announce a step."
-)
 # Leading and trailing whitespace, a newline and non-ASCII text, which the
 # reply must carry unchanged.
 ANSWER = '  first line\n{"action": "move", "to": [1, 2]} é ✓\n'
@@ -69,7 +65,6 @@ def _flat(text: str) -> str:
 @pytest.fixture
 def channel(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_WORDING", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
@@ -118,18 +113,15 @@ def _prompt(actor_tools, surface: str) -> str:
 
 @pytest.mark.parametrize("profile", ["", "lean"])
 @pytest.mark.parametrize("surface", ["json", "core"])
-@pytest.mark.parametrize("wording", ["", "reason", "action_last"])
 @pytest.mark.parametrize("note", [False, True])
 def test_the_prompt_says_it_once_where_the_reply_rule_is(
     monkeypatch,
     actor_tools,
     profile,
     surface,
-    wording,
     note,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_WORDING", wording)
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", note)
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "")
     off = _flat(_prompt(actor_tools, surface))
@@ -137,16 +129,13 @@ def test_the_prompt_says_it_once_where_the_reply_rule_is(
     on = _flat(_prompt(actor_tools, surface))
     assert FROM_CELL not in off and NOTE_FROM_CELL not in off
     assert on.count(FROM_CELL) == 1
-    # Beside the reply rule, after the reasoning sentence when that is on.
+    # Beside the reply rule.
     rule = (
         "Your answer is your final reply: a message without a tool call."
         if profile == "lean"
         else "never via a tool call."
     )
-    lead = f"{rule} {REASON} " if wording == "reason" else f"{rule} "
-    assert lead + FROM_CELL in on
-    # The wording switch's sentence is still said exactly once.
-    assert on.count(REASON) == (1 if wording == "reason" else 0)
+    assert f"{rule} {FROM_CELL}" in on
     # The reply-protocol note says a cell's reply() takes the action.
     assert on.count(NOTE_FROM_CELL) == (1 if note else 0)
     assert on.replace(FROM_CELL + " ", "").replace(NOTE_FROM_CELL + " ", "") == off

@@ -7,8 +7,7 @@ checker's verdict into the harness process (``unify.outcome.post``, or an
 ``{"outcome": ...}`` line on ``unify act --jsonl``'s stdin), and the review,
 forked or standalone, reads it in its own section. Its "Final Result" is
 the agent's last reply before the outcome arrived, not the stop notice every
-persistent session used to end on. ``UNIFY_REVIEW_FAILED=lessons`` reviews
-a failed run with function writes refused and guidance writes allowed.
+persistent session used to end on.
 
 Requests are captured at unillm's transport (``tests/cache_discipline_helpers.py``);
 nothing leaves the process.
@@ -50,13 +49,11 @@ def switches(monkeypatch):
     def set_(
         *,
         outcome: bool = False,
-        review_failed: str = "",
         discipline: bool = False,
         fork: bool = False,
         admission: str = "",
     ) -> None:
         monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", outcome)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FAILED", review_failed)
         monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
         monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", admission)
@@ -314,108 +311,7 @@ async def test_an_outcome_after_the_session_ended_is_refused(switches):
         outcome_mod.post(handle.outcome_session_id, FAILED)
 
 
-# ── failure lessons ──────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_lessons_standalone_offers_no_function_writes_and_keeps_guidance(
-    switches,
-):
-    switches(outcome=True, review_failed="lessons")
-    captured: dict = {}
-    real = caa.start_async_tool_loop
-
-    def spy(*args, **kwargs):
-        if kwargs.get("loop_id") == "StorageCheck(CodeActActor.act)":
-            captured["tools"] = sorted(kwargs["tools"])
-        return real(*args, **kwargs)
-
-    with patch.object(caa, "start_async_tool_loop", spy):
-        _note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
-    assert "GuidanceManager_add_guidance" in captured["tools"]
-    assert "GuidanceManager_update_guidance" in captured["tools"]
-    for name in outcome_mod.LESSON_REFUSED_TOOLS:
-        assert name not in captured["tools"]
-    names = {t["function"]["name"] for t in requests[3]["tools"]}
-    assert "FunctionManager_add_functions" not in names
-    assert "GuidanceManager_add_guidance" in names
-    text = _review_text(requests[3])
-    assert outcome_mod.LESSONS_HEADER in text
-
-
-@pytest.mark.asyncio
-async def test_lessons_refuse_the_function_patch_tool_too(switches, monkeypatch):
-    switches(outcome=True, review_failed="lessons")
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-    captured: dict = {}
-    real = caa.start_async_tool_loop
-
-    def spy(*args, **kwargs):
-        if kwargs.get("loop_id") == "StorageCheck(CodeActActor.act)":
-            captured["tools"] = sorted(kwargs["tools"])
-        return real(*args, **kwargs)
-
-    with patch.object(caa, "start_async_tool_loop", spy):
-        _note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
-    assert "FunctionManager_patch_function" not in captured["tools"]
-    assert "GuidanceManager_patch_guidance" in captured["tools"]
-    names = {t["function"]["name"] for t in requests[3]["tools"]}
-    assert "FunctionManager_patch_function" not in names
-
-
-LESSON_FORK_REVIEW = (
-    lambda: h.completion(
-        calls=[
-            (
-                "FunctionManager_add_functions",
-                {"implementations": ["def f():\n    return 1\n"]},
-            ),
-            (
-                "GuidanceManager_add_guidance",
-                {"title": "Check the recipient", "content": "Confirm Kim's address."},
-            ),
-        ],
-        call_ids=["write_fn", "write_note"],
-    ),
-    lambda: h.completion(content="Recorded one lesson."),
-)
-
-
-@pytest.mark.asyncio
-async def test_lessons_fork_refuses_function_writes_and_runs_guidance_writes(
-    switches,
-):
-    switches(outcome=True, review_failed="lessons", discipline=True, fork=True)
-    note, requests, _handle, _ = await _persistent_review(
-        review=LESSON_FORK_REVIEW,
-        outcome=FAILED,
-    )
-    assert note["message"] == "Recorded one lesson."
-    replies = {
-        m["tool_call_id"]: m["content"]
-        for m in requests[4]["messages"]
-        if m.get("role") == "tool"
-    }
-    assert outcome_mod.LESSON_MASK_RULE in replies["write_fn"]
-    assert outcome_mod.LESSON_MASK_RULE not in replies["write_note"]
-    assert "refused" not in replies["write_note"].lower()
-    # the fixed tool list is unchanged: refused by rule, not removed
-    assert (
-        h.request_bytes(requests[3])["tools"] == h.request_bytes(requests[2])["tools"]
-    )
-
-
-@pytest.mark.asyncio
-async def test_lessons_need_a_failed_outcome(switches):
-    switches(outcome=True, review_failed="lessons")
-    solved = {**FAILED, "solved": True}
-    _note, requests, _handle, _ = await _persistent_review(outcome=solved)
-    names = {t["function"]["name"] for t in requests[3]["tools"]}
-    assert "FunctionManager_add_functions" in names
-    assert outcome_mod.LESSONS_HEADER not in _review_text(requests[3])
-
-
-# ── lessons and the admission gate (mocked review loop) ──────────────────
+# ── the admission gate (mocked review loop) ──────────────────────────────
 
 
 def _inner_handle(result_future: "asyncio.Future[str]") -> MagicMock:
@@ -457,46 +353,7 @@ async def _session_end(post=None) -> tuple:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("verdict", "outcome", "expected"),
-    [
-        # admission on: only a "lessons" verdict reviews a failed run, and
-        # never with function writes
-        ({"admit": "lessons", "reason": "failed train task"}, FAILED, "lessons"),
-        ({"admit": "lessons"}, None, "lessons"),
-        ({"admit": False, "reason": "frozen library"}, FAILED, "skipped"),
-        ({"admit": True}, FAILED, "lessons"),
-        ({"admit": True}, {**FAILED, "solved": True}, "full"),
-        # admission off: the outcome decides
-        (None, FAILED, "lessons"),
-        (None, {**FAILED, "solved": None}, "full"),
-        (None, None, "full"),
-    ],
-)
-async def test_lessons_obey_the_admission_gate(
-    switches,
-    tmp_path,
-    verdict,
-    outcome,
-    expected,
-):
-    path = ""
-    if verdict is not None:
-        path = str(tmp_path / "verdict.json")
-        with open(path, "w") as fh:
-            json.dump(verdict, fh)
-    switches(outcome=True, review_failed="lessons", admission=path)
-    mock_loop, notes = await _session_end(post=outcome)
-    if expected == "skipped":
-        mock_loop.assert_not_called()
-        assert [n for n in notes if n.get("type") == "storage_review_skipped"]
-        return
-    mock_loop.assert_called_once()
-    assert mock_loop.call_args.kwargs["lessons"] is (expected == "lessons")
-
-
-@pytest.mark.asyncio
-async def test_off_a_lessons_verdict_does_not_admit(switches, tmp_path):
+async def test_a_lessons_verdict_does_not_admit(switches, tmp_path):
     path = tmp_path / "verdict.json"
     path.write_text(json.dumps({"admit": "lessons"}))
     switches(admission=str(path))

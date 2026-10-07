@@ -33,12 +33,10 @@ def switches(monkeypatch):
         shortlist: bool,
         gate: bool = False,
         snapshot: bool = True,
-        try_first: bool = False,
     ):
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", shortlist)
         monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", gate)
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SNAPSHOT", snapshot)
-        monkeypatch.setattr(SETTINGS, "UNIFY_TRY_FIRST", try_first)
         monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
 
     return set_
@@ -181,29 +179,6 @@ async def test_on_the_ranking_counts_no_search_hit(switches):
     _, actor = await _act(seed=seed)
     rows = actor.function_manager._rows("name = 'list_names'")
     assert rows and int(rows[0].get("usage_search_hits") or 0) == 0
-
-
-@pytest.mark.requires_provider_key
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_on_a_function_stored_for_the_same_request_carries_its_mark(switches):
-    from unify.function_manager import task_origin
-
-    switches(shortlist=True, try_first=True)
-
-    def seed(actor):
-        token = task_origin.enter(TASK)
-        try:
-            _add_function(actor)
-        finally:
-            task_origin.leave(token)
-
-    on, _ = await _act(seed=seed)
-    block = _shortlist(_first_user(on[0]))
-    assert (
-        "- function `list_names(path)`: List the names in a directory. [similar_request 1.0]"
-        in block
-    )
 
 
 def test_at_most_five_entries_closest_first_and_no_primitives():

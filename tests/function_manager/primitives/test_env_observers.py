@@ -225,8 +225,6 @@ def test_switches_off_inject_the_registered_globals_themselves(weather):
     assert observers.observed_globals(values, enabled=False)["apis"] is APIS
     # A setting that is present but off is off.
     assert not observers.proxy_enabled(SimpleNamespace(UNIFY_SPECULATE="off"))
-    assert not observers.proxy_enabled(SimpleNamespace(UNIFY_EVIDENCE_LEDGER=False))
-    assert observers.proxy_enabled(SimpleNamespace(UNIFY_EVIDENCE_LEDGER=True))
     assert observers.proxy_enabled(SimpleNamespace(UNIFY_SPECULATE="writes"))
 
 

@@ -7,8 +7,8 @@ note (``UNIFY_REPLY_PROTOCOL_NOTE``) came from ARC episodes whose actor
 delegated ``request_demos`` to sub-actors that called
 ``request_demonstration``, and it checks only its own words. This lint
 renders the actor's system prompt and tool schemas, and the storage review's
-rulebook constants, notes and sent requests, with every prompt-affecting
-switch off, on and mixed, and fails on any benchmark or dataset name, or a
+rulebook constants, notes and sent requests, under the defaults and with
+the switches still in progress on, and fails on any benchmark or dataset name, or a
 benchmark's own vocabulary, as a whole word.
 
 Text that already uses one of these words for its general meaning is
@@ -92,94 +92,27 @@ UPSTREAM_EXAMPLE_CHECKS = {
     ),
 }
 
-# Switches whose value changes the actor's prompt or the storage rulebook.
+# The switches still in progress (WIP_SWITCHES.md) that change what the
+# model reads; every other prompt-affecting switch was baked at the freeze.
 SWITCH_SETS = {
-    "off": {},
-    "on": {
-        "UNIFY_REVIEW_FRAMING": "unified",
-        "UNIFY_CURATION_DOCTRINE": "compose",
-        "UNIFY_REPLY_PROTOCOL_NOTE": True,
-        "UNIFY_FUNCTION_PATCH": True,
-        "UNIFY_STORE_CHECK": "resolve",
-        "UNIFY_TRY_FIRST": True,
-        "UNIFY_CODE_FIRST": True,
-        "UNIFY_FUNCTION_CASES": True,
-        "UNIFY_REPLY_WORDING": "reason",
-        "UNIFY_REPLY_CHANNEL": "code+text",
-        "UNIFY_BIND_REQUEST": "on",
-        "UNIFY_VARIABLE_INVENTORY": "on",
-    },
-    "framing only": {"UNIFY_REVIEW_FRAMING": "unified"},
-    "doctrine and note": {
-        "UNIFY_CURATION_DOCTRINE": "compose",
-        "UNIFY_REPLY_PROTOCOL_NOTE": True,
-    },
-    "try first and code first": {
-        "UNIFY_TRY_FIRST": True,
-        "UNIFY_CODE_FIRST": True,
-    },
-    "accuracy": {"UNIFY_PROMPT_ACCURACY": True},
-    "minimal doctrine": {
-        "UNIFY_CURATION_DOCTRINE": "minimal",
-        "UNIFY_FUNCTION_PATCH": True,
-    },
-    "balanced doctrine": {
-        "UNIFY_CURATION_DOCTRINE": "balanced",
-        "UNIFY_FUNCTION_PATCH": True,
-    },
-    "lean": {"UNIFY_PROMPT_PROFILE": "lean"},
-    "reply wording action last": {
-        "UNIFY_REPLY_WORDING": "action_last",
-        "UNIFY_REPLY_PROTOCOL_NOTE": True,
-    },
-    "lean, on, delegation on demand": {
-        "UNIFY_PROMPT_PROFILE": "lean",
-        "UNIFY_DELEGATION": "on_demand",
-        "UNIFY_REVIEW_FRAMING": "unified",
-        "UNIFY_CURATION_DOCTRINE": "compose",
-        "UNIFY_REPLY_PROTOCOL_NOTE": True,
-        "UNIFY_FUNCTION_PATCH": True,
-        "UNIFY_STORE_CHECK": "resolve",
-        "UNIFY_TRY_FIRST": True,
-        "UNIFY_CODE_FIRST": True,
-        "UNIFY_FUNCTION_CASES": True,
-        "UNIFY_REPLY_WORDING": "reason",
+    "default": {},
+    "wip on": {
         "UNIFY_REPLY_CHANNEL": "code+text",
         "UNIFY_BIND_REQUEST": "on",
         "UNIFY_VARIABLE_INVENTORY": "on",
     },
 }
 SWITCH_OFF = {
-    "UNIFY_REVIEW_FRAMING": "",
-    "UNIFY_CURATION_DOCTRINE": "",
-    "UNIFY_REPLY_PROTOCOL_NOTE": False,
-    "UNIFY_FUNCTION_PATCH": False,
-    "UNIFY_STORE_CHECK": "",
-    "UNIFY_TRY_FIRST": False,
-    "UNIFY_CODE_FIRST": False,
-    "UNIFY_FUNCTION_CASES": False,
-    "UNIFY_PROMPT_ACCURACY": False,
-    "UNIFY_PROMPT_PROFILE": "",
-    "UNIFY_DELEGATION": "on",
-    "UNIFY_REVIEW_GATE": False,
-    "UNIFY_REPLY_WORDING": "",
     "UNIFY_REPLY_CHANNEL": "",
     "UNIFY_BIND_REQUEST": "",
     "UNIFY_VARIABLE_INVENTORY": "",
 }
 
 PROMPT_MODES = {
-    "act": {"can_store": True, "discovery_first_policy": True},
-    # UNIFY_DISCOVERY_GATE off
     "search when useful": {"can_store": True, "search_when_useful": True},
     "persist": {"can_store": True, "persist": True},
     "read only": {"can_store": True, "library_read_only": True},
     "no store": {},
-    # UNIFY_PROMPT_CLOCK=message / UNIFY_CACHE_AFFINITY_SCOPE=static
-    "static": {"can_store": True, "session_sections": False},
-    # UNIFY_INLINE_CURATION
-    "inline on": {"can_store": True, "inline_curation": "on"},
-    "inline only": {"inline_curation": "only"},
 }
 
 
@@ -249,40 +182,8 @@ def _rulebook() -> dict[str, str]:
         params = inspect.signature(fn).parameters.values()
         if all(p.default is not p.empty for p in params):
             texts[f"{name}()"] = fn()
-    texts["_storage_review_outcome_note(lessons=True)"] = (
-        caa._storage_review_outcome_note(lessons=True)
-    )
     texts["_storage_base_instructions()"] = caa._storage_base_instructions()
     texts["_review_fork_role()"] = caa._review_fork_role()
-    texts["_INLINE_ONLY_REASON"] = caa._INLINE_ONLY_REASON
-    return texts
-
-
-def _receipt_texts() -> dict[str, str]:
-    """Every line a reply receipt can show (UNIFY_REPLY_RECEIPT)."""
-    from unify.common._async_tool import reply_receipt as rr
-
-    error = '{"error": "Traceback (most recent call last):\\nValueError: boom"}'
-    caught = "try:\n    f()\nexcept Exception as e:\n    print(f'Error: {e}')"
-    replies = {
-        "zero": "The total is **0**.",
-        "empty": "{}",
-        "nan": "The mean is NaN.",
-        "null": '{"total": null}',
-        "same items": "`[3, 3, 3]`",
-        "identical": "[[1, 2], [3, 4]]",
-    }
-    texts = {
-        f"reply receipt ({name})": rr.receipt(reply, "In:\n1 2\n3 4", [])
-        for name, reply in replies.items()
-    }
-    raised = [{"role": "user", "content": "q"}, *_cell_messages("x = d[1]", error)]
-    texts["reply receipt (raised)"] = rr.receipt("It is **7**.", "q", raised)
-    texts["reply receipt (caught)"] = rr.receipt(
-        "It is **7**.",
-        "q",
-        [{"role": "user", "content": "q"}, *_cell_messages(caught, "Error: gone")],
-    )
     return texts
 
 
@@ -302,7 +203,7 @@ def _session_texts(tools: dict) -> dict[str, str]:
     """What the model reads outside the system prompt and the rulebook."""
     from unify.common._async_tool import loop_stop
     from unify.common._async_tool.repeat_guard import RepeatGuard
-    from unify.function_manager import inline_curation, store_cases, store_verify
+    from unify.function_manager import store_cases, store_verify
 
     guard = RepeatGuard()
     guard.surfaced("the same reply")
@@ -334,10 +235,6 @@ def _session_texts(tools: dict) -> dict[str, str]:
             store_cases.PRESERVED,
         )
     ]
-    try:
-        inline_curation.check_names(["def tmp():\n    return 1\n"])
-    except ValueError as exc:
-        naming = str(exc)
     from unify.function_manager import instance_lint
 
     tokens = instance_lint.tokens_of(
@@ -373,25 +270,18 @@ def _session_texts(tools: dict) -> dict[str, str]:
             (3, 0),
             has_fm_tools=True,
             has_gm_tools=True,
-            discovery_gate=True,
+            discovery_gate=False,
         ),
         "repeat guard": guard.check("the same reply"),
-        # UNIFY_REPLY_RECEIPT: every wording a receipt can take.
-        **_receipt_texts(),
         # UNIFY_LOOP_STOP: the notice before the last word, and the reply.
         "loop stop notice": loop_stop.Stop(k=10, last_word=True).notice,
         "loop stop reply": loop_stop.Stop(k=10, last_word=True).headline,
         "loop stop cancel": loop_stop.Stop(k=10, last_word=True).cancelled,
         "case refusal": store_cases.refusal("f", replays),
         "case report": store_cases.report("f", replays),
-        "naming refusal": naming,
-        "_TRY_FIRST_NOTE": pb._TRY_FIRST_NOTE,
         # UNIFY_LIBRARY_SHORTLIST
         "library shortlist header": library_shortlist._HEADER,
-        "_CODE_FIRST": pb._CODE_FIRST,
-        "_INLINE_ONLY_BULLET": pb._INLINE_ONLY_BULLET,
         "store_verify.doctrine()": store_verify.doctrine(),
-        "_inline_function_bullet()": pb._inline_function_bullet(tools),
         # UNIFY_VARIABLE_INVENTORY: the harness's words around the model's
         # own names (every kind of description, and the overflow).
         "variable inventory": _inventory_line(),
@@ -541,23 +431,16 @@ def test_what_the_session_adds_to_its_messages_names_no_benchmark(actor_tools):
 
 
 def test_the_switched_texts_are_in_the_prompt_they_lint(monkeypatch, actor_tools):
-    """The prompt scanned under "on" carries every switched section."""
-    for name, value in {**SWITCH_OFF, **SWITCH_SETS["on"]}.items():
+    """The prompt scanned under "wip on" carries every switched section."""
+    for name, value in {**SWITCH_OFF, **SWITCH_SETS["wip on"]}.items():
         monkeypatch.setattr(SETTINGS, name, value)
     actor, tools = actor_tools
     prompt = pb.build_code_act_prompt(
         environments=actor.environments,
         tools=tools,
         can_store=True,
-        inline_curation="on",
     )
-    for text in (
-        pb._TRY_FIRST_NOTE,
-        pb._CODE_FIRST,
-        "**Functions, during the task**",
-        pb._BIND_REQUEST_LINE,
-    ):
-        assert text in prompt
+    assert pb._BIND_REQUEST_LINE in prompt
 
 
 # ── the storage review ───────────────────────────────────────────────────
@@ -583,13 +466,10 @@ def test_the_rulebook_names_no_benchmark(switches):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fork", [False, True], ids=["standalone", "fork"])
-async def test_the_sent_review_names_no_benchmark(switches, monkeypatch, fork):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", fork)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
+async def test_the_sent_review_names_no_benchmark(switches):
     _summary, _, requests = await h.scenario_review()
     review = requests[2]["messages"]
-    # The rulebook arrives as the system prompt, or as the fork's last message.
-    sent = review[-1]["content"] if fork else review[0]["content"]
+    # The rulebook arrives as the fork's last message.
+    sent = review[-1]["content"]
     assert "## Instructions" in sent
     assert _findings({f"review ({switches})": sent}) == []

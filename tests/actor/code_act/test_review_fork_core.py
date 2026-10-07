@@ -190,44 +190,24 @@ async def test_a_bash_cell_is_refused_in_the_review():
 # ── what the review may do ─────────────────────────────────────────────────
 
 
-def test_the_review_policy_writes_and_refuses_a_lessons_reviews_function_writes():
-    from unify import outcome as outcome_mod
-
+def test_the_review_policy_writes():
     full = core_surface.review_policy()
     assert full.review is True
     for method in ("functions.add", "functions.delete", "guidance.add"):
         assert full.refusal(method) is None, method
-    lessons = core_surface.review_policy(
-        lesson_refusals={
-            name: outcome_mod.LESSON_MASK_RULE
-            for name in outcome_mod.LESSON_REFUSED_TOOLS
-        },
-    )
-    assert outcome_mod.LESSON_MASK_RULE in lessons.refusal("functions.add")
-    assert outcome_mod.LESSON_MASK_RULE in lessons.refusal("functions.delete")
-    assert lessons.refusal("guidance.add") is None
     # A session's policy is unchanged.
     assert core_surface.WritePolicy().review is False
     assert core_surface.WritePolicy().withheld == ()
 
 
-@pytest.mark.parametrize("doctrine", ["", "compose", "minimal"])
-@pytest.mark.parametrize("framing", ["", "unified"])
-def test_the_rulebook_names_no_json_library_tool_after_translation(
-    monkeypatch,
-    doctrine,
-    framing,
-):
+def test_the_rulebook_names_no_json_library_tool_after_translation():
     from unify import outcome as outcome_mod
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", doctrine)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FRAMING", framing)
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     text = core_surface.python_names(
         caa._review_fork_role(core=True)
         + caa._storage_doctrine_sections()
         + caa._storage_base_instructions()
-        + outcome_mod.render(None, lessons=True),
+        + outcome_mod.render(None),
     )
     assert caa._REVIEW_FORK_TOOLS_CORE in text
     for name in ("FunctionManager_", "GuidanceManager_", "install_python_packages"):

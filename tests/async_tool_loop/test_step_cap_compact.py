@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 
 import pytest
 
@@ -492,36 +491,6 @@ async def test_on_a_compaction_is_bounded_by_the_loop_timeout(switches, monkeypa
 
 
 # ── what survives the compaction ─────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_on_the_budget_footer_counts_from_the_compacted_conversation(
-    switches,
-):
-    """After a compaction the footer counts the steps left from the
-    compacted conversation: the first result has none (the count kept
-    across a compression would say 0 steps were left), and it shows again
-    within the last tenth of the new count, before the next limit."""
-    switches(UNIFY_BUDGET_FOOTER=True)
-    model = _Model(after_restart=None)
-    with h.scripted(()):
-        _install(model)
-        handle = _start()
-        result = await asyncio.wait_for(handle.result(), WAIT)
-    assert result == TERMINATED.format(MAX_STEPS)
-    assert model.compactor_calls == 2
-    after = [r for r in model.session_requests if RESTART in _text(r)]
-    first = next(r for r in after if any(m.get("role") == "tool" for m in r))
-    first_result = [m for m in first if m.get("role") == "tool"][-1]
-    assert first_result["content"] == "Nothing new."
-    footers = [
-        re.search(r"\[step budget\] (\d+) of (\d+) steps left", m["content"])
-        for r in after
-        for m in r
-        if m.get("role") == "tool"
-    ]
-    shown = {(int(f[1]), int(f[2])) for f in footers if f}
-    assert shown and all(left <= 2 and cap == MAX_STEPS for left, cap in shown)
 
 
 @pytest.mark.asyncio

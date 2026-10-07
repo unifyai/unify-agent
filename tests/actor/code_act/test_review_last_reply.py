@@ -63,7 +63,6 @@ def switches(monkeypatch):
             raising=False,
         )
         monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", outcome)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FAILED", "")
         monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", False)
         monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", False)
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", "")

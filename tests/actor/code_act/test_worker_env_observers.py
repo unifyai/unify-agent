@@ -226,8 +226,8 @@ async def test_a_raw_global_call_reaches_the_observer_when_a_feature_is_on(
     mode,
 ):
     _mode(monkeypatch, mode)
-    # Neither switch exists yet: placed where ``getattr(SETTINGS, ...)`` finds it.
-    monkeypatch.setitem(vars(SETTINGS), "UNIFY_EVIDENCE_LEDGER", True)
+    # The switch does not exist yet: placed where ``getattr(SETTINGS, ...)`` finds it.
+    monkeypatch.setitem(vars(SETTINGS), "UNIFY_SPECULATE", "writes")
     ex = _executor()
     try:
         rec = Recorder()
