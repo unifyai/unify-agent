@@ -62,7 +62,6 @@ from unify.settings import SETTINGS
 @pytest.fixture
 def library(core_world, monkeypatch):  # noqa: F811
     install_fake_embed(monkeypatch.setattr)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     return core_world
 
 
@@ -200,9 +199,6 @@ async def test_an_unreachable_package_index_is_a_clear_error_not_a_hang(
             assert "RuntimeError" in out.error, out.error
             assert "Failed to install ['e2eabsentpkg>=1']" in out.error, out.error
             assert took < 120, took
-        # The failure is the function's own, held against it.
-        rows = db.query("SELECT failures FROM function_trust")
-        assert [int(r["failures"]) for r in rows] == [2]
         out = await cells("1 + 1")
         assert out.result == 2, out.error
     finally:

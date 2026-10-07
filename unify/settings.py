@@ -296,18 +296,6 @@ class ProductionSettings(BaseSettings):
     # with a log line, while UNIFY_STORE_ADMISSION withholds the session's
     # writes (unify/function_manager/inline_curation.py). Empty: as shipped.
     UNIFY_INLINE_CURATION: str = ""
-    # ``ramp``: keep a trust record per stored function (probation, trusted,
-    # quarantined) in function_trust. Every reuse is evidence: a call that
-    # returns is a pass, one that raises quarantines the function, which is
-    # then left out of the searches that load functions and listed to the
-    # next storage review as needing repair. A function is trusted after 3
-    # passes over 2 distinct inputs (5 over 3 if it can change anything); a
-    # changed source or callee, or an overwrite, puts it back on probation
-    # with its passes cleared and its failure history kept. With
-    # UNIFY_STORE_VERIFY set, a reuse is also re-checked in a fresh world
-    # with probability 1/2^k after k clean uses
-    # (unify/function_manager/store_trust.py). Empty keeps no record.
-    UNIFY_STORE_TRUST: str = ""
     # Keep every tool loop's requests a growing, byte-stable prefix, so the
     # provider's prompt cache is reused call after call: the tool list is
     # computed once per session and a tool the phase does not allow is
@@ -760,14 +748,6 @@ class ProductionSettings(BaseSettings):
                 "UNIFY_REPLY_CHANNEL must be empty, 'text' or 'code+text', "
                 f"not {v!r}",
             )
-        return value
-
-    @field_validator("UNIFY_STORE_TRUST", mode="before")
-    @classmethod
-    def parse_store_trust(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "ramp"):
-            raise ValueError(f"UNIFY_STORE_TRUST must be empty or 'ramp', not {v!r}")
         return value
 
     @field_validator("UNIFY_WORKSPACE", mode="before")

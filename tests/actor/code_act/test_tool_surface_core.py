@@ -15,9 +15,8 @@ Python, and with the discovery gate on (it can only force JSON tools).
 
 ``functions.run`` runs the stored code in the worker, confined, and records
 the call as ``execute_function`` does: usage, a ``UNIFY_FUNCTION_CASES`` case
-with the environment calls it made, ``UNIFY_STORE_TRUST`` evidence (a failure
-the caller caused is not held against the function, and says so), and the
-declared dependencies installed first. A stored function called by name is
+with the environment calls it made, and the declared dependencies installed
+first. A stored function called by name is
 recorded the same way.
 
 The model is a scripted transport (tests/cache_discipline_helpers.py): real

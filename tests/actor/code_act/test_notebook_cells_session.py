@@ -17,7 +17,7 @@ both ways and compare what happens:
   is a cell's last expression is adopted and steered, a cell asks a
   clarification and gets the answer, parent chat context reaches a
   sub-agent, the heartbeat notification fires, and stored-function calls
-  record the same cases and trust.
+  record the same cases.
 
 The model is the scripted transport of ``tests/cache_discipline_helpers``:
 real unillm clients, nothing leaves the process. Tests that need the
@@ -325,14 +325,14 @@ async def test_a_refused_magic_reaches_the_model_and_the_next_cell_runs(
     assert "ran 2" in ran
 
 
-# ── stored functions: the same cases and trust ──────────────────────────────
+# ── stored functions: the same cases ────────────────────────────────────────
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
 @_handle_project
-async def test_stored_function_calls_record_the_same_cases_and_trust(
+async def test_stored_function_calls_record_the_same_cases(
     core_world,
     monkeypatch,
 ):
@@ -343,7 +343,6 @@ async def test_stored_function_calls_record_the_same_cases_and_trust(
     from unify.function_manager.function_manager import FunctionManager
     from unify.function_manager.primitives.environment import namespace_object
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     from unify import environment
 
     monkeypatch.setattr(environment, "ensure", lambda specs: None)
@@ -404,7 +403,7 @@ async def test_stored_function_calls_record_the_same_cases_and_trust(
             next(music_fixture)
         except StopIteration:
             pass
-    assert legacy_records["cases"] and legacy_records["trust"]
+    assert legacy_records["cases"]
     assert notebook_records == legacy_records
     for legacy_out, notebook_out in zip(legacy_outs, notebook_outs):
         assert type(notebook_out).__mro__[1] is type(legacy_out)

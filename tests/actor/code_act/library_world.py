@@ -181,7 +181,6 @@ CORE_ENV = {
     "UNIFY_DISCOVERY_GATE": "false",
     "UNIFY_VALIDATE_LLM_PROVIDERS": "false",
     "UNIFY_FUNCTION_CASES": "true",
-    "UNIFY_STORE_TRUST": "ramp",
 }
 
 

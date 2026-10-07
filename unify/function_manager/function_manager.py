@@ -187,7 +187,6 @@ class _LineageTrackedFunction:
         wrapped_callable: Callable[..., Any],
         function_name: str,
         on_call: Optional[Callable[[], None]] = None,
-        observer: Optional[Any] = None,
         cases: Optional[Any] = None,
     ):
         self._wrapped = wrapped_callable
@@ -196,9 +195,6 @@ class _LineageTrackedFunction:
         # already passes through, and its __getattr__ delegation keeps proxy
         # identity intact, which is why the trace records here.
         self._on_call = on_call
-        # UNIFY_STORE_TRUST: records whether each call returned or raised
-        # (store_trust.CallObserver); None while the switch is off.
-        self._observer = observer
         # UNIFY_FUNCTION_CASES: records each call as a case
         # (store_cases.CaseRecorder); None while the switch is off.
         self._cases = cases
@@ -217,7 +213,7 @@ class _LineageTrackedFunction:
 
         if store_cases.replaying():
             # UNIFY_FUNCTION_CASES: a callee inside a replay runs bare, so the
-            # replay records no usage, trust evidence or case.
+            # replay records no usage or case.
             return self._wrapped(*args, **kwargs)
         if self._on_call is not None:
             try:
@@ -228,12 +224,6 @@ class _LineageTrackedFunction:
         from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE
         from unify.common.hierarchical_logger import log_boundary_event
 
-        observer = self._observer
-        arguments = (
-            observer.before(self._wrapped, args, kwargs)
-            if observer is not None
-            else None
-        )
         cases = self._cases
         case = cases.begin(args, kwargs) if cases is not None else None
 
@@ -255,8 +245,6 @@ class _LineageTrackedFunction:
                 result = self._wrapped(*args, **kwargs)
         except Exception as exc:
             TOOL_LOOP_LINEAGE.reset(token_call)
-            if observer is not None:
-                observer.after(arguments, exc)
             if cases is not None:
                 cases.end(case, error=exc)
             raise
@@ -277,23 +265,17 @@ class _LineageTrackedFunction:
                     with store_cases.tracing(case), value_notice.watching(case):
                         value = await result
                 except Exception as exc:
-                    if observer is not None:
-                        observer.after(arguments, exc)
                     if cases is not None:
                         cases.end(case, error=exc)
                     raise
                 finally:
                     TOOL_LOOP_LINEAGE.reset(token_run)
-                if observer is not None:
-                    observer.after(arguments, None)
                 if cases is not None:
                     run_summary.show_in_cell_output(cases.end(case, result=value))
                 return value
 
             return _await_and_finalize()
 
-        if observer is not None:
-            observer.after(arguments, None)
         if cases is not None:
             run_summary.show_in_cell_output(cases.end(case, result=result))
         return result
@@ -363,13 +345,11 @@ class _InProcessFunctionProxy:
         self._func_data = func_data
         self._namespace = namespace
         self._raw_callable = raw_callable
-        # UNIFY_STORE_TRUST: records the stateful calls, which run the raw
-        # callable directly; the other modes go through execute_function.
+        # UNIFY_FUNCTION_CASES: records the stateful calls, which run the raw
+        # callable directly, as cases (the other modes go through
+        # execute_function); None while off.
         from .store_cases import CaseRecorder
-        from .store_trust import CallObserver
 
-        self._observer = CallObserver.for_function(function_manager, func_data)
-        # UNIFY_FUNCTION_CASES: records the same calls as cases; None while off.
         self._cases = CaseRecorder.for_function(func_data)
 
         # Copy key attributes from raw callable for introspection
@@ -397,36 +377,24 @@ class _InProcessFunctionProxy:
         if state_mode == "stateful":
             # Execute directly using the raw callable in the shared namespace.
             # This is the existing behavior - state naturally persists in the namespace.
-            observer = self._observer
             cases = self._cases
-            if observer is None and cases is None:
+            if cases is None:
                 result = self._raw_callable(*args, **kwargs)
                 if asyncio.iscoroutine(result):
                     result = await result
                 return result
             from . import run_summary, store_cases, value_notice
 
-            arguments = (
-                observer.before(self._raw_callable, args, kwargs)
-                if observer is not None
-                else None
-            )
-            case = cases.begin(args, kwargs) if cases is not None else None
+            case = cases.begin(args, kwargs)
             try:
                 with store_cases.tracing(case), value_notice.watching(case):
                     result = self._raw_callable(*args, **kwargs)
                     if asyncio.iscoroutine(result):
                         result = await result
             except Exception as exc:
-                if observer is not None:
-                    observer.after(arguments, exc)
-                if cases is not None:
-                    cases.end(case, error=exc)
+                cases.end(case, error=exc)
                 raise
-            if observer is not None:
-                observer.after(arguments, None)
-            if cases is not None:
-                run_summary.show_in_cell_output(cases.end(case, result=result))
+            run_summary.show_in_cell_output(cases.end(case, result=result))
             return result
 
         # For stateless and read_only, use execute_function with appropriate
@@ -1055,13 +1023,11 @@ class FunctionManager(BaseFunctionManager):
         if isinstance(raw, _LineageTrackedFunction):
             return raw
         from .store_cases import CaseRecorder
-        from .store_trust import CallObserver
 
         return _LineageTrackedFunction(
             raw,
             str(func_data.get("name")),
             on_call=lambda: self._note_function_use(func_data),
-            observer=CallObserver.for_function(self, func_data),
             cases=CaseRecorder.for_function(func_data),
         )
 
@@ -1427,16 +1393,6 @@ class FunctionManager(BaseFunctionManager):
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
 
-        # UNIFY_STORE_TRUST: an overwrite (a patch included) starts the
-        # function's trust over on probation, keeping its failure history.
-        from . import store_trust
-
-        if store_trust.enabled():
-            store_trust.reset(
-                log_id
-                for log_id in log_ids_to_update
-                if results.get(log_id_to_name.get(log_id, "")) == "updated"
-            )
 
         for name, report in case_reports.items():
             if results.get(name) == "updated":
@@ -1773,27 +1729,6 @@ class FunctionManager(BaseFunctionManager):
     def _skip_unloadable() -> Optional[List[Dict[str, str]]]:
         """A list to collect unloadable rows in."""
         return []
-
-    @staticmethod
-    def _drop_quarantined(
-        rows: List[Dict[str, Any]],
-    ) -> Tuple[List[Dict[str, Any]], Set[str], Optional[str]]:
-        """Rows without the quarantined functions (UNIFY_STORE_TRUST), their names and the warning.
-
-        Only a read that loads functions into a namespace drops them; the
-        rows as they came, no names and no warning while the switch is off.
-        """
-        from . import store_trust
-
-        if not store_trust.enabled():
-            return rows, set(), None
-        hidden = store_trust.quarantined(rows)
-        if not hidden:
-            return rows, set(), None
-        warning = store_trust.hidden_warning(hidden)
-        logger.warning(warning)
-        kept = [row for row in rows if row.get("name") not in hidden]
-        return kept, set(hidden), warning
 
     @staticmethod
     def _unloadable_warning(skipped: List[Dict[str, str]]) -> str:
@@ -2774,9 +2709,6 @@ class FunctionManager(BaseFunctionManager):
             return metadata
 
         assert _namespace is not None  # validated above
-        func_rows, quarantined, quarantine_warning = self._drop_quarantined(func_rows)
-        for name in quarantined:
-            metadata.pop(name, None)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             func_rows,
@@ -2789,8 +2721,6 @@ class FunctionManager(BaseFunctionManager):
             for name in unloadable:
                 metadata.pop(name, None)
             metadata["(unloadable functions)"] = self._unloadable_warning(skipped)  # type: ignore[assignment]
-        if quarantine_warning:
-            metadata["(quarantined functions)"] = quarantine_warning  # type: ignore[assignment]
         callables_map = {
             row["name"]: cb
             for row, cb in zip(func_rows, callables_list)
@@ -3120,7 +3050,6 @@ class FunctionManager(BaseFunctionManager):
             return store_cases.with_summaries(rows)
 
         assert _namespace is not None  # validated above
-        rows, _, quarantine_warning = self._drop_quarantined(rows)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             rows,
@@ -3142,8 +3071,6 @@ class FunctionManager(BaseFunctionManager):
                     *metadata_rows,
                     {"warning": self._unloadable_warning(skipped)},
                 ]
-            if quarantine_warning:
-                metadata_rows = [*metadata_rows, {"warning": quarantine_warning}]
             # UNIFY_FUNCTION_CASES: each row's recorded cases; as is while off.
             store_cases.with_summaries(metadata_rows)
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
@@ -3219,7 +3146,6 @@ class FunctionManager(BaseFunctionManager):
             return store_cases.with_summaries(compact_results)
 
         assert _namespace is not None  # validated above
-        results, _, quarantine_warning = self._drop_quarantined(results)
         skipped = self._skip_unloadable()
         callables_list = self._inject_callables_for_functions(
             results,
@@ -3240,8 +3166,6 @@ class FunctionManager(BaseFunctionManager):
             store_cases.with_summaries(metadata_rows)
             if skipped:
                 metadata_rows.append({"warning": self._unloadable_warning(skipped)})
-            if quarantine_warning:
-                metadata_rows.append({"warning": quarantine_warning})
             return {"callables": callables_list, "metadata": metadata_rows}  # type: ignore[return-value]
 
         return callables_list  # type: ignore[return-value]
@@ -3413,29 +3337,12 @@ class FunctionManager(BaseFunctionManager):
         if not isinstance(implementation, str) or not implementation.strip():
             raise ValueError(f"Function '{function_name}' has no implementation")
 
-        # UNIFY_STORE_TRUST: an install that fails or a run that reports an
-        # error is a failed reuse; None while the switch is off.
-        from .store_trust import CallObserver
-
-        observer = CallObserver.for_function(self, func_data)
-        arguments = (
-            observer.before(None, (), call_kwargs or {})
-            if observer is not None
-            else None
-        )
         # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
         from . import store_cases, value_notice
 
         cases = store_cases.CaseRecorder.for_function(func_data)
         case = cases.begin((), call_kwargs or {}) if cases is not None else None
-        try:
-            environment.ensure(func_data.get("dependencies") or [])
-        except Exception as exc:
-            # The function's own install failed, whatever the arguments: a
-            # plain dict carries no caller fault.
-            if observer is not None:
-                observer.after(dict(arguments), exc)
-            raise
+        environment.ensure(func_data.get("dependencies") or [])
         with store_cases.tracing(case), value_notice.watching(case):
             outcome = await self._execute_python_function(
                 implementation=implementation,
@@ -3445,8 +3352,6 @@ class FunctionManager(BaseFunctionManager):
                 extra_namespaces=ns,
                 _parent_chat_context=_parent_chat_context,
             )
-        if observer is not None:
-            observer.after(arguments, outcome.get("error"))
         if cases is not None:
             notice = cases.end(
                 case,

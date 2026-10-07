@@ -31,8 +31,7 @@ prints their full documentation as cell output.
 
 ``functions.run`` and direct calls of stored functions run in the worker,
 confined; this module records them (usage, ``UNIFY_FUNCTION_CASES`` cases with
-the environment calls they make, ``UNIFY_STORE_TRUST`` evidence, the declared
-dependencies installed first) exactly as the ``execute_function`` tool does.
+the environment calls they make, the declared dependencies installed first) exactly as the ``execute_function`` tool does.
 
 Compression is unchanged: the loop asks for it at the same threshold and
 offers ``compress_context`` (and ``store_skills``) on that turn as shipped;
@@ -287,8 +286,6 @@ class _Run:
     name: str
     mode: str
     func_data: dict
-    observer: Any = None
-    arguments: Any = None
     recorder: Any = None
     pending: Any = None
     steering_seen: int = 0
@@ -599,9 +596,9 @@ class FunctionLibrary:
         """Start recording a stored-function call the worker is about to run.
 
         ``mode`` is ``"run"`` (``functions.run``: as the ``execute_function``
-        tool -- usage, trust, case, dependencies installed, events) or
+        tool -- usage, case, dependencies installed, events) or
         ``"call"`` (a direct call: as the boundary wrapper of an in-process
-        session -- usage, trust, case). Returns ``{"found": False}`` for a
+        session -- usage, case). Returns ``{"found": False}`` for a
         name the library does not hold, ``{"found": True, "primitive": True}``
         for a primitive, and otherwise the token the call's environment calls
         and its end carry, with the source ``functions.run`` defines.
@@ -609,7 +606,6 @@ class FunctionLibrary:
         from unify import environment
         from unify.function_manager import store_cases
         from unify.function_manager.source_labels import function_source_filename
-        from unify.function_manager.store_trust import CallObserver, source_signature
 
         if self._policy.review:
             raise PermissionError(REVIEW_RUN_REFUSAL)
@@ -629,20 +625,8 @@ class FunctionLibrary:
         run = _Run(name=name, mode=mode, func_data=func_data)
         helpers = self._helpers(func_data) if mode == "run" else []
         if mode == "call":
-            # The boundary wrapper's order: usage, trust, case.
+            # The boundary wrapper's order: usage, case.
             self._note_use(func_data)
-        bind_to = None
-        if mode == "call":
-            signature = source_signature(impl, name)
-            if signature is not None:
-
-                def bind_to(*a: Any, **k: Any) -> None:  # noqa: ARG001
-                    return None
-
-                bind_to.__signature__ = signature  # type: ignore[attr-defined]
-        run.observer = CallObserver.for_function(self._fm, func_data)
-        if run.observer is not None:
-            run.arguments = run.observer.before(bind_to, tuple(args), kwargs)
         run.recorder = store_cases.CaseRecorder.for_function(func_data)
         if run.recorder is not None:
             run.pending = run.recorder.begin(tuple(args), kwargs)
@@ -659,11 +643,7 @@ class FunctionLibrary:
             if deps:
                 try:
                     await asyncio.to_thread(environment.ensure, deps)
-                except Exception as exc:
-                    # The function's own install failed, whatever the
-                    # arguments: a plain dict carries no caller fault.
-                    if run.observer is not None:
-                        run.observer.after(dict(run.arguments), exc)
+                except Exception:
                     if run.pending is not None:
                         run.pending.trace.closed = True
                     raise
@@ -723,14 +703,6 @@ class FunctionLibrary:
                 notice = run.recorder.end(run.pending, result=result, error=error)
                 if notice:
                     reply["notice"] = notice
-            if run.observer is not None:
-                run.observer.after(run.arguments, error)
-                fault = getattr(run.arguments, "caller_fault", None)
-                if error and fault:
-                    reply["note"] = (
-                        f"Not counted against the stored function `{run.name}`: "
-                        f"{fault}."
-                    )
         if run.publish is not None:
             await run.publish(error)
         return reply

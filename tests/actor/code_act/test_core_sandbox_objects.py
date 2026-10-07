@@ -5,9 +5,8 @@ objects a cell reaches through the sandboxed worker's proxy. ``functions.run``
 replaces the ``execute_function`` tool: it runs the stored code in the worker,
 confined, and records the call as that tool does -- usage, a
 ``UNIFY_FUNCTION_CASES`` case with the environment calls it made (so a later
-change is replayed against it), ``UNIFY_STORE_TRUST`` evidence (a failure the
-caller caused is not held against the function, and the error says so), and
-the declared dependencies installed first. These tests make the same calls
+change is replayed against it), and the declared dependencies installed
+first. These tests make the same calls
 both ways and compare every stored record. A stored function called by name
 is recorded the same way (as shipped the worker only notes its use).
 ``state`` is ``execute_function``'s ``state_mode``; writes the session may not
@@ -129,7 +128,7 @@ def _unsalted(value: Any) -> Any:
 
 
 def _records() -> dict:
-    """Every case and trust row, without timestamps, ids or redaction salts."""
+    """Every case row, without timestamps, ids or redaction salts."""
     cases = []
     for row in db.query("SELECT * FROM function_cases ORDER BY case_id"):
         row = dict(row)
@@ -141,12 +140,7 @@ def _records() -> dict:
         row["call"] = call
         row["trace"] = json.loads(row["trace"]) if row.get("trace") else None
         cases.append(row)
-    trust = []
-    for row in db.query("SELECT * FROM function_trust ORDER BY function_id"):
-        row = dict(row)
-        row.pop("updated_at", None)
-        trust.append(row)
-    return _unsalted({"cases": cases, "trust": trust})
+    return _unsalted({"cases": cases})
 
 
 async def _reuse(monkeypatch, music, *, core: bool, calls: list[tuple[str, dict]]):
@@ -226,7 +220,6 @@ async def test_functions_run_records_what_execute_function_records(
     music,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     calls = [
         ("remove_tracks_before", {"year": 2000}),
         ("fetch_profile", {"access_token": "expired-1"}),
@@ -249,15 +242,7 @@ async def test_functions_run_records_what_execute_function_records(
     for json_out, core_out in zip(json_outs[1:], core_outs[1:]):
         assert json_out.result is None and core_out.result is None
         assert "401 Unauthorized" in core_out.error
-    # A failure the caller caused is not held against the function, and the
-    # reply says so, in both.
-    assert "Not counted against the stored function `fetch_profile`" in (
-        json_outs[2].error
-    )
-    assert "Not counted against the stored function `fetch_profile`" in (
-        core_outs[2].error
-    )
-    # Usage, cases (with the environment calls in order) and trust: the same.
+    # Usage and cases (with the environment calls in order): the same.
     assert core_used == json_used == [name for name, _ in calls]
     assert core_records == json_records, json.dumps(
         {"core": core_records, "json": json_records},
@@ -269,7 +254,6 @@ async def test_functions_run_records_what_execute_function_records(
         "music.remove_track",
     ]
     assert traced["trace_complete"] == 1 and traced["args_shown"] == "year=2000"
-    assert [r["failures"] for r in core_records["trust"]] == [0, 1]
     # The declared dependencies are installed before the call, once a call.
     assert core_installs == json_installs == [["tinydep>=1"]]
 
@@ -283,13 +267,12 @@ async def test_a_stored_function_called_by_name_is_recorded_too(
     music,
     monkeypatch,
 ):
-    """In core mode a call by name records a case and trust evidence, as the
+    """In core mode a call by name records a case, as the
     in-process boundary wrapper does; as shipped the worker only notes use."""
     from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
     from unify.function_manager.function_manager import FunctionManager
     from unify.function_manager.primitives.environment import namespace_object
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[REMOVE_BEFORE, DOUBLE])
     actor = _actor(function_manager=fm, can_store=False)
@@ -326,7 +309,6 @@ async def test_a_stored_function_called_by_name_is_recorded_too(
         "music.remove_track",
         "music.remove_track",
     ]
-    assert [r["passes"] for r in records["trust"]] == [1, 1]
 
 
 # ── the sandbox objects ─────────────────────────────────────────────────────

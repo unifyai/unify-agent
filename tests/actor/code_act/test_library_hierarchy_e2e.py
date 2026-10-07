@@ -7,7 +7,7 @@ stored functions of their own. These tests store such a hierarchy (and the
 guidance that explains it) from cells, then, in a later session of another
 actor process on the same ``UNIFY_HOME`` store, find it from code, run it
 with ``functions.run`` and by name, and check the results, state modes,
-errors and tracebacks, recursion and cycles, the cases, trust and usage the
+errors and tracebacks, recursion and cycles, the cases and usage the
 harness records for every level, what a patch, a rename and a delete do to
 the callers, and readers running while another process writes.
 
@@ -56,9 +56,8 @@ NAMES = sorted([*HELPERS, "summarize_pairs"])
 
 @pytest.fixture
 def library(core_world, monkeypatch):  # noqa: F811
-    """The core world with a deterministic embedder, cases and trust on."""
+    """The core world with a deterministic embedder and cases on."""
     install_fake_embed(monkeypatch.setattr)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     return core_world
 
 
@@ -100,16 +99,6 @@ async def _settled_usage(expected) -> dict[str, int]:
         if expected(usage) or time.monotonic() > deadline:
             return usage
         await asyncio.sleep(0.1)
-
-
-def _trust() -> dict[str, tuple[int, int]]:
-    return {
-        r["name"]: (int(r["passes"]), int(r["failures"]))
-        for r in _rows(
-            "SELECT f.name AS name, t.passes AS passes, t.failures AS failures "
-            "FROM function_trust t JOIN functions f ON f.function_id = t.function_id",
-        )
-    }
 
 
 # ── 1 & 2: store from code, find from code in another process ───────────────
@@ -437,7 +426,7 @@ async def test_recursion_and_cycles_resolve_and_end(library):
 @pytest.mark.timeout(300)
 @_handle_project
 async def test_every_level_of_the_hierarchy_is_recorded(library):
-    """``functions.run`` records the entry point (usage, case, trust) and each
+    """``functions.run`` records the entry point (usage, case) and each
     helper call it makes; a call by name does the same."""
     _store_hierarchy()
     cells = Cells(new_actor(can_store=False))
@@ -451,7 +440,6 @@ async def test_every_level_of_the_hierarchy_is_recorded(library):
         assert json.loads(entry["result"]) == SUMMARY or SUMMARY in entry["result"]
         usage = await _settled_usage(lambda u: u == {n: 1 for n in NAMES})
         assert usage == {name: 1 for name in NAMES}, usage
-        assert _trust() == {name: (1, 0) for name in NAMES}
         # A stateless run binds nothing; a read binds the entry point (and
         # its helpers) for calls by name, which are recorded the same way.
         out = await cells("await functions.get('summarize_pairs')")
@@ -463,9 +451,6 @@ async def test_every_level_of_the_hierarchy_is_recorded(library):
         assert usage == {name: 2 for name in NAMES}, usage
         failing = await cells("await functions.run('summarize_pairs', text='q=nope')")
         assert "ValueError" in failing.error
-        trust = _trust()
-        assert trust["parse_pairs"][1] == 1 and trust["summarize_pairs"][1] == 1, trust
-        assert trust["total_by_key"][1] == 0, trust
     finally:
         await cells.close()
 
@@ -520,7 +505,7 @@ async def _calls_both_ways(monkeypatch, *, core: bool) -> dict:
         for name, rows in _cases_by_name().items()
     }
     usage = await _settled_usage(lambda u: u.get("summarize_pairs", 0) >= 2)
-    return {"outs": outs, "cases": cases, "usage": usage, "trust": _trust()}
+    return {"outs": outs, "cases": cases, "usage": usage}
 
 
 @needs_bwrap
@@ -536,10 +521,8 @@ async def test_functions_run_records_the_entry_point_and_its_helpers(
     core = await _calls_both_ways(monkeypatch, core=True)
     assert core["outs"] == [(SUMMARY, None), ("c: 7", None)]
     assert len(core["cases"]["summarize_pairs"]) == 2, core["cases"]
-    assert core["trust"]["summarize_pairs"] == (2, 0), core["trust"]
     for helper in HELPERS:
         assert len(core["cases"][helper]) == 2, core["cases"]
-        assert core["trust"][helper] == (2, 0), core["trust"]
 
 
 # ── 6: patch, rename, delete, concurrent readers ────────────────────────────
@@ -580,12 +563,6 @@ async def test_a_helper_patch_is_replayed_against_the_calls_the_entry_point_made
         assert out.result.get("status") == "patched", out.result
         out = await cells(f"await functions.run('summarize_pairs', text={TEXT!r})")
         assert out.result == SUMMARY, out.error
-        # A patch starts the helper's trust over, and its callers': a caller's
-        # trust covers the sources of the stored functions it calls.
-        trust = _trust()
-        assert trust["total_by_key"] == (1, 0), trust
-        assert trust["summarize_pairs"] == (1, 0), trust
-        assert trust["parse_pairs"] == (2, 0), trust
     finally:
         await cells.close()
 

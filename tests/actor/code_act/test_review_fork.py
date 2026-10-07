@@ -193,28 +193,18 @@ async def test_a_task_tool_is_refused_in_the_review_and_the_list_stays(
 
 
 @pytest.mark.asyncio
-async def test_the_fork_carries_the_update_first_and_needs_repair_notes(
+async def test_the_fork_carries_the_update_first_note(
     monkeypatch,
     switches,
 ):
-    """The two notes the standalone review gets from their switches."""
+    """The note the standalone review gets from its switch."""
     switches(discipline=True, fork=True)
-    repair = (
-        "## Needs Repair\n\n- `broken_fn`: 1 failure(s) after 0 pass(es); "
-        "last failure: boom\n\n"
-    )
-    monkeypatch.setattr(caa, "_storage_needs_repair_note", lambda: repair)
     _summary, requests, _forks, _counter = await _forked_review(monkeypatch)
     appended = requests[2]["messages"][-1]["content"]
     update_first = caa._storage_update_first_note()
     assert update_first.startswith("### Update before you add")
     assert update_first in appended
-    assert repair in appended
-    assert (
-        appended.index(update_first)
-        < appended.index(repair)
-        < appended.index("## Final Result")
-    )
+    assert appended.index(update_first) < appended.index("## Final Result")
 
 
 # ── fallbacks ────────────────────────────────────────────────────────────

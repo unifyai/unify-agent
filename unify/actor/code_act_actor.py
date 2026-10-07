@@ -893,13 +893,6 @@ as replying with that text would; the cell stops there. For example
 ``reply(answer)`` when the answer is in a variable."""
 
 
-def _storage_needs_repair_note() -> str:
-    """Quarantined functions for the review to repair (``UNIFY_STORE_TRUST``); else empty."""
-    from unify.function_manager import store_trust
-
-    return store_trust.needs_repair_note()
-
-
 def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
     """A standalone storage review's client: the actor's model, as shipped."""
     return new_llm_client(
@@ -2391,7 +2384,6 @@ def _start_storage_check_loop(
             "\n\n"
             f"{stop_context_section}"
             f"{proactive_storage_section}"
-            f"{_storage_needs_repair_note()}"
             f"{generalise_note}"
             f"{origin_note}"
             f"{outcome_note}"
@@ -2425,7 +2417,6 @@ def _start_storage_check_loop(
                 "\n\n"
                 f"{stop_context_section}"
                 f"{proactive_storage_section}"
-                f"{_storage_needs_repair_note()}"
                 f"{generalise_note}"
                 f"{origin_note}"
                 f"{outcome_note}"
@@ -2449,7 +2440,6 @@ def _start_storage_check_loop(
         f"{inner_storage_section}"
         f"{completed_tools_section}"
         f"{proactive_storage_section}"
-        f"{_storage_needs_repair_note()}"
         f"{generalise_note}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
