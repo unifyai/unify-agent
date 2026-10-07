@@ -62,7 +62,6 @@ from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager, search_doc_without_dormant
 from unify.actor import review_outcome as _review_outcome
-from unify.function_manager import origin_capture as _origin_capture
 from unify.function_manager import escape_drift as _escape_drift
 from unify.function_manager import task_origin as _task_origin
 from unify.function_manager import entry_record as _entry_record
@@ -2001,85 +2000,6 @@ def _storage_review_outcome_note(
     return outcome_mod.render(outcome, lessons=lessons)
 
 
-def _origin_link_notes(
-    trajectory: list[dict],
-    *,
-    outcome: Optional[dict],
-    answer: Optional[str],
-    lessons: bool,
-) -> tuple[Any, str, str]:
-    """``(answer cell, review note, gate note)`` for the review that follows a session.
-
-    ``UNIFY_CAPTURE_ACCEPTED``: the code cell the session's answer repeats
-    (:mod:`unify.function_manager.origin_capture`), unless the checked
-    outcome says the session failed or the review may record only lessons.
-    ``UNIFY_REVIEW_RECURRENCE``: how many earlier logged requests resemble
-    this one. ``UNIFY_REVIEW_OUTCOME``: the request to state whether the
-    conversation shows the final answer was confirmed
-    (:mod:`unify.actor.review_outcome`). Both notes are empty, and the cell
-    ``None``, with the switches off.
-    """
-    cell = None
-    review_parts: list[str] = []
-    gate_parts: list[str] = []
-    if (
-        _origin_capture.enabled()
-        and not lessons
-        and (outcome or {}).get("solved") is not False
-    ):
-        try:
-            cell = _origin_capture.find_answer_cell(trajectory, answer=answer)
-        except Exception as exc:  # an aid; never blocks the review
-            logger.warning(f"answer cell not found: {type(exc).__name__}: {exc}")
-            cell = None
-        if cell is not None:
-            review_parts.append(_origin_capture.review_note(cell, outcome))
-            gate_parts.append(_origin_capture.gate_note(cell, outcome))
-    recurrence_note = _review_recurrence_note()
-    if recurrence_note:
-        review_parts.append(recurrence_note + "\n\n")
-        gate_parts.append(recurrence_note)
-    # UNIFY_SHORTLIST_RELATED: a statement for each entry the review writes.
-    from unify.actor import related_shortlist
-
-    if related_shortlist.statements_enabled():
-        review_parts.append(related_shortlist.REVIEW_SECTION)
-    # UNIFY_ENTRY_RECORD: the entries the trajectory relied on.
-    if _entry_record.enabled():
-        review_parts.append(_entry_record.REVIEW_SECTION)
-    if _review_outcome.enabled():
-        review_parts.append(_review_outcome.REVIEW_SECTION)
-        gate_parts.append(_review_outcome.GATE_SECTION)
-    gate_note = "".join(f"\n\n{part}" for part in gate_parts)
-    return cell, "".join(review_parts), gate_note
-
-
-def _review_recurrence_note() -> str:
-    """``UNIFY_REVIEW_RECURRENCE``: the review's line on how often requests like this one came."""
-    from unify.settings import SETTINGS
-
-    try:
-        found = _task_origin.recurrence(SETTINGS.shortlist_gate_threshold())
-    except Exception as exc:  # an aid; never blocks the review
-        logger.warning(f"request recurrence not counted: {type(exc).__name__}: {exc}")
-        return ""
-    if found is None:
-        return ""
-    if found.earlier == 0:
-        return (
-            "## Recurrence\n\nThis is the first request in this assistant's "
-            "request log: no earlier request to compare it with."
-        )
-    closest = f"{found.closest:.2f}" if found.closest is not None else "none"
-    return (
-        "## Recurrence\n\n"
-        f"{found.similar} of the {found.earlier} earlier requests in this "
-        "assistant's request log resemble this one (similar_request at least "
-        f"{found.threshold:g}, an overlap of the two requests' words weighted "
-        f"by rarity; the closest scores {closest})."
-    )
-
-
 # UNIFY_REVIEW_FRAMING=unified: the fork is the agent's own curation step.
 _REVIEW_FORK_ROLE_UNIFIED = (
     "## Curating The Library\n\n"
@@ -3403,15 +3323,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             if turn_task is not None and not turn_task.done():
                 await asyncio.gather(turn_task, return_exceptions=True)
 
-            # UNIFY_CAPTURE_ACCEPTED, UNIFY_REVIEW_RECURRENCE: what the review
-            # and its gate are told about the answer's code and recurrence.
-            answer_cell, review_origin_note, gate_origin_note = _origin_link_notes(
-                trajectory,
-                outcome=self._outcome,
-                answer=self._reply_at_outcome,
-                lessons=lessons,
-            )
-
             # UNIFY_REVIEW_GATE: one tool-free yes/no call decides whether the
             # review runs; a failed or unreadable gate runs it as shipped. While
             # the library holds nothing, the gate is not asked: the review runs.
@@ -3432,12 +3343,9 @@ class _StorageCheckHandle(SteerableToolHandle):
             # when no review states one.
             gate_judgement: Optional[str] = None
             if ask_gate:
-                gate_outcome_note = (
-                    _storage_review_outcome_note(
-                        self._outcome,
-                        lessons=lessons,
-                    )
-                    + gate_origin_note
+                gate_outcome_note = _storage_review_outcome_note(
+                    self._outcome,
+                    lessons=lessons,
                 )
                 decision = await review_gate.decide(
                     client_factory=lambda: _review_gate_client(self._actor),
@@ -3512,18 +3420,11 @@ class _StorageCheckHandle(SteerableToolHandle):
                         "the standalone review",
                     )
 
-                # UNIFY_CAPTURE_ACCEPTED: the review's tools inherit the
-                # answer cell, so a function it stores is tried on its values.
-                # UNIFY_STORE_FROM_SESSION: and the session's cells, so a
-                # function it names is stored as it ran.
+                # UNIFY_STORE_FROM_SESSION: the review's tools inherit the
+                # session's cells, so a function it names is stored as it ran.
                 from unify.function_manager import session_source as _session_source
 
-                with (
-                    _origin_capture.reviewing(
-                        answer_cell,
-                    ),
-                    _session_source.reviewing(trajectory),
-                ):
+                with _session_source.reviewing(trajectory):
                     storage_handle = _start_storage_check_loop(
                         trajectory=trajectory,
                         ask_tools=ask_tools,
@@ -3536,7 +3437,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                         fork_source=fork_source,
                         outcome=self._outcome,
                         lessons=lessons,
-                        origin_note=review_origin_note,
                     )
 
                 if storage_handle is None:

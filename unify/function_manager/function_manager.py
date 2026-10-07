@@ -1567,19 +1567,6 @@ class FunctionManager(BaseFunctionManager):
             if status == "updated" or status.startswith(("updated; ", "added")):
                 results[name] = f"{status}; warning: {warning}"
 
-        # UNIFY_CAPTURE_ACCEPTED: in a review shown the code behind the
-        # session's answer, record each written function's answering call.
-        from . import origin_capture
-
-        if origin_capture.current() is not None:
-            for name in dict.fromkeys(name for name, *_ in parsed):
-                status = results.get(name, "")
-                if not status.startswith(("added", "updated")):
-                    continue
-                note = origin_capture.record_answering_call(self, name)
-                if note:
-                    results[name] = f"{status}; {note}"
-
         # Check for errors and raise if requested
         if raise_on_error:
             errors = {k: v for k, v in results.items() if v.startswith("error")}
