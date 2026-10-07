@@ -2538,10 +2538,8 @@ async def async_tool_loop_inner(
                             args = json.loads(_raw_args)
                         except ValueError as exc:
                             logger.error(
-                                "Malformed tool-call arguments for %s (%d chars): %s",
-                                name,
-                                len(_raw_args),
-                                exc,
+                                f"Malformed tool-call arguments for {name} "
+                                f"({len(_raw_args)} chars): {exc}",
                             )
                             refusal = (
                                 f"⚠️ Error: the arguments for '{name}' were not "
