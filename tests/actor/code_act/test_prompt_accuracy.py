@@ -83,7 +83,6 @@ def test_on_a_persistent_session_without_turn_reviews_is_told_the_session_end(
     monkeypatch,
     framing,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FRAMING", framing)
     prompt = _flat(_prompt(persist=True, turn_reviews=False))
     assert _SESSION_END in prompt
@@ -103,7 +102,6 @@ def test_on_a_session_with_turn_reviews_keeps_the_per_turn_notice(
     monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FRAMING", framing)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
     shipped = _prompt(persist=True, turn_reviews=True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     assert _prompt(persist=True, turn_reviews=True) == shipped
     assert _PER_TURN in shipped
 
@@ -111,7 +109,6 @@ def test_on_a_session_with_turn_reviews_keeps_the_per_turn_notice(
 def test_on_a_one_shot_session_keeps_its_notice(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
     shipped = _prompt(persist=False, turn_reviews=False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     assert _prompt(persist=False, turn_reviews=False) == shipped
 
 
@@ -125,7 +122,6 @@ def test_off_the_persistent_notice_is_as_shipped(monkeypatch):
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize("turn_reviews", [False, True])
 async def test_act_describes_the_schedule_the_session_gets(monkeypatch, turn_reviews):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_TURN_STORAGE_REVIEWS", turn_reviews)
     system = _flat(_system_text(await _first_request(persist=True)))
     assert (_PER_TURN in system) is turn_reviews
@@ -149,7 +145,6 @@ def _tool_descriptions() -> dict[str, str]:
 
 
 def test_on_the_steering_docs_name_the_steer_tool(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     for name, text in _tool_descriptions().items():
         assert "stop_execute_" not in text, name
         assert 'steer(call_id=<id>, action="stop")' in text, name
@@ -164,7 +159,6 @@ def test_off_the_steering_docs_are_as_shipped(monkeypatch):
 
 
 def test_a_corrected_actor_leaves_the_next_actors_docs_alone(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     _tool_descriptions()
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
     assert "``stop_execute_code_<call_id>``" in _tool_descriptions()["execute_code"]
@@ -200,7 +194,6 @@ async def _loop_request(*, lineage=None, parent_chat_context=None) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 async def test_on_a_top_level_actor_is_not_told_of_a_parent(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     request = await _first_request(persist=False)
     assert _PARENT not in _system_text(request)
     assert "outer_user" not in json.dumps(request["messages"])
@@ -230,7 +223,6 @@ async def test_on_the_section_follows_whether_a_parent_exists(
     context,
     expected,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     request = await _loop_request(lineage=lineage, parent_chat_context=context)
     assert (_PARENT in _system_text(request)) is expected
 
@@ -258,7 +250,6 @@ def _clarify_prompt(*, can_clarify: bool) -> str:
 
 
 def test_on_without_the_tool_the_rules_never_mention_clarification(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     prompt = _flat(_clarify_prompt(can_clarify=False))
     assert "request_clarification" not in prompt
     assert "request clarification" not in prompt
@@ -272,7 +263,6 @@ def test_on_without_the_tool_the_rules_never_mention_clarification(monkeypatch):
 def test_on_with_the_tool_the_rules_are_as_shipped(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
     shipped = _clarify_prompt(can_clarify=True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     assert _clarify_prompt(can_clarify=True) == shipped
 
 
@@ -286,7 +276,6 @@ def test_off_the_rules_mention_clarification_as_shipped(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 async def test_act_without_clarification_sends_no_clarification_text(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     request = await _first_request(persist=False, clarification_enabled=False)
     system = _flat(_system_text(request))
     assert "request_clarification" not in system
@@ -359,7 +348,6 @@ async def test_act_tells_its_sandbox_whether_it_can_ask(monkeypatch, clarify):
     from unify.actor.code_act_actor import CodeActActor
     from unify.actor.execution import _CAN_CLARIFY
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", True)
     actor = CodeActActor()
     try:
         with h.scripted(h.ACTOR_REPLIES):

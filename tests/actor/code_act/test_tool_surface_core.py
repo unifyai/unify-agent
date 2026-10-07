@@ -87,7 +87,6 @@ async def test_a_session_finds_runs_and_calls_a_stored_function_in_code(
     core_world,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     actor = _actor(can_store=False)
     actor.function_manager.add_functions(implementations=[DOUBLE])
     replies = (

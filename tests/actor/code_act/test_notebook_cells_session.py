@@ -343,7 +343,6 @@ async def test_stored_function_calls_record_the_same_cases_and_trust(
     from unify.function_manager.function_manager import FunctionManager
     from unify.function_manager.primitives.environment import namespace_object
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     from unify import environment
 

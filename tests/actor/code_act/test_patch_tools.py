@@ -30,7 +30,7 @@ PATCH_TOOLS = {"FunctionManager_patch_function", "GuidanceManager_patch_guidance
 
 @pytest.fixture
 def patch_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
+    """Baked in at the code freeze: the behaviour this pinned is the only path."""
 
 
 # --------------------------------------------------------------------------- #
@@ -54,7 +54,6 @@ def test_the_review_gets_the_patch_tools_only_while_on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
     off = _storage_tool_names()
     assert not PATCH_TOOLS & off
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     on = _storage_tool_names()
     assert on - off == PATCH_TOOLS
     assert off <= on
@@ -96,7 +95,6 @@ def test_the_update_first_order_is_in_both_review_prompts_only_while_on(
     monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
     assert _storage_update_first_note() == ""
     off = _review_prompts()
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     note = _storage_update_first_note()
     assert note.startswith("### Update before you add")
     for tool in PATCH_TOOLS:

@@ -482,7 +482,6 @@ def _case_view(case: store_cases.Case) -> tuple:
 
 @_handle_project
 def test_recorded_cases_are_the_same_with_an_observer_active(weather, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[TOUCH.format(n="a"), TOUCH.format(n="b")])
     namespace = {"primitives": SimpleNamespace(weather=weather)}

@@ -62,9 +62,7 @@ from unify.settings import SETTINGS
 @pytest.fixture
 def library(core_world, monkeypatch):  # noqa: F811
     install_fake_embed(monkeypatch.setattr)
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     return core_world
 
 
@@ -643,7 +641,6 @@ async def test_the_shortlist_lists_the_entry_point_and_its_guidance(
     assert _store_in_another_process()[0]["error"] is None
     db.reset_store()
     monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SNAPSHOT", True)
     requests = await _act_once(
         REQUEST,
         [

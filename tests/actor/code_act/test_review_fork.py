@@ -199,7 +199,6 @@ async def test_the_fork_carries_the_update_first_and_needs_repair_notes(
 ):
     """The two notes the standalone review gets from their switches."""
     switches(discipline=True, fork=True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     repair = (
         "## Needs Repair\n\n- `broken_fn`: 1 failure(s) after 0 pass(es); "
         "last failure: boom\n\n"

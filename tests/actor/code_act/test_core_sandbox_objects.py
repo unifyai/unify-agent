@@ -226,7 +226,6 @@ async def test_functions_run_records_what_execute_function_records(
     music,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     calls = [
         ("remove_tracks_before", {"year": 2000}),
@@ -290,7 +289,6 @@ async def test_a_stored_function_called_by_name_is_recorded_too(
     from unify.function_manager.function_manager import FunctionManager
     from unify.function_manager.primitives.environment import namespace_object
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[REMOVE_BEFORE, DOUBLE])
@@ -525,7 +523,6 @@ async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
 ):
     """The recorded case replays (with its environment answers) against a
     new source, and a change that does something else is refused."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     outs, _records, _used, _installs = await _reuse(
         monkeypatch,
         music,

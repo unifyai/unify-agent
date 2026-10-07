@@ -230,7 +230,6 @@ async def test_a_listed_function_is_callable_in_the_first_cell_only_when_bound(
     bind,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_CORE_BIND_LISTED", bind)
     _pin_ranking(monkeypatch)
     actor = _actor(can_store=False)
@@ -266,7 +265,6 @@ async def test_binding_changes_only_the_list_in_the_first_request(
     monkeypatch,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     _pin_ranking(monkeypatch)
     firsts = {}
     for bind in (False, True):
@@ -353,7 +351,6 @@ def _seed_linked():
 
 @_handle_project
 def test_guidance_reads_are_as_shipped_with_the_switch_off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", False)
     _fm, gm, gid = _seed_linked()
     read = gm.get_guidance(guidance_id=gid)
@@ -365,7 +362,6 @@ def test_guidance_reads_are_as_shipped_with_the_switch_off(monkeypatch):
 
 @_handle_project
 def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
     _fm, gm, gid = _seed_linked()
     expected = ["double_twice(x: int) -> int (async)", "double(x: int) -> int"]
@@ -385,7 +381,6 @@ def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch
 @pytest.mark.timeout(120)
 @_handle_project
 async def test_the_json_guidance_tool_shows_the_linked_functions(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
     fm, gm, gid = _seed_linked()
@@ -415,7 +410,6 @@ async def test_a_core_guidance_read_binds_the_functions_it_names(
     monkeypatch,
     linked,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", linked)
     fm, gm, gid = _seed_linked()
     actor = _actor(function_manager=fm, guidance_manager=gm, can_store=False)

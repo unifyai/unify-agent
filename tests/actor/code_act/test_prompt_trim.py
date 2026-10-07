@@ -59,13 +59,12 @@ def _with_primitives():
 @pytest.fixture(params=["", "lean"])
 def profile(request, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", request.param)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
     return request.param
 
 
 @pytest.fixture
 def trim(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", True)
+    """Baked in at the code freeze: the behaviour this pinned is the only path."""
 
 
 def test_on_by_default():
@@ -106,7 +105,6 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
 def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "on")
     off = _render(_with_primitives())
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", True)
     on = _render(_with_primitives())
     assert on == off
     assert "`primitives.*`" in on[0]
@@ -133,7 +131,6 @@ def test_each_trim_removes_only_its_own_text(trim, monkeypatch):
     import difflib
 
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
     # The reply note names sub-agents outside the agent record (deleted with
     # the record's predecessor in step 5); under the record it is the
     # reply-owner rule.
@@ -158,7 +155,6 @@ def test_the_reply_note_keeps_sub_agents_while_delegation_is_on(trim, monkeypatc
     """A sub-agent can exist (delegation on) though this actor cannot start
     one: the note still says what a sub-agent should do."""
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
     # Outside the agent record (deleted in step 5): see above.
     monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "on")
@@ -208,7 +204,6 @@ def test_a_core_session_prompt_names_no_primitive(trim, monkeypatch):
     from unify.actor.core_surface import PromptSurface
 
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     core = PromptSurface(steering=True)
     kwargs = dict(environments={}, can_store=True, persist=True, core=core)

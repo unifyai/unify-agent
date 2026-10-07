@@ -449,7 +449,6 @@ async def _act(actor, replies) -> list[dict]:
 @pytest.fixture
 def no_gate(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
 
 
 @pytest.fixture

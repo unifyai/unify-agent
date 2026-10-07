@@ -175,7 +175,6 @@ def test_builtin_guidance_counts_only_where_it_is_shown(monkeypatch):
     from unify.guidance_manager.guidance_manager import GuidanceManager
 
     gm = GuidanceManager()
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     assert caa._library_counts(None, gm) == (None, 0)
     monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", True)
     shown = caa._library_counts(None, gm)[1]

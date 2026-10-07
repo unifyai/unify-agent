@@ -139,7 +139,6 @@ def jsonl_session(monkeypatch):
     from unify.cli import Act
 
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
 

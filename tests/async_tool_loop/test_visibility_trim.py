@@ -140,7 +140,6 @@ async def test_on_a_progress_message_still_appends_it(monkeypatch):
 
 
 def test_the_switch_is_read_once_per_loop(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", True)
     data = td.ToolsData({}, client=None, logger=None)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
     assert data._prompt_trim is True

@@ -37,7 +37,6 @@ def switches(monkeypatch):
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", shortlist)
         monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", gate)
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SNAPSHOT", snapshot)
-        monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
 
     return set_
 

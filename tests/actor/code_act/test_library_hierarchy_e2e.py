@@ -58,9 +58,7 @@ NAMES = sorted([*HELPERS, "summarize_pairs"])
 def library(core_world, monkeypatch):  # noqa: F811
     """The core world with a deterministic embedder, cases and trust on."""
     install_fake_embed(monkeypatch.setattr)
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_TRUST", "ramp")
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
     return core_world
 
 
@@ -208,7 +206,6 @@ async def test_store_time_checks_refuse_or_warn_from_code(library, monkeypatch):
         clear_environment_namespaces,
     )
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_INSTANCE_LINT", True)
     clear_environment_namespaces()
     register_environment(
         EnvironmentSurface(
@@ -559,7 +556,6 @@ async def test_a_helper_patch_is_replayed_against_the_calls_the_entry_point_made
     """The helper's cases were recorded through the entry point, so a patch
     that changes what the helper did there is refused, naming the new-name
     route; one that keeps it is stored and the entry point runs it."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
     _store_hierarchy()
     cells = Cells(new_actor())
     try:

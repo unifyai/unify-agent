@@ -79,7 +79,6 @@ def test_functions_first_states_the_preference_plainly(monkeypatch):
 def test_functions_first_has_its_own_step_3_and_keeps_the_compose_frame(
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "minimal")
     minimal_steps = caa._storage_base_instructions()
     minimal_role = caa._review_fork_role()
     monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "functions_first")
@@ -94,8 +93,6 @@ def test_functions_first_has_its_own_step_3_and_keeps_the_compose_frame(
 
 
 def test_functions_first_keeps_the_compose_update_first_order(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "minimal")
     minimal = caa._storage_update_first_note()
     monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "functions_first")
     assert caa._storage_update_first_note() == minimal
