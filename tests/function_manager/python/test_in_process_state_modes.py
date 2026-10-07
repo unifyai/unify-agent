@@ -25,17 +25,25 @@ def set_var(value):
     return f"Set my_var to {value}"
 """.strip()
 
+# The storage check refuses a function that reads a global it cannot
+# resolve. A function that reads session state therefore declares it as
+# module state it assigns (``global x; x = x``): the check accepts it, and
+# the read still fails where the state does not exist.
 GET_VAR_FUNC = """
 def get_var():
+    global my_var
+    my_var = my_var
     return my_var
 """.strip()
 
 CHECK_VAR_FUNC = """
 def check_var():
+    global my_var
     try:
-        return my_var
+        my_var = my_var
     except NameError:
         return "NOT_DEFINED"
+    return my_var
 """.strip()
 
 SIMPLE_FUNC = """
@@ -65,6 +73,8 @@ def set_multiple():
 
 GET_MULTIPLE_VARS_FUNC = """
 def get_multiple():
+    global int_var, str_var, list_var, dict_var
+    int_var, str_var, list_var, dict_var = int_var, str_var, list_var, dict_var
     return {
         "int": int_var,
         "str": str_var,
@@ -82,6 +92,8 @@ async def async_set_var(value):
 
 ASYNC_GET_VAR_FUNC = """
 async def async_get_var():
+    global async_var
+    async_var = async_var
     return async_var
 """.strip()
 

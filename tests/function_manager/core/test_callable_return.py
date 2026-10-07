@@ -358,29 +358,19 @@ async def test_search_return_callable_forward_ref_annotations_just_work():
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_dep_added_after_root_does_not_backfill_depends_on():
+async def test_a_root_is_stored_only_once_its_callee_exists():
     fm = FunctionManager()
 
     a_src = "async def a(x: int) -> int:\n    return (await b(x=x)) + 1\n"
     b_src = "async def b(x: int) -> int:\n    return x + 10\n"
 
-    # Add root first (b doesn't exist yet) → depends_on for a will NOT include b
-    fm.add_functions(implementations=[a_src])
+    # The storage check refuses a root whose callee does not exist yet.
+    with pytest.raises(ValueError, match="`b` is not defined"):
+        fm.add_functions(implementations=[a_src])
+
+    # Once b exists, a is stored with b in its depends_on, and injected.
     fm.add_functions(implementations=[b_src])
-
-    ns = create_base_globals()
-    callables = fm.filter_functions(
-        filter="name = 'a'",
-        limit=1,
-        _return_callable=True,
-        _namespace=ns,
-    )
-    assert "b" not in ns
-    with pytest.raises(NameError):
-        await callables[0](x=1)
-
-    # Now overwrite a AFTER b exists → depends_on is recomputed and injection works
-    fm.add_functions(implementations=[a_src], overwrite=True)
+    fm.add_functions(implementations=[a_src])
 
     ns2 = create_base_globals()
     callables2 = fm.filter_functions(
