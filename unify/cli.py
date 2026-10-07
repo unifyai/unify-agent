@@ -233,7 +233,7 @@ class Chat:
 
     async def start(self) -> None:
         from unify import db
-        from unify.conversation_manager.main import run_conversation_manager
+        from unify.legacy.conversation_manager.main import run_conversation_manager
         from unify.session_details import SESSION_DETAILS
 
         SESSION_DETAILS.populate_from_env()
@@ -255,7 +255,7 @@ class Chat:
     # ── outbound ─────────────────────────────────────────────────────────
 
     async def _listen(self) -> None:
-        from unify.conversation_manager.events import (
+        from unify.legacy.conversation_manager.events import (
             ActorClarificationRequest,
             ActorNotification,
             ActorResult,
@@ -302,7 +302,7 @@ class Chat:
     # ── inbound ──────────────────────────────────────────────────────────
 
     async def send(self, text: str) -> None:
-        from unify.conversation_manager.events import UnifyMessageReceived
+        from unify.legacy.conversation_manager.events import UnifyMessageReceived
 
         attachments = [_stage_attachment(p) for p in self._pending_attachments]
         self._pending_attachments.clear()

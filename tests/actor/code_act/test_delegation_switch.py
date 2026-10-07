@@ -72,14 +72,16 @@ async def test_off_nothing_in_the_request_offers_a_sub_actor():
     assert "primitives.actor" not in json.dumps(request["tools"])
 
 
-def test_the_cli_and_the_conversation_manager_build_from_the_switch():
-    """Both top-level builders take their environments from the switch."""
+def test_the_cli_builds_from_the_switch():
+    """The CLI's top-level builder takes its environments from the switch.
+
+    The legacy conversation manager's half of this check is in
+    tests/legacy/conversation_manager/core/test_delegation_switch_cm.py.
+    """
     import inspect
 
     from unify import cli
-    from unify.conversation_manager.domains import managers_utils
 
-    for module in (cli, managers_utils):
-        source = inspect.getsource(module)
-        assert "top_level_environments()" in source
-        assert "ActorEnvironment(), *registered_environments()" not in source
+    source = inspect.getsource(cli)
+    assert "top_level_environments()" in source
+    assert "ActorEnvironment(), *registered_environments()" not in source

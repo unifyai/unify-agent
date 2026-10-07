@@ -22,7 +22,6 @@ pytestmark = pytest.mark.no_unify_context
 ACTOR_SYSTEM_PROMPT_BUDGET = 10_400
 ACTOR_ACT_TOOL_SCHEMAS_BUDGET = 14_500
 STORAGE_REVIEW_DOCTRINE_BUDGET = 4_700
-CM_SYSTEM_PROMPT_BUDGET = 11_100
 
 
 @pytest.fixture(autouse=True)
@@ -77,16 +76,6 @@ def _storage_review_doctrine() -> str:
     return _storage_doctrine_sections() + _storage_base_instructions()
 
 
-def _cm_system_prompt() -> str:
-    from unify.conversation_manager.prompt_builders import build_system_prompt
-
-    return build_system_prompt(
-        bio="A helpful assistant.",
-        first_name="Alice",
-        surname="Smith",
-    ).flatten()
-
-
 _CASES = {
     "actor_system_prompt": (_actor_system_prompt, ACTOR_SYSTEM_PROMPT_BUDGET),
     "actor_act_tool_schemas": (
@@ -97,7 +86,6 @@ _CASES = {
         _storage_review_doctrine,
         STORAGE_REVIEW_DOCTRINE_BUDGET,
     ),
-    "cm_system_prompt": (_cm_system_prompt, CM_SYSTEM_PROMPT_BUDGET),
 }
 
 

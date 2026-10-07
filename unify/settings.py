@@ -15,7 +15,6 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from unify.actor.settings import ActorSettings
-from unify.conversation_manager.settings import ConversationSettings
 from unify.function_manager.settings import FunctionSettings
 from unify.guidance_manager.settings import GuidanceSettings
 
@@ -49,6 +48,38 @@ def _step_cap_reply_mode(v: Any) -> Optional[str]:
     if value == "last_word":
         return "last_word"
     return None
+
+
+class ConversationSettings(BaseSettings):
+    """The conversation-layer settings (env prefix ``UNIFY_CONVERSATION_``).
+
+    Defined here, not in the legacy conversation manager
+    (``unify/legacy/conversation_manager/settings.py`` holds the same class),
+    because the slow-brain model resolver in ``unify.common.llm_client`` and
+    the manager registry read ``SETTINGS.conversation``, and nothing on the
+    actor or CLI path may import ``unify.legacy``.
+
+    Attributes:
+        IMPL: Implementation type - "real" or "simulated".
+        SLOW_BRAIN_MODEL: Shared ConversationManager slow-brain model. Empty
+            falls back to the global shared model (UNIFY_MODEL / assistant
+            default resolution). Override via
+            UNIFY_CONVERSATION_SLOW_BRAIN_MODEL.
+        SLOW_BRAIN_REASONING_EFFORT: Reasoning effort paired with
+            SLOW_BRAIN_MODEL when that setting is non-empty. Empty leaves
+            call-site effort intact. Override via
+            UNIFY_CONVERSATION_SLOW_BRAIN_REASONING_EFFORT.
+    """
+
+    SLOW_BRAIN_MODEL: str = "openai/gpt-5.6-terra@openrouter"
+    SLOW_BRAIN_REASONING_EFFORT: str = "high"
+    IMPL: str = "real"
+
+    model_config = SettingsConfigDict(
+        env_prefix="UNIFY_CONVERSATION_",
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 
 class ProductionSettings(BaseSettings):

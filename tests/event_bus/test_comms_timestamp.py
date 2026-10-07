@@ -2,8 +2,7 @@
 
 Verifies that:
 1. CommsPayload.timestamp is typed as datetime (not str)
-2. A chat event's timestamp survives conversion to its EventBus event
-3. Publishing Comms events with timestamps works without type mismatch errors
+2. Publishing Comms events with timestamps works without type mismatch errors
 """
 
 import pytest
@@ -13,7 +12,6 @@ from typing import get_type_hints, get_origin, get_args, Union
 from tests.helpers import _handle_project
 from unify.events.event_bus import EventBus, Event as BusEvent
 from unify.events.types.comms import CommsPayload
-from unify.conversation_manager.events import UnifyMessageReceived
 
 # -------------------------------------------------------------------
 #  CommsPayload timestamp type tests
@@ -45,26 +43,6 @@ def test_comms_payload_coerces_string_to_datetime():
     payload = CommsPayload(timestamp=iso_str, content="test")
     assert isinstance(payload.timestamp, dt.datetime)
     assert payload.timestamp.isoformat() == iso_str
-
-
-# -------------------------------------------------------------------
-#  Chat event -> BusEvent conversion
-# -------------------------------------------------------------------
-
-
-def test_unify_message_to_bus_event_keeps_timestamp():
-    """UnifyMessageReceived carries its timestamp onto the bus event and payload."""
-    original_ts = dt.datetime(2025, 6, 15, 14, 30, 0, tzinfo=dt.UTC)
-    original = UnifyMessageReceived(
-        timestamp=original_ts,
-        content="Message from console",
-    )
-
-    bus_event = original.to_bus_event()
-    assert bus_event.type == "Comms"
-    assert bus_event.payload_cls == "UnifyMessageReceived"
-    assert bus_event.timestamp == original_ts
-    assert bus_event.payload["timestamp"] == original_ts
 
 
 # -------------------------------------------------------------------
