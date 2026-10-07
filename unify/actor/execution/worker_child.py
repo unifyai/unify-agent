@@ -871,6 +871,55 @@ async def _ready(value: Any) -> Any:
     return value
 
 
+# ``query_llm(..., response_format=Model)`` with a model a cell defined: the
+# class cannot cross to the harness, so its JSON schema goes in the OpenAI
+# form the harness already takes as a dict, and the answer (a dict) is
+# validated here into the cell's own class.
+_QUERY_LLM = "query_llm"
+MAX_SCHEMA_CHARS = 64 * 1024
+
+
+def _cell_response_model(label: str, kwargs: dict) -> Any:
+    """The cell-defined pydantic model a ``query_llm`` call names as its
+    ``response_format``, or None (anything else crosses as it does today)."""
+    if label != _QUERY_LLM:
+        return None
+    value = kwargs.get("response_format")
+    if not (isinstance(value, type) and _cell_written(value)):
+        return None
+    from pydantic import BaseModel
+
+    return value if issubclass(value, BaseModel) else None
+
+
+def _response_format_of(model: Any) -> dict:
+    """*model*'s JSON schema as plain data, refused when it cannot be one."""
+    where = f"response_format {model.__name__} of {_QUERY_LLM}"
+    try:
+        text = json.dumps(model.model_json_schema())
+    except Exception as exc:  # noqa: BLE001 - the schema is the model's own
+        raise BoundaryRefusal(
+            f"{where}: its JSON schema could not be built "
+            f"({type(exc).__name__}: {exc})",
+        ) from None
+    if len(text) > MAX_SCHEMA_CHARS:
+        raise BoundaryRefusal(
+            f"{where}: its JSON schema is {len(text)} characters, over the "
+            f"{MAX_SCHEMA_CHARS} that may cross to the harness",
+        )
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": model.__name__[:64], "schema": json.loads(text)},
+    }
+
+
+def _validated(model: Any, value: Any) -> Any:
+    """The answer as an instance of the cell's *model*; pydantic's
+    ``ValidationError`` when it does not fit (as in-process). An answer that
+    is not a dict passes as it is."""
+    return model.model_validate(value) if isinstance(value, dict) else value
+
+
 # ---------------------------------------------------------------------------
 # The worker
 # ---------------------------------------------------------------------------
@@ -1084,6 +1133,9 @@ class Worker:
     def invoke(self, proxy: _Remote, args: tuple, kwargs: dict) -> Any:
         label = proxy._label
         target = object.__getattribute__(proxy, "_target")
+        model = _cell_response_model(label, kwargs)
+        if model is not None:
+            kwargs = {**kwargs, "response_format": _response_format_of(model)}
         enc_args = [
             self.encode_arg(a, f"argument {i + 1} of {label}")
             for i, a in enumerate(args)
@@ -1094,13 +1146,15 @@ class Worker:
         }
         fields = {"target": target, "args": enc_args, "kwargs": enc_kwargs}
         if object.__getattribute__(proxy, "_async"):
-            return self._call_async(fields)
+            return self._call_async(fields, model)
         value, msg = self.request_sync("call", **fields)
+        if model is not None:
+            value = _validated(model, value)
         return _ready(value) if msg.get("coroutine") else value
 
-    async def _call_async(self, fields: dict) -> Any:
+    async def _call_async(self, fields: dict, model: Any = None) -> Any:
         value, _ = await self.request_async("call", **fields)
-        return value
+        return value if model is None else _validated(model, value)
 
     # -- output ----------------------------------------------------------------
     def _write(self, parts: list, text: str) -> None:

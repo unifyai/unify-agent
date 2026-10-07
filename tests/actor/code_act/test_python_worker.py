@@ -273,6 +273,60 @@ async def test_a_cells_typed_model_resolves_against_the_session_module(
         await ex.close()
 
 
+@pytest.fixture
+def answers(monkeypatch) -> dict:
+    """``query_llm`` as a fake: records each ``response_format`` it receives
+    and answers ``answers["next"]`` (as query_llm does for a schema dict)."""
+    import unify.common.reasoning as reasoning
+
+    state: dict = {"sent": [], "next": None}
+
+    async def fake_query_llm(prompt, *, response_format=None, **_kwargs):
+        state["sent"].append(response_format)
+        return state["next"]
+
+    monkeypatch.setattr(reasoning, "query_llm", fake_query_llm)
+    return state
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answers):
+    ex, _ = executor_with_fakes()
+    try:
+        answers["next"] = {"ids": [1, 2], "tags": [{"label": "a"}]}
+        _, res = await run(
+            ex,
+            TYPED_MODEL + "r = await query_llm('Extract.', response_format=Record)\n"
+            "f'{type(r) is Record}:{r.tags[0].label}'",
+        )
+        assert res["error"] is None, res["error"]
+        assert res["result"] == "True:a"
+        (sent,) = answers["sent"]
+        assert sent["type"] == "json_schema" and sent["json_schema"]["name"] == "Record"
+        assert set(sent["json_schema"]["schema"]["properties"]) == {"ids", "tags"}
+        # An answer that does not fit the cell's model raises pydantic's error
+        # in the cell, as in-process.
+        answers["next"] = {"ids": "not a list"}
+        _, res = await run(
+            ex,
+            "await query_llm('Extract.', response_format=Record)",
+        )
+        assert "ValidationError" in res["error"] and "ids" in res["error"]
+        # A schema too large to send is refused before anything crosses.
+        _, res = await run(
+            ex,
+            "fields = {f'field_{i}': int for i in range(4000)}\n"
+            "Wide = type('Wide', (BaseModel,), "
+            "{'__module__': __name__, '__annotations__': fields})\n"
+            "await query_llm('Extract.', response_format=Wide)",
+        )
+        assert "BoundaryRefusal" in res["error"] and "JSON schema is" in res["error"]
+        assert len(answers["sent"]) == 2
+    finally:
+        await ex.close()
+
+
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
