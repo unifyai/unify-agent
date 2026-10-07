@@ -263,8 +263,11 @@ async def test_a_message_after_the_session_ended_is_refused_not_answered(
         # The observation the live session took is in the conversation.
         assert OBSERVATION in [m.get("content") for m in review]
     assert review[-1]["role"] == "user"
+    # Forked, the appended message is the baked unified framing
+    # (UNIFY_REVIEW_FRAMING=unified), whose heading the actor's constant holds.
+    fork_heading = caa._REVIEW_FORK_ROLE_UNIFIED.split("\n", 1)[0]
     assert review[-1]["content"].startswith(
-        "## Storage Review" if forked else "Review the trajectory",
+        fork_heading if forked else "Review the trajectory",
     )
 
 
