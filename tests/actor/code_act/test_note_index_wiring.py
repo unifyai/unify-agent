@@ -173,8 +173,17 @@ async def test_on_a_note_whose_writer_the_checker_did_not_accept_is_labelled(
     monkeypatch,
     solved,
 ):
-    # The checker's outcome is kept in the request log (a listing switch keeps it).
-    monkeypatch.setattr(SETTINGS, "UNIFY_ORIGIN_PROVENANCE", True)
+    # The note index keeps the checker's outcome itself: no listing or
+    # provenance switch is on.
+    for name in (
+        "UNIFY_ORIGIN_PROVENANCE",
+        "UNIFY_LISTING_PROVENANCE",
+        "UNIFY_LESSON_STATUS",
+        "UNIFY_LISTING_USAGE",
+        "UNIFY_ENTRY_RECORD",
+    ):
+        monkeypatch.setattr(SETTINGS, name, False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROTECT_VERIFIED", "")
     actor = caa.CodeActActor()
     _seed(actor, EXPLODE, "explode_payments")
     assert _in_task(WRITTEN_FOR, lambda: task_origin.record_outcome(solved))

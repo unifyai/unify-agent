@@ -950,8 +950,10 @@ class ProductionSettings(BaseSettings):
     # docstring line and its own requests, built at read time), each with the
     # functions it links, which are bound in the sandbox as a library read
     # binds them and never called by the harness; a note whose latest
-    # writer's session was recorded as not accepted says so, and nothing is
-    # chosen or described by shared words (note-index-v1: the job's
+    # writer's session the checker did not accept says so (this switch keeps
+    # checker outcomes in ``<UNIFY_HOME>/request_log.sqlite`` itself; the
+    # review's judgement never labels), and nothing is chosen or described
+    # by shared words (note-index-v1: the job's
     # function available on 79.8% of AppWorld returns against 34.9%;
     # unify/actor/note_index.py). An actor refuses to start with this on and
     # those records off. Off: as shipped.

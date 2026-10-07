@@ -448,11 +448,19 @@ def text_key(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _note_index_enabled() -> bool:
+    """``UNIFY_NOTE_INDEX`` (with request records on): it labels a note whose writer the checker did not accept."""
+    from unify.settings import SETTINGS
+
+    return enabled() and bool(getattr(SETTINGS, "UNIFY_NOTE_INDEX", False))
+
+
 def _checker_kept() -> bool:
     return (
         provenance_enabled()
         or listing_notes_enabled()
         or (enabled() and _records_requests())
+        or _note_index_enabled()
     )
 
 
@@ -460,9 +468,10 @@ def record_outcome(solved: Any, *, source: str = CHECKER) -> bool:
     """Keep the current request's outcome from *source*; whether it was kept.
 
     *source* :data:`CHECKER` is the outcome the environment posted
-    (``UNIFY_OUTCOME``), kept while ``UNIFY_ORIGIN_PROVENANCE`` or a switch
+    (``UNIFY_OUTCOME``), kept while ``UNIFY_ORIGIN_PROVENANCE``, a switch
     that shows outcomes in the shortlist (``UNIFY_LISTING_PROVENANCE``,
-    ``UNIFY_LESSON_STATUS``, ``UNIFY_LISTING_USAGE``) is on;
+    ``UNIFY_LESSON_STATUS``, ``UNIFY_LISTING_USAGE``), or
+    ``UNIFY_NOTE_INDEX`` (whose trust label reads it) is on;
     :data:`REVIEW` is the storage review's judgement from the conversation,
     kept while ``UNIFY_REVIEW_OUTCOME`` is on. *solved* is ``True`` or
     ``False``; anything else (unknown) keeps nothing. The latest outcome of

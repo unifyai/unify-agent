@@ -31,10 +31,11 @@ With the switch on, for a top-level task:
   each with its recorded cases under ``UNIFY_FUNCTION_CASES``. Nothing is
   chosen or described by shared words or identifiers.
 * **Trust label** (ADR-16 (e)). A note (or a stand-in's function) whose
-  latest writer's session is recorded as not accepted -- the checker's
-  outcome, else the storage review's, kept under that session's request
-  (:func:`unify.function_manager.task_origin.record_outcome`) -- says
-  :data:`FAILED_WRITER`. The latest writer is the session that wrote its
+  latest writer's session the checker did not accept -- its outcome kept
+  under that session's request
+  (:func:`unify.function_manager.task_origin.record_outcome`, which this
+  switch keeps on its own) -- says :data:`FAILED_WRITER`. The storage
+  review's own judgement is not a verdict (ADR-2) and never labels. The latest writer is the session that wrote its
   current content (``UNIFY_PROTECT_VERIFIED``), else the latest request its
   origin records. An unknown outcome says nothing. The label informs; it
   never hides or re-ranks an entry.
@@ -237,15 +238,42 @@ def rank(
 # ── the evidence already kept ────────────────────────────────────────────
 
 
+def checker_outcome(key: Optional[str]) -> Optional[bool]:
+    """The checker's outcome kept for the session whose request hashes to *key*; ``None`` when none.
+
+    The storage review's judgement (source ``review``) is never read.
+    """
+    import sqlite3
+    from contextlib import closing
+
+    from unify.function_manager import task_origin
+
+    if not key:
+        return None
+    path = task_origin.request_log_path()
+    if not path.exists():
+        return None
+    try:
+        with closing(task_origin._connect_outcomes(path)) as conn:
+            row = conn.execute(
+                "SELECT solved FROM request_outcomes WHERE text_key = ? AND source = ?",
+                (key, task_origin.CHECKER),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning(f"note index: outcome not read: {type(exc).__name__}: {exc}")
+        return None
+    return None if row is None else bool(row[0])
+
+
 def failed_writer(row: Dict[str, Any]) -> bool:
-    """Whether the session that last wrote *row* is recorded as not accepted.
+    """Whether the checker did not accept the session that last wrote *row*.
 
     The writer is the session that wrote its current content
     (``UNIFY_PROTECT_VERIFIED``), else the latest request its origin
-    records; its outcome is looked up by that request's hash (the checker's,
-    else the review's). Unknown is ``False``.
+    records; its checker outcome is looked up by that request's hash. No
+    checker outcome is ``False``, whatever the review judged.
     """
-    from unify.function_manager import entry_record, task_origin
+    from unify.function_manager import task_origin
     from unify.function_manager.verified_guard import content_by
 
     key = content_by(row)
@@ -254,7 +282,7 @@ def failed_writer(row: Dict[str, Any]) -> bool:
         if not origins:
             return False
         key = task_origin.text_key(origins[-1])
-    return entry_record.outcome_of_key(key) is False
+    return checker_outcome(key) is False
 
 
 def _cases(shown: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
@@ -446,6 +474,7 @@ def binder(actor: Any, sandbox: Any, core_session: Any = None) -> Optional[Binde
 
 __all__ = [
     "CALL_FORM",
+    "checker_outcome",
     "FAILED_WRITER",
     "HEADER",
     "INTRO",

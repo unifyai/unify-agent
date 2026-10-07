@@ -15,6 +15,8 @@ from unify.actor import note_index as ni
 from unify.function_manager import task_origin
 from unify.settings import ProductionSettings, SETTINGS
 
+_CHECKER_OUTCOME = ni.checker_outcome
+
 
 def _fn(fid, name, doc, origin=""):
     metadata = {task_origin.REQUESTS_FIELD: [origin]} if origin else {}
@@ -72,12 +74,10 @@ def on(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def outcomes(monkeypatch):
-    """The kept outcome of each writer's session, by its request (unknown unless set)."""
-    from unify.function_manager import entry_record
-
+    """The checker's outcome of each writer's session, by its request (unknown unless set)."""
     kept: dict[str, bool] = {}
     by_key = lambda: {task_origin.text_key(t): v for t, v in kept.items()}
-    monkeypatch.setattr(entry_record, "outcome_of_key", lambda key: by_key().get(key))
+    monkeypatch.setattr(ni, "checker_outcome", lambda key: by_key().get(key))
     return kept
 
 
@@ -499,6 +499,44 @@ def test_a_stand_in_whose_function_writer_failed_is_labelled(on, outcomes):
     outcomes["Refund invoice 12."] = False
     heads = _headings(_section(functions, [], "Refund invoice 40."))
     assert heads == [f"### {ni.STAND_IN}: Refund an invoice. {ni.FAILED_WRITER}"]
+
+
+def _log_outcome(path, text, source, solved):
+    from contextlib import closing
+
+    with closing(task_origin._connect_outcomes(path)) as conn, conn:
+        conn.execute(
+            "INSERT INTO request_outcomes (text_key, source, solved) VALUES (?, ?, ?)",
+            (task_origin.text_key(text), source, int(solved)),
+        )
+
+
+def test_only_the_checkers_verdict_labels_never_the_reviews(
+    on,
+    monkeypatch,
+    tmp_path,
+):
+    """ADR-2: the storage review's judgement is not a verdict."""
+    log = tmp_path / "request_log.sqlite"
+    monkeypatch.setattr(task_origin, "request_log_path", lambda: log)
+    monkeypatch.setattr(ni, "checker_outcome", _CHECKER_OUTCOME)
+    notes = [
+        _note(1, "Review only", "x", origin="Total my payment."),
+        _note(2, "Checker failed", "y", origin="Total my payment and refund."),
+        _note(3, "Checker accepted", "z", origin="Total my payment, refund, invoice."),
+    ]
+    _log_outcome(log, "Total my payment.", task_origin.REVIEW, False)
+    _log_outcome(log, "Total my payment and refund.", task_origin.CHECKER, False)
+    # The review said accepted; the checker's "not accepted" still labels.
+    _log_outcome(log, "Total my payment and refund.", task_origin.REVIEW, True)
+    _log_outcome(log, "Total my payment, refund, invoice.", task_origin.CHECKER, True)
+    _log_outcome(log, "Total my payment, refund, invoice.", task_origin.REVIEW, False)
+    heads = _headings(_section([], notes, "Total my payment."))
+    assert heads == [
+        "### Note 1: Review only",
+        f"### Note 2: Checker failed {ni.FAILED_WRITER}",
+        "### Note 3: Checker accepted",
+    ]
 
 
 def test_the_label_never_hides_or_reranks(on, outcomes):
