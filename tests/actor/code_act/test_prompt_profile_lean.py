@@ -46,12 +46,6 @@ def test_lean_opens_with_the_role_and_the_reply_format():
     assert "each reply follows that format exactly" in _flat(prompt.split("###")[1])
 
 
-def test_lean_puts_the_reply_protocol_note_right_after_the_role():
-    prompt = _prompt()
-    assert prompt.startswith(f"{pb._LEAN_ROLE}\n\n{pb._REPLY_PROTOCOL_NOTE}")
-    assert prompt.count("### Actions Taken By Replying") == 1
-
-
 @pytest.mark.parametrize(
     "gone",
     [
@@ -86,7 +80,6 @@ def test_lean_keeps_the_mechanisms():
         "### Python First",
         "### Execution",
         "### Verify Before Scaling",
-        "### Function & Guidance Library",  # library: its own switches
         "### Skill Storage",
         "### Current Time",
         "### Workspace",
@@ -162,6 +155,6 @@ async def test_lean_act_sends_the_lean_prompt_and_tools():
     tools = _descriptions(later)
     assert "send_notification" not in tools
     assert "single-call rule" not in tools["execute_code"]
-    assert "preferred tool" not in tools["execute_function"]
-    assert "MUST" not in tools["install_python_packages"]
+    # The core surface sends execute_code alone.
+    assert set(tools) == {"execute_code"}
     assert "stop_execute_" not in json.dumps(tools)

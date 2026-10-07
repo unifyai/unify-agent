@@ -67,24 +67,14 @@ def _actor_act_tool_schemas() -> str:
 
 
 def _storage_review_doctrine() -> str:
-    # The static prefix every skill-librarian loop pays, in prompt order.
+    # The static prefix every skill-librarian loop pays, in prompt order: the
+    # minimal rulebook (baked in at the code freeze) and the instructions.
     from unify.actor.code_act_actor import (
-        _STORAGE_BASE_INSTRUCTIONS,
-        _STORAGE_RECURRING_DELIVERABLE,
-        _STORAGE_SUB_AGENT_PATTERNS,
-        _STORAGE_TWO_STORES,
-        _STORAGE_WHAT_CAN_BE_STORED,
+        _storage_base_instructions,
+        _storage_doctrine_sections,
     )
 
-    return "".join(
-        [
-            _STORAGE_WHAT_CAN_BE_STORED,
-            _STORAGE_TWO_STORES,
-            _STORAGE_SUB_AGENT_PATTERNS,
-            _STORAGE_RECURRING_DELIVERABLE,
-            _STORAGE_BASE_INSTRUCTIONS,
-        ],
-    )
+    return _storage_doctrine_sections() + _storage_base_instructions()
 
 
 def _cm_system_prompt() -> str:
