@@ -241,7 +241,7 @@ class ProductionSettings(BaseSettings):
     # Leave a stored function that cannot be loaded out of a search, list or
     # filter that loads its results, naming it in a warning, instead of
     # failing the whole result.
-    UNIFY_SEARCH_SKIP_UNLOADABLE: bool = False
+    UNIFY_SEARCH_SKIP_UNLOADABLE: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Namespaces and the Storage Check
@@ -256,7 +256,7 @@ class ProductionSettings(BaseSettings):
     # globals and the registered namespaces, and it must load as a search
     # would load it; otherwise ``add_functions`` refuses it and says why.
     # Empty stores without the check.
-    UNIFY_STORE_CHECK: str = ""
+    UNIFY_STORE_CHECK: str = "resolve"
     # On: after ``add_functions`` or ``patch_function`` stores a function,
     # the stored library is read for ``await primitives.<namespace>.<method>(...)``
     # where the registered environment method is synchronous (awaiting its
