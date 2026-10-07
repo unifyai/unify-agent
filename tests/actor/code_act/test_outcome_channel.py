@@ -248,11 +248,13 @@ async def test_the_outcome_reaches_the_forked_review(switches):
     assert note["message"] == REVIEW_SUMMARY
     review = requests[3]
     text = review["messages"][-1]["content"]
-    assert text.startswith("## Storage Review")
+    # the fork's message is the curation step, closed by what to do now
+    assert text.startswith("## Curating The Library")
     assert "## Completed Trajectory" not in text
     assert outcome_mod.OUTCOME_HEADER in text
     assert "- Solved: no" in text
-    assert text.endswith(f"## Final Result\n\n{SESSION_REPLY}")
+    assert f"## Final Result\n\n{SESSION_REPLY}\n\n## Now\n\n" in text
+    assert text.index(outcome_mod.OUTCOME_HEADER) < text.index("## Final Result")
     # still a fork: the session's own requests are its prefix
     sent = json.dumps(requests[2]["messages"], default=str)
     assert (
