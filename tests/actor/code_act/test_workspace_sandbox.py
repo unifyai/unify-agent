@@ -405,17 +405,29 @@ def test_refusals_are_tool_input_errors_that_name_the_rule():
     }
 
 
-def test_the_harness_installs_packages_unconfined(world, monkeypatch, tmp_path):
-    """Dependency installs started from inside a sandboxed cell are the harness's own."""
+@needs_bwrap
+def test_the_harness_installs_packages_under_its_own_wrapping(
+    world,
+    monkeypatch,
+    tmp_path,
+):
+    """Dependency installs started from inside a sandboxed cell are the harness's own.
+
+    A cell's subprocess confinement never wraps them (so never twice): the
+    installer wraps ``uv pip install`` itself, with the environment writable
+    (tests/actor/code_act/test_install_confinement.py).
+    """
     import subprocess
 
     from unify import environment
 
     monkeypatch.setattr(sys, "path", list(sys.path))
     confinement_seen = []
+    commands = []
 
     def fake_run(argv, **kwargs):
         confinement_seen.append(sandbox._CONFINE.get())
+        commands.append(list(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     policy = sandbox.build_policy(fresh=True)
@@ -426,5 +438,8 @@ def test_the_harness_installs_packages_unconfined(world, monkeypatch, tmp_path):
         monkeypatch.setattr(environment.subprocess, "run", fake_run)
         environment.install(["humanize"])
     assert outside.exists()
-    # ``uv venv`` then ``uv pip install``, neither under the sandbox.
+    # ``uv venv`` (the harness's own command), then ``uv pip install``, which
+    # the installer wrapped in bubblewrap; neither under the cell's policy.
     assert confinement_seen == [None, None]
+    assert commands[0][0] == "uv"
+    assert os.path.basename(commands[1][0]) == "bwrap"

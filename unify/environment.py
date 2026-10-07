@@ -10,21 +10,63 @@ later task and session.
 A stored function records the packages it imports as PEP 508 requirement
 strings (its ``dependencies``); :func:`ensure` installs whichever of them
 are missing right before the function runs.
+
+The packages are the model's choice, and installing one can run its build
+steps (an sdist's ``setup.py`` or build backend). So ``uv`` never gets the
+harness's environment, which holds the provider credentials: it gets the
+few variables an install needs (:func:`installer_env`). With
+``UNIFY_WORKSPACE=sandboxed`` the install also runs inside bubblewrap under
+the workspace policy (unify/sandbox.py): ``/`` read-only, credential
+locations and ``.env`` files hidden, and only this environment and the
+installer's own cache writable. It keeps the host's network, as it had
+before, since it has to reach the package index.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from packaging.requirements import Requirement
 
+from unify import sandbox
 from unify.db import store_home
 from unify.sandbox import unconfined
+
+# What an install passes on from the harness's environment: finding uv and
+# the home directory, the locale, the index and proxy configuration, and
+# the CA bundle. Credential-named variables are dropped even from these.
+_INSTALLER_ENV = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "UV_INDEX",
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_NATIVE_TLS",
+    "UV_OFFLINE",
+    "UV_CACHE_DIR",
+    "XDG_CACHE_HOME",
+)
 
 
 def environment_dir() -> Path:
@@ -61,43 +103,121 @@ def activate() -> Path | None:
     return packages
 
 
+def installer_cache() -> Path:
+    """The confined installer's own uv cache, beside the environment.
+
+    Never the host's uv cache: what a build step writes there would reach
+    every later install on the machine, the harness's own included.
+    """
+    return store_home() / "uv-cache"
+
+
+def installer_env() -> Dict[str, str]:
+    """The environment ``uv`` runs with: :data:`_INSTALLER_ENV`, never the
+    harness's (which holds the provider credentials)."""
+    return sandbox.scrubbed_env(
+        {name: os.environ[name] for name in _INSTALLER_ENV if name in os.environ},
+    )
+
+
+def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str]]:
+    """``(argv, env, cwd)`` for running the installer command *argv*.
+
+    With ``UNIFY_WORKSPACE=sandboxed``, *argv* runs inside bubblewrap under
+    the workspace policy, with this environment and the installer's cache
+    bound writable and the host's network kept.
+    """
+    env = installer_env()
+    if not sandbox.enabled():
+        return argv, env, None
+    venv = environment_dir()
+    cache = installer_cache()
+    for path in (venv, cache):
+        path.mkdir(parents=True, exist_ok=True)
+    policy = sandbox.build_policy()
+    if Path(os.path.realpath(venv)) not in policy.readonly_state:
+        policy = sandbox.build_policy(fresh=True)
+    env.pop("XDG_CACHE_HOME", None)
+    env.update(
+        {
+            "UV_CACHE_DIR": str(cache),
+            # The cache and the environment are separate mounts, so uv's
+            # hardlinks between them would fail; copy without the warning.
+            "UV_LINK_MODE": "copy",
+            "TMPDIR": "/tmp",
+        },
+    )
+    # The environment as the working directory: no project configuration
+    # (pyproject.toml, uv.toml) a cell wrote in the workspace applies.
+    wrapped = sandbox.wrap_argv(
+        argv,
+        policy,
+        cwd=str(venv),
+        writable=[venv, cache],
+        share_network=True,
+    )
+    return wrapped, env, str(venv)
+
+
 def _create() -> Path:
     """Create the environment with the running interpreter and activate it."""
     if not environment_python().exists():
         environment_dir().parent.mkdir(parents=True, exist_ok=True)
+        # The harness's own command (no package is named), so not confined;
+        # the worker may already have created the directory, empty.
         with unconfined():
             subprocess.run(
                 ["uv", "venv", "--python", sys.executable, str(environment_dir())],
                 capture_output=True,
                 text=True,
                 check=True,
+                env=installer_env(),
             )
     site_packages().mkdir(parents=True, exist_ok=True)
     return activate()
+
+
+def _check_specifiers(specifiers: List[str]) -> None:
+    """Refuse an installer option among *specifiers*: each names a package."""
+    for specifier in specifiers:
+        if not isinstance(specifier, str) or specifier.lstrip().startswith("-"):
+            raise ValueError(
+                f"{specifier!r} is not an installer option the environment "
+                "accepts: name packages only, as requirement specifiers "
+                "(e.g. 'pandas>=2', 'pkg @ git+https://github.com/user/repo.git').",
+            )
 
 
 def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
     """Install *specifiers* into the environment and make them importable.
 
     Returns ``success``, the installer's ``stdout`` / ``stderr`` and the
-    requested ``packages``.
+    requested ``packages``. Raises ``ValueError`` for an installer option
+    among *specifiers* before anything runs.
     """
+    specifiers = list(specifiers)
+    _check_specifiers(specifiers)
     _create()
-    # The harness installs a stored function's declared dependencies even when
-    # the function runs from a sandboxed cell (UNIFY_WORKSPACE).
+    argv, env, cwd = _installer(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(environment_python()),
+            *specifiers,
+        ],
+    )
+    # Never wrapped by a cell's subprocess confinement (UNIFY_WORKSPACE): the
+    # command is the harness's, and already wrapped when the sandbox is on.
     with unconfined():
         result = subprocess.run(
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                str(environment_python()),
-                *specifiers,
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
+            cwd=cwd,
         )
     importlib.invalidate_caches()
     return {

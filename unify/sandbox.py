@@ -26,6 +26,11 @@ bubblewrap, a path :func:`check_readable` rejects) raises
 rule that hid it; an OS error in a shell cell's output gets a note naming the
 rule behind it (:func:`annotate_refusals`).
 
+The harness's package installer (unify/environment.py) runs under the same
+policy with two additions it asks for itself: the workspace environment and
+the installer's cache are writable, and it keeps the host's network to reach
+the package index.
+
 Without bubblewrap nothing runs: the harness refuses rather than run the
 command unconfined. What this does not confine is Python cells themselves:
 they run in the harness's own process (``exec``), so only the subprocesses they
@@ -427,8 +432,15 @@ def wrap_argv(
     policy: SandboxPolicy,
     *,
     cwd: Optional[str] = None,
+    writable: Sequence[Path] = (),
+    share_network: bool = False,
 ) -> list[str]:
-    """*argv* as a bubblewrap command line under *policy*."""
+    """*argv* as a bubblewrap command line under *policy*.
+
+    *writable* paths are bound read-write after everything else, and
+    *share_network* keeps the host's network instead of the policy's; only
+    the harness's package installer asks for either (unify/environment.py).
+    """
     bwrap = require_bwrap()
     notices = policy.notices_dir or _notices_dir()
     args: list[str] = [
@@ -458,8 +470,13 @@ def wrap_argv(
     for path in policy.readonly_state:
         args += ["--ro-bind", str(path), str(path)]
     args += ["--bind", str(policy.workspace), str(policy.workspace)]
+    extra = [Path(os.path.realpath(p)) for p in writable]
+    for path in extra:
+        args += ["--bind", str(path), str(path)]
     command = list(argv)
-    if policy.network == "proxy":
+    if share_network:
+        args.append("--share-net")
+    elif policy.network == "proxy":
         bridge = _proxy_bridge(policy.proxy_port)
         args += ["--ro-bind", str(bridge.directory), _PROXY_MOUNT]
         command = [
@@ -473,9 +490,10 @@ def wrap_argv(
             *command,
         ]
     workdir = cwd or os.getcwd()
-    if policy.readable_violation(Path(workdir)) is not None or not os.path.isdir(
-        workdir,
-    ):
+    bound = any(_within(Path(os.path.realpath(workdir)), p) for p in extra)
+    if (
+        not bound and policy.readable_violation(Path(workdir)) is not None
+    ) or not os.path.isdir(workdir):
         workdir = str(policy.workspace)
     args += ["--chdir", workdir, "--"]
     return args + command
