@@ -371,7 +371,7 @@ def test_session_end_review_frames_the_whole_session():
         ),
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
     ):
         for reason in (SESSION_ENDED, "user cancelled"):
@@ -380,7 +380,6 @@ def test_session_end_review_frames_the_whole_session():
                     {"role": "user", "content": "do work"},
                     {"role": "tool", "content": "worked"},
                 ],
-                ask_tools={},
                 actor=_mock_actor(),
                 original_result="done",
                 stop_reason=reason,

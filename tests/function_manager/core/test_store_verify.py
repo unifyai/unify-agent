@@ -546,7 +546,7 @@ def _storage_tool_names() -> set:
         function_manager=FunctionManager(),
         guidance_manager=GuidanceManager(),
     )
-    tools, _, _ = caa._build_storage_tools(actor=actor, ask_tools={})
+    tools = caa._build_storage_tools(actor=actor)
     return set(tools)
 
 
