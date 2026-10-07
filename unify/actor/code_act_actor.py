@@ -29,7 +29,7 @@ from unify.actor.base import BaseCodeActActor
 from unify.common._async_tool import cell_reply
 from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
-from unify import environment, sandbox
+from unify import environment, sandbox, transcripts
 from unify.actor.workspace_tools import workspace_tools as _workspace_tools
 from unify.actor.grants import CALLER_GRANTS, ActorGrants
 from unify.actor.execution import (
@@ -871,7 +871,8 @@ def _review_gate_client(actor: "CodeActActor") -> Any:
 
     client = _storage_review_client(actor, origin=review_gate.ORIGIN)
     client.set_reasoning_effort(review_gate.GATE_EFFORT)
-    return client
+    # Its prompt carries the checked outcome: never where a cell can read it.
+    return transcripts.mark_internal(client)
 
 
 # UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
@@ -1929,6 +1930,9 @@ def _start_storage_review_fork(
         purpose="planning",
         messages=fork_source["messages"],
     )
+    # The review is harness-internal (its message carries the checked
+    # outcome): transcribed where no cell can read it.
+    transcripts.mark_internal(client)
     first_choice = fork_source.get("tool_choice")
     first_choice = first_choice if isinstance(first_choice, str) else "auto"
     review_tools = dict(tools)
@@ -2162,6 +2166,10 @@ def _start_storage_check_loop(
             actor,
             core_surface.review_policy(),
         )
+        # The outcome section as the rulebook carries it, renamed with it.
+        from unify import outcome as outcome_mod
+
+        outcome_mod.remember(core_surface.python_names(outcome_note))
         rulebook = core_surface.python_names(
             f"{_review_fork_role(core=True)}"
             f"{_storage_doctrine_sections()}"
@@ -2234,6 +2242,9 @@ def _start_storage_check_loop(
 
     client = _storage_review_client(actor, origin="StorageCheck")
     client.set_system_message(system_prompt)
+    # The review is harness-internal (its prompt carries the checked
+    # outcome): transcribed where no cell can read it.
+    transcripts.mark_internal(client)
 
     return start_async_tool_loop(
         client=client,
