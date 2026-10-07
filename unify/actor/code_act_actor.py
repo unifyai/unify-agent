@@ -59,10 +59,7 @@ from unify.common.act_llm_profiles import (
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
-from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import escape_drift as _escape_drift
-from unify.function_manager import task_origin as _task_origin
-from unify.function_manager import entry_record as _entry_record
 from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
 from unify.actor.prompt_builders import build_code_act_prompt
@@ -2178,19 +2175,7 @@ def _close_with_result(handle: Any, close: Callable[[], Awaitable[None]]) -> Non
     handle.result = _result_then_close
 
 
-def _start_storage_check_loop(**kwargs: Any) -> "AsyncToolLoopHandle | None":
-    """Start the storage review (:func:`_start_storage_check_loop_inner`).
-
-    ``UNIFY_ENTRY_RECORD``: inside it (and the tasks it starts), calls and
-    reads are the review's, not the session's, and are not counted as uses.
-    """
-    from unify.function_manager import entry_record
-
-    with entry_record.reviewing():
-        return _start_storage_check_loop_inner(**kwargs)
-
-
-def _start_storage_check_loop_inner(
+def _start_storage_check_loop(
     *,
     trajectory: list[dict],
     ask_tools: dict,
@@ -2523,18 +2508,7 @@ def _start_storage_check_loop_inner(
 # ---------------------------------------------------------------------------
 
 
-def _start_proactive_storage_loop(**kwargs: Any) -> "AsyncToolLoopHandle | None":
-    """Start an on-demand storage review (:func:`_start_proactive_storage_loop_inner`).
-
-    ``UNIFY_ENTRY_RECORD``: its calls and reads are not counted as uses.
-    """
-    from unify.function_manager import entry_record
-
-    with entry_record.reviewing():
-        return _start_proactive_storage_loop_inner(**kwargs)
-
-
-def _start_proactive_storage_loop_inner(
+def _start_proactive_storage_loop(
     *,
     trajectory: list[dict],
     ask_tools: dict,
@@ -2691,15 +2665,9 @@ class _StorageCheckHandle(SteerableToolHandle):
         turn_reviews_enabled: bool = False,
         persist: bool = False,
         skip_review: Optional[str] = None,
-        evidence_session: Optional[Any] = None,
     ) -> None:
         self._inner = inner
         self._actor = actor
-        # UNIFY_EVIDENCE_LEDGER: the request this session's messages are kept
-        # under, taken when the handle is built (a caller's task, such as the
-        # CLI's stdin reader, does not carry the request's context). None
-        # (off, or a sub-agent): nothing is kept.
-        self._evidence_session = evidence_session
         # Why no review follows the task (UNIFY_INLINE_CURATION=only); None
         # reviews as shipped.
         self._skip_review = skip_review
@@ -3166,11 +3134,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             except Exception:
                 pass
 
-            # UNIFY_ORIGIN_PROVENANCE: keep the checked outcome under this
-            # task's request, for the listings of what it stores.
-            if self._outcome is not None:
-                _task_origin.record_outcome(self._outcome.get("solved"))
-
             # ── Phase 2: storage check ────────────────────────────────
             # A crashed trajectory is not a source of reusable knowledge — the
             # librarian would derive functions, guidance, and claims from work
@@ -3264,9 +3227,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                     "StorageCheck gate not asked: the library is empty; reviewing",
                 )
                 ask_gate = False
-            # UNIFY_REVIEW_OUTCOME: the gate's judgement of the answer, kept
-            # when no review states one.
-            gate_judgement: Optional[str] = None
             if ask_gate:
                 gate_outcome_note = _storage_review_outcome_note(
                     self._outcome,
@@ -3282,10 +3242,7 @@ class _StorageCheckHandle(SteerableToolHandle):
                     f"StorageCheck gate: review={decision.review} "
                     f"decided={decision.decided} ({decision.reason})",
                 )
-                gate_judgement = decision.answer_outcome
                 if not decision.review:
-                    _review_outcome.record(gate_judgement)
-
                     await self._notification_q.put(
                         {
                             "type": "storage_review_skipped",
@@ -3388,27 +3345,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                         logger.warning(
                             f"StorageCheck failed: {type(exc).__name__}: {exc}",
                         )
-                    # UNIFY_REVIEW_OUTCOME: the review's judgement, else the gate's.
-                    _review_outcome.record(
-                        (
-                            _review_outcome.parse(storage_summary)
-                            if storage_success
-                            else None
-                        ),
-                        gate_judgement,
-                    )
-                    # UNIFY_SHORTLIST_RELATED: keep the statements it wrote.
-                    if storage_success:
-                        from unify.actor import related_shortlist
-
-                        related_shortlist.record_statements(
-                            storage_summary,
-                            getattr(self._actor, "function_manager", None),
-                            getattr(self._actor, "guidance_manager", None),
-                        )
-                        # UNIFY_ENTRY_RECORD: the entries it says were relied on.
-                        _entry_record.record_relied(storage_summary)
-
                     await publish_manager_method_event(
                         _sc_call_id,
                         "CodeActActor",
@@ -3545,14 +3481,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             )
             return None
         handle = self._active_handle
-        if self._evidence_session is not None and self._phase == "task":
-            from unify.actor import evidence_ledger
-
-            evidence_ledger.record(
-                evidence_ledger.MESSAGE,
-                message,
-                key=self._evidence_session,
-            )
         if handle is not None:
             return await handle.interject(
                 message,
@@ -4897,33 +4825,6 @@ class CodeActActor(BaseCodeActActor):
         core = core_surface.enabled()
         if core:
             core_surface.require_prerequisites(can_compose=effective_can_compose)
-        # UNIFY_SHORTLIST_GATE: refuse a gate nothing could pass.
-        from unify.settings import SETTINGS as _GATE_SETTINGS
-
-        shortlist_gate = _GATE_SETTINGS.shortlist_gate_threshold()
-        if shortlist_gate is not None:
-            from unify.actor.library_shortlist import require_gate_prerequisites
-
-            require_gate_prerequisites()
-        # UNIFY_SHORTLIST_RELATED: refuse a tier with no gated list to follow.
-        from unify.actor import related_shortlist as _related
-
-        _related.require_prerequisites()
-        # UNIFY_ORIGIN_PROVENANCE, UNIFY_REVIEW_RECURRENCE: refuse a switch
-        # that could never say anything.
-        _task_origin.require_origin_link_prerequisites()
-        # UNIFY_EVIDENCE_LIST: refuse a list with nothing to read.
-        from unify.actor import evidence_list as _evidence_list
-
-        _evidence_list.require_prerequisites()
-        evidence = _evidence_list.enabled()
-        # UNIFY_EVIDENCE_LEDGER: refused above without request records.
-        from unify.actor import evidence_ledger as _evidence_ledger
-
-        # UNIFY_PROTECT_VERIFIED=versioned: refuse it with nothing to accept a session.
-        from unify.function_manager import verified_guard as _verified_guard
-
-        _verified_guard.require_prerequisites()
 
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(
@@ -5361,9 +5262,6 @@ class CodeActActor(BaseCodeActActor):
         _clar_queues = None
         _on_clar_req = None
         _on_clar_ans = None
-        # UNIFY_EVIDENCE_LEDGER: the session this task's evidence is kept
-        # under (set below, once the request is keyed); None keeps nothing.
-        _ledger_session = None
         if clarification_enabled:
             # (None, None) still injects request_clarification; the tool then
             # uses per-call hidden queues so CM sees handle._clar_q events.
@@ -5389,8 +5287,6 @@ class CodeActActor(BaseCodeActActor):
                     )
                 except Exception:
                     pass
-                if _ledger_session is not None:
-                    _ledger_session.question(q)
 
             async def _on_clar_ans(ans: str):
                 try:
@@ -5408,8 +5304,6 @@ class CodeActActor(BaseCodeActActor):
                     )
                 except Exception:
                     pass
-                if _ledger_session is not None:
-                    _ledger_session.answer(ans)
 
         async def _on_notify(message: str):
             try:
@@ -5431,18 +5325,6 @@ class CodeActActor(BaseCodeActActor):
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] starting async tool loop")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
-        # UNIFY_TASK_ORIGIN, UNIFY_TRY_FIRST: the task loop and its storage
-        # review inherit this task's key (set until the handle is built); a
-        # sub-agent, started inside a keyed task, keeps the key of the task
-        # it works for.
-        task_origin_token = _task_origin.enter(request)
-        # UNIFY_EVIDENCE_LEDGER: a top-level task keeps what arrives after
-        # its request under it (a sub-agent keeps nothing).
-        ledger_token = (
-            _evidence_ledger.enter() if task_origin_token is not None else None
-        )
-        if ledger_token is not None:
-            _ledger_session = _evidence_ledger.current_session()
         # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
@@ -5450,34 +5332,11 @@ class CodeActActor(BaseCodeActActor):
         core_token = core_session.enter() if core_session is not None else None
         try:
             # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
-            # request, after the snapshot line; ranked inside the task's
-            # origin context, so a function stored for a similar request
-            # carries its mark. UNIFY_SHORTLIST_GATE: by request similarity,
-            # for a top-level task only (a sub-agent inherits its caller's
-            # request, so its list would be its caller's again).
-            # UNIFY_EVIDENCE_LIST: for a top-level task only, as the gate.
-            if SETTINGS.UNIFY_LIBRARY_SHORTLIST and (
-                (shortlist_gate is None and not evidence)
-                or task_origin_token is not None
-            ):
-                from unify.actor.library_shortlist import (
-                    ashortlist_block,
-                    shortlist_block,
-                )
+            # request, after the snapshot line.
+            if SETTINGS.UNIFY_LIBRARY_SHORTLIST:
+                from unify.actor.library_shortlist import shortlist_block
 
-                # UNIFY_EVIDENCE_LIST_MATCHER=judge: the list asks a model,
-                # the session's own unless one is named.
-                shortlist_block_for = (
-                    functools.partial(
-                        ashortlist_block,
-                        judge_model=(
-                            SETTINGS.UNIFY_EVIDENCE_LIST_JUDGE_MODEL or client_model
-                        ),
-                    )
-                    if _evidence_list.judged()
-                    else shortlist_block
-                )
-                shortlist = shortlist_block_for(
+                shortlist = shortlist_block(
                     self.function_manager,
                     self.guidance_manager,
                     request,
@@ -5489,7 +5348,6 @@ class CodeActActor(BaseCodeActActor):
                         str(k).startswith("GuidanceManager_") for k in base_tools
                     )
                     or (core_session is not None and core_session.prompt.guidance),
-                    gate=shortlist_gate,
                     # UNIFY_CORE_BIND_LISTED: the listed functions are bound
                     # as a read binds them, and the header says how to call.
                     bind=(
@@ -5498,21 +5356,8 @@ class CodeActActor(BaseCodeActActor):
                         else None
                     ),
                 )
-                if inspect.isawaitable(shortlist):
-                    shortlist = await shortlist
                 if shortlist:
                     first_message_parts.append(shortlist)
-            # UNIFY_EVIDENCE_LEDGER: the evidence kept while handling earlier
-            # requests like this one, as plain data in the sandbox, and one
-            # sentence saying it is there. Nothing found, nothing bound.
-            if _ledger_session is not None:
-                seen_before = _evidence_ledger.earlier(
-                    _ledger_session.text,
-                    session=_ledger_session,
-                )
-                if seen_before:
-                    _evidence_ledger.bind(sandbox, seen_before)
-                    first_message_parts.append(_evidence_ledger.line(seen_before))
             if _agents is not None:
                 sandbox.global_state.update(_agents.globals())
                 if isinstance(getattr(sandbox, "core_globals", None), dict):
@@ -5580,8 +5425,6 @@ class CodeActActor(BaseCodeActActor):
             )
         except BaseException:
             _instance_lint.leave(instance_token)
-            _evidence_ledger.leave(ledger_token)
-            _task_origin.leave(task_origin_token)
             raise
         finally:
             current_run_meter.reset(meter_token)
@@ -5648,7 +5491,6 @@ class CodeActActor(BaseCodeActActor):
                 ),
                 persist=bool(persist),
                 **({"skip_review": _INLINE_ONLY_REASON} if inline_only else {}),
-                evidence_session=_ledger_session,
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not
@@ -5656,8 +5498,6 @@ class CodeActActor(BaseCodeActActor):
             self._live_storage_handles.add(handle)
 
         _instance_lint.leave(instance_token)
-        _evidence_ledger.leave(ledger_token)
-        _task_origin.leave(task_origin_token)
         if _agents is not None:
             # The handle the caller holds (the storage wrapper by default).
             handle.agents_pool = _agents.pool  # type: ignore[attr-defined]

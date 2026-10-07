@@ -130,11 +130,6 @@ class _Library:
     def _shortlist_rows(self, text, k):
         return [dict(r) for r in (self._functions or self._guidance)]
 
-    def _gated_shortlist_rows(self, threshold, k):
-        return [
-            {**r, "similar_request": 0.31, "usage_calls": 2} for r in self._functions
-        ]
-
 
 ROWS = [
     {
@@ -160,20 +155,19 @@ GUIDANCE_ROWS = [
 ]
 
 
-@pytest.mark.parametrize("gate", [None, 0.2])
-def test_a_binder_binds_the_listed_functions_and_the_header_says_how_to_call(gate):
+def test_a_binder_binds_the_listed_functions_and_the_header_says_how_to_call():
     fm = _Library(ROWS)
     gm = _Library([], GUIDANCE_ROWS)
-    shipped = ls.shortlist_block(fm, gm, TASK, gate=gate)
+    shipped = ls.shortlist_block(fm, gm, TASK)
     asked: list = []
 
     def bind(names):
         asked.append(list(names))
         return {"double": False, "double_twice": True}
 
-    on = ls.shortlist_block(fm, gm, TASK, gate=gate, bind=bind)
-    header = ls._GATED_HEADER_CALL if gate else ls._HEADER_CALL
-    shipped_header = ls._GATED_HEADER if gate else ls._HEADER
+    on = ls.shortlist_block(fm, gm, TASK, bind=bind)
+    header = ls._HEADER_CALL
+    shipped_header = ls._HEADER
     assert shipped.splitlines()[0] == shipped_header
     assert on.splitlines()[0] == header and ls.CALL_FORM in header
     assert '`await functions.run("name", arg=...)`' in header

@@ -713,50 +713,12 @@ _STORAGE_SESSION_END_NOTICE_UNIFIED = _unified(
 )
 
 
-# UNIFY_TRY_FIRST: free checks with stored functions before paid actions.
-_WRITING_TO_THE_LIBRARIES = "\n\n#### Writing to the libraries\n"
-_TRY_FIRST_NOTE = textwrap.dedent("""
-    **Free before paid.** Before an action that costs something (a paid
-    request, a submission that is scored, an irreversible effect), use
-    what is free first: when a stored function fits what is asked, run it
-    on inputs you already have and, when it works, act on its result; pay
-    for more information only when it does not. A search result with
-    `similar_request` (a score up to 1; higher is closer) was stored while
-    handling a request similar to this one; it is worth trying on the
-    inputs you have before costlier steps. Check that it fits.
-""").strip()
-
-
-def _try_first_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_TRY_FIRST)
-
-
-def _with_try_first(text: str) -> str:
-    """``text`` with the try-first paragraph before its writing subsection."""
-    return _unified(
-        text,
-        _WRITING_TO_THE_LIBRARIES,
-        "\n\n" + _TRY_FIRST_NOTE + _WRITING_TO_THE_LIBRARIES,
-    )
-
-
-_FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST = _with_try_first(
-    _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED,
-)
-
-
 def _library_section(
     inline_curation: str = "",
     tools: Optional[Mapping[str, Callable]] = None,
     search_when_useful: bool = False,
 ) -> str:
-    text = (
-        _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
-        if _try_first_enabled()
-        else _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
-    )
+    text = _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
     if search_when_useful:
         text = _unified(text, _ALWAYS_SEARCH_FIRST, _SEARCH_WHEN_USEFUL)
     if inline_curation:
@@ -1590,8 +1552,6 @@ def _build_core_prompt(
     )
     if core.functions or core.guidance:
         library = core.library_section(inline_curation=inline_curation)
-        if _try_first_enabled():
-            library = f"{library}\n\n{_TRY_FIRST_NOTE}"
         parts.append(library)
         if library_read_only:
             parts.append(core.read_only_notice())
