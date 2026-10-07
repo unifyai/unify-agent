@@ -274,7 +274,7 @@ class ProductionSettings(BaseSettings):
     # echoed. The tool's description says the same in one sentence
     # (unify/actor/placeholder_note.py). Off: results and description as
     # shipped.
-    UNIFY_PLACEHOLDER_NOTE: bool = False
+    UNIFY_PLACEHOLDER_NOTE: bool = True
     # ``neutral``: the prompt and the code tools' descriptions stop preferring
     # ``execute_function`` for one exact call ("use ``execute_code`` only
     # when ..."). Where they said so they say that either tool can run a
@@ -396,7 +396,7 @@ class ProductionSettings(BaseSettings):
     # ``"\\n"``, its ``r'\bE\b'`` as ``r"\\bE\\b"``. The refusal names both
     # spellings (unify/function_manager/escape_drift.py). Without the
     # session's cells nothing is checked. Empty (also ``off``): as shipped.
-    UNIFY_ESCAPE_DRIFT_CHECK: str = ""
+    UNIFY_ESCAPE_DRIFT_CHECK: str = "on"
     # Path of a JSON file in which an external check of the session's outcome
     # admits (``{"admit": true}``) the review that runs when a session ends.
     # A missing, unreadable or malformed file, or any other ``admit``, skips
@@ -940,7 +940,7 @@ class ProductionSettings(BaseSettings):
     # sources with an escape gained an escaping level; 0 of 74 cells did).
     # The review is told it may. A name no cell defines is that entry's
     # error. Off: as shipped.
-    UNIFY_STORE_FROM_SESSION: bool = False
+    UNIFY_STORE_FROM_SESSION: bool = True
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
     # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
     # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
@@ -1129,7 +1129,7 @@ class ProductionSettings(BaseSettings):
     # instead of the loop's stop notice ("processed stopped early, no
     # result"), which read as a session that failed. Any other stop, and a
     # session with no reply yet, keeps the notice. Off: as shipped.
-    UNIFY_REVIEW_LAST_REPLY: bool = False
+    UNIFY_REVIEW_LAST_REPLY: bool = True
     # ``lessons``: a run whose outcome says it failed (``solved`` false, with
     # UNIFY_OUTCOME), or whose admission verdict is ``{"admit": "lessons"}``,
     # is reviewed with function writes refused and guidance writes allowed,
