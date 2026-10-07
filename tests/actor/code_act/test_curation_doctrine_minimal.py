@@ -31,13 +31,17 @@ _DROPPED = (
 )
 
 
+# The minimal rulebook's own text, before the notes that follow it.
+_MINIMAL = caa._STORAGE_MINIMAL_WHAT + caa._STORAGE_MINIMAL_GUIDANCE
+
+
 def _sections() -> str:
     return caa._storage_doctrine_sections()
 
 
 def test_minimal_keeps_what_storage_needs():
     text = _sections()
-    assert text.startswith(caa._STORAGE_MINIMAL_DOCTRINE)
+    assert text.startswith(_MINIMAL)
     assert caa._STORAGE_COMPOSE_DOCTRINE in text
     flat = " ".join(text.split())
     for kept in (
@@ -56,7 +60,7 @@ def test_minimal_drops_the_office_assistant(dropped):
 
 
 def test_minimal_names_no_benchmark():
-    words = set(re.findall(r"[a-z]+", caa._STORAGE_MINIMAL_DOCTRINE.lower()))
+    words = set(re.findall(r"[a-z]+", _MINIMAL.lower()))
     for word in (
         "arc",
         "appworld",
@@ -82,13 +86,13 @@ async def test_the_sent_review_carries_the_minimal_rulebook():
             await asyncio.wait_for(handle._completion_event.wait(), 60)
     finally:
         await actor.close()
+    # The review forks the session and names the core surface's calls, so it
+    # is found by the rulebook's heading.
     reviews = [
-        r
-        for r in provider.requests
-        if caa._STORAGE_MINIMAL_DOCTRINE in str(r["messages"][0]["content"])
+        r for r in provider.requests if "## What Can Be Stored" in str(r["messages"])
     ]
     assert reviews
-    assert "## Recurring Deliverables" not in str(reviews[0]["messages"][0]["content"])
+    assert "## Recurring Deliverables" not in str(reviews[0]["messages"])
 
 
 # The minimal rulebook once said "Functions are `async def` and `await` their

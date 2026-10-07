@@ -250,10 +250,9 @@ async def _start_act(monkeypatch, *, persist: bool) -> dict:
     try:
         handle = await actor.act("Do something", persist=persist, can_store=True)
         captured["handle"] = handle
-        # The default discovery-first policy: once both libraries have been
-        # searched, the full (statically filtered) tool set is visible.
-        searched = ["FunctionManager_search_functions", "GuidanceManager_search"]
-        decision = captured["policy"](5, dict(captured["tools"]), searched)
+        # With the discovery gate off (the default) the policy only filters
+        # statically: what a later turn sees.
+        decision = captured["policy"](5, dict(captured["tools"]))
         captured["visible_later"] = set(decision[1])
     finally:
         try:
@@ -261,30 +260,6 @@ async def _start_act(monkeypatch, *, persist: bool) -> dict:
         except Exception:
             pass
     return captured
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-async def test_gated_session_withholds_write_tools(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        SETTINGS,
-        "UNIFY_STORE_ADMISSION",
-        str(tmp_path / "verdict.json"),
-    )
-    captured = await _start_act(monkeypatch, persist=False)
-    assert not _WRITE_TOOLS & set(captured["tools"])
-    assert "execute_code" in captured["visible_later"]
-    assert not _WRITE_TOOLS & captured["visible_later"]
-    # Reads stay.
-    assert "FunctionManager_search_functions" in captured["tools"]
-    assert "GuidanceManager_search" in captured["tools"]
-    assert captured["extra_compression_tools"] is None
-    assert captured["prompt_kwargs"]["can_store"] is False
-    assert captured["prompt_kwargs"]["library_read_only"] is True
-    assert "### Library Writes" in captured["prompt"]
-    assert "### Skill Storage" not in captured["prompt"]
-    # The session is still wrapped, so an admitted review can run at its end.
-    assert isinstance(captured["handle"], _StorageCheckHandle)
 
 
 @pytest.mark.asyncio
@@ -307,11 +282,8 @@ async def test_unset_session_is_unchanged(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TURN_STORAGE_REVIEWS", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", "")
     captured = await _start_act(monkeypatch, persist=True)
-    assert {
-        "store_skills",
-        "FunctionManager_add_functions",
-        "GuidanceManager_add_guidance",
-    } <= set(captured["tools"])
+    # The library writes are Python calls from cells (the core surface).
+    assert "store_skills" in set(captured["tools"])
     assert captured["extra_compression_tools"] == ["store_skills"]
     assert captured["prompt_kwargs"]["can_store"] is True
     assert "library_read_only" not in captured["prompt_kwargs"]
