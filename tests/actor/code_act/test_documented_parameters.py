@@ -1,11 +1,9 @@
 """Symbolic: a tool, and ``help()`` in a core-surface cell, documents only the parameters it takes.
 
 ``search_functions``'s contract offers ``include_dormant``. The function
-manager takes it, but the actor's ``FunctionManager_search_functions`` tool
-and the core surface's ``functions.search`` do not: on the JSON surface a
-call passing it is refused as an unknown argument, and in a core-surface
-cell it raises ``TypeError``. Each copy of the contract leaves it out where
-the parameter is not taken; the function manager's own contract keeps it.
+manager takes it, but the core surface's ``functions.search`` does not: in a
+core-surface cell it raises ``TypeError``. Its copy of the contract leaves it
+out; the function manager's own contract keeps it.
 
 ``help(functions.search)`` in a core-surface cell also described what the
 harness-only ``_return_callable``, ``_namespace`` and ``_also_return_metadata``
@@ -53,21 +51,6 @@ def test_every_documented_parameter_of_an_actor_tool_is_in_its_schema():
         if extra:
             missing[name] = sorted(extra)
     assert missing == {}
-
-
-def test_the_search_tool_does_not_offer_include_dormant():
-    tool = _actor_tools()["FunctionManager_search_functions"]
-    schema = method_to_schema(
-        getattr(tool, "fn", tool),
-        "FunctionManager_search_functions",
-    )["function"]
-    assert "include_dormant" not in schema["parameters"]["properties"]
-    assert "include_dormant" not in schema["description"]
-    # The rest of the contract is kept.
-    assert "always see the whole store). Freshly stored" in " ".join(
-        schema["description"].split(),
-    )
-    assert "include_implementations" in schema["description"]
 
 
 def test_every_documented_parameter_of_a_core_library_method_is_taken():

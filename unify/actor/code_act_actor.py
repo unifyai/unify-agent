@@ -1,7 +1,6 @@
 import asyncio
 import contextvars
 import copy
-import dataclasses
 import functools
 import inspect
 import json
@@ -60,7 +59,6 @@ from unify.common.act_llm_profiles import (
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import inline_curation
-from unify.function_manager.base import BaseFunctionManager, search_doc_without_dormant
 from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import escape_drift as _escape_drift
 from unify.function_manager import task_origin as _task_origin
@@ -882,31 +880,6 @@ def _inline_curation_mode(
         )
         return ""
     return mode
-
-
-def _guard_inline_writes(tools: Dict[str, Any]) -> Dict[str, Any]:
-    """*tools* with the session's function writes behind the inline guards.
-
-    ``FunctionManager_add_functions`` refuses names that do not describe
-    behaviour and both it and ``FunctionManager_patch_function`` run the
-    storage check (unify/function_manager/inline_curation.py). The wrappers
-    keep the wrapped method's name, signature and docstring, so the tool
-    schemas are unchanged. The review's tools are its own and stay as they are.
-    """
-    guards = {
-        "FunctionManager_add_functions": inline_curation.guard_add_functions,
-        "FunctionManager_patch_function": inline_curation.guard_patch_function,
-    }
-    out = dict(tools)
-    for name, guard in guards.items():
-        tool = out.get(name)
-        if tool is None:
-            continue
-        if isinstance(tool, ToolSpec):
-            out[name] = dataclasses.replace(tool, fn=guard(tool.fn))
-        else:
-            out[name] = guard(tool)
-    return out
 
 
 # UNIFY_REPLY_CHANNEL=code+text: execute_function runs a stored function,
@@ -4485,192 +4458,6 @@ class CodeActActor(BaseCodeActActor):
         if sandbox.enabled():
             tools.update(_workspace_tools(execute_code))
 
-        # FunctionManager read tools: thin wrappers that inject callables
-        # into the sandbox and return only metadata to the LLM. Docstrings
-        # are inherited from the base class (the single source of truth).
-        if self.function_manager:
-
-            async def FunctionManager_search_functions(
-                query: str = "",
-                n: int = 5,
-                include_implementations: bool = True,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.search_functions(
-                    query=query,
-                    n=n,
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            # It takes no include_dormant, so its contract does not offer it.
-            FunctionManager_search_functions.__doc__ = search_doc_without_dormant(
-                BaseFunctionManager.search_functions.__doc__,
-            )
-
-            async def FunctionManager_filter_functions(
-                filter: Optional[str] = None,
-                offset: int = 0,
-                limit: int = 100,
-                include_implementations: bool = True,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.filter_functions(
-                    filter=filter,
-                    offset=offset,
-                    limit=limit,
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            FunctionManager_filter_functions.__doc__ = (
-                BaseFunctionManager.filter_functions.__doc__
-            )
-
-            async def FunctionManager_list_functions(
-                include_implementations: bool = False,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.list_functions(
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            FunctionManager_list_functions.__doc__ = (
-                BaseFunctionManager.list_functions.__doc__
-            )
-
-            tools["FunctionManager_search_functions"] = ToolSpec(
-                fn=FunctionManager_search_functions,
-                display_label="Searching for relevant skills",
-            )
-            tools["FunctionManager_filter_functions"] = ToolSpec(
-                fn=FunctionManager_filter_functions,
-                display_label="Filtering saved skills",
-            )
-            tools["FunctionManager_list_functions"] = ToolSpec(
-                fn=FunctionManager_list_functions,
-                display_label="Listing existing skills",
-            )
-
-            fm = self.function_manager
-            tools.update(
-                methods_to_tool_dict(
-                    ToolSpec(
-                        fn=fm.add_functions,
-                        display_label="Adding functions to the library",
-                    ),
-                    ToolSpec(
-                        fn=fm.delete_function,
-                        display_label="Deleting functions from the library",
-                    ),
-                    ToolSpec(
-                        fn=fm.reconcile_dependencies,
-                        display_label="Checking function dependencies",
-                    ),
-                    include_class_name=True,
-                ),
-            )
-            if hasattr(fm, "patch_function"):
-                tools.update(
-                    methods_to_tool_dict(
-                        ToolSpec(
-                            fn=fm.patch_function,
-                            display_label="Patching a stored function",
-                        ),
-                        include_class_name=True,
-                    ),
-                )
-            if hasattr(fm, "retire_case"):
-                tools.update(
-                    methods_to_tool_dict(
-                        ToolSpec(
-                            fn=fm.retire_case,
-                            display_label="Retiring a recorded case",
-                        ),
-                        include_class_name=True,
-                    ),
-                )
-
-        # FunctionManager read tools (search/filter/list) use custom wrappers
-        # that inject callables into the sandbox. All other FM/GM tools below
-        # are plain CRUD with no sandbox side-effects.
-        if self.guidance_manager:
-            gm = self.guidance_manager
-            tools.update(
-                methods_to_tool_dict(
-                    ToolSpec(
-                        fn=gm.search,
-                        display_label="Searching for relevant guidance",
-                    ),
-                    ToolSpec(fn=gm.filter, display_label="Filtering saved guidance"),
-                    ToolSpec(
-                        fn=gm.get_guidance,
-                        display_label="Reading a full guidance entry",
-                    ),
-                    ToolSpec(fn=gm.add_guidance, display_label="Saving new guidance"),
-                    ToolSpec(
-                        fn=gm.update_guidance,
-                        display_label="Updating saved guidance",
-                    ),
-                    ToolSpec(
-                        fn=gm.delete_guidance,
-                        display_label="Deleting saved guidance",
-                    ),
-                    ToolSpec(
-                        fn=gm.reconcile_dependencies,
-                        display_label="Checking guidance dependencies",
-                    ),
-                    include_class_name=True,
-                ),
-            )
-            if hasattr(gm, "patch_guidance"):
-                tools.update(
-                    methods_to_tool_dict(
-                        ToolSpec(
-                            fn=gm.patch_guidance,
-                            display_label="Patching saved guidance",
-                        ),
-                        include_class_name=True,
-                    ),
-                )
-
         # ── Proactive skill storage tool ──────────────────────────────
         if self.function_manager and self.guidance_manager:
             _actor_ref = self
@@ -5910,23 +5697,9 @@ class CodeActActor(BaseCodeActActor):
             "execute_code",
             "install_python_packages",
         }
-        _store_only_tools = {
-            "store_skills",
-            "FunctionManager_add_functions",
-            "FunctionManager_delete_function",
-            "FunctionManager_reconcile_dependencies",
-            "GuidanceManager_reconcile_dependencies",
-            "FunctionManager_patch_function",
-            "GuidanceManager_patch_guidance",
-            "FunctionManager_retire_case",
-        }
-        # Admission-gated sessions also lose the direct guidance writes that
-        # can_store=False leaves in place: nothing is written in-session.
-        _admission_withheld_tools = _store_only_tools | {
-            "GuidanceManager_add_guidance",
-            "GuidanceManager_update_guidance",
-            "GuidanceManager_delete_guidance",
-        }
+        _store_only_tools = {"store_skills"}
+        # Admission-gated sessions write nothing in-session either.
+        _admission_withheld_tools = _store_only_tools
 
         def _filter_tools(
             tool_dict: Dict[str, Any],
@@ -5953,8 +5726,6 @@ class CodeActActor(BaseCodeActActor):
 
         _act_tools = self.get_tools("act")
         base_tools = _filter_tools(_act_tools)
-        if inline_mode:
-            base_tools = _guard_inline_writes(base_tools)
 
         # UNIFY_TOOL_SURFACE=core: execute_code is the only JSON tool; the
         # libraries, install, read_file and grep are objects in the sandbox,

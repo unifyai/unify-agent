@@ -496,11 +496,9 @@ async def test_writes_the_session_may_not_make_are_refused_with_the_reason(
         await cells.close()
 
 
-def test_the_write_policy_matches_the_tools_the_json_surface_withholds():
-    """Each refusal mirrors a JSON tool the shipped surface leaves out."""
-    from unify.actor import code_act_actor
-
-    source = open(code_act_actor.__file__).read()
+def test_the_write_policy_withholds_the_store_only_writes():
+    """Without storage every store-only write is refused; admission-gated,
+    the direct guidance writes are refused as well."""
     for method in sorted(core_surface._STORE_ONLY):
         family, name = method.split(".")
         assert core_surface.WritePolicy(can_store=False).refusal(method)
@@ -508,7 +506,6 @@ def test_the_write_policy_matches_the_tools_the_json_surface_withholds():
     for method in ("guidance.add", "guidance.update", "guidance.delete"):
         assert core_surface.WritePolicy(can_store=False).refusal(method) is None
         assert core_surface.WritePolicy(admission_gated=True).refusal(method)
-    assert '"GuidanceManager_add_guidance"' in source
 
 
 REMOVE_AT_OR_AFTER = REMOVE_BEFORE.replace(
