@@ -7,7 +7,10 @@ Python cell starts, runs inside bubblewrap (Linux) under one policy:
   ``UNIFY_LOCAL_ROOT``) and a private ``/tmp`` are the only writable places.
 * The Unify state directory (``UNIFY_HOME``) is hidden behind an empty tmpfs,
   except read-only views of the transcripts directory, the store file and the
-  package venv, and the writable workspace.
+  package venv, and the writable workspace. The harness's internal
+  transcripts (``internal-transcripts``: the storage review, whose prompt
+  carries the environment's checked outcome) stay hidden even when a mount
+  that is seen contains them (a workspace configured as ``UNIFY_HOME``).
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
   a few other well-known ones) are hidden, and so is every ``.env`` file found
   in the working directory and its parents, the home directory and its
@@ -187,6 +190,9 @@ class SandboxPolicy:
     readonly_state: list[Path] = field(default_factory=list)
     masked_dirs: list[tuple[Path, str]] = field(default_factory=list)
     masked_files: list[tuple[Path, str]] = field(default_factory=list)
+    # Harness-only directories under the state directory: hidden after every
+    # mount, so no mount that contains them shows them.
+    hidden: list[Path] = field(default_factory=list)
     network: str = ""  # "" (off) or "proxy"
     proxy_port: int = 0
     notices_dir: Optional[Path] = None
@@ -198,6 +204,12 @@ class SandboxPolicy:
         resolved = Path(os.path.realpath(path))
         if _within(resolved, Path("/proc")):
             return "mask-proc", f"{resolved} is under /proc"
+        for hidden in self.hidden:
+            if _within(resolved, hidden):
+                return (
+                    "mask-unify-state",
+                    f"{resolved} is inside the harness's internal {hidden}",
+                )
         # Mounted last, so visible whatever contains them.
         if any(_within(resolved, v) for v in (self.workspace, *self.readonly_state)):
             return None
@@ -376,12 +388,15 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
 
         network = str(getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "") or "")
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
+        from unify.transcripts import INTERNAL_DIRNAME
+
         policy = SandboxPolicy(
             workspace=workspace,
             state_dir=state_dir,
             readonly_state=readonly,
             masked_dirs=masked_dirs,
             masked_files=masked_files,
+            hidden=[state_dir / INTERNAL_DIRNAME],
             network=network,
             proxy_port=port,
             notices_dir=_notices_dir(),
@@ -473,6 +488,21 @@ def wrap_argv(
     extra = [Path(os.path.realpath(p)) for p in writable]
     for path in extra:
         args += ["--bind", str(path), str(path)]
+    # Last of all, over any mount above that contains them. One no mount
+    # contains is already behind the state directory's tmpfs.
+    shown = (*policy.readonly_state, policy.workspace, *extra)
+    for path in policy.hidden:
+        if any(_within(path, p) for p in shown):
+            # Its mount point must exist on the host when the mount above it
+            # is read-only.
+            path.mkdir(parents=True, exist_ok=True)
+            args += [
+                "--tmpfs",
+                str(path),
+                "--ro-bind",
+                str(notices / "mask-unify-state"),
+                _notice(path),
+            ]
     command = list(argv)
     if share_network:
         args.append("--share-net")
