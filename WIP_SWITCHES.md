@@ -1,0 +1,68 @@
+# Switches still in progress
+
+At the code freeze of 7 October 2026 every other research switch was either made the default behaviour or set to be removed. The switches below stay as switches, at the defaults shown, until the experiment named for each one decides them. Each is read from `unify/settings.py`, where its comment gives the full behaviour, and each is set through the environment variable of the same name.
+
+## UNIFY_CODE_PROJECTION
+
+- **Values:** empty (the same as `legacy`) or `notebook`.
+- **Default:** empty.
+- **What it does:** With `notebook`, `execute_code` takes a single `code` field, and where a cell runs is written inside the cell as Jupyter magics on its first lines (for example `%%bash` or `%%scratch`) instead of as separate arguments. The cell's result then reads like a notebook cell: its output, its errors and its last value.
+- **Evidence:** This is the "code alone" schema of design B, which the 5 October Python-tool-mode debugging lane ranked first. Its Stage 2/3 screen had not reported when the freeze was made. The proposal was to make `notebook` the default if the Stage 3 readout is not worse.
+
+## UNIFY_STATEFUL_CELLS
+
+- **Values:** a boolean.
+- **Default:** off.
+- **What it does:** When on, every `execute_code` cell runs in the task's one persistent session, like a notebook, and the tool no longer offers a stateless mode or a choice of session. The session-management tools are also withdrawn.
+- **Evidence:** This switch is an arm of the E4 workbench screen (build de97caa57; preregistration `workbench-screen-v1/PREREG-v1.md`). Its canaries passed on ARC and AppWorld, but no counted readout existed at the freeze. The proposal was to turn it on if the readout is inconclusive, because the change only removes options and no measured run had made a stateless choice useful. Under the core tool surface, the choice it removes is already small.
+
+## UNIFY_VARIABLE_INVENTORY
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, a cell that ran in a persistent session ends its result with one line naming the variables the session has bound, each with its type and a short description of its shape. The line appears only when those names or shapes have changed since the last one shown.
+- **Evidence:** This switch is an arm of the E4 workbench screen (the W arm against the W-without-inventory arm). Its canaries passed, but no counted readout existed at the freeze. It is to be removed unless E4 shows a gain.
+
+## UNIFY_BIND_REQUEST
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, code in a cell can read the current request as `request`: `request.text` is the requester's latest message, and `request.data` is the list of JSON objects and arrays found in it. The object is read-only, and a fresh copy is given to each cell.
+- **Evidence:** This switch is an arm of the E4 workbench screen. No counted readout existed at the freeze. It is to be removed unless E4 shows a gain.
+
+## UNIFY_REPLY_CHANNEL
+
+- **Values:** empty (the same as `text`) or `code+text`.
+- **Default:** empty.
+- **What it does:** With `code+text`, code in a cell can send the turn's reply by calling `reply(text)`. The cell ends at once and the text becomes the reply, without another model call.
+- **Evidence:** This switch is in the E4 workbench screen. In the earlier WI-2 screen it scored 11 of 25 on a single run, and a trace review judged that difference to be noise rather than a defect. It is to be removed unless E4 shows a gain.
+
+## UNIFY_CELL_SCOPE_FIX
+
+- **Values:** a boolean.
+- **Default:** on.
+- **What it does:** A cell runs as the body of a wrapper function, so a name the cell binds outside a plain top-level assignment used to be lost when the cell ended. When on, every name the cell's own scope binds is kept in the session, as the prompt promises, including names bound inside `if`, `for`, `with` and `try` blocks.
+- **Evidence:** This is a bug fix and is already on by default. In measured runs, where about 95% of cells were stateless, it never mattered. Its exposure rises when every cell is stateful.
+
+## UNIFY_STEP_CAP_COMPACT
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, a task loop that can compress its context compacts it when it reaches its step limit, instead of stopping, and carries on with the same request. This happens at most twice per request. At the third limit, the request stops as it would without the switch.
+- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
+
+## UNIFY_LOOP_STOP and UNIFY_LOOP_STOP_K
+
+- **Values:** `UNIFY_LOOP_STOP` is empty (the same as `off`) or `on`. `UNIFY_LOOP_STOP_K` is a whole number of at least 1.
+- **Defaults:** empty and 10.
+- **What it does:** When on, a request ends early once the model has made `UNIFY_LOOP_STOP_K` calls in a row that make no progress. A call makes no progress when it runs a cell that does nothing, or when it repeats one of the two calls before it and gets the same result. The request then ends the way the step limit ends it under `UNIFY_STEP_CAP_REPLY`.
+- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
+
+## UNIFY_STEP_CAP_REPLY
+
+- **Values:** empty, `draft` or `last_word`. The boolean spellings are also accepted, with true meaning `draft`.
+- **Default:** empty.
+- **What it does:** With `draft`, reaching the step limit in a persistent session ends only the current request. The reply quotes the latest reply text the model drafted, and the next message starts a new request with its own step budget. With `last_word`, the model first gets one call with no tools to give its best answer.
+- **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
+
+The three long-horizon switches share the step-limit reply path.
