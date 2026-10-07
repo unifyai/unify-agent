@@ -6509,6 +6509,10 @@ class CodeActActor(BaseCodeActActor):
 
         _evidence_list.require_prerequisites()
         evidence = _evidence_list.enabled()
+        # UNIFY_NOTE_INDEX: refuse an index with no requests to rank notes by.
+        from unify.actor import note_index as _note_index
+
+        _note_index.require_prerequisites()
         # UNIFY_EVIDENCE_LEDGER: refused above without request records.
         from unify.actor import evidence_ledger as _evidence_ledger
 
@@ -7160,6 +7164,26 @@ class CodeActActor(BaseCodeActActor):
         try:
             if env_section:
                 first_message_parts.append(env_section)
+            # UNIFY_NOTE_INDEX: for a top-level task, the notes written for
+            # the earlier requests closest to this one, with the functions
+            # they link bound in the sandbox (never called by the harness).
+            if _note_index.enabled() and task_origin_token is not None:
+                note_section = _note_index.section(
+                    self.function_manager,
+                    self.guidance_manager,
+                    _task_origin.current_request(),
+                    functions=any(
+                        str(k).startswith("FunctionManager_") for k in base_tools
+                    )
+                    or (core_session is not None and core_session.prompt.functions),
+                    guidance=any(
+                        str(k).startswith("GuidanceManager_") for k in base_tools
+                    )
+                    or (core_session is not None and core_session.prompt.guidance),
+                    bind=_note_index.binder(self, sandbox, core_session),
+                )
+                if note_section:
+                    first_message_parts.append(note_section)
             # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
             # request, after the snapshot line; ranked inside the task's
             # origin context, so a function stored for a similar request
