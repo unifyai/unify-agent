@@ -117,6 +117,7 @@ def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
 
 
 def test_off_without_primitives_the_text_is_as_shipped(profile, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     prompt, schemas = _render(_actor())
     assert "When a correction concerns work already running in `primitives.*`" in prompt
@@ -133,6 +134,10 @@ def test_each_trim_removes_only_its_own_text(trim, monkeypatch):
 
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+    # The reply note names sub-agents outside the agent record (deleted with
+    # the record's predecessor in step 5); under the record it is the
+    # reply-owner rule.
+    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     on, _ = _render(_actor())
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
@@ -154,6 +159,8 @@ def test_the_reply_note_keeps_sub_agents_while_delegation_is_on(trim, monkeypatc
     one: the note still says what a sub-agent should do."""
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", True)
+    # Outside the agent record (deleted in step 5): see above.
+    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "on")
     prompt, _ = _render(_actor())
     assert "If you are a sub-agent" in prompt
