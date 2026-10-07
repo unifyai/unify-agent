@@ -40,7 +40,8 @@ def test_default_tool_policy_requires_both_families_when_present():
     )
     mode, gated, opts = _unpack(policy(0, tools, called_tools=[]))
     assert mode == "required"
-    assert opts == {"eager": True}
+    # UNIFY_CACHE_DISCIPLINE (on by default) masks the other tools by rule.
+    assert opts["eager"] is True and "searched first" in opts["mask_rule"]
     assert "execute_code" not in gated
     assert set(gated) == {
         "FunctionManager_search_functions",
@@ -57,7 +58,8 @@ def test_default_tool_policy_requires_both_families_when_present():
         ),
     )
     assert mode == "required"
-    assert opts == {"eager": True}
+    # UNIFY_CACHE_DISCIPLINE (on by default) masks the other tools by rule.
+    assert opts["eager"] is True and "searched first" in opts["mask_rule"]
     assert set(gated) == {"GuidanceManager_search"}
 
     mode, full, opts = _unpack(
@@ -90,7 +92,8 @@ def test_default_tool_policy_falls_back_when_preferred_missing():
     )
     mode, gated, opts = _unpack(policy(0, tools, called_tools=[]))
     assert mode == "required"
-    assert opts == {"eager": True}
+    # UNIFY_CACHE_DISCIPLINE (on by default) masks the other tools by rule.
+    assert opts["eager"] is True and "searched first" in opts["mask_rule"]
     assert set(gated) == {
         "FunctionManager_list_functions",
         "GuidanceManager_filter",
@@ -111,7 +114,8 @@ def test_default_tool_policy_skips_gm_gate_when_absent():
     )
     mode, gated, opts = _unpack(policy(0, tools, called_tools=[]))
     assert mode == "required"
-    assert opts == {"eager": True}
+    # UNIFY_CACHE_DISCIPLINE (on by default) masks the other tools by rule.
+    assert opts["eager"] is True and "searched first" in opts["mask_rule"]
     assert "FunctionManager_add_functions" not in gated
     assert set(gated) == {"FunctionManager_search_functions"}
 
