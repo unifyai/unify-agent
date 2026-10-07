@@ -1959,9 +1959,6 @@ SESSION_ENDED = "session ended"
 # UNIFY_OUTCOME when the agent's last reply had no text.
 _STOPPED_NOTICE = "processed stopped early, no result"
 _EMPTY_REPLY = "(the agent's last reply had no text)"
-# UNIFY_REVIEW_LAST_REPLY: the line after the last reply of a session its host
-# ended normally.
-_HOST_ENDED_NOTE = "(The host then ended the session; no outcome was posted.)"
 
 
 def review_final_result(
@@ -1971,7 +1968,6 @@ def review_final_result(
     stop_reason: Optional[str],
     outcome_active: bool,
     reply_at_outcome: Optional[str],
-    last_reply_switch: bool,
 ) -> str:
     """The "Final Result" a session's storage review reads.
 
@@ -1982,13 +1978,11 @@ def review_final_result(
     first); ``stop_reason`` the reason of the stop that ended it (None when
     nothing stopped it); ``outcome_active`` whether UNIFY_OUTCOME gave the
     session an outcome channel, and ``reply_at_outcome`` the reply an
-    outcome arrived after; ``last_reply_switch`` is UNIFY_REVIEW_LAST_REPLY.
+    outcome arrived after.
 
-    As shipped it is the session's result. With an outcome channel it is the
+    Without an outcome channel it is the session's result. With one it is the
     reply the outcome arrived after or, with no outcome, the last reply in
-    place of the stop notice. Otherwise, with ``last_reply_switch``, a session
-    its host ended normally (``SESSION_ENDED``) reads its last reply and one
-    line saying the host then ended it; every other end keeps its result.
+    place of the stop notice.
     """
     result = str(original_result)
     if outcome_active:
@@ -1996,14 +1990,6 @@ def review_final_result(
             return reply_at_outcome or _EMPTY_REPLY
         if result == _STOPPED_NOTICE and last_reply is not None:
             return last_reply or _EMPTY_REPLY
-        return result
-    if (
-        last_reply_switch
-        and result == _STOPPED_NOTICE
-        and stop_reason == SESSION_ENDED
-        and last_reply is not None
-    ):
-        return f"{last_reply or _EMPTY_REPLY}\n\n{_HOST_ENDED_NOTE}"
     return result
 
 
@@ -3007,11 +2993,6 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._outcome: Optional[dict] = None
         self._last_reply: Optional[str] = None
         self._reply_at_outcome: Optional[str] = None
-        # UNIFY_REVIEW_LAST_REPLY: the agent's last reply is kept without an
-        # outcome channel too, for the review of a session its host ended.
-        from unify.settings import SETTINGS
-
-        self._review_last_reply = bool(SETTINGS.UNIFY_REVIEW_LAST_REPLY)
         from unify import outcome as outcome_mod
 
         if outcome_mod.enabled():
@@ -3073,7 +3054,7 @@ class _StorageCheckHandle(SteerableToolHandle):
             while True:
                 notif = await source.next_notification()
                 if (
-                    (self.outcome_session_id is not None or self._review_last_reply)
+                    self.outcome_session_id is not None
                     and isinstance(notif, dict)
                     and notif.get("type") == "response"
                 ):
@@ -3121,7 +3102,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             stop_reason=self._stop_reason,
             outcome_active=self.outcome_session_id is not None,
             reply_at_outcome=self._reply_at_outcome,
-            last_reply_switch=self._review_last_reply,
         )
 
     def _note_turn_boundary(self, latest_response: str) -> None:
