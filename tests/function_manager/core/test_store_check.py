@@ -24,6 +24,7 @@ from unify.function_manager.primitives import (
     register_environment,
 )
 from unify.function_manager.primitives.environment import clear_environment_namespaces
+from unify.settings import SETTINGS
 
 
 def _reseed() -> None:
@@ -132,6 +133,9 @@ def test_a_dependency_that_cannot_be_installed_is_refused(monkeypatch):
             raise FileNotFoundError(2, "No such file or directory", "uv")
 
     monkeypatch.setattr(environment, "ensure", no_uv)
+    # The load step runs only where Python runs in this process; with the
+    # sandboxed worker the check stays static (test_store_check_confinement).
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     fm = FunctionManager()
     message = _refusal(
         fm,

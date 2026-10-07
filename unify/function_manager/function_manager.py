@@ -1753,11 +1753,16 @@ class FunctionManager(BaseFunctionManager):
 
         The static part (``store_check.unresolved``) resolves every global name
         and every ``primitives.*`` reference against a fresh sandbox's globals
-        and the namespaces in this manager's scope. Then the function is loaded
-        exactly as a search loads it (declared dependencies installed, stored
-        callees injected, the ``def`` executed) into a scratch namespace that is
-        thrown away. The raised ``ValueError`` names what failed; the storage
-        review reads it as the tool's error.
+        and the namespaces in this manager's scope. Then, only where Python runs
+        in this process anyway, the function is loaded exactly as a search
+        loads it (stored callees injected, the ``def`` executed) into a scratch
+        namespace that is thrown away. Executing a ``def`` runs its default
+        values and decorators, so with Python in the sandboxed worker
+        (``UNIFY_WORKSPACE_PYTHON=worker``) the check stays static: model-written
+        code never runs in the harness's process, which holds the credentials.
+        A function that fails as it loads then fails where it runs, in the
+        worker. The raised ``ValueError`` names what failed; the storage review
+        reads it as the tool's error.
         """
         from . import store_check
 
@@ -1784,6 +1789,10 @@ class FunctionManager(BaseFunctionManager):
                 + "; ".join(problems)
                 + ". Fix the function and add it again.",
             )
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            return
         scratch = create_execution_globals()
         entry = {
             "name": name,
