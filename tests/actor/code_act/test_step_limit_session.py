@@ -224,17 +224,29 @@ async def test_on_the_step_limit_ends_the_request_and_the_session_goes_on(
 RESTART = "Context was compressed. Continue from where you left off."
 
 
+def _is_compaction(messages: list) -> bool:
+    """The compactor's request, or the fork summary's
+    (UNIFY_CACHE_DISCIPLINE, the default since the code freeze)."""
+    from unify.common._async_tool import cache_discipline
+
+    return any(
+        m.get("role") == "system"
+        and "You are a context compactor" in str(m.get("content"))
+        for m in messages
+    ) or (
+        bool(messages)
+        and cache_discipline.COMPRESSION_FORK_INSTRUCTION
+        in str(messages[-1].get("content"))
+    )
+
+
 class _CompactingModel(_Model):
     """As _Model; the compactor returns at once, and after a compaction
     the session replies with its draft."""
 
     async def __call__(self, *, shared_session=None, client=None, **kw):
         messages = kw.get("messages") or []
-        if any(
-            m.get("role") == "system"
-            and "You are a context compactor" in str(m.get("content"))
-            for m in messages
-        ):
+        if _is_compaction(messages):
             self.requests.append(messages)
             return h.completion(content="Compacted.")
         restarted = any(
@@ -281,9 +293,7 @@ async def test_compact_at_the_step_limit_and_the_session_goes_on(
     first, second = (line["content"] for line in lines if line["type"] == "response")
     assert (first, second) == (DRAFT, FINAL)
     assert not any("🔚" in json.dumps(line, ensure_ascii=False) for line in lines)
-    compactions = [
-        r for r in model.requests if "You are a context compactor" in json.dumps(r)
-    ]
+    compactions = [r for r in model.requests if _is_compaction(r)]
     assert len(compactions) == 1
     # The follow-up was answered from the compacted conversation.
     (turn,) = [r for r in model.requests if _last_request_text(r) == FOLLOW_UP]

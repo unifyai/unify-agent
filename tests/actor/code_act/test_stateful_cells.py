@@ -149,8 +149,9 @@ def test_the_prompt_names_no_cell_mode_and_no_session_tool(monkeypatch, profile)
         "the session's\n`state_mode`",
     ):
         assert gone not in on, gone
-    # The notebook framing and the function modes stay.
-    assert "persistent" in on and "**stateless** | `await func.stateless(...)`" in on
+    # The notebook framing stays. (The function modes table is part of the
+    # library section, which only the library's JSON tools brought in.)
+    assert "persistent" in on
     # Only these sentences change: what is left is the shipped text.
     assert len(on) < len(off)
 
