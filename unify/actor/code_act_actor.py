@@ -7146,8 +7146,15 @@ class CodeActActor(BaseCodeActActor):
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
         instance_token = _instance_lint.enter(request)
+        # UNIFY_ENV_CARDS: the task loop's environment calls are recorded, and
+        # its first message lists what earlier sessions verified.
+        from unify.actor import env_cards as _env_cards
+
+        env_scope, env_section = _env_cards.enter(request)
         core_token = core_session.enter() if core_session is not None else None
         try:
+            if env_section:
+                first_message_parts.append(env_section)
             # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
             # request, after the snapshot line; ranked inside the task's
             # origin context, so a function stored for a similar request
@@ -7281,6 +7288,7 @@ class CodeActActor(BaseCodeActActor):
             _instance_lint.leave(instance_token)
             _evidence_ledger.leave(ledger_token)
             _task_origin.leave(task_origin_token)
+            _env_cards.leave(env_scope)
             raise
         finally:
             current_run_meter.reset(meter_token)
@@ -7357,6 +7365,7 @@ class CodeActActor(BaseCodeActActor):
         _instance_lint.leave(instance_token)
         _evidence_ledger.leave(ledger_token)
         _task_origin.leave(task_origin_token)
+        _env_cards.leave(env_scope)
         if _agents is not None:
             # The handle the caller holds (the storage wrapper by default).
             handle.agents_pool = _agents.pool  # type: ignore[attr-defined]

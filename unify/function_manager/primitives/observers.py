@@ -318,7 +318,7 @@ async def dispatch_async(
 # ---------------------------------------------------------------------------
 
 _OFF_WORDS = frozenset({"", "0", "false", "no", "off", "none"})
-_SWITCHES = ("UNIFY_EVIDENCE_LEDGER", "UNIFY_SPECULATE")
+_SWITCHES = ("UNIFY_EVIDENCE_LEDGER", "UNIFY_SPECULATE", "UNIFY_ENV_CARDS")
 
 
 def _on(value: Any) -> bool:
