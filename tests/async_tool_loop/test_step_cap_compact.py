@@ -14,6 +14,11 @@ the request has already given is not held back for a compaction. When the
 compaction fails, runs past the loop's timeout or is cancelled, the shipped
 behaviour applies too, or the cancel does. The transport is scripted, so
 nothing leaves the process.
+
+Under the baked defaults (``UNIFY_CACHE_DISCIPLINE`` on) the compression is
+the fork summary: the session's last request plus one instruction, answered
+by the session's own model. The compactor runs only when the fork yields no
+summary.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import pytest
 
 import unify.common._async_tool.context_compression as _cc
 from tests import cache_discipline_helpers as h
+from unify.common._async_tool.cache_discipline import COMPRESSION_FORK_INSTRUCTION
 from unify.common._async_tool.context_compression import _COMPRESSED_HEADER
 from unify.settings import SETTINGS
 
@@ -36,6 +42,7 @@ FINAL_2 = "Still 42."
 LOOP_AGAIN = "Look into it once more."
 REPLY = "Replied from a cell: 42."
 RESTART = "Context was compressed. Continue from where you left off."
+SUMMARY = "Summary: looked several times; best so far 42."
 TERMINATED = "🔚 Terminating early: max_steps ({}) exceeded"
 STOPPED = "🔚 Stopped at the step limit: max_steps ({}) exceeded"
 MAX_STEPS = 17
@@ -47,6 +54,13 @@ def _is_compactor(messages: list) -> bool:
         m.get("role") == "system"
         and "You are a context compactor" in str(m.get("content"))
         for m in messages
+    )
+
+
+def _is_fork(messages: list) -> bool:
+    """A compression fork: the session's request plus the summary instruction."""
+    return bool(messages) and messages[-1].get("content") == (
+        COMPRESSION_FORK_INSTRUCTION
     )
 
 
@@ -79,23 +93,44 @@ def _text(messages: list) -> str:
 
 
 class _Model:
-    """The scripted model of the session and of its compactor.
+    """The scripted model of the session, its compression fork and its compactor.
 
     The session calls ``look`` (with *DRAFT* as its text) until the request
     is ``CONTINUE`` (answered with ``FINAL_2``) or, with *after_restart*,
     until the conversation was compacted: ``"answer"`` then answers with
-    ``FINAL`` at once, ``"look"`` first looks once more. The compactor
-    returns at once, leaving every entry as it is.
+    ``FINAL`` at once, ``"look"`` first looks once more. A compression fork
+    answers with *SUMMARY*, or as *fork* says: ``"fail"`` raises, ``"block"``
+    answers its first *block_calls* calls only once :attr:`release` is set
+    (:attr:`fork_started` is set when one starts). unillm shields a model
+    call from a caller that stops waiting (the provider is already charging;
+    the abandoned call is billed when it ends), so a blocked fork is
+    abandoned by the loop, never cancelled. The compactor returns at once,
+    leaving every entry as it is.
     """
 
-    def __init__(self, *, after_restart: str | None = "answer"):
+    def __init__(
+        self,
+        *,
+        after_restart: str | None = "answer",
+        fork: str = "summary",
+        block_calls: int = 1,
+    ):
         self.after_restart = after_restart
+        self.fork = fork
+        self.block_calls = block_calls
         self.requests: list[list[dict]] = []
+        self.forks: list[list[dict]] = []
         self.compactor_calls = 0
+        self.fork_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @property
+    def fork_calls(self) -> int:
+        return len(self.forks)
 
     @property
     def session_requests(self) -> list[list[dict]]:
-        return [r for r in self.requests if not _is_compactor(r)]
+        return [r for r in self.requests if not _is_compactor(r) and not _is_fork(r)]
 
     async def __call__(self, *, shared_session=None, client=None, **kw):
         messages = kw.get("messages") or []
@@ -104,6 +139,14 @@ class _Model:
             self.requests.append(messages)
             return h.completion(content="Compacted.")
         self.requests.append(messages)
+        if _is_fork(messages):
+            self.forks.append(messages)
+            if self.fork == "fail":
+                raise RuntimeError("provider unavailable")
+            if self.fork == "block" and len(self.forks) <= self.block_calls:
+                self.fork_started.set()
+                await self.release.wait()
+            return h.completion(content=SUMMARY)
         last = _last_request(messages)
         if last == CONTINUE:
             return h.completion(content=FINAL_2)
@@ -206,7 +249,7 @@ async def test_off_the_limit_ends_the_loop_as_shipped(switches):
         handle = _start()
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == TERMINATED.format(MAX_STEPS)
-    assert model.compactor_calls == 0
+    assert (model.fork_calls, model.compactor_calls) == (0, 0)
     assert handle._runtime_state.step_cap_compactions == 0
 
 
@@ -229,28 +272,27 @@ async def test_on_the_session_is_compacted_and_goes_on(switches):
         for _ in range(10):
             await handle.submit(CONTINUE)
             answers.append((await _response(handle))["content"])
-            if model.compactor_calls == 2:
+            if model.fork_calls == 2:
                 break
         assert not handle.done()
         state = handle._runtime_state
-        archives = handle._compression.raw_archives
         await _close(handle)
 
     assert answers[0] == FINAL
     assert set(answers[1:]) == {FINAL_2}
-    assert model.compactor_calls == state.step_cap_compactions == 2
+    assert model.fork_calls == state.step_cap_compactions == 2
+    assert model.compactor_calls == 0
     # The step count restarted from the compacted conversation.
     assert state.message_count_offset == 0
-    # The first answer came after the compaction, from its context.
+    # The first answer came after the compaction, from its summary of the
+    # conversation, which held the task.
     answered = next(r for r in model.session_requests if RESTART in _last_request(r))
     assert _COMPRESSED_HEADER.strip() in _text(answered)
-    assert TASK in _text(answered)
+    assert SUMMARY in _text(answered)
+    assert TASK in _text(model.forks[0])
     assert len(answered) < MAX_STEPS
-    # The answer before the second compaction was given at the limit.
-    assert len(archives[1]) >= MAX_STEPS
-    assert archives[1][-1] == {"role": "assistant", "content": FINAL_2} or (
-        archives[1][-1].get("content") == FINAL_2
-    )
+    # The second compaction summarised a conversation at the limit.
+    assert len(model.forks[1]) >= MAX_STEPS
     # The last request was compacted before it was read, and read after it.
     last = model.session_requests[-1]
     assert _last_request(last) == CONTINUE
@@ -270,7 +312,7 @@ async def test_on_a_request_is_compacted_twice_then_ends_as_shipped(switches):
         handle = _start()
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == TERMINATED.format(MAX_STEPS)
-    assert model.compactor_calls == 2
+    assert (model.fork_calls, model.compactor_calls) == (2, 0)
     assert handle._runtime_state.step_cap_compactions == 2
 
 
@@ -283,7 +325,7 @@ async def test_on_a_loop_that_is_not_persistent_is_compacted_and_answers(switche
         handle = _start(persist=False)
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == FINAL
-    assert model.compactor_calls == 1
+    assert (model.fork_calls, model.compactor_calls) == (1, 0)
 
 
 @pytest.mark.asyncio
@@ -295,32 +337,29 @@ async def test_on_without_compression_the_limit_ends_the_loop_as_shipped(switche
         handle = _start(enable_compression=False)
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == TERMINATED.format(MAX_STEPS)
-    assert model.compactor_calls == 0
+    assert (model.fork_calls, model.compactor_calls) == (0, 0)
 
 
 @pytest.mark.asyncio
-async def test_on_with_cache_discipline_the_fork_summary_compacts(switches):
-    """Under UNIFY_CACHE_DISCIPLINE the compaction is the fork summary a
-    full context gets; the request goes on from it."""
-    from unify.common._async_tool import cache_discipline
-
-    switches(UNIFY_CACHE_DISCIPLINE=True)
+async def test_on_the_fork_summary_compacts_and_the_request_goes_on_from_it(
+    switches,
+):
+    """The compaction is the fork summary a full context gets: the session's
+    last request plus the instruction; the request goes on from it."""
+    switches()
     model = _Model()
     with h.scripted(()):
         _install(model)
         handle = _start(persist=False)
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == FINAL
-    assert model.compactor_calls == 0
-    forks = [
-        r
-        for r in model.requests
-        if cache_discipline.COMPRESSION_FORK_INSTRUCTION in str(r[-1].get("content"))
-    ]
-    assert len(forks) == 1
+    assert (model.fork_calls, model.compactor_calls) == (1, 0)
+    # the fork continues the session's last request
+    fork = model.forks[0]
+    assert fork[:-1] == model.session_requests[-2]
     answered = model.session_requests[-1]
     assert RESTART in _last_request(answered)
-    assert DRAFT in _last_request(answered)  # the fork's summary
+    assert SUMMARY in _last_request(answered)
     assert handle._runtime_state.step_cap_compactions == 1
 
 
@@ -339,7 +378,7 @@ async def test_on_with_cap_reply_a_long_request_is_compacted_and_answered(switch
         second = (await _response(handle))["content"]
         await _close(handle)
     assert (first, second) == (FINAL, FINAL_2)
-    assert model.compactor_calls == 1
+    assert (model.fork_calls, model.compactor_calls) == (1, 0)
 
 
 @pytest.mark.asyncio
@@ -352,7 +391,7 @@ async def test_on_with_cap_reply_the_third_limit_replies_and_the_next_request_ha
         _install(model)
         handle = _start(drive=True)
         capped = (await _response(handle))["content"]
-        after_first = model.compactor_calls
+        after_first = model.fork_calls
         await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
         await handle.submit(LOOP_AGAIN)
@@ -363,7 +402,7 @@ async def test_on_with_cap_reply_the_third_limit_replies_and_the_next_request_ha
     assert after_first == 2
     assert answered == FINAL_2
     assert capped_again.startswith(STOPPED.format(MAX_STEPS))
-    assert model.compactor_calls == 4
+    assert (model.fork_calls, model.compactor_calls) == (4, 0)
 
 
 # ── failure, timeout and cancel ──────────────────────────────────────────
@@ -376,13 +415,15 @@ async def test_on_a_failed_compaction_ends_the_loop_as_shipped(switches, monkeyp
     async def fail(*args, **kwargs):
         raise RuntimeError("provider unavailable")
 
+    # The fork fails, and so does the compactor it falls back to.
     monkeypatch.setattr(_cc, "compress_messages", fail)
-    model = _Model()
+    model = _Model(fork="fail")
     with h.scripted(()):
         _install(model)
         handle = _start()
         result = await asyncio.wait_for(handle.result(), WAIT)
     assert result == TERMINATED.format(MAX_STEPS)
+    assert model.fork_calls == 1
     state = handle._runtime_state
     assert (state.step_cap_compactions, state.step_cap_compaction_failures) == (0, 1)
 
@@ -398,7 +439,7 @@ async def test_on_with_cap_reply_a_failed_compaction_replies_and_the_session_goe
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(_cc, "compress_messages", fail)
-    model = _Model()
+    model = _Model(fork="fail")
     with h.scripted(()):
         _install(model)
         handle = _start(drive=True)
@@ -410,45 +451,21 @@ async def test_on_with_cap_reply_a_failed_compaction_replies_and_the_session_goe
     assert answered == FINAL_2
 
 
-def _blocking_compressor(monkeypatch, *, block_calls: int = 1):
-    """compress_messages that never returns on its first *block_calls* calls
-    (and records that it was cancelled), then returns its input."""
-    started = asyncio.Event()
-    seen = {"calls": 0, "cancelled": 0}
-
-    async def compress(messages, endpoint, **kwargs):
-        seen["calls"] += 1
-        if seen["calls"] <= block_calls:
-            started.set()
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                seen["cancelled"] += 1
-                raise
-        return _cc.CompressedMessages(
-            messages=[
-                _cc.CompressedMessage(content=json.dumps(m, default=str))
-                for m in messages
-            ],
-        )
-
-    monkeypatch.setattr(_cc, "compress_messages", compress)
-    return started, seen
-
-
 @pytest.mark.asyncio
-async def test_on_stop_during_a_compaction_ends_it_at_once(switches, monkeypatch):
+async def test_on_stop_during_a_compaction_ends_it_at_once(switches):
     switches()
-    started, seen = _blocking_compressor(monkeypatch)
-    model = _Model()
+    model = _Model(fork="block")
     with h.scripted(()):
         _install(model)
         handle = _start()
-        await asyncio.wait_for(started.wait(), WAIT)
+        await asyncio.wait_for(model.fork_started.wait(), WAIT)
         await handle.stop()
         await asyncio.wait_for(handle.result(), WAIT)
-    assert handle.done()
-    assert seen["cancelled"] == 1
+        # The loop ended while the fork's call was still out.
+        assert handle.done() and not model.release.is_set()
+        model.release.set()
+    assert model.fork_calls == 1
+    assert handle._runtime_state.step_cap_compactions == 0
 
 
 @pytest.mark.asyncio
@@ -457,36 +474,37 @@ async def test_on_a_cancelled_request_during_a_compaction_ends_the_request(
     monkeypatch,
 ):
     switches()
-    started, seen = _blocking_compressor(monkeypatch)
-    model = _Model()
+    model = _Model(fork="block")
     with h.scripted(()):
         _install(model)
         handle = _start(drive=True)
-        await asyncio.wait_for(started.wait(), WAIT)
+        await asyncio.wait_for(model.fork_started.wait(), WAIT)
         assert await handle.cancel_request("enough")
         cancelled = await _response(handle)
         await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
         state = handle._runtime_state
         await _close(handle)
+        model.release.set()
     assert cancelled.get("cancelled") is True
-    assert seen["cancelled"] == 1
+    # The abandoned fork's summary was never used; the next request's was.
+    assert model.fork_calls == 2
     # The next request was compacted before it was read, and answered.
     assert answered == FINAL_2
     assert state.step_cap_compactions == 1
 
 
 @pytest.mark.asyncio
-async def test_on_a_compaction_is_bounded_by_the_loop_timeout(switches, monkeypatch):
+async def test_on_a_compaction_is_bounded_by_the_loop_timeout(switches):
     switches()
-    _, seen = _blocking_compressor(monkeypatch)
-    model = _Model()
+    model = _Model(fork="block")
     with h.scripted(()):
         _install(model)
         handle = _start(timeout=0.5)
         result = await asyncio.wait_for(handle.result(), WAIT)
+        model.release.set()
     assert result == TERMINATED.format(MAX_STEPS)
-    assert seen["cancelled"] == 1
+    assert model.fork_calls == 1
     assert handle._runtime_state.step_cap_compaction_failures == 1
 
 
@@ -509,10 +527,14 @@ async def test_on_a_reply_from_a_cell_at_the_limit_ends_the_turn(switches):
     class _Replier(_Model):
         async def __call__(self, **kw):
             messages = kw.get("messages") or []
-            if not _is_compactor(messages) and _last_request(messages) == TASK:
+            if (
+                not _is_compactor(messages)
+                and not _is_fork(messages)
+                and _last_request(messages) == TASK
+            ):
                 self.requests.append(messages)
-                # Three looks, then the reply lands at the limit.
-                if sum(m.get("role") == "tool" for m in messages) < 3:
+                # Six looks, then the reply lands at the limit (the 17th message).
+                if sum(m.get("role") == "tool" for m in messages) < 6:
                     return h.completion(content=DRAFT, calls=[("look", {})])
                 return h.completion(content=DRAFT, calls=[("answer", {})])
             return await super().__call__(**kw)
@@ -526,7 +548,7 @@ async def test_on_a_reply_from_a_cell_at_the_limit_ends_the_turn(switches):
             drive=True,
         )
         replied = (await _response(handle))["content"]
-        compacted_before = model.compactor_calls
+        compacted_before = model.fork_calls
         at_reply = len(handle.get_history())
         await handle.submit(CONTINUE)
         answered = (await _response(handle))["content"]
@@ -535,7 +557,7 @@ async def test_on_a_reply_from_a_cell_at_the_limit_ends_the_turn(switches):
     assert at_reply >= MAX_STEPS
     assert compacted_before == 0
     assert answered == FINAL_2
-    assert model.compactor_calls == 1
+    assert (model.fork_calls, model.compactor_calls) == (1, 0)
 
 
 @pytest.mark.asyncio
@@ -569,13 +591,8 @@ async def test_on_the_turn_boundary_hook_goes_on_after_the_compaction(switches):
     assert answer == FINAL
     assert calls["after"] >= 1
     after = [r for r in model.session_requests if RESTART in _last_request(r)]
-    compacted = [
-        m
-        for m in after[-1]
-        if m.get("_compressed_message")
-        or (m.get("role") == "system" and _COMPRESSED_HEADER in str(m.get("content")))
-    ]
-    assert compacted and "RECORD-1" in _text(compacted)
+    # The block delivered before the compaction was in what the fork summarised.
+    assert model.fork_calls == 1 and "RECORD-1" in _text(model.forks[0])
     assert any(
         m.get("role") == "user" and "RECORD-2" in str(m.get("content"))
         for m in after[-1]
@@ -602,6 +619,6 @@ async def test_on_the_bound_request_survives_the_compaction(switches):
         answer = (await _response(handle))["content"]
         await _close(handle)
     assert answer == FINAL
-    assert model.compactor_calls == 1
+    assert (model.fork_calls, model.compactor_calls) == (1, 0)
     # Every call, the one after the compaction too, read the request.
     assert len(seen) >= 3 and set(seen) == {TASK}
