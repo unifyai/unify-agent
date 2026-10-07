@@ -1,5 +1,10 @@
 """Symbolic: with every switch the merged lanes add off, requests are upstream's.
 
+Since the code freeze (step 3) most of these switches default on: the
+default configuration is pinned by tests/actor/code_act/test_baked_prompt_golden.py,
+and this test pins every switch to its off value explicitly, so the
+switches-off path is still checked against upstream until step 4 removes it.
+
 Each lane checked its own switch-off path; this checks them together. The
 actor's first request (the discovery gate's tools, its system prompt and
 the task) and the full tool list it advertises after the gate were recorded
@@ -119,6 +124,13 @@ NEW_SWITCHES = {
     "UNIFY_ESCAPE_DRIFT_CHECK": "",
 }
 
+# Upstream settings whose default the code freeze changed (lean-all's
+# values), pinned back to the recording's here.
+UPSTREAM_OFF = {
+    "UNIFY_STORE_CHECK": "",
+    "UNIFY_SEARCH_SKIP_UNLOADABLE": False,
+}
+
 # The UNIFY_ settings of the commit the actor golden was recorded on
 # (35c8633c7); every other one is a lane's and belongs in NEW_SWITCHES.
 UPSTREAM_SETTINGS = frozenset(
@@ -147,22 +159,25 @@ UPSTREAM_SETTINGS = frozenset(
 )
 
 
-def test_every_lane_switch_is_here_at_its_default():
+def test_every_lane_switch_is_here_and_its_default_is_off_or_baked():
+    from tests.actor.code_act.test_baked_prompt_golden import BAKED_DEFAULTS
     from unify.settings import ProductionSettings
 
     fields = ProductionSettings.model_fields
     added = {name for name in fields if name.startswith("UNIFY_")} - UPSTREAM_SETTINGS
     assert sorted(added - set(NEW_SWITCHES)) == []
+    assert set(UPSTREAM_OFF) <= UPSTREAM_SETTINGS
+    expected = {**NEW_SWITCHES, **UPSTREAM_OFF, **BAKED_DEFAULTS}
     assert {
         name: (fields[name].default, value)
-        for name, value in NEW_SWITCHES.items()
+        for name, value in expected.items()
         if fields[name].default != value
     } == {}
 
 
 @pytest.fixture
 def all_off(monkeypatch):
-    for name, value in NEW_SWITCHES.items():
+    for name, value in {**NEW_SWITCHES, **UPSTREAM_OFF}.items():
         assert hasattr(SETTINGS, name), name
         monkeypatch.setattr(SETTINGS, name, value)
 
