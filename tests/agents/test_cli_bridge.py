@@ -25,7 +25,7 @@ class _Handle:
         if pool is not None:
             self.agents_pool = pool
 
-    async def interject(self, text, **_):
+    async def submit(self, text):
         self.interjected.append(text)
 
     async def cancel_request(self):

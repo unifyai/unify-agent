@@ -17,7 +17,7 @@ from unify.actor.code_act_actor import CodeActActor
 from unify.actor.environments.actor import ActorEnvironment, _ActorRunner
 from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
 from unify.actor.prompt_builders import build_code_act_prompt
-from unify.common.async_tool_loop import SteerableToolHandle
+from unify.common.async_tool_loop import ToolLoopHandle
 from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
@@ -241,19 +241,19 @@ def test_actor_accessible_via_primitives_class():
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
-async def test_actor_act_returns_steerable_handle():
-    """actor.act() should return a SteerableToolHandle, not a plain string."""
+async def test_actor_act_returns_a_loop_handle():
+    """actor.act() should return a ToolLoopHandle, not a plain string."""
     runner = _ActorRunner()
     handle = await runner.act(
         request="What is 1+1?",
         timeout=10,
     )
     try:
-        assert isinstance(handle, SteerableToolHandle)
+        assert isinstance(handle, ToolLoopHandle)
         assert callable(handle.result)
         assert callable(handle.stop)
-        assert callable(handle.pause)
-        assert callable(handle.resume)
+        assert callable(handle.submit)
+        assert not hasattr(handle, "pause") and not hasattr(handle, "interject")
     finally:
         await handle.stop()
         try:

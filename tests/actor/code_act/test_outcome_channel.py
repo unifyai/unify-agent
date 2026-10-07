@@ -126,7 +126,7 @@ class _Receiver:
     async def stop(self, reason=None) -> None:
         self.stopped = reason
 
-    async def interject(self, message: str) -> None:
+    async def submit(self, message: str) -> None:
         self.interjections.append(message)
 
 

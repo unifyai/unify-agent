@@ -71,7 +71,7 @@ class _FakeHandle:
     async def answer_clarification(self, call_id: str, answer: str) -> None:
         self.answers.append((call_id, answer))
 
-    async def interject(self, message: str) -> None:
+    async def submit(self, message: str) -> None:
         self.interjections.append(message)
         self.interjected.set()
 
