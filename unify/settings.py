@@ -640,7 +640,7 @@ class ProductionSettings(BaseSettings):
     # interjections that cancel calls, clarification and notification
     # channels, lifecycle notices and primitives.actor are not used, and
     # ``agents.spawn`` starts helpers. Empty: as shipped.
-    UNIFY_AGENTS: str = ""
+    UNIFY_AGENTS: str = "record"
     # Tunables for UNIFY_AGENTS=record, ``key=value,…`` (unify/agents/options.py).
     # Empty: the documented defaults.
     UNIFY_AGENTS_OPTIONS: str = ""
