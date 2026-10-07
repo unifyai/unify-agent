@@ -260,22 +260,6 @@ _EXECUTION_RULES = textwrap.dedent("""
 # must not offer one.
 _PRIMITIVES_GLOBAL_ROW = "| `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |\n"
 
-# UNIFY_REPLY_PROTOCOL_NOTE: reply-format actions are the actor's own reply.
-_REPLY_PROTOCOL_NOTE = textwrap.dedent("""
-    ### Actions Taken By Replying
-
-    When the requester defines actions you take by replying in a stated
-    format (a JSON object such as `{"action": ...}`, a keyword, a fixed
-    template), those actions exist only as your own final reply. They are
-    not functions, tools or `primitives.*` methods, and no code, search or
-    sub-agent can take them for you: to take one, end your turn with
-    exactly that reply. Do not delegate a sub-task whose result would be
-    such an action. If you are a sub-agent and your task seems to need one,
-    say so in your result instead of calling a function that does not
-    exist.
-""").strip()
-
-
 # UNIFY_PROMPT_ACCURACY: without request_clarification the rules do not
 # mention it. Each excerpt must occur once in its section.
 _RULE_5_CLARIFY = (
@@ -314,17 +298,6 @@ def _incremental_execution(can_clarify: bool) -> str:
     )
 
 
-def _reply_protocol_note_enabled() -> bool:
-    from unify import agents
-    from unify.settings import SETTINGS
-
-    # UNIFY_AGENTS=record: the record enforces the note's rule (only the asked
-    # agent may reply; a helper cannot take the requester's action), and the
-    # team-record section states it in its last sentence, so the note, which
-    # also tells the model not to delegate, is not sent (design v2 §5.2).
-    return bool(SETTINGS.UNIFY_REPLY_PROTOCOL_NOTE) and not agents.enabled()
-
-
 # ---------------------------------------------------------------------------
 # UNIFY_REPLY_CHANNEL: the reply rule
 # ---------------------------------------------------------------------------
@@ -338,10 +311,6 @@ def _reply_protocol_note_enabled() -> bool:
 _REPLY_FROM_CELL = (
     "You can also reply from a cell with `reply(text)`, for example "
     "`reply(answer)` when the answer is in a variable; it ends your turn."
-)
-_NOTE_FROM_CELL = (
-    "A cell's `reply(text)` is your reply too: `reply(action)` takes the "
-    "action and ends your turn."
 )
 _WRAP = 72
 
@@ -422,25 +391,6 @@ def _final_answer_rule(text: str) -> str:
         ],
     )
     return _unified(text, _RULE_6_FINAL_ANSWER, _refill(rule, indent="   "))
-
-
-_NOTE_TAKE_ONE = (
-    "They are not functions, tools or `primitives.*` methods, and no code, "
-    "search or sub-agent can take them for you: to take one, end your turn "
-    "with exactly that reply."
-)
-
-
-def _reply_protocol_note() -> str:
-    """UNIFY_REPLY_PROTOCOL_NOTE's text, as the switches word it."""
-    take_one = _NOTE_TAKE_ONE
-    if _reply_from_cell():
-        take_one = f"{take_one} {_NOTE_FROM_CELL}"
-    if take_one == _NOTE_TAKE_ONE:
-        return _REPLY_PROTOCOL_NOTE
-    heading, body = _REPLY_PROTOCOL_NOTE.split("\n\n", 1)
-    body = _unified(" ".join(body.split()), _NOTE_TAKE_ONE, take_one)
-    return f"{heading}\n\n{_refill(body)}"
 
 
 _SUB_ACTOR_DIAL = textwrap.dedent("""
@@ -1468,8 +1418,6 @@ def build_code_act_prompt(
         if lean:
             # The requester's reply format first.
             parts.append(_lean_role())
-            if _reply_protocol_note_enabled():
-                parts.append(_reply_protocol_note())
         else:
             parts.append(
                 "### Role\n\n"
@@ -1495,8 +1443,6 @@ def build_code_act_prompt(
             parts.append(_TOOL_SELECTION)
             parts.append(_PYTHON_FIRST)
             parts.append(_execution_rules(can_clarify))
-            if _reply_protocol_note_enabled():
-                parts.append(_reply_protocol_note())
         parts.append(
             (
                 _LEAN_INCREMENTAL_EXECUTION
@@ -1632,8 +1578,6 @@ def _build_core_prompt(
     parts: list[str] = []
     if lean:
         parts.append(_lean_role())
-        if _reply_protocol_note_enabled():
-            parts.append(_reply_protocol_note())
     else:
         parts.append(
             "### Role\n\n"
@@ -1662,8 +1606,6 @@ def _build_core_prompt(
         )
     else:
         parts.append(core_surface.execution_rules(_execution_rules(can_clarify)))
-        if _reply_protocol_note_enabled():
-            parts.append(_reply_protocol_note())
     parts.append(
         _LEAN_INCREMENTAL_EXECUTION if lean else _incremental_execution(can_clarify),
     )

@@ -407,15 +407,6 @@ class ProductionSettings(BaseSettings):
     # configuration share a key across minutes and workspaces. Ignored with
     # the switch off.
     UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
-    # Tell the actor how large its libraries are and skip searching an empty
-    # one: the discovery-first gate counts the stored functions (primitives
-    # excluded) and the guidance entries in scope each time it is evaluated,
-    # and a library with none is treated as already searched, so with both
-    # empty the first turn is ``auto`` instead of a forced search. Only the
-    # tool choice changes: under UNIFY_CACHE_DISCIPLINE the tool list sent is
-    # the same. The session's first user message starts with one line giving
-    # both counts at task start. Off: as shipped.
-    UNIFY_LIBRARY_SNAPSHOT: bool = True
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -438,12 +429,6 @@ class ProductionSettings(BaseSettings):
     # refuses to start without it. Nothing is listed when no function
     # passes. Off: as shipped.
     UNIFY_REVIEW_GENERALISE: bool = False
-    # The actor's prompt states that actions the requester asks to be taken by
-    # replying in a stated format are only ever the actor's own final reply:
-    # they are not functions or primitives, and no code or sub-agent can take
-    # them, so a sub-agent whose task seems to need one reports that instead
-    # of calling a function that does not exist. Off: as shipped.
-    UNIFY_REPLY_PROTOCOL_NOTE: bool = True
     # Delegation for the actor `unify act` and the conversation manager
     # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
     # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
@@ -1111,14 +1096,12 @@ class ProductionSettings(BaseSettings):
         "UNIFY_FUNCTION_EMPTY_NOTICE",
         "UNIFY_FUNCTION_VALUE_NOTICE",
         "UNIFY_CACHE_DISCIPLINE",
-        "UNIFY_LIBRARY_SNAPSHOT",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
         "UNIFY_REVIEW_LAST_REPLY",
         "UNIFY_BUILTIN_GUIDANCE",
-        "UNIFY_REPLY_PROTOCOL_NOTE",
         "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
         "UNIFY_REVIEW_GATE_FORK",

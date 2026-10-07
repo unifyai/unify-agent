@@ -6493,16 +6493,10 @@ class CodeActActor(BaseCodeActActor):
                 _has_fm_tools,
                 _has_gm_tools,
                 _filter_tools,
-                **(
-                    {
-                        "library_counts": functools.partial(
-                            _library_counts,
-                            self.function_manager,
-                            self.guidance_manager,
-                        ),
-                    }
-                    if SETTINGS.UNIFY_LIBRARY_SNAPSHOT
-                    else {}
+                library_counts=functools.partial(
+                    _library_counts,
+                    self.function_manager,
+                    self.guidance_manager,
                 ),
             )
         else:
@@ -6531,21 +6525,16 @@ class CodeActActor(BaseCodeActActor):
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.
-        if SETTINGS.UNIFY_LIBRARY_SNAPSHOT:
-            snapshot = _library_snapshot_line(
-                _library_counts(self.function_manager, self.guidance_manager),
-                has_fm_tools=any(
-                    str(k).startswith("FunctionManager_") for k in base_tools
-                )
-                or (core_session is not None and core_session.prompt.functions),
-                has_gm_tools=any(
-                    str(k).startswith("GuidanceManager_") for k in base_tools
-                )
-                or (core_session is not None and core_session.prompt.guidance),
-                discovery_gate=discovery_gate,
-            )
-            if snapshot:
-                first_message_parts.append(snapshot)
+        snapshot = _library_snapshot_line(
+            _library_counts(self.function_manager, self.guidance_manager),
+            has_fm_tools=any(str(k).startswith("FunctionManager_") for k in base_tools)
+            or (core_session is not None and core_session.prompt.functions),
+            has_gm_tools=any(str(k).startswith("GuidanceManager_") for k in base_tools)
+            or (core_session is not None and core_session.prompt.guidance),
+            discovery_gate=discovery_gate,
+        )
+        if snapshot:
+            first_message_parts.append(snapshot)
 
         # Soft/partial discovery hosts often serialize families under
         # tool_choice=required. Inject a Unify-local completion mutator that
