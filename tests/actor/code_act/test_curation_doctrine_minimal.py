@@ -18,7 +18,6 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
-from unify.settings import SETTINGS
 
 _DROPPED = (
     "### Preserving user-facing communication points",
@@ -32,13 +31,12 @@ _DROPPED = (
 )
 
 
-def _sections(monkeypatch, doctrine: str) -> str:
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", doctrine)
+def _sections() -> str:
     return caa._storage_doctrine_sections()
 
 
-def test_minimal_keeps_what_storage_needs(monkeypatch):
-    text = _sections(monkeypatch, "minimal")
+def test_minimal_keeps_what_storage_needs():
+    text = _sections()
     assert text.startswith(caa._STORAGE_MINIMAL_DOCTRINE)
     assert caa._STORAGE_COMPOSE_DOCTRINE in text
     flat = " ".join(text.split())
@@ -53,29 +51,8 @@ def test_minimal_keeps_what_storage_needs(monkeypatch):
 
 
 @pytest.mark.parametrize("dropped", _DROPPED)
-def test_minimal_drops_the_office_assistant(monkeypatch, dropped):
-    assert dropped not in _sections(monkeypatch, "minimal")
-    assert dropped in _sections(monkeypatch, "compose")
-
-
-def test_minimal_is_at_least_three_quarters_shorter(monkeypatch):
-    compose = _sections(monkeypatch, "compose")
-    minimal = _sections(monkeypatch, "minimal")
-    assert len(minimal) < len(compose) / 4
-
-
-def test_minimal_keeps_the_compose_instructions_and_opening(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "compose")
-    compose = (caa._storage_base_instructions(), caa._review_fork_role())
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "minimal")
-    assert (caa._storage_base_instructions(), caa._review_fork_role()) == compose
-
-
-def test_compose_and_shipped_are_unchanged(monkeypatch):
-    shipped = _sections(monkeypatch, "")
-    assert shipped.startswith(caa._STORAGE_WHAT_CAN_BE_STORED)
-    assert caa._STORAGE_RECURRING_DELIVERABLE in shipped
-    assert caa._STORAGE_COMPOSE_DOCTRINE not in shipped
+def test_minimal_drops_the_office_assistant(dropped):
+    assert dropped not in _sections()
 
 
 def test_minimal_names_no_benchmark():
@@ -94,10 +71,9 @@ def test_minimal_names_no_benchmark():
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-async def test_the_sent_review_carries_the_minimal_rulebook(monkeypatch):
+async def test_the_sent_review_carries_the_minimal_rulebook():
     from unify.actor.code_act_actor import CodeActActor
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_CURATION_DOCTRINE", "minimal")
     actor = CodeActActor()
     try:
         with h.scripted(h.ACTOR_REPLIES) as provider:
@@ -113,19 +89,6 @@ async def test_the_sent_review_carries_the_minimal_rulebook(monkeypatch):
     ]
     assert reviews
     assert "## Recurring Deliverables" not in str(reviews[0]["messages"][0]["content"])
-
-
-@pytest.mark.parametrize(
-    "value, expected",
-    [("minimal", "minimal"), ("MINIMAL", "minimal"), ("compose", "compose"), ("", "")],
-)
-def test_the_setting_parses(value, expected):
-    from unify.settings import ProductionSettings
-
-    assert (
-        ProductionSettings(UNIFY_CURATION_DOCTRINE=value).UNIFY_CURATION_DOCTRINE
-        == expected
-    )
 
 
 # The minimal rulebook once said "Functions are `async def` and `await` their
@@ -187,8 +150,8 @@ def registered():
     clear_environment_namespaces()
 
 
-def test_minimal_awaits_only_what_is_asynchronous(monkeypatch):
-    flat = " ".join(_sections(monkeypatch, "minimal").split())
+def test_minimal_awaits_only_what_is_asynchronous():
+    flat = " ".join(_sections().split())
     assert "Functions are `async def` and `await` their calls" not in flat
     assert (
         "Await only what is asynchronous: `query_llm(...)`, the "
@@ -198,12 +161,9 @@ def test_minimal_awaits_only_what_is_asynchronous(monkeypatch):
     assert "awaiting that value raises `TypeError`, so call it without `await`" in flat
 
 
-def test_minimal_says_a_synchronous_environment_is_synchronous(
-    monkeypatch,
-    registered,
-):
+def test_minimal_says_a_synchronous_environment_is_synchronous(registered):
     registered(_namespace("music", show_library=_sync_call, play=_sync_call))
-    text = " ".join(_sections(monkeypatch, "minimal").split())
+    text = " ".join(_sections().split())
     assert "`primitives.music`" in text
     assert (
         "Every method of these namespaces is synchronous: it returns its value "
@@ -211,23 +171,20 @@ def test_minimal_says_a_synchronous_environment_is_synchronous(
     ) in text
 
 
-def test_minimal_says_an_asynchronous_environment_is_asynchronous(
-    monkeypatch,
-    registered,
-):
+def test_minimal_says_an_asynchronous_environment_is_asynchronous(registered):
     registered(_namespace("web", fetch=_async_call, post=_AwaitableObject()))
-    text = " ".join(_sections(monkeypatch, "minimal").split())
+    text = " ".join(_sections().split())
     assert "Every method of these namespaces is asynchronous: `await` it." in text
     assert "synchronous: call" not in text
 
 
-def test_minimal_names_the_kinds_of_a_mixed_environment(monkeypatch, registered):
+def test_minimal_names_the_kinds_of_a_mixed_environment(registered):
     registered(
         _namespace("music", show_library=_sync_call),
         _namespace("web", fetch=_async_call),
         _namespace("files", read=_sync_call, write=_sync_call, watch=_async_call),
     )
-    text = " ".join(_sections(monkeypatch, "minimal").split())
+    text = " ".join(_sections().split())
     assert (
         "The methods of `primitives.music` are synchronous: call them without `await`."
         in text
@@ -237,14 +194,6 @@ def test_minimal_names_the_kinds_of_a_mixed_environment(monkeypatch, registered)
         "In `primitives.files`, `watch` is asynchronous (`await` it) and the "
         "other methods are synchronous."
     ) in text
-
-
-@pytest.mark.parametrize("doctrine", ["", "compose"])
-def test_other_rulebooks_carry_no_kinds_sentence(monkeypatch, registered, doctrine):
-    registered(_namespace("music", show_library=_sync_call))
-    text = _sections(monkeypatch, doctrine)
-    assert "`primitives.music`" in text
-    assert "synchronous" not in text
 
 
 def test_is_async_method_reads_the_callable():
