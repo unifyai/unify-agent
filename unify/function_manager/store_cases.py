@@ -209,12 +209,6 @@ _QUIET: contextvars.ContextVar[bool] = contextvars.ContextVar(
 )
 
 
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_FUNCTION_CASES", False))
-
-
 def replaying() -> bool:
     """Whether the current call runs inside a replay."""
     return _REPLAYING.get()
@@ -753,8 +747,8 @@ class CaseRecorder:
 
     @classmethod
     def for_function(cls, func_data: Mapping[str, Any]) -> Optional["CaseRecorder"]:
-        """A recorder for a stored function while the switch is on; ``None`` otherwise."""
-        if not enabled() or not isinstance(func_data, Mapping):
+        """A recorder for a stored function; ``None`` for a row that cannot have cases."""
+        if not isinstance(func_data, Mapping):
             return None
         if func_data.get("is_primitive") or func_data.get("function_id") is None:
             return None
@@ -1039,9 +1033,7 @@ def summaries(rows: Iterable[Mapping[str, Any]]) -> Dict[int, str]:
 
 
 def with_summaries(rows: List[Any]) -> List[Any]:
-    """``rows`` with a ``cases`` field on each function row that has cases (in place); as given when off."""
-    if not enabled():
-        return rows
+    """``rows`` with a ``cases`` field on each function row that has cases (in place)."""
     try:
         found = summaries(row for row in rows if isinstance(row, dict))
     except Exception as exc:  # noqa: BLE001 - a read aid must never break a search
@@ -1081,7 +1073,7 @@ def mark_outcome(session: str, outcome: Any) -> int:
 
     Nothing calls this yet: an outcome is posted under the actor's own session id, not the transcript's.
     """
-    if not enabled() or not session:
+    if not session:
         return 0
     cursor = db.execute(
         "UPDATE function_cases SET outcome = ? WHERE session = ?",
@@ -1553,7 +1545,6 @@ __all__ = [
     "Pending",
     "Replay",
     "cases",
-    "enabled",
     "mark_outcome",
     "observe_primitive",
     "observe_primitive_async",

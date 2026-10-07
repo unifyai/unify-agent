@@ -176,12 +176,6 @@ _OVERWRITE_REASON: ContextVar[Optional[str]] = ContextVar(
 DEFAULT_OVERWRITE_REASON = "overwritten with add_functions(overwrite=True)"
 
 
-def _function_patch_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
-
-
 class _LineageTrackedFunction:
     """Boundary wrapper for FunctionManager callables injected into CodeActActor sandboxes.
 
@@ -1394,10 +1388,7 @@ class FunctionManager(BaseFunctionManager):
                         function_id=existing_functions[name]["function_id"],
                         raise_if_missing=True,
                     )
-                    if (
-                        self._function_cases_enabled()
-                        and prior.get("implementation") != source
-                    ):
+                    if prior.get("implementation") != source:
                         report = self._case_replay_gate(
                             name=name,
                             function_id=int(prior["function_id"]),
@@ -1633,16 +1624,10 @@ class FunctionManager(BaseFunctionManager):
         excerpt = "\n".join(line[:120] for line in lines[:4])
         if len(lines) > 4:
             excerpt += "\n    ..."
-        if _function_patch_enabled():
-            instead = (
-                f"fix '{best_name}' with FunctionManager_patch_function instead "
-                f"and delete '{name}'"
-            )
-        else:
-            instead = (
-                f"update '{best_name}' with FunctionManager_add_functions "
-                f"(overwrite=True) instead and delete '{name}'"
-            )
+        instead = (
+            f"fix '{best_name}' with FunctionManager_patch_function instead "
+            f"and delete '{name}'"
+        )
         return (
             f"'{name}' is nearly identical to the stored function '{best_name}' "
             f"(code similarity {best_score:.2f} with names, docstrings and type "
@@ -1716,10 +1701,6 @@ class FunctionManager(BaseFunctionManager):
         def refused(message: str) -> Dict[str, Any]:
             return {"name": name, "error": message}
 
-        if not _function_patch_enabled():
-            return refused(
-                "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
-            )
         if not str(why or "").strip():
             return refused("say `why` the function needs this patch")
         try:
@@ -1804,12 +1785,6 @@ class FunctionManager(BaseFunctionManager):
     #  Recorded cases (UNIFY_FUNCTION_CASES)                              #
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _function_cases_enabled() -> bool:
-        from . import store_cases
-
-        return store_cases.enabled()
-
     def _case_replay_gate(
         self,
         *,
@@ -1877,10 +1852,6 @@ class FunctionManager(BaseFunctionManager):
                 "error": message,
             }
 
-        if not store_cases.enabled():
-            return refused(
-                "cases are not recorded here (UNIFY_FUNCTION_CASES is off)",
-            )
         if not str(why or "").strip():
             return refused("say `why` the recorded behaviour was wrong")
         try:
@@ -2422,11 +2393,11 @@ class FunctionManager(BaseFunctionManager):
         """Apply ``changes`` to one stored function.
 
         ``reason`` marks an overwrite of the function itself (not a refresh of
-        its stale reasons); with ``UNIFY_FUNCTION_PATCH`` on, the row as it was
+        its stale reasons); the row as it was
         is first appended to ``function_history`` with that reason. Callers
         run this inside their transaction, so both writes land or neither.
         """
-        if reason is not None and _function_patch_enabled():
+        if reason is not None:
             FunctionManager._record_function_history(function_id, reason)
         values = _encode_function_values(changes)
         assignments = ", ".join(f"{column} = ?" for column in values)

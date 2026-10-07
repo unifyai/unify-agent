@@ -84,15 +84,10 @@ _ADDED = (("result_kind", "TEXT"), ("result_empty", "INTEGER"), ("inputs", "TEXT
 
 
 def enabled() -> bool:
-    """``UNIFY_FUNCTION_SUMMARY`` with ``UNIFY_FUNCTION_CASES`` on."""
+    """``UNIFY_FUNCTION_SUMMARY``."""
     from unify.settings import SETTINGS
 
-    from . import store_cases
-
-    return (
-        bool(getattr(SETTINGS, "UNIFY_FUNCTION_SUMMARY", False))
-        and store_cases.enabled()
-    )
+    return bool(getattr(SETTINGS, "UNIFY_FUNCTION_SUMMARY", False))
 
 
 def _connect() -> sqlite3.Connection:

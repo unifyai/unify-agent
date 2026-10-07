@@ -244,8 +244,6 @@ class WritePolicy:
 
     def refusal(self, method: str) -> Optional[str]:
         """Why ``method`` (``functions.add``, ...) is refused here; ``None`` if allowed."""
-        from unify.settings import SETTINGS
-
         for name, why in self.withheld:
             if name == method:
                 return f"{method} is not available in this review: {why}"
@@ -259,18 +257,6 @@ class WritePolicy:
             return (
                 f"{method} is not available in this session: it may not write "
                 "to the libraries (can_store is off)"
-            )
-        if method in ("functions.patch", "guidance.patch") and not (
-            SETTINGS.UNIFY_FUNCTION_PATCH
-        ):
-            return f"{method} is off (UNIFY_FUNCTION_PATCH); store a corrected " + (
-                "version with functions.add(..., overwrite=True)"
-                if method == "functions.patch"
-                else "entry with guidance.update(...)"
-            )
-        if method == "functions.retire" and not SETTINGS.UNIFY_FUNCTION_CASES:
-            return (
-                "functions.retire is off: no cases are recorded (UNIFY_FUNCTION_CASES)"
             )
         return None
 

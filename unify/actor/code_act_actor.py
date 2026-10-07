@@ -959,18 +959,6 @@ def _guard_inline_writes(tools: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _function_patch_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
-
-
-def _function_cases_enabled() -> bool:
-    from unify.function_manager import store_cases
-
-    return store_cases.enabled()
-
-
 # UNIFY_REPLY_CHANNEL=code+text: execute_function runs a stored function,
 # which returns its result rather than replying.
 _REPLY_REFUSED_IN_FUNCTION = (
@@ -1441,9 +1429,7 @@ def _storage_doctrine_sections() -> str:
 
 
 def _storage_update_first_note() -> str:
-    """The review's update-before-add order, while ``UNIFY_FUNCTION_PATCH`` is on; else empty."""
-    if not _function_patch_enabled():
-        return ""
+    """The review's update-before-add order."""
     if _curation_doctrine_compose():
         return (
             "### Update before you add\n\n"
@@ -2113,19 +2099,18 @@ def _build_storage_tools(
     if store_verify.enabled():
         storage_methods.append(fm.check_function)
     # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by replacing
-    # excerpts; off, the tools are as shipped. Simulated managers have none.
-    if _function_patch_enabled():
-        storage_methods.extend(
-            method
-            for method in (
-                getattr(fm, "patch_function", None),
-                getattr(gm, "patch_guidance", None),
-            )
-            if method is not None
+    # excerpts. Simulated managers have none.
+    storage_methods.extend(
+        method
+        for method in (
+            getattr(fm, "patch_function", None),
+            getattr(gm, "patch_guidance", None),
         )
+        if method is not None
+    )
     # UNIFY_FUNCTION_CASES: the review can retire a recorded case that a
-    # change no longer reproduces; off, the tools are as shipped.
-    if _function_cases_enabled() and hasattr(fm, "retire_case"):
+    # change no longer reproduces.
+    if hasattr(fm, "retire_case"):
         storage_methods.append(fm.retire_case)
 
     tools: Dict[str, Callable] = {
@@ -2870,8 +2855,7 @@ def _start_storage_check_loop_inner(
         from unify import outcome as outcome_mod
 
         refused_tools = list(outcome_mod.LESSON_REFUSED_TOOLS)
-        if _function_cases_enabled():
-            refused_tools.append("FunctionManager_retire_case")
+        refused_tools.append("FunctionManager_retire_case")
         for name in refused_tools:
             tools.pop(name, None)
             lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
@@ -5275,7 +5259,7 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
-            if _function_patch_enabled() and hasattr(fm, "patch_function"):
+            if hasattr(fm, "patch_function"):
                 tools.update(
                     methods_to_tool_dict(
                         ToolSpec(
@@ -5285,7 +5269,7 @@ class CodeActActor(BaseCodeActActor):
                         include_class_name=True,
                     ),
                 )
-            if _function_cases_enabled() and hasattr(fm, "retire_case"):
+            if hasattr(fm, "retire_case"):
                 tools.update(
                     methods_to_tool_dict(
                         ToolSpec(
@@ -5328,7 +5312,7 @@ class CodeActActor(BaseCodeActActor):
                     include_class_name=True,
                 ),
             )
-            if _function_patch_enabled() and hasattr(gm, "patch_guidance"):
+            if hasattr(gm, "patch_guidance"):
                 tools.update(
                     methods_to_tool_dict(
                         ToolSpec(

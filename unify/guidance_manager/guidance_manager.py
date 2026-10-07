@@ -89,12 +89,6 @@ _UPDATE_REASON: ContextVar[Optional[str]] = ContextVar(
 DEFAULT_UPDATE_REASON = "updated with update_guidance"
 
 
-def _patch_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_FUNCTION_PATCH)
-
-
 def _linked_names_enabled() -> bool:
     from unify.settings import SETTINGS
 
@@ -540,7 +534,7 @@ class GuidanceManager(BaseGuidanceManager):
         """Apply ``updates`` to one stored guidance entry.
 
         ``reason`` marks an edit of the entry (not a refresh of its stale
-        reasons); with ``UNIFY_FUNCTION_PATCH`` on, the row as it was is first
+        reasons); the row as it was is first
         appended to ``guidance_history`` with that reason, in one transaction.
         """
         assignments = ", ".join(f"{column} = ?" for column in updates)
@@ -549,7 +543,7 @@ class GuidanceManager(BaseGuidanceManager):
             for column, value in updates.items()
         ]
         sql = f"UPDATE guidance SET {assignments} WHERE guidance_id = ?"
-        if reason is not None and _patch_enabled():
+        if reason is not None:
             with db.transaction():
                 GuidanceManager._record_guidance_history(guidance_id, reason)
                 db.execute(sql, [*values, int(guidance_id)])
@@ -631,10 +625,6 @@ class GuidanceManager(BaseGuidanceManager):
         """
         from unify.common.exact_patch import PatchRefused, apply_edits, collect_edits
 
-        if not _patch_enabled():
-            raise ValueError(
-                "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
-            )
         if not str(why or "").strip():
             raise ValueError("say `why` the entry needs this patch")
         try:
