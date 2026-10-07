@@ -243,11 +243,40 @@ def test_a_patch_that_doubles_an_escape_is_refused(drift, monkeypatch):
 
 # ── through the actor's storage review ───────────────────────────────────
 
+# The forked review (UNIFY_REVIEW_FORK_CORE, baked in) continues the session's
+# conversation with this message and stores from its own execute_code cells.
+_REVIEW_OPENING = "## Curating The Library"
+
+
+def _is_review(request: dict) -> bool:
+    return any(
+        m.get("role") == "user" and str(m.get("content")).startswith(_REVIEW_OPENING)
+        for m in request["messages"]
+    )
+
+
+def _add_cell(implementations: list) -> list:
+    """The review's cell: add *implementations*, printing each status as it reads."""
+    code = (
+        f"out = await functions.add(implementations={implementations!r}, "
+        "raise_on_error=False)\n"
+        "for name, status in out.items():\n"
+        "    print(f'{name}: {status}')\n"
+    )
+    return [("execute_code", {"code": code})]
+
+
+def _text(content) -> str:
+    if isinstance(content, list):
+        return "".join(str(part.get("text", "")) for part in content)
+    return str(content)
+
 
 async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[str]:
     """Run a scripted session whose one cell is *session_cell*; its review makes *review_calls*.
 
-    Returns the review's tool results (as the model read them).
+    Returns the tool results of the review's last request (as the model read
+    them), the session's own among them.
     """
     from unify.actor import code_act_actor as caa
     from unify.actor import review_gate
@@ -262,16 +291,12 @@ async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[st
                 system = provider.requests[-1]["messages"][0]["content"]
                 if system == review_gate.GATE_SYSTEM_PROMPT:
                     return h.completion(content='{"review": true, "reason": "x"}')
-                if system.startswith("You are a skill librarian."):
+                if _is_review(provider.requests[-1]):
                     reviewed["calls"] += 1
                     if reviewed["calls"] == 1:
                         return h.completion(calls=review_calls)
                     return h.completion(content="done")
-                actor_turns = sum(
-                    1
-                    for r in provider.requests
-                    if not r["messages"][0]["content"].startswith("You are a skill")
-                )
+                actor_turns = sum(1 for r in provider.requests if not _is_review(r))
                 if actor_turns == 1:
                     return h.completion(
                         calls=[("execute_code", {"code": session_cell})],
@@ -284,13 +309,9 @@ async def _review(monkeypatch, session_cell: str, review_calls: list) -> list[st
             await asyncio.wait_for(handle._completion_event.wait(), 60)
     finally:
         await actor.close()
-    reviews = [
-        r
-        for r in provider.requests
-        if r["messages"][0]["content"].startswith("You are a skill librarian.")
-    ]
+    reviews = [r for r in provider.requests if _is_review(r)]
     assert len(reviews) >= 2
-    return [str(m["content"]) for m in reviews[-1]["messages"] if m["role"] == "tool"]
+    return [_text(m["content"]) for m in reviews[-1]["messages"] if m["role"] == "tool"]
 
 
 @pytest.mark.asyncio
@@ -305,7 +326,7 @@ async def test_the_review_is_refused_a_doubled_write_of_its_sessions_cell(
     results = await _review(
         monkeypatch,
         session_cell,
-        [("FunctionManager_add_functions", {"implementations": [DOUBLED]})],
+        _add_cell([DOUBLED]),
     )
     results = [t for t in results if "write_names" in t]
     assert any("one extra backslash at each escape" in t for t in results), results
@@ -343,9 +364,9 @@ async def test_both_on_a_function_stored_by_name_is_the_cells_and_passes(
     results = await _review(
         monkeypatch,
         SESSION_CELL,
-        [("FunctionManager_add_functions", {"implementations": ["join_names"]})],
+        _add_cell(["join_names"]),
     )
-    assert any('"join_names": "added"' in t for t in results), results
+    assert any("join_names: added" in t for t in results), results
     assert not any("one extra backslash" in t for t in results), results
     assert _stored("join_names")["implementation"] == SESSION_DEF
 
@@ -359,7 +380,7 @@ async def test_both_on_a_retyped_source_with_one_more_escape_is_refused(
     results = await _review(
         monkeypatch,
         SESSION_CELL,
-        [("FunctionManager_add_functions", {"implementations": [RETYPED]})],
+        _add_cell([RETYPED]),
     )
     assert any(
         "'join_names' was not stored, because its source writes "

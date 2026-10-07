@@ -26,6 +26,7 @@ import pytest
 from tests import cache_discipline_helpers as h
 from unify import outcome as outcome_mod
 from unify.actor import code_act_actor as caa
+from unify.actor import core_surface
 from unify.settings import SETTINGS
 
 SESSION_REPLY = "All done: the email was sent to Kim."
@@ -248,11 +249,14 @@ async def test_the_outcome_reaches_the_forked_review(switches):
     assert note["message"] == REVIEW_SUMMARY
     review = requests[3]
     text = review["messages"][-1]["content"]
-    assert text.startswith("## Storage Review")
+    # Baked in: the unified curation framing, forked through execute_code
+    # (UNIFY_REVIEW_FORK_CORE), whose closing follows the final result.
+    assert text.startswith("## Curating The Library")
     assert "## Completed Trajectory" not in text
     assert outcome_mod.OUTCOME_HEADER in text
     assert "- Solved: no" in text
-    assert text.endswith(f"## Final Result\n\n{SESSION_REPLY}")
+    closing = core_surface.python_names(caa._REVIEW_CLOSING_UNIFIED)
+    assert text.endswith(f"## Final Result\n\n{SESSION_REPLY}{closing}")
     # still a fork: the session's own requests are its prefix
     sent = json.dumps(requests[2]["messages"], default=str)
     assert (

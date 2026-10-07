@@ -261,7 +261,7 @@ async def test_a_message_after_the_session_ended_is_refused_not_answered(
         assert OBSERVATION in [m.get("content") for m in review]
     assert review[-1]["role"] == "user"
     assert review[-1]["content"].startswith(
-        "## Storage Review" if forked else "Review the trajectory",
+        "## Curating The Library" if forked else "Review the trajectory",
     )
 
 
