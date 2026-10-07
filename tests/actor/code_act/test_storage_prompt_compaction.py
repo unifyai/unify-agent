@@ -256,14 +256,13 @@ def test_storage_check_prompt_puts_doctrine_before_trajectory():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], ["- `some_tool`"]),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_storage_check_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             original_result="all done",
         )
@@ -278,8 +277,8 @@ def test_storage_check_prompt_puts_doctrine_before_trajectory():
     assert "x" * 100 not in prompt
     assert "System prompt omitted" in prompt
     assert "distinctive-user-request" in prompt
-    assert "## Completed Tools" in prompt
-    assert "`some_tool`" in prompt
+    # The review's ask-about-completed-tool section went with the ask tools.
+    assert "## Completed Tools" not in prompt
     assert prompt.index("## Final Result") > trajectory_at
 
 
@@ -291,14 +290,13 @@ def test_proactive_storage_prompt_puts_doctrine_before_trajectory():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_proactive_storage_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             request="store the fetch helper",
         )
@@ -325,14 +323,13 @@ def test_storage_check_prompt_live_session_framing():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_storage_check_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             original_result="Filed week 2.",
             live_session=True,

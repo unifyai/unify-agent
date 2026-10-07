@@ -515,8 +515,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],
@@ -528,8 +526,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],

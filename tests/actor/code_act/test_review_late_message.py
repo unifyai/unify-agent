@@ -213,11 +213,14 @@ def _summary(notifications: list[dict]) -> str | None:
     "discipline, tool, forked",
     [
         (True, None, True),
-        # the recorded case: the fork is on but skipped (unanswered call)
-        (True, "FunctionManager_list_functions", False),
+        # The recorded case had the fork on but skipped, because the step
+        # limit cancelled a call still pending and left it unanswered. The
+        # trimmed loop runs each call to completion and answers every call
+        # at the limit, so the limit no longer skips the fork; the
+        # standalone review is the case below.
         (False, None, False),
     ],
-    ids=["forked", "fork-skipped", "no-cache-discipline"],
+    ids=["forked", "no-cache-discipline"],
 )
 async def test_a_message_after_the_session_ended_is_refused_not_answered(
     switches,
@@ -246,7 +249,7 @@ async def test_a_message_after_the_session_ended_is_refused_not_answered(
     refused = [n for n in notifications if n.get("type") == "interjection_refused"]
     assert [n["message"] for n in refused] == [caa._LATE_SESSION_MESSAGE_REFUSAL]
     assert any(
-        line.startswith("Interjection not delivered: the persistent session")
+        line.startswith("Message not delivered: the persistent session")
         for line in info_lines
     )
     assert FEEDBACK not in "\n".join(info_lines)  # its length, not its text

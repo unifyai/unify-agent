@@ -34,7 +34,7 @@ def _storage_tool_names() -> set:
         function_manager=FunctionManager(),
         guidance_manager=GuidanceManager(),
     )
-    tools, _, _ = code_act_actor._build_storage_tools(actor=actor, ask_tools={})
+    tools = code_act_actor._build_storage_tools(actor=actor)
     return set(tools)
 
 
@@ -49,7 +49,7 @@ def _review_prompts() -> list[str]:
         patch.object(
             code_act_actor,
             "_build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
         patch.object(code_act_actor, "new_llm_client") as client,
         patch.object(code_act_actor, "start_async_tool_loop"),
@@ -57,14 +57,12 @@ def _review_prompts() -> list[str]:
         trajectory = [{"role": "user", "content": "do it"}]
         _start_storage_check_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=actor,
             original_result="done",
         )
         prompts.append(client.return_value.set_system_message.call_args[0][0])
         _start_proactive_storage_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=actor,
             request="store it",
         )

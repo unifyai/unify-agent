@@ -594,16 +594,6 @@ def test_an_empty_cell_reads_no_output_and_images_keep_their_place():
     assert kinds[0] == "text" and kinds[-1] == "text" and "image_url" in kinds
 
 
-def test_a_result_holding_a_handle_keeps_the_shipped_rendering_for_adoption():
-    from unify.common._async_tool.tools_data import _HANDLE_SENTINEL
-
-    fields = dict(result=_HANDLE_SENTINEL, state_mode="stateful", session_id=0)
-    assert (
-        nb.NotebookCellResult(**fields).to_llm_content()
-        == ExecutionResult(**fields).to_llm_content()
-    )
-
-
 def test_the_product_keeps_the_runtimes_result_object():
     runtime = Runtime()
     out = asyncio.run(_project(runtime)["execute_code"].fn(code="%%scratch\nx"))
