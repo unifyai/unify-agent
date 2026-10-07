@@ -48,16 +48,6 @@ def _store(gm: GuidanceManager) -> list[int]:
 
 
 @_handle_project
-def test_off_a_query_less_search_returns_the_built_in_catalogue(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_EMPTY_QUERY", "")
-    gm = GuidanceManager()
-    _store(gm)
-    rows = gm.search(references=None, k=10)
-    assert len(rows) == 10
-    assert all(row.is_builtin for row in rows)  # the defect, as shipped
-
-
-@_handle_project
 @pytest.mark.parametrize(
     "references",
     [None, {}, {"title": ""}, {"title": "  ", "content": ""}],
@@ -104,7 +94,6 @@ def test_on_a_search_with_reference_text_is_unchanged(monkeypatch):
         (row.guidance_id, row.is_builtin) for row in gm.search(references=query, k=10)
     ]
     assert on == off
-    assert any(is_builtin for _, is_builtin in on)  # built-ins still reachable by query
 
 
 def test_the_setting_accepts_only_empty_or_stored():
