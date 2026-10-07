@@ -226,6 +226,53 @@ async def test_state_persists_across_cells_in_one_worker_per_session(worker_worl
         await ex.close()
 
 
+# A cell's model whose annotations name what the cell imported: pydantic
+# resolves them through ``sys.modules[cls.__module__]``.
+TYPED_MODEL = (
+    "from typing import List, Optional\n"
+    "from pydantic import BaseModel\n"
+    "class Tag(BaseModel):\n"
+    "    label: str\n"
+    "class Record(BaseModel):\n"
+    "    ids: List[int]\n"
+    "    tags: Optional[List[Tag]] = None\n"
+)
+USE_MODEL = "Record(ids=[1, 2], tags=[Tag(label='a')]).model_dump_json()"
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_a_cells_typed_model_resolves_against_the_session_module(
+    worker_world,
+):
+    ex, _ = executor_with_fakes(timeout=3)
+    expected = '{"ids":[1,2],"tags":[{"label":"a"}]}'
+    try:
+        _, res = await run(ex, TYPED_MODEL + USE_MODEL)
+        assert res["error"] is None, res["error"]
+        assert res["result"] == expected
+        _, res = await run(ex, "Record.__module__")
+        assert res["result"] == "__sandbox_worker__"
+        # A read_only cell resolves against the session's module, and a model
+        # it defines is dropped with the rest of what it changed.
+        res = await ex.execute(
+            code="class Extra(BaseModel):\n    xs: List[int]\n"
+            "Extra(xs=[3]).model_dump_json()",
+            state_mode="read_only",
+            session_id=0,
+        )
+        assert res["result"] == '{"xs":[3]}', res["error"]
+        _, res = await run(ex, HAS_X.replace("x\n", "Extra\n", 1))
+        assert res["result"] is False
+        # A fresh worker registers its module again.
+        _, res = await run(ex, "while True:\n    pass")
+        assert "timed out" in res["error"]
+        _, res = await run(ex, TYPED_MODEL + USE_MODEL)
+        assert res["result"] == expected, res["error"]
+    finally:
+        await ex.close()
+
+
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(

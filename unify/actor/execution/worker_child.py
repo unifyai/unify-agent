@@ -70,9 +70,12 @@ import sys
 import tempfile
 import threading
 import traceback
+import types
 from typing import Any, Callable, Optional
 
 TAG = "__unify__"
+#: The module whose dict is the session's globals (``__name__`` of every cell).
+SESSION_MODULE = "__sandbox_worker__"
 MAX_DEPTH = 64
 MAX_REPR = 500
 MAX_FD_OUTPUT = 256 * 1024
@@ -884,7 +887,14 @@ class Worker:
         self._exc_classes: dict[tuple[str, str], type] = {}
         self._out_fd = out_fd
         self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.ns: dict[str, Any] = {}
+        # The session's globals are a registered module's dict, as in-process
+        # (``PythonExecutionSession``): a class a cell defines resolves names
+        # through ``sys.modules[cls.__module__]`` (pydantic's annotations do).
+        # Emptied so the namespace holds only what init and the cells bind.
+        module = types.ModuleType(SESSION_MODULE)
+        module.__dict__.clear()
+        sys.modules[SESSION_MODULE] = module
+        self.ns: dict[str, Any] = module.__dict__
         self.installed: dict[str, Any] = {}
         # The globals every namespace starts from (init's), for the fresh
         # globals of ``functions.run(..., state="stateless")``.
@@ -1158,7 +1168,7 @@ class Worker:
         if "print" in safe:
             safe["print"] = self._print
         self.ns["__builtins__"] = safe
-        self.ns["__name__"] = "__sandbox_worker__"
+        self.ns["__name__"] = SESSION_MODULE
         missing: dict[str, str] = {}
         for name, spec in (msg.get("globals") or {}).items():
             value = self._import(spec)
