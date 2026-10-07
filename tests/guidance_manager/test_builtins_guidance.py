@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 from unify import db
 from unify.guidance_manager.builtins import (
-    ensure_seeded,
     load_snapshot,
     seed_builtin_guidance,
     stable_guidance_id,
