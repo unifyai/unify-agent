@@ -552,13 +552,6 @@ class ProductionSettings(BaseSettings):
     # choice, and no turn is forced. An empty or unranked library adds
     # nothing. Off: as shipped.
     UNIFY_LIBRARY_SHORTLIST: bool = True
-    # In a persistent session, a turn's final reply identical (whitespace
-    # collapsed, JSON compared with sorted keys) to an earlier reply the
-    # requester has already answered is held back once: the loop appends a
-    # note quoting the requester's answer to it and the model takes another
-    # step, and sending the same reply again surfaces it. Replies that differ,
-    # and one-shot runs, are unaffected. Off: as shipped.
-    UNIFY_REPEAT_GUARD: bool = False
     # The actor's prompt asks it to use what is free before an action that
     # costs something (a paid request, a scored submission, an irreversible
     # effect): run a stored function that fits on inputs it already has and
@@ -993,7 +986,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
-        "UNIFY_REPEAT_GUARD",
         "UNIFY_BATCH_WAKE",
         "UNIFY_PENDING_REQUIRED",
         "UNIFY_LIFECYCLE_NOTICES",

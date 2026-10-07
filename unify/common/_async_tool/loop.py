@@ -69,7 +69,6 @@ from .tools_data import (
 from .dynamic_tools_factory import DynamicToolFactory
 from . import cache_discipline as _cache_discipline
 from . import loop_stop as _loop_stop_mod
-from . import repeat_guard as _repeat_guard_mod
 from . import batch_wait as _batch_wait
 from . import cell_reply as _cell_reply
 from . import bound_request as _bound_request
@@ -820,13 +819,6 @@ async def async_tool_loop_inner(
     _request_token = _bound_request.bind(bind_request)
     _request_slot = _bound_request.current() if _request_token is not None else None
     _discipline = _cache_discipline.enabled()
-    # UNIFY_REPEAT_GUARD: a persistent session's replies and the requester
-    # messages that answered them, to hold back a reply already answered.
-    _repeat_guard = (
-        _repeat_guard_mod.RepeatGuard()
-        if persist and _repeat_guard_mod.enabled()
-        else None
-    )
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -2842,9 +2834,6 @@ async def async_tool_loop_inner(
                     )
                 except Exception:
                     pass
-
-                if _repeat_guard is not None and _msg_text:
-                    _repeat_guard.requester_said(_msg_text)
 
                 if _ctx_cont:
                     _ctx_cont = make_messages_safe_for_context_dump(_ctx_cont)
@@ -5542,25 +5531,6 @@ async def async_tool_loop_inner(
                     if _persist_response_content is not None
                     else final_content
                 )
-                # UNIFY_REPEAT_GUARD: a reply the requester has already
-                # answered is held back once; a note quoting that answer is
-                # appended at the tail and the model takes another step.
-                if _repeat_guard is not None and not _suppress_persist_response:
-                    _repeat_note = _repeat_guard.check(_response_to_surface)
-                    if _repeat_note is not None:
-                        logger.info(
-                            "Repeat guard: reply matches an answered one; "
-                            "asking the model to confirm or revise",
-                            prefix=ICONS["interjection"],
-                        )
-                        await _msg_dispatcher.append_msgs(
-                            [loop_user_notice(_repeat_note, _repeat_guard_msg=True)],
-                        )
-                        _persist_response_content = None
-                        _persist_response_emitted = False
-                        llm_turn_required = True
-                        continue
-                    _repeat_guard.surfaced(_response_to_surface)
                 _outer = outer_handle_container[0] if outer_handle_container else None
                 if (
                     _outer is not None
