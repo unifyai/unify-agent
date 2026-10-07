@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
 
 from tests.helpers import _handle_project
 from unify import db
@@ -29,7 +28,6 @@ from unify.guidance_manager.guidance_manager import (
     DEFAULT_UPDATE_REASON,
     GuidanceManager,
 )
-from unify.settings import SETTINGS
 
 V1 = "def scale(x: int) -> int:\n    return x * 2\n"
 V2 = "def scale(x: int) -> int:\n    return x * 3\n"
@@ -59,30 +57,13 @@ def _stored(name: str) -> dict:
     return dict(db.query_one("SELECT * FROM functions WHERE name = ?", (name,)))
 
 
-@pytest.fixture
-def patch_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-
-
-@pytest.fixture
-def patch_off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-
-
-def test_the_switch_is_off_by_default_and_reads_on():
-    from unify.settings import ProductionSettings
-
-    assert ProductionSettings.model_fields["UNIFY_FUNCTION_PATCH"].default is False
-    assert ProductionSettings(UNIFY_FUNCTION_PATCH="on").UNIFY_FUNCTION_PATCH is True
-
-
 # --------------------------------------------------------------------------- #
 #  Functions                                                                   #
 # --------------------------------------------------------------------------- #
 
 
 @_handle_project
-def test_an_overwrite_keeps_the_previous_row_with_its_reason(patch_on):
+def test_an_overwrite_keeps_the_previous_row_with_its_reason():
     fm = _FM()
     mark = _mark("function_history")
     fm.add_functions(implementations=V1, preconditions={"scale": {"ok": True}})
@@ -108,7 +89,7 @@ def test_an_overwrite_keeps_the_previous_row_with_its_reason(patch_on):
 
 
 @_handle_project
-def test_each_overwrite_adds_a_row_and_nothing_removes_them(patch_on):
+def test_each_overwrite_adds_a_row_and_nothing_removes_them():
     fm = _FM()
     mark = _mark("function_history")
     fm.add_functions(implementations=V1)
@@ -125,7 +106,7 @@ def test_each_overwrite_adds_a_row_and_nothing_removes_them(patch_on):
 
 
 @_handle_project
-def test_a_skipped_add_writes_no_history(patch_on):
+def test_a_skipped_add_writes_no_history():
     fm = _FM()
     mark = _mark("function_history")
     fm.add_functions(implementations=V1)
@@ -134,11 +115,10 @@ def test_a_skipped_add_writes_no_history(patch_on):
 
 
 @_handle_project
-def test_a_refused_overwrite_writes_no_history(patch_on, monkeypatch):
+def test_a_refused_overwrite_writes_no_history(monkeypatch):
     fm = _FM()
     mark = _mark("function_history")
     fm.add_functions(implementations=V1)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "resolve")
     broken = "def scale(x: int) -> int:\n    return undefined_helper(x)\n"
     result = fm.add_functions(
         implementations=broken,
@@ -151,7 +131,7 @@ def test_a_refused_overwrite_writes_no_history(patch_on, monkeypatch):
 
 
 @_handle_project
-def test_refreshing_stale_reasons_is_not_an_overwrite(patch_on):
+def test_refreshing_stale_reasons_is_not_an_overwrite():
     fm = _FM()
     mark = _mark("function_history")
     fm.add_functions(
@@ -177,20 +157,6 @@ def _overwrite_sequence(fm: FunctionManager) -> dict:
     return row
 
 
-@_handle_project
-def test_off_writes_no_history_and_stores_the_same_row(patch_off, monkeypatch):
-    fm = _FM()
-    mark = _mark("function_history")
-    off_row = _overwrite_sequence(fm)
-    assert _since("function_history", mark) == []
-
-    fm.clear()
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-    on_row = _overwrite_sequence(fm)
-    assert on_row == off_row
-    assert len(_since("function_history", mark)) == 1
-
-
 # --------------------------------------------------------------------------- #
 #  Guidance                                                                    #
 # --------------------------------------------------------------------------- #
@@ -203,7 +169,7 @@ def _guidance(gid: int) -> dict:
 
 
 @_handle_project
-def test_a_guidance_update_keeps_the_previous_row(patch_on):
+def test_a_guidance_update_keeps_the_previous_row():
     gm = GuidanceManager()
     mark = _mark("guidance_history")
     gid = gm.add_guidance(title="Pay on Venmo", content="Step 1. Log in.")["details"][
@@ -227,7 +193,7 @@ def test_a_guidance_update_keeps_the_previous_row(patch_on):
 
 
 @_handle_project
-def test_reconciling_guidance_is_not_an_update(patch_on):
+def test_reconciling_guidance_is_not_an_update():
     fm = _FM()
     gm = GuidanceManager()
     mark = _mark("guidance_history")
@@ -240,23 +206,3 @@ def test_reconciling_guidance_is_not_an_update(patch_on):
     out = gm.reconcile_dependencies()
     assert out["details"]["stale_guidance_ids"] == [gid]
     assert _since("guidance_history", mark) == []
-
-
-@_handle_project
-def test_off_a_guidance_update_writes_no_history(patch_off, monkeypatch):
-    gm = GuidanceManager()
-    mark = _mark("guidance_history")
-    gid = gm.add_guidance(title="t", content="old")["details"]["guidance_id"]
-    gm.update_guidance(guidance_id=gid, content="new", title="t2")
-    off_row = _guidance(gid)
-    assert _since("guidance_history", mark) == []
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-    gid2 = gm.add_guidance(title="t", content="old")["details"]["guidance_id"]
-    gm.update_guidance(guidance_id=gid2, content="new", title="t2")
-    on_row = _guidance(gid2)
-    for row in (off_row, on_row):
-        row.pop("guidance_id")
-        row.pop("created_at")
-    assert on_row == off_row
-    assert len(_since("guidance_history", mark)) == 1

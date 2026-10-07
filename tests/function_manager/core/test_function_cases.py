@@ -40,7 +40,6 @@ from unify.function_manager.primitives.environment import (
     clear_environment_namespaces,
     namespace_object,
 )
-from unify.settings import ProductionSettings, SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 TRIPLE_AS_DOUBLE = "def double(x: int) -> int:\n    return x * 3\n"
@@ -167,16 +166,6 @@ def music_env():
     fm_module._PRIMITIVES_SEEDED_FOR.clear()
 
 
-@pytest.fixture
-def cases_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
-
-
-@pytest.fixture
-def cases_off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", False)
-
-
 def _FM() -> FunctionManager:
     return FunctionManager(include_primitives=False)
 
@@ -202,18 +191,13 @@ def _row_count() -> int:
     return int(db.query_one("SELECT COUNT(*) AS n FROM function_cases")["n"])
 
 
-def test_the_switch_is_off_by_default_and_parses_as_a_bool():
-    assert ProductionSettings.model_fields["UNIFY_FUNCTION_CASES"].default is False
-    assert ProductionSettings(UNIFY_FUNCTION_CASES="true").UNIFY_FUNCTION_CASES is True
-
-
 # --------------------------------------------------------------------------- #
 #  Recording                                                                   #
 # --------------------------------------------------------------------------- #
 
 
 @_handle_project
-def test_a_pure_call_is_recorded_with_its_arguments_and_result(cases_on):
+def test_a_pure_call_is_recorded_with_its_arguments_and_result():
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     assert _load(fm)["double"](3) == 6
@@ -227,7 +211,6 @@ def test_a_pure_call_is_recorded_with_its_arguments_and_result(cases_on):
 
 @_handle_project
 def test_environment_calls_are_recorded_in_order_with_their_answers(
-    cases_on,
     music_env,
 ):
     fm = _FM()
@@ -246,7 +229,6 @@ def test_environment_calls_are_recorded_in_order_with_their_answers(
 
 @_handle_project
 def test_a_stored_function_called_inside_another_is_a_case_of_its_own(
-    cases_on,
     music_env,
 ):
     fm = _FM()
@@ -265,7 +247,7 @@ def test_a_stored_function_called_inside_another_is_a_case_of_its_own(
 
 
 @_handle_project
-def test_a_raise_is_recorded_as_a_failing_case(cases_on):
+def test_a_raise_is_recorded_as_a_failing_case():
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     with pytest.raises(ZeroDivisionError):
@@ -275,7 +257,7 @@ def test_a_raise_is_recorded_as_a_failing_case(cases_on):
 
 
 @_handle_project
-def test_a_call_that_does_not_fit_the_signature_is_not_recorded(cases_on):
+def test_a_call_that_does_not_fit_the_signature_is_not_recorded():
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     with pytest.raises(TypeError):
@@ -284,7 +266,7 @@ def test_a_call_that_does_not_fit_the_signature_is_not_recorded(cases_on):
 
 
 @_handle_project
-def test_at_most_three_passing_and_three_failing_cases_one_per_input(cases_on):
+def test_at_most_three_passing_and_three_failing_cases_one_per_input():
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     divide = _load(fm)["divide"]
@@ -306,7 +288,7 @@ def test_at_most_three_passing_and_three_failing_cases_one_per_input(cases_on):
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_execute_function_and_proxy_calls_are_recorded(cases_on, music_env):
+async def test_execute_function_and_proxy_calls_are_recorded(music_env):
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE, REMOVE_BEFORE])
     out = await fm.execute_function(function_name="double", call_kwargs={"x": 4})
@@ -331,7 +313,7 @@ async def test_execute_function_and_proxy_calls_are_recorded(cases_on, music_env
 
 @_handle_project
 @pytest.mark.asyncio
-async def test_a_call_through_the_actors_execute_function_tool_is_recorded(cases_on):
+async def test_a_call_through_the_actors_execute_function_tool_is_recorded():
     from unify.actor.code_act_actor import CodeActActor
 
     fm = _FM()
@@ -357,7 +339,7 @@ async def test_a_call_through_the_actors_execute_function_tool_is_recorded(cases
 
 
 @_handle_project
-def test_a_credential_argument_is_not_shown(cases_on):
+def test_a_credential_argument_is_not_shown():
     fm = _FM()
     fm.add_functions(
         implementations=[
@@ -370,7 +352,7 @@ def test_a_credential_argument_is_not_shown(cases_on):
 
 
 @_handle_project
-def test_deleting_a_function_deletes_its_cases(cases_on):
+def test_deleting_a_function_deletes_its_cases():
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     _load(fm)["double"](1)
@@ -385,7 +367,7 @@ def test_deleting_a_function_deletes_its_cases(cases_on):
 
 
 @_handle_project
-def test_a_change_that_keeps_every_case_is_stored_and_says_so(cases_on, music_env):
+def test_a_change_that_keeps_every_case_is_stored_and_says_so(music_env):
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE, REMOVE_BEFORE])
     ns = _load(fm)
@@ -407,7 +389,7 @@ def test_a_change_that_keeps_every_case_is_stored_and_says_so(cases_on, music_en
 
 
 @_handle_project
-def test_a_different_environment_call_refuses_the_change(cases_on, music_env):
+def test_a_different_environment_call_refuses_the_change(music_env):
     fm = _FM()
     fm.add_functions(implementations=[REMOVE_BEFORE])
     _load(fm)["remove_tracks_before"](2010)
@@ -435,7 +417,6 @@ def test_a_different_environment_call_refuses_the_change(cases_on, music_env):
 
 @_handle_project
 def test_an_extra_or_a_missing_environment_call_refuses_the_change(
-    cases_on,
     music_env,
 ):
     fm = _FM()
@@ -456,7 +437,7 @@ def test_an_extra_or_a_missing_environment_call_refuses_the_change(
 
 
 @_handle_project
-def test_a_changed_return_value_refuses_the_change(cases_on):
+def test_a_changed_return_value_refuses_the_change():
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     _load(fm)["double"](3)
@@ -470,8 +451,7 @@ def test_a_changed_return_value_refuses_the_change(cases_on):
 
 
 @_handle_project
-def test_a_patch_that_changes_behaviour_is_refused(cases_on, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
+def test_a_patch_that_changes_behaviour_is_refused(monkeypatch):
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     _load(fm)["double"](3)
@@ -489,7 +469,7 @@ def test_a_patch_that_changes_behaviour_is_refused(cases_on, monkeypatch):
 
 
 @_handle_project
-def test_a_nondeterministic_function_is_inconclusive_and_does_not_block(cases_on):
+def test_a_nondeterministic_function_is_inconclusive_and_does_not_block():
     fm = _FM()
     fm.add_functions(implementations=[STAMPED])
     _load(fm)["stamped"](1)
@@ -503,7 +483,7 @@ def test_a_nondeterministic_function_is_inconclusive_and_does_not_block(cases_on
 
 
 @_handle_project
-def test_a_model_call_is_inconclusive(cases_on):
+def test_a_model_call_is_inconclusive():
     fm = _FM()
     fm.add_functions(implementations=[ASK])
     _load(fm)["ask"]("hi")
@@ -513,7 +493,7 @@ def test_a_model_call_is_inconclusive(cases_on):
 
 
 @_handle_project
-def test_a_replay_that_runs_too_long_is_inconclusive(cases_on, monkeypatch):
+def test_a_replay_that_runs_too_long_is_inconclusive(monkeypatch):
     monkeypatch.setattr(store_cases, "REPLAY_TIMEOUT_S", 0.2)
     fm = _FM()
     fm.add_functions(implementations=[SLOW])
@@ -523,7 +503,7 @@ def test_a_replay_that_runs_too_long_is_inconclusive(cases_on, monkeypatch):
 
 
 @_handle_project
-def test_a_failing_case_is_rerun_and_reported_when_it_now_returns(cases_on):
+def test_a_failing_case_is_rerun_and_reported_when_it_now_returns():
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE])
     divide = _load(fm)["divide"]
@@ -540,7 +520,7 @@ def test_a_failing_case_is_rerun_and_reported_when_it_now_returns(cases_on):
 
 
 @_handle_project
-def test_a_retired_case_no_longer_blocks(cases_on):
+def test_a_retired_case_no_longer_blocks():
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     _load(fm)["double"](3)
@@ -577,7 +557,7 @@ def test_a_retired_case_no_longer_blocks(cases_on):
 
 
 @_handle_project
-def test_new_behaviour_under_a_new_name_is_stored(cases_on):
+def test_new_behaviour_under_a_new_name_is_stored():
     fm = _FM()
     fm.add_functions(implementations=[DOUBLE])
     _load(fm)["double"](3)
@@ -592,7 +572,7 @@ def test_new_behaviour_under_a_new_name_is_stored(cases_on):
 
 
 @_handle_project
-def test_search_and_filter_results_carry_compact_cases(cases_on):
+def test_search_and_filter_results_carry_compact_cases():
     fm = _FM()
     fm.add_functions(implementations=[DIVIDE, DOUBLE])
     ns = _load(fm)
@@ -617,27 +597,12 @@ def test_search_and_filter_results_carry_compact_cases(cases_on):
 
 
 @_handle_project
-def test_a_long_cases_field_is_cut_to_its_bound(cases_on):
+def test_a_long_cases_field_is_cut_to_its_bound():
     fm = _FM()
     fm.add_functions(implementations=["def echo(s: str) -> str:\n    return s\n"])
     _load(fm)["echo"]("x" * 5000)
     (row,) = fm.filter_functions()
     assert len(row["cases"]) == store_cases.SUMMARY_LIMIT
-
-
-def test_the_review_gets_the_retire_tool_only_while_on(monkeypatch):
-    import unify.actor.code_act_actor as code_act_actor
-    from unify.guidance_manager.guidance_manager import GuidanceManager
-
-    actor = SimpleNamespace(
-        function_manager=FunctionManager(),
-        guidance_manager=GuidanceManager(),
-    )
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", False)
-    off = set(code_act_actor._build_storage_tools(actor=actor, ask_tools={})[0])
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
-    on = set(code_act_actor._build_storage_tools(actor=actor, ask_tools={})[0])
-    assert on - off == {"FunctionManager_retire_case"}
 
 
 # --------------------------------------------------------------------------- #
@@ -754,7 +719,6 @@ def test_credential_keys_are_matched_word_by_word():
 
 @_handle_project
 def test_secrets_in_answers_and_arguments_are_stored_as_placeholders(
-    cases_on,
     accounts_env,
 ):
     fm = _FM()
@@ -781,7 +745,7 @@ def test_secrets_in_answers_and_arguments_are_stored_as_placeholders(
 
 
 @_handle_project
-def test_a_function_that_passes_a_secret_on_still_replays(cases_on, accounts_env):
+def test_a_function_that_passes_a_secret_on_still_replays(accounts_env):
     fm = _FM()
     fm.add_functions(implementations=[SYNC])
     _load_accounts(fm)["sync"]("ann", PASSWORD)
@@ -793,7 +757,6 @@ def test_a_function_that_passes_a_secret_on_still_replays(cases_on, accounts_env
 
 @_handle_project
 def test_a_change_to_what_is_done_with_a_secret_is_still_refused(
-    cases_on,
     accounts_env,
 ):
     fm = _FM()
@@ -819,7 +782,6 @@ def test_a_change_to_what_is_done_with_a_secret_is_still_refused(
 
 @_handle_project
 def test_a_case_recorded_before_redaction_replays_unredacted(
-    cases_on,
     accounts_env,
     monkeypatch,
 ):
@@ -836,31 +798,8 @@ def test_a_case_recorded_before_redaction_replays_unredacted(
     assert old.salt is None and old.call["args"][1] == PASSWORD
     assert old.trace[0]["result"]["access_token"] == TOKEN
     monkeypatch.undo()
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_CASES", True)
     out = fm.add_functions(implementations=[SYNC_REWRITTEN], overwrite=True)
     assert out["sync"] == "updated; cases: 1 recorded call(s) replayed unchanged"
-
-
-# --------------------------------------------------------------------------- #
-#  Switch off                                                                  #
-# --------------------------------------------------------------------------- #
-
-
-@_handle_project
-def test_switch_off_records_nothing_and_overwrites_as_shipped(cases_off, music_env):
-    fm = _FM()
-    fm.add_functions(implementations=[DOUBLE, REMOVE_BEFORE])
-    ns = _load(fm)
-    assert ns["double"](3) == 6
-    assert ns["remove_tracks_before"](2010) == 2
-    assert _row_count() == 0
-    assert fm.add_functions(
-        implementations=[TRIPLE_AS_DOUBLE, REMOVE_AT_OR_AFTER],
-        overwrite=True,
-    ) == {"double": "updated", "remove_tracks_before": "updated"}
-    assert all("cases" not in row for row in fm.filter_functions())
-    assert "error" in fm.retire_case(function_name="double", case_id=1, why="x")
-    assert _row_count() == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -890,7 +829,6 @@ def global_env():
 
 @_handle_project
 def test_a_caller_of_a_function_using_an_environment_global_is_recorded_as_incomplete(
-    cases_on,
     global_env,
 ):
     """The callee's calls through ``apis`` are not recorded, so neither trace is complete.
@@ -910,7 +848,7 @@ def test_a_caller_of_a_function_using_an_environment_global_is_recorded_as_incom
 
 
 @_handle_project
-def test_a_caller_of_a_pure_function_stays_complete(cases_on, global_env):
+def test_a_caller_of_a_pure_function_stays_complete(global_env):
     fm = _FM()
     fm.add_functions(
         implementations=[
