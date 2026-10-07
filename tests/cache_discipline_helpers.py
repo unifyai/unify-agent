@@ -375,7 +375,6 @@ async def scenario_gate() -> tuple[str, dict, list[dict]]:
             make_tools(counter),
             "Do the task.",
             tool_policy=gate_policy,
-            interrupt_llm_with_interjections=False,
         )
     return result, counter, provider.requests
 
@@ -399,7 +398,6 @@ async def scenario_threshold() -> tuple[str, dict, list[dict]]:
             new_client(),
             {"execute_code": tools["execute_code"]},
             "Do the task.",
-            interrupt_llm_with_interjections=False,
         )
     return result, counter, provider.requests
 
@@ -465,7 +463,7 @@ async def scenario_persist() -> tuple[str, dict, list[dict]]:
         handle._queue.put_nowait(
             {"_compact_transcript": {"reviewed_messages": len(client.messages)}},
         )
-        await handle.interject("Second request.")
+        await handle.submit("Second request.")
         second = await _next_response(handle)
         await handle.stop()
         await asyncio.wait_for(handle.result(), 30)
@@ -495,7 +493,6 @@ async def scenario_compress(replies=COMPRESS_REPLIES) -> tuple[str, dict, list[d
             new_client(),
             {"execute_code": tools["execute_code"]},
             "Do the task.",
-            interrupt_llm_with_interjections=False,
         )
     return result, counter, provider.requests
 
@@ -552,7 +549,6 @@ async def scenario_review(replies=REVIEW_REPLIES, *, actor=None, tools=None):
                 loop_id="CodeActActor.act",
                 log_steps=False,
                 timeout=60,
-                interrupt_llm_with_interjections=False,
             )
             handle = _StorageCheckHandle(inner=inner, actor=actor)
             summaries = []

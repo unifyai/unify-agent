@@ -46,7 +46,7 @@ from unify.actor.execution import (
 from unify.actor.execution.session import inventory_enabled
 from unify.common.async_tool_loop import (
     AsyncToolLoopHandle,
-    SteerableToolHandle,
+    ToolLoopHandle,
     start_async_tool_loop,
 )
 from unify.events.event_bus import EVENT_BUS, Event
@@ -1543,15 +1543,10 @@ def _prepare_trajectory_for_storage_review(
 def _build_storage_tools(
     *,
     actor: "CodeActActor",
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
-) -> tuple[Dict[str, Callable], list[str], list[str]]:
+) -> Dict[str, Callable]:
     """Build the tool dict shared by both post-processing and proactive storage loops.
 
-    Returns ``(tools, storage_active_lines, dormant_lines)`` so callers can
-    reference which inner tools are still actively reviewing skills and
-    which completed tools can be queried. Tool docstrings deliberately stay
-    static — per-run listings belong in the (volatile tail of the) system
+    Tool docstrings deliberately stay static — per-run listings belong in the (volatile tail of the) system
     prompt so the serialized tool schemas are byte-identical across loops
     and stay prompt-cache-friendly.
     """
@@ -1602,131 +1597,7 @@ def _build_storage_tools(
         ),
     }
 
-    # ── Wire ask_about_completed_tool from snapshot ───────────────────
-
-    _meta = completed_tool_metadata or {}
-    storage_active_lines: list[str] = []
-    storage_active_handles: Dict[str, Any] = {}
-    dormant_lines: list[str] = []
-    for name, fn in ask_tools.items():
-        entry = None
-        for _cid, _m in _meta.items():
-            if _m.get("ask_fn") is fn:
-                entry = _m
-                break
-        handle = entry.get("handle") if entry else None
-        if handle is not None and hasattr(handle, "done") and not handle.done():
-            storage_active_lines.append(f"- `{name}` [storage-active]")
-            storage_active_handles[name] = handle
-        else:
-            dormant_lines.append(f"- `{name}`")
-
-    if ask_tools:
-
-        async def ask_about_completed_tool(
-            tool_name: str,
-            question: str,
-        ) -> str:
-            """Ask a follow-up question about a completed tool from the trajectory.
-
-            Use this to inspect a completed tool's internal reasoning or
-            results. The available tool names are listed in the Completed
-            Tools section of this prompt.
-            """
-            fn = ask_tools.get(tool_name)
-            if fn is None:
-                return (
-                    f"Tool '{tool_name}' not found. Available: {list(ask_tools.keys())}"
-                )
-            handle = await fn(question=question)
-            if hasattr(handle, "result"):
-                result = handle.result
-                if callable(result):
-                    result = result()
-                if inspect.isawaitable(result):
-                    result = await result
-                return str(result)
-            return str(handle)
-
-        tools["ask_about_completed_tool"] = ask_about_completed_tool
-
-    # ── Wire steering tools for storage-active inner handles ──────────
-
-    if storage_active_handles:
-        _sa_handles = storage_active_handles
-
-        def _resolve_handle(tool_name: str) -> tuple[Any | None, str | None]:
-            h = _sa_handles.get(tool_name)
-            if h is None:
-                avail = list(_sa_handles.keys())
-                return None, (
-                    f"Tool '{tool_name}' not found or no longer storage-active. "
-                    f"Available: {avail}"
-                )
-            if hasattr(h, "done") and h.done():
-                return None, (
-                    f"Tool '{tool_name}' has already finished its storage review."
-                )
-            return h, None
-
-        async def stop_inner_storage(tool_name: str, reason: str) -> str:
-            """Stop an inner storage loop, preventing it from storing anything further.
-
-            Use this when you have determined that the inner agent's storage
-            would be redundant (e.g. you are storing a comprehensive function
-            that already covers the inner agent's scope).
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.stop(reason=reason)
-            return f"Stopped inner storage for '{tool_name}': {reason}"
-
-        async def interject_inner_storage(tool_name: str, message: str) -> str:
-            """Inject a directive into an inner storage loop's conversation.
-
-            Use this to provide context that should influence the inner
-            loop's storage decisions (e.g. "The parent is storing a
-            comprehensive function — only store yours if it is genuinely
-            independent and reusable in isolation").
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.interject(message)
-            return f"Interjected into inner storage for '{tool_name}'."
-
-        async def pause_inner_storage(tool_name: str) -> str:
-            """Temporarily pause an inner storage loop.
-
-            Use this to halt an inner loop while you make decisions,
-            then resume it with ``resume_inner_storage``. The inner loop
-            will not proceed until resumed (or until its timeout expires).
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.pause()
-            return f"Paused inner storage for '{tool_name}'."
-
-        async def resume_inner_storage(tool_name: str) -> str:
-            """Resume a previously paused inner storage loop.
-
-            Call this after ``pause_inner_storage`` to let the inner
-            loop continue its skill review.
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.resume()
-            return f"Resumed inner storage for '{tool_name}'."
-
-        tools["stop_inner_storage"] = stop_inner_storage
-        tools["interject_inner_storage"] = interject_inner_storage
-        tools["pause_inner_storage"] = pause_inner_storage
-        tools["resume_inner_storage"] = resume_inner_storage
-
-    return tools, storage_active_lines, dormant_lines
+    return tools
 
 
 # ---------------------------------------------------------------------------
@@ -2068,9 +1939,7 @@ def _start_storage_review_fork(
     )
     first_choice = fork_source.get("tool_choice")
     first_choice = first_choice if isinstance(first_choice, str) else "auto"
-    # The list's ask_about_completed_tool is the loop's own, over the review's
-    # calls; the review's variant over the task's tools is not in the list.
-    review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
+    review_tools = dict(tools)
 
     opts: dict = {"mask_rule": mask_rule}
 
@@ -2118,8 +1987,6 @@ def _close_with_result(handle: Any, close: Callable[[], Awaitable[None]]) -> Non
 def _start_storage_check_loop(
     *,
     trajectory: list[dict],
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
     actor: "CodeActActor",
     original_result: str,
     parent_lineage: list[str] | None = None,
@@ -2165,11 +2032,7 @@ def _start_storage_check_loop(
     from unify.function_manager import session_source
 
     generalise_note += session_source.review_note()
-    tools, storage_active_lines, dormant_lines = _build_storage_tools(
-        actor=actor,
-        ask_tools=ask_tools,
-        completed_tool_metadata=completed_tool_metadata,
-    )
+    tools = _build_storage_tools(actor=actor)
     outcome_note = _storage_review_outcome_note(outcome)
 
     # ── Build prompt ──────────────────────────────────────────────────
@@ -2178,38 +2041,6 @@ def _start_storage_check_loop(
         _prepare_trajectory_for_storage_review(trajectory),
         default=str,
     )
-
-    completed_tools_section = ""
-    if storage_active_lines or dormant_lines:
-        listing = "\n".join([*storage_active_lines, *dormant_lines])
-        completed_tools_section = (
-            "## Completed Tools\n\n"
-            "These completed tools from the trajectory can be queried via "
-            "`ask_about_completed_tool` (entries marked [storage-active] "
-            "are still running their own background skill review):\n\n"
-            f"{listing}\n\n"
-        )
-
-    # Build optional section about inner storage loops.
-    inner_storage_section = ""
-    if storage_active_lines:
-        inner_storage_section = (
-            "## Inner Storage Loops\n\n"
-            "Some inner tools from this trajectory are currently running "
-            "their own background skill-review loops:\n\n"
-            + "\n".join(storage_active_lines)
-            + "\n\n"
-            "These inner loops may be storing functions independently at a "
-            "finer granularity. You can:\n"
-            "- Query them via `ask_about_completed_tool`\n"
-            "- Inject directives via `interject_inner_storage`\n"
-            "- Stop them via `stop_inner_storage`\n"
-            "- Pause/resume them via `pause_inner_storage` / "
-            "`resume_inner_storage`\n\n"
-            "Use these to coordinate storage decisions (e.g. stop an inner "
-            "loop that would store something redundant, or interject context "
-            "about what you plan to store at the higher level).\n\n"
-        )
 
     # ── Proactive storage awareness ───────────────────────────────────
     proactive_storage_section = ""
@@ -2399,8 +2230,6 @@ def _start_storage_check_loop(
         "\n\n"
         f"{stop_context_section}"
         f"{live_session_section}"
-        f"{inner_storage_section}"
-        f"{completed_tools_section}"
         f"{proactive_storage_section}"
         f"{generalise_note}"
         f"{trajectory_header}"
@@ -2434,8 +2263,6 @@ def _start_storage_check_loop(
 def _start_proactive_storage_loop(
     *,
     trajectory: list[dict],
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
     actor: "CodeActActor",
     request: str,
     parent_lineage: list[str] | None = None,
@@ -2456,11 +2283,7 @@ def _start_proactive_storage_loop(
     if fm is None or gm is None:
         return None
 
-    tools, storage_active_lines, dormant_lines = _build_storage_tools(
-        actor=actor,
-        ask_tools=ask_tools,
-        completed_tool_metadata=completed_tool_metadata,
-    )
+    tools = _build_storage_tools(actor=actor)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -2468,37 +2291,6 @@ def _start_proactive_storage_loop(
         _prepare_trajectory_for_storage_review(trajectory),
         default=str,
     )
-
-    completed_tools_section = ""
-    if storage_active_lines or dormant_lines:
-        listing = "\n".join([*storage_active_lines, *dormant_lines])
-        completed_tools_section = (
-            "## Completed Tools\n\n"
-            "These completed tools from the trajectory can be queried via "
-            "`ask_about_completed_tool` (entries marked [storage-active] "
-            "are still running their own background skill review):\n\n"
-            f"{listing}\n\n"
-        )
-
-    inner_storage_section = ""
-    if storage_active_lines:
-        inner_storage_section = (
-            "## Inner Storage Loops\n\n"
-            "Some inner tools from this trajectory are currently running "
-            "their own background skill-review loops:\n\n"
-            + "\n".join(storage_active_lines)
-            + "\n\n"
-            "These inner loops may be storing functions independently at a "
-            "finer granularity. You can:\n"
-            "- Query them via `ask_about_completed_tool`\n"
-            "- Inject directives via `interject_inner_storage`\n"
-            "- Stop them via `stop_inner_storage`\n"
-            "- Pause/resume them via `pause_inner_storage` / "
-            "`resume_inner_storage`\n\n"
-            "Use these to coordinate storage decisions (e.g. stop an inner "
-            "loop that would store something redundant, or interject context "
-            "about what you plan to store at the higher level).\n\n"
-        )
 
     instructions = (
         "## Instructions\n\n"
@@ -2532,8 +2324,6 @@ def _start_proactive_storage_loop(
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
         "\n\n"
-        f"{inner_storage_section}"
-        f"{completed_tools_section}"
         "## Storage Request\n\n"
         f"{request}\n\n"
         "## Trajectory So Far\n\n"
@@ -2556,19 +2346,19 @@ def _start_proactive_storage_loop(
     )
 
 
-class _StorageCheckHandle(SteerableToolHandle):
+class _StorageCheckHandle(ToolLoopHandle):
     """Wraps an inner handle and runs a storage check after task completion.
 
     Lifecycle phases:
 
-    * **task** -- the inner tool loop is running.  All steering methods
-      forward to the inner handle.  Notifications from the inner handle
-      are relayed to consumers.
+    * **task** -- the inner tool loop is running.  ``submit``, ``stop`` and
+      ``cancel_request`` forward to the inner handle.  Notifications from
+      the inner handle are relayed to consumers.
     * **storage** -- the task has completed.  ``result()`` has already
       resolved with the original task result.  A second loop reviews the
-      trajectory for reusable skills.  The handle remains live: steering
-      methods (ask, interject, stop, pause, resume) operate on the
-      storage loop, and ``done()`` returns ``False``.
+      trajectory for reusable skills.  The handle remains live: ``submit``
+      and ``stop`` operate on the storage loop, and ``done()`` returns
+      ``False``.
     * **done** -- both phases have completed (or were stopped/skipped).
       ``done()`` returns ``True``.
 
@@ -2602,12 +2392,6 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._stopped: bool = False
         self._stop_reason: Optional[str] = None
         self._active_relay: Optional[asyncio.Task] = None
-        # Whether the caller's latest steering asked for this handle to be
-        # held. Pause is forwarded to whichever loop is active when it
-        # arrives, and a pause that lands as the task loop is finishing would
-        # otherwise end with that loop: the review would then run unpaused
-        # while the caller believes the handle is held.
-        self._pause_requested: bool = False
 
         # Optional turn-boundary reviews for persistent sessions (off unless
         # UNIFY_TURN_STORAGE_REVIEWS is set). A persist=True loop never
@@ -2659,16 +2443,8 @@ class _StorageCheckHandle(SteerableToolHandle):
     # ── Internal helpers ──────────────────────────────────────────────
 
     @property
-    def _pause_event(self):
-        """Delegate to the active inner handle so get_handle_paused_state works."""
-        handle = self._active_handle
-        if handle is not None:
-            return getattr(handle, "_pause_event", None)
-        return None
-
-    @property
-    def _active_handle(self) -> Optional["SteerableToolHandle"]:
-        """The currently active inner handle for steering delegation."""
+    def _active_handle(self) -> Optional["AsyncToolLoopHandle"]:
+        """The currently active inner handle the caller's calls go to."""
         if self._phase == "task":
             return self._inner
         if self._phase == "storage":
@@ -2677,7 +2453,7 @@ class _StorageCheckHandle(SteerableToolHandle):
 
     async def _relay_notifications_from(
         self,
-        source: "SteerableToolHandle",
+        source: "ToolLoopHandle",
     ) -> None:
         """Forward notifications from *source* into our queue until cancelled.
 
@@ -2798,21 +2574,6 @@ class _StorageCheckHandle(SteerableToolHandle):
         *,
         reviewed_messages: int,
     ) -> None:
-        ask_tools: dict = {}
-        try:
-            ask_tools = getattr(self._inner._task, "get_ask_tools", lambda: {})()
-        except Exception:
-            pass
-        completed_tool_metadata: dict = {}
-        try:
-            completed_tool_metadata = getattr(
-                self._inner._task,
-                "get_completed_tool_metadata",
-                lambda: {},
-            )()
-        except Exception:
-            pass
-
         proactive_summaries: list[str] = []
         _ctx = _CURRENT_AGENT_CONTEXT.get(None)
         if _ctx is not None:
@@ -2840,8 +2601,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             )
             storage_handle = _start_storage_check_loop(
                 trajectory=trajectory,
-                ask_tools=ask_tools,
-                completed_tool_metadata=completed_tool_metadata,
                 actor=self._actor,
                 original_result=self._latest_turn_response,
                 parent_lineage=_tr_parent_lineage,
@@ -3013,36 +2772,16 @@ class _StorageCheckHandle(SteerableToolHandle):
             await self._cancel_relay()
             self._task_done_event.set()
 
-            # Snapshot trajectory and ask tools (client/messages are still
-            # valid after result() returns -- cleanup only resets context
-            # vars and releases the semaphore).
+            # Snapshot the trajectory (client/messages are still valid after
+            # result() returns -- cleanup only resets context vars and
+            # releases the semaphore).
             trajectory: list[dict] = []
-            ask_tools: dict = {}
             try:
                 client = getattr(self._inner, "_client", None)
                 if client is not None:
                     trajectory = make_messages_safe_for_context_dump(
                         list(getattr(client, "messages", []) or []),
                     )
-            except Exception:
-                pass
-            try:
-                _get_ask = getattr(
-                    self._inner._task,
-                    "get_ask_tools",
-                    lambda: {},
-                )
-                ask_tools = _get_ask()
-            except Exception:
-                pass
-            completed_tool_metadata: dict = {}
-            try:
-                _get_meta = getattr(
-                    self._inner._task,
-                    "get_completed_tool_metadata",
-                    lambda: {},
-                )
-                completed_tool_metadata = _get_meta()
             except Exception:
                 pass
 
@@ -3185,8 +2924,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                 with _session_source.reviewing(trajectory):
                     storage_handle = _start_storage_check_loop(
                         trajectory=trajectory,
-                        ask_tools=ask_tools,
-                        completed_tool_metadata=completed_tool_metadata,
                         actor=self._actor,
                         original_result=self._review_final_result(),
                         parent_lineage=_sc_parent_lineage,
@@ -3207,8 +2944,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                     )
                 else:
                     self._storage_handle = storage_handle
-                    if self._pause_requested:
-                        await storage_handle.pause()
                     storage_success = True
                     try:
                         storage_summary = await self._storage_handle.result()
@@ -3253,100 +2988,16 @@ class _StorageCheckHandle(SteerableToolHandle):
             self._task_done_event.set()
             self._completion_event.set()
 
-    # ── Steering: phase-aware forwarding ──────────────────────────────
+    # ── The caller's side: phase-aware forwarding ─────────────────────
 
-    async def ask(
-        self,
-        question: str,
-        *,
-        _parent_chat_context: list[dict] | None = None,
-        **kwargs,
-    ) -> "SteerableToolHandle":
-        # Task and done phases: ask about the completed/running task.
-        if self._phase != "storage":
-            return await self._inner.ask(
-                question,
-                _parent_chat_context=_parent_chat_context,
-                **kwargs,
-            )
-
-        # ── Storage phase: thin routing loop ──────────────────────────
-        inner_ref = self._inner
-        storage_ref = self._storage_handle
-        pcc = _parent_chat_context
-
-        async def ask_about_task(question: str) -> str:
-            """Ask a question about the **completed task** itself.
-
-            Use this for anything related to:
-            - What the task was and what the agent did to accomplish it
-            - The reasoning, tool calls, or intermediate steps taken
-            - The final result or output of the task
-            - Errors or issues encountered during execution
-
-            This queries the full execution trajectory of the finished
-            task, NOT the skill-storage process that is running now.
-            """
-            h = await inner_ref.ask(question, _parent_chat_context=pcc)
-            return await h.result()
-
-        async def ask_about_skill_storage(question: str) -> str:
-            """Ask a question about the **ongoing skill storage** process.
-
-            Use this for anything related to:
-            - Which functions are being considered for storage
-            - What the skill librarian has stored, merged, or deleted so far
-            - Progress or status of the skill consolidation review
-            - Decisions about whether a function is worth keeping
-
-            This queries the live storage-check loop that is reviewing
-            the completed trajectory for reusable patterns, NOT the
-            original task itself.
-            """
-            if storage_ref is not None:
-                h = await storage_ref.ask(question, _parent_chat_context=pcc)
-                return await h.result()
-            return "Skill storage has not started yet."
-
-        routing_tools: Dict[str, Callable] = {
-            "ask_about_task": ask_about_task,
-            "ask_about_skill_storage": ask_about_skill_storage,
-        }
-
-        routing_client = new_llm_client(purpose="planning", origin="StorageCheck.ask")
-        routing_client.set_system_message(
-            "You are answering a question about an agent that has completed "
-            "its primary task and is now reviewing its execution trajectory "
-            "to store reusable skills.\n\n"
-            "You have two tools:\n"
-            "- ask_about_task: for questions about the completed task, its "
-            "approach, reasoning, or result\n"
-            "- ask_about_skill_storage: for questions about the ongoing "
-            "skill consolidation process\n\n"
-            "Route the question to the appropriate tool. If the question "
-            "spans both topics, call both tools and synthesize the answers.",
-        )
-
-        return start_async_tool_loop(
-            client=routing_client,
-            message=question,
-            tools=routing_tools,
-            loop_id="Question(StorageCheck.routing)",
-        )
-
-    async def interject(
-        self,
-        message: str,
-        *,
-        _parent_chat_context_cont: list[dict] | None = None,
-        **kwargs,
-    ) -> None:
+    async def submit(self, text: str) -> None:
+        """Queue *text* for the active loop's next turn boundary."""
         if self._refuses_late_session_message():
             logger.info(
-                "Interjection not delivered: the persistent session's task "
-                "loop has ended, so the message has no session to go to, and "
-                "the storage review does not take the session's messages "
-                f"({len(message)} chars)",
+                "Message not delivered: the persistent session's task loop "
+                "has ended, so the message has no session to go to, and the "
+                "storage review does not take the session's messages "
+                f"({len(text)} chars)",
             )
             await self._notification_q.put(
                 {
@@ -3357,22 +3008,18 @@ class _StorageCheckHandle(SteerableToolHandle):
             return None
         handle = self._active_handle
         if handle is not None:
-            return await handle.interject(
-                message,
-                _parent_chat_context_cont=_parent_chat_context_cont,
-                **kwargs,
-            )
+            return await handle.submit(text)
 
     def _refuses_late_session_message(self) -> bool:
-        """Whether an interjection arrives after a persistent session ended.
+        """Whether a message arrives after a persistent session ended.
 
         A persistent session takes each follow-up as its next request. Once
         its task loop has ended (at a step or time limit, or by a stop), a
         follow-up has no session to go to, and forwarded to the storage
-        review it is read there as a user interjection the review must
-        answer. With ``UNIFY_REVIEW_FORK`` it is refused instead; off, it
-        is forwarded as shipped. A handle that was not persistent keeps the
-        shipped routing, where an interjection steers the review.
+        review it is read there as a user message the review must answer.
+        With ``UNIFY_REVIEW_FORK`` it is refused instead; off, it is
+        forwarded as shipped. A handle that was not persistent forwards it to
+        the review, which reads it at its next boundary.
         """
         from unify.common._async_tool import cache_discipline
 
@@ -3385,10 +3032,6 @@ class _StorageCheckHandle(SteerableToolHandle):
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
         self._stop_reason = reason
-        # A stop supersedes a pause: the review still runs after a stop, and
-        # starting it held would leave the handle waiting on a resume that the
-        # caller, having stopped it, has no reason to send.
-        self._pause_requested = False
         handle = self._active_handle
         if handle is not None:
             await handle.stop(reason=reason, **kwargs)
@@ -3399,20 +3042,6 @@ class _StorageCheckHandle(SteerableToolHandle):
         if self._phase != "task":
             return False
         return await self._inner.cancel_request(reason)
-
-    async def pause(self, **kwargs) -> Optional[str]:
-        self._pause_requested = True
-        handle = self._active_handle
-        if handle is not None:
-            return await handle.pause(**kwargs)
-        return None
-
-    async def resume(self, **kwargs) -> Optional[str]:
-        self._pause_requested = False
-        handle = self._active_handle
-        if handle is not None:
-            return await handle.resume(**kwargs)
-        return None
 
     # ── Completion ────────────────────────────────────────────────────
 
@@ -3885,23 +3514,22 @@ class CodeActActor(BaseCodeActActor):
         *,
         clarification_up_q: asyncio.Queue[str] | None,
         clarification_down_q: asyncio.Queue[str] | None,
-        interject_q: asyncio.Queue | None = None,
         notification_q: asyncio.Queue | None = None,
-        pause_event: asyncio.Event | None = None,
     ):
         """Bind one tool call's channels onto the live sandbox.
 
-        Two channels, both per-call and both restored on exit:
+        Both per-call and both restored on exit:
 
         * clarification queues, so nested manager clarifications write into the
           outer tool's ``clar_up_queue`` (mailbox A) watched by the async tool
           loop
-        * a :class:`SteeringChannel`, so checkpoints inside the running block
-          can observe interjections aimed at this call and suspend for a
-          decision
+        * a :class:`SteeringSession` with no correction channel: nothing
+          interrupts the running block, and its checkpoints only record how
+          far it got (reported when the block fails) and carry its progress
+          notifications
 
-        Yields the steering channel so the caller can report progress once
-        execution ends, however it ended.
+        Yields the session so the caller can report progress once execution
+        ends, however it ended.
         """
         from contextlib import contextmanager
 
@@ -3910,7 +3538,6 @@ class CodeActActor(BaseCodeActActor):
             restore_sandbox_clarification_queues,
         )
         from unify.function_manager.steering import SteeringSession, use_session
-        from unify.function_manager.steering_patcher import build_patch_author
 
         @contextmanager
         def _binding():
@@ -3935,15 +3562,7 @@ class CodeActActor(BaseCodeActActor):
                 clarification_down_q,
             )
 
-            # The patch author only matters when there is a channel to be
-            # corrected through; without one nothing can interrupt, so the
-            # LLM client is never built.
-            steering = SteeringSession(
-                interject_q=interject_q,
-                notification_q=notification_q,
-                patch_author=build_patch_author() if interject_q is not None else None,
-                pause_event=pause_event,
-            )
+            steering = SteeringSession(notification_q=notification_q)
             # Carried by context rather than installed on this sandbox:
             # stateless cells build a fresh sandbox per call that would
             # never see anything installed here.
@@ -3978,8 +3597,6 @@ class CodeActActor(BaseCodeActActor):
             _notification_up_q: asyncio.Queue[dict] | None = None,
             _clarification_up_q: asyncio.Queue[str] | None = None,
             _clarification_down_q: asyncio.Queue[str] | None = None,
-            _interject_queue: asyncio.Queue | None = None,
-            _pause_event: asyncio.Event | None = None,
             _parent_chat_context: list[dict] | None = None,
             _language: str = "python",
         ) -> Any:
@@ -4126,9 +3743,7 @@ class CodeActActor(BaseCodeActActor):
                     with self._sandbox_call_binding(
                         clarification_up_q=_clarification_up_q,
                         clarification_down_q=_clarification_down_q,
-                        interject_q=_interject_queue,
                         notification_q=notification_q,
-                        pause_event=_pause_event,
                     ) as _steering:
                         # Only UNIFY_WORKSPACE=sandboxed routes another
                         # language here (see _workspace_tools).
@@ -4307,18 +3922,6 @@ class CodeActActor(BaseCodeActActor):
                     else []
                 )
 
-                _task = getattr(handle, "_task", None)
-                _ask_tools = (
-                    _task.get_ask_tools()
-                    if _task and hasattr(_task, "get_ask_tools")
-                    else {}
-                )
-                _completed_meta = (
-                    _task.get_completed_tool_metadata()
-                    if _task and hasattr(_task, "get_completed_tool_metadata")
-                    else {}
-                )
-
                 _ps_call_id = new_call_id()
                 _ps_parent = TOOL_LOOP_LINEAGE.get([])
                 _ps_parent_lineage = (
@@ -4342,8 +3945,6 @@ class CodeActActor(BaseCodeActActor):
 
                 storage_handle = _start_proactive_storage_loop(
                     trajectory=_trajectory,
-                    ask_tools=_ask_tools,
-                    completed_tool_metadata=_completed_meta,
                     actor=_actor_ref,
                     request=request,
                     parent_lineage=_ps_parent_lineage,
@@ -4664,7 +4265,7 @@ class CodeActActor(BaseCodeActActor):
         can_compose: Optional[bool] = None,
         can_store: Optional[bool] = None,
         llm_profile: Optional[str] = None,
-    ) -> SteerableToolHandle:
+    ) -> ToolLoopHandle:
         if not self._main_event_loop:
             self._main_event_loop = asyncio.get_running_loop()
 
@@ -5231,8 +4832,6 @@ class CodeActActor(BaseCodeActActor):
                 tools,
                 loop_id=f"CodeActActor.act",
                 parent_chat_context=(_parent_chat_context if _agents is None else None),
-                # UNIFY_AGENTS=record: nothing that arrives races the model call.
-                interrupt_llm_with_interjections=_agents is None,
                 log_steps=True,
                 tool_policy=tool_policy,
                 response_format=response_format,
@@ -5263,12 +4862,9 @@ class CodeActActor(BaseCodeActActor):
                     else _on_notify
                 ),
                 **(
-                    {
-                        "steering_tools": core_session.steering and _agents is None,
-                        "compression_tools_on_demand": True,
-                    }
+                    {"compression_tools_on_demand": True}
                     if core_session is not None
-                    else ({"steering_tools": False} if _agents is not None else {})
+                    else {}
                 ),
                 **(
                     {"on_turn_boundary": _agents.on_turn_boundary}

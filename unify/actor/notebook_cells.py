@@ -456,22 +456,11 @@ def _repr(value: Any) -> str:
 
 
 def _holds_handle(value: Any) -> bool:
-    """Whether *value* is, or holds, a steerable handle or the sentinel the
-    loop puts in its place once adopted."""
-    from unify.common._async_tool.tools_data import (
-        _HANDLE_SENTINEL,
-        _handle_label_sentinel,
-    )
-    from unify.common.async_tool_loop import SteerableToolHandle
+    """Whether *value* is, or holds, a tool-loop handle."""
+    from unify.common.async_tool_loop import SteerableToolHandle, ToolLoopHandle
 
-    if isinstance(value, SteerableToolHandle):
+    if isinstance(value, (SteerableToolHandle, ToolLoopHandle)):
         return True
-    if isinstance(value, str):
-        labelled = re.escape(_handle_label_sentinel("LABEL")).replace(
-            "LABEL",
-            r"h\d+",
-        )
-        return value == _HANDLE_SENTINEL or bool(re.fullmatch(labelled, value))
     if isinstance(value, dict):
         return any(_holds_handle(v) for v in value.values())
     if isinstance(value, (list, tuple)):
@@ -815,8 +804,6 @@ def project_tools(
             _notification_up_q: asyncio.Queue[dict] | None = None,
             _clarification_up_q: asyncio.Queue[str] | None = None,
             _clarification_down_q: asyncio.Queue[str] | None = None,
-            _interject_queue: asyncio.Queue | None = None,
-            _pause_event: asyncio.Event | None = None,
             _parent_chat_context: list[dict] | None = None,
         ) -> Any:
             return await run_cell(
@@ -825,8 +812,6 @@ def project_tools(
                     _notification_up_q=_notification_up_q,
                     _clarification_up_q=_clarification_up_q,
                     _clarification_down_q=_clarification_down_q,
-                    _interject_queue=_interject_queue,
-                    _pause_event=_pause_event,
                     _parent_chat_context=_parent_chat_context,
                 ),
             )
@@ -839,8 +824,6 @@ def project_tools(
             _notification_up_q: asyncio.Queue[dict] | None = None,
             _clarification_up_q: asyncio.Queue[str] | None = None,
             _clarification_down_q: asyncio.Queue[str] | None = None,
-            _interject_queue: asyncio.Queue | None = None,
-            _pause_event: asyncio.Event | None = None,
         ) -> Any:
             return await run_cell(
                 code,
@@ -848,8 +831,6 @@ def project_tools(
                     _notification_up_q=_notification_up_q,
                     _clarification_up_q=_clarification_up_q,
                     _clarification_down_q=_clarification_down_q,
-                    _interject_queue=_interject_queue,
-                    _pause_event=_pause_event,
                 ),
             )
 

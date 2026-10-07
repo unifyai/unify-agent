@@ -84,8 +84,6 @@ def workspace_tools(execute_code: Callable[..., Any]) -> Dict[str, ToolSpec]:
         _notification_up_q: asyncio.Queue[dict] | None = None,
         _clarification_up_q: asyncio.Queue[str] | None = None,
         _clarification_down_q: asyncio.Queue[str] | None = None,
-        _interject_queue: asyncio.Queue | None = None,
-        _pause_event: asyncio.Event | None = None,
         _parent_chat_context: list[dict] | None = None,
     ) -> Any:
         if language not in LANGUAGES:
@@ -103,8 +101,6 @@ def workspace_tools(execute_code: Callable[..., Any]) -> Dict[str, ToolSpec]:
             _notification_up_q=_notification_up_q,
             _clarification_up_q=_clarification_up_q,
             _clarification_down_q=_clarification_down_q,
-            _interject_queue=_interject_queue,
-            _pause_event=_pause_event,
             _parent_chat_context=_parent_chat_context,
             _language=language,
         )

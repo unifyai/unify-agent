@@ -62,7 +62,7 @@ class CliBridge:
         block = record.take_block(record.root)
         if block:
             self._root_busy = True
-            await self.handle.interject(block)
+            await self.handle.submit(block)
 
 
 def attach_bridge(handle: Any, emit: Callable[..., None]) -> Optional[CliBridge]:

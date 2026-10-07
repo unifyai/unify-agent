@@ -609,7 +609,8 @@ class Act:
     # ── input ────────────────────────────────────────────────────────────
 
     async def _read_lines(self) -> None:
-        """Route typed lines: answer a pending question, else steer the actor."""
+        """Route typed lines: answer a pending question, else submit the line
+        as the next message (read at the session's next turn boundary)."""
         with _stdin_reader(on_line=self._on_channel_line) as reader:
             while not self._closing.is_set():
                 raw = await reader.readline()
@@ -677,7 +678,7 @@ class Act:
                         line,
                     )
                     continue
-                await self._handle.interject(line)
+                await self._handle.submit(line)
 
     # ── cancel escalation ────────────────────────────────────────────────
     # The loop takes a cancel at once, cancelling the model call and the
