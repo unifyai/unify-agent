@@ -107,7 +107,16 @@ def _shortlist_gate_threshold(value: Any) -> Optional[float]:
 
 
 class ProductionSettings(BaseSettings):
-    """Runtime settings; test settings (TestingSettings) inherit from this class."""
+    """Runtime settings; test settings (TestingSettings) inherit from this class.
+
+    The research switches default to the configuration chosen at the code
+    freeze (7 Oct 2026): the lean-all recipe, Python tool mode
+    (``UNIFY_TOOL_SURFACE=core`` with worker Python in the sandboxed
+    workspace) and the shared agent record. In the comments below, "as
+    shipped" names upstream's behaviour, which a switch's off value still
+    selects until the switch is removed. The switches still in progress are
+    listed in WIP_SWITCHES.md at the repository root.
+    """
 
     # ─────────────────────────────────────────────────────────────────────────
     # Local Workspace
@@ -377,7 +386,7 @@ class ProductionSettings(BaseSettings):
     # name or code (literals and defaults) carries one; a docstring or a
     # guidance entry that names one is stored with a warning. Off stores
     # without the check.
-    UNIFY_STORE_INSTANCE_LINT: bool = False
+    UNIFY_STORE_INSTANCE_LINT: bool = True
     # ``on``: while the storage review that follows a session runs, a
     # function it adds or patches is refused when a string literal in it
     # (plain, raw, or an f-string's text) holds a backslash, is in none of
@@ -422,7 +431,7 @@ class ProductionSettings(BaseSettings):
     # every guidance search, filter, lookup and count sees only the entries
     # the assistant stored itself; rows an earlier process seeded stay in the
     # store, untouched. On reads them alongside the stored entries as shipped.
-    UNIFY_BUILTIN_GUIDANCE: bool = True
+    UNIFY_BUILTIN_GUIDANCE: bool = False
     # Offer FunctionManager_patch_function and GuidanceManager_patch_guidance,
     # which replace excerpts of a stored entry in place -- one edit or an
     # ordered, all-or-nothing batch, each matched exactly or, failing that,
@@ -431,7 +440,7 @@ class ProductionSettings(BaseSettings):
     # and keep the previous version of every overwritten function or guidance
     # entry in function_history / guidance_history. Off: no patch tools and
     # nothing is written to history.
-    UNIFY_FUNCTION_PATCH: bool = False
+    UNIFY_FUNCTION_PATCH: bool = True
     # Record each stored function's calls as cases in function_cases (its
     # arguments, what it returned or raised, and the environment calls it
     # made with their answers; the latest 3 that returned and 3 that raised,
@@ -447,7 +456,7 @@ class ProductionSettings(BaseSettings):
     # results show up to two cases per function
     # (unify/function_manager/store_cases.py). Off: nothing is recorded or
     # replayed and every tool is as shipped.
-    UNIFY_FUNCTION_CASES: bool = False
+    UNIFY_FUNCTION_CASES: bool = True
     # With UNIFY_FUNCTION_CASES on, every recorded call of a stored function
     # also leaves one small row (store home, function_runs.sqlite): per
     # environment endpoint, calls made and items per answer; a digest per
@@ -491,7 +500,7 @@ class ProductionSettings(BaseSettings):
     # ``warn``: adding a new function whose normalised code nearly matches a
     # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
     # the stored function. Empty adds as shipped.
-    UNIFY_STORE_DEDUPE: str = ""
+    UNIFY_STORE_DEDUPE: str = "warn"
     # ``ramp``: keep a trust record per stored function (probation, trusted,
     # quarantined) in function_trust. Every reuse is evidence: a call that
     # returns is a pass, one that raises quarantines the function, which is
@@ -513,7 +522,7 @@ class ProductionSettings(BaseSettings):
     # LLM client takes one; and each call logs how much of its input came
     # from the cache (unify/common/_async_tool/cache_discipline.py). Off: as
     # shipped.
-    UNIFY_CACHE_DISCIPLINE: bool = False
+    UNIFY_CACHE_DISCIPLINE: bool = True
     # What the cache affinity key of UNIFY_CACHE_DISCIPLINE is shared by:
     # ``prefix`` (the default), every session whose model, system prompt and
     # tool list are the same, so a new session reaches the replica an earlier
@@ -532,7 +541,7 @@ class ProductionSettings(BaseSettings):
     # tool choice changes: under UNIFY_CACHE_DISCIPLINE the tool list sent is
     # the same. The session's first user message starts with one line giving
     # both counts at task start. Off: as shipped.
-    UNIFY_LIBRARY_SNAPSHOT: bool = False
+    UNIFY_LIBRARY_SNAPSHOT: bool = True
     # Where the actor's per-session prompt sections go: the clock (minute
     # resolution) and the filesystem context (workspace paths). Empty: at the
     # tail of the system prompt, as shipped, so the system prompt differs
@@ -552,7 +561,7 @@ class ProductionSettings(BaseSettings):
     # its task loop ended on its own (a step limit, say) is refused rather than
     # read by the review, forked or not, as an interjection to answer.
     # Off: as shipped.
-    UNIFY_REVIEW_FORK: bool = False
+    UNIFY_REVIEW_FORK: bool = True
     # ``unified``: the storage review is framed as the agent's own curation
     # step after the task rather than a separate "skill librarian" (whose
     # text opens with "Often nothing is"): the actor's prompt says it will
@@ -560,7 +569,7 @@ class ProductionSettings(BaseSettings):
     # review is told the task is finished and this is that step, and it ends
     # with the closing instruction the standalone review already gets. The
     # rulebook is unchanged. Empty frames the review as shipped.
-    UNIFY_REVIEW_FRAMING: str = ""
+    UNIFY_REVIEW_FRAMING: str = "unified"
     # ``compose``: the storage rulebook asks for small, parametrised units
     # composed into larger ones, stored only from code the trajectory ran,
     # with names and signatures that describe behaviour; a patch must keep an
@@ -587,7 +596,7 @@ class ProductionSettings(BaseSettings):
     # discipline (reusable, general-purpose, distilled as a superset: one
     # rule with its conditions as parameters, covering earlier cases rather
     # than a sibling, one subject, no instance values). Empty: as shipped.
-    UNIFY_CURATION_DOCTRINE: str = ""
+    UNIFY_CURATION_DOCTRINE: str = "minimal"
     # The storage review is shown the stored functions saved while handling
     # requests similar to this session's (``similar_request`` at least the
     # ``UNIFY_SHORTLIST_GATE`` threshold when that is set, else 0.24), at
@@ -603,7 +612,7 @@ class ProductionSettings(BaseSettings):
     # they are not functions or primitives, and no code or sub-agent can take
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
-    UNIFY_REPLY_PROTOCOL_NOTE: bool = False
+    UNIFY_REPLY_PROTOCOL_NOTE: bool = True
     # The actor states only what the session actually has: the skill-storage
     # notice of a persistent session describes the review it gets (once,
     # when the session ends, unless UNIFY_TURN_STORAGE_REVIEWS), not one per
@@ -614,7 +623,7 @@ class ProductionSettings(BaseSettings):
     # conversation; the execution rules mention request_clarification only
     # when the session has it; and a sub-actor gets request_clarification
     # only when the actor that started it could ask. Off: as shipped.
-    UNIFY_PROMPT_ACCURACY: bool = False
+    UNIFY_PROMPT_ACCURACY: bool = True
     # Delegation for the actor `unify act` and the conversation manager
     # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
     # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
@@ -624,7 +633,7 @@ class ProductionSettings(BaseSettings):
     # use for delegates. ``on_demand`` installs it, and the prompt carries a
     # three-line pointer instead of the docs, which ``help(primitives.actor.act)``
     # returns in the sandbox.
-    UNIFY_DELEGATION: str = "on"
+    UNIFY_DELEGATION: str = "off"
     # The shared agent record. ``record``: every agent of a run, the user (or
     # the benchmark driving the run) and the harness talk through one
     # append-only thread, read only at turn boundaries; the steering tools,
@@ -649,7 +658,7 @@ class ProductionSettings(BaseSettings):
     # UNIFY_PROMPT_ACCURACY fix. The library, discovery, storage and steering
     # sections are unchanged (their own switches govern them). Empty: as
     # shipped.
-    UNIFY_PROMPT_PROFILE: str = ""
+    UNIFY_PROMPT_PROFILE: str = "lean"
     # execute_code takes state_mode (an untyped optional string), session_id
     # and session_name, and four tools manage sessions. An omitted mode runs
     # the cell in session 0, the task's persistent session, but a model that
@@ -702,7 +711,7 @@ class ProductionSettings(BaseSettings):
     # the review. While the library holds nothing (0 functions, 0 guidance
     # entries) the gate is not asked and the review runs. Turn reviews and
     # store_skills are not gated. Off: as shipped.
-    UNIFY_REVIEW_GATE: bool = False
+    UNIFY_REVIEW_GATE: bool = True
     # Ask the UNIFY_REVIEW_GATE question as a fork of the session's own
     # conversation: the gate's request is the actor's last request as sent
     # (system prompt, messages, tools, tool choice; a forced choice is sent
@@ -807,7 +816,7 @@ class ProductionSettings(BaseSettings):
     # as is UNIFY_LIBRARY_SNAPSHOT's line (without its note on skipping an
     # empty library's search, which describes the gate). A caller's own
     # tool_policy is unaffected. On: as shipped.
-    UNIFY_DISCOVERY_GATE: bool = True
+    UNIFY_DISCOVERY_GATE: bool = False
     # On: at the start of each act() (sub-agents' included) the harness ranks the stored
     # functions and guidance entries in scope against the request by
     # embedding similarity (no model call; primitives and lapsed functions
@@ -819,7 +828,7 @@ class ProductionSettings(BaseSettings):
     # line, and asks nothing: reading, calling or searching stays the model's
     # choice, and no turn is forced. An empty or unranked library adds
     # nothing. Off: as shipped.
-    UNIFY_LIBRARY_SHORTLIST: bool = False
+    UNIFY_LIBRARY_SHORTLIST: bool = True
     # In a persistent session, a turn's final reply identical (whitespace
     # collapsed, JSON compared with sorted keys) to an earlier reply the
     # requester has already answered is held back once: the loop appends a
@@ -1112,7 +1121,7 @@ class ProductionSettings(BaseSettings):
     # agent's, and its "Final Result" is the agent's last reply before the
     # outcome arrived instead of the stop notice of a persistent session.
     # Off: no outcome is taken and the review is as shipped.
-    UNIFY_OUTCOME: bool = False
+    UNIFY_OUTCOME: bool = True
     # When a host ends a persistent session normally (``unify act``'s /quit,
     # ``{"quit": true}`` or end of input) and no outcome channel applies
     # (UNIFY_OUTCOME), the storage review's "Final Result" is the agent's last
@@ -1136,7 +1145,7 @@ class ProductionSettings(BaseSettings):
     # and one line per ended session to ``transcripts/index.jsonl``; after a
     # context compression the compressed context points at the file
     # (unify/transcripts.py). Off: nothing is written.
-    UNIFY_TRANSCRIPTS: bool = False
+    UNIFY_TRANSCRIPTS: bool = True
     # Reasoning effort of every storage review (forked, standalone, after a
     # turn, or asked for mid-task): one of the efforts unillm forwards
     # (``none``, ``low``, ``medium``, ``high``, ``xhigh``, ``max``). A forked
@@ -1164,7 +1173,7 @@ class ProductionSettings(BaseSettings):
     # those commands are refused, never run unconfined. Python cells
     # themselves still run in this process unless UNIFY_WORKSPACE_PYTHON says
     # otherwise. Empty: none of this exists.
-    UNIFY_WORKSPACE: str = ""
+    UNIFY_WORKSPACE: str = "sandboxed"
     # ``worker`` (with ``sandboxed``): each Python session runs its cells in a
     # persistent child process inside the same bubblewrap policy, and reaches
     # ``primitives``, steering and the other harness objects only through a
