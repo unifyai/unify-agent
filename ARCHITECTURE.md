@@ -246,7 +246,7 @@ Each library follows the same pattern:
 
 ## The ConversationManager
 
-**File:** `unify/conversation_manager/conversation_manager.py`
+**File:** `unify/legacy/conversation_manager/conversation_manager.py`
 
 The ConversationManager is the top-level orchestrator for the live conversation. It has a different design from the actor and the libraries because it handles real-time interaction: it sees the full picture — the chat thread, notifications, in-flight actions, system state — and makes deliberate decisions about what to do. It uses a single-shot tool decision pattern (one LLM call → one action) rather than a multi-turn loop, because the user might send another message at any moment.
 
@@ -406,7 +406,7 @@ unify/
 │   │   ├── code_act_actor.py           # CodeActActor implementation
 │   │   ├── execution/                  # PythonExecutionSession, sandbox
 │   │   └── environments/               # Pluggable execution environments
-│   ├── conversation_manager/
+│   ├── legacy/conversation_manager/  # legacy, unused, unsupported
 │   │   ├── conversation_manager.py     # ConversationManager (the interaction loop)
 │   │   ├── events.py                   # Chat and actor events on the broker
 │   │   └── domains/

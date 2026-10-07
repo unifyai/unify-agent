@@ -14,7 +14,7 @@ This branch is the overhauled Unify harness. **Lean-all is the base config, in P
   - the switches-off equivalence test is replaced by one baked-prompt golden (`tests/actor_baked_prompt_golden.json`, checked by `tests/actor/code_act/test_baked_prompt_golden.py`);
   - `tests/test_no_research_switches.py` fails while any research switch remains;
   - provider-key tests carry `requires_provider_key`: skipped by name without a key, and failing under `UNIFY_TEST_REQUIRE_PROVIDER_KEY=1` if the key is missing.
-- **Untouched:** ordinary context compression and `unify/conversation_manager/`.
+- **Untouched:** ordinary context compression. `conversation_manager` moved to `unify/legacy/` (see Legacy below).
 
 ## Remaining research switches (17)
 
@@ -51,6 +51,15 @@ What is left is the tool-surface tangle below. `tests/test_no_research_switches.
 **Small dead pieces:**
 - the `interrupt_llm_on_tool_completion` parameter, which is now always overridden;
 - `BatchHold.install()`'s time-from-install branch.
+
+## Legacy (8 Oct 2026, branch `freeze-legacy-cm`)
+
+**Legacy, unused, unsupported.** The harness uses only the actor; the conversation manager served an older product.
+- **Moved:** `unify/conversation_manager/` to `unify/legacy/conversation_manager/` (files byte-identical apart from import paths), and its tests to `tests/legacy/conversation_manager/` (with the CM-only tests from `tests/actor/code_act/`, `tests/common/`, `tests/event_bus/` and the CM parts of `tests/test_test_configuration.py`, `tests/test_prompt_token_budgets.py` and `tests/actor/code_act/test_delegation_switch.py`).
+- **Out of the default discovery and the gate:** `tests/conftest.py` skips `tests/legacy/` unless a path inside it is named, and `tests/parallel_run.sh` prunes `legacy` directories from a sweep.
+- **Isolated:** `tests/test_legacy_isolation.py` fails if importing `unify.cli` or `unify.actor` (or populating the manager registry) loads any `unify.legacy` module. `ConversationSettings` (read by the slow-brain resolver in `unify/common/llm_client.py`) now lives in `unify/settings.py`; the registry registers the CM handles only inside `get_conversation_manager_handle`.
+- **Still reaching legacy:** `unify chat`, the CLI's default command, imports it lazily when it starts. Removing that command (or making `act` the default) is a product decision for the lead.
+- **After the loop trim** legacy is reference-only and not expected to run: it drives the pre-trim loop with steering tools.
 
 ## Security: the store check and confinement (7 Oct 2026)
 

@@ -167,7 +167,7 @@ unify/
 ├── unify/                   # Main package
 │   ├── cli.py               # Terminal chat (`python -m unify`)
 │   ├── actor/               # CodeAct Actor, central orchestrator
-│   ├── conversation_manager/ # The persistent interaction loop (slow brain)
+│   ├── legacy/              # Legacy, unused, unsupported (conversation_manager)
 │   ├── db.py                # The local SQLite store: five tables, two views
 │   ├── guidance_manager/    # Procedures, SOPs
 │   ├── function_manager/    # Stored Python functions and their dependencies
@@ -233,7 +233,7 @@ The script **always blocks** until all tests complete (or timeout), streaming pa
 
 - By default: One tmux session per *test*. All tests run concurrently (maximum speed).
 - With `-s`: One tmux session per *file*. Tests within a file run serially.
-- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/conversation_manager/domains/managers_utils.py`.
+- `-s` runs all of a file's tests in one process, each on its own event loop (`asyncio_default_test_loop_scope = function` in `pytest.ini`). That exposes module-level asyncio state (a queue, lock or task) left bound to an earlier test's loop, which the per-test default hides. Such state needs the dead-loop guard that `_adopt_running_loop` applies in `unify/legacy/conversation_manager/domains/managers_utils.py`.
 
 **Examples:**
 ```bash
@@ -518,7 +518,7 @@ The prompts in each prompt builder file should focus on the high level usage pat
 
 ## Tests That Guard the Prompts
 
-`tests/actor/code_act/test_prompt_builders.py` and `tests/conversation_manager/core/test_prompt_builders.py` pin phrases of the rendered prompts with exact substring asserts. Change a pinned phrase and its assert together, and keep each pinned phrase on one line of the prompt source: the source's line breaks survive into the rendered prompt, so re-wrapping a paragraph can split a phrase and fail the assert. `tests/test_prompt_token_budgets.py` caps the tokens every call pays for its system prompt and tool schemas; tighten its budget in the same change as a cut.
+`tests/actor/code_act/test_prompt_builders.py` and `tests/legacy/conversation_manager/core/test_prompt_builders.py` pin phrases of the rendered prompts with exact substring asserts. Change a pinned phrase and its assert together, and keep each pinned phrase on one line of the prompt source: the source's line breaks survive into the rendered prompt, so re-wrapping a paragraph can split a phrase and fail the assert. `tests/test_prompt_token_budgets.py` caps the tokens every call pays for its system prompt and tool schemas; tighten its budget in the same change as a cut.
 
 Use this to decide which component owns what and where its jurisdiction ends. Keep manager docstrings implementation‑agnostic; this guide is only for high‑level routing and composition.
 

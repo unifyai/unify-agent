@@ -154,7 +154,7 @@ unify/
 ├── unify/                   # Main package
 │   ├── cli.py               # Terminal chat (`python -m unify`)
 │   ├── actor/               # CodeAct Actor, central orchestrator
-│   ├── conversation_manager/ # The persistent interaction loop (slow brain)
+│   ├── legacy/              # Legacy, unused, unsupported (conversation_manager)
 │   ├── db.py                # The local SQLite store: five tables, two views
 │   ├── guidance_manager/    # Procedures, SOPs
 │   ├── function_manager/    # Stored Python functions and their dependencies

@@ -216,8 +216,8 @@ See [tests/README.md](tests/README.md) for the philosophy and the runner.
 | `unify/common/_async_tool/loop.py` | The async tool loop engine: nesting, steering, context propagation |
 | `unify/actor/code_act_actor.py` | CodeAct: plan generation, sandbox, the storage review |
 | `unify/function_manager/steering.py` | Steering code that is already running |
-| `unify/conversation_manager/conversation_manager.py` | The slow brain: debouncing, in-flight actions, event loop |
-| `unify/conversation_manager/domains/brain_action_tools.py` | How the brain starts, steers and tracks concurrent work |
+| `unify/legacy/conversation_manager/conversation_manager.py` | The slow brain: debouncing, in-flight actions, event loop |
+| `unify/legacy/conversation_manager/domains/brain_action_tools.py` | How the brain starts, steers and tracks concurrent work |
 | `unify/db.py` | The local store: the five tables, the two views, the read-only path for model-written SQL |
 | `unify/environment.py` | The workspace environment: one venv, packages installed once |
 
@@ -225,7 +225,7 @@ See [tests/README.md](tests/README.md) for the philosophy and the runner.
 
 ```text
 unify/
-├── unify/             # The harness: cli, actor, conversation_manager, function_manager, guidance_manager, db, common
+├── unify/             # The harness: cli, actor, function_manager, guidance_manager, db, common, legacy
 ├── tests/             # Pytest suite (cached LLM responses, per-session SQLite store)
 ├── scripts/           # Skill import, git hooks
 └── docs/              # Design writeups
