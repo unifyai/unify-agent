@@ -232,7 +232,6 @@ class WritePolicy:
 
     can_store: bool = True
     admission_gated: bool = False
-    inline_mode: str = ""
     #: ``UNIFY_REVIEW_FORK_CORE``: the policy of a forked storage review's
     #: sandbox, which stores and edits the libraries but runs no stored
     #: function and binds none in its namespace (the task is over).
@@ -467,14 +466,6 @@ class FunctionLibrary:
         _refuse(self._policy, method)
         return await asyncio.to_thread(fn, **kwargs)
 
-    def _add_fn(self) -> Callable[..., Any]:
-        from unify.function_manager import inline_curation
-
-        fn = self._fm.add_functions
-        if self._policy.inline_mode:
-            fn = inline_curation.guard_add_functions(fn)
-        return fn
-
     async def add(
         self,
         implementations: Union[str, List[str]],
@@ -486,7 +477,7 @@ class FunctionLibrary:
     ) -> Dict[str, str]:
         return await self._write(
             "functions.add",
-            self._add_fn(),
+            self._fm.add_functions,
             implementations=implementations,
             preconditions=preconditions,
             overwrite=overwrite,
@@ -505,14 +496,9 @@ class FunctionLibrary:
         replace_all: bool = False,
     ) -> Dict[str, Any]:
         _refuse(self._policy, "functions.patch")
-        from unify.function_manager import inline_curation
-
-        fn = self._fm.patch_function
-        if self._policy.inline_mode:
-            fn = inline_curation.guard_patch_function(fn)
         return await self._write(
             "functions.patch",
-            fn,
+            self._fm.patch_function,
             name=name,
             old=old,
             new=new,
@@ -1526,7 +1512,7 @@ class PromptSurface:
         )
         return "\n".join(_fill(line) for line in lines)
 
-    def library_section(self, *, inline_curation: str = "") -> str:
+    def library_section(self) -> str:
         lines = [
             "### Function & Guidance Library",
             "",
@@ -1554,32 +1540,15 @@ class PromptSurface:
                 if "patch" in self.policy.writes(FUNCTIONS)
                 else "`functions.add(..., overwrite=True)`"
             )
-            if inline_curation:
-                lines.append(
-                    "- **Functions, during the task**: once a reusable unit ran "
-                    "and worked, store it with `functions.add(source)`; when a "
-                    f"stored function fails, fix it with {patch}, keeping its "
-                    "behaviour on the inputs it already handled (a change of "
-                    "behaviour is a new function with a new name). Store only "
-                    "code that ran, under a name that says what it does "
-                    "(snake_case, a verb and its object). A write that fails a "
-                    "check is refused, saying why.",
-                )
-            else:
-                lines.append(
-                    "- **Functions**: a user's request to add, update or delete "
-                    f"a function uses `functions.add(...)` (`overwrite=True` to "
-                    f"update), {patch} or `functions.delete(...)`.",
-                )
+            lines.append(
+                "- **Functions**: a user's request to add, update or delete "
+                f"a function uses `functions.add(...)` (`overwrite=True` to "
+                f"update), {patch} or `functions.delete(...)`.",
+            )
         return "\n".join(_fill(line) for line in lines)
 
-    def storage_notice(self, *, persist: bool, inline_curation: str) -> str:
-        if inline_curation == "only":
-            text = (
-                "Nothing reviews this trajectory for the libraries after the "
-                "task: what is worth keeping, you store during it."
-            )
-        elif persist:
+    def storage_notice(self, *, persist: bool) -> str:
+        if persist:
             text = (
                 "A review reads this session's trajectory "
                 + ("after each completed turn and " if self.turn_reviews else "")

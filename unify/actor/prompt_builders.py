@@ -713,101 +713,10 @@ _STORAGE_SESSION_END_NOTICE_UNIFIED = _unified(
 )
 
 
-def _library_section(
-    inline_curation: str = "",
-    tools: Optional[Mapping[str, Callable]] = None,
-    search_when_useful: bool = False,
-) -> str:
+def _library_section(search_when_useful: bool = False) -> str:
     text = _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
     if search_when_useful:
         text = _unified(text, _ALWAYS_SEARCH_FIRST, _SEARCH_WHEN_USEFUL)
-    if inline_curation:
-        text = _inline_library_section(text, inline_curation, tools or {})
-    return text
-
-
-# UNIFY_INLINE_CURATION: the actor stores units that ran and worked during the task.
-_FUNCTION_WRITES_BULLET = (
-    "- **Functions**: explicit user requests to add/update/delete functions\n"
-    "  use `FunctionManager_add_functions` (`overwrite=True` to update) or\n"
-    "  `FunctionManager_delete_function` directly.\n"
-)
-_REVIEW_BULLETS = (
-    # As shipped.
-    "- For skills discovered *during* execution, use `store_skills` —\n"
-    "  a dedicated review extracts functions and compositional guidance\n"
-    "  from the trajectory.",
-    # UNIFY_REVIEW_FRAMING=unified.
-    "- Skills discovered *during* execution are stored by you in the\n"
-    "  curation step that follows the task, where you turn this\n"
-    "  trajectory into reusable functions and compositional guidance;\n"
-    "  `store_skills` runs that step early, mid-task.",
-)
-_INLINE_ONLY_BULLET = (
-    "- Nothing reviews this trajectory for the libraries after the task:\n"
-    "  what is worth keeping, you store during it."
-)
-
-
-def _inline_function_bullet(tools: Mapping[str, Callable]) -> str:
-    patch = (
-        "`FunctionManager_patch_function`"
-        if "FunctionManager_patch_function" in tools
-        else "`FunctionManager_add_functions` with `overwrite=True`"
-    )
-    guidance_fix = (
-        "`GuidanceManager_patch_guidance`"
-        if "GuidanceManager_patch_guidance" in tools
-        else "`GuidanceManager_update_guidance`"
-    )
-    checks = "its names resolve and it loads"
-    if "FunctionManager_retire_case" in tools:
-        checks = (
-            "its names resolve, it loads, and an update still does what the "
-            "function did on its recorded calls"
-        )
-    functions = (
-        "**Functions, during the task**: once a reusable unit ran and "
-        "worked, store it with "
-        f"`FunctionManager_add_functions`; when a stored function fails, fix "
-        f"it with {patch}, keeping its behaviour on the inputs it already "
-        "handled (a change of behaviour is a new function with a new name). "
-        "Store only code that ran, under a name that says what it does "
-        "(snake_case, a verb and its object, e.g. `parse_invoice_dates`). "
-        f"Each write is refused, saying why, unless {checks}. Explicit user "
-        "requests to add/update/delete functions use the same tools "
-        "(`FunctionManager_delete_function` to delete)."
-    )
-    guidance = (
-        "**Guidance, during the task**: likewise, record a procedure that "
-        "worked with `GuidanceManager_add_guidance`, and correct an entry "
-        f"that misled you with {guidance_fix}."
-    )
-    return "".join(
-        textwrap.fill(
-            text,
-            width=72,
-            initial_indent="- ",
-            subsequent_indent="  ",
-            break_long_words=False,
-            break_on_hyphens=False,
-        )
-        + "\n"
-        for text in (functions, guidance)
-    )
-
-
-def _inline_library_section(
-    text: str,
-    inline_curation: str,
-    tools: Mapping[str, Callable],
-) -> str:
-    text = _unified(text, _FUNCTION_WRITES_BULLET, _inline_function_bullet(tools))
-    if inline_curation == "only":
-        for bullet in _REVIEW_BULLETS:
-            if bullet in text:
-                text = _unified(text, bullet, _INLINE_ONLY_BULLET)
-                break
     return text
 
 
@@ -1269,7 +1178,6 @@ def build_code_act_prompt(
     persist: bool = False,
     library_read_only: bool = False,
     session_sections: bool = True,
-    inline_curation: str = "",
     turn_reviews: bool = True,
     can_clarify: bool = True,
     core: Optional["PromptSurface"] = None,
@@ -1308,11 +1216,6 @@ def build_code_act_prompt(
         When ``False``, the per-session sections (the clock and the
         filesystem context, :func:`build_session_context`) are left out, so
         the prompt is the same for every session of one configuration.
-    inline_curation:
-        The session's effective ``UNIFY_INLINE_CURATION`` (``on`` or
-        ``only``; empty as shipped): the library section says the actor
-        stores units that ran and worked during the task and repairs
-        failed ones, and with ``only`` that no review follows it.
     turn_reviews:
         Whether a persistent session is reviewed after each completed turn
         (``UNIFY_TURN_STORAGE_REVIEWS``). With ``False`` and
@@ -1337,7 +1240,6 @@ def build_code_act_prompt(
             persist=persist,
             library_read_only=library_read_only,
             session_sections=session_sections,
-            inline_curation=inline_curation,
         )
     has_execute_code = bool(tools and "execute_code" in tools)
     has_fm_tools = bool(
@@ -1397,7 +1299,7 @@ def build_code_act_prompt(
 
         if has_fm_tools or has_gm_tools:
             parts.append(
-                _library_section(inline_curation, tools, search_when_useful),
+                _library_section(search_when_useful),
             )
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
@@ -1447,7 +1349,7 @@ def build_code_act_prompt(
 
         if has_fm_tools or has_gm_tools:
             parts.append(
-                _library_section(inline_curation, tools, search_when_useful),
+                _library_section(search_when_useful),
             )
             if discovery_first_policy:
                 parts.append(_DISCOVERY_FIRST_POLICY)
@@ -1506,7 +1408,6 @@ def _build_core_prompt(
     persist: bool,
     library_read_only: bool,
     session_sections: bool,
-    inline_curation: str,
 ) -> str:
     """The system prompt of a ``UNIFY_TOOL_SURFACE=core`` session.
 
@@ -1551,14 +1452,12 @@ def _build_core_prompt(
         _LEAN_INCREMENTAL_EXECUTION if lean else _incremental_execution(can_clarify),
     )
     if core.functions or core.guidance:
-        library = core.library_section(inline_curation=inline_curation)
+        library = core.library_section()
         parts.append(library)
         if library_read_only:
             parts.append(core.read_only_notice())
     if can_store:
-        parts.append(
-            core.storage_notice(persist=persist, inline_curation=inline_curation),
-        )
+        parts.append(core.storage_notice(persist=persist))
     parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
         parts.append(_build_clock_context())
