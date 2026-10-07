@@ -14,7 +14,6 @@ from ..common.stale_reason import StaleReason, merge_stale_reasons
 from ..common.semantic_search import rank_by_similarity
 from ..common.tool_outcome import ToolOutcome
 from .base import BaseGuidanceManager
-from .builtins import builtin_guidance_enabled, ensure_seeded
 from .types.guidance import (
     Guidance,
     GuidanceWithLinks,
@@ -189,7 +188,6 @@ class GuidanceManager(BaseGuidanceManager):
         self._filter_scope = filter_scope
         self._exclude_ids = frozenset(exclude_ids) if exclude_ids else None
         self._rolling_summary_in_prompts = rolling_summary_in_prompts
-        ensure_seeded()
 
     # -- Scope / exclusion properties ----------------------------------------
 
@@ -212,13 +210,13 @@ class GuidanceManager(BaseGuidanceManager):
         self._exclude_ids = frozenset(value) if value else None
 
     def _scope(self, caller_filter: Optional[str] = None) -> Optional[str]:
-        """Compose *caller_filter* with ``filter_scope``, the id exclusions and,
-        under ``UNIFY_BUILTIN_GUIDANCE=0``, the stored entries only."""
+        """Compose *caller_filter* with ``filter_scope``, the id exclusions and
+        the stored entries only (builtin guidance is never read)."""
         return and_clauses(
             caller_filter,
             self._filter_scope,
             not_in("guidance_id", self._exclude_ids),
-            None if builtin_guidance_enabled() else "is_builtin = 0",
+            "is_builtin = 0",
         )
 
     # -- Reads ------------------------------------------------------------------
@@ -247,29 +245,6 @@ class GuidanceManager(BaseGuidanceManager):
             (int(guidance_id),),
         )
         return db.decode(row, db.GUIDANCE_JSON_COLUMNS) if row else None
-
-    @staticmethod
-    def _is_builtin_guidance(guidance_id: int) -> bool:
-        if not builtin_guidance_enabled():
-            return False
-        return (
-            db.query_one(
-                "SELECT 1 FROM builtin_guidance WHERE guidance_id = ?",
-                (int(guidance_id),),
-            )
-            is not None
-        )
-
-    def _raise_if_builtin(self, guidance_id: int, action: str) -> None:
-        """Refuse mutations of builtins entries with an actionable error."""
-        if self._is_builtin_guidance(guidance_id):
-            raise ValueError(
-                f"guidance_id {guidance_id} is a built-in platform guidance "
-                f"entry and cannot be {action}. Built-in guidance is "
-                "read-only for everyone. To tailor it, create your own "
-                "entry with add_guidance (optionally adapting the built-in "
-                "content); that copy can then be updated or deleted freely.",
-            )
 
     @staticmethod
     def _available_functions_by_id() -> dict[int, str]:
@@ -420,7 +395,6 @@ class GuidanceManager(BaseGuidanceManager):
         if not updates:
             raise ValueError("At least one field must be provided for an update.")
 
-        self._raise_if_builtin(guidance_id, "updated")
         row = self._own_row(guidance_id)
         if row is None:
             raise ValueError(
@@ -672,7 +646,6 @@ class GuidanceManager(BaseGuidanceManager):
         text = str(id_or_title).strip()
         if isinstance(id_or_title, int) or text.isdigit():
             guidance_id = int(text)
-            self._raise_if_builtin(guidance_id, "patched")
             row = self._own_row(guidance_id)
             if row is not None:
                 return row
@@ -690,12 +663,6 @@ class GuidanceManager(BaseGuidanceManager):
             )
         if matches:
             return self._own_row(int(matches[0]["guidance_id"]))
-        builtin = db.query_one(
-            "SELECT guidance_id FROM builtin_guidance WHERE title = ?",
-            (text,),
-        )
-        if builtin is not None:
-            self._raise_if_builtin(int(builtin["guidance_id"]), "patched")
         raise ValueError(f"No stored guidance is titled {text!r}.")
 
     @functools.wraps(BaseGuidanceManager.delete_guidance, updated=())
@@ -704,7 +671,6 @@ class GuidanceManager(BaseGuidanceManager):
         *,
         guidance_id: int,
     ) -> ToolOutcome:
-        self._raise_if_builtin(guidance_id, "deleted")
         self._refuse_unverified_change(guidance_id, "delete")
         deleted = db.execute(
             "DELETE FROM guidance WHERE guidance_id = ?",

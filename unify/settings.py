@@ -329,12 +329,6 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
-    # Off: the built-in guidance catalogue (the Agent Skills snapshot in
-    # guidance_manager/builtins_guidance.json) is neither seeded nor read, so
-    # every guidance search, filter, lookup and count sees only the entries
-    # the assistant stored itself; rows an earlier process seeded stay in the
-    # store, untouched. On reads them alongside the stored entries as shipped.
-    UNIFY_BUILTIN_GUIDANCE: bool = False
     # With UNIFY_FUNCTION_CASES on, every recorded call of a stored function
     # also leaves one small row (store home, function_runs.sqlite): per
     # environment endpoint, calls made and items per answer; a digest per
@@ -1076,7 +1070,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
         "UNIFY_REVIEW_LAST_REPLY",
-        "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REVIEW_GENERALISE",
         "UNIFY_PLACEHOLDER_NOTE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",

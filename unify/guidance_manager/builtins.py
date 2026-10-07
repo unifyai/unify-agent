@@ -22,8 +22,6 @@ from unify import db
 
 SNAPSHOT_PATH = Path(__file__).with_name("builtins_guidance.json")
 
-_SEEDED_FOR: set[str] = set()
-
 
 def stable_guidance_id(title: str) -> int:
     """Derive the stable builtin guidance id from a namespaced title.
@@ -71,28 +69,8 @@ def seed_builtin_guidance(
     return True
 
 
-def builtin_guidance_enabled() -> bool:
-    """False under ``UNIFY_BUILTIN_GUIDANCE=0``: the catalogue is neither seeded nor read."""
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_BUILTIN_GUIDANCE)
-
-
-def ensure_seeded() -> None:
-    """Seed the snapshot once per process for the store currently open."""
-    if not builtin_guidance_enabled():
-        return
-    path = db.store_path()
-    if path in _SEEDED_FOR:
-        return
-    seed_builtin_guidance()
-    _SEEDED_FOR.add(path)
-
-
 __all__ = [
     "SNAPSHOT_PATH",
-    "builtin_guidance_enabled",
-    "ensure_seeded",
     "load_snapshot",
     "seed_builtin_guidance",
     "stable_guidance_id",
