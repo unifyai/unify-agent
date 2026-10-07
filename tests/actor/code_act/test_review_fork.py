@@ -197,11 +197,13 @@ async def test_the_fork_carries_the_update_first_note(
     monkeypatch,
     switches,
 ):
-    """The note the standalone review gets from its switch."""
+    """The note the standalone review gets, in the names the forked review's sandbox has."""
+    from unify.actor import core_surface
+
     switches(discipline=True, fork=True)
     _summary, requests, _forks, _counter = await _forked_review(monkeypatch)
     appended = requests[2]["messages"][-1]["content"]
-    update_first = caa._storage_update_first_note()
+    update_first = core_surface.python_names(caa._storage_update_first_note())
     assert update_first.startswith("### Update before you add")
     assert update_first in appended
     assert appended.index(update_first) < appended.index("## Final Result")
