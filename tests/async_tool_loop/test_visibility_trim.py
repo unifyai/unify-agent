@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_PROMPT_TRIM`` and the "User Visibility Context" message.
+"""Symbolic: the prompt trim (baked in) and the "User Visibility Context" message.
 
 The loop appends the message the first time an interjection, a progress
 notification or a clarification reaches the model; it says what the user
@@ -7,10 +7,10 @@ reply) and that "[progress ...]" and "[clarification ...]" messages are not
 the user's. A lean-all ARC session has
 no send_notification and no clarification request, and its lifecycle
 announcements are off, yet every one of its 36 sessions got the message on
-the requester's second message. With the switch on an interjection appends
+the requester's second message. An interjection appends
 it only when the model has a channel to the user besides its final reply,
 and whatever appends it, it names only the channels and messages the loop
-has. Off, it is as shipped.
+has.
 
 The transport is scripted (tests/cache_discipline_helpers.py), as in
 test_lean_loop.py, whose loop runner these tests use.
@@ -24,7 +24,6 @@ import pytest
 
 from tests.async_tool_loop.test_lean_loop import LEAN, TOOLS, _batch, _done, _run
 from unify.common._async_tool import tools_data as td
-from unify.settings import SETTINGS
 
 HEADING = "User Visibility Context"
 
@@ -81,22 +80,11 @@ def test_the_trimmed_text_keeps_the_shipped_wording():
 
 
 @pytest.mark.asyncio
-async def test_off_an_interjection_appends_the_shipped_message(monkeypatch):
-    requests, _, _ = await _run(
-        monkeypatch,
-        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 3, *_done()],
-        switches={**LEAN, "UNIFY_PROMPT_TRIM": False},
-        during=_interject,
-    )
-    assert _visibility(requests) == [td.USER_VISIBILITY_GUIDANCE]
-
-
-@pytest.mark.asyncio
 async def test_on_an_interjection_without_a_user_channel_appends_nothing(monkeypatch):
     requests, _, _ = await _run(
         monkeypatch,
         [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 3, *_done()],
-        switches={**LEAN, "UNIFY_PROMPT_TRIM": True},
+        switches=LEAN,
         during=_interject,
     )
     assert any(
@@ -110,7 +98,7 @@ async def test_on_an_interjection_with_notifications_appends_what_applies(monkey
     requests, _, _ = await _run(
         monkeypatch,
         [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 3, *_done()],
-        switches={**LEAN, "UNIFY_PROMPT_TRIM": True},
+        switches=LEAN,
         during=_interject,
         on_notify=lambda _text: None,
     )
@@ -126,7 +114,7 @@ async def test_on_a_progress_message_still_appends_it(monkeypatch):
     requests, _, _ = await _run(
         monkeypatch,
         [_batch("notifying_tool"), *[_batch("wait")] * 3, *_done()],
-        switches={**LEAN, "UNIFY_PROMPT_TRIM": True},
+        switches=LEAN,
         tools={**TOOLS, "notifying_tool": notifying_tool},
     )
     assert any(
@@ -137,9 +125,3 @@ async def test_on_a_progress_message_still_appends_it(monkeypatch):
     assert _visibility(requests) == [
         td.trimmed_visibility_guidance(notify=False, clarify=False),
     ]
-
-
-def test_the_switch_is_read_once_per_loop(monkeypatch):
-    data = td.ToolsData({}, client=None, logger=None)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
-    assert data._prompt_trim is True

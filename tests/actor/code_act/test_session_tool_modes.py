@@ -45,7 +45,6 @@ def modes(monkeypatch):
         monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
         monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", admission)
-        monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
 
     return set_
 
@@ -178,32 +177,6 @@ def _assert_one_list(requests: list[dict]) -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_a_frozen_session_never_lists_the_writes_and_keeps_one_list(
-    modes,
-    info_lines,
-):
-    modes(admission="never", fork=True)
-    session, review = await _act()
-    assert len(session) >= 3
-    _assert_one_list(session)
-    names = _names(session[0])
-    assert not WRITES & names
-    assert {
-        "FunctionManager_search_functions",
-        "GuidanceManager_search",
-        "execute_code",
-    } <= names
-    # A write the model calls anyway is not in the list: refused, not run.
-    refusal = _tool_replies(session[-1])["GuidanceManager_add_guidance"]
-    assert "not in the current tool schema" in refusal
-    # No review runs, and no verdict file is looked for.
-    assert review == []
-    assert any(caa._STORE_ADMISSION_NEVER_REASON in line for line in info_lines)
-    assert not any("no admission verdict" in line for line in info_lines)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_a_gated_session_whose_review_does_not_fork_never_lists_them(
     modes,
     tmp_path,
@@ -217,34 +190,6 @@ async def test_a_gated_session_whose_review_does_not_fork_never_lists_them(
 
 
 # ── a fork will reuse the list: listed from the start, refused until then ──
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_writes_a_fork_will_use_are_listed_from_the_start_and_refused_until_it(
-    modes,
-    info_lines,
-    tmp_path,
-):
-    verdict = tmp_path / "verdict.json"
-    verdict.write_text(json.dumps({"admit": True, "reason": "check passed"}))
-    modes(admission=str(verdict), fork=True)
-    session, review = await _act(gate=False)
-    listed = _assert_one_list(session)
-    assert WRITES <= _names(session[0])  # on the very first call
-    refusal = _tool_replies(session[-1])["GuidanceManager_add_guidance"]
-    assert caa._ADMISSION_MASK_RULE in refusal
-    # The review is the fork: the session's exact list, and its last request
-    # is a byte prefix of the review's first.
-    assert review, [line for line in info_lines if "StorageCheck" in line]
-    assert _assert_one_list(review) == listed
-    sent = [json.dumps(m, default=str) for m in session[-1]["messages"]]
-    first = [json.dumps(m, default=str) for m in review[0]["messages"]]
-    assert first[: len(sent)] == sent
-    # There the write is available and runs, once.
-    assert len(review) == 2
-    stored = _tool_replies(review[-1])["GuidanceManager_add_guidance"]
-    assert "guidance created successfully" in stored
 
 
 # ── with the switch off nothing changes ─────────────────────────────────

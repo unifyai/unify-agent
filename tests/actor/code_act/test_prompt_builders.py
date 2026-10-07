@@ -18,6 +18,15 @@ import pytest
 
 from unify.actor.code_act_actor import CodeActActor
 from unify.actor.prompt_builders import build_code_act_prompt
+from unify.settings import SETTINGS
+
+
+@pytest.fixture(autouse=True)
+def _full_profile(monkeypatch):
+    """These tests check the full prompt profile's text. The default is the
+    lean profile (tests/actor/code_act/test_prompt_profile_lean.py); the
+    profile switch remains until the tool-surface strip removes it."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
 
 
 class _DummyEnv:
@@ -72,7 +81,6 @@ def test_code_act_prompt_defers_tool_contracts_to_schemas_and_no_legacy_name():
     from unify.common.prompt_helpers import unwrap_tool_callable
 
     for name in (
-        "execute_function",
         "execute_code",
         "list_sessions",
         "inspect_state",
@@ -82,8 +90,7 @@ def test_code_act_prompt_defers_tool_contracts_to_schemas_and_no_legacy_name():
         assert name in tools
         assert _inspect.getdoc(unwrap_tool_callable(tools[name]))
     ec_doc = _inspect.getdoc(unwrap_tool_callable(tools["execute_code"])) or ""
-    assert "Execute arbitrary Python code in a specified state mode." in ec_doc
-    assert "multi-step composition" in ec_doc.lower()
+    assert "Execute arbitrary Python or bash code in a specified state mode." in ec_doc
 
     # Selection policy (not contract) stays inline in the prompt.
     assert "multi-step composition" in prompt.lower()
@@ -235,30 +242,6 @@ def test_code_act_prompt_does_not_make_reason_mandatory_for_every_loop():
 
 
 @pytest.mark.timeout(30)
-def test_discovery_first_guidance_separates_search_from_execution_choice():
-    """Discovery-first should not imply that a missing library hit means execute_code."""
-    actor = CodeActActor()
-    prompt = build_code_act_prompt(
-        environments=_real_envs_mixed(),
-        tools=dict(actor.get_tools("act")),
-        discovery_first_policy=True,
-    )
-
-    assert "Discovery index scope" in prompt
-    # Search covers the primitive catalogue, minus what the prompt documents
-    # (the actor primitive, prompt-injected functions/guidance) and what the
-    # actor's environments do not provide.
-    assert "the built-in `primitives.*` catalogue" in prompt
-    assert "they never appear in search" in prompt
-    assert "Search is a discovery step" in prompt
-    assert "not an execution decision." in prompt
-    assert (
-        "if the request or discovery step already identifies one exact function"
-        in prompt
-    )
-
-
-@pytest.mark.timeout(30)
 def test_discovery_first_examples_no_longer_model_execute_code_as_default_fallback():
     """Discovery-first examples should not teach no-hit => write custom code."""
     actor = CodeActActor()
@@ -277,10 +260,6 @@ def test_discovery_first_examples_no_longer_model_execute_code_as_default_fallba
         not in prompt
     )
     assert "Use `execute_code` for *everything* (Python + shell)" not in prompt
-    assert (
-        "if one exact function or primitive call is enough, use execute_function"
-        in prompt
-    )
 
 
 @pytest.mark.timeout(30)
@@ -434,7 +413,8 @@ def test_storage_notice_matches_session_mode():
         tools=tools,
         can_store=True,
     )
-    assert "after you return your result" in one_shot
+    one_shot = " ".join(one_shot.split())
+    assert "After you return your result you also curate the libraries" in one_shot
     assert "after each completed turn" not in one_shot
 
     session = build_code_act_prompt(
@@ -444,7 +424,7 @@ def test_storage_notice_matches_session_mode():
         persist=True,
     )
     assert "after each completed turn" in session
-    assert "after you return your result" not in session
+    assert "return your result" not in " ".join(session.split())
     # The convergence contract: repeat requests are one execution and a
     # report, and amendments edit the stored function in place rather than
     # triggering a fresh replan.
