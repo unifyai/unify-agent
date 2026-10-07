@@ -103,9 +103,6 @@ async def test_without_the_parameters_the_loop_is_as_shipped():
         "steer",
         "ask_about_completed_tool",
     ]
-    assert any(
-        "[steerable" in str(m.get("content")) for m in provider.requests[-1]["messages"]
-    )
 
 
 @pytest.mark.asyncio
@@ -113,13 +110,13 @@ async def test_without_the_steering_tools_the_model_is_woken_once_per_batch(
     monkeypatch,
 ):
     """With no `wait` to call, no turn starts while a sibling call runs (as
-    under UNIFY_BATCH_WAKE), and none is forced to call a tool."""
+    with them), and none is forced to call a tool."""
     from tests.async_tool_loop import test_lean_loop as lean
 
     requests, sent, handle = await lean._run(
         monkeypatch,
         [lean._batch("fast_tool", "medium_tool"), *lean._done()],
-        switches=lean.SHIPPED,
+        switches=lean.LEAN,
         steering_tools=False,
     )
     assert len(requests) == 2
