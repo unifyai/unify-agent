@@ -2960,6 +2960,11 @@ def _start_storage_check_loop_inner(
     # UNIFY_REVIEW_GENERALISE (not for a lessons-only review, which stores
     # no functions).
     generalise_note = "" if lessons else _review_generalise_note(fm, gm)
+    if not lessons:
+        # UNIFY_STORE_FROM_SESSION: a function the session ran may be stored by name.
+        from unify.function_manager import session_source
+
+        generalise_note += session_source.review_note()
     tools, storage_active_lines, dormant_lines = _build_storage_tools(
         actor=actor,
         ask_tools=ask_tools,
@@ -4136,7 +4141,16 @@ class _StorageCheckHandle(SteerableToolHandle):
 
                 # UNIFY_CAPTURE_ACCEPTED: the review's tools inherit the
                 # answer cell, so a function it stores is tried on its values.
-                with _origin_capture.reviewing(answer_cell):
+                # UNIFY_STORE_FROM_SESSION: and the session's cells, so a
+                # function it names is stored as it ran.
+                from unify.function_manager import session_source as _session_source
+
+                with (
+                    _origin_capture.reviewing(
+                        answer_cell,
+                    ),
+                    _session_source.reviewing(trajectory),
+                ):
                     storage_handle = _start_storage_check_loop(
                         trajectory=trajectory,
                         ask_tools=ask_tools,

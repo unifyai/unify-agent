@@ -59,7 +59,7 @@ from .dependency_analysis import (
 from .types.function import Function
 from .source_labels import compile_function_source
 from .base import BaseFunctionManager
-from . import task_origin, verified_guard
+from . import session_source, task_origin, verified_guard
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -1257,9 +1257,10 @@ class FunctionManager(BaseFunctionManager):
                 )
         if isinstance(implementations, str):
             implementations = [implementations]
+        # UNIFY_STORE_FROM_SESSION: a bare name is the session's own source.
+        implementations, parse_errors = session_source.expand(implementations)
 
         parsed: List[Tuple[str, ast.Module, ast.FunctionDef, str]] = []
-        parse_errors: Dict[str, str] = {}
         temp_names: Set[str] = set()
 
         # Parse all implementations
