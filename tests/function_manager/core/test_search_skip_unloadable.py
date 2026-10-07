@@ -70,8 +70,9 @@ def _library() -> FunctionManager:
 
 
 @_handle_project
-def test_shipped_one_broken_row_fails_the_whole_search():
-    assert SETTINGS.UNIFY_SEARCH_SKIP_UNLOADABLE is False
+def test_shipped_one_broken_row_fails_the_whole_search(monkeypatch):
+    # On by default since the code freeze (lean-all); this is the shipped path.
+    monkeypatch.setattr(SETTINGS, "UNIFY_SEARCH_SKIP_UNLOADABLE", False)
     fm = _library()
     with pytest.raises(SyntaxError):
         fm.search_functions(

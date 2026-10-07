@@ -127,8 +127,9 @@ def _stored(name: str):
 # ── the switch ───────────────────────────────────────────────────────────
 
 
-def test_the_switch_is_off_by_default_and_validated(monkeypatch):
-    assert ProductionSettings.model_fields["UNIFY_ESCAPE_DRIFT_CHECK"].default == ""
+def test_the_switch_is_on_by_default_and_validated(monkeypatch):
+    # On by default since the code freeze.
+    assert ProductionSettings.model_fields["UNIFY_ESCAPE_DRIFT_CHECK"].default == "on"
     for value, parsed in (("", ""), ("off", ""), ("ON", "on"), (" on ", "on")):
         monkeypatch.setenv("UNIFY_ESCAPE_DRIFT_CHECK", value)
         assert ProductionSettings().UNIFY_ESCAPE_DRIFT_CHECK == parsed

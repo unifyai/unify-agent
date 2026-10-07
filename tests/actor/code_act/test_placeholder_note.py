@@ -235,7 +235,8 @@ def test_a_long_stand_in_is_shortened_when_echoed(monkeypatch):
 def test_the_setting_parses_as_a_boolean():
     from unify.settings import ProductionSettings
 
-    assert ProductionSettings().UNIFY_PLACEHOLDER_NOTE is False
+    # On by default since the code freeze.
+    assert ProductionSettings().UNIFY_PLACEHOLDER_NOTE is True
     for value, expected in (("true", True), ("1", True), ("false", False), ("", False)):
         assert (
             ProductionSettings(UNIFY_PLACEHOLDER_NOTE=value).UNIFY_PLACEHOLDER_NOTE

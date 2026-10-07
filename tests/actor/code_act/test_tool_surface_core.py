@@ -68,8 +68,9 @@ async def _act(actor, replies, request="Do the task.", **act_kwargs):
 # ── the setting ──────────────────────────────────────────────────────────────
 
 
-def test_the_switch_is_off_by_default_and_takes_only_core():
-    assert ProductionSettings().UNIFY_TOOL_SURFACE == ""
+def test_the_switch_is_core_by_default_and_takes_only_core():
+    # The core surface is the default since the code freeze.
+    assert ProductionSettings().UNIFY_TOOL_SURFACE == "core"
     assert ProductionSettings(UNIFY_TOOL_SURFACE="Core").UNIFY_TOOL_SURFACE == "core"
     with pytest.raises(ValueError):
         ProductionSettings(UNIFY_TOOL_SURFACE="python")

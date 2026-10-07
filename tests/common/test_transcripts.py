@@ -187,8 +187,9 @@ async def run_delegation(provider) -> Provider:
 # ── off: exactly as shipped ─────────────────────────────────────────────────
 
 
-def test_setting_defaults_off_and_parses_on():
-    assert ProductionSettings().UNIFY_TRANSCRIPTS is False
+def test_setting_defaults_on_and_parses_on():
+    # On by default since the code freeze (lean-all).
+    assert ProductionSettings().UNIFY_TRANSCRIPTS is True
     assert ProductionSettings(UNIFY_TRANSCRIPTS="on").UNIFY_TRANSCRIPTS is True
 
 

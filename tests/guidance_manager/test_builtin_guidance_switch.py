@@ -119,7 +119,8 @@ def test_off_a_built_in_title_is_not_a_read_only_entry(monkeypatch):
 
 
 def test_the_setting_parses_booleans():
-    assert ProductionSettings().UNIFY_BUILTIN_GUIDANCE is True
+    # Off by default since the code freeze (lean-all).
+    assert ProductionSettings().UNIFY_BUILTIN_GUIDANCE is False
     assert (
         ProductionSettings(UNIFY_BUILTIN_GUIDANCE="0").UNIFY_BUILTIN_GUIDANCE is False
     )

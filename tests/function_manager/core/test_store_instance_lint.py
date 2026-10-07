@@ -376,8 +376,9 @@ async def test_on_the_actor_and_its_review_are_refused_the_alias(
     assert not instance_lint.current()
 
 
-def test_the_setting_defaults_off():
-    assert ProductionSettings().UNIFY_STORE_INSTANCE_LINT is False
+def test_the_setting_defaults_on():
+    # On by default since the code freeze (lean-all).
+    assert ProductionSettings().UNIFY_STORE_INSTANCE_LINT is True
     assert (
         ProductionSettings(UNIFY_STORE_INSTANCE_LINT="1").UNIFY_STORE_INSTANCE_LINT
         is True

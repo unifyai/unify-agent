@@ -185,8 +185,9 @@ def test_the_refusal_reaches_a_caller_that_raises(check_on):
 
 
 @_handle_project
-def test_without_the_check_the_same_code_is_stored_as_shipped():
-    assert SETTINGS.UNIFY_STORE_CHECK == ""
+def test_without_the_check_the_same_code_is_stored_as_shipped(monkeypatch):
+    # The check is on by default since the code freeze; this is the shipped path.
+    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "")
     fm = FunctionManager()
     source = (
         "def rewind(u: str) -> dict:\n    return primitives.spotify.login(username=u)\n"
@@ -201,6 +202,7 @@ def test_the_switch_accepts_only_resolve():
     assert (
         ProductionSettings(UNIFY_STORE_CHECK="Resolve").UNIFY_STORE_CHECK == "resolve"
     )
-    assert ProductionSettings().UNIFY_STORE_CHECK == ""
+    # resolve by default since the code freeze (lean-all).
+    assert ProductionSettings().UNIFY_STORE_CHECK == "resolve"
     with pytest.raises(ValueError, match="UNIFY_STORE_CHECK"):
         ProductionSettings(UNIFY_STORE_CHECK="strict")

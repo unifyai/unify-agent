@@ -148,8 +148,9 @@ async def run(ex, code, *, mode="stateful", session_id=0):
 # ── settings and the switch off ─────────────────────────────────────────────
 
 
-def test_setting_defaults_off_and_rejects_unknown_values():
-    assert ProductionSettings().UNIFY_WORKSPACE_PYTHON == ""
+def test_setting_defaults_to_the_worker_and_rejects_unknown_values():
+    # The worker is the default since the code freeze.
+    assert ProductionSettings().UNIFY_WORKSPACE_PYTHON == "worker"
     assert (
         ProductionSettings(UNIFY_WORKSPACE_PYTHON="Worker").UNIFY_WORKSPACE_PYTHON
         == "worker"
