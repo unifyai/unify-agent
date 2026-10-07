@@ -176,17 +176,37 @@ def _tool_names_from_openai_tools(tools: Any) -> list[str]:
     return names
 
 
+# Tools the tool loop itself adds to a request, whatever the policy allows:
+# the static steering surface (wait, steer, ask_about_completed_tool), the
+# response tools and the multi-request clarification tool.
+_LOOP_OWNED_TOOLS = frozenset(
+    {
+        "wait",
+        "steer",
+        "ask_about_completed_tool",
+        "final_response",
+        "send_response",
+        "ask_user_clarification",
+    },
+)
+
+
 def _is_discovery_gate_schema(tool_names: list[str]) -> bool:
     """True when the visible schema is only discovery-read tools (+ loop extras).
 
-    The loop extras are ``compress_context`` and ``check_status_*`` only, so
-    the actor's gate request, which also lists the loop's own tools, is never
-    recognised and the mutator never fires.
+    As shipped the loop extras are ``compress_context`` and ``check_status_*``
+    only, so the actor's gate request, which also lists the loop's own tools
+    (``_LOOP_OWNED_TOOLS``), is never recognised and the mutator never fires.
+    Under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False`` those are ignored too.
     """
+    from unify.settings import SETTINGS
+
     if not tool_names:
         return False
     names = set(tool_names)
     extras = {"compress_context"}
+    if not SETTINGS.UNIFY_DISCOVERY_SPECULATIVE_TURN:
+        extras |= _LOOP_OWNED_TOOLS
     core = {n for n in names if n not in extras and not n.startswith("check_status_")}
     if not core or not core.issubset(_DISCOVERY_GATE_TOOLS):
         return False
@@ -367,7 +387,27 @@ def _default_tool_policy(
     call is scheduled (without waiting for that call's result).  That way a
     model that only fires one of the required discovery tools on the first
     turn is prompted for the missing family right away, overlapping the
-    in-flight search.
+    in-flight search. A turn that adds ``wait(until="all")`` to its calls
+    (``UNIFY_WAIT_FOR_BATCH``) waits for them instead, and the gate, still
+    open, requires the missing family on the turn it is woken for.
+
+    With ``UNIFY_DISCOVERY_SPECULATIVE_TURN`` off the policy returns
+    ``{"eager": False, "gated": True, "required_unit": True}`` instead: no
+    turn is granted while the searches a turn scheduled are running, so none
+    is started only to be cancelled (and still billed) when one lands. The
+    gated turns themselves are unchanged (``tool_choice="required"``, only
+    the discovery tools, parallel calls asked for, ``compress_context``
+    withheld). The searches the gate forces are one unit: when a turn makes
+    two or more, the model is woken once all have finished, or at
+    ``UNIFY_WAIT_CEILING_SECONDS``, or at once on a stop, a new message, a
+    clarification or a notification; another call in the turn is not held.
+    The completion mutator that adds the missing family to a turn that
+    searched one also recognises the gate request, which lists the loop's
+    own tools (``_is_discovery_gate_schema``), so an opening turn searches
+    both families. A turn that searches one family anyway is woken once
+    that call has returned, on a turn that, the gate still open, requires
+    the missing family. The switch is read each time the policy is
+    evaluated.
 
     When only a subset of the manager tool families is present, those families
     act as the gates.  When none are present the policy is a no-op pass-through.
@@ -419,8 +459,16 @@ def _default_tool_policy(
 
         if gated:
             from unify.common._async_tool import cache_discipline
+            from unify.settings import SETTINGS
 
-            opts: dict = {"eager": True}
+            # UNIFY_DISCOVERY_SPECULATIVE_TURN off: gated turns without the
+            # eager turn granted while their searches run, woken once the
+            # searches a turn made have all returned.
+            opts: dict = (
+                {"eager": True}
+                if SETTINGS.UNIFY_DISCOVERY_SPECULATIVE_TURN
+                else {"eager": False, "gated": True, "required_unit": True}
+            )
             # Under UNIFY_CACHE_DISCIPLINE the other tools stay in the request
             # and a call to one is refused with this rule.
             if cache_discipline.enabled():

@@ -1,18 +1,35 @@
-"""The loop's batch-wake hold, and the accounting of model turns the loop
-cancels after sending them.
+"""The model's own request to be woken once a turn's calls have all finished,
+and the accounting of model turns the loop cancels after sending them.
 
-When a turn calls several tools and the first one returns, a loop that woke
-the model at once would start its next turn on part of the batch and cancel
-it when a sibling lands; the provider has already received, generated and
-billed the cancelled turn. Batch wake makes waiting the loop's rule: whenever
-calls are running, a hold covers all of them (the model declares nothing),
-its clock starting only when the first result is held
-(``from_first_result``), so a slow batch with nothing landed waits as long as
-it runs and a landed result waits at most ``HOLD_CEILING_SECONDS``. Only tool
-results wait for it: a new message, a clarification request or a progress
-notification (from the user, the environment or another agent) still wakes
-the model at once. The loop also stops cancelling a sent turn when a result
-or a progress notification lands during it.
+When a turn calls several tools and the first one returns, the loop starts the
+model's next turn at once; when a sibling lands during that turn,
+``interrupt_llm_on_tool_completion`` cancels it and asks again. The provider
+has already received, generated and billed the cancelled turn.
+
+``UNIFY_WAIT_FOR_BATCH`` gives the model the choice. The always-present
+``wait`` tool takes ``until="all"``: added to the same turn as the calls, it
+asks the loop to hold the next turn until every call from that turn has
+finished, or ``max_seconds`` has passed (clamped to
+``UNIFY_WAIT_CEILING_SECONDS``). The loop guesses nothing: a turn without the
+declaration is woken exactly as shipped.
+
+A tool policy can ask for the same hold on a turn it forces: a result whose
+options carry ``"required_unit": True`` makes the required calls a turn makes
+one unit, held the same way (until all have finished, at most
+``UNIFY_WAIT_CEILING_SECONDS``) without the model declaring it. The actor's
+discovery gate asks for this under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
+Only the forced calls are held: a result from any other call wakes the model
+as shipped.
+
+``UNIFY_BATCH_WAKE`` makes the hold the loop's rule instead of the model's
+choice: whenever calls are running, a hold covers all of them (the model
+declares nothing), its clock starting only when the first result is held
+(``from_first_result``), so a slow batch with nothing landed waits as
+shipped and a landed result waits at most ``UNIFY_WAIT_CEILING_SECONDS``.
+Only tool results wait for it: a new message, a clarification request or a
+progress notification (from the user, the environment or another agent)
+still wakes the model at once. The loop also stops cancelling a sent turn
+when a result or a progress notification lands during it.
 
 The accounting is always on and changes no request: every model turn the loop
 cancels after dispatch is counted on the loop's runtime state and published as
@@ -28,6 +45,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from enum import Enum
 from typing import Any, Callable, Optional, Set
 
 from ...logger import LOGGER as logger
@@ -36,25 +54,96 @@ from ...logger import LOGGER as logger
 CANCELLED_TURN_EVENT = "ToolLoopCancelledTurn"
 
 
-# The longest a landed result is held back while other calls still run
-# (seconds), counted from the first result held.
-HOLD_CEILING_SECONDS = 15.0
+def enabled() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_WAIT_FOR_BATCH)
+
+
+def batch_wake() -> bool:
+    from unify.settings import SETTINGS
+
+    return bool(SETTINGS.UNIFY_BATCH_WAKE)
+
+
+def ceiling_seconds() -> float:
+    from unify.settings import SETTINGS
+
+    return float(SETTINGS.UNIFY_WAIT_CEILING_SECONDS)
+
+
+class WaitUntil(str, Enum):
+    """When a ``wait`` call wakes the model."""
+
+    NEXT = "next"
+    ALL = "all"
+
+
+WAIT_DOC = (
+    "Keep waiting on the running tool calls without starting, stopping or "
+    "changing any of them. With no arguments you are woken when the next call "
+    "finishes or a new message arrives. When you call several tools in one "
+    'turn and need their results together, add wait(until="all") to that '
+    "same turn: you are woken once, with every result, when all the calls "
+    "from that turn have finished (or after max_seconds). A new message, a "
+    "clarification request or a stop still wakes you at once. Refused while a "
+    "clarification is pending — answer it via "
+    'steer(call_id=<id>, action="clarify", payload=<answer>) first.'
+)
+
+UNTIL_DOC = (
+    '"next" (the default): wake on the next result. "all": in a turn that '
+    "also calls tools, wake once every call from that turn has finished."
+)
+
+MAX_SECONDS_DOC = (
+    'With until="all", the longest to hold back results that have already '
+    "landed while others still run (seconds); the harness caps it."
+)
+
+
+def declares_batch(args: Any) -> bool:
+    """Whether a ``wait`` call's arguments ask for the whole turn's results."""
+    if not isinstance(args, dict):
+        return False
+    return str(args.get("until") or "").strip().lower() == WaitUntil.ALL.value
+
+
+def hold_seconds(args: Any) -> float:
+    """How long a declared wait may hold the next turn: its ``max_seconds``,
+    clamped to ``[0, UNIFY_WAIT_CEILING_SECONDS]``; the ceiling when absent or
+    unreadable."""
+    ceiling = ceiling_seconds()
+    raw = args.get("max_seconds") if isinstance(args, dict) else None
+    if raw is None or isinstance(raw, bool):
+        return ceiling
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return ceiling
+    if value != value:  # NaN
+        return ceiling
+    return max(0.0, min(value, ceiling))
 
 
 @dataclass
 class BatchHold:
-    """The running calls the next turn waits for.
+    """The calls a turn declared with ``wait(until="all")``, while they run.
 
     ``owed`` records that a result landed while the hold kept the model
     waiting, so the turn it earned is granted when the hold ends.
-    ``from_first_result`` marks the batch-wake hold: its time starts when the
-    first result is held (``hold``), not when it is installed, so it never
-    ends while there is nothing to wake the model with.
+    ``own_only`` marks a hold a tool policy imposed on the calls it forced
+    (``"required_unit"``): only their results are held, and a result from
+    any other call wakes the model as shipped. ``from_first_result`` marks
+    the hold ``UNIFY_BATCH_WAKE`` installs: its time starts when the first
+    result is held (``hold``), not when it is installed, so it never ends
+    while there is nothing to wake the model with.
     """
 
     tasks: Set[asyncio.Task] = field(default_factory=set)
     until: Optional[float] = None
     owed: bool = False
+    own_only: bool = False
     from_first_result: bool = False
     seconds: float = 0.0
 
@@ -67,17 +156,19 @@ class BatchHold:
         tasks: Set[asyncio.Task],
         seconds: float,
         *,
+        own_only: bool = False,
         from_first_result: bool = False,
     ) -> None:
         self.tasks = set(tasks)
         self.seconds = seconds
         self.until = None if from_first_result else time.monotonic() + seconds
         self.owed = False
+        self.own_only = own_only
         self.from_first_result = from_first_result
 
     def holds(self, landed: Set[asyncio.Task]) -> bool:
         """Whether the results of *landed* wait for the hold to end."""
-        return self.declared
+        return self.declared and (not self.own_only or not (landed - self.tasks))
 
     def hold(self) -> None:
         """A result landed and waits for the hold to end: it is owed a turn,
@@ -112,6 +203,7 @@ class BatchHold:
         self.tasks = set()
         self.until = None
         self.owed = False
+        self.own_only = False
         self.from_first_result = False
         self.seconds = 0.0
         return owed

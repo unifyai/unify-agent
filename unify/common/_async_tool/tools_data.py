@@ -97,11 +97,10 @@ _VISIBILITY_FINAL_ITEM = (
 _VISIBILITY_LIFECYCLE = "\n\nuser-role messages prefixed with `[steerable <call_id>]`"
 
 
-def trimmed_visibility_guidance(*, notify: bool, clarify: bool) -> str:
+def trimmed_visibility_guidance(*, notify: bool, clarify: bool, lifecycle: bool) -> str:
     """The User Visibility Context naming only what this loop has: the
-    notification and clarification channels. The loop appends no
-    "[steerable ...]" / "[askable ...]" announcements, so their paragraph
-    is left out."""
+    notification and clarification channels, and the "[steerable ...]" /
+    "[askable ...]" announcements."""
     text = USER_VISIBILITY_GUIDANCE
     for part in (
         _VISIBILITY_NOTIFY_ITEM,
@@ -123,7 +122,9 @@ def trimmed_visibility_guidance(*, notify: bool, clarify: bool) -> str:
     head, _, rest = text.partition("1. ")
     _, _, tail = rest.partition(_VISIBILITY_FINAL_ITEM)
     text = head + numbered + tail
-    return text[: text.index(_VISIBILITY_LIFECYCLE)]
+    if not lifecycle:
+        text = text[: text.index(_VISIBILITY_LIFECYCLE)]
+    return text
 
 
 def _failure_text(exc: BaseException) -> str:
@@ -524,7 +525,15 @@ class ToolsData:
         # guidance lands at most once, whichever trigger — a user interjection
         # or the first [progress]/[clarification] message — fires first.
         self._visibility_guidance_injected: bool = False
+        # UNIFY_LIFECYCLE_NOTICES, read once so a loop never changes mid-way:
+        # off, the "[steerable ...]" and "[askable ...]" announcements are not
+        # appended (nothing already in the transcript is touched). A loop
+        # without the steering tools they name never appends them.
+        from unify.settings import SETTINGS
 
+        self._lifecycle_notices: bool = (
+            bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES) and self.steering_tools
+        )
         self._can_notify_user: bool = (
             "send_notification" in self.normalized
             if can_notify_user is None
@@ -605,6 +614,7 @@ class ToolsData:
         content = trimmed_visibility_guidance(
             notify=self._can_notify_user,
             clarify=self._can_ask_user,
+            lifecycle=self._lifecycle_notices,
         )
         await msg_dispatcher.append_msgs(
             [
@@ -675,6 +685,128 @@ class ToolsData:
         new_msg = loop_user_notice(content, _clarify_msg=True)
         await msg_dispatcher.append_msgs([new_msg])
         info.clarify_msg = new_msg
+
+    @staticmethod
+    def _describe_custom_methods(handle: Any, call_id: str) -> str:
+        """Render a handle's custom methods (beyond the core steering surface)
+        as a short listing: name, signature, one-line docstring. Custom
+        `action="call"` methods are validated at execution time rather than
+        exposed as tools of their own, so this listing is the model's only
+        description of them. Returns "" when there are none.
+        """
+        with suppress(Exception):
+            # Imported at call time: dynamic_tools_factory imports this
+            # module at top level, so a module-level import would be circular.
+            from .dynamic_tools_factory import DynamicToolFactory
+
+            custom_methods = DynamicToolFactory._discover_custom_public_methods(
+                handle,
+            )
+            lines = []
+            for meth_name, bound in sorted(custom_methods.items()):
+                try:
+                    sig = inspect.signature(bound)
+                except Exception:
+                    sig = "(...)"
+                doc = (inspect.getdoc(bound) or "").strip().splitlines()
+                first_line = doc[0] if doc else ""
+                suffix = f" — {first_line}" if first_line else ""
+                lines.append(f"  - {meth_name}{sig}{suffix}")
+            if lines:
+                return (
+                    f' Custom methods reachable via steer(call_id="{call_id}", '
+                    'action="call", method=<name>, payload=<JSON object>):\n'
+                    + "\n".join(lines)
+                )
+        return ""
+
+    async def record_tool_started(
+        self,
+        info: "ToolCallMetadata",
+        msg_dispatcher: "LoopMessageDispatcher",
+    ) -> None:
+        """Announce that a call is now live and steerable via ``steer``.
+
+        One-shot, append-only tail message (same shape as record_progress /
+        record_clarification, minus coalescing — a call starts exactly
+        once). The tool schema is static, so the transcript is the only
+        place this signal can live.
+
+        Deliberately carries no argument payload — the adjacent assistant
+        `tool_calls` entry already has the full arguments; duplicating them
+        here would freeze a second copy into the prefix forever.
+        Custom-method discoverability lives in `record_tool_capability_delta`,
+        so a call that never gets a handle never pays for that either.
+        Not appended under ``UNIFY_LIFECYCLE_NOTICES=0``.
+        """
+        if not self._lifecycle_notices:
+            return
+        await self._ensure_visibility_guidance_injected(msg_dispatcher)
+        content = f"[steerable {info.call_id}] {info.name} started."
+        await msg_dispatcher.append_msgs(
+            [loop_user_notice(content, _lifecycle_msg=True)],
+        )
+
+    async def record_tool_capability_delta(
+        self,
+        info: "ToolCallMetadata",
+        msg_dispatcher: "LoopMessageDispatcher",
+    ) -> None:
+        """Announce that a call already covered by `record_tool_started`
+        just widened its steer() surface (a handle was adopted).
+
+        Not a re-announcement: no arguments, no restatement of "started",
+        only which of interject/pause/ask became available plus any custom
+        methods the handle exposes. Not appended under
+        ``UNIFY_LIFECYCLE_NOTICES=0``.
+        """
+        if not self._lifecycle_notices:
+            return
+        handle = info.handle
+        caps = []
+        if handle is not None:
+            if hasattr(handle, "interject"):
+                caps.append("interject")
+            if hasattr(handle, "pause") or hasattr(handle, "resume"):
+                caps.append("pause")
+            if hasattr(handle, "ask"):
+                caps.append("ask")
+        if not caps:
+            return
+        await self._ensure_visibility_guidance_injected(msg_dispatcher)
+        content = f"[steerable {info.call_id}] now supports {'/'.join(caps)}."
+        if handle is not None:
+            content += self._describe_custom_methods(handle, info.call_id)
+        await msg_dispatcher.append_msgs(
+            [loop_user_notice(content, _lifecycle_msg=True)],
+        )
+
+    async def record_tool_completed_askable(
+        self,
+        call_id: str,
+        name: str,
+        msg_dispatcher: "LoopMessageDispatcher",
+    ) -> None:
+        """Announce that a completed call's trajectory is now askable.
+
+        An appended tail message rather than a live listing in
+        ``ask_about_completed_tool``'s docstring, which would churn the
+        schema on every completion; that docstring stays frozen. Carries no
+        argument payload, same as ``record_tool_started``: the adjacent
+        assistant `tool_calls` entry already has the full arguments, and a
+        copy here would freeze into the prefix forever. Not appended under
+        ``UNIFY_LIFECYCLE_NOTICES=0``.
+        """
+        if not self._lifecycle_notices:
+            return
+        await self._ensure_visibility_guidance_injected(msg_dispatcher)
+        content = (
+            f"[askable {call_id}] {name} completed and is askable via "
+            f'ask_about_completed_tool(tool_id="{call_id}", question=...).'
+        )
+        await msg_dispatcher.append_msgs(
+            [loop_user_notice(content, _lifecycle_msg=True)],
+        )
 
     def resolve_call_id(
         self,
@@ -1112,6 +1244,14 @@ class ToolsData:
                 prefix=f"🛠️  ToolCall Scheduled",
             )
 
+        # Announce steerability so the model has an explicit call_id pointer
+        # for steer() later — without this, models reliably hallucinate a
+        # plausible-looking id instead of reading the real one back from
+        # their own earlier tool_calls entry.
+        if msg_dispatcher is not None:
+            with suppress(Exception):
+                await self.record_tool_started(metadata, msg_dispatcher)
+
         # The quota counter moves only once scheduling has succeeded.
         with suppress(Exception):
             self.call_counts[name] = self.call_counts.get(name, 0) + 1
@@ -1172,6 +1312,17 @@ class ToolsData:
         info: ToolCallMetadata = self.pop_task(task)
         name = info.name
         call_id = info.call_id
+
+        # Announce retrospective askability now that pop_task has (possibly)
+        # promoted this call_id into _completed_askable_tools.
+        askable_entry = self._completed_askable_tools.get(call_id)
+        if askable_entry is not None:
+            with suppress(Exception):
+                await self.record_tool_completed_askable(
+                    call_id,
+                    askable_entry["name"],
+                    msg_dispatcher,
+                )
 
         _pickup_delay = _pct_time.perf_counter() - info.scheduled_time
         self._logger.debug(
@@ -1521,6 +1672,10 @@ class ToolsData:
         if self._on_handle_adopted is not None:
             with suppress(Exception):
                 self._on_handle_adopted(nested_task)
+        # Only the capability delta: record_tool_started already covered
+        # call_id discovery when this call was scheduled.
+        with suppress(Exception):
+            await self.record_tool_capability_delta(metadata, msg_dispatcher)
 
     async def adopt_multi_nested(
         self,
@@ -1623,3 +1778,13 @@ class ToolsData:
             if self._on_handle_adopted is not None:
                 with suppress(Exception):
                     self._on_handle_adopted(nested_task)
+
+            # Announce this child's synthesized call_id: steer() needs it
+            # verbatim and, unlike the single-handle case, it differs from
+            # the original call's id, so nothing else in the transcript
+            # carries it. The child has its handle at birth, so the
+            # capability delta fires right after as part of this one
+            # announcement.
+            with suppress(Exception):
+                await self.record_tool_started(metadata, msg_dispatcher)
+                await self.record_tool_capability_delta(metadata, msg_dispatcher)

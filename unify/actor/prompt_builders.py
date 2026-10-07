@@ -825,8 +825,19 @@ _TOOLS_SECTION = textwrap.dedent("""
     list as what is callable right now.
 """).strip()
 
+# UNIFY_WAIT_FOR_BATCH: the model asks to be woken once with a batch's results.
+_WAIT_FOR_BATCH_LINE = (
+    "When you call several tools in one message and need all of their "
+    'results before your next step, add `wait(until="all")` to that same '
+    "message: you are woken once, with every result, instead of after each one."
+)
+
 
 def _tools_section() -> str:
+    from unify.common._async_tool import batch_wait
+
+    if batch_wait.enabled():
+        return f"{_TOOLS_SECTION}\n\n{_WAIT_FOR_BATCH_LINE}"
     return _TOOLS_SECTION
 
 
@@ -1416,6 +1427,7 @@ def _build_core_prompt(
     less what names JSON tools the session does not have.
     """
     from unify.actor import core_surface
+    from unify.common._async_tool import batch_wait
 
     lean = _lean_profile()
     can_clarify = core.clarification
@@ -1430,6 +1442,8 @@ def _build_core_prompt(
             "backed by a library of stored functions and procedures.",
         )
     tools = core.tools_section()
+    if core.steering and batch_wait.enabled():
+        tools = f"{tools}\n\n{_WAIT_FOR_BATCH_LINE}"
     parts.append(tools)
     sandbox = _build_sandbox_environment_section(
         has_primitives=_injects_actor_primitives(environments),

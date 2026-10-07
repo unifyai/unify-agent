@@ -343,6 +343,68 @@ class ProductionSettings(BaseSettings):
     # is lost when the cell ends (a later cell gets NameError), as shipped.
     # Read per cell; in-process and worker cells alike.
     UNIFY_CELL_SCOPE_FIX: bool = True
+    # The loop's `wait` tool takes ``until="all"``: a turn that calls several
+    # tools and adds wait(until="all") is woken once, when every call from
+    # that turn has finished, instead of when the first one does (a turn
+    # started then is cancelled, and still billed, when a sibling lands).
+    # The model decides; the declaration also skips the eager turn a
+    # discovery gate would grant. A new message, a clarification request, a
+    # progress notification or a stop still wakes it at once. The tool's
+    # description and one line of the actor prompt say so. Off: as shipped.
+    UNIFY_WAIT_FOR_BATCH: bool = False
+    # The longest a wait(until="all") holds the next turn back (seconds):
+    # its own max_seconds is clamped to this, so a slow call never keeps the
+    # model from results that have landed for longer. Between 1 and 120.
+    UNIFY_WAIT_CEILING_SECONDS: float = 15.0
+    # No model turn starts while a tool call is still running: the model is
+    # woken once, when every running call has finished, as if each turn added
+    # wait(until="all") over everything in flight. A landed result is held
+    # back at most UNIFY_WAIT_CEILING_SECONDS, counted from the first one held,
+    # and the model is then woken with the results so far. Only tool results
+    # are held: a message from the user, the environment or another agent (an
+    # interjection, a clarification request or a progress notification) still
+    # wakes the model at once, as does a stop. A tool result or a notification
+    # that lands while a model turn is in flight never cancels it (the
+    # provider bills it anyway): the turn finishes and the model gets the
+    # result or the message next. An interjection, a clarification and a stop
+    # still cancel a turn in flight, as shipped. No eager turn is granted
+    # while calls run. Requests, tools and the prompt are unchanged; only when
+    # the model is called changes. Read once per loop. Off: as shipped.
+    UNIFY_BATCH_WAKE: bool = True
+    # While a tool call is still running, every model turn is sent with
+    # tool_choice "required", so the model has to call some tool (often a
+    # bare `wait`, which the loop prunes) instead of replying. It dates from
+    # a final-answer tool the actor no longer has: its answer is a reply
+    # without tool calls. Off: such a turn keeps the tool_choice its policy
+    # gave it ("auto" unless a gate requires a call). Read once per loop. On:
+    # as shipped.
+    UNIFY_PENDING_REQUIRED: bool = False
+    # Each tool call the loop schedules appends a user-role
+    # "[steerable <call_id>] <tool> started." message, a call that becomes a
+    # handle appends "[steerable <call_id>] now supports ...", and a finished
+    # call that can be asked about appends "[askable <call_id>] ...". The
+    # first of them also appends the "User Visibility Context" system
+    # message. Off: none of these is appended; the call ids stay in the
+    # model's own tool calls, and progress, clarification and interjection
+    # messages (with the visibility message they bring) are unchanged. Read
+    # once per loop, so a session never changes mid-way, and nothing already
+    # in a transcript is removed. On: as shipped.
+    UNIFY_LIFECYCLE_NOTICES: bool = False
+    # Off: while the actor's discovery gate is open, no model turn starts
+    # before the library searches a turn scheduled have returned. As shipped
+    # the gate grants one at once, while they run, and the model is woken as
+    # soon as the first of two searches lands; either turn is cancelled, and
+    # still billed, when a search lands during it. Off, the searches the gate
+    # forces are one unit: the model is woken once all a turn made have
+    # returned, or at UNIFY_WAIT_CEILING_SECONDS, or at once on a stop, a new
+    # message, a clarification or a notification; other calls are not held.
+    # The mutator that adds the missing family to a turn that searched one
+    # also recognises the actor's gate request, which lists wait, steer and
+    # ask_about_completed_tool. The gate still requires the searches
+    # (tool_choice "required", only the gated tools, parallel calls asked
+    # for), and a turn that leaves a family out is followed, once its calls
+    # return, by one that requires it. On: as shipped.
+    UNIFY_DISCOVERY_SPECULATIVE_TURN: bool = True
     # Off: the actor's library searches are the model's choice. As shipped the
     # default tool policy opens every task with a discovery-first gate: until
     # each present library family (FunctionManager, GuidanceManager) has been
@@ -544,10 +606,14 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_BATCH_WAKE",
+        "UNIFY_PENDING_REQUIRED",
+        "UNIFY_LIFECYCLE_NOTICES",
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
+        "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
         "UNIFY_CORE_BIND_LISTED",
@@ -658,6 +724,16 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "stored"):
             raise ValueError(
                 f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_WAIT_CEILING_SECONDS", mode="before")
+    @classmethod
+    def parse_wait_ceiling_seconds(cls, v: Any) -> float:
+        value = float(15.0 if v in (None, "") else v)
+        if not 1 <= value <= 120:
+            raise ValueError(
+                f"UNIFY_WAIT_CEILING_SECONDS must be between 1 and 120, not {v!r}",
             )
         return value
 

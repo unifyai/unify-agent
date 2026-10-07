@@ -1,14 +1,22 @@
-"""Symbolic: the loop's batch wake, which every loop now runs with.
+"""Symbolic: the three lean-loop switches, each alone and together.
 
-No model turn starts while a call is still running, and a result or a progress
-notification never cancels a turn already sent. Only tool results wait for the
-batch: a message from the user, the environment or another agent (an
-interjection, a clarification or a notification) wakes the model at once. A
-turn sent while calls run keeps its policy's ``tool_choice``, and the loop
-appends no ``[steerable …]``/``[askable …]`` announcements. (These were the
-``UNIFY_BATCH_WAKE``, ``UNIFY_PENDING_REQUIRED=0`` and
-``UNIFY_LIFECYCLE_NOTICES=0`` switches, baked in and removed by the code
-freeze.)
+``UNIFY_BATCH_WAKE``: no model turn starts while a call is still running, and a
+result or a progress notification never cancels a turn already sent. Only tool
+results wait for the batch: a message from the user, the environment or another
+agent (an interjection, a clarification or a notification) wakes the model at
+once. In the fixed-build ARC LOW cell 158 of the 161 cancelled turns were a
+model turn started on the first of two library searches the model itself chose
+(once the discovery gate is satisfied the policy returns ``auto`` with no
+hold), the empty function search landing in about 10 ms and the guidance
+search 40-600 ms later; the model never declared ``wait(until="all")``.
+
+``UNIFY_PENDING_REQUIRED=0``: a turn sent while calls run keeps its policy's
+``tool_choice`` instead of being forced to ``required`` (337 of 1,446 main
+calls in that cell).
+
+``UNIFY_LIFECYCLE_NOTICES=0``: no ``[steerable …]``/``[askable …]``
+announcements, and the visibility message they bring, unless a progress,
+clarification or interjection message brings it.
 
 The transport is scripted and slowed (``LLM_SECONDS`` per turn after the
 first), so the races are deterministic and nothing leaves the process.
@@ -24,8 +32,7 @@ import time
 import pytest
 
 from tests import cache_discipline_helpers as h
-from unify.common._async_tool import batch_wait as _batch_wait
-from unify.settings import SETTINGS
+from unify.settings import ProductionSettings, SETTINGS
 
 LLM_SECONDS = 0.6
 
@@ -83,8 +90,16 @@ TOOLS = {
     "GuidanceManager_search": GuidanceManager_search,
 }
 
-# The loop's switches are gone; callers may still pass settings to pin.
-LEAN: dict = {}
+LEAN = {
+    "UNIFY_BATCH_WAKE": True,
+    "UNIFY_PENDING_REQUIRED": False,
+    "UNIFY_LIFECYCLE_NOTICES": False,
+}
+SHIPPED = {
+    "UNIFY_BATCH_WAKE": False,
+    "UNIFY_PENDING_REQUIRED": True,
+    "UNIFY_LIFECYCLE_NOTICES": True,
+}
 
 
 def _done(n: int = 6):
@@ -115,7 +130,8 @@ async def _run(
 
     for name, value in switches.items():
         monkeypatch.setattr(SETTINGS, name, value)
-    monkeypatch.setattr(_batch_wait, "HOLD_CEILING_SECONDS", ceiling)
+    monkeypatch.setattr(SETTINGS, "UNIFY_WAIT_FOR_BATCH", False)
+    monkeypatch.setattr(SETTINGS, "UNIFY_WAIT_CEILING_SECONDS", ceiling)
     sent: list[float] = []
     started = dt.datetime.now(dt.UTC)
     with h.scripted(replies) as provider:
@@ -191,7 +207,7 @@ def _append_only(requests: list[dict]) -> bool:
     return True
 
 
-# ── batch wake ────────────────────────────────────────────────────────────
+# ── UNIFY_BATCH_WAKE ────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -208,13 +224,20 @@ async def test_a_model_chosen_search_pair_wakes_the_model_once(monkeypatch):
     requests, sent, handle = await _run(
         monkeypatch,
         replies,
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
     )
     assert len(requests) == 2, [_results_seen(r) for r in requests]
     assert _results_seen(requests[1]) == {"FM_EMPTY_RESULT", "GM_RESULT"}
     assert not _pending_placeholder(requests[1])
     assert sent[1] - sent[0] >= 0.4
     assert handle._runtime_state.cancelled_turns == 0
+
+    # As shipped the same script starts a turn on the function search alone
+    # and cancels it when the guidance search lands.
+    requests, _, handle = await _run(monkeypatch, replies, switches=SHIPPED)
+    assert {"FM_EMPTY_RESULT"} in [_results_seen(r) for r in requests[1:]]
+    assert handle._runtime_state.cancelled_turns >= 1
+    assert handle._runtime_state.cancelled_turns_by_cause.get("tool_result", 0) >= 1
 
 
 @pytest.mark.asyncio
@@ -229,7 +252,7 @@ async def test_no_turn_starts_while_any_sibling_is_pending(monkeypatch):
             ),
             *_done(),
         ],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
     )
     # One turn after the batch, with no placeholder: nothing was pending.
     assert len(requests) == 2
@@ -250,7 +273,7 @@ async def test_a_slow_batch_with_nothing_landed_is_not_cut_by_the_ceiling(
     requests, sent, _ = await _run(
         monkeypatch,
         [_batch("slow_tool"), *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         ceiling=1.0,
     )
     # The ceiling bounds how long a landed result waits; with none landed
@@ -265,7 +288,7 @@ async def test_the_ceiling_wakes_the_model_with_the_results_so_far(monkeypatch):
     requests, sent, _ = await _run(
         monkeypatch,
         [_batch("fast_tool", "slow_tool"), _batch("wait"), *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         ceiling=1.0,
     )
     # Woken about 1 s after the fast result, while the slow call still runs.
@@ -283,7 +306,7 @@ async def test_a_result_landing_during_a_sent_turn_does_not_cancel_it(monkeypatc
     requests, sent, handle = await _run(
         monkeypatch,
         [_batch("fast_tool", "late_tool", "slow_tool"), _batch("wait"), *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         ceiling=1.0,
     )
     assert _results_seen(requests[1]) == {"FAST_RESULT"}
@@ -305,7 +328,7 @@ async def test_an_interjection_still_wakes_the_model_at_once(monkeypatch):
     requests, sent, _ = await _run(
         monkeypatch,
         [_batch("fast_tool", "slow_tool"), _batch("wait"), *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         during=interject,
     )
     assert "STOP_AND_LISTEN" in json.dumps(requests[1]["messages"])
@@ -342,7 +365,7 @@ async def test_a_clarification_still_wakes_the_model_at_once(monkeypatch):
     requests, sent, _ = await _run(
         monkeypatch,
         replies,
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         tools=tools,
     )
     assert "WHICH_COLOUR?" in json.dumps(requests[1]["messages"])
@@ -374,7 +397,7 @@ async def test_a_message_from_another_agent_wakes_the_model_at_once(monkeypatch)
     requests, sent, handle = await _run(
         monkeypatch,
         [_batch("fast_tool", "slow_tool", "notifier"), _batch("wait"), *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         tools=tools,
     )
     # Not woken by the fast result alone; woken by the message, promptly.
@@ -399,7 +422,7 @@ async def test_a_notification_during_a_sent_turn_does_not_cancel_it(monkeypatch)
     requests, _, handle = await _run(
         monkeypatch,
         [_batch("fast_tool", "notifier"), *[_batch("wait")] * 2, *_done()],
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         tools=tools,
         ceiling=1.0,
     )
@@ -443,7 +466,7 @@ async def test_batch_wake_grants_no_eager_gate_turn(monkeypatch):
     requests, _, handle = await _run(
         monkeypatch,
         replies,
-        switches=LEAN,
+        switches={**SHIPPED, "UNIFY_BATCH_WAKE": True},
         tools=tools,
         tool_policy=h.gate_policy,
     )
@@ -452,6 +475,113 @@ async def test_batch_wake_grants_no_eager_gate_turn(monkeypatch):
     # The gate still requires the other search on the turn it is woken for.
     assert requests[1]["tool_choice"] == "required"
     assert handle._runtime_state.cancelled_turns == 0
+
+
+# ── UNIFY_PENDING_REQUIRED ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [True, False], ids=["shipped", "off"])
+async def test_a_turn_sent_while_calls_run_keeps_its_tool_choice(
+    monkeypatch,
+    required,
+):
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 4, *_done()],
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": required},
+    )
+    # As shipped the fast result wakes the model while the slow call runs.
+    while_pending = [r for r in requests[1:] if _sent_while(r, "SLOW_RESULT")]
+    assert while_pending
+    expected = "required" if required else "auto"
+    assert {r["tool_choice"] for r in while_pending} == {expected}
+    assert requests[0]["tool_choice"] == "auto"
+    assert requests[-1]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_a_gates_required_choice_is_kept_with_the_switch_off(monkeypatch):
+    replies = [
+        _batch(("FunctionManager_search_functions", {"query": "q"})),
+        _batch(("GuidanceManager_search", {"query": "q"})),
+        *_done(),
+    ]
+    requests, _, _ = await _run(
+        monkeypatch,
+        replies,
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": False},
+        tool_policy=h.gate_policy,
+    )
+    assert requests[0]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_pending_required_is_read_once_per_loop(monkeypatch):
+    def flip():
+        monkeypatch.setattr(SETTINGS, "UNIFY_PENDING_REQUIRED", True)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 4, *_done()],
+        switches={**SHIPPED, "UNIFY_PENDING_REQUIRED": False},
+        after_first=flip,
+    )
+    while_pending = [r for r in requests[1:] if _sent_while(r, "SLOW_RESULT")]
+    assert while_pending
+    assert {r["tool_choice"] for r in while_pending} == {"auto"}
+
+
+# ── UNIFY_LIFECYCLE_NOTICES ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notices_shipped_and_off(monkeypatch):
+    replies = [_batch("fast_tool", "medium_tool"), *[_batch("wait")] * 3, *_done()]
+    requests, _, _ = await _run(monkeypatch, replies, switches=SHIPPED)
+    shipped = [n for r in requests for n in _notices(r)]
+    assert any(n.startswith("[steerable ") and "started." in n for n in shipped)
+    assert any("User Visibility Context" in n for n in shipped)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        replies,
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+    )
+    assert [n for r in requests for n in _notices(r)] == []
+    # The calls' ids are still in the model's own tool calls.
+    first_turn = next(m for m in requests[1]["messages"] if m.get("tool_calls"))
+    assert first_turn["tool_calls"][0]["id"].startswith("call_")
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_notices_are_read_once_per_loop(monkeypatch):
+    def flip():
+        monkeypatch.setattr(SETTINGS, "UNIFY_LIFECYCLE_NOTICES", True)
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "medium_tool"), *[_batch("wait")] * 3, *_done()],
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+        after_first=flip,
+    )
+    assert [n for r in requests for n in _notices(r)] == []
+
+
+@pytest.mark.asyncio
+async def test_an_interjection_still_brings_the_visibility_message(monkeypatch):
+    async def interject(handle):
+        await asyncio.sleep(0.3)
+        await handle.interject("STOP_AND_LISTEN")
+
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "slow_tool"), *[_batch("wait")] * 3, *_done()],
+        switches={**SHIPPED, "UNIFY_LIFECYCLE_NOTICES": False},
+        during=interject,
+    )
+    seen = [n for r in requests for n in _notices(r)]
+    assert seen and all("User Visibility Context" in n for n in seen)
 
 
 # ── all three together ──────────────────────────────────────────────────────
@@ -489,3 +619,18 @@ async def test_the_actor_runs_with_the_lean_loop(monkeypatch):
     assert result
     assert [n for r in requests for n in _notices(r)] == []
     assert _append_only(h.session_requests(requests))
+
+
+def test_the_settings_default_to_as_shipped():
+    settings = ProductionSettings()
+    assert settings.UNIFY_BATCH_WAKE is False
+    assert settings.UNIFY_PENDING_REQUIRED is True
+    assert settings.UNIFY_LIFECYCLE_NOTICES is True
+    lean = ProductionSettings(
+        UNIFY_BATCH_WAKE="1",
+        UNIFY_PENDING_REQUIRED="0",
+        UNIFY_LIFECYCLE_NOTICES="off",
+    )
+    assert lean.UNIFY_BATCH_WAKE is True
+    assert lean.UNIFY_PENDING_REQUIRED is False
+    assert lean.UNIFY_LIFECYCLE_NOTICES is False

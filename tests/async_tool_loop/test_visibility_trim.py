@@ -3,8 +3,8 @@
 The loop appends the message the first time an interjection, a progress
 notification or a clarification reaches the model; it says what the user
 sees (their messages, notifications, clarification requests, the final
-reply) and that "[progress ...]" and "[clarification ...]" messages are not
-the user's. A lean-all ARC session has
+reply) and that "[progress ...]", "[clarification ...]", "[steerable ...]"
+and "[askable ...]" messages are not the user's. A lean-all ARC session has
 no send_notification and no clarification request, and its lifecycle
 announcements are off, yet every one of its 36 sessions got the message on
 the requester's second message. With the switch on an interjection appends
@@ -53,14 +53,9 @@ async def notifying_tool(_notification_up_q: asyncio.Queue | None = None) -> str
 
 
 def test_the_trimmed_text_keeps_the_shipped_wording():
-    full = td.trimmed_visibility_guidance(notify=True, clarify=True)
-    assert (
-        full
-        == td.USER_VISIBILITY_GUIDANCE[
-            : td.USER_VISIBILITY_GUIDANCE.index(td._VISIBILITY_LIFECYCLE)
-        ]
-    )
-    bare = td.trimmed_visibility_guidance(notify=False, clarify=False)
+    full = td.trimmed_visibility_guidance(notify=True, clarify=True, lifecycle=True)
+    assert full == td.USER_VISIBILITY_GUIDANCE
+    bare = td.trimmed_visibility_guidance(notify=False, clarify=False, lifecycle=False)
     assert "notifications you emit" not in bare
     assert "clarification requests you send" not in bare
     assert "[steerable" not in bare and "ask_about_completed_tool" not in bare
@@ -75,6 +70,7 @@ def test_the_trimmed_text_keeps_the_shipped_wording():
     only_notify = td.trimmed_visibility_guidance(
         notify=True,
         clarify=False,
+        lifecycle=False,
     )
     assert "2. Any notifications you emit" in only_notify
     assert "3. Your FINAL plain-text" in only_notify
@@ -115,7 +111,7 @@ async def test_on_an_interjection_with_notifications_appends_what_applies(monkey
         on_notify=lambda _text: None,
     )
     assert _visibility(requests) == [
-        td.trimmed_visibility_guidance(notify=True, clarify=False),
+        td.trimmed_visibility_guidance(notify=True, clarify=False, lifecycle=False),
     ]
 
 
@@ -135,7 +131,19 @@ async def test_on_a_progress_message_still_appends_it(monkeypatch):
         for m in r["messages"]
     )
     assert _visibility(requests) == [
-        td.trimmed_visibility_guidance(notify=False, clarify=False),
+        td.trimmed_visibility_guidance(notify=False, clarify=False, lifecycle=False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_on_with_lifecycle_notices_the_announcements_are_explained(monkeypatch):
+    requests, _, _ = await _run(
+        monkeypatch,
+        [_batch("fast_tool", "medium_tool"), *[_batch("wait")] * 3, *_done()],
+        switches={**LEAN, "UNIFY_LIFECYCLE_NOTICES": True, "UNIFY_PROMPT_TRIM": True},
+    )
+    assert _visibility(requests) == [
+        td.trimmed_visibility_guidance(notify=False, clarify=False, lifecycle=True),
     ]
 
 

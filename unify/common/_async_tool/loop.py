@@ -189,13 +189,19 @@ def _parse_tool_policy_result(
     ``eager=True`` means: after the model schedules tool calls on this turn,
     immediately grant another LLM turn (without waiting for those tools to
     finish) for as long as subsequent policy evaluations keep returning
-    ``eager=True``.  Default is ``False`` (wait for tool results).
+    ``eager=True``.  Default is ``False`` (wait for tool results). Under
+    ``UNIFY_WAIT_FOR_BATCH`` a turn that also calls ``wait(until="all")``
+    gets no eager turn: it is woken once its calls have finished, and the
+    policy, evaluated again for that turn, still decides its tools and
+    ``tool_choice`` (``"required"`` while a gate is open).
 
     While ``eager=True``, the loop also withholds ``compress_context`` from the
     visible tool schema (except on the forced over-threshold compression path)
     so gated required policies cannot be bypassed by compressing context, and
     asks for parallel tool calls. ``{"gated": True}`` asks for those two
-    without the eager turn (see ``_policy_gates_turn``).
+    without the eager turn (see ``_policy_gates_turn``), and
+    ``{"required_unit": True}`` holds the next turn for the calls a turn
+    makes to the required tools (see ``_policy_requires_unit``).
     """
     if not isinstance(result, (tuple, list)) or len(result) < 2:
         raise TypeError(
@@ -218,11 +224,31 @@ def _policy_gates_turn(result: Any) -> bool:
     A gated turn withholds ``compress_context`` from the visible schema and
     asks for parallel tool calls, so the required calls are made together
     and cannot be bypassed by compressing. Eager results gate their turn;
-    ``{"gated": True}`` gates it without the eager turn.
+    ``{"gated": True}`` gates it without the eager turn, which the actor's
+    discovery gate returns under ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
     """
     _, _, eager = _parse_tool_policy_result(result)
     opts = result[2] if len(result) >= 3 else None
     return eager or (isinstance(opts, dict) and bool(opts.get("gated", False)))
+
+
+def _policy_requires_unit(result: Any) -> bool:
+    """Whether a ``tool_policy`` result makes the calls it forces one unit.
+
+    ``{"required_unit": True}`` on a ``"required"`` result holds the model's
+    next turn until every call the turn makes to the required tools has
+    finished, at most ``UNIFY_WAIT_CEILING_SECONDS`` (``batch_wait``): the
+    harness imposed those calls, so it waits for all of them before asking
+    again. The actor's discovery gate returns it under
+    ``UNIFY_DISCOVERY_SPECULATIVE_TURN=False``.
+    """
+    mode, _, _ = _parse_tool_policy_result(result)
+    opts = result[2] if len(result) >= 3 else None
+    return (
+        mode == "required"
+        and isinstance(opts, dict)
+        and bool(opts.get("required_unit", False))
+    )
 
 
 def _is_cache_miss_error(exc: BaseException | None) -> bool:
@@ -593,9 +619,9 @@ async def async_tool_loop_inner(
         When ``True`` a tool result landing during an in-flight
         ``client.generate`` cancels it (the provider still bills it) so the
         next step starts with the result; ``False`` lets the step finish and
-        the result reaches the model on the following turn. Batch wake
-        always makes it ``False``, and also holds every turn until the calls
-        in flight have finished (see ``batch_wait``).
+        the result reaches the model on the following turn.
+        ``UNIFY_BATCH_WAKE`` makes it ``False``, and also holds every turn
+        until the calls in flight have finished (see ``batch_wait``).
 
     propagate_chat_context : ``ChatContextPropagation``, default ``LLM_DECIDES``
         Whether a filtered snapshot of this loop's conversation (genuine user
@@ -621,8 +647,12 @@ async def async_tool_loop_inner(
         ``compress_context`` from the visible schema (forced over-threshold
         compression still applies) and ask for parallel tool calls, which
         ``{"gated": True}`` asks for without the eager turn. Omitting
-        ``eager`` keeps the wait-for-results behaviour. While calls run the
-        batch-wake hold is declared, so no eager turn is granted.
+        ``eager`` keeps the wait-for-results behaviour. A turn that declares
+        ``wait(until="all")`` (``UNIFY_WAIT_FOR_BATCH``) gets no eager turn.
+        ``{"required_unit": True}`` on a ``"required"`` result wakes the
+        model once the calls the turn makes to the required tools have all
+        finished (at most ``UNIFY_WAIT_CEILING_SECONDS``), as a declared
+        ``wait(until="all")`` limited to them would.
 
     parent_chat_context : ``list[dict] | None``
         Chat history passed from an outer loop. When a tool call opts into
@@ -677,7 +707,9 @@ async def async_tool_loop_inner(
         none of the ``[steerable ...]``/``[askable ...]`` announcements that
         name them, keeps a turn's own ``tool_choice`` while calls run
         (``"required"`` would leave only the caller's tools to call), and
-        wakes the model once per batch, as every loop does.
+        wakes the model once per batch, as ``UNIFY_BATCH_WAKE`` does (with
+        no ``wait`` to call, a turn started on part of a batch could only run
+        more code or end the run).
 
     compression_tools_on_demand : ``bool``, default ``False``
         ``True`` (``UNIFY_TOOL_SURFACE=core``): ``compress_context`` and the
@@ -2235,12 +2267,61 @@ async def async_tool_loop_inner(
             _msg_dispatcher,
         )
 
+    async def _declare_batch_wait(msg: dict, call: dict, args: Any) -> None:
+        """UNIFY_WAIT_FOR_BATCH: hold the next turn for this turn's calls.
+
+        The hold covers the calls this message scheduled that are still
+        running; with none, the call is an ordinary `wait`.
+        """
+        batch = {
+            t
+            for t in tools_data.pending
+            if getattr(tools_data.info.get(t), "assistant_msg", None) is msg
+        }
+        if not batch:
+            await _settle_wait_call(msg, call)
+            return
+        seconds = _batch_wait.hold_seconds(args)
+        _hold.install(batch, seconds)
+        try:
+            logger.info(
+                f'Assistant chose `wait(until="all")` – the next turn waits for '
+                f"{len(batch)} call(s), at most {seconds:g}s.",
+                prefix=ICONS["wait"],
+            )
+        except Exception:
+            pass
+        await _prune_wait_call(msg, call)
+
+    def _hold_required_unit(msg: dict) -> None:
+        """A policy's ``"required_unit"``: hold the next turn for the calls
+        this message made to the turn's required tools, while two or more
+        run; other calls are not held (``BatchHold.own_only``)."""
+        unit = {
+            t
+            for t in tools_data.pending
+            if getattr(tools_data.info.get(t), "assistant_msg", None) is msg
+            and getattr(tools_data.info.get(t), "name", None) in policy_tools_norm
+        }
+        if len(unit) < 2:
+            return
+        seconds = _batch_wait.ceiling_seconds()
+        _hold.install(unit, seconds, own_only=True)
+        try:
+            logger.info(
+                f"The turn's {len(unit)} required calls are one unit – the next "
+                f"turn waits for them, at most {seconds:g}s.",
+                prefix=ICONS["wait"],
+            )
+        except Exception:
+            pass
+
     def _hold_running_calls() -> None:
-        """Batch wake: hold the next turn until every running call has
+        """UNIFY_BATCH_WAKE: hold the next turn until every running call has
         finished. A call waiting for a clarification is left out: only the
         model can let it finish, and its question wakes the model anyway. The
         hold's time starts with the first result it holds."""
-        if _hold.declared:
+        if not _batch_wake or _hold.declared:
             return
         running = {
             t
@@ -2250,7 +2331,7 @@ async def async_tool_loop_inner(
         if running:
             _hold.install(
                 running,
-                _batch_wait.HOLD_CEILING_SECONDS,
+                _batch_wait.ceiling_seconds(),
                 from_first_result=True,
             )
 
@@ -2270,11 +2351,23 @@ async def async_tool_loop_inner(
     llm_turn_required = False
     # Consecutive replies of this turn dropped for a provider error.
     _provider_error_retries = 0
-    # Batch wake: while calls run, a hold covers all of them (only tool
-    # results wait for it), and a result or a notification never cancels a
-    # sent turn, so ``interrupt_llm_on_tool_completion`` is always off.
+    # UNIFY_WAIT_FOR_BATCH: the calls a turn declared with wait(until="all"),
+    # held until they have all finished or the hold's time is up.
+    _wait_for_batch = _batch_wait.enabled()
     _hold = _batch_wait.BatchHold()
-    interrupt_llm_on_tool_completion = False
+    # UNIFY_BATCH_WAKE, read once for the loop: while calls run, a hold covers
+    # all of them (only tool results wait for it), and a result or a
+    # notification never cancels a sent turn.
+    # A loop without the steering tools (steering_tools=False) waits the
+    # same way: with no `wait` to call, a turn started on part of a batch
+    # could only run more code or end the run.
+    _batch_wake = _batch_wait.batch_wake() or not steering_tools
+    if _batch_wake:
+        interrupt_llm_on_tool_completion = False
+    # UNIFY_PENDING_REQUIRED, read once for the loop.
+    from unify.settings import SETTINGS as _LOOP_SETTINGS
+
+    _pending_required = bool(_LOOP_SETTINGS.UNIFY_PENDING_REQUIRED)
     # A patient interjection (trigger_immediate_llm_turn=False) arriving while
     # the LLM is already thinking earns exactly one extra LLM step after the
     # current one, unless another event triggers a turn anyway.
@@ -2806,10 +2899,11 @@ async def async_tool_loop_inner(
 
             # ── A. Wait for a tool completion, cancellation, interjection,
             #       clarification or notification ────────────────────────
-            # A hold ends once every call it covers has finished or its time
-            # is up; a result it held back is owed the turn it would have had.
+            # UNIFY_WAIT_FOR_BATCH: a hold ends once every call it covers has
+            # finished or its time is up; a result it held back is owed the
+            # turn it would have had.
             if _hold.declared and not _hold.active(tools_data.pending):
-                if _hold.owed and _hold.tasks & tools_data.pending:
+                if _batch_wake and _hold.owed and _hold.tasks & tools_data.pending:
                     logger.info(
                         f"Results held for {_hold.seconds:g}s while "
                         f"{len(_hold.tasks & tools_data.pending)} call(s) still "
@@ -2934,7 +3028,7 @@ async def async_tool_loop_inner(
                 # Under a hold only results wait: an interjection, a
                 # clarification or a notification (a message from the user,
                 # the environment or another agent) wakes the model as
-                # shipped.
+                # shipped, UNIFY_BATCH_WAKE included.
                 _event_wake = restart or bool(
                     done & (clar_waiters.keys() | notif_waiters.keys()),
                 )
@@ -2998,6 +3092,7 @@ async def async_tool_loop_inner(
             )
             _policy_eager = False
             _policy_gated = False
+            _policy_unit = False
             _policy_mask_rules: Dict[str, str] = {}
             _policy_mask_default: Optional[str] = None
             if tool_policy is not None:
@@ -3020,6 +3115,7 @@ async def async_tool_loop_inner(
                         )
                     )
                     _policy_gated = _policy_gates_turn(_policy_result)
+                    _policy_unit = _policy_requires_unit(_policy_result)
                     if _discipline:
                         _policy_mask_rules, _policy_mask_default = (
                             _cache_discipline.policy_mask_rules(_policy_result)
@@ -3031,14 +3127,29 @@ async def async_tool_loop_inner(
                     tool_choice_mode, filtered = "auto", _tools_snapshot
                     _policy_eager = False
                     _policy_gated = False
+                    _policy_unit = False
                 policy_tools_norm = normalise_tools(filtered)
             else:
                 tool_choice_mode = "auto"
                 policy_tools_norm = tools_data.normalized
 
-            # In-flight tools leave the policy's tool_choice as it is: the
-            # model may reply while calls run.
+            # When tools are in-flight, force tool_choice=required so the LLM
+            # must call a real tool (steer, wait, ask_about_completed_tool,
+            # etc.) rather than ending the loop. The response tool stays in
+            # the schema but is refused at execution time while anything is
+            # pending (see the steer()/response-tool execution branches
+            # below), so "required" still only leaves live options.
+            # UNIFY_PENDING_REQUIRED=0 keeps the policy's tool_choice, and so
+            # does a loop without the steering tools (steering_tools=False),
+            # where "required" would leave only the caller's tools to call.
             _has_pending_tools = bool(tools_data.pending)
+            if (
+                _has_pending_tools
+                and tool_choice_mode != "required"
+                and _pending_required
+                and steering_tools
+            ):
+                tool_choice_mode = "required"
 
             logger.debug(
                 f"[setup +{_setup_elapsed()}] building tool schemas ({len(policy_tools_norm)} tools)",
@@ -3678,6 +3789,7 @@ async def async_tool_loop_inner(
                     (_finished and interrupt_llm_on_tool_completion)
                     or (interject_w in done and not _patient_interjection)
                     or done & clar_waiters2.keys()
+                    or (done & notif_waiters2.keys() and not _batch_wake)
                 ):
                     if _finished:
                         logger.debug(
@@ -3742,12 +3854,12 @@ async def async_tool_loop_inner(
                 # placeholder is no longer at the tail appends a synthetic
                 # assistant/tool status pair, and the loop would otherwise
                 # mistake that pair's tool message for this step's turn.
-                # Batch wake: a notification that landed during the
+                # UNIFY_BATCH_WAKE: a notification that landed during the
                 # step does not cancel it either; it goes back to the front of
                 # its tool's queue, so it is delivered (or drained with the
                 # tool's result) once the step has landed, and wakes the model
                 # then.
-                if done & notif_waiters2.keys():
+                if _batch_wake and done & notif_waiters2.keys():
                     for pw, src in notif_waiters2.items():
                         if pw in done:
                             _requeue_at_front(
@@ -4020,6 +4132,9 @@ async def async_tool_loop_inner(
                         "or conclude.",
                     )
                     await _msg_dispatcher.append_msgs([sys_notice])
+
+                # UNIFY_WAIT_FOR_BATCH: a wait(until="all") in this turn.
+                _declared_wait: Optional[Tuple[dict, Any]] = None
 
                 for idx, call in enumerate(msg["tool_calls"]):  # capture index
                     name = call["function"]["name"]
@@ -4421,6 +4536,11 @@ async def async_tool_loop_inner(
                         continue
 
                     if lname_cf == "wait":
+                        if _wait_for_batch and _batch_wait.declares_batch(args):
+                            # UNIFY_WAIT_FOR_BATCH: settled once every call of
+                            # this turn is scheduled, so it can cover them.
+                            _declared_wait = (call, args)
+                            continue
                         await _settle_wait_call(msg, call)
                         continue
 
@@ -5086,7 +5206,11 @@ async def async_tool_loop_inner(
                         initial_paused=not pause_event.is_set(),
                     )
 
+                if _declared_wait is not None:
+                    await _declare_batch_wait(msg, *_declared_wait)
                 _hold_running_calls()
+                if _policy_unit and not _hold.declared:
+                    _hold_required_unit(msg)
 
                 if _persist_response_emitted:
                     pass  # fall through to section F → persist wait
@@ -5117,9 +5241,10 @@ async def async_tool_loop_inner(
                     # re-evaluation uses the updated called_tools so eagerness
                     # ends as soon as the policy stops requesting it, and only
                     # runs when this turn was already eager: non-eager policies
-                    # must not get an extra same-step callback. A turn held
-                    # by the batch-wake hold gets no eager turn; the policy
-                    # still gates the turn it is woken for.
+                    # must not get an extra same-step callback. A turn that
+                    # declared wait(until="all") (UNIFY_WAIT_FOR_BATCH) asked
+                    # to be woken with its results, so it gets no eager turn;
+                    # the policy still gates the turn it is woken for.
                     if tool_policy is not None and _policy_eager and not _hold.declared:
                         try:
                             _eager_snapshot = {
