@@ -22,6 +22,7 @@ from tests.helpers import _handle_project
 from unify.common import embeddings
 from unify.common.embeddings import Embedder
 from unify.function_manager.function_manager import FunctionManager
+from unify.settings import SETTINGS
 
 GOOD = (
     "def forecast_summary(city: str) -> str:\n"
@@ -69,7 +70,9 @@ def _library() -> FunctionManager:
 
 
 @_handle_project
-def test_search_leaves_the_broken_row_out_and_names_it():
+@pytest.mark.parametrize("python", ["worker", ""])
+def test_search_leaves_the_broken_row_out_and_names_it(python, monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
     fm = _library()
     namespace: dict = {}
     result = fm.search_functions(
@@ -83,7 +86,11 @@ def test_search_leaves_the_broken_row_out_and_names_it():
     warning = result["metadata"][-1]["warning"]
     assert "forecast_summary_broken: SyntaxError" in warning
     assert len(result["callables"]) == len(result["metadata"]) - 1
-    assert namespace["forecast_summary"]("Oslo") == "Oslo: sunny"
+    if python:
+        # Bound by its source, for the sandboxed worker to define and run.
+        assert namespace["forecast_summary"].source == GOOD
+    else:
+        assert namespace["forecast_summary"]("Oslo") == "Oslo: sunny"
     assert "forecast_summary_broken" not in namespace
 
 

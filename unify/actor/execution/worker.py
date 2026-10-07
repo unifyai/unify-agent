@@ -464,6 +464,18 @@ class PythonWorker:
             # imported in the worker would dial it from inside the sandbox,
             # which does not reach it, so it is served from here.
             return self._remote(name, value)
+        from unify.function_manager.source_labels import StoredSource
+
+        if isinstance(value, StoredSource):
+            # Bound by a read from its stored source; never executed here.
+            desc = {
+                "kind": "function",
+                "source": value.source,
+                "filename": value.filename,
+            }
+            if record:
+                desc["record"] = True
+            return desc
         code = _stored_function_code(value)
         if code is not None:
             entry = linecache.cache.get(code.co_filename)

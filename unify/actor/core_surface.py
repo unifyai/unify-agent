@@ -319,7 +319,12 @@ class FunctionLibrary:
         """A read that also binds the functions it returns in the session, as
         the actor's JSON search tools do (in *_sandbox*, else the running
         cell's). A review's read binds nothing, as the review's JSON search
-        tools do not."""
+        tools do not.
+
+        With Python in the sandboxed worker, which this surface requires, each
+        function is bound by its stored source and its callees with it
+        (``FunctionManager._bind_stored_sources``): the worker defines and
+        runs them, and nothing they hold is executed in the harness."""
         from unify.actor.execution import _CURRENT_SANDBOX
 
         if self._policy.review:
@@ -1068,6 +1073,10 @@ def sandbox_objects(
 
 def _is_async_function(value: Any) -> bool:
     """Whether the bound stored function *value* is ``async def`` (unwrapped)."""
+    from unify.function_manager.source_labels import StoredSource
+
+    if isinstance(value, StoredSource):
+        return value.is_async
     try:
         return inspect.iscoroutinefunction(inspect.unwrap(value))
     except Exception:  # noqa: BLE001 - a wrapper that does not unwrap

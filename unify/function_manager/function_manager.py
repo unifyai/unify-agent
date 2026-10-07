@@ -57,7 +57,7 @@ from .dependency_analysis import (
     detect_third_party_imports,
 )
 from .types.function import Function
-from .source_labels import compile_function_source
+from .source_labels import StoredSource, compile_function_source
 from .base import BaseFunctionManager
 from . import session_source, task_origin
 from ..common.stale_reason import (
@@ -2249,6 +2249,25 @@ class FunctionManager(BaseFunctionManager):
             ),
         )
 
+    @staticmethod
+    def _refuse_in_process_execution(what: str) -> None:
+        """Raise instead of executing a stored function in this process while
+        Python runs in the sandboxed worker.
+
+        The defence behind every path that binds or runs stored code: this
+        process holds the provider credentials, so model-written code runs
+        only in the worker, and a path that would execute it here fails
+        loudly rather than run it outside the sandbox.
+        """
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            raise RuntimeError(
+                f"{what} would execute model-written code in the harness; with "
+                "Python in the sandboxed worker it runs only there (from a "
+                "cell: a call by name, or functions.run)",
+            )
+
     def _create_in_process_callable(
         self,
         func_data: Dict[str, Any],
@@ -2267,8 +2286,14 @@ class FunctionManager(BaseFunctionManager):
 
         The returned proxy provides state mode control:
         ``.stateful()`` / ``.stateless()`` / ``.read_only()``.
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
         """
         func_name = func_data.get("name")
+        self._refuse_in_process_execution(
+            f"Loading the stored function {func_name!r} in this process",
+        )
         if not isinstance(func_name, str) or not func_name:
             raise ValueError("func_data missing valid 'name'")
 
@@ -2455,6 +2480,50 @@ class FunctionManager(BaseFunctionManager):
         a fresh ``Primitives`` instance on demand.  ``Primitives`` is
         fully stateless, so a freshly constructed instance works in
         isolation without any ambient ContextVars or parent actor state.
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
+        """
+        self._refuse_in_process_execution(
+            f"Loading the stored callees of {func_data.get('name')!r} in this process",
+        )
+
+        def load(dep_name: str, dep_data: Dict[str, Any]) -> None:
+            # exec puts the raw function in the namespace. We call
+            # _create_in_process_callable to exec the function, but we DON'T
+            # overwrite the namespace with the proxy - the raw function stays
+            # for inter-function calls, decorators, and introspection.
+            self._create_in_process_callable(
+                dep_data,
+                namespace=namespace,
+            )
+            # replace namespace[dep_name] with wrapper so inter-function calls
+            # also flow through lineage/event boundaries.
+            raw_dep = namespace.get(dep_name)
+            if callable(raw_dep):
+                namespace[dep_name] = self._boundary(raw_dep, dep_data)
+
+        self._walk_dependencies(
+            func_data,
+            namespace=namespace,
+            visited=visited,
+            bind=load,
+        )
+
+    def _walk_dependencies(
+        self,
+        func_data: Dict[str, Any],
+        *,
+        namespace: Dict[str, Any],
+        visited: Set[str],
+        bind: Callable[[str, Dict[str, Any]], None],
+    ) -> None:
+        """Resolve ``func_data``'s ``depends_on`` transitively (breadth-first).
+
+        A dotted name's root is put in ``namespace`` when missing
+        (``construct_sandbox_root``, harness code); each stored function it
+        names is passed to ``bind`` as ``(name, record)``, which defines it.
+        Executes nothing itself.
         """
         from collections import deque
 
@@ -2499,19 +2568,7 @@ class FunctionManager(BaseFunctionManager):
                 )
                 continue
 
-            # exec puts the raw function in the namespace. We call
-            # _create_in_process_callable to exec the function, but we DON'T
-            # overwrite the namespace with the proxy - the raw function stays
-            # for inter-function calls, decorators, and introspection.
-            self._create_in_process_callable(
-                dep_data,
-                namespace=namespace,
-            )
-            # replace namespace[dep_name] with wrapper so inter-function calls
-            # also flow through lineage/event boundaries.
-            raw_dep = namespace.get(dep_name)
-            if callable(raw_dep):
-                namespace[dep_name] = self._boundary(raw_dep, dep_data)
+            bind(dep_name, dep_data)
 
             nested = dep_data.get("depends_on") or []
             if isinstance(nested, list):
@@ -2564,6 +2621,11 @@ class FunctionManager(BaseFunctionManager):
                     )
             return callables
 
+        from unify.actor.execution import worker as python_worker
+
+        if python_worker.enabled():
+            return self._bind_stored_sources(func_rows, namespace=namespace)
+
         callables = []
         visited: Set[str] = set()
 
@@ -2576,18 +2638,7 @@ class FunctionManager(BaseFunctionManager):
             # They are already accessible via the ``primitives`` object in the
             # namespace, so we don't inject a new namespace entry.
             if func_data.get("is_primitive") is True:
-                from unify.function_manager.primitives.runtime import (
-                    get_primitive_callable,
-                )
-
-                primitives_obj = namespace.get("primitives")
-                fn = get_primitive_callable(
-                    func_data,
-                    primitives=primitives_obj,
-                )
-                if fn is not None:
-                    fn = _LineageTrackedFunction(fn, name)
-                callables.append(fn)
+                callables.append(self._primitive_callable(func_data, namespace))
                 continue
 
             # Check if we've already processed this function (e.g., duplicate in results)
@@ -2634,6 +2685,105 @@ class FunctionManager(BaseFunctionManager):
             callables.append(fn)
 
         return callables
+
+    @staticmethod
+    def _primitive_callable(
+        func_data: Dict[str, Any],
+        namespace: Dict[str, Any],
+    ) -> Any:
+        """A primitive's callable, from the live runtime registry (harness code)."""
+        from unify.function_manager.primitives.runtime import get_primitive_callable
+
+        fn = get_primitive_callable(func_data, primitives=namespace.get("primitives"))
+        return (
+            _LineageTrackedFunction(fn, func_data["name"]) if fn is not None else None
+        )
+
+    def _bind_stored_sources(
+        self,
+        func_rows: List[Dict[str, Any]],
+        *,
+        namespace: Dict[str, Any],
+    ) -> List[Any]:
+        """``_inject_callables_for_functions`` with Python in the sandboxed worker.
+
+        Binds each function and its stored callees in ``namespace`` as a
+        :class:`StoredSource`, from the stored source alone: nothing is
+        executed here, and the worker defines and runs each one, confined.
+        What a load did besides executing stays: the declared dependencies
+        are installed (confined, by ``environment.ensure``), annotation names
+        get their placeholders, and a source that does not compile or does
+        not define its name fails the row.
+        """
+        callables: List[Any] = []
+        visited: Set[str] = set()
+
+        def bind(name: str, func_data: Dict[str, Any]) -> None:
+            namespace[name] = self._stored_source(func_data, namespace=namespace)
+
+        for func_data in func_rows:
+            name = func_data.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError("Function record missing valid 'name'")
+            if func_data.get("is_primitive") is True:
+                callables.append(self._primitive_callable(func_data, namespace))
+                continue
+            if name not in visited:
+                visited.add(name)
+                self._walk_dependencies(
+                    func_data,
+                    namespace=namespace,
+                    visited=visited,
+                    bind=bind,
+                )
+                bind(name, func_data)
+            bound = namespace.get(name)
+            if not isinstance(bound, StoredSource):
+                bound = self._stored_source(func_data, namespace=namespace)
+            callables.append(bound)
+        return callables
+
+    def _stored_source(
+        self,
+        func_data: Dict[str, Any],
+        *,
+        namespace: Dict[str, Any],
+    ) -> StoredSource:
+        """The :class:`StoredSource` of one stored function; never executes it."""
+        func_name = func_data.get("name")
+        if not isinstance(func_name, str) or not func_name:
+            raise ValueError("func_data missing valid 'name'")
+        implementation = func_data.get("implementation")
+        if not isinstance(implementation, str) or not implementation.strip():
+            raise ValueError(f"Function '{func_name}' has no implementation")
+        self._inject_forward_ref_annotation_placeholders(
+            implementation,
+            namespace=namespace,
+        )
+        environment.ensure(func_data.get("dependencies") or [])
+        # Compiled to check it and to register its text; never executed here.
+        compile_function_source(func_name, implementation)
+        definition = next(
+            (
+                node
+                for node in ast.parse(implementation).body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == func_name
+            ),
+            None,
+        )
+        if definition is None:
+            raise ValueError(
+                f"Function '{func_name}' is not defined by its stored source",
+            )
+        return StoredSource(
+            func_name,
+            implementation,
+            docstring=str(
+                func_data.get("docstring") or ast.get_docstring(definition) or "",
+            ),
+            is_async=isinstance(definition, ast.AsyncFunctionDef),
+        )
 
     # 2. Listing -------------------------------------------------------- #
 
@@ -3354,6 +3504,9 @@ class FunctionManager(BaseFunctionManager):
         implementation = func_data.get("implementation")
         if not isinstance(implementation, str) or not implementation.strip():
             raise ValueError(f"Function '{function_name}' has no implementation")
+        self._refuse_in_process_execution(
+            f"Running the stored function {function_name!r} in this process",
+        )
 
         # UNIFY_FUNCTION_CASES: the run is recorded as a case; None while off.
         from . import store_cases
@@ -3453,7 +3606,11 @@ class FunctionManager(BaseFunctionManager):
         - stateless: Fresh globals each time (pure function behavior)
         - stateful: Persistent globals per session_id (Jupyter-notebook style)
         - read_only: Reads existing state but doesn't persist changes
+
+        Refused with Python in the sandboxed worker
+        (:meth:`_refuse_in_process_execution`).
         """
+        self._refuse_in_process_execution("Running a stored function in this process")
         from .execution_env import create_base_globals
         import io
         import traceback

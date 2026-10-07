@@ -20,6 +20,16 @@ from unify.function_manager.function_manager import (
     FunctionManager,
     _InProcessFunctionProxy,
 )
+from unify.settings import SETTINGS
+
+
+@pytest.fixture(autouse=True)
+def _python_in_process(monkeypatch):
+    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty): the in-process proxy exists only where stored functions are loaded into this process. With the
+    sandboxed worker a read binds them by source and nothing runs here (tests/actor/code_act/test_bind_load_confinement.py).
+    """
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # Sample Functions

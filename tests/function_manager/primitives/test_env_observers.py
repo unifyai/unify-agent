@@ -228,8 +228,19 @@ def test_switches_off_inject_the_registered_globals_themselves(weather):
     assert observers.proxy_enabled(SimpleNamespace(UNIFY_SPECULATE="writes"))
 
 
+@pytest.fixture
+def python_in_process(monkeypatch):
+    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty): these tests run stored functions in this process. With the
+    sandboxed worker that is refused, and the worker's observer tests cover it (tests/actor/code_act/test_bind_load_confinement.py).
+    """
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+
+
 @pytest.mark.asyncio
-async def test_switches_off_a_stored_function_gets_the_global_itself(weather):
+async def test_switches_off_a_stored_function_gets_the_global_itself(
+    weather,
+    python_in_process,
+):
     fm = FunctionManager(include_primitives=False)
     out = await fm._execute_python_function(
         implementation="def which():\n    return type(apis).__name__\n",
@@ -481,7 +492,11 @@ def _case_view(case: store_cases.Case) -> tuple:
 
 
 @_handle_project
-def test_recorded_cases_are_the_same_with_an_observer_active(weather, monkeypatch):
+def test_recorded_cases_are_the_same_with_an_observer_active(
+    weather,
+    monkeypatch,
+    python_in_process,
+):
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[TOUCH.format(n="a"), TOUCH.format(n="b")])
     namespace = {"primitives": SimpleNamespace(weather=weather)}
@@ -565,6 +580,7 @@ async def test_switch_on_an_async_raw_global_call_is_observed_and_interceptable(
 async def test_switch_on_a_stored_function_reaches_the_global_through_the_proxy(
     weather,
     proxy_on,
+    python_in_process,
 ):
     fm = FunctionManager(include_primitives=False)
     rec = Recorder()

@@ -221,7 +221,11 @@ def test_environment_modules_and_globals(weather):
 
 
 @_handle_project
-def test_stored_function_records_and_gets_the_namespace(weather):
+@pytest.mark.parametrize("python", ["worker", ""])
+def test_stored_function_records_and_gets_the_namespace(weather, python, monkeypatch):
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
     fm = FunctionManager()
     source = (
         "def two_forecasts(a: str, b: str) -> list:\n"
@@ -239,6 +243,15 @@ def test_stored_function_records_and_gets_the_namespace(weather):
         _return_callable=True,
         _namespace=namespace,
     )
+    if python:
+        # Bound by its source for the sandboxed worker, with the namespace
+        # root it reaches the environment through.
+        assert namespace["two_forecasts"].source == source
+        assert namespace["primitives"].weather.forecast(city="Oslo") == {
+            "city": "Oslo",
+            "temp_c": 21,
+        }
+        return
     assert namespace["two_forecasts"]("Oslo", "Rome") == [
         {"city": "Oslo", "temp_c": 21},
         {"city": "Rome", "temp_c": 21},

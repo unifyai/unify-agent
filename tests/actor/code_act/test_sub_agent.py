@@ -547,12 +547,19 @@ _TRIPLING_FUNCTION = (
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project
-async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
+async def test_child_calls_the_stored_prompt_function_its_discovery_hides(
+    monkeypatch,
+):
     """A stored function named in prompt_functions is documented in the
     child's prompt and left out of its discovery, and the child's code can
-    still call it."""
-    from unify.function_manager.function_manager import FunctionManager
+    still call it.
 
+    With Python in process: the namespace holds functions loaded into this
+    process. With the sandboxed worker see the test below."""
+    from unify.function_manager.function_manager import FunctionManager
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     FunctionManager(include_primitives=False).add_functions(
         implementations=[_DOUBLING_FUNCTION, _TRIPLING_FUNCTION],
     )
@@ -577,6 +584,46 @@ async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
 
     assert _result_error(coded) is None
     assert coded.result == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@_handle_project
+async def test_with_python_in_the_worker_a_prompt_function_never_runs_in_the_harness(
+    monkeypatch,
+):
+    """The child's ``functions`` namespace is a harness object the worker
+    reaches remotely, so its stored functions would run in the harness: they
+    are bound by source, and a call is refused there. Running them in the
+    worker needs a design choice (FREEZE-TODO.md, Security)."""
+    from unify.function_manager.function_manager import FunctionManager
+
+    executed: list[str] = []
+    create = FunctionManager._create_in_process_callable
+
+    def watched(self, func_data, *args, **kwargs):
+        executed.append(func_data.get("name"))
+        return create(self, func_data, *args, **kwargs)
+
+    monkeypatch.setattr(FunctionManager, "_create_in_process_callable", watched)
+    FunctionManager(include_primitives=False).add_functions(
+        implementations=[_DOUBLING_FUNCTION, _TRIPLING_FUNCTION],
+    )
+    child = _build_child(can_spawn_sub_agents=False, prompt_functions=["double"])
+    tools = child.get_tools("act")
+    sandbox = PythonExecutionSession(environments=child.environments)
+    token = _CURRENT_SANDBOX.set(sandbox)
+    try:
+        coded = await tools["execute_code"](
+            thought="Doubling with the prompt-injected function.",
+            code="await functions.double(21)",
+        )
+    finally:
+        _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
+
+    assert "runs only in the sandboxed worker" in str(_result_error(coded))
+    assert executed == []
 
 
 # ---------------------------------------------------------------------------
