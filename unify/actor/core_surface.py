@@ -50,7 +50,7 @@ import logging
 import re
 import textwrap
 import types
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -238,15 +238,9 @@ class WritePolicy:
     #: sandbox, which stores and edits the libraries but runs no stored
     #: function and binds none in its namespace (the task is over).
     review: bool = False
-    #: ``(method, why)`` pairs refused before anything else (a lessons-only
-    #: review's function writes).
-    withheld: Tuple[Tuple[str, str], ...] = ()
 
     def refusal(self, method: str) -> Optional[str]:
         """Why ``method`` (``functions.add``, ...) is refused here; ``None`` if allowed."""
-        for name, why in self.withheld:
-            if name == method:
-                return f"{method} is not available in this review: {why}"
         if self.admission_gated and method in _ADMISSION_WITHHELD:
             return (
                 f"{method} is not available in this session: the libraries are "
@@ -1175,7 +1169,7 @@ def review_fork_refusal(tool_names: List[str]) -> Optional[str]:
 # The JSON tool names the storage rulebook uses, as the sandbox names them;
 # longer names first, so no name is replaced inside another. The function
 # check (UNIFY_STORE_VERIFY) has no sandbox method and a core review does not
-# fork with it on, so a lessons-only review's list of refused writes drops it.
+# fork with it on, so a list of tools that names it drops it.
 _REVIEW_NAMES = (
     ("`FunctionManager_check_function`, ", ""),
     ("FunctionManager_reconcile_dependencies", "functions.reconcile_dependencies"),
@@ -1205,19 +1199,10 @@ def python_names(text: str) -> str:
     return text
 
 
-def review_policy(
-    *,
-    lesson_refusals: Optional[Mapping[str, str]] = None,
-) -> WritePolicy:
+def review_policy() -> WritePolicy:
     """The writes of a forked review's sandbox: every library write the
-    session's switches allow, less a lessons-only review's (*lesson_refusals*:
-    JSON tool name -> why), which are refused saying why."""
-    withheld = tuple(
-        (python_names(name), why)
-        for name, why in (lesson_refusals or {}).items()
-        if python_names(name) != name
-    )
-    return WritePolicy(review=True, withheld=withheld)
+    session's switches allow."""
+    return WritePolicy(review=True)
 
 
 class ReviewSandbox:

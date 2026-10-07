@@ -197,7 +197,6 @@ def test_the_review_policy_writes():
         assert full.refusal(method) is None, method
     # A session's policy is unchanged.
     assert core_surface.WritePolicy().review is False
-    assert core_surface.WritePolicy().withheld == ()
 
 
 def test_the_rulebook_names_no_json_library_tool_after_translation():

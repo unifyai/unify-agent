@@ -42,20 +42,6 @@ MAX_SOURCE = 40
 MAX_SUMMARY = 1200
 
 OUTCOME_HEADER = "## Verified outcome (from the environment's checker, not the agent)"
-LESSONS_HEADER = "## Failure lessons"
-
-# The library writes a review of a failed run may not make.
-LESSON_REFUSED_TOOLS = (
-    "FunctionManager_add_functions",
-    "FunctionManager_delete_function",
-    "FunctionManager_reconcile_dependencies",
-    "FunctionManager_check_function",
-    "FunctionManager_patch_function",
-)
-LESSON_MASK_RULE = (
-    "this review covers a run that failed its check, so it records lessons "
-    "as guidance and makes no function writes"
-)
 
 
 class OutcomeError(ValueError):
@@ -74,13 +60,6 @@ def enabled() -> bool:
     from unify.settings import SETTINGS
 
     return bool(getattr(SETTINGS, "UNIFY_OUTCOME", False))
-
-
-def review_failed_mode() -> str:
-    """``UNIFY_REVIEW_FAILED``: ``"lessons"`` or ``""``."""
-    from unify.settings import SETTINGS
-
-    return str(getattr(SETTINGS, "UNIFY_REVIEW_FAILED", "") or "")
 
 
 def _text(value: Any, limit: int, what: str) -> str:
@@ -175,11 +154,8 @@ def _verdict_word(value: Optional[bool]) -> str:
     return {True: "yes", False: "no", None: "not stated"}[value]
 
 
-def render(outcome: Optional[dict], *, lessons: bool = False) -> str:
-    """The review's section on the checked outcome, and on failure lessons.
-
-    Empty when there is neither an outcome nor a lessons-only review.
-    """
+def render(outcome: Optional[dict]) -> str:
+    """The review's section on the checked outcome; empty without one."""
     parts: list[str] = []
     if outcome is not None:
         lines = [
@@ -221,18 +197,4 @@ def render(outcome: Optional[dict], *, lessons: bool = False) -> str:
                 "\nThe checker gave no overall verdict; weigh the checks above.",
             )
         parts.append("\n".join(lines) + "\n\n")
-    if lessons:
-        refused = ", ".join(f"`{name}`" for name in LESSON_REFUSED_TOOLS)
-        parts.append(
-            f"{LESSONS_HEADER}\n\n"
-            "This run failed its check, so this review records lessons, not "
-            f"functions: function writes ({refused}) are refused. If the "
-            "failure teaches something a future task of this kind should do "
-            "differently -- the mistake, the check that caught it, and what "
-            "would have passed -- record it as guidance "
-            "(`GuidanceManager_add_guidance`, or update the entry that covers "
-            "it). Name the mistake concretely, and never record the failed "
-            "procedure as a recipe. If the failure teaches nothing general, "
-            "store nothing.\n\n",
-        )
     return "".join(parts)

@@ -1905,21 +1905,15 @@ def _read_store_admission(path: str) -> tuple[bool, str]:
     return False, f"not admitted{why}"
 
 
-def _storage_review_outcome_note(
-    outcome: Optional[dict] = None,
-    *,
-    lessons: bool = False,
-) -> str:
+def _storage_review_outcome_note(outcome: Optional[dict] = None) -> str:
     """The storage review's section on the session's checked outcome.
 
-    Filled from the outcome the environment posted (``UNIFY_OUTCOME``,
-    :mod:`unify.outcome`) and, for a review of a failed run that may record
-    only lessons (``UNIFY_REVIEW_FAILED=lessons``), the rule for it. Empty
-    when there is neither, so the review is then the shipped text.
+    Filled from the outcome the environment posted (:mod:`unify.outcome`).
+    Empty when there is none, so the review is then the shipped text.
     """
     from unify import outcome as outcome_mod
 
-    return outcome_mod.render(outcome, lessons=lessons)
+    return outcome_mod.render(outcome)
 
 
 # UNIFY_REVIEW_FRAMING=unified: the fork is the agent's own curation step.
@@ -2102,7 +2096,6 @@ def _start_storage_review_fork(
     tools: Dict[str, Callable],
     message: str,
     parent_lineage: list[str] | None,
-    mask_rules: Optional[Dict[str, str]] = None,
     mask_rule: str = _REVIEW_FORK_MASK_RULE,
 ) -> "AsyncToolLoopHandle":
     """Start the storage review as a fork of the session's conversation.
@@ -2129,10 +2122,6 @@ def _start_storage_review_fork(
     review_tools = {n: t for n, t in tools.items() if n != "ask_about_completed_tool"}
 
     opts: dict = {"mask_rule": mask_rule}
-    if mask_rules:
-        # A lessons-only review: the function writes the list advertises are
-        # refused with their own rule, not the fork's.
-        opts["mask_rules"] = dict(mask_rules)
 
     def _review_policy(step: int, visible: Dict[str, Any]):
         return (
@@ -2188,15 +2177,12 @@ def _start_storage_check_loop(
     live_session: bool = False,
     fork_source: dict | None = None,
     outcome: dict | None = None,
-    lessons: bool = False,
     origin_note: str = "",
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
 
     *outcome* is the session's checked outcome (``UNIFY_OUTCOME``), shown in
-    its own section before the final result. With *lessons* the run failed
-    and the review may record only lessons: the function writes are not
-    offered (refused by rule in a fork) and the prompt says why.
+    its own section before the final result.
 
     With *fork_source* (see :func:`_review_fork_source`) the review is a fork
     of the session's own conversation, and the rulebook arrives as one
@@ -2224,26 +2210,16 @@ def _start_storage_check_loop(
     if fm is None or gm is None:
         return None
     generalise_note = ""
-    if not lessons:
-        # UNIFY_STORE_FROM_SESSION: a function the session ran may be stored by name.
-        from unify.function_manager import session_source
+    # UNIFY_STORE_FROM_SESSION: a function the session ran may be stored by name.
+    from unify.function_manager import session_source
 
-        generalise_note += session_source.review_note()
+    generalise_note += session_source.review_note()
     tools, storage_active_lines, dormant_lines = _build_storage_tools(
         actor=actor,
         ask_tools=ask_tools,
         completed_tool_metadata=completed_tool_metadata,
     )
-    lesson_rules: Dict[str, str] = {}
-    if lessons:
-        from unify import outcome as outcome_mod
-
-        refused_tools = list(outcome_mod.LESSON_REFUSED_TOOLS)
-        refused_tools.append("FunctionManager_retire_case")
-        for name in refused_tools:
-            tools.pop(name, None)
-            lesson_rules[name] = outcome_mod.LESSON_MASK_RULE
-    outcome_note = _storage_review_outcome_note(outcome, lessons=lessons)
+    outcome_note = _storage_review_outcome_note(outcome)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -2410,7 +2386,7 @@ def _start_storage_check_loop(
         # session's, unchanged.
         review_sandbox = core_surface.ReviewSandbox(
             actor,
-            core_surface.review_policy(lesson_refusals=lesson_rules),
+            core_surface.review_policy(),
         )
         rulebook = core_surface.python_names(
             f"{_review_fork_role(core=True)}"
@@ -2462,7 +2438,6 @@ def _start_storage_check_loop(
                 f"{_REVIEW_CLOSING_UNIFIED}"
             ),
             parent_lineage=parent_lineage,
-            mask_rules=lesson_rules or None,
         )
 
     # Static doctrine first, volatile trajectory last: every storage loop
@@ -3152,14 +3127,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             # With an admission file configured, the review runs only when an
             # external check of the session's outcome admits it, read now that
             # the session has ended; anything else skips it.
-            # UNIFY_REVIEW_FAILED=lessons adds one admitting verdict,
-            # ``{"admit": "lessons"}``, and a failed checked outcome
-            # (UNIFY_OUTCOME) without an admission file: both review the run
-            # for lessons only, with no function writes.
-            from unify import outcome as outcome_mod
-
-            lessons_mode = outcome_mod.review_failed_mode() == "lessons"
-            lessons = False
             admission_path = _store_admission_path()
             if admission_path and _store_admission_never(admission_path):
                 logger.info(f"StorageCheck skipped: {_STORE_ADMISSION_NEVER_REASON}")
@@ -3172,13 +3139,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                 return
             if admission_path:
                 admitted, admission_reason = _read_store_admission(admission_path)
-                if not admitted and lessons_mode:
-                    verdict, _failure = _load_store_admission(admission_path)
-                    if verdict is not None and verdict.get("admit") == "lessons":
-                        admitted, lessons = True, True
-                        admission_reason = (
-                            f"admitted for failure lessons{_admission_why(verdict)}"
-                        )
                 if not admitted:
                     logger.info(f"StorageCheck skipped: {admission_reason}")
                     await self._notification_q.put(
@@ -3189,17 +3149,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                     )
                     return
                 logger.info(f"StorageCheck {admission_reason}")
-            if (
-                lessons_mode
-                and self._outcome is not None
-                and self._outcome.get("solved") is False
-            ):
-                lessons = True
-            if lessons:
-                logger.info(
-                    "StorageCheck reviewing a failed run for lessons only: "
-                    "function writes refused",
-                )
 
             self._phase = "storage"
 
@@ -3228,10 +3177,7 @@ class _StorageCheckHandle(SteerableToolHandle):
                 )
                 ask_gate = False
             if ask_gate:
-                gate_outcome_note = _storage_review_outcome_note(
-                    self._outcome,
-                    lessons=lessons,
-                )
+                gate_outcome_note = _storage_review_outcome_note(self._outcome)
                 decision = await review_gate.decide(
                     client_factory=lambda: _review_gate_client(self._actor),
                     trajectory=trajectory,
@@ -3318,7 +3264,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                         proactive_summaries=proactive_summaries or None,
                         fork_source=fork_source,
                         outcome=self._outcome,
-                        lessons=lessons,
                     )
 
                 if storage_handle is None:

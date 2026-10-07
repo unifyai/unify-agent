@@ -433,12 +433,6 @@ class ProductionSettings(BaseSettings):
     # outcome arrived instead of the stop notice of a persistent session.
     # Off: no outcome is taken and the review is as shipped.
     UNIFY_OUTCOME: bool = True
-    # ``lessons``: a run whose outcome says it failed (``solved`` false, with
-    # UNIFY_OUTCOME), or whose admission verdict is ``{"admit": "lessons"}``,
-    # is reviewed with function writes refused and guidance writes allowed,
-    # to record what went wrong. An admission verdict of false still skips the
-    # review. Empty: failed runs are reviewed, or skipped, as shipped.
-    UNIFY_REVIEW_FAILED: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Session Transcripts
@@ -730,16 +724,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("on", "off", "on_demand"):
             raise ValueError(
                 f"UNIFY_DELEGATION must be 'on', 'off' or 'on_demand', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_REVIEW_FAILED", mode="before")
-    @classmethod
-    def parse_review_failed(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "lessons"):
-            raise ValueError(
-                f"UNIFY_REVIEW_FAILED must be empty or 'lessons', not {v!r}",
             )
         return value
 
