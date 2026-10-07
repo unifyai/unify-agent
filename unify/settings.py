@@ -763,7 +763,7 @@ class ProductionSettings(BaseSettings):
     # still cancel a turn in flight, as shipped. No eager turn is granted
     # while calls run. Requests, tools and the prompt are unchanged; only when
     # the model is called changes. Read once per loop. Off: as shipped.
-    UNIFY_BATCH_WAKE: bool = False
+    UNIFY_BATCH_WAKE: bool = True
     # While a tool call is still running, every model turn is sent with
     # tool_choice "required", so the model has to call some tool (often a
     # bare `wait`, which the loop prunes) instead of replying. It dates from
@@ -771,7 +771,7 @@ class ProductionSettings(BaseSettings):
     # without tool calls. Off: such a turn keeps the tool_choice its policy
     # gave it ("auto" unless a gate requires a call). Read once per loop. On:
     # as shipped.
-    UNIFY_PENDING_REQUIRED: bool = True
+    UNIFY_PENDING_REQUIRED: bool = False
     # Each tool call the loop schedules appends a user-role
     # "[steerable <call_id>] <tool> started." message, a call that becomes a
     # handle appends "[steerable <call_id>] now supports ...", and a finished
@@ -782,7 +782,7 @@ class ProductionSettings(BaseSettings):
     # messages (with the visibility message they bring) are unchanged. Read
     # once per loop, so a session never changes mid-way, and nothing already
     # in a transcript is removed. On: as shipped.
-    UNIFY_LIFECYCLE_NOTICES: bool = True
+    UNIFY_LIFECYCLE_NOTICES: bool = False
     # Off: while the actor's discovery gate is open, no model turn starts
     # before the library searches a turn scheduled have returned. As shipped
     # the gate grants one at once, while they run, and the model is woken as
