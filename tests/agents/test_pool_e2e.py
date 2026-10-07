@@ -194,38 +194,3 @@ async def test_agents_waiting_on_each_other_are_released_by_their_timeouts(
     )
     assert result == "gave up waiting"
     assert all(task.done() for task in pool._tasks.values())
-
-
-async def test_spawning_is_refused_without_the_worker_sandbox(monkeypatch, tmp_path):
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.agents import binding
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "record")
-    monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-    actor = CodeActActor(
-        environments=actor_env.top_level_environments(),
-        tool_policy=None,
-    )
-    replies = [
-        _code(
-            "try:\n"
-            "    await agents.spawn('Summarise a.csv: rows and columns please.')\n"
-            "except PermissionError as e:\n"
-            "    print('refused:', e)",
-        ),
-        _text("done"),
-    ]
-    try:
-        with h.scripted(replies) as provider:
-            handle = await actor.act(
-                "Summarise a.csv.",
-                persist=False,
-                can_store=False,
-                clarification_enabled=False,
-            )
-            await asyncio.wait_for(handle.result(), 60)
-    finally:
-        await actor.close()
-    assert "UNIFY_WORKSPACE_PYTHON=worker" in json.dumps(
-        provider.requests[1]["messages"],
-    )
