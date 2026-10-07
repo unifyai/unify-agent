@@ -132,9 +132,12 @@ async def test_a_dispatch_records_only_messages_tools_and_tool_choice(on):
 
 
 @pytest.mark.asyncio
-async def test_the_record_matches_what_was_sent_and_is_off_by_default(monkeypatch):
+async def test_the_record_matches_what_was_sent(monkeypatch):
+    """Compression's fork summary reads the record, so it is kept whatever
+    UNIFY_CACHE_DISCIPLINE says (on by default since the code freeze)."""
     from unify.common._async_tool.messages import generate_with_preprocess
 
+    assert SETTINGS.UNIFY_CACHE_DISCIPLINE is True
     for switch in (False, True):
         monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", switch)
         client = h.new_client()
@@ -155,9 +158,6 @@ async def test_the_record_matches_what_was_sent_and_is_off_by_default(monkeypatc
                 stateful=True,
             )
         record = cd.last_sent_request(client)
-        if not switch:
-            assert record is None
-            continue
         sent = provider.requests[0]
         assert _dumps(record["messages"]) == _dumps(sent["messages"])
         assert record["tools"] == sent["tools"]

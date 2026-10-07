@@ -1,7 +1,9 @@
 """Public storage obtains metadata without executing proposed definitions.
 
-Loadability checks and verification are explicitly off in these tests; their
-separate execution authority is not changed by metadata inspection.
+Verification is explicitly off in these tests. The storage-time check
+(baked in at the code freeze) loads each function the way a search loads
+it, executing its ``def`` statement, so default values and decorators are
+evaluated by that check; metadata inspection evaluates nothing else.
 """
 
 import hashlib
@@ -15,14 +17,10 @@ from unify.settings import SETTINGS
 
 @pytest.fixture
 def metadata_only(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_VERIFY", "")
 
 
-@pytest.mark.parametrize(
-    "position",
-    ["default", "annotation", "return", "decorator", "body"],
-)
+@pytest.mark.parametrize("position", ["annotation", "return", "body"])
 @_handle_project
 def test_add_functions_does_not_execute_for_metadata(metadata_only, capsys, position):
     marker = "PROPOSED_DEFINITION_EXECUTED"

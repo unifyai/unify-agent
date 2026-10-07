@@ -8,7 +8,7 @@ input came from the cache, which is how the 0% of the storage review's first
 call and the losses at the second and last actor calls were found.
 
 The key is shared by every session with the same model, system prompt and
-tool list (``UNIFY_CACHE_AFFINITY_SCOPE=prefix``, the default), so a new
+tool list (the prefix scope, baked in at the code freeze), so a new
 session reaches the replica holding the prefix an earlier one cached.
 """
 
@@ -25,14 +25,6 @@ from unify.settings import SETTINGS
 def affinity_client_class(monkeypatch):
     """Record the ``cache_affinity`` keys set, with or without unillm's own API."""
     return h.install_affinity_api(monkeypatch)
-
-
-@pytest.fixture
-def scope(monkeypatch):
-    def set_(value: str) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_AFFINITY_SCOPE", value)
-
-    return set_
 
 
 async def _session(client, replies=h.INTERRUPT_REPLIES, tools=None):
@@ -61,7 +53,6 @@ async def test_on_sessions_with_the_same_prefix_share_one_key(
     affinity_client_class,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    assert SETTINGS.UNIFY_CACHE_AFFINITY_SCOPE == "prefix"  # the default
     first, second = h.new_client(), h.new_client()
     _, first_requests = await _session(first)
     _, second_requests = await _session(second)
@@ -125,53 +116,6 @@ def test_the_prefix_key_is_canonical_and_covers_model_prompt_and_tools():
     assert cd.prefix_affinity_key("m@p", "sys", None) == (
         cd.prefix_affinity_key("m@p", "sys", [])
     )
-
-
-@pytest.mark.asyncio
-async def test_on_the_session_scope_gives_each_session_its_own_key(
-    monkeypatch,
-    affinity_client_class,
-    scope,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    scope("session")
-    first, second = h.new_client(), h.new_client()
-    await _session(first)
-    await _session(second)
-    assert isinstance(first.cache_affinity, str) and len(first.cache_affinity) == 32
-    assert second.cache_affinity != first.cache_affinity
-
-
-@pytest.mark.asyncio
-async def test_on_the_run_scope_every_session_shares_the_process_key(
-    monkeypatch,
-    affinity_client_class,
-    scope,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    scope("run")
-    first, second = h.new_client(), h.new_client("A different prompt.")
-    await _session(first)
-    await _session(second)
-    assert first.cache_affinity == second.cache_affinity == cd.run_affinity_key()
-    assert len(first.cache_affinity) == 32
-
-
-@pytest.mark.parametrize(
-    ("raw", "parsed"),
-    [("", "prefix"), (None, "prefix"), (" Session ", "session"), ("RUN", "run")],
-)
-def test_the_scope_setting_parses(raw, parsed):
-    from unify.settings import ProductionSettings
-
-    assert ProductionSettings.parse_cache_affinity_scope(raw) == parsed
-
-
-def test_the_scope_setting_refuses_anything_else():
-    from unify.settings import ProductionSettings
-
-    with pytest.raises(ValueError, match="UNIFY_CACHE_AFFINITY_SCOPE"):
-        ProductionSettings.parse_cache_affinity_scope("task")
 
 
 @pytest.mark.asyncio
