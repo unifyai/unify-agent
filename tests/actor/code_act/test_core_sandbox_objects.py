@@ -2,12 +2,11 @@
 
 ``functions``, ``guidance``, ``install``, ``read_file`` and ``grep`` are harness
 objects a cell reaches through the sandboxed worker's proxy. ``functions.run``
-replaces the ``execute_function`` tool: it runs the stored code in the worker,
-confined, and records the call as that tool does -- usage, a
+replaced the ``execute_function`` tool (removed): it runs the stored code in
+the worker, confined, and records the call as that tool did -- usage, a
 ``UNIFY_FUNCTION_CASES`` case with the environment calls it made (so a later
-change is replayed against it), and the declared dependencies installed
-first. These tests make the same calls
-both ways and compare every stored record. A stored function called by name
+change is checked against it), and the declared dependencies installed
+first. A stored function called by name
 is recorded the same way (as shipped the worker only notes its use).
 ``state`` is ``execute_function``'s ``state_mode``; writes the session may not
 make are refused with the reason; ``help()`` prints the objects' docs.
@@ -40,7 +39,7 @@ from unify.settings import SETTINGS
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 
 
-# ── functions.run against execute_function: the same records ───────────────
+# ── functions.run: what it records ───────────────────────────────────────────
 
 REMOVE_BEFORE = (
     "def remove_tracks_before(year: int) -> int:\n"
@@ -143,18 +142,16 @@ def _records() -> dict:
     return _unsalted({"cases": cases})
 
 
-async def _reuse(monkeypatch, music, *, core: bool, calls: list[tuple[str, dict]]):
-    """The given stored-function calls in one session, through the
-    ``execute_function`` tool (switch off) or ``functions.run`` (switch on),
-    in a fresh store; returns what each call returned, the records, the
-    usage notes and the dependency installs."""
+async def _reuse(monkeypatch, music, *, calls: list[tuple[str, dict]]):
+    """The given stored-function calls in one session, through
+    ``functions.run``, in a fresh store; returns what each call returned, the
+    records, the usage notes and the dependency installs."""
     from unify import environment
     from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
     from unify.function_manager.function_manager import FunctionManager
     from unify.function_manager.primitives.environment import namespace_object
 
     db.clear()
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core" if core else "")
     music.world = _Music()
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[REMOVE_BEFORE], dependencies=["tinydep>=1"])
@@ -174,31 +171,21 @@ async def _reuse(monkeypatch, music, *, core: bool, calls: list[tuple[str, dict]
     sandbox.global_state["primitives"] = SimpleNamespace(
         music=namespace_object("music"),
     )
-    if core:
-        objects = core_surface.sandbox_objects(
-            actor,
-            policy=core_surface.WritePolicy(),
-        )
-        sandbox.global_state.update(objects)
-        sandbox.core_globals = objects
+    objects = core_surface.sandbox_objects(
+        actor,
+        policy=core_surface.WritePolicy(),
+    )
+    sandbox.global_state.update(objects)
+    sandbox.core_globals = objects
     token = _CURRENT_SANDBOX.set(sandbox)
     outs = []
     try:
         for name, kwargs in calls:
-            if core:
-                args = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
-                out = await tools["execute_code"].fn(
-                    thought="Reusing a stored function.",
-                    code=f"await functions.run({name!r}, {args})",
-                )
-            else:
-                tool = tools["execute_function"]
-                out = await tool.fn(
-                    thought="Reusing a stored function.",
-                    function_name=name,
-                    call_kwargs=kwargs,
-                    state_mode="stateful",
-                )
+            args = ", ".join(f"{k}={v!r}" for k, v in kwargs.items())
+            out = await tools["execute_code"].fn(
+                thought="Reusing a stored function.",
+                code=f"await functions.run({name!r}, {args})",
+            )
             outs.append(out)
     finally:
         _CURRENT_SANDBOX.reset(token)
@@ -215,39 +202,30 @@ def _last_line(text: Any) -> str:
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
 @_handle_project
-async def test_functions_run_records_what_execute_function_records(
+async def test_functions_run_records_the_call(
     core_world,
     music,
     monkeypatch,
 ):
+    """Results, errors, usage, a case with its environment calls, and the
+    declared dependencies. (Its comparison with the ``execute_function`` tool
+    went with that tool.)"""
     calls = [
         ("remove_tracks_before", {"year": 2000}),
         ("fetch_profile", {"access_token": "expired-1"}),
         ("fetch_profile", {"access_token": "{{access_token}}"}),
     ]
-    json_outs, json_records, json_used, json_installs = await _reuse(
-        monkeypatch,
-        music,
-        core=False,
-        calls=calls,
-    )
     core_outs, core_records, core_used, core_installs = await _reuse(
         monkeypatch,
         music,
-        core=True,
         calls=calls,
     )
-    # The same results and errors reach the model.
-    assert json_outs[0].result == core_outs[0].result == 1
-    for json_out, core_out in zip(json_outs[1:], core_outs[1:]):
-        assert json_out.result is None and core_out.result is None
+    assert core_outs[0].result == 1
+    for core_out in core_outs[1:]:
+        assert core_out.result is None
         assert "401 Unauthorized" in core_out.error
-    # Usage and cases (with the environment calls in order): the same.
-    assert core_used == json_used == [name for name, _ in calls]
-    assert core_records == json_records, json.dumps(
-        {"core": core_records, "json": json_records},
-        default=str,
-    )
+    # Usage and cases (with the environment calls in order).
+    assert core_used == [name for name, _ in calls]
     traced = core_records["cases"][0]
     assert [c["call"] for c in traced["trace"]] == [
         "music.list_tracks",
@@ -255,7 +233,7 @@ async def test_functions_run_records_what_execute_function_records(
     ]
     assert traced["trace_complete"] == 1 and traced["args_shown"] == "year=2000"
     # The declared dependencies are installed before the call, once a call.
-    assert core_installs == json_installs == [["tinydep>=1"]]
+    assert core_installs == [["tinydep>=1"]]
 
 
 @needs_bwrap
@@ -401,10 +379,14 @@ async def test_functions_run_states(core_world):
     actor = _actor(can_store=False)
     actor.function_manager.add_functions(
         implementations=[
+            # `global` + an assignment: the store check (resolve) refuses a
+            # free name it cannot find where the function runs.
             "def where() -> str:\n"
+            "    global marker\n"
             "    try:\n"
             "        return f'sees {marker}'\n"
             "    except NameError:\n"
+            "        marker = None\n"
             "        return 'fresh'\n",
             "def bump() -> int:\n"
             "    global counter\n"
@@ -511,7 +493,6 @@ async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
     outs, _records, _used, _installs = await _reuse(
         monkeypatch,
         music,
-        core=True,
         calls=[("remove_tracks_before", {"year": 2010})],
     )
     assert outs[0].result == 2

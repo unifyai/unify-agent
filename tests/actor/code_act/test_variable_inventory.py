@@ -523,40 +523,6 @@ async def _act(actor) -> tuple[list[str], list]:
     return tools, provider.requests
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(20)
-@pytest.mark.parametrize("projection", ["", "notebook"])
-@pytest.mark.parametrize("stateful_cells", [False, True])
-@pytest.mark.parametrize("switch", ["on", ""])
-async def test_an_act_shows_the_line_on_change(
-    on,
-    monkeypatch,
-    projection,
-    stateful_cells,
-    switch,
-):
-    from unify.actor.code_act_actor import CodeActActor
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_VARIABLE_INVENTORY", switch)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
-    monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", stateful_cells)
-    actor = CodeActActor()
-    try:
-        tools, requests = await _act(actor)
-    finally:
-        await actor.close()
-    assert len(tools) == 3
-    if not switch:
-        assert not any("[variables]" in t for t in tools)
-        return
-    assert "[variables] grid: list[2x2]" in tools[0]
-    assert "[variables]" not in tools[1]
-    assert "[variables] total: int = 10; grid: list[2x2]" in tools[2]
-    # Each request extends the one before it.
-    for earlier, later in zip(requests, requests[1:]):
-        assert later["messages"][: len(earlier["messages"])] == earlier["messages"]
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)

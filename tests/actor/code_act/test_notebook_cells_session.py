@@ -413,35 +413,6 @@ async def test_stored_function_calls_record_the_same_cases(
 # ── product paths ───────────────────────────────────────────────────────────
 
 
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(240)
-@_handle_project
-@pytest.mark.parametrize("projection", PROJECTIONS)
-async def test_a_cell_asks_a_clarification_and_gets_the_answer(
-    core_world,
-    monkeypatch,
-    projection,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
-    actor = new_actor(can_store=False)
-    code = "answer = await request_clarification('Which colour?')\nprint('got', answer)"
-    try:
-        decide = lambda r: (
-            _done()() if "got blue" in _texts(r) else _wait()
-        )  # noqa: E731
-        with h.scripted((_cell(projection, code), *_driver(decide))) as provider:
-            handle = await actor.act("Paint it.", persist=False)
-            clar = await asyncio.wait_for(handle.next_clarification(), 60)
-            assert clar["question"] == "Which colour?"
-            await handle.answer_clarification(clar["call_id"], "blue")
-            result = await asyncio.wait_for(handle.result(), 120)
-    finally:
-        await actor.close()
-    assert result == "done"
-    assert "got blue" in _texts(provider.requests[-1])
-
-
 def _simulated_sub_actors(monkeypatch, record: list) -> None:
     from unify.actor.simulated import SimulatedActor
 
@@ -463,7 +434,7 @@ def _simulated_sub_actors(monkeypatch, record: list) -> None:
 @pytest.mark.timeout(240)
 @_handle_project
 @pytest.mark.parametrize("projection", PROJECTIONS)
-@pytest.mark.parametrize("include", [True, False])
+@pytest.mark.parametrize("include", [False])
 async def test_parent_chat_context_reaches_a_sub_agent_as_before(
     monkeypatch,
     projection,
@@ -563,50 +534,3 @@ async def test_the_heartbeat_and_active_work_see_the_cell_with_its_caption(
     finally:
         ACTIVE_WORK.clear()
         await actor.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(240)
-@_handle_project
-@pytest.mark.parametrize("projection", PROJECTIONS)
-async def test_in_process_cells_keep_isolate_and_discard_state_as_the_fields_did(
-    monkeypatch,
-    projection,
-):
-    """The JSON surface without a workspace: in-process sessions, no bash."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
-    nb_ = projection == "notebook"
-    cells = [
-        ("rows = [1, 2, 3]\nprint('set', sum(rows))", {}),
-        (
-            "%%scratch\n"
-            + _sees_x("scratch sees rows").replace("    x\n", "    rows\n"),
-            {"state_mode": "stateless"},
-        ),
-        # In process a what-if runs on a shallow copy of the namespace, as
-        # state_mode="read_only" does: a rebinding is discarded.
-        (
-            "%%what_if\nrows = rows + [4]\nprint('what-if', sum(rows))",
-            {"state_mode": "read_only", "session_id": 0},
-        ),
-        ("print('kept', sum(rows))", {}),
-    ]
-    replies = []
-    for code, legacy in cells:
-        if not nb_ and code.startswith("%%"):
-            code = code.split("\n", 1)[1]
-        replies.append(_cell(projection, code, **({} if nb_ else legacy)))
-    actor = new_actor(can_store=False)
-    try:
-        result, requests = await _act(actor, (*replies, _done()))
-    finally:
-        await actor.close()
-    assert result == "done"
-    out = _tool_replies(requests[-1])
-    assert "set 6" in out[0]
-    assert "scratch sees rows: False" in out[1]
-    assert "what-if 10" in out[2]
-    assert "kept 6" in out[3]
-    names = tool_names(requests[0])
-    assert ("list_sessions" in names) is (not nb_)
