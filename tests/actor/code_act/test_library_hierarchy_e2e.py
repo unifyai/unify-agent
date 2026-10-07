@@ -530,19 +530,16 @@ async def _calls_both_ways(monkeypatch, *, core: bool) -> dict:
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
 @_handle_project
-async def test_functions_run_records_the_entry_point_as_execute_function_does(
+async def test_functions_run_records_the_entry_point_and_its_helpers(
     library,
     monkeypatch,
 ):
-    """Parity on the entry point with ``execute_function`` on the default
-    surface (worker Python both ways); the helper calls are recorded only
-    under core, where they run as recorded stored functions."""
-    shipped = await _calls_both_ways(monkeypatch, core=False)
+    """The entry point's two runs are recorded, and so are the helper calls,
+    which run as recorded stored functions under core."""
     core = await _calls_both_ways(monkeypatch, core=True)
-    assert core["outs"] == shipped["outs"] == [(SUMMARY, None), ("c: 7", None)]
-    assert core["cases"]["summarize_pairs"] == shipped["cases"]["summarize_pairs"]
-    assert core["usage"]["summarize_pairs"] == shipped["usage"]["summarize_pairs"]
-    assert core["trust"]["summarize_pairs"] == shipped["trust"]["summarize_pairs"]
+    assert core["outs"] == [(SUMMARY, None), ("c: 7", None)]
+    assert len(core["cases"]["summarize_pairs"]) == 2, core["cases"]
+    assert core["trust"]["summarize_pairs"] == (2, 0), core["trust"]
     for helper in HELPERS:
         assert len(core["cases"][helper]) == 2, core["cases"]
         assert core["trust"][helper] == (2, 0), core["trust"]

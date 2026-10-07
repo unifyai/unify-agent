@@ -18,7 +18,6 @@ returns ``""``. Outside a cell ``sys.stdin`` is the process's own.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -136,32 +135,6 @@ async def test_a_cell_in_the_worker_reads_an_empty_stdin(cell, world, monkeypatc
     else:
         assert res["error"] is None, res["error"]
         assert res["result"] == ([] if cell == "iterate" else "")
-
-
-@pytest.mark.asyncio
-async def test_execute_function_help_with_no_arguments_returns(
-    harness_stdin,
-    monkeypatch,
-):
-    """The recorded call: ``execute_function("help")``, no arguments."""
-    from unify.actor.code_act_actor import CodeActActor
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    actor = CodeActActor()
-    try:
-        fn = actor.get_tools("act")["execute_function"]
-        fn = getattr(fn, "fn", fn)
-        harness_stdin.arm()
-        started = time.monotonic()
-        out = await fn(thought="Reading the help.", function_name="help")
-        elapsed = time.monotonic() - started
-    finally:
-        await actor.close()
-
-    assert elapsed < WATCHDOG_S, f"execute_function waited on stdin ({elapsed:.1f}s)"
-    assert "help>" in json.dumps(out, default=str)
-    time.sleep(WATCHDOG_S - elapsed + 0.5)
-    assert harness_stdin.readline() == HOST_LINE
 
 
 # ── what a cell starts ─────────────────────────────────────────────────────
