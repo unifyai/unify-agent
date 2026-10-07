@@ -30,11 +30,14 @@ With the switch on, for a top-level task:
   that then worked in the same session (weighted by the sessions it failed
   in).
 * **Showing.** One section in the session's first message, for the groups
-  (``apis.spotify``) whose last name the request names as a whole word,
-  and those used in at least half of the earlier sessions: at most
+  (``apis.spotify``) used by the :data:`NEAREST` earlier sessions whose
+  requests are closest to this one by embedding (the request's embedding
+  is kept, never its text), and those used in at least half of the earlier
+  sessions: at most
   :data:`K` facts per group, heaviest first. It informs; nothing is
   refused. Facts are keyed by the environment's own names, never by a task
-  or a request.
+  or a request; nothing is chosen by shared words. An embedding failure
+  leaves only the share rule.
 
 Off: no observer, no table, no section.
 """
@@ -54,12 +57,15 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 logger = logging.getLogger(__name__)
 
 TABLE = "env_calls"
+SESSIONS = "env_sessions"
 K = 5
 """Facts shown per group, at most."""
 MIN_SHARE = 0.5
 """A group used in at least this share of earlier sessions is shown without being named."""
 MIN_SESSIONS = 2
 """Earlier sessions needed before the share rule applies."""
+NEAREST = 3
+"""The earlier sessions whose requests are closest (by embedding) to this one: the groups they used are shown."""
 MAX_KEYS = 12
 MAX_ERROR = 120
 MAX_NAME = 40
@@ -99,6 +105,10 @@ def _connect() -> sqlite3.Connection:
     path = db.store_home() / "env_cards.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {SESSIONS} (session TEXT PRIMARY KEY,"
+        " vec BLOB NOT NULL, created_at TEXT NOT NULL)",
+    )
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS {TABLE} (seq INTEGER PRIMARY KEY"
         " AUTOINCREMENT, session TEXT NOT NULL, grp TEXT NOT NULL,"
@@ -264,20 +274,77 @@ def _rows(exclude_session: str = "") -> List[Tuple]:
         return []
 
 
-def _named(group: str, request: str) -> bool:
-    last = group.split(".")[-1]
-    return (
-        bool(last)
-        and re.search(
-            r"(?<![A-Za-z0-9_])" + re.escape(last) + r"(?![A-Za-z0-9_])",
-            request,
-            re.I,
+def _embed(texts: List[str]) -> Any:
+    from unify.common import embeddings
+
+    return embeddings.embed(texts)
+
+
+def _vector(text: str) -> Optional[bytes]:
+    """The request's embedding as float32 bytes, or ``None`` (no text, or the embedder failed)."""
+    if not text:
+        return None
+    try:
+        import numpy as np
+
+        vec = np.asarray(_embed([text]), dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vec))
+        return (vec / norm).astype(np.float32).tobytes() if norm else None
+    except Exception as exc:  # noqa: BLE001 - only the share rule, then
+        logger.warning(
+            "env cards: request not embedded: %s: %s",
+            type(exc).__name__,
+            exc,
         )
-        is not None
-    )
+        return None
 
 
-def facts(request: str, *, exclude_session: str = "") -> Dict[str, List[str]]:
+def _keep_session(session: str, vector: Optional[bytes]) -> None:
+    if vector is None:
+        return
+    try:
+        with closing(_connect()) as conn, conn:
+            conn.execute(
+                f"INSERT OR REPLACE INTO {SESSIONS} VALUES (?, ?, ?)",
+                (session, vector, _now()),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("env cards: session not kept: %s: %s", type(exc).__name__, exc)
+
+
+def _nearest(vector: Optional[bytes], exclude_session: str) -> set:
+    """The :data:`NEAREST` earlier sessions whose requests are closest to *vector* by cosine."""
+    if vector is None:
+        return set()
+    try:
+        import numpy as np
+
+        with closing(_connect()) as conn:
+            rows = conn.execute(
+                f"SELECT session, vec FROM {SESSIONS} WHERE session != ?",
+                (exclude_session,),
+            ).fetchall()
+        if not rows:
+            return set()
+        here = np.frombuffer(vector, dtype=np.float32)
+        scored = []
+        for session, blob in rows:
+            other = np.frombuffer(blob, dtype=np.float32)
+            if other.shape == here.shape:
+                scored.append((float(here @ other), session))
+        scored.sort(key=lambda item: -item[0])
+        return {session for _, session in scored[:NEAREST]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("env cards: nearest sessions not read: %s", exc)
+        return set()
+
+
+def facts(
+    request: str,
+    *,
+    exclude_session: str = "",
+    vector: Optional[bytes] = None,
+) -> Dict[str, List[str]]:
     """Per shown group, its facts as lines, heaviest first (at most :data:`K`)."""
     rows = _rows(exclude_session)
     if not rows:
@@ -307,10 +374,11 @@ def facts(request: str, *, exclude_session: str = "") -> Dict[str, List[str]]:
                 pitfall_sessions[key].add(session)
         else:
             open_failures[(session, group)].append((method, args, error))
+    near = _nearest(vector, exclude_session)
     shown = sorted(
         g
         for g in used
-        if _named(g, request)
+        if used[g] & near
         or (len(sessions) >= MIN_SESSIONS and len(used[g]) / len(sessions) >= MIN_SHARE)
     )
     out: Dict[str, List[str]] = {}
@@ -349,11 +417,16 @@ def facts(request: str, *, exclude_session: str = "") -> Dict[str, List[str]]:
     return out
 
 
-def section(request: str, *, exclude_session: str = "") -> str:
+def section(
+    request: str,
+    *,
+    exclude_session: str = "",
+    vector: Optional[bytes] = None,
+) -> str:
     """The first-message section for *request*, or "" (off, or nothing verified yet)."""
     if not enabled() or not request:
         return ""
-    found = facts(request, exclude_session=exclude_session)
+    found = facts(request, exclude_session=exclude_session, vector=vector)
     if not found:
         return ""
     blocks = [
@@ -395,7 +468,9 @@ def enter(request: str) -> Tuple[Optional[contextlib.ExitStack], str]:
     if any(isinstance(o, Recorder) for o in observers.current()):
         return None, ""  # a sub-agent: its calls are its caller's session's
     session = uuid.uuid4().hex
-    text = section(request, exclude_session=session)
+    vector = _vector(str(request or ""))
+    text = section(request, exclude_session=session, vector=vector)
+    _keep_session(session, vector)
     stack = contextlib.ExitStack()
     stack.enter_context(observers.observing(Recorder(session, _surface_names())))
     return stack, text

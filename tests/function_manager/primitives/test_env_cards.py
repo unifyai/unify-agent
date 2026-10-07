@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 
+import numpy as np
 import pytest
 
 from tests.function_manager.primitives.test_env_observers import (  # noqa: F401 (fixture)
@@ -21,15 +22,26 @@ from unify.function_manager.primitives import observers
 from unify.function_manager.primitives.observers import EnvCall
 from unify.settings import ProductionSettings, SETTINGS
 
+# The stand-in embedder: a fixed vector per text, so closeness is set by the test, never by shared words.
+WEATHERY = [1.0, 0.0, 0.1]
+MUSICAL = [0.0, 1.0, 0.1]
+VECTORS: dict = {}
+
+
+def _stand_in_embed(texts):
+    return np.array([VECTORS.get(t, [0.0, 0.0, 1.0]) for t in texts], dtype=np.float32)
+
 
 @pytest.fixture
 def on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_ENV_CARDS", True)
+    monkeypatch.setattr(ec, "_embed", _stand_in_embed)
+    VECTORS.clear()
 
 
-def _session(run):
+def _session(run, request=""):
     """One session: its calls go through the seam under its own recorder."""
-    scope, _ = ec.enter("")
+    scope, _ = ec.enter(request)
     try:
         run()
     finally:
@@ -135,13 +147,18 @@ def test_a_later_session_sees_usage_and_the_call_that_worked_after_a_failure(
     on,
     weather,
 ):
+    VECTORS.update(
+        {"Is it raining in Oslo?": WEATHERY, "Forecast for Bergen?": WEATHERY},
+    )
+
     def first():
         with pytest.raises(LookupError):
             weather.fails(city="Oslo")
         weather.forecast(city="Oslo")
 
-    _session(first)
-    text = ec.section("What is the weather like in Bergen?")
+    _session(first, "Is it raining in Oslo?")
+    request = "Forecast for Bergen?"
+    text = ec.section(request, vector=ec._vector(request))
     assert text.startswith(ec.HEADER)
     assert "### weather" in text
     assert "`weather.forecast(city)` → {city: str, temp_c: int}" in text
@@ -151,13 +168,84 @@ def test_a_later_session_sees_usage_and_the_call_that_worked_after_a_failure(
     assert "then `weather.forecast(city)` worked" in text
 
 
-def test_a_group_is_shown_when_named_or_used_by_most_sessions(on, weather):
-    _session(lambda: weather.forecast(city="Oslo"))
-    # One earlier session: the share rule needs two, so only a naming request lists it.
-    assert ec.section("Plan my day.") == ""
-    assert "### weather" in ec.section("Will the weather hold?")
-    _session(lambda: weather.forecast(city="Rome"))
-    assert "### weather" in ec.section("Plan my day.")
+def _fake_session(session, vector, group, method):
+    ec._keep_session(session, ec._vector(vector) if isinstance(vector, str) else vector)
+    rec = ec.Recorder(session)
+    namespace, _, rest = group.partition(".")
+    call = EnvCall(
+        namespace=namespace,
+        method=f"{rest}.{method}" if rest else method,
+        effect="",
+        args=(),
+        kwargs={"q": 1},
+        via="global",
+    )
+    rec.after(
+        call,
+        result={"ok": True},
+        error=None,
+        intercepted=False,
+        started=0.0,
+        elapsed_s=0.0,
+    )
+
+
+def test_a_group_is_shown_when_a_close_earlier_session_used_it_or_most_did(on):
+    VECTORS.update(
+        {
+            "rain": WEATHERY,
+            "song": MUSICAL,
+            "Will it rain tomorrow?": WEATHERY,
+            "Play something calm.": MUSICAL,
+        },
+    )
+    _fake_session("s1", "rain", "apis.weather", "forecast")
+    for name in ("s2", "s3", "s4"):
+        _fake_session(name, "song", "apis.spotify", "play")
+    near = ec.section(
+        "Will it rain tomorrow?",
+        vector=ec._vector("Will it rain tomorrow?"),
+    )
+    far = ec.section("Play something calm.", vector=ec._vector("Play something calm."))
+    assert "### apis.weather" in near  # its closest earlier session used it
+    assert "### apis.weather" not in far  # 1 of 4 sessions, none of them close
+    assert "### apis.spotify" in near and "### apis.spotify" in far  # 3 of 4
+
+
+def test_a_shared_word_never_selects_a_group(on):
+    """The request names "weather" but is close, by embedding, only to the music sessions."""
+    request = "Add the song Stormy Weather to my weather-free playlist."
+    VECTORS.update({"rain": WEATHERY, "song": MUSICAL, request: MUSICAL})
+    _fake_session("s1", "rain", "apis.weather", "forecast")
+    for name in ("s2", "s3", "s4"):
+        _fake_session(name, "song", "apis.spotify", "play")
+    assert "### apis.weather" not in ec.section(request, vector=ec._vector(request))
+
+
+def test_an_embedding_failure_leaves_only_the_share_rule(on, monkeypatch):
+    def broken(texts):
+        raise RuntimeError("provider down")
+
+    _fake_session("s1", WEATHERY_BYTES(), "apis.weather", "forecast")
+    for name in ("s2", "s3", "s4"):
+        _fake_session(name, MUSICAL_BYTES(), "apis.spotify", "play")
+    monkeypatch.setattr(ec, "_embed", broken)
+    assert ec._vector("Will it rain?") is None
+    text = ec.section("Will it rain?", vector=None)
+    assert "### apis.spotify" in text and "### apis.weather" not in text
+
+
+def _unit(v):
+    a = np.array(v, dtype=np.float32)
+    return (a / np.linalg.norm(a)).astype(np.float32).tobytes()
+
+
+def WEATHERY_BYTES():
+    return _unit(WEATHERY)
+
+
+def MUSICAL_BYTES():
+    return _unit(MUSICAL)
 
 
 def test_at_most_k_facts_per_group_heaviest_first(on, weather, monkeypatch):
