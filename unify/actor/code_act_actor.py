@@ -972,98 +972,6 @@ as replying with that text would; the cell stops there. For example
 ``reply(answer)`` when the answer is in a variable."""
 
 
-# UNIFY_REVIEW_GENERALISE: the review sees the functions stored for requests
-# like this one, so that a second instance of a task generalises the first
-# instance's function instead of storing a sibling. On the 5 Oct ARC LOW runs
-# the reviews of repeat visits stored siblings for the same rule (two
-# "stamp"/"recolor" functions in two runs, two mirror-tiling functions in
-# another), and reviews that found the earlier function left a helper whose
-# deciding value stayed a parameter.
-_GENERALISE_MAX_FUNCTIONS = 3
-_GENERALISE_SOURCE_HEAD = 3000
-_GENERALISE_SOURCE_TAIL = 1000
-
-
-def _review_generalise_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_REVIEW_GENERALISE)
-
-
-def _generalise_threshold() -> float:
-    """The ``UNIFY_SHORTLIST_GATE`` threshold when set, else the search mark's."""
-    from unify.settings import SETTINGS
-
-    gate = SETTINGS.shortlist_gate_threshold()
-    return gate if gate is not None else _task_origin.SIMILAR_REQUEST_THRESHOLD
-
-
-def _clipped_source(source: str) -> str:
-    source = str(source or "").rstrip()
-    if len(source) <= _GENERALISE_SOURCE_HEAD + _GENERALISE_SOURCE_TAIL:
-        return source
-    omitted = len(source) - _GENERALISE_SOURCE_HEAD - _GENERALISE_SOURCE_TAIL
-    return (
-        source[:_GENERALISE_SOURCE_HEAD]
-        + f"\n# ... [{omitted:,} characters omitted; read the function for all of it] ...\n"
-        + source[-_GENERALISE_SOURCE_TAIL:]
-    )
-
-
-def render_generalise_note(rows: list[dict]) -> str:
-    """The review's section on functions stored for similar requests, or ""."""
-    if not rows:
-        return ""
-    blocks = [
-        "## Functions Stored For Similar Requests\n\n"
-        "This request resembles the ones the stored functions below were "
-        "saved while handling (similar_request: the overlap of the two "
-        "requests' words, weighted by rarity; 1 is the same request; used: "
-        "times called). If this trajectory did the same kind of task, "
-        "consider extending or correcting one of them so it covers this "
-        "instance as well as the earlier ones, rather than storing a "
-        "sibling. If it did a different kind of task, leave them as they "
-        "are.",
-    ]
-    for row in rows:
-        argspec = str(row.get("argspec") or "").strip()
-        if not argspec.startswith("("):
-            argspec = f"({argspec})"
-        score = float(row.get("similar_request") or 0.0)
-        calls = int(row.get("usage_calls") or 0)
-        blocks.append(
-            f"### `{row.get('name')}{argspec}` (function_id "
-            f"{row.get('function_id')}, similar_request {score:.2f}, used "
-            f"{calls}×)\n\n```python\n{_clipped_source(row.get('implementation'))}\n```",
-        )
-    return "\n\n".join(blocks) + "\n\n"
-
-
-def _review_generalise_note(function_manager: Any, guidance_manager: Any = None) -> str:
-    """``UNIFY_REVIEW_GENERALISE``: the section for this review, or "" (off, none, or unreadable).
-
-    With ``UNIFY_GUIDANCE_ORIGIN`` the guidance entries' recorded requests
-    weigh the scores too, as in the gated shortlist.
-    """
-    if not _review_generalise_enabled() or function_manager is None:
-        return ""
-    ranked = getattr(function_manager, "_similar_request_functions", None)
-    if not callable(ranked):
-        return ""
-    try:
-        args: list = [_generalise_threshold(), _GENERALISE_MAX_FUNCTIONS]
-        origin_rows = getattr(guidance_manager, "_origin_rows", None)
-        if _task_origin.guidance_enabled() and callable(origin_rows):
-            args.append(origin_rows())
-        rows = ranked(*args)
-    except Exception as exc:  # an aid; never blocks the review
-        logger.warning(
-            f"similar-request functions not listed: {type(exc).__name__}: {exc}",
-        )
-        return ""
-    return render_generalise_note(rows)
-
-
 def _storage_needs_repair_note() -> str:
     """Quarantined functions for the review to repair (``UNIFY_STORE_TRUST``); else empty."""
     from unify.function_manager import store_trust
@@ -2485,9 +2393,7 @@ def _start_storage_check_loop_inner(
     gm = actor.guidance_manager
     if fm is None or gm is None:
         return None
-    # UNIFY_REVIEW_GENERALISE (not for a lessons-only review, which stores
-    # no functions).
-    generalise_note = "" if lessons else _review_generalise_note(fm, gm)
+    generalise_note = ""
     if not lessons:
         # UNIFY_STORE_FROM_SESSION: a function the session ran may be stored by name.
         from unify.function_manager import session_source
@@ -5969,12 +5875,6 @@ class CodeActActor(BaseCodeActActor):
         from unify.function_manager import verified_guard as _verified_guard
 
         _verified_guard.require_prerequisites()
-        if _GATE_SETTINGS.UNIFY_REVIEW_GENERALISE and not _task_origin.enabled():
-            raise ValueError(
-                "UNIFY_REVIEW_GENERALISE needs UNIFY_TASK_ORIGIN=1 (or "
-                "UNIFY_TRY_FIRST=1): without the requests stored functions "
-                "were recorded under, no function could be listed.",
-            )
 
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(

@@ -404,16 +404,6 @@ class ProductionSettings(BaseSettings):
     # read by the review, forked or not, as an interjection to answer.
     # Off: as shipped.
     UNIFY_REVIEW_FORK: bool = True
-    # The storage review is shown the stored functions saved while handling
-    # requests similar to this session's (``similar_request`` at least the
-    # ``UNIFY_SHORTLIST_GATE`` threshold when that is set, else 0.24), at
-    # most 3, each with its signature, score, call count and source, and is
-    # told that when the session did the same kind of task it can extend or
-    # correct one of them to cover this instance too rather than store a
-    # sibling. Needs ``UNIFY_TASK_ORIGIN`` (or ``UNIFY_TRY_FIRST``): an actor
-    # refuses to start without it. Nothing is listed when no function
-    # passes. Off: as shipped.
-    UNIFY_REVIEW_GENERALISE: bool = False
     # Delegation for the actor `unify act` and the conversation manager
     # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
     # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
@@ -1040,7 +1030,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
         "UNIFY_OUTCOME",
-        "UNIFY_REVIEW_GENERALISE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",

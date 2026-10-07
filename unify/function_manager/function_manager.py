@@ -3681,46 +3681,6 @@ class FunctionManager(BaseFunctionManager):
             self._update_function(int(row["function_id"]), {"metadata": metadata})
         return True
 
-    def _similar_request_functions(
-        self,
-        threshold: float,
-        k: int,
-        guidance: Sequence[Dict[str, Any]] = (),
-    ) -> List[Dict[str, Any]]:
-        """``UNIFY_REVIEW_GENERALISE``: the stored functions saved for requests like this one.
-
-        The rows :meth:`_gated_shortlist_rows` keeps (the same ranking and
-        threshold rule), each with its ``implementation`` as well, for the
-        storage review to read. No search hit is counted. *guidance* holds
-        the guidance rows with a recorded origin (``UNIFY_GUIDANCE_ORIGIN``):
-        they weigh the requests as they do in the gated shortlist, so a
-        function's score here is the one the shortlist showed, but only
-        functions are listed.
-        """
-        from unify.actor.library_shortlist import gate_rows
-
-        if k <= 0:
-            return []
-        library = self._rows(self._compositional_scope())
-        if not library:
-            return []
-        marker = task_origin.Marker([*library, *guidance])
-        return [
-            {
-                key: row.get(key)
-                for key in (
-                    "function_id",
-                    "name",
-                    "argspec",
-                    "docstring",
-                    "implementation",
-                    "usage_calls",
-                    "similar_request",
-                )
-            }
-            for row in gate_rows(library, marker, threshold, k=k)
-        ]
-
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #
     # ------------------------------------------------------------------ #
