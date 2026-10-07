@@ -193,7 +193,14 @@ def phone_env():
 
 
 @pytest.fixture
-def verify_on(monkeypatch, tmp_path, phone_env):
+def in_process_python(monkeypatch):
+    """Python in this process: the verifier loads and calls candidates here, so it is
+    refused with Python in the sandboxed worker (test_store_verify_confinement)."""
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+
+
+@pytest.fixture
+def verify_on(monkeypatch, tmp_path, phone_env, in_process_python):
     scripted = ScriptedVerifier()
     module = types.ModuleType("scripted_store_verifier")
     module.make = lambda: scripted
@@ -500,7 +507,10 @@ def test_no_held_out_task_means_nothing_new_is_stored(verify_on):
     )
 
 
-def test_the_switch_needs_admission_and_a_loadable_factory(monkeypatch):
+def test_the_switch_needs_admission_and_a_loadable_factory(
+    monkeypatch,
+    in_process_python,
+):
     store_verify.reset()
     monkeypatch.setattr(
         SETTINGS,

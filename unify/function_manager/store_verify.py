@@ -33,6 +33,10 @@ A verifier is any object with
     load the :class:`Candidate` against the held-out world (``candidate.load(primitives, extra_globals)``), call
     it with ``call_kwargs`` and judge the outcome.
 
+Both run in the process that asks (the harness), so a candidate executes there. With Python in the sandboxed
+worker (``UNIFY_WORKSPACE=sandboxed``, ``UNIFY_WORKSPACE_PYTHON=worker``) model-written code must run only in the
+worker, never beside the credentials, so :func:`verifier` refuses the switch there and start-up stops.
+
 With the switch unset nothing here is imported by the storage path, no tool is added and every prompt is the
 shipped one.
 """
@@ -224,12 +228,29 @@ def enabled() -> bool:
     return bool(spec())
 
 
+IN_WORKER_REFUSAL = (
+    "UNIFY_STORE_VERIFY is refused with Python in the sandboxed worker "
+    "(UNIFY_WORKSPACE=sandboxed, UNIFY_WORKSPACE_PYTHON=worker): its verifier loads "
+    "and calls each candidate function in this process, and model-written code "
+    "must not run here, outside the sandbox and beside the credentials"
+)
+
+
 def verifier() -> Any:
-    """The verifier the factory named by ``UNIFY_STORE_VERIFY`` returned (created once per process)."""
+    """The verifier the factory named by ``UNIFY_STORE_VERIFY`` returned (created once per process).
+
+    A verifier runs a candidate by loading and calling it in this process (:meth:`Candidate.load`), so with
+    Python in the sandboxed worker it is refused, before the factory is called: model-written code runs only
+    in the worker there, never in the process that holds the credentials. Start-up stops on the refusal.
+    """
     global _verifier, _loaded_spec
     current = spec()
     if not current:
         raise StoreVerifyError("UNIFY_STORE_VERIFY is not set")
+    from unify.actor.execution import worker as python_worker
+
+    if python_worker.enabled():
+        raise StoreVerifyError(IN_WORKER_REFUSAL)
     with _lock:
         if _verifier is not None and _loaded_spec == current:
             return _verifier
@@ -663,6 +684,7 @@ def doctrine() -> str:
 __all__ = [
     "Candidate",
     "HeldOut",
+    "IN_WORKER_REFUSAL",
     "MAX_RUN_CHECKS",
     "StoreVerifyError",
     "Verdict",

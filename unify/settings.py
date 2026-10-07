@@ -241,7 +241,9 @@ class ProductionSettings(BaseSettings):
     # held-out task of the same kind (FunctionManager_check_function, offered
     # to the review only while this is set) and static checks against request
     # details and credentials (unify/function_manager/store_verify.py). Needs
-    # UNIFY_STORE_ADMISSION. Empty stores without the check.
+    # UNIFY_STORE_ADMISSION. The verifier loads and calls candidates in this
+    # process, so with UNIFY_WORKSPACE_PYTHON=worker it is refused and
+    # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
