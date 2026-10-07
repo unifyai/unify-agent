@@ -65,12 +65,6 @@ _SIMPLE = {
 }
 
 
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_ESCAPE_DRIFT_CHECK", "") == "on"
-
-
 @dataclass(frozen=True)
 class Literal:
     """A string literal's value, whether it was written raw, and its spelling."""
@@ -217,11 +211,10 @@ def enter(
 ) -> "contextvars.Token[Optional[Mapping[str, str]]]":
     """Check writes against *trajectory*'s cells from now on (and in the tasks started now).
 
-    With the switch off, or no cell literal in the trajectory, nothing is
-    kept. Undo with :func:`leave`.
+    With no cell literal in the trajectory, nothing is kept. Undo with :func:`leave`.
     """
     seen: Optional[Mapping[str, str]] = None
-    if enabled() and trajectory:
+    if trajectory:
         try:
             seen = cell_literals(session_cells(trajectory)) or None
         except Exception:  # noqa: BLE001 - a check, never a reason to fail a review
@@ -245,7 +238,7 @@ def reviewing(trajectory: Optional[Sequence[Mapping[str, Any]]]) -> Iterator[Non
 
 def current() -> Optional[Mapping[str, str]]:
     """The cell literals writes are checked against now, or ``None``."""
-    return _SEEN.get() if enabled() else None
+    return _SEEN.get()
 
 
 def check(name: str, source: str) -> None:
@@ -264,7 +257,6 @@ __all__ = [
     "check",
     "current",
     "drifted",
-    "enabled",
     "enter",
     "leave",
     "literals",

@@ -231,10 +231,6 @@ class ProductionSettings(BaseSettings):
     # The endpoint OpenRouter-style embedding requests are posted to, for
     # example a proxy that tracks their cost. Empty posts to openrouter.ai.
     UNIFY_EMBED_URL: str = ""
-    # Leave a stored function that cannot be loaded out of a search, list or
-    # filter that loads its results, naming it in a warning, instead of
-    # failing the whole result.
-    UNIFY_SEARCH_SKIP_UNLOADABLE: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Environment Namespaces and the Storage Check
@@ -244,21 +240,6 @@ class ProductionSettings(BaseSettings):
     # namespaces at start-up (unify/function_manager/primitives/environment.py).
     # Empty registers nothing.
     UNIFY_ENV_NAMESPACES: str = ""
-    # ``resolve``: before a function is stored, every name and every
-    # ``primitives.*`` reference in it must resolve against the sandbox's
-    # globals and the registered namespaces, and it must load as a search
-    # would load it; otherwise ``add_functions`` refuses it and says why.
-    # Empty stores without the check.
-    UNIFY_STORE_CHECK: str = "resolve"
-    # On: after ``add_functions`` or ``patch_function`` stores a function,
-    # the stored library is read for ``await primitives.<namespace>.<method>(...)``
-    # where the registered environment method is synchronous (awaiting its
-    # plain return value raises TypeError when the function runs), and the
-    # result carries a warning naming each such line in the function just
-    # written and every other stored function with the same pattern. It
-    # informs and never refuses (unify/function_manager/store_async_check.py).
-    # Off stores as shipped.
-    UNIFY_STORE_ASYNC_CHECK: bool = False
     # On: an ``execute_function`` result carries a short note when a
     # credential-named argument received a stand-in (an unfilled template
     # such as ``{{access_token}}``, an empty string, ``unknown``...), naming
@@ -319,25 +300,6 @@ class ProductionSettings(BaseSettings):
     # result, and the prompt and tools are unchanged (unify/actor/execution/worker_child.py
     # ``Inventory``). Empty: results as shipped.
     UNIFY_VARIABLE_INVENTORY: str = ""
-    # On: a function or guidance entry is checked, before it is stored, for
-    # identifiers of the session's own task instance: id-like tokens (hex
-    # runs, UUIDs, ``word-<hex>`` aliases, long digit runs) and quoted
-    # titles taken from the session's first request, and task-alias or UUID
-    # shapes in any function name. ``add_functions`` refuses a function whose
-    # name or code (literals and defaults) carries one; a docstring or a
-    # guidance entry that names one is stored with a warning. Off stores
-    # without the check.
-    UNIFY_STORE_INSTANCE_LINT: bool = True
-    # ``on``: while the storage review that follows a session runs, a
-    # function it adds or patches is refused when a string literal in it
-    # (plain, raw, or an f-string's text) holds a backslash, is in none of
-    # the session's Python code cells, and with one level of backslash
-    # escaping removed is a literal of those cells (and is not also written
-    # elsewhere in the same source): the cell's ``'\n'`` stored as
-    # ``"\\n"``, its ``r'\bE\b'`` as ``r"\\bE\\b"``. The refusal names both
-    # spellings (unify/function_manager/escape_drift.py). Without the
-    # session's cells nothing is checked. Empty (also ``off``): as shipped.
-    UNIFY_ESCAPE_DRIFT_CHECK: str = "on"
     # Path of a JSON file in which an external check of the session's outcome
     # admits (``{"admit": true}``) the review that runs when a session ends.
     # A missing, unreadable or malformed file, or any other ``admit``, skips
@@ -438,10 +400,6 @@ class ProductionSettings(BaseSettings):
     # with a log line, while UNIFY_STORE_ADMISSION withholds the session's
     # writes (unify/function_manager/inline_curation.py). Empty: as shipped.
     UNIFY_INLINE_CURATION: str = ""
-    # ``warn``: adding a new function whose normalised code nearly matches a
-    # stored one (token Jaccard >= 0.9) stores it and returns a warning naming
-    # the stored function. Empty adds as shipped.
-    UNIFY_STORE_DEDUPE: str = "warn"
     # ``ramp``: keep a trust record per stored function (probation, trusted,
     # quarantined) in function_trust. Every reuse is evidence: a call that
     # returns is a pass, one that raises quarantines the function, which is
@@ -853,17 +811,6 @@ class ProductionSettings(BaseSettings):
     # model; at most three tries), and a call whose return repeats that
     # reply is recorded as the function's case. Off: as shipped.
     UNIFY_CAPTURE_ACCEPTED: bool = False
-    # On: while the storage review runs, an implementation passed to
-    # ``add_functions`` (``FunctionManager_add_functions`` or
-    # ``functions.add``) that is only a function's name is that function's
-    # source as the latest of the session's Python code cells that defines it
-    # ran it -- the ``def`` with its decorators, byte for byte, with the
-    # module-level imports it uses moved into its body -- so the review need
-    # not retype code into a JSON string (office, 6-7 Oct: 16 of 41 retyped
-    # sources with an escape gained an escaping level; 0 of 74 cells did).
-    # The review is told it may. A name no cell defines is that entry's
-    # error. Off: as shipped.
-    UNIFY_STORE_FROM_SESSION: bool = True
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
     # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
     # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
@@ -1223,7 +1170,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
-        "UNIFY_SEARCH_SKIP_UNLOADABLE",
         "UNIFY_TOOL_CHOICE_FALLBACK",
         "UNIFY_REPEAT_GUARD",
         "UNIFY_BATCH_WAKE",
@@ -1250,15 +1196,12 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
         "UNIFY_REVIEW_GATE_FORK",
-        "UNIFY_STORE_INSTANCE_LINT",
-        "UNIFY_STORE_ASYNC_CHECK",
         "UNIFY_PLACEHOLDER_NOTE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
         "UNIFY_ORIGIN_PROVENANCE",
         "UNIFY_CAPTURE_ACCEPTED",
-        "UNIFY_STORE_FROM_SESSION",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
         "UNIFY_GUIDANCE_ORIGIN",
@@ -1330,25 +1273,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_STEP_CAP_COMPACT must be empty, 'off' or 'on', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_STORE_CHECK", mode="before")
-    @classmethod
-    def parse_store_check(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "resolve"):
-            raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
-        return value
-
-    @field_validator("UNIFY_ESCAPE_DRIFT_CHECK", mode="before")
-    @classmethod
-    def parse_escape_drift_check(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        value = "" if value == "off" else value
-        if value not in ("", "on"):
-            raise ValueError(
-                f"UNIFY_ESCAPE_DRIFT_CHECK must be empty, 'off' or 'on', not {v!r}",
             )
         return value
 
@@ -1521,14 +1445,6 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
             )
-        return value
-
-    @field_validator("UNIFY_STORE_DEDUPE", mode="before")
-    @classmethod
-    def parse_store_dedupe(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "warn"):
-            raise ValueError(f"UNIFY_STORE_DEDUPE must be empty or 'warn', not {v!r}")
         return value
 
     @field_validator("UNIFY_WAIT_CEILING_SECONDS", mode="before")

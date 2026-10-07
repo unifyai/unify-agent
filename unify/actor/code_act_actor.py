@@ -850,13 +850,11 @@ def _environment_method_kinds(namespaces: tuple[Any, ...]) -> str:
 def _storage_environment_note() -> str:
     """The storage review's note on the environment's namespaces and the storage check.
 
-    Empty unless an environment registered namespaces (``UNIFY_ENV_NAMESPACES``),
-    the storage check is on (``UNIFY_STORE_CHECK=resolve``) or functions are
-    verified before they are stored (``UNIFY_STORE_VERIFY``), so the doctrine
-    is otherwise the shipped text.
+    It always states the storage check, and adds the environment's
+    namespaces (``UNIFY_ENV_NAMESPACES``) and the verification before
+    storing (``UNIFY_STORE_VERIFY``) when they are set.
     """
     from unify.function_manager.primitives.environment import environment_surface
-    from unify.settings import SETTINGS
 
     surface = environment_surface()
     parts: list[str] = []
@@ -883,14 +881,13 @@ def _storage_environment_note() -> str:
                 f"Modules it supplies ({listed}) are importable wherever a "
                 "stored function runs; never declare them as `dependencies`.",
             )
-    if SETTINGS.UNIFY_STORE_CHECK == "resolve":
-        parts.append(
-            "`FunctionManager_add_functions` checks each function before "
-            "storing it: every name it reads and every `primitives.*` "
-            "reference must exist where it will run, and it must load. A "
-            "function that fails is not stored, and the error names what "
-            "failed; fix the function and add it again.",
-        )
+    parts.append(
+        "`FunctionManager_add_functions` checks each function before "
+        "storing it: every name it reads and every `primitives.*` "
+        "reference must exist where it will run, and it must load. A "
+        "function that fails is not stored, and the error names what "
+        "failed; fix the function and add it again.",
+    )
     from unify.function_manager import store_verify
 
     if store_verify.enabled():

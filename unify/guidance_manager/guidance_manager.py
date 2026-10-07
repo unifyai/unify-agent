@@ -148,8 +148,6 @@ def _instance_warning(title: Optional[str], content: Optional[str]) -> Optional[
     """``UNIFY_STORE_INSTANCE_LINT``: a warning when the entry names this task instance."""
     from unify.function_manager import instance_lint
 
-    if not instance_lint.enabled():
-        return None
     return instance_lint.join_warnings(
         [
             instance_lint.text_warning("its title", title or ""),

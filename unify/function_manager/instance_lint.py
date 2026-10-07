@@ -78,12 +78,6 @@ _CURRENT: contextvars.ContextVar[Optional[InstanceTokens]] = contextvars.Context
 )
 
 
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_STORE_INSTANCE_LINT", False))
-
-
 def _has_digit(text: str) -> bool:
     return any(ch.isdigit() for ch in text)
 
@@ -145,7 +139,7 @@ def tokens_of(request: Any) -> InstanceTokens:
 
 def enter(request: Any) -> Optional[contextvars.Token]:
     """Keep *request*'s tokens for the current task, unless a task already set them."""
-    if not enabled() or _CURRENT.get() is not None:
+    if _CURRENT.get() is not None:
         return None
     return _CURRENT.set(tokens_of(request))
 

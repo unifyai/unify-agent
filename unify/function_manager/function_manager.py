@@ -1364,26 +1364,24 @@ class FunctionManager(BaseFunctionManager):
 
                 all_calls = self._collect_function_calls(node)
                 self._validate_function_calls(name, all_calls)
-                if self._instance_lint_enabled():
-                    warning = self._instance_lint(name, node)
-                    if warning:
-                        instance_warnings[name] = warning
+                warning = self._instance_lint(name, node)
+                if warning:
+                    instance_warnings[name] = warning
                 # UNIFY_ESCAPE_DRIFT_CHECK: in a storage review, a literal of
                 # the session's cells retyped with one more escape is refused.
                 from . import escape_drift
 
                 escape_drift.check(name, source)
-                if self._store_check_enabled():
-                    self._store_check(
-                        name=name,
-                        node=node,
-                        source=source,
-                        depends_on=dependencies_list,
-                        requirements=requirements,
-                        third_party_imports=tp_imports,
-                        stored_functions=all_known_function_names,
-                        same_batch=temp_names,
-                    )
+                self._store_check(
+                    name=name,
+                    node=node,
+                    source=source,
+                    depends_on=dependencies_list,
+                    requirements=requirements,
+                    third_party_imports=tp_imports,
+                    stored_functions=all_known_function_names,
+                    same_batch=temp_names,
+                )
                 if self._store_verify_enabled():
                     self._store_verify_gate(name=name, node=node, source=source)
                 signature = self._signature_from_node(node, name)
@@ -1493,16 +1491,15 @@ class FunctionManager(BaseFunctionManager):
                     self._stamp_new_function_usage(entry_data, name)
                     entries_to_create.append(entry_data)
                     results[name] = "added"
-                    if self._store_dedupe_enabled():
-                        if stored_sources is None:
-                            stored_sources = self._stored_sources()
-                        warning = self._near_duplicate_warning(
-                            name,
-                            source,
-                            stored_sources,
-                        )
-                        if warning:
-                            dedupe_warnings[name] = warning
+                    if stored_sources is None:
+                        stored_sources = self._stored_sources()
+                    warning = self._near_duplicate_warning(
+                        name,
+                        source,
+                        stored_sources,
+                    )
+                    if warning:
+                        dedupe_warnings[name] = warning
             except ValueError as e:
                 results[name] = f"error: {e}"
             except Exception as e:
@@ -1579,15 +1576,6 @@ class FunctionManager(BaseFunctionManager):
             if status == "updated" or status.startswith(("updated; ", "added")):
                 results[name] = f"{status}; warning: {warning}"
 
-        # UNIFY_STORE_ASYNC_CHECK: awaits of synchronous environment methods,
-        # in what was just written and across the stored library.
-        if self._async_check_enabled():
-            for name, warning in self._async_check_warnings(
-                list(dict.fromkeys(name for name, *_ in parsed)),
-                results,
-            ).items():
-                results[name] = f"{results[name]}; warning: {warning}"
-
         # UNIFY_CAPTURE_ACCEPTED: in a review shown the code behind the
         # session's answer, record each written function's answering call.
         from . import origin_capture
@@ -1611,59 +1599,8 @@ class FunctionManager(BaseFunctionManager):
         return results
 
     # ------------------------------------------------------------------ #
-    #  Awaited synchronous methods (UNIFY_STORE_ASYNC_CHECK)              #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _async_check_enabled() -> bool:
-        from . import store_async_check
-
-        return store_async_check.enabled()
-
-    def _async_check_warnings(
-        self,
-        names: List[str],
-        results: Dict[str, str],
-    ) -> Dict[str, str]:
-        """Warnings for the functions just stored that await a synchronous environment method.
-
-        Reads the stored library after the write, so the list of other
-        functions with the pattern is what a later search would load. Only
-        functions whose status says they were stored are warned; nothing is
-        refused.
-        """
-        from . import store_async_check
-
-        written = [
-            name
-            for name in names
-            if results.get(name, "").startswith(("added", "updated"))
-        ]
-        if not written:
-            return {}
-        sync_methods = store_async_check.synchronous_methods()
-        if not any(sync_methods.values()):
-            return {}
-        try:
-            sources = self._stored_sources()
-        except Exception as exc:
-            logger.warning(
-                "UNIFY_STORE_ASYNC_CHECK could not read the library: %s",
-                exc,
-            )
-            return {}
-        hits = store_async_check.library_hits(sources, sync_methods)
-        return store_async_check.warnings_for(written, hits)
-
-    # ------------------------------------------------------------------ #
     #  Near-duplicate warning (UNIFY_STORE_DEDUPE=warn)                   #
     # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _store_dedupe_enabled() -> bool:
-        from unify.settings import SETTINGS
-
-        return SETTINGS.UNIFY_STORE_DEDUPE == "warn"
 
     def _stored_sources(self) -> Dict[str, str]:
         """The source of each stored function in this manager's scope, by name."""
@@ -1970,12 +1907,6 @@ class FunctionManager(BaseFunctionManager):
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _instance_lint_enabled() -> bool:
-        from . import instance_lint
-
-        return instance_lint.enabled()
-
-    @staticmethod
     def _instance_lint(
         name: str,
         node: Union[ast.FunctionDef, ast.AsyncFunctionDef],
@@ -2001,23 +1932,9 @@ class FunctionManager(BaseFunctionManager):
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _store_check_enabled() -> bool:
-        from unify.settings import SETTINGS
-
-        from . import inline_curation
-
-        # UNIFY_INLINE_CURATION: the actor's own writes are checked either way.
-        return (
-            SETTINGS.UNIFY_STORE_CHECK == "resolve"
-            or inline_curation.store_check_forced()
-        )
-
-    @staticmethod
     def _skip_unloadable() -> Optional[List[Dict[str, str]]]:
-        """A list to collect unloadable rows in, when UNIFY_SEARCH_SKIP_UNLOADABLE is on."""
-        from unify.settings import SETTINGS
-
-        return [] if SETTINGS.UNIFY_SEARCH_SKIP_UNLOADABLE else None
+        """A list to collect unloadable rows in."""
+        return []
 
     @staticmethod
     def _drop_quarantined(
@@ -2237,20 +2154,19 @@ class FunctionManager(BaseFunctionManager):
                 f"its dependencies cannot be read: {type(exc).__name__}: {exc}",
             )
             depends_on = []
-        if self._store_check_enabled():
-            try:
-                self._store_check(
-                    name=name,
-                    node=node,
-                    source=source,
-                    depends_on=depends_on,
-                    requirements=[],
-                    third_party_imports=set(),
-                    stored_functions=all_names,
-                    same_batch={name},
-                )
-            except ValueError as exc:
-                problems.append(str(exc))
+        try:
+            self._store_check(
+                name=name,
+                node=node,
+                source=source,
+                depends_on=depends_on,
+                requirements=[],
+                third_party_imports=set(),
+                stored_functions=all_names,
+                same_batch={name},
+            )
+        except ValueError as exc:
+            problems.append(str(exc))
         out["static_problems"] = problems
         out["run_checks_left"] = store_verify.run_checks_left()
         if problems:

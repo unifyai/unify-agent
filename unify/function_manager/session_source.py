@@ -48,12 +48,6 @@ REVIEW_NOTE = (
 )
 
 
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_STORE_FROM_SESSION", False))
-
-
 @contextlib.contextmanager
 def reviewing(trajectory: Optional[Sequence[Mapping[str, Any]]]) -> Iterator[None]:
     """While the block runs (and in the tasks it starts), names resolve against *trajectory*'s cells."""
@@ -65,13 +59,13 @@ def reviewing(trajectory: Optional[Sequence[Mapping[str, Any]]]) -> Iterator[Non
 
 
 def review_note() -> str:
-    """The review's paragraph on storing by name, or "" (off)."""
-    return REVIEW_NOTE if enabled() else ""
+    """The review's paragraph on storing by name."""
+    return REVIEW_NOTE
 
 
 def cells() -> List[str]:
-    """The Python code of the reviewed session's cells that ran, in order ([] when off or outside a review)."""
-    trajectory = _TRAJECTORY.get() if enabled() else None
+    """The Python code of the reviewed session's cells that ran, in order ([] outside a review)."""
+    trajectory = _TRAJECTORY.get()
     if not trajectory:
         return []
     from .origin_capture import _code_cells
@@ -202,9 +196,9 @@ def resolve(name: str) -> Tuple[Optional[str], str]:
 def expand(implementations: Sequence[Any]) -> Tuple[List[Any], Dict[str, str]]:
     """*implementations* with each bare name replaced by its session source, and an error per name not found.
 
-    Off, or outside a review: returned unchanged, with no errors.
+    Outside a review: returned unchanged, with no errors.
     """
-    if not enabled() or _TRAJECTORY.get() is None:
+    if _TRAJECTORY.get() is None:
         return list(implementations), {}
     out: List[Any] = []
     errors: Dict[str, str] = {}
@@ -224,7 +218,6 @@ def expand(implementations: Sequence[Any]) -> Tuple[List[Any], Dict[str, str]]:
 __all__ = [
     "REVIEW_NOTE",
     "cells",
-    "enabled",
     "expand",
     "is_name",
     "resolve",
