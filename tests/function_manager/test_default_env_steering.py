@@ -26,6 +26,15 @@ from unify.function_manager.steering import (
 )
 from tests.baked_defaults import as_shipped  # noqa: F401
 
+
+@pytest.fixture(autouse=True)
+def _python_in_process(monkeypatch):
+    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty), the mode these tests exercise: stored functions run in this process. With the sandboxed worker nothing runs here (tests/actor/code_act/test_bind_load_confinement.py)."""
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+
+
 IMPLEMENTATION = (
     "async def notify_vendors(vendors):\n"
     "    sent = []\n"
