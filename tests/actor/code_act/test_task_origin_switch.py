@@ -95,6 +95,7 @@ def test_a_request_is_keyed_and_a_sub_agent_keeps_its_tasks_key(switches):
     assert task_origin.enter("outer task") is None
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_a_stored_function_records_its_request_and_a_search_marks_it(switches):
     switches(origin=True)

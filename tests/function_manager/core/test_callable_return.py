@@ -202,6 +202,7 @@ async def test_filter_return_callable_with_dependencies_executes():
     assert result == "1.2.0"
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 @pytest.mark.asyncio
 async def test_search_return_callable_with_metadata():
@@ -300,6 +301,7 @@ async def test_dependency_injection_supports_user_defined_forward_ref_string_ann
     assert return_name == "MetricResult"
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 @pytest.mark.asyncio
 async def test_search_return_callable_forward_ref_annotations_just_work():

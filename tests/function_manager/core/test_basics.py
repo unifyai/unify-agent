@@ -489,6 +489,7 @@ def test_filter_functions_include_implementations():
     assert "name" in hits[0]  # Other fields still present
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_include_implementations():
     """search_functions respects include_implementations parameter."""
@@ -516,6 +517,7 @@ def test_search_functions_include_implementations():
     assert "name" in user_funcs[0]  # Other fields still present
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_matches_meaning_not_words():
     """A query that shares no words with a function's name or docstring finds it."""

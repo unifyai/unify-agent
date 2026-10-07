@@ -302,6 +302,7 @@ def _origin(request: str) -> dict:
     }
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_on_a_search_from_the_same_request_marks_the_function(try_first):
     try_first(True)
@@ -333,6 +334,7 @@ def _source(name: str, factor: int) -> str:
     )
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_on_a_return_visit_with_fresh_data_shows_its_score(try_first):
     try_first(True)
@@ -360,6 +362,7 @@ def test_on_a_return_visit_with_fresh_data_shows_its_score(try_first):
     assert "similar_request" not in _in_task(other, lambda: _search(fm))
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_on_an_overwrite_from_another_task_keeps_both_origins(try_first):
     try_first(True)
@@ -393,6 +396,7 @@ def test_on_a_function_keeps_its_latest_three_requests(try_first):
     ]
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_off_nothing_is_recorded_or_marked(try_first):
     try_first(False)
@@ -450,6 +454,7 @@ def _search_results_seen(requests: list[dict]) -> list[str]:
     ]
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 @_handle_project

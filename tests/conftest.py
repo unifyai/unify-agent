@@ -445,6 +445,7 @@ def pytest_configure(config):
         "markers",
         "no_unify_context: skip the per-test store reset for pure unit tests",
     )
+    config.pluginmanager.register(_ProviderKeyGate(), "unify-provider-key-gate")
 
     # ------------------------------------------------------------------
     # Isolate HOME so that tests never touch the real home directory
@@ -552,8 +553,62 @@ def unify_home(request, monkeypatch):
     lock.close()
 
 
+# ``requires_provider_key``: a deterministic test (no model call) whose code
+# path still sends a request that needs a provider key, such as an
+# OpenRouter embedding behind a semantic search. Workers of the model-free
+# half never hold credentials, so there it is skipped with this reason; the
+# key-bound half sets UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, so a key that
+# failed to load fails the test instead of skipping it silently.
+PROVIDER_KEY_SKIP_REASON = "needs a provider key; runs in the key-bound half"
+REQUIRE_PROVIDER_KEY_VAR = "UNIFY_TEST_REQUIRE_PROVIDER_KEY"
+# The unillm setting the OpenRouter embedder reads its bearer token from
+# (unify/common/embeddings.py), the only key these tests need so far.
+DEFAULT_PROVIDER_KEY = "OPENROUTER_API_KEY"
+
+
+def _provider_key_loaded(name: str) -> bool:
+    """Whether unillm holds a non-empty *name*, checked by presence only.
+
+    unillm reads its keys from the environment and ``.env`` (the suite's own
+    loading), so this is what a request would send. The value is never
+    logged or returned.
+    """
+    import unillm
+
+    secret = getattr(unillm.SETTINGS, name, None)
+    getter = getattr(secret, "get_secret_value", None)
+    return bool(getter() if callable(getter) else secret)
+
+
+def _missing_provider_keys(item) -> list[str]:
+    marker = item.get_closest_marker("requires_provider_key")
+    if marker is None:
+        return []
+    names = list(marker.args) or [DEFAULT_PROVIDER_KEY]
+    return [name for name in names if not _provider_key_loaded(name)]
+
+
+class _ProviderKeyGate:
+    """Fails a ``requires_provider_key`` test whose key is missing while
+    UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, before its body runs (the setup hook
+    skips it otherwise). A plugin object, since this module already defines
+    a ``pytest_runtest_call`` wrapper."""
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_runtest_call(self, item):
+        missing = _missing_provider_keys(item)
+        if missing:
+            pytest.fail(
+                f"{REQUIRE_PROVIDER_KEY_VAR}=1 but no {', '.join(missing)} is "
+                f"loaded: {PROVIDER_KEY_SKIP_REASON}",
+                pytrace=False,
+            )
+
+
 def pytest_runtest_setup(item):
     test_name_log_filter.set_test_name(item.nodeid)
+    if os.environ.get(REQUIRE_PROVIDER_KEY_VAR) != "1" and _missing_provider_keys(item):
+        pytest.skip(PROVIDER_KEY_SKIP_REASON)
     if not os.environ.get("SKIP_UNIFY_TEST_INIT") and _uses_unify_context(item):
         _reset_store_for_test()
 

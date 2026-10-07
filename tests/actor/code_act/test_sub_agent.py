@@ -471,6 +471,7 @@ def _record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return spawned
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project

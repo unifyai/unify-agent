@@ -95,6 +95,7 @@ def test_catalog_reads_only_scoped_managers(scoped_function_manager_factory):
     assert primitives[_ACTOR_ACT]["primitive_class"] == _ACTOR_CLASS_PATH
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_respects_scope(scoped_function_manager_factory):
     """search_functions() only returns primitives for scoped classes."""

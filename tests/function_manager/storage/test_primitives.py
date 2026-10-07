@@ -272,6 +272,7 @@ def test_seeded_rows_resolve_to_runtime_callables(function_manager_factory):
 # ────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_includes_primitives_by_default(function_manager_factory):
     """search_functions should include primitives by default."""
@@ -291,6 +292,7 @@ def test_search_includes_primitives_by_default(function_manager_factory):
     assert has_primitive, "Expected at least one primitive in search results"
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_ranks_functions_and_primitives_together(function_manager_factory):
     """Search should return both user functions and primitives, ranked together."""

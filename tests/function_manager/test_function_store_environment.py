@@ -304,6 +304,7 @@ def test_exclusion_integration_list_functions(fm_factory):
     assert "gamma" in listing, "gamma should still be visible"
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_exclusion_integration_search_functions(fm_factory):
     """Functions promoted to the environment should be excludable from search_functions."""

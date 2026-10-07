@@ -146,6 +146,7 @@ def test_default_library_surfaces_through_guidance_manager():
         assert len(full.content) > GUIDANCE_PREVIEW_CHARS
 
 
+@pytest.mark.requires_provider_key
 def test_default_library_semantic_search():
     gm = GuidanceManager()
 
@@ -221,6 +222,7 @@ def test_guidance_reads_blend_builtins_and_own_entries(test_entries):
     assert [row.title for row in own_only] == ["My deploy checklist"]
 
 
+@pytest.mark.requires_provider_key
 def test_single_term_search_returns_builtins(test_entries):
     gm = GuidanceManager()
 
@@ -233,6 +235,7 @@ def test_single_term_search_returns_builtins(test_entries):
     assert results[0].is_builtin is True
 
 
+@pytest.mark.requires_provider_key
 def test_multi_term_search_combines_builtins_scores(test_entries):
     gm = GuidanceManager()
 

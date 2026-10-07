@@ -110,6 +110,7 @@ async def test_off_the_first_message_is_as_shipped(switches):
 # ── on ───────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_the_first_message_lists_the_closest_function_and_guidance(switches):
@@ -136,6 +137,7 @@ async def test_on_the_first_message_lists_the_closest_function_and_guidance(swit
     assert on[0]["tool_choice"] == off[0]["tool_choice"] == "auto"
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_the_list_is_written_once_and_never_repeated(switches):
@@ -181,6 +183,7 @@ async def test_on_the_ranking_counts_no_search_hit(switches):
     assert rows and int(rows[0].get("usage_search_hits") or 0) == 0
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_a_function_stored_for_the_same_request_carries_its_mark(switches):
