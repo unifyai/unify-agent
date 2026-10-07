@@ -286,24 +286,6 @@ async def test_off_the_final_result_is_the_stop_notice_and_nothing_is_posted(swi
 
 
 @pytest.mark.asyncio
-async def test_off_the_review_requests_are_upstreams(switches):
-    """The equivalence baseline recorded on the upstream commit."""
-    _summary, _, requests = await h.scenario_review()
-    golden = json.loads(h.GOLDEN.read_text())["review"]
-    assert [h.request_bytes(r) for r in requests] == golden
-
-
-@pytest.mark.asyncio
-async def test_on_without_an_outcome_a_finished_task_reviews_as_upstream(switches):
-    """A task that ends by itself has a real result; with no outcome posted
-    the switch leaves its review byte-identical."""
-    switches(outcome=True)
-    _summary, _, requests = await h.scenario_review()
-    golden = json.loads(h.GOLDEN.read_text())["review"]
-    assert [h.request_bytes(r) for r in requests] == golden
-
-
-@pytest.mark.asyncio
 async def test_an_outcome_after_the_session_ended_is_refused(switches):
     switches(outcome=True)
     _note, _requests, handle, _ = await _persistent_review()

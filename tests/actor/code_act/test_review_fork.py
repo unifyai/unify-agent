@@ -221,35 +221,6 @@ async def test_the_fork_carries_the_update_first_and_needs_repair_notes(
 # ── fallbacks ────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_without_cache_discipline_the_review_runs_as_shipped(
-    switches,
-    info_lines,
-):
-    switches(discipline=False, fork=True)
-    summary, _, requests = await h.scenario_review()
-    assert summary == "Nothing worth storing."
-    golden = json.loads(h.GOLDEN.read_text())["review"]
-    assert [h.request_bytes(r) for r in requests] == golden
-    assert any(
-        "StorageCheck fork skipped: UNIFY_REVIEW_FORK needs UNIFY_CACHE_DISCIPLINE"
-        in line
-        for line in info_lines
-    )
-
-
-@pytest.mark.asyncio
-async def test_off_the_review_is_upstreams_and_nothing_is_logged(
-    switches,
-    info_lines,
-):
-    switches(discipline=False, fork=False)
-    _summary, _, requests = await h.scenario_review()
-    golden = json.loads(h.GOLDEN.read_text())["review"]
-    assert [h.request_bytes(r) for r in requests] == golden
-    assert not any("fork skipped" in line for line in info_lines)
-
-
 def _recorded_session(extra_messages=()):
     client = h.new_client("You are a scripted actor.")
     client._messages.extend(

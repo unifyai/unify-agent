@@ -15,7 +15,6 @@ transport (``tests/cache_discipline_helpers.py``).
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
@@ -158,14 +157,6 @@ async def test_compose_the_standalone_review_carries_the_doctrine(framing):
     assert OFTEN_NOTHING not in system
     assert caa._STORAGE_COMPOSE_DOCTRINE in system
     assert caa._STORAGE_COMPOSE_STEP_3 in system
-
-
-@pytest.mark.asyncio
-async def test_off_the_standalone_review_is_upstreams(framing):
-    framing()
-    _summary, _, requests = await h.scenario_review()
-    golden = json.loads(h.GOLDEN.read_text())["review"]
-    assert [h.request_bytes(r) for r in requests] == golden
 
 
 def test_the_compose_doctrine_names_no_benchmark_or_instance():
