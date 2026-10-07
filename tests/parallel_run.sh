@@ -199,8 +199,10 @@ trap '_cleanup_sessions TERM; exit 143' TERM
 # (tests/parallel_run/), not tests themselves; those tests hand the fixture
 # files to this script explicitly. Excluding them by name keeps a directory
 # sweep from spawning, say, the hang fixture that exists only to be killed by
-# --session-timeout.
-EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures store_fixtures report_fixtures )
+# --session-timeout. tests/legacy/ holds the tests of unify/legacy/ (legacy,
+# unused, unsupported code): a sweep skips it, and it runs only when named
+# (tests/parallel_run.sh tests/legacy/).
+EXCLUDE_DIRS=( .git .hg .svn .venv venv .mypy_cache .pytest_cache __pycache__ .idea .vscode fixtures hang_fixtures store_fixtures report_fixtures legacy )
 
 # Parse arguments
 # Returns: 0=success, 1=help requested, 2=error

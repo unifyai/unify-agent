@@ -52,6 +52,27 @@ from tests.settings import SETTINGS
 # targeted rerun with it forced off) still wins.
 os.environ.setdefault("UNIFY_TRANSCRIPT_INVARIANT_CHECKS", "1")
 
+# tests/legacy/ holds the tests of unify/legacy/ (legacy, unused, unsupported
+# code). They leave the default discovery and the gate: a directory sweep
+# (``pytest``, ``pytest tests/``) skips them, and they are collected only
+# when a path inside tests/legacy/ is named on the command line.
+_LEGACY_TESTS = Path(__file__).resolve().parent / "legacy"
+
+
+def _within_legacy_tests(path: Path) -> bool:
+    return path == _LEGACY_TESTS or _LEGACY_TESTS in path.parents
+
+
+def pytest_ignore_collect(collection_path, config):
+    if not _within_legacy_tests(Path(collection_path).resolve()):
+        return None
+    invocation_dir = Path(config.invocation_params.dir)
+    for arg in config.args:
+        target = (invocation_dir / arg.split("::", 1)[0]).resolve()
+        if _within_legacy_tests(target):
+            return None
+    return True
+
 
 def _reset_singleton_registries() -> None:
     """Singletons must not leak across tests."""
