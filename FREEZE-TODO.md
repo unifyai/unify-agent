@@ -52,6 +52,15 @@ What is left is the tool-surface tangle below. `tests/test_no_research_switches.
 - the `interrupt_llm_on_tool_completion` parameter, which is now always overridden;
 - `BatchHold.install()`'s time-from-install branch.
 
+## Security: the store check and confinement (7 Oct 2026)
+
+**Found and fixed (PR "SECURITY: keep the store check from executing model code in the harness"):** storing a function executed its `def`, and its stored callees, in the process serving the call (`_store_check` → `_inject_dependencies` / `_create_in_process_callable`). That runs default values and decorators. With Python in the sandboxed worker, a cell's `functions.add` is served by the harness, so model-written code ran outside the sandbox, beside the credentials. With the worker on, the check is now static only. `tests/actor/code_act/test_store_check_confinement.py` fails without the fix.
+
+**Still open, same class:**
+- **The `UNIFY_STORE_VERIFY` hook** (benchmark configuration) loads candidates in the harness (`store_verify.Candidate` loader).
+- **Declared dependencies** are installed by the harness (`environment.ensure`, uv into the workspace venv), and package build steps run there.
+- **Restore later:** `tests/function_manager/core/test_stored_metadata.py`'s `default` and `decorator` cases ("add_functions does not execute"). They were dropped while the check executed; restore them once the test-suite PR lands.
+
 ## Known defects and test status
 - **`library_shortlist.shortlist_block` (lines ~435–437) and `_gated_block` swallow any exception at DEBUG level.** A missing embedding key silently drops the shortlist. Log a warning at least.
 - **`test_can_store_true_merges_redundant_functions`** passes 3/5 live under the old defaults. The review sometimes searches only by the new function's exact name, so it never sees the narrower variants.
