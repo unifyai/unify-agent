@@ -11,6 +11,9 @@ Python cell starts, runs inside bubblewrap (Linux) under one policy:
   transcripts (``internal-transcripts``: the storage review, whose prompt
   carries the environment's checked outcome) stay hidden even when a mount
   that is seen contains them (a workspace configured as ``UNIFY_HOME``).
+* The harness's log directories (``UNILLM_LOG_DIR``, which holds every LLM
+  request and reply, ``UNILLM_OTEL_LOG_DIR``, ``UNIFY_LOG_DIR`` and
+  ``UNIFY_OTEL_LOG_DIR``, wherever they are configured) are hidden too.
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
   a few other well-known ones) are hidden, and so is every ``.env`` file found
   in the working directory and its parents, the home directory and its
@@ -85,6 +88,10 @@ RULES: dict[str, str] = {
     "mask-unify-state": (
         "the Unify state directory is hidden, except read-only views of the "
         "transcripts, the store file and the package venv, and the workspace"
+    ),
+    "mask-harness-logs": (
+        "the harness's log directories (every LLM request and reply, traces) "
+        "are hidden"
     ),
     "mask-credentials": "credential directories and files are hidden",
     "mask-env-file": ".env files are hidden",
@@ -190,9 +197,9 @@ class SandboxPolicy:
     readonly_state: list[Path] = field(default_factory=list)
     masked_dirs: list[tuple[Path, str]] = field(default_factory=list)
     masked_files: list[tuple[Path, str]] = field(default_factory=list)
-    # Harness-only directories under the state directory: hidden after every
-    # mount, so no mount that contains them shows them.
-    hidden: list[Path] = field(default_factory=list)
+    # Harness-only directories, each with the rule that hides it: hidden after
+    # every mount, so no mount that contains them shows them.
+    hidden: list[tuple[Path, str]] = field(default_factory=list)
     network: str = ""  # "" (off) or "proxy"
     proxy_port: int = 0
     notices_dir: Optional[Path] = None
@@ -204,12 +211,13 @@ class SandboxPolicy:
         resolved = Path(os.path.realpath(path))
         if _within(resolved, Path("/proc")):
             return "mask-proc", f"{resolved} is under /proc"
-        for hidden in self.hidden:
-            if _within(resolved, hidden):
-                return (
-                    "mask-unify-state",
-                    f"{resolved} is inside the harness's internal {hidden}",
-                )
+        seen = (self.workspace, *self.readonly_state)
+        for hidden, rule in self.hidden:
+            if _within(resolved, hidden) and not any(
+                _within(resolved, v) and _within(v, hidden) and v != hidden
+                for v in seen
+            ):
+                return rule, f"{resolved} is inside the harness's {hidden}"
         # Mounted last, so visible whatever contains them.
         if any(_within(resolved, v) for v in (self.workspace, *self.readonly_state)):
             return None
@@ -312,6 +320,68 @@ def _current_run_records() -> Optional[Path]:
     return Path(os.path.realpath(path.parent)) if path is not None else None
 
 
+LOG_DIR_SETTINGS = (
+    "UNILLM_LOG_DIR",
+    "UNILLM_OTEL_LOG_DIR",
+    "UNIFY_LOG_DIR",
+    "UNIFY_OTEL_LOG_DIR",
+)
+
+
+def _log_dir_settings() -> list[str]:
+    """Each harness log directory as configured (environment, then settings)."""
+    from unify.settings import SETTINGS
+
+    try:
+        import unillm
+
+        unillm_settings = unillm.SETTINGS
+    except Exception:
+        unillm_settings = None
+    out = []
+    for name in LOG_DIR_SETTINGS:
+        source = unillm_settings if name.startswith("UNILLM_") else SETTINGS
+        value = os.environ.get(name, "").strip() or str(
+            getattr(source, name, "") or "",
+        )
+        out.append(value.strip())
+    return out
+
+
+def _log_dirs() -> list[Path]:
+    """The configured log directories, created, to hide from every cell.
+
+    A directory that holds the interpreter or the Unify package is not hidden
+    (a cell could not start), and a warning names it.
+    """
+    import logging
+
+    keep = [
+        Path(os.path.realpath(sys.prefix)),
+        Path(os.path.realpath(sys.executable)),
+        Path(__file__).resolve().parents[1],
+    ]
+    dirs: list[Path] = []
+    for raw in _log_dir_settings():
+        if not raw:
+            continue
+        path = Path(os.path.realpath(Path(raw).expanduser()))
+        if any(_within(k, path) for k in keep):
+            logging.getLogger(__name__).warning(
+                "workspace sandbox: log directory %s holds the interpreter or the "
+                "Unify package, so cells can read it",
+                path,
+            )
+            continue
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        if path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
 def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     """The policy for the current settings and filesystem.
 
@@ -337,6 +407,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0),
             getattr(SETTINGS, "UNIFY_AGENTS", ""),
             str(_current_run_records() or ""),
+            tuple(_log_dir_settings()),
         )
         if (
             not fresh
@@ -396,7 +467,10 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             readonly_state=readonly,
             masked_dirs=masked_dirs,
             masked_files=masked_files,
-            hidden=[state_dir / INTERNAL_DIRNAME],
+            hidden=[
+                (state_dir / INTERNAL_DIRNAME, "mask-unify-state"),
+                *((d, "mask-harness-logs") for d in _log_dirs()),
+            ],
             network=network,
             proxy_port=port,
             notices_dir=_notices_dir(),
@@ -473,6 +547,22 @@ def wrap_argv(
         "--die-with-parent",
         "--new-session",
     ]
+    extra = [Path(os.path.realpath(p)) for p in writable]
+    shown = (*policy.readonly_state, policy.workspace, *extra)
+
+    def _inside_shown(path: Path) -> bool:
+        return any(_within(path, p) and path != p for p in shown)
+
+    def _hide(path: Path, rule: str) -> list[str]:
+        # Its mount point must exist on the host when the mount above it is
+        # read-only.
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            if not path.is_dir():
+                raise
+        return ["--tmpfs", str(path), "--ro-bind", str(notices / rule), _notice(path)]
+
     # Hide the state directory, then put back what may be seen.
     args += ["--tmpfs", str(policy.state_dir)]
     args += ["--ro-bind", str(notices / "mask-unify-state"), _notice(policy.state_dir)]
@@ -480,29 +570,27 @@ def wrap_argv(
         args += ["--tmpfs", str(path), "--ro-bind", str(notices / rule), _notice(path)]
     for path, rule in policy.masked_files:
         args += ["--ro-bind", str(notices / rule), str(path)]
+    # A harness-only directory outside the state directory and outside every
+    # mount below is masked with the others; what is seen inside it is put
+    # back below.
+    for path, rule in policy.hidden:
+        if not _within(path, policy.state_dir) and not _inside_shown(path):
+            args += _hide(path, rule)
     # After every mask, so what may be seen is seen wherever it lives, and the
     # workspace last of all, so it is writable even inside a masked directory.
     for path in policy.readonly_state:
         args += ["--ro-bind", str(path), str(path)]
     args += ["--bind", str(policy.workspace), str(policy.workspace)]
-    extra = [Path(os.path.realpath(p)) for p in writable]
     for path in extra:
         args += ["--bind", str(path), str(path)]
-    # Last of all, over any mount above that contains them. One no mount
-    # contains is already behind the state directory's tmpfs.
-    shown = (*policy.readonly_state, policy.workspace, *extra)
-    for path in policy.hidden:
-        if any(_within(path, p) for p in shown):
-            # Its mount point must exist on the host when the mount above it
-            # is read-only.
-            path.mkdir(parents=True, exist_ok=True)
-            args += [
-                "--tmpfs",
-                str(path),
-                "--ro-bind",
-                str(notices / "mask-unify-state"),
-                _notice(path),
-            ]
+    # A harness-only directory inside a mount above is hidden last of all,
+    # unless it holds a mount itself (a log directory that holds the
+    # workspace): the harness's own file tools still refuse it then. One
+    # inside the state directory that no mount contains is already behind its
+    # tmpfs.
+    for path, rule in policy.hidden:
+        if _inside_shown(path) and not any(_within(p, path) for p in shown):
+            args += _hide(path, rule)
     command = list(argv)
     if share_network:
         args.append("--share-net")

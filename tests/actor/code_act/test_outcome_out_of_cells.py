@@ -22,6 +22,7 @@ import contextvars
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -37,33 +38,39 @@ from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
 from unify.settings import SETTINGS
 
-MARKER = "outcome-marker-c41d07"
+# Fresh per process: logs of earlier runs cannot match it.
+MARKER = f"outcome-marker-{uuid.uuid4().hex[:12]}"
 OUTCOME = {**FAILED, "summary": MARKER}
 # What the checker wrote, as the review read it: the summary, a check's
 # reason and the section's header.
 NEEDLES = (MARKER, "no email to Kim", outcome_mod.OUTCOME_HEADER)
 
-# Run in the worker: every needle found in what the cell can read.
+# Run in the worker: for each place, what was read and every needle found.
 PROBE = r"""
 import json, os
 needles = json.loads({needles!r})
 roots = json.loads({roots!r})
-found = []
+pointer = {pointer!r}
+
+def hits(data):
+    return [n for n in needles if n.encode() in data]
+
+report = {{"env": [], "roots": {{}}}}
 for name, value in os.environ.items():
-    for n in needles:
-        if n in value:
-            found.append(("env", name, n))
+    report["env"] += [[name, n] for n in needles if n in value]
 try:
     with open("/proc/self/environ", "rb") as fh:
-        raw = fh.read()
-    for n in needles:
-        if n.encode() in raw:
-            found.append(("/proc/self/environ", "", n))
-except OSError:
-    pass
-scanned = 0
-for root in roots:
-    for dirpath, dirs, files in os.walk(root):
+        report["proc_environ"] = hits(fh.read())
+except OSError as exc:
+    report["proc_environ"] = type(exc).__name__
+for label, root in roots.items():
+    seen = {{"files": 0, "found": []}}
+    if os.path.isfile(root):
+        walk = [(os.path.dirname(root), [], [os.path.basename(root)])]
+    else:
+        seen["missing"] = not os.path.isdir(root)
+        walk = os.walk(root)
+    for dirpath, dirs, files in walk:
         for name in files:
             full = os.path.join(dirpath, name)
             try:
@@ -73,11 +80,16 @@ for root in roots:
                     data = fh.read()
             except OSError:
                 continue
-            scanned += 1
-            for n in needles:
-                if n.encode() in data:
-                    found.append(("file", full, n))
-print(json.dumps({{"found": found, "scanned": scanned}}))
+            seen["files"] += 1
+            seen["found"] += [[full, n] for n in hits(data)]
+    report["roots"][label] = seen
+try:
+    with open(pointer, "rb") as fh:
+        data = fh.read()
+    report["pointer"] = {{"bytes": len(data), "found": hits(data)}}
+except OSError as exc:
+    report["pointer"] = {{"error": type(exc).__name__}}
+print(json.dumps(report))
 """
 
 OPEN = r"""
@@ -164,18 +176,37 @@ async def _cell(code: str) -> dict:
         await ex.close()
 
 
-def _mounts(world) -> list[str]:  # noqa: F811
-    """Every path the policy mounts into a cell, plus the state dir and home."""
+def _places(world) -> dict[str, str]:  # noqa: F811
+    """Every path the policy mounts into a cell, the internal transcripts, every
+    configured log directory, the state directory as a whole and the home."""
     policy = sandbox.build_policy(fresh=True)
-    return [
-        str(p)
-        for p in (
-            policy.workspace,
-            *policy.readonly_state,
-            policy.state_dir,
-            world["home"],
-        )
-    ]
+    state = policy.state_dir
+    places = {
+        "workspace": policy.workspace,
+        **{
+            f"mounted {p.relative_to(state) if p.is_relative_to(state) else p}": p
+            for p in policy.readonly_state
+        },
+        "internal-transcripts": state / "internal-transcripts",
+        "state directory (UNIFY_HOME)": state,
+        "home": world["home"],
+    }
+    for name, value in zip(sandbox.LOG_DIR_SETTINGS, sandbox._log_dir_settings()):
+        if value:
+            places[name] = value
+    return {k: str(v) for k, v in places.items()}
+
+
+def _has_needle(directory: str) -> bool:
+    for dirpath, _dirs, files in os.walk(directory):
+        for name in files:
+            try:
+                data = Path(dirpath, name).read_bytes()
+            except OSError:
+                continue
+            if MARKER.encode() in data:
+                return True
+    return False
 
 
 @needs_bwrap
@@ -188,12 +219,36 @@ async def test_a_later_cell_finds_no_outcome_anywhere_it_can_read(
     review,
 ):
     await _task_one(monkeypatch, review)
-    roots = _mounts(outcome_world)
+    places = _places(outcome_world)
+    readable = outcome_world["state"] / "transcripts"
+    task = [r for r in _sessions(readable) if r.get("origin") == "CodeActActor.act"]
+    assert len(task) == 1
+    # The file a compaction pointer names for the task's session.
+    pointer = task[0]["path"]
+    # The outcome is on the host where only the harness reads it: the LLM
+    # request log, which the cell must not see.
+    llm_log = places.get("UNILLM_LOG_DIR")
+    assert llm_log and _has_needle(llm_log), "the review's request was not logged"
     report = await _cell(
-        PROBE.format(needles=json.dumps(NEEDLES), roots=json.dumps(roots)),
+        PROBE.format(
+            needles=json.dumps(NEEDLES),
+            roots=json.dumps(places),
+            pointer=pointer,
+        ),
     )
-    assert report["scanned"] > 0
-    assert report["found"] == [], report["found"]
+    print(json.dumps(report, indent=1))
+    assert report["env"] == [] and report["proc_environ"] in ([], "PermissionError")
+    found = {k: v["found"] for k, v in report["roots"].items() if v["found"]}
+    assert found == {}, found
+    assert report["roots"]["mounted transcripts"]["files"] > 0
+    assert report["roots"]["mounted store.sqlite"]["files"] > 0
+    assert report["roots"]["workspace"]["files"] >= 0
+    # The task's own transcript stays readable, and holds none of it.
+    assert report["pointer"].get("bytes", 0) > 0, report["pointer"]
+    assert report["pointer"]["found"] == []
+    # What the harness keeps hidden reads as nothing at all.
+    assert report["roots"]["internal-transcripts"]["files"] == 0
+    assert report["roots"]["UNILLM_LOG_DIR"]["files"] <= 1  # the mask's notice
 
 
 @needs_bwrap
@@ -243,27 +298,61 @@ async def test_the_internal_transcripts_keep_the_review_session(
     assert all(n not in text for n in NEEDLES)
     # the task's own session stays where its cells can read it; no review does
     assert _review_sessions(readable) == []
-    task = [r for r in _sessions(readable) if r["origin"] == "CodeActActor.act"]
+    task = [r for r in _sessions(readable) if r.get("origin") == "CodeActActor.act"]
     assert len(task) == 1
     assert Path(task[0]["path"]).parent == readable
 
 
-def test_the_policy_mounts_nothing_that_holds_the_internal_transcripts(
+def _visible(argv: list[str], path: Path) -> bool:
+    """Replay the bubblewrap mounts in order: whether *path* shows the host's
+    content once every mount is made."""
+    visible, i = False, 1
+    while argv[i] != "--chdir":
+        flag = argv[i]
+        if flag in ("--ro-bind", "--bind", "--tmpfs"):
+            dest = Path(argv[i + (1 if flag == "--tmpfs" else 2)])
+            if path == dest or path.is_relative_to(dest):
+                visible = flag != "--tmpfs"
+            i += 2 if flag == "--tmpfs" else 3
+        elif flag in ("--dev", "--proc"):
+            i += 2
+        else:
+            i += 1
+    return visible
+
+
+@pytest.mark.parametrize("log_dir", ["outside", "inside the workspace"])
+def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
     unify_home,
     monkeypatch,
     tmp_path,
+    log_dir,
 ):
-    """The full mount list, for the default workspace and for UNIFY_HOME itself."""
+    """The full mount list, for the default workspace and for UNIFY_HOME itself,
+    with the LLM request log outside or inside the workspace."""
     from unify import environment
 
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
     monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
-    internal = Path(os.path.realpath(unify_home)) / "internal-transcripts"
-    for local_root in ("", str(unify_home)):
+    home = Path(os.path.realpath(unify_home))
+    internal = home / "internal-transcripts"
+    for local_root in ("", str(home)):
         monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", local_root)
+        workspace = Path(local_root) if local_root else home / "workspace"
+        logs = (
+            Path(os.path.realpath(tmp_path)) / "llm-logs"
+            if log_dir == "outside"
+            else workspace / "llm-logs"
+        )
+        monkeypatch.setenv("UNILLM_LOG_DIR", str(logs))
+        monkeypatch.setenv("UNIFY_OTEL_LOG_DIR", str(logs.parent / "otel"))
         policy = sandbox.build_policy(fresh=True)
-        assert policy.readable_violation(internal) is not None
-        assert policy.readable_violation(internal / "x.jsonl") is not None
+        hidden = (internal, logs, logs.parent / "otel")
+        for path in hidden:
+            assert policy.readable_violation(path) is not None, path
+            assert policy.readable_violation(path / "x.jsonl") is not None, path
+        assert policy.readable_violation(workspace / "data.txt") is None
+        assert policy.readable_violation(home / "transcripts" / "s.jsonl") is None
         if not sys.platform.startswith("linux") or sandbox.bwrap_path() is None:
             continue
         argv = sandbox.wrap_argv(
@@ -271,27 +360,10 @@ def test_the_policy_mounts_nothing_that_holds_the_internal_transcripts(
             policy,
             writable=[environment.environment_dir(), environment.installer_cache()],
         )
-        # Replay the mounts in order: what is visible at internal-transcripts
-        # once every mount is made.
-        visible = False
-        i = 1
-        while argv[i] != "--chdir":
-            flag = argv[i]
-            if flag in ("--ro-bind", "--bind"):
-                dest = Path(argv[i + 2])
-                if internal == dest or internal.is_relative_to(dest):
-                    visible = True
-                i += 3
-            elif flag == "--tmpfs":
-                dest = Path(argv[i + 1])
-                if internal == dest or internal.is_relative_to(dest):
-                    visible = False
-                i += 2
-            elif flag in ("--dev", "--proc"):
-                i += 2
-            else:
-                i += 1
-        assert not visible, (local_root, argv)
+        for path in hidden:
+            assert not _visible(argv, path), (local_root, path, argv)
+        assert _visible(argv, workspace / "data.txt"), argv
+        assert _visible(argv, home / "transcripts"), argv
 
 
 def test_every_transcript_line_drops_the_outcome_section_the_harness_built(
