@@ -456,7 +456,7 @@ def test_the_review_gate_names_no_benchmark():
 
 def test_the_rulebook_names_no_benchmark(switches):
     texts = _rulebook()
-    assert {"_STORAGE_TWO_STORES", "_REVIEW_FORK_ROLE"} <= set(texts)
+    assert {"_STORAGE_TWO_STORES", "_REVIEW_FORK_ROLE_UNIFIED"} <= set(texts)
     assert _findings(texts) == []
 
 

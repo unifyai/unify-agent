@@ -17,6 +17,7 @@ bounded and prompt-cache-friendly:
 from unittest.mock import MagicMock, patch
 
 from unify.actor.code_act_actor import (
+    _STORAGE_MINIMAL_WHAT,
     _STORAGE_WHAT_CAN_BE_STORED,
     _prepare_trajectory_for_storage_review,
     _start_proactive_storage_loop,
@@ -269,7 +270,7 @@ def test_storage_check_prompt_puts_doctrine_before_trajectory():
         prompt = _built_system_prompt(mock_client)
         assert mock_loop.called
 
-    doctrine_at = prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40])
+    doctrine_at = prompt.index(_STORAGE_MINIMAL_WHAT[:40])
     instructions_at = prompt.index("## Instructions")
     trajectory_at = prompt.index("## Completed Trajectory")
     assert doctrine_at < instructions_at < trajectory_at
@@ -304,6 +305,7 @@ def test_proactive_storage_prompt_puts_doctrine_before_trajectory():
         prompt = _built_system_prompt(mock_client)
         assert mock_loop.called
 
+    # The proactive loop builds the full rulebook, not the minimal one.
     doctrine_at = prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40])
     request_at = prompt.index("## Storage Request")
     trajectory_at = prompt.index("## Trajectory So Far")
@@ -347,8 +349,9 @@ def test_storage_check_prompt_live_session_framing():
     assert "## Latest Turn Response" in prompt
     assert "## Completed Trajectory" not in prompt
     assert "## Final Result" not in prompt
-    assert "## Recurring Deliverables" in prompt
+    # The minimal rulebook (baked in) has no recurring-deliverables section.
+    assert "## Recurring Deliverables" not in prompt
     # Doctrine still precedes the volatile tail.
-    assert prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40]) < prompt.index(
+    assert prompt.index(_STORAGE_MINIMAL_WHAT[:40]) < prompt.index(
         "## Session Trajectory So Far",
     )
