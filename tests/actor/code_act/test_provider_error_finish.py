@@ -39,6 +39,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.sandbox_world import needs_bwrap
 
 TASK = (
     "Solve the puzzle. Reply with one action as a JSON object on the last "
@@ -155,9 +156,7 @@ def jsonl_session(monkeypatch):
     """``unify act --persist --jsonl`` on the real ``CodeActActor``."""
     from unify.actor.code_act_actor import CodeActActor
     from unify.cli import Act
-    from unify.settings import SETTINGS
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
 
@@ -205,20 +204,19 @@ def _responses(lines: list[dict]) -> list[str]:
 
 
 # What the session answers first, by what its first calls return, and the
-# session calls made before that answer. The
-# first step is gated (``tool_choice="required"``, as in the recorded run),
-# so a reply without a tool call gets unillm's one tool-choice retry. When
-# the retry fails the same way, unillm hands the loop the failed reply (its
-# partial text, or, with no text, its reasoning summary promoted to
-# content), still marked with the provider's error. The loop drops such a
+# session calls made before that answer. The first step is not gated
+# (``tool_choice="auto"``: the discovery gate went with the library's JSON
+# tools), so unillm makes no tool-choice retry and hands the loop the failed
+# reply (its partial text, or, with no text, its reasoning summary promoted
+# to content), still marked with the provider's error. The loop drops such a
 # reply and sends the turn again, at most twice; only when every attempt
 # fails is the failed reply kept, as shipped.
-ERRORS = 6  # two attempts of unillm's per loop attempt, three loop attempts
+ERRORS = 3  # three loop attempts
 CASES = {
     "no-text": ([None], AFTER, 2),
     "partial-text": ([PARTIAL], AFTER, 2),
-    "no-text-twice": ([None, None], AFTER, 4),
-    "partial-text-twice": ([PARTIAL, PARTIAL], AFTER, 4),
+    "no-text-twice": ([None, None], AFTER, 3),
+    "partial-text-twice": ([PARTIAL, PARTIAL], AFTER, 3),
     "no-text-always": ([None] * ERRORS, REASONING, ERRORS),
     "partial-text-always": ([PARTIAL] * ERRORS, PARTIAL, ERRORS),
 }
@@ -231,6 +229,7 @@ def quick_backoff(monkeypatch):
     monkeypatch.setattr(loop, "_PROVIDER_ERROR_BACKOFF_S", 0.01)
 
 
+@needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", sorted(CASES))
 async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
@@ -277,12 +276,11 @@ async def test_a_session_answers_after_an_error_finish(jsonl_session, case):
     # and tool choice as the turn whose reply failed.
     session_calls = [r for r in model.requests if not _is_review(r["messages"])]
     turn = session_calls[0]
-    for retry in session_calls[2:calls_before_answer:2]:
+    for retry in session_calls[1:calls_before_answer]:
         for key in ("messages", "tools", "tool_choice"):
             assert retry.get(key) == turn.get(key), key
-    # The follow-up's gated step takes two calls (its text answer gets the
-    # tool-choice retry too), as shipped.
-    assert len(session_calls) == calls_before_answer + 2
+    # The follow-up's step takes one call.
+    assert len(session_calls) == calls_before_answer + 1
 
 
 def test_only_a_reply_marked_by_the_provider_counts_as_failed():
