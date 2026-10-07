@@ -82,7 +82,7 @@ async def test_persist_mode_waits_for_interjection(llm_config):
     assert not handle.done(), "Persist loop should not terminate after first response"
 
     # Now interject to give it something to process
-    await handle.interject("Now say goodbye.")
+    await handle.submit("Now say goodbye.")
 
     # Wait for a second assistant response
     async def _has_two_responses() -> bool:
@@ -131,7 +131,7 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
     await _wait_for_condition(_has_response, poll=0.05, timeout=30.0)
 
     # First interjection - ask it to add
-    await handle.interject(
+    await handle.submit(
         "Use the add tool to compute 2 + 3, then tell me the result.",
     )
 
@@ -168,7 +168,7 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
     assert any("5" in msg for msg in assistant_msgs), "Should have computed 2+3=5"
 
     # Second interjection
-    await handle.interject("Now add 10 and 20.")
+    await handle.submit("Now add 10 and 20.")
 
     # Wait for second tool call
     async def _has_second_tool_call() -> bool:
@@ -357,7 +357,7 @@ async def test_persist_mode_does_not_terminate_on_send_response(llm_config):
     )
 
     # Interject and get a second response.
-    await handle.interject("Now greet me in French and pick a different number.")
+    await handle.submit("Now greet me in French and pick a different number.")
 
     # Wait for the LLM to produce a second send_response call
     async def _has_second_send_response() -> bool:
@@ -435,7 +435,7 @@ async def test_persist_mode_response_format_with_tools(llm_config):
     ), "Persist loop should NOT terminate after send_response with tools."
 
     # 4. Second turn: interject with another computation
-    await handle.interject("Now what is 10 + 20?")
+    await handle.submit("Now what is 10 + 20?")
 
     # Wait for second add call
     async def _has_second_add() -> bool:
@@ -586,7 +586,7 @@ async def test_persist_mode_survives_ask_mirror(llm_config):
     )
 
     # A real interjection should still work normally after the ask
-    await handle.interject("Now use the echo tool with 'test'.")
+    await handle.submit("Now use the echo tool with 'test'.")
     await _wait_for_tool_request(client, "echo")
 
     await asyncio.sleep(0.3)
@@ -667,7 +667,7 @@ async def test_persist_mode_transcript_note_appends_without_llm_turn(llm_config)
     assert not handle.done(), "Loop should still be in persist wait"
 
     # A real interjection still works, and the model can now see the note.
-    await handle.interject("Now use the echo tool with 'test'.")
+    await handle.submit("Now use the echo tool with 'test'.")
     await _wait_for_tool_request(client, "echo")
 
     await handle.stop()
@@ -752,7 +752,7 @@ async def test_persist_mode_compact_sentinel_stubs_reviewed_tool_results(llm_con
     assert not handle.done()
 
     # The loop still works normally afterwards.
-    await handle.interject("Now use the echo tool... actually just say 'ack'.")
+    await handle.submit("Now use the echo tool... actually just say 'ack'.")
 
     async def _acked() -> bool:
         return (

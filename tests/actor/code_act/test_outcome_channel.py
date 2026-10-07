@@ -203,7 +203,7 @@ async def _persistent_review(
             if outcome is not None:
                 posted = outcome_mod.post(handle.outcome_session_id, outcome)
             if closing:
-                await handle.interject(CLOSING)
+                await handle.submit(CLOSING)
                 await _next(handle, ("response",))
             else:
                 provider.replies.pop(0)

@@ -100,7 +100,6 @@ async def test_stale_review_flag_does_not_force_extra_turn_after_answer(
         client=client,
         message="start",
         tools={"bg_tool": bg_tool, "quick_tool": quick_tool},
-        interrupt_llm_on_tool_completion=False,  # patient mode
         max_steps=40,
         timeout=30,
     )
@@ -118,7 +117,7 @@ async def test_stale_review_flag_does_not_force_extra_turn_after_answer(
     # ingested below, so it cannot be the thing that later clears the flag
     # under test; withholding this turn's content keeps the dispatch
     # genuinely in flight so bg_tool's completion races against it for real.
-    await handle.interject("continue")
+    await handle.submit("continue")
     await _wait_for_condition(lambda: _dispatched_at_least(2), poll=0.02, timeout=10.0)
     bg_release.set()
     await asyncio.sleep(0.3)  # let the completion be detected before proceeding
@@ -185,7 +184,6 @@ async def test_late_result_review_turn_falls_back_to_substantive_answer(
         client=client,
         message="start",
         tools={"bg_tool": bg_tool},
-        interrupt_llm_on_tool_completion=False,  # patient mode
         max_steps=40,
         timeout=30,
     )
@@ -202,7 +200,7 @@ async def test_late_result_review_turn_falls_back_to_substantive_answer(
             if turn_queue.qsize() == 0:
                 return
             await asyncio.sleep(0.05)
-        await handle.interject("continue")
+        await handle.submit("continue")
 
     async def _dispatched_at_least(n: int) -> bool:
         return dispatch_count >= n
@@ -213,7 +211,7 @@ async def test_late_result_review_turn_falls_back_to_substantive_answer(
 
     # Force the answer turn's dispatch, but withhold its content so
     # bg_tool's completion below races against it for real.
-    await handle.interject("continue")
+    await handle.submit("continue")
     await _wait_for_condition(lambda: _dispatched_at_least(2), poll=0.02, timeout=10.0)
     bg_release.set()
     await asyncio.sleep(0.3)
@@ -263,7 +261,6 @@ async def test_true_empty_answer_retries_then_fails_loudly(
         client=client,
         message="start",
         tools={},
-        interrupt_llm_with_interjections=False,  # legacy blocking mode; no racing needed
         max_steps=40,
         timeout=30,
     )
@@ -347,7 +344,6 @@ async def test_whitespace_only_terminal_turn_falls_back_to_prior_answer(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,  # legacy blocking mode; no racing needed
         max_steps=40,
         timeout=30,
     )
@@ -392,7 +388,6 @@ async def test_empty_content_block_list_falls_back_to_prior_answer(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,
         max_steps=40,
         timeout=30,
     )
@@ -443,7 +438,6 @@ async def test_substantive_content_block_list_returns_extracted_text(
         client=client,
         message="start",
         tools={},
-        interrupt_llm_with_interjections=False,
         max_steps=40,
         timeout=30,
     )
@@ -495,7 +489,6 @@ async def test_lifecycle_announcement_between_answer_and_empty_recovers(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,  # legacy blocking mode; no racing needed
         max_steps=40,
         timeout=30,
     )
@@ -562,7 +555,6 @@ async def test_nudge_message_does_not_become_boundary_on_retry(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,
         max_steps=40,
         timeout=30,
     )
@@ -647,7 +639,6 @@ async def test_compression_threshold_notice_between_answer_and_empty_recovers(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,  # legacy blocking mode; no racing needed
         max_steps=40,
         timeout=30,
     )
@@ -706,7 +697,6 @@ async def test_quota_pruning_notice_between_answer_and_empty_recovers(
         client=client,
         message="start",
         tools={"quick_tool": _quick_tool},
-        interrupt_llm_with_interjections=False,
         max_steps=40,
         timeout=30,
     )
@@ -780,12 +770,12 @@ async def test_persist_empty_turn_still_surfaces_a_response(
     await turn_queue.put(_final_msg("ready"))
     assert (await _next_response())["content"] == "ready"
 
-    await handle.interject("Your submission was CORRECT.")
+    await handle.submit("Your submission was CORRECT.")
     await turn_queue.put({"role": "assistant", "content": None, "tool_calls": None})
     assert (await _next_response())["content"] == ""
     assert not handle.done()
 
-    await handle.interject("Reply with the word done.")
+    await handle.submit("Reply with the word done.")
     await turn_queue.put(_final_msg("done"))
     assert (await _next_response())["content"] == "done"
 

@@ -19,8 +19,6 @@ async def _loop(replies, tools, on_turn_boundary):
             log_steps=False,
             timeout=60,
             max_steps=30,
-            interrupt_llm_with_interjections=False,
-            steering_tools=False,
             on_turn_boundary=on_turn_boundary,
         )
         result = await asyncio.wait_for(handle.result(), timeout=60)

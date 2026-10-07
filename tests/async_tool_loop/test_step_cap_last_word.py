@@ -119,7 +119,7 @@ async def test_the_request_ends_with_the_models_last_word(last_word):
         handle = _start(persist=True)
         capped = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
         calls_at_cap = len(model.requests)
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
         stats = handle._runtime_state
         await handle.stop()
@@ -163,7 +163,7 @@ async def test_without_a_last_word_the_draft_is_quoted(last_word, reply):
         handle = _start(persist=True)
         capped = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
         looks_before.append(len(model.requests))
-        await handle.interject(CONTINUE)
+        await handle.submit(CONTINUE)
         answered = (await asyncio.wait_for(h._next_response(handle), BOUND))["content"]
         stats = handle._runtime_state
         await handle.stop()

@@ -31,7 +31,7 @@ async def test_code_act_persist_keeps_loop_alive_until_stopped():
         ), "persist=True should keep the loop alive after first message"
 
         # Interject and ensure we're still alive afterwards (persist loop continues).
-        _ = await handle.interject(
+        _ = await handle.submit(
             "Now reply with exactly 'ACK' and keep waiting.",
         )
         await asyncio.sleep(3)

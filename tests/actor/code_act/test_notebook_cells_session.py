@@ -517,7 +517,7 @@ async def test_a_sub_agent_handle_as_the_last_expression_is_adopted_and_steered(
                 )
 
             await _wait_for_condition(adopted, poll=0.05, timeout=60)
-            await handle.interject("Also cover Munich.")
+            await handle.submit("Also cover Munich.")
             result = await asyncio.wait_for(handle.result(), 120)
     finally:
         await actor.close()
