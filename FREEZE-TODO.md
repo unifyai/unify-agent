@@ -128,6 +128,19 @@ What is left is the tool-surface tangle below. `tests/test_no_research_switches.
 4. **Credentials in URLs.** A proxy or index URL with `user:password@` passes to the installer (and to build steps) unchanged; scrubbing is by name. Options: strip userinfo, or require index authentication through a keyring or netrc that stays outside the sandbox.
 5. **Without the sandbox** (`UNIFY_WORKSPACE` unset), installs still run unconfined (only the environment is minimal); there, cells run in-process with the harness anyway.
 
+## Security: checker outcomes and what cells can read (8 Oct 2026)
+
+**Closed (PR "SECURITY: keep checker outcomes out of everything a cell can read"):**
+- The storage review, its fork and the review gate carry the environment's checked outcome in their prompts. Their sessions are transcribed to `<UNIFY_HOME>/internal-transcripts/` (same format and index), never to the cell-readable `transcripts/`; sessions started inside them follow.
+- Every transcript line, in either directory, has each outcome section the harness rendered (`unify.outcome.render`) replaced by `[REDACTED:outcome]`, keyed on the exact section, never on words.
+- The sandbox hides `internal-transcripts/` after every mount, so no mount that contains it (a workspace set to `UNIFY_HOME`) shows it, and hides the harness's log directories (`UNILLM_LOG_DIR`, which holds every LLM request and reply, `UNILLM_OTEL_LOG_DIR`, `UNIFY_LOG_DIR`, `UNIFY_OTEL_LOG_DIR`) wherever they are configured (rule `mask-harness-logs`).
+
+**In-process Python (`UNIFY_WORKSPACE_PYTHON` empty) is for tests only, never for benchmarks or real work.** Model code then runs in the harness's own process: it can read the harness's environment (provider keys), the internal transcripts, the LLM request logs and anything else the harness can, including checked outcomes. No code change confines it; the worker (the default) is the only confined mode.
+
+**Still open:**
+- The storage review's own cells (core fork, `ReviewSandbox`) run in a worker whose workspace is writable, and the review has read the outcome; a review model that writes the verdict into the workspace or into a library entry puts it where later cells read it. Bounding that is a review-policy decision (a read-only workspace for the review's worker), not done here.
+- A log directory inside a mounted path (the workspace) that itself holds another mounted path cannot be hidden by a mount without hiding that path; the harness's file tools still refuse it, but a cell's own `open` can read it. Keep log directories outside the workspace, or under `UNIFY_HOME` (hidden as the state directory).
+
 ## Known defects and test status
 - **`library_shortlist.shortlist_block` (lines ~435–437) and `_gated_block` swallow any exception at DEBUG level.** A missing embedding key silently drops the shortlist. Log a warning at least.
 - **`test_can_store_true_merges_redundant_functions`** passes 3/5 live under the old defaults. The review sometimes searches only by the new function's exact name, so it never sees the narrower variants.

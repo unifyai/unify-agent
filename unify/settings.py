@@ -414,7 +414,10 @@ class ProductionSettings(BaseSettings):
     # compressor) as JSON lines to ``<UNIFY_HOME>/transcripts/<session>.jsonl``
     # and one line per ended session to ``transcripts/index.jsonl``; after a
     # context compression the compressed context points at the file
-    # (unify/transcripts.py). Off: nothing is written.
+    # (unify/transcripts.py). Harness-internal sessions (the storage review,
+    # its fork, the review gate) go to ``internal-transcripts/`` instead,
+    # which cells never see, and no line carries an outcome section the
+    # harness rendered. Off: nothing is written.
     UNIFY_TRANSCRIPTS: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -434,7 +437,11 @@ class ProductionSettings(BaseSettings):
     # persistent child process inside the same bubblewrap policy, and reaches
     # ``primitives``, steering and the other harness objects only through a
     # proxy the harness serves (unify/actor/execution/worker.py). Empty: Python
-    # cells run by ``exec`` in this process.
+    # cells run by ``exec`` in this process. That is for tests only, never for
+    # benchmarks or real work: model code then runs with everything the
+    # harness can read, including its environment (provider keys), the
+    # internal transcripts, the LLM request logs (UNILLM_LOG_DIR) and so the
+    # environment's checked outcomes the storage review was given.
     UNIFY_WORKSPACE_PYTHON: str = "worker"
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
     # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
