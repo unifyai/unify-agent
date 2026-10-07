@@ -366,10 +366,13 @@ async def test_compaction_is_recorded_and_the_new_context_points_at_the_file(
             # The compressor keeps every entry as it is.
             "You are a context compactor": [completion(content="done")],
             # Everything else is the root conversation, whose system prompt
-            # the rebuild folds into the compressed context.
+            # the rebuild folds into the compressed context. The summary fork
+            # (it carries the root's system prompt) answers nothing, so the
+            # compactor builds the new context.
             "": [
                 completion(content="thinking", calls=[("lookup", {})]),
                 completion(calls=[("compress_context", {})]),
+                completion(content=""),
                 completion(content="after compaction"),
             ],
         },
