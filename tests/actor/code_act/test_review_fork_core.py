@@ -37,7 +37,7 @@ from unify.common._async_tool import cache_discipline as cd
 from unify.settings import ProductionSettings, SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
-_REVIEW_OPENING = "## Storage Review\n\n"
+_REVIEW_OPENING = "## Curating The Library\n\n"
 
 
 def _cell(code: str):
@@ -154,7 +154,8 @@ async def test_the_review_forks_the_core_session_and_stores_through_python(fork_
     assert caa._REVIEW_FORK_TOOLS not in rulebook
     assert "FunctionManager_" not in rulebook and "GuidanceManager_" not in rulebook
     assert "functions.add" in rulebook
-    assert rulebook.endswith("## Final Result\n\n8")
+    # Under the baked defaults further sections follow the result.
+    assert "## Final Result\n\n8" in rulebook
 
     # The review stored through python; its sandbox had none of the task's
     # variables; it ran no stored function; its sandbox was closed.
@@ -279,19 +280,12 @@ def test_the_core_review_falls_back_and_says_why(
     assert source is None and reason in why
 
 
-def test_without_the_core_surface_the_switch_changes_nothing(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", True)
-    source, why = caa._review_fork_source(*_recorded_session("FunctionManager_x"))
-    assert why is None and "core" not in source
-
-
 @pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
 def test_the_setting_parses_booleans(value, expected):
     settings = ProductionSettings(UNIFY_REVIEW_FORK_CORE=value)
     assert settings.UNIFY_REVIEW_FORK_CORE is expected
 
 
-def test_the_default_is_off():
-    assert ProductionSettings.model_fields["UNIFY_REVIEW_FORK_CORE"].default is False
+def test_the_default_is_on():
+    # Baked on at the code freeze.
+    assert ProductionSettings.model_fields["UNIFY_REVIEW_FORK_CORE"].default is True

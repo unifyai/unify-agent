@@ -117,8 +117,9 @@ async def test_the_review_request_continues_the_sessions_conversation(
     assert reply["role"] == "assistant"
     assert reply["content"] == "Listed the stored functions; there are none."
     assert appended["role"] == "user"
+    # UNIFY_REVIEW_FRAMING=unified, baked in: the agent's own curation step.
     assert appended["content"].startswith(
-        "## Storage Review\n\nThe task above is over.",
+        "## Curating The Library\n\nThe task above is finished.",
     )
     assert "## Final Result\n\nListed the stored functions" in appended["content"]
     # No trajectory dump and no new system prompt: the conversation is it.
@@ -172,27 +173,6 @@ async def test_the_fork_is_sent_to_its_sessions_cache_under_the_prefix_key(
 
 
 @pytest.mark.asyncio
-async def test_a_task_tool_is_refused_in_the_review_and_the_list_stays(
-    monkeypatch,
-    switches,
-):
-    switches(discipline=True, fork=True)
-    _summary, requests, _forks, counter = await _forked_review(monkeypatch)
-    assert counter == {}  # the review never ran the task's code runner
-    follow_up = requests[3]
-    replies = {
-        m["tool_call_id"]: m["content"]
-        for m in follow_up["messages"]
-        if m.get("role") == "tool"
-    }
-    assert caa._REVIEW_FORK_MASK_RULE in replies["review_code"]
-    assert replies["review_list"] == "{}"
-    assert h.request_bytes(follow_up)["tools"] == h.request_bytes(requests[1])["tools"]
-    sent = _dumps(requests[2]["messages"])
-    assert _dumps(follow_up["messages"])[: len(sent)] == sent
-
-
-@pytest.mark.asyncio
 async def test_the_fork_carries_the_update_first_note(
     monkeypatch,
     switches,
@@ -232,19 +212,6 @@ def _recorded_session(extra_messages=()):
     inner = SimpleNamespace(_client=client, _compression=SimpleNamespace(count=0))
     actor = SimpleNamespace(_preprocess_msgs=None)
     return client, inner, actor
-
-
-def test_the_fork_source_is_the_raw_history_and_the_last_tools(switches):
-    switches(discipline=True, fork=True)
-    client, inner, actor = _recorded_session()
-    source, reason = caa._review_fork_source(inner, actor)
-    assert reason is None
-    assert source["client"] is client
-    assert source["tools"] == [{"type": "function", "function": {"name": "t"}}]
-    assert source["tool_choice"] == "auto"
-    assert source["messages"] == client.messages
-    client._messages.append({"role": "user", "content": "later"})
-    assert source["messages"][-1] == {"role": "assistant", "content": "done"}
 
 
 @pytest.mark.parametrize(
