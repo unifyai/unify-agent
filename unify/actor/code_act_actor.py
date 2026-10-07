@@ -6160,24 +6160,10 @@ class CodeActActor(BaseCodeActActor):
         if core_session is not None:
             prompt_kwargs["core"] = core_session.prompt
         system_prompt = build_code_act_prompt(**prompt_kwargs)
-        # UNIFY_CACHE_AFFINITY_SCOPE=static keys the session on the prompt
-        # without its per-session sections.
-        static_system_prompt: Optional[str] = None
-        if cache_discipline.enabled() and cache_discipline.affinity_scope() == (
-            "static"
-        ):
-            static_system_prompt = build_code_act_prompt(
-                **prompt_kwargs,
-                session_sections=False,
-            )
         if notebook_cells.enabled() and "execute_code" in base_tools:
             # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
             # named the session fields and tools.
             system_prompt = notebook_cells.rewrite_prompt(system_prompt)
-            if static_system_prompt is not None:
-                static_system_prompt = notebook_cells.rewrite_prompt(
-                    static_system_prompt,
-                )
         # What opens the session's first user message (first_message_context),
         # in this order: the library's size (UNIFY_LIBRARY_SNAPSHOT), then a
         # rule and the request.
@@ -6238,8 +6224,6 @@ class CodeActActor(BaseCodeActActor):
         )
         if system_prompt:
             client.set_system_message(system_prompt)
-        if static_system_prompt is not None:
-            cache_discipline.set_static_system_message(client, static_system_prompt)
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.

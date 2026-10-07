@@ -382,16 +382,6 @@ class ProductionSettings(BaseSettings):
     # from the cache (unify/common/_async_tool/cache_discipline.py). Off: as
     # shipped.
     UNIFY_CACHE_DISCIPLINE: bool = True
-    # What the cache affinity key of UNIFY_CACHE_DISCIPLINE is shared by:
-    # ``prefix`` (the default), every session whose model, system prompt and
-    # tool list are the same, so a new session reaches the replica an earlier
-    # one cached that prefix on; ``session``, one key per session; ``run``,
-    # one key for every session of this process; ``static``, like ``prefix``
-    # but over the actor's system prompt without its per-session sections
-    # (the clock and the filesystem context), so sessions of one
-    # configuration share a key across minutes and workspaces. Ignored with
-    # the switch off.
-    UNIFY_CACHE_AFFINITY_SCOPE: str = "prefix"
     # Run the storage review that follows a session as a fork of the session's
     # own conversation: its request is the actor's system prompt, messages,
     # last tools and tool choice, plus one user message with the review
@@ -1105,17 +1095,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on", "only"):
             raise ValueError(
                 f"UNIFY_INLINE_CURATION must be empty, 'on' or 'only', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_CACHE_AFFINITY_SCOPE", mode="before")
-    @classmethod
-    def parse_cache_affinity_scope(cls, v: Any) -> str:
-        value = str(v or "").strip().lower() or "prefix"
-        if value not in ("prefix", "session", "run", "static"):
-            raise ValueError(
-                "UNIFY_CACHE_AFFINITY_SCOPE must be 'prefix', 'session', 'run' "
-                f"or 'static', not {v!r}",
             )
         return value
 
