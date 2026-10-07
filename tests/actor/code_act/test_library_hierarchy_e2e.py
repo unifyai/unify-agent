@@ -536,9 +536,11 @@ async def test_a_helper_patch_is_replayed_against_the_calls_the_entry_point_made
     library,
     monkeypatch,
 ):
-    """The helper's cases were recorded through the entry point, so a patch
-    that changes what the helper did there is refused, naming the new-name
-    route; one that keeps it is stored and the entry point runs it."""
+    """The helper's cases were recorded through the entry point. With Python
+    in the sandboxed worker no recorded call is replayed in the harness
+    (tests/actor/code_act/test_case_replay_confinement.py), so any patch of a
+    helper with passing cases is refused as not replayed, naming the routes on;
+    the entry point keeps running the stored helper."""
     _store_hierarchy()
     cells = Cells(new_actor())
     try:
@@ -552,15 +554,15 @@ async def test_a_helper_patch_is_replayed_against_the_calls_the_entry_point_made
         )
         assert out.error is None, out.error
         refusal = json.dumps(out.result)
-        assert "error" in out.result, refusal
-        assert "does something else" in refusal, refusal
+        assert "error" in out.result and "not replayed" in refusal, refusal
         out = await cells(
             "await functions.patch('total_by_key', "
             "'totals[key] = totals.get(key, 0) + value', "
             "'totals[key] = value + totals.get(key, 0)', "
             "why='same sum, operands swapped')",
         )
-        assert out.result.get("status") == "patched", out.result
+        refusal = json.dumps(out.result)
+        assert "error" in out.result and "not replayed" in refusal, refusal
         out = await cells(f"await functions.run('summarize_pairs', text={TEXT!r})")
         assert out.result == SUMMARY, out.error
     finally:
