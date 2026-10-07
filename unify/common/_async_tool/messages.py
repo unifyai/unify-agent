@@ -442,7 +442,6 @@ async def generate_with_preprocess(
             preprocess_msgs,
             **gen_kwargs,
         )
-        _deliver_reasoning_details(client, pre_copy_len)
         return result
     except BaseException:
         # A dispatch that ends without a response — cancelled because a tool
@@ -460,31 +459,6 @@ async def generate_with_preprocess(
         raise
     finally:
         client._llm_inflight_since = None
-
-
-def _deliver_reasoning_details(client: Any, start: int) -> None:
-    """UNIFY_REASONING_DELIVERY=top_level: let the provider read its own reasoning.
-
-    LiteLLM files every non-standard message key under
-    ``provider_specific_fields``, so the encrypted ``reasoning_details`` a
-    provider returns go back nested, where OpenRouter ignores them. Each
-    assistant message this dispatch added (all above the sent watermark, so
-    not yet sent) also gets them at top level, the field the provider reads.
-    The nested copy stays, so nothing already sent changes byte for byte.
-    """
-    from unify.settings import SETTINGS
-
-    if getattr(SETTINGS, "UNIFY_REASONING_DELIVERY", "") != "top_level":
-        return
-    for msg in list(client.messages or [])[start:]:
-        if not isinstance(msg, dict) or msg.get("role") != "assistant":
-            continue
-        if msg.get("reasoning_details") is not None:
-            continue
-        nested = msg.get("provider_specific_fields")
-        items = nested.get("reasoning_details") if isinstance(nested, dict) else None
-        if isinstance(items, list) and items:
-            msg["reasoning_details"] = copy.deepcopy(items)
 
 
 _NOT_RECORDED = object()

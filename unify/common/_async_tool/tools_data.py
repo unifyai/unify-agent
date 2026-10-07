@@ -460,23 +460,6 @@ def compute_context_injection(
     return extra_kwargs, should_inject_ctx
 
 
-def _with_footer(result: Any, footer: Optional[Callable[[], Optional[str]]]) -> Any:
-    """*result* ending with the line *footer* gives now, if it gives one."""
-    if footer is None:
-        return result
-    try:
-        line = footer()
-    except Exception:
-        return result
-    if not line:
-        return result
-    if isinstance(result, str):
-        return f"{result}\n\n{line}"
-    if isinstance(result, list):
-        return [*result, {"type": "text", "text": line}]
-    return result
-
-
 class ToolsData:
     def __init__(
         self,
@@ -495,8 +478,6 @@ class ToolsData:
         self._client = client
         # Calls abandoned after a bounded cancel, held until they end.
         self._abandoned: Set[asyncio.Task] = set()
-        # UNIFY_BUDGET_FOOTER: a line to end each tool result with, or None.
-        self.result_footer: Optional[Callable[[], Optional[str]]] = None
         # False: the loop offers no wait/steer/ask_about_completed_tool, so
         # nothing announces calls as "[steerable ...]" or "[askable ...]".
         self.steering_tools = bool(steering_tools)
@@ -1530,8 +1511,6 @@ class ToolsData:
         self.completed_results[call_id] = result
         self._completed_tool_names[call_id] = name
         # Only the transcript's copy carries the footer.
-        result = _with_footer(result, self.result_footer)
-
         self._logger.debug(
             f"⏱️ [ToolsData.process_completed +{_pct_ms()}] {name} result obtained",
         )

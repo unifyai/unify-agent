@@ -178,13 +178,6 @@ class ProductionSettings(BaseSettings):
     # reply()) is given, not compacted for. A loop without compression is
     # unchanged. Empty (also ``off``): as shipped.
     UNIFY_STEP_CAP_COMPACT: str = ""
-    # Close to ``max_steps`` (within its last tenth), every tool result ends
-    # with one line giving the steps left before the limit stops the request
-    # (counted as the limit counts them: per request under
-    # UNIFY_STEP_CAP_REPLY, else over the whole loop). It informs only; the
-    # line is part of the new result, so no message already sent changes.
-    # Off: as shipped.
-    UNIFY_BUDGET_FOOTER: bool = False
     # Seconds a loop waits on questions nobody answers before it says so.
     # When every call a loop is waiting on is a question (its own
     # request_clarification, say) and no answer has come for this long, the
@@ -294,24 +287,6 @@ class ProductionSettings(BaseSettings):
     # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
     # Empty: replies are text only, as shipped.
     UNIFY_REPLY_CHANNEL: str = ""
-    # ``on``: a text reply that would end a turn of a loop answering a
-    # requester (the actor's task loop; also a cell's ``reply()`` under
-    # UNIFY_REPLY_CHANNEL) is first checked for two facts: its answer is
-    # degenerate (0, NaN, None, null, empty, a list whose items are all the
-    # same, or a list of lists identical to the request's last table, a
-    # block of integer rows in its text or a list of lists in its JSON,
-    # whichever comes last), or the last computing cell since the requester's
-    # message raised, or a cell caught and printed an error, and the reply
-    # mentions no error. When one holds and no receipt was shown for this
-    # request, the turn does not end: the facts (at most 3 lines, no
-    # instruction) are appended as one loop-authored message and the model is
-    # called again; its next text reply ends the turn as it is. At most one
-    # receipt per request; none at the step limit, on a cancel, or with
-    # fewer than three steps left. A persistent session's response is only
-    # the final reply. Counted in the CLI's run stats (``receipts_shown``,
-    # ``receipts_revised``) (unify/common/_async_tool/reply_receipt.py).
-    # Empty: as shipped.
-    UNIFY_REPLY_RECEIPT: str = ""
     # ``on``: model code in a cell reads the current request as ``request``
     # (in process and under UNIFY_WORKSPACE_PYTHON=worker): ``request.text``
     # is the requester's latest message, the request or a later message of a
@@ -341,8 +316,7 @@ class ProductionSettings(BaseSettings):
     # stored functions), as are modules and names starting with ``_``. No
     # value is printed whole. It is computed where the cell ran (in process
     # or in the UNIFY_WORKSPACE_PYTHON=worker child), is the tool's own
-    # result (a UNIFY_BUDGET_FOOTER line still comes after it), and the
-    # prompt and tools are unchanged (unify/actor/execution/worker_child.py
+    # result, and the prompt and tools are unchanged (unify/actor/execution/worker_child.py
     # ``Inventory``). Empty: results as shipped.
     UNIFY_VARIABLE_INVENTORY: str = ""
     # On: a function or guidance entry is checked, before it is stored, for
@@ -946,12 +920,6 @@ class ProductionSettings(BaseSettings):
     # refuses to start with this on and request records off. Off: as
     # shipped.
     UNIFY_LESSON_STATUS: bool = False
-    # The storage rulebook asks that a lesson from the trajectory go into a
-    # guidance entry of its own, which records the request it was learned on,
-    # rather than be appended to an entry written while handling other
-    # tasks; an existing entry is changed to correct or clarify what it says,
-    # or when the trajectory followed it. Off: as shipped.
-    UNIFY_GUIDANCE_SCOPED: bool = False
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each call of a stored
     # function keeps the request it ran under (a hash, the latest three per
     # function, in ``<UNIFY_HOME>/request_log.sqlite``), and every function
@@ -1163,18 +1131,6 @@ class ProductionSettings(BaseSettings):
     # not offered and the prompt names the magics where it named the fields
     # (unify/actor/notebook_cells.py). On both tool surfaces.
     UNIFY_CODE_PROJECTION: str = ""
-    # "top_level": send the provider's encrypted reasoning items back. LiteLLM
-    # parses a response's non-standard message keys into
-    # ``provider_specific_fields``, so the ``reasoning_details`` OpenRouter
-    # returns (encrypted items and summaries) ride nested in the history Unify
-    # sends back, where OpenRouter ignores them: cross-turn reasoning
-    # continuity has been a no-op on the wire (replay probe, 6 Oct: input
-    # tokens identical with the items removed). With this value each new
-    # assistant message also carries its items as the top-level
-    # ``reasoning_details`` field, as prime-agent sends them. Messages already
-    # sent are never rewritten, so the cached prefix stays byte-stable. Off
-    # (""): as shipped.
-    UNIFY_REASONING_DELIVERY: str = ""
     # With UNIFY_TOOL_SURFACE=core and UNIFY_REVIEW_FORK, run the storage
     # review as a fork of the session too, instead of falling back to the
     # standalone librarian: the session's last request (its execute_code-only
@@ -1311,11 +1267,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_GUIDANCE_LINKED_NAMES",
         "UNIFY_LISTING_PROVENANCE",
         "UNIFY_LESSON_STATUS",
-        "UNIFY_GUIDANCE_SCOPED",
         "UNIFY_LISTING_USAGE",
         "UNIFY_ENTRY_RECORD",
         "UNIFY_SEARCH_IDENTIFIERS",
-        "UNIFY_BUDGET_FOOTER",
         "UNIFY_EVIDENCE_LEDGER",
         "UNIFY_CELL_SCOPE_FIX",
         mode="before",
@@ -1630,17 +1584,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_REPLY_RECEIPT", mode="before")
-    @classmethod
-    def parse_reply_receipt(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        value = "" if value == "off" else value
-        if value not in ("", "on"):
-            raise ValueError(
-                f"UNIFY_REPLY_RECEIPT must be empty, 'off' or 'on', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_REPLY_CHANNEL", mode="before")
     @classmethod
     def parse_reply_channel(cls, v: Any) -> str:
@@ -1698,16 +1641,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "core"):
             raise ValueError(
                 f"UNIFY_TOOL_SURFACE must be empty or 'core', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_REASONING_DELIVERY", mode="before")
-    @classmethod
-    def parse_reasoning_delivery(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "top_level"):
-            raise ValueError(
-                f"UNIFY_REASONING_DELIVERY must be empty or 'top_level', not {v!r}",
             )
         return value
 
