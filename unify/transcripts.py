@@ -14,10 +14,18 @@ goes to ``<UNIFY_HOME>/transcripts/index.jsonl`` naming the session, the session
 that spawned it, where it came from, when it started and ended, the tools it
 called and how many results were errors.
 
+The workspace sandbox lets cells read ``transcripts/``. A harness-internal
+session -- the storage review, its fork and the review gate, whose prompts
+carry the environment's checked outcome (unify/outcome.py) -- is marked with
+:func:`mark_internal` and goes, with every session started inside it, to
+``<UNIFY_HOME>/internal-transcripts/`` instead (same format, an index of its
+own), which no cell can reach (unify/sandbox.py).
+
 Nothing is redacted from what the model saw, except that the value of any
 environment variable whose name contains KEY, TOKEN, SECRET or PASSWORD, and any
-provider credential unillm holds, is replaced by ``[REDACTED:<name>]`` before a
-line is written.
+provider credential unillm holds, is replaced by ``[REDACTED:<name>]``, and
+every outcome section the harness rendered is replaced by
+``[REDACTED:outcome]``, before a line is written, in either directory.
 
 With the switch off nothing here touches the filesystem: :func:`attach`
 returns ``None`` and every other entry point is a no-op for a loop it did not
@@ -45,6 +53,8 @@ __all__ = [
     "attach",
     "close",
     "enabled",
+    "internal_transcripts_dir",
+    "mark_internal",
     "observe",
     "record_compaction",
     "resume_session",
@@ -97,6 +107,31 @@ def transcripts_dir() -> Path:
     return store_home() / "transcripts"
 
 
+INTERNAL_DIRNAME = "internal-transcripts"
+
+
+def internal_transcripts_dir() -> Path:
+    """``<UNIFY_HOME>/internal-transcripts``, for harness-internal sessions.
+
+    Hidden from every cell by the workspace sandbox; not created by this call.
+    """
+    from unify.db import store_home
+
+    return store_home() / INTERNAL_DIRNAME
+
+
+def mark_internal(client: Any) -> Any:
+    """Transcribe the session *client* will carry as harness-internal.
+
+    Its file, and those of the sessions started inside it, go to
+    :func:`internal_transcripts_dir`. Call before the client's loop starts.
+    Returns *client*.
+    """
+    with suppress_all():
+        setattr(client, "_unify_transcript_internal", True)
+    return client
+
+
 def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
 
@@ -143,7 +178,10 @@ def _secret_values() -> list[tuple[str, str]]:
 
 
 def scrub(line: str) -> str:
-    """Replace every credential value in *line*, raw or JSON-escaped."""
+    """Replace every credential value in *line*, raw or JSON-escaped, and
+    every outcome section the harness rendered (:func:`unify.outcome.redact`)."""
+    from unify import outcome
+
     for name, value in _secret_values():
         marker = f"[REDACTED:{name}]"
         if value in line:
@@ -151,7 +189,7 @@ def scrub(line: str) -> str:
         escaped = json.dumps(value, ensure_ascii=False)[1:-1]
         if escaped != value and escaped in line:
             line = line.replace(escaped, marker)
-    return line
+    return outcome.redact(line)
 
 
 # ---------------------------------------------------------------------------
@@ -209,13 +247,16 @@ class TranscriptSession:
         parent: Optional["TranscriptSession"],
         origin: str,
         label: str,
+        internal: bool = False,
     ) -> None:
         self.id = session_id
         self.parent_id = parent.id if parent is not None else None
         self.origin = origin
         self.label = label
         self.resumed = resumed
-        self.path = transcripts_dir() / f"{session_id}.jsonl"
+        self.internal = internal
+        directory = internal_transcripts_dir() if internal else transcripts_dir()
+        self.path = directory / f"{session_id}.jsonl"
         self.started_at = _now()
         self.ended_at = self.started_at
         self.tools: set[str] = set()
@@ -482,14 +523,20 @@ def _open_session(client: Any, loop_cfg: Any, label: str) -> TranscriptSession:
         if len(lineage) > 1:
             with _REGISTRY_LOCK:
                 parent = _BY_LABEL.get("->".join(lineage[:-1]))
-    requested = _REQUESTED_ID.get() if parent is None else None
+    # Internal if marked, or started inside an internal session.
+    internal = bool(getattr(client, "_unify_transcript_internal", False)) or bool(
+        parent is not None and parent.internal,
+    )
+    # A requested id names a session cells may read; an internal one never
+    # continues it.
+    requested = _REQUESTED_ID.get() if parent is None and not internal else None
     with _REGISTRY_LOCK:
         live_ids = {s.id for s in _LIVE}
     if requested in live_ids:
         # Another live root already continues this id; two writers must never
         # share one file, so this one starts its own.
         requested = None
-    directory = transcripts_dir()
+    directory = internal_transcripts_dir() if internal else transcripts_dir()
     if requested:
         session_id = requested
         resumed = (directory / f"{session_id}.jsonl").exists()
@@ -507,6 +554,7 @@ def _open_session(client: Any, loop_cfg: Any, label: str) -> TranscriptSession:
         parent=parent,
         origin=origin,
         label=label,
+        internal=internal,
     )
     session.start()
     try:

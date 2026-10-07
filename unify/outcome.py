@@ -9,7 +9,10 @@ checker and not from the agent.
 
 The outcome is held in memory, on the session's handle. It is never
 written to a file and never put in the environment, so nothing the agent
-runs through the workspace can read it from disk. ``unify act --jsonl``
+runs through the workspace can read it from disk. Every section
+:func:`render` builds is remembered (in memory) so that the session
+transcripts (unify/transcripts.py) can replace it with
+:data:`REDACTED` in every line they write (:func:`redact`). ``unify act --jsonl``
 receives it as a control line on the stdin channel the driving program
 already writes (``{"outcome": {...}}``); a program that runs the actor in
 process calls :func:`post` itself.
@@ -30,9 +33,12 @@ Anything else is refused with :class:`OutcomeError`.
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import threading
 import weakref
+from collections import OrderedDict
 from typing import Any, Optional, Protocol
 
 MAX_CHECKS = 20
@@ -42,6 +48,15 @@ MAX_SOURCE = 40
 MAX_SUMMARY = 1200
 
 OUTCOME_HEADER = "## Verified outcome (from the environment's checker, not the agent)"
+
+#: What a transcript line holds in place of a rendered outcome section.
+REDACTED = "[REDACTED:outcome]"
+
+# Every outcome section rendered in this process (and each form a prompt
+# builder derived from one), most recent last; bounded, oldest dropped first.
+_RENDERED: "OrderedDict[str, None]" = OrderedDict()
+_RENDERED_MAX = 1024
+_RENDERED_LOCK = threading.Lock()
 
 
 class OutcomeError(ValueError):
@@ -145,8 +160,54 @@ def _verdict_word(value: Optional[bool]) -> str:
     return {True: "yes", False: "no", None: "not stated"}[value]
 
 
+def remember(section: str) -> None:
+    """Treat *section* as an outcome section: :func:`redact` removes it.
+
+    :func:`render` calls this for every section it builds; a prompt builder
+    that rewrites a section (renaming the tools in it) passes the result too.
+    """
+    if not section:
+        return
+    with _RENDERED_LOCK:
+        _RENDERED.pop(section, None)
+        _RENDERED[section] = None
+        while len(_RENDERED) > _RENDERED_MAX:
+            _RENDERED.popitem(last=False)
+
+
+def _forms(section: str) -> list[str]:
+    """*section* raw, JSON-escaped once and twice (a JSON string inside JSON)."""
+    once = json.dumps(section, ensure_ascii=False)[1:-1]
+    twice = json.dumps(once, ensure_ascii=False)[1:-1]
+    return list(dict.fromkeys((section, once, twice)))
+
+
+def redact(line: str) -> str:
+    """*line* with every outcome section this process rendered replaced.
+
+    Keyed on the exact sections :func:`render` built (raw or JSON-escaped),
+    never on words: text a model wrote about an outcome is left as it is. A
+    line without the section header is returned unchanged at once.
+    """
+    if OUTCOME_HEADER not in line:
+        return line
+    with _RENDERED_LOCK:
+        sections = sorted(_RENDERED, key=len, reverse=True)
+    for section in sections:
+        for form in _forms(section):
+            if form in line:
+                line = line.replace(form, REDACTED)
+        if OUTCOME_HEADER not in line:
+            break
+    return line
+
+
 def render(outcome: Optional[dict]) -> str:
-    """The review's section on the checked outcome; empty without one."""
+    """The review's section on the checked outcome; empty without one.
+
+    The section is remembered, so a transcript line never carries it
+    (:func:`redact`).
+    """
     parts: list[str] = []
     if outcome is not None:
         lines = [
@@ -188,4 +249,6 @@ def render(outcome: Optional[dict]) -> str:
                 "\nThe checker gave no overall verdict; weigh the checks above.",
             )
         parts.append("\n".join(lines) + "\n\n")
-    return "".join(parts)
+    section = "".join(parts)
+    remember(section)
+    return section
