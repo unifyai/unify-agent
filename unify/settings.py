@@ -1210,7 +1210,7 @@ class ProductionSettings(BaseSettings):
     # (bubblewrap installed) and UNIFY_DISCOVERY_GATE off: an actor refuses
     # to start otherwise, and never runs model code unconfined
     # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
-    UNIFY_TOOL_SURFACE: str = ""
+    UNIFY_TOOL_SURFACE: str = "core"
     # What the model is asked to fill in to run a cell. Empty (or "legacy"):
     # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
     # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
@@ -1252,7 +1252,7 @@ class ProductionSettings(BaseSettings):
     # review, saying why, without worker Python or with UNIFY_STORE_VERIFY
     # (its check has no sandbox method). Off: the core surface's review is
     # standalone, as shipped.
-    UNIFY_REVIEW_FORK_CORE: bool = False
+    UNIFY_REVIEW_FORK_CORE: bool = True
     # With UNIFY_TOOL_SURFACE=core and UNIFY_LIBRARY_SHORTLIST (gated or
     # not): the stored functions the shortlist lists are bound in the
     # sandbox when the task starts, exactly as a ``functions.get`` would bind
@@ -1263,13 +1263,13 @@ class ProductionSettings(BaseSettings):
     # forced. As shipped, a listed function raises NameError until something
     # reads it, and the list does not say how to call it. No effect on the
     # JSON surface. Off: as shipped.
-    UNIFY_CORE_BIND_LISTED: bool = False
+    UNIFY_CORE_BIND_LISTED: bool = True
     # With UNIFY_TOOL_SURFACE=core: the prompt's index line for
     # ``functions`` ends with one example of calling a found function, by
     # ``functions.run`` and by name (the core counterpart of the JSON
     # prompt's ``execute_function`` sentence). No effect on the JSON
     # surface. Off: as shipped.
-    UNIFY_CORE_CALL_EXAMPLE: bool = False
+    UNIFY_CORE_CALL_EXAMPLE: bool = True
     # A guidance read (search, filter, get: ``guidance.*`` under the core
     # surface, ``GuidanceManager_*`` otherwise) also shows the functions an
     # entry links, as ``linked_functions``: each one's name and signature
@@ -1278,7 +1278,7 @@ class ProductionSettings(BaseSettings):
     # the sandbox, as a ``functions.get`` would, so a name it shows is
     # callable from the next cell. A linked id with no stored function is left out (its
     # ``stale_reasons`` already say so). Off: as shipped.
-    UNIFY_GUIDANCE_LINKED_NAMES: bool = False
+    UNIFY_GUIDANCE_LINKED_NAMES: bool = True
     # On: ``execute_function`` of a stored function defines the stored
     # functions it calls, transitively and each once, in the namespace the
     # call runs in (in process and under worker Python), and installs their
@@ -1289,7 +1289,7 @@ class ProductionSettings(BaseSettings):
     # boundary wrapper records it: usage, trust, a case
     # (unify/actor/function_helpers.py). Off: only the entry point is
     # defined, so its helpers are a NameError until a read loads them.
-    UNIFY_FUNCTION_HELPERS: bool = False
+    UNIFY_FUNCTION_HELPERS: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
