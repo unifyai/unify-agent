@@ -43,11 +43,11 @@ comes from the environment or ``.env`` only.
 The network is shared: tests call model providers. The sandbox therefore
 bounds what model code can *read and write*; it does not hide the provider
 keys this process holds in its environment and ``.env``, nor stop a request
-to the network. Code a model writes runs in this same process, so anything
-the process can reach, the code can reach; only the Python worker
-(``UNIFY_WORKSPACE=sandboxed`` with ``UNIFY_WORKSPACE_PYTHON=worker``) runs
-cells in a child process without credentials or network, and turning it on
-changes the actor's tools and prompt, so it is not a test default.
+to the network. Code a model writes in a Python cell runs in a child
+process without credentials or network under the default workspace
+(``UNIFY_WORKSPACE=sandboxed`` with ``UNIFY_WORKSPACE_PYTHON=worker``); a test
+that pins in-process Python runs it in this same process, so anything the
+process can reach, that code can reach.
 
 ``UNIFY_TEST_SANDBOX`` selects the behaviour: ``auto`` (the default) confines
 the run where bubblewrap exists (Linux) and runs as before elsewhere, with a

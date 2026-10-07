@@ -1179,7 +1179,7 @@ class ProductionSettings(BaseSettings):
     # ``primitives``, steering and the other harness objects only through a
     # proxy the harness serves (unify/actor/execution/worker.py). Empty: Python
     # cells run by ``exec`` in this process.
-    UNIFY_WORKSPACE_PYTHON: str = ""
+    UNIFY_WORKSPACE_PYTHON: str = "worker"
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
     # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
     # Empty: no network at all.
