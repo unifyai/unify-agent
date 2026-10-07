@@ -942,6 +942,18 @@ class ProductionSettings(BaseSettings):
     # one that then worked (env-memory-v1: AppWorld net -11% of task USD).
     # Off: as shipped.
     UNIFY_ENV_CARDS: bool = False
+    # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST) and guidance origins
+    # recorded (UNIFY_GUIDANCE_ORIGIN or UNIFY_ENTRY_RECORD): a top-level
+    # task's first message shows the three guidance notes whose "Written for"
+    # requests are closest to its request (one embedding call; a stored
+    # function no note links stands in as a note of its own, by its first
+    # docstring line and its own requests, built at read time), each with the
+    # functions it links, which are bound in the sandbox as a library read
+    # binds them and never called by the harness (note-index-v1: the job's
+    # function available on 79.8% of AppWorld returns against 34.9%;
+    # unify/actor/note_index.py). An actor refuses to start with this on and
+    # those records off. Off: as shipped.
+    UNIFY_NOTE_INDEX: bool = False
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
     # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
     # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
@@ -1371,6 +1383,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CAPTURE_ACCEPTED",
         "UNIFY_STORE_FROM_SESSION",
         "UNIFY_ENV_CARDS",
+        "UNIFY_NOTE_INDEX",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
         "UNIFY_GUIDANCE_ORIGIN",
