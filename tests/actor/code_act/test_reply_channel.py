@@ -65,7 +65,6 @@ def _flat(text: str) -> str:
 @pytest.fixture
 def channel(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
@@ -113,16 +112,13 @@ def _prompt(actor_tools, surface: str) -> str:
 
 @pytest.mark.parametrize("profile", ["", "lean"])
 @pytest.mark.parametrize("surface", ["json", "core"])
-@pytest.mark.parametrize("note", [False, True])
 def test_the_prompt_says_it_once_where_the_reply_rule_is(
     monkeypatch,
     actor_tools,
     profile,
     surface,
-    note,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_PROTOCOL_NOTE", note)
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "")
     off = _flat(_prompt(actor_tools, surface))
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
@@ -136,8 +132,8 @@ def test_the_prompt_says_it_once_where_the_reply_rule_is(
         else "never via a tool call."
     )
     assert f"{rule} {FROM_CELL}" in on
-    # The reply-protocol note says a cell's reply() takes the action.
-    assert on.count(NOTE_FROM_CELL) == (1 if note else 0)
+    # The reply-protocol note is gone.
+    assert NOTE_FROM_CELL not in on
     assert on.replace(FROM_CELL + " ", "").replace(NOTE_FROM_CELL + " ", "") == off
 
 
@@ -304,10 +300,14 @@ def test_off_the_sandbox_has_no_reply(monkeypatch):
 # ── one-shot act ─────────────────────────────────────────────────────────
 
 
+@needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_a_one_shot_act_answers_with_the_cells_reply(channel):
+@pytest.mark.timeout(30)
+async def test_a_one_shot_act_answers_with_the_cells_reply(channel, world, monkeypatch):
     from unify.actor.code_act_actor import CodeActActor
+
+    # The core surface runs cells in the sandboxed worker.
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
     actor = CodeActActor()
     try:
@@ -343,10 +343,18 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(channel):
     assert (state.replies_from_cell, state.replies_from_value) == (1, 1)
 
 
+@needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_a_text_reply_still_answers_with_the_switch_on(channel):
+@pytest.mark.timeout(30)
+async def test_a_text_reply_still_answers_with_the_switch_on(
+    channel,
+    world,
+    monkeypatch,
+):
     from unify.actor.code_act_actor import CodeActActor
+
+    # The core surface runs cells in the sandboxed worker.
+    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
     actor = CodeActActor()
     try:

@@ -17,9 +17,9 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import review_gate
-from unify.settings import SETTINGS
 
 _LIBRARIAN = "You are a skill librarian."
+_CURATION = "This is the curation step that follows"
 
 
 # ── the decision ──────────────────────────────────────────────────────
@@ -131,7 +131,6 @@ def test_the_gate_names_no_benchmark_and_asks_for_no_example_checks():
 async def _session(
     monkeypatch,
     *,
-    gate: bool,
     gate_reply: str,
     counts: tuple = (1, 0),
 ) -> list[dict]:
@@ -140,7 +139,6 @@ async def _session(
     from unify.actor import code_act_actor as caa
     from unify.actor.code_act_actor import CodeActActor
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_GATE", gate)
     monkeypatch.setattr(caa, "_library_counts", lambda *_a, **_k: counts)
     actor = CodeActActor()
     try:
@@ -179,7 +177,14 @@ def _gate_requests(requests):
 
 
 def _review_requests(requests):
-    return [r for r in requests if r["messages"][0]["content"].startswith(_LIBRARIAN)]
+    # The review forks the session (UNIFY_REVIEW_FORK), so it is the request
+    # that carries the curation step rather than its own system prompt.
+    return [
+        r
+        for r in requests
+        if _LIBRARIAN in json.dumps(r["messages"], default=str)
+        or _CURATION in json.dumps(r["messages"], default=str)
+    ]
 
 
 @pytest.mark.asyncio
@@ -187,7 +192,6 @@ def _review_requests(requests):
 async def test_a_no_skips_the_review(monkeypatch):
     requests = await _session(
         monkeypatch,
-        gate=True,
         gate_reply='{"review": false, "reason": "nothing reusable"}',
     )
     (gate_request,) = _gate_requests(requests)
@@ -202,7 +206,6 @@ async def test_a_no_skips_the_review(monkeypatch):
 async def test_a_yes_runs_the_review_after_it(monkeypatch):
     requests = await _session(
         monkeypatch,
-        gate=True,
         gate_reply='{"review": true, "reason": "working code"}',
     )
     (gate_request,) = _gate_requests(requests)
@@ -214,16 +217,8 @@ async def test_a_yes_runs_the_review_after_it(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 async def test_an_unreadable_gate_runs_the_review(monkeypatch):
-    requests = await _session(monkeypatch, gate=True, gate_reply="hmm")
+    requests = await _session(monkeypatch, gate_reply="hmm")
     assert len(_gate_requests(requests)) == 1
-    assert _review_requests(requests)
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_off_no_gate_and_the_review_runs(monkeypatch):
-    requests = await _session(monkeypatch, gate=False, gate_reply="")
-    assert _gate_requests(requests) == []
     assert _review_requests(requests)
 
 
@@ -251,7 +246,6 @@ async def test_an_empty_library_is_reviewed_without_asking_the_gate(monkeypatch)
     # The first sessions seed the library: the gate would have said no here.
     requests = await _session(
         monkeypatch,
-        gate=True,
         gate_reply='{"review": false, "reason": "nothing reusable"}',
         counts=(0, 0),
     )
@@ -264,33 +258,11 @@ async def test_an_empty_library_is_reviewed_without_asking_the_gate(monkeypatch)
 async def test_an_unknown_library_size_asks_the_gate(monkeypatch):
     requests = await _session(
         monkeypatch,
-        gate=True,
         gate_reply='{"review": false, "reason": "nothing reusable"}',
         counts=(None, None),
     )
     assert len(_gate_requests(requests)) == 1
     assert _review_requests(requests) == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_off_an_empty_library_changes_nothing(monkeypatch):
-    requests = await _session(monkeypatch, gate=False, gate_reply="", counts=(0, 0))
-    assert _gate_requests(requests) == []
-    assert _review_requests(requests)
-
-
-@pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
-def test_the_setting_parses_booleans(value, expected):
-    from unify.settings import ProductionSettings
-
-    assert ProductionSettings(UNIFY_REVIEW_GATE=value).UNIFY_REVIEW_GATE is expected
-
-
-def test_the_default_is_off():
-    from unify.settings import ProductionSettings
-
-    assert ProductionSettings.model_fields["UNIFY_REVIEW_GATE"].default is False
 
 
 def test_the_system_prompt_is_one_fixed_text():
