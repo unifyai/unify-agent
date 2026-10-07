@@ -298,14 +298,14 @@ def _execution_rules(can_clarify: bool) -> str:
 
 
 def _shipped_execution_rules(can_clarify: bool) -> str:
-    if can_clarify or not _prompt_accuracy_enabled():
+    if can_clarify:
         return _EXECUTION_RULES
     text = _unified(_EXECUTION_RULES, _RULE_5_CLARIFY, _RULE_5_NO_CLARIFY)
     return text[: text.index(_RULE_8_START)]
 
 
 def _incremental_execution(can_clarify: bool) -> str:
-    if can_clarify or not _prompt_accuracy_enabled():
+    if can_clarify:
         return _INCREMENTAL_EXECUTION
     return _unified(
         _INCREMENTAL_EXECUTION,
@@ -686,18 +686,6 @@ _STORAGE_SESSION_NOTICE = textwrap.dedent("""
 """).strip()
 
 
-def _review_framing_unified() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_REVIEW_FRAMING == "unified"
-
-
-def _prompt_accuracy_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.prompt_accuracy()
-
-
 def _unified(text: str, old: str, new: str) -> str:
     """``text`` with ``old`` replaced by ``new``; ``old`` must occur exactly once."""
     if text.count(old) != 1:
@@ -752,26 +740,6 @@ _SESSION_OWN_STORAGE_PARAGRAPH = (
     "When your own storage reports a stored function covering a\n"
     "deliverable that is requested again, the whole\n"
 )
-_STORAGE_SESSION_END_NOTICE = _unified(
-    _unified(
-        _STORAGE_SESSION_NOTICE,
-        "In this persistent session, a dedicated skill-consolidation process\n"
-        "reviews your trajectory automatically **after each completed turn**\n"
-        "(and again when the session ends). Do not call `store_skills` for\n"
-        "work a completed turn already contains — the automatic review covers\n"
-        "it. Reserve `store_skills` for mid-turn moments: something worth\n"
-        "keeping is at risk before a risky continuation, or the user\n"
-        "explicitly asks to store a skill right now.",
-        "In this persistent session, a dedicated skill-consolidation process\n"
-        "reviews your whole trajectory automatically once, **when the session\n"
-        "ends**; nothing reviews it between turns, and no review result is\n"
-        "added to this conversation. Reserve `store_skills` for moments when\n"
-        "something worth keeping is at risk before a risky continuation, or\n"
-        "the user explicitly asks to store a skill right now.",
-    ),
-    _SESSION_NOTES_PARAGRAPH,
-    _SESSION_OWN_STORAGE_PARAGRAPH,
-)
 _STORAGE_SESSION_END_NOTICE_UNIFIED = _unified(
     _unified(
         _STORAGE_SESSION_NOTICE,
@@ -824,9 +792,6 @@ def _with_try_first(text: str) -> str:
     )
 
 
-_FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST = _with_try_first(
-    _FUNCTION_AND_GUIDANCE_LIBRARY,
-)
 _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST = _with_try_first(
     _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED,
 )
@@ -837,18 +802,11 @@ def _library_section(
     tools: Optional[Mapping[str, Callable]] = None,
     search_when_useful: bool = False,
 ) -> str:
-    if _review_framing_unified():
-        text = (
-            _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
-            if _try_first_enabled()
-            else _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
-        )
-    else:
-        text = (
-            _FUNCTION_AND_GUIDANCE_LIBRARY_TRY_FIRST
-            if _try_first_enabled()
-            else _FUNCTION_AND_GUIDANCE_LIBRARY
-        )
+    text = (
+        _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED_TRY_FIRST
+        if _try_first_enabled()
+        else _FUNCTION_AND_GUIDANCE_LIBRARY_UNIFIED
+    )
     if search_when_useful:
         text = _unified(text, _ALWAYS_SEARCH_FIRST, _SEARCH_WHEN_USEFUL)
     if inline_curation:
@@ -944,16 +902,10 @@ def _inline_library_section(
 def _storage_notice(persist: bool, turn_reviews: bool = True) -> str:
     if persist:
         # UNIFY_PROMPT_ACCURACY: describe the schedule the session gets.
-        if not turn_reviews and _prompt_accuracy_enabled():
-            if _review_framing_unified():
-                return _STORAGE_SESSION_END_NOTICE_UNIFIED
-            return _STORAGE_SESSION_END_NOTICE
-        if _review_framing_unified():
-            return _STORAGE_SESSION_NOTICE_UNIFIED
-        return _STORAGE_SESSION_NOTICE
-    if _review_framing_unified():
-        return _STORAGE_DEFERRED_NOTICE_UNIFIED
-    return _STORAGE_DEFERRED_NOTICE
+        if not turn_reviews:
+            return _STORAGE_SESSION_END_NOTICE_UNIFIED
+        return _STORAGE_SESSION_NOTICE_UNIFIED
+    return _STORAGE_DEFERRED_NOTICE_UNIFIED
 
 
 def _build_clock_context() -> str:

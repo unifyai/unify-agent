@@ -957,13 +957,7 @@ async def async_tool_loop_inner(
     # UNIFY_PROMPT_ACCURACY: not to a loop that has no parent -- one no other
     # loop started (its lineage is its own id) and given no parent context --
     # which no parent conversation exists for, and no continuation can reach.
-    from unify.settings import SETTINGS as _ACCURACY_SETTINGS
-
-    _no_parent = (
-        _ACCURACY_SETTINGS.prompt_accuracy()
-        and parent_chat_context is None
-        and len(cfg.lineage) < 2
-    )
+    _no_parent = parent_chat_context is None and len(cfg.lineage) < 2
     _has_parent_chat_context = False
     if propagate_chat_context != ChatContextPropagation.NEVER and not _no_parent:
         ctx_content = parent_chat_context_safe if parent_chat_context_safe else []

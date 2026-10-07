@@ -428,41 +428,6 @@ class ProductionSettings(BaseSettings):
     # read by the review, forked or not, as an interjection to answer.
     # Off: as shipped.
     UNIFY_REVIEW_FORK: bool = True
-    # ``unified``: the storage review is framed as the agent's own curation
-    # step after the task rather than a separate "skill librarian" (whose
-    # text opens with "Often nothing is"): the actor's prompt says it will
-    # curate the libraries from its trajectory when the task ends, a forked
-    # review is told the task is finished and this is that step, and it ends
-    # with the closing instruction the standalone review already gets. The
-    # rulebook is unchanged. Empty frames the review as shipped.
-    UNIFY_REVIEW_FRAMING: str = "unified"
-    # ``compose``: the storage rulebook asks for small, parametrised units
-    # composed into larger ones, stored only from code the trajectory ran,
-    # with names and signatures that describe behaviour; a patch must keep an
-    # entry's behaviour on the inputs it already handled (a behaviour change
-    # gets a new name and the old entry is retired), a guidance entry stays
-    # short and is split rather than grown, and the update-first order no
-    # longer sends a fix into a broader existing entry. ``minimal``: the
-    # same rules, with the rest of the rulebook cut to what storage needs
-    # (what can be stored and how it runs, dependencies, what guidance is
-    # for): no user-notification, recurring-deliverable, specialist
-    # sub-agent, model-choice-trial, logging-marker or distillation-dial
-    # sections. ``functions_first``: the ``minimal`` rulebook with the
-    # compose rules replaced by a functions-first doctrine: a review asks
-    # first which functions the trajectory supports -- a root function for
-    # the procedure that produced the result, composed of small stored
-    # functions, with what varies between instances as parameters, the
-    # decisions the trajectory settled made inside the code, no instance
-    # literals, and an existing function for the same kind of task
-    # generalised rather than duplicated -- and stores a short guidance
-    # entry linked to the functions as well. ``balanced``: the ``minimal``
-    # rulebook with functions and guidance on equal footing ("What To
-    # Keep"): a function carries what code can repeat, a note what code
-    # cannot, linked when they go together; a note is held to a function's
-    # discipline (reusable, general-purpose, distilled as a superset: one
-    # rule with its conditions as parameters, covering earlier cases rather
-    # than a sibling, one subject, no instance values). Empty: as shipped.
-    UNIFY_CURATION_DOCTRINE: str = "minimal"
     # The storage review is shown the stored functions saved while handling
     # requests similar to this session's (``similar_request`` at least the
     # ``UNIFY_SHORTLIST_GATE`` threshold when that is set, else 0.24), at
@@ -479,17 +444,6 @@ class ProductionSettings(BaseSettings):
     # them, so a sub-agent whose task seems to need one reports that instead
     # of calling a function that does not exist. Off: as shipped.
     UNIFY_REPLY_PROTOCOL_NOTE: bool = True
-    # The actor states only what the session actually has: the skill-storage
-    # notice of a persistent session describes the review it gets (once,
-    # when the session ends, unless UNIFY_TURN_STORAGE_REVIEWS), not one per
-    # turn with results as background notes; the steering docs of
-    # execute_code and execute_function name the `steer` tool, not the
-    # stop_* tools it replaced; and a loop that no other loop started and
-    # that was given no parent context is not told it runs inside a parent
-    # conversation; the execution rules mention request_clarification only
-    # when the session has it; and a sub-actor gets request_clarification
-    # only when the actor that started it could ask. Off: as shipped.
-    UNIFY_PROMPT_ACCURACY: bool = True
     # Delegation for the actor `unify act` and the conversation manager
     # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
     # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
@@ -1165,7 +1119,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_LAST_REPLY",
         "UNIFY_BUILTIN_GUIDANCE",
         "UNIFY_REPLY_PROTOCOL_NOTE",
-        "UNIFY_PROMPT_ACCURACY",
         "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
         "UNIFY_REVIEW_GATE_FORK",
@@ -1430,27 +1383,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_REVIEW_FRAMING", mode="before")
-    @classmethod
-    def parse_review_framing(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "unified"):
-            raise ValueError(
-                f"UNIFY_REVIEW_FRAMING must be empty or 'unified', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_CURATION_DOCTRINE", mode="before")
-    @classmethod
-    def parse_curation_doctrine(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "compose", "minimal", "functions_first", "balanced"):
-            raise ValueError(
-                "UNIFY_CURATION_DOCTRINE must be empty, 'compose', 'minimal', "
-                f"'functions_first' or 'balanced', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_BIND_REQUEST", mode="before")
     @classmethod
     def parse_bind_request(cls, v: Any) -> str:
@@ -1548,10 +1480,6 @@ class ProductionSettings(BaseSettings):
     def step_cap_reply(self) -> str:
         """The ``UNIFY_STEP_CAP_REPLY`` mode: ``""``, ``"draft"`` or ``"last_word"``."""
         return _step_cap_reply_mode(self.UNIFY_STEP_CAP_REPLY) or ""
-
-    def prompt_accuracy(self) -> bool:
-        """Whether the UNIFY_PROMPT_ACCURACY fixes apply (the switch, or the lean profile)."""
-        return bool(self.UNIFY_PROMPT_ACCURACY) or self.UNIFY_PROMPT_PROFILE == "lean"
 
     def lean_prompt(self) -> bool:
         """``UNIFY_PROMPT_PROFILE=lean``."""

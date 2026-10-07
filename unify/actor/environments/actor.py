@@ -656,14 +656,11 @@ class _ActorRunner:
         # UNIFY_PROMPT_ACCURACY: the sub-actor may ask only when the actor
         # that started it can (outside any actor, as shipped).
         clarification_enabled = True
-        from unify.settings import SETTINGS
+        from unify.actor.execution import _CAN_CLARIFY
 
-        if SETTINGS.prompt_accuracy():
-            from unify.actor.execution import _CAN_CLARIFY
-
-            parent_can_clarify = _CAN_CLARIFY.get(None)
-            if parent_can_clarify is not None:
-                clarification_enabled = parent_can_clarify
+        parent_can_clarify = _CAN_CLARIFY.get(None)
+        if parent_can_clarify is not None:
+            clarification_enabled = parent_can_clarify
 
         handle = await inner_actor.act(
             request,

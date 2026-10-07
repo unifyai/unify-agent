@@ -868,10 +868,9 @@ def _storage_environment_note() -> str:
             "needs no import and no dependency for them. No other "
             "`primitives.*` name exists.",
         )
-        if _curation_doctrine_minimal():
-            # The minimal rulebook says to await only what is asynchronous;
-            # this says which of the environment's methods are.
-            parts.append(_environment_method_kinds(surface.namespaces))
+        # The minimal rulebook says to await only what is asynchronous;
+        # this says which of the environment's methods are.
+        parts.append(_environment_method_kinds(surface.namespaces))
         if surface.globals:
             listed = ", ".join(f"`{g}`" for g in sorted(surface.globals))
             parts.append(f"The environment also binds the sandbox globals {listed}.")
@@ -1072,57 +1071,6 @@ def _storage_needs_repair_note() -> str:
     return store_trust.needs_repair_note()
 
 
-def _review_framing_unified() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_REVIEW_FRAMING == "unified"
-
-
-def _curation_doctrine_compose() -> bool:
-    """The compose doctrine's framing applies (``compose``, ``minimal``, ``functions_first``, ``balanced``).
-
-    ``functions_first`` and ``balanced`` keep the compose opening,
-    instructions frame and update-first order, and replace the compose rules
-    themselves.
-    """
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_CURATION_DOCTRINE in (
-        "compose",
-        "minimal",
-        "functions_first",
-        "balanced",
-    )
-
-
-def _curation_doctrine_minimal() -> bool:
-    """The minimal rulebook applies (``minimal``, or ``functions_first`` / ``balanced``, which keep it)."""
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_CURATION_DOCTRINE in (
-        "minimal",
-        "functions_first",
-        "balanced",
-    )
-
-
-def _curation_doctrine_balanced() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_CURATION_DOCTRINE == "balanced"
-
-
-def _curation_doctrine_functions_first() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.UNIFY_CURATION_DOCTRINE == "functions_first"
-
-
-def _review_opening_is_neutral() -> bool:
-    """Whether a review opens without "Often nothing is" (either switch on)."""
-    return _review_framing_unified() or _curation_doctrine_compose()
-
-
 def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
     """A standalone storage review's client: the actor's model, as shipped."""
     return new_llm_client(
@@ -1200,159 +1148,9 @@ _STORAGE_COMPOSE_DOCTRINE = (
 )
 
 
-# UNIFY_CURATION_DOCTRINE=functions_first: the compose rules, rewritten so
-# that a review asks first which functions a trajectory supports. On the 5 Oct
-# ARC LOW runs, 80 of 192 repeat visits had a solved earlier visit and no
-# function to reuse: the review kept a note, the gate called the task a
-# one-off, or the answer had been typed out. Where functions were stored, 12
-# of 13 for one rule were helpers that left the rule's deciding value as a
-# parameter, and 4 of the 5 wrong reuses passed that parameter wrongly.
-_STORAGE_FUNCTIONS_FIRST_DOCTRINE = (
-    "## Functions First\n\n"
-    "Stored functions are what make the next task of this kind cheaper and "
-    "more reliable: a later session that finds a function which does its "
-    "task calls it instead of working the task out again. So the first "
-    "question of this review is which functions the trajectory supports. "
-    "Guidance comes second, and goes with the functions.\n\n"
-    "- **Store the procedure that produced the result.** When the task was "
-    "done by code, or by steps code could repeat, store that procedure as a "
-    "root function whose inputs are what the next task of this kind will be "
-    "given (its raw input, not values worked out along the way) and whose "
-    "result is what this task delivered or did. A later session should be "
-    "able to do such a task with one call. The code that produced the "
-    "result outranks helpers written beside it.\n"
-    "- **Compose it from small functions.** Write the root as a short "
-    "function that calls smaller ones, each doing one well-defined step "
-    "that another procedure could use, and store those too. Call functions "
-    "already in the library instead of copying them. A hierarchy of small "
-    "functions is easier to check, patch and recombine than one long "
-    "body.\n"
-    "- **Parametrise what varies; decide what was decided.** Values that "
-    "would differ in the next instance (the input, identifiers, names, "
-    "sizes, counts) are parameters, or are read from the input inside the "
-    "function. A choice the trajectory settled (which value or element "
-    "plays which role, which rule applies) is made inside the function, "
-    "read from the input where it can be, not handed to the caller as a "
-    "parameter to guess. A parameter keeps a default only when the "
-    "trajectory showed that value.\n"
-    "- **No instance literals.** Values that belong only to this instance "
-    "(its data, its identifiers, its answer) appear nowhere in a stored "
-    "function, docstring or guidance entry.\n"
-    "- **Guard the assumptions.** A function raises a clear error on an "
-    "input outside what the trajectory handled (a shape, a range, a "
-    "missing element), so a caller with a different kind of task finds out "
-    "at once instead of getting a wrong result.\n"
-    "- **Generalise rather than duplicate.** When the library already holds "
-    "a function for this kind of task, change it so it also covers this "
-    "instance, rather than adding a sibling under a new name. Two instances "
-    "show what varied: make that a parameter and keep the rest in the "
-    "code. A change must keep the function's behaviour on the inputs it "
-    "already handled; when the behaviour itself must change, store it under "
-    "a new name and retire the old entry.\n"
-    "- **Guidance with the functions.** For each root function, add or "
-    "update one short guidance entry (under about "
-    f"{GUIDANCE_ENTRY_TARGET_CHARS:,} characters) linked to it through "
-    "`function_ids`: the kind of request it serves, how to call it, what it "
-    "assumes, and what failed on the way to it. Guidance on its own is "
-    "right only when nothing in the work could be written as a "
-    "function.\n"
-    "- **Untested code says so.** Prefer code the trajectory ran. When the "
-    "trajectory reached its result without code but its steps are fully "
-    "determined, you may write the function from them; its docstring then "
-    "says it has not been run yet.\n\n"
-)
-
-_STORAGE_FUNCTIONS_FIRST_STEP_3 = (
-    "3. Decide the functions first: the root function for the procedure "
-    "that produced the result, the smaller functions it composes, and the "
-    "changes that let an existing function cover this instance instead of "
-    "a sibling. Then add the guidance entry that goes with them, and any "
-    "lesson code cannot carry. Retire the entries a generalisation "
-    "supersedes.\n"
-)
-
-
-# UNIFY_CURATION_DOCTRINE=balanced: functions and guidance on equal footing
-# (retrieval design study, 5 Oct, section 2.5). ``functions_first`` fixed
-# reviews that kept only a note after a solved, code-produced answer, and its
-# rules for functions stay; but it ranks one kind first, a bet on the domain
-# (the ScienceWorld stores checked held guidance only), and asks nothing of a
-# note's reuse. On the 5 Oct Continual-ARC paper-protocol run notes were
-# written as single-instance anecdotes, one note gathered three tasks' rules,
-# and one puzzle ended with six entries. Here a note is held to a function's
-# discipline: reusable, general, conditioned on when it applies, one subject,
-# one note subsuming related cases rather than a sibling beside it.
-_STORAGE_BALANCED_DOCTRINE = (
-    "## What To Keep\n\n"
-    "The next task of this kind should start from what this one learned. "
-    "Two kinds of entry carry it, on equal footing and often as a pair; "
-    "each is written to be reused, not to record this one instance.\n\n"
-    "- **A function carries what code can repeat**: the procedure that "
-    "produced this result, written so that the next task of this kind can "
-    "run it in one call. Its inputs are what that task will be given; what "
-    "varies between instances is a parameter or is read from the input; "
-    "choices this trajectory settled are made inside the code; no value "
-    "that belongs only to this instance appears in it. It raises a clear "
-    "error on an input outside what the trajectory handled, and calls the "
-    "smaller stored functions it builds on instead of copying them.\n"
-    "- **A guidance note carries what code cannot**: when a procedure "
-    "applies and when it does not, what to pass and what it assumes, a "
-    "condition or preference the requester cares about, a judgement the "
-    "work needed, and an approach that failed and what worked instead.\n\n"
-    "Notes, like functions, are reusable, general-purpose and distilled as "
-    "supersets. A note is written with the same discipline as a function:\n\n"
-    "- **General, with its conditions.** It states the rule for the kind "
-    "of task, with the conditions under which it holds as its parameters "
-    "(when this holds, do that; when it does not, this other thing), not "
-    "the story of this instance. No value that belongs only to this "
-    "instance (its data, identifiers or answer) appears in it.\n"
-    "- **A superset, not a sibling.** When the library already holds a "
-    "note on this kind of task, rewrite that note so that one rule covers "
-    "its earlier cases and this one, stating what differs between them as "
-    "a condition, rather than adding a second note beside it. A note that "
-    "is wrong for this case is corrected, not appended to.\n"
-    "- **One subject.** A note covers one kind of task or one decision. A "
-    "lesson about a different kind of task goes in a note of its own, even "
-    "when the subjects sound related: it is not appended to a note written "
-    "for other tasks, and unrelated rules are not gathered into one "
-    "general note.\n"
-    "- **Linked.** When a note says when or how to use a function, link "
-    "them (`function_ids`), so each is listed with the other.\n\n"
-    "Ask both questions of the trajectory: which steps would the next task "
-    "of this kind repeat, and what would the next session need to know to "
-    "choose and use them, or to do what code cannot? A note alone is right "
-    "when the work could not be written as code; a function alone is right "
-    "when its docstring tells a caller everything. A lesson about how this "
-    "agent works in general (its tools, its reply format) is not a lesson "
-    "about the task.\n\n"
-    "Prefer what the trajectory confirmed. A note or function from a "
-    "session whose result was not confirmed describes what was tried and "
-    "what happened, not a rule, and says so.\n\n"
-)
-_STORAGE_BALANCED_GUIDANCE = (
-    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
-    "uses through `function_ids`) is prose for what code cannot carry, "
-    "kept reusable on the same terms as a function (What To Keep, below)."
-    "\n\n"
-)
-_STORAGE_BALANCED_STEP_3 = (
-    "3. Decide what the next task of this kind needs: the function for the "
-    "procedure that produced the result and the smaller functions it "
-    "composes, the note that says when and how to use it or carries what "
-    "code cannot, and the changes that let an existing entry of either kind "
-    "cover this instance instead of a sibling beside it. Retire the entries "
-    "a generalisation supersedes.\n"
-)
-
-
 def _storage_compose_note() -> str:
-    """The compose doctrine (``compose``, ``minimal``), the functions-first doctrine
-    (``functions_first``), the balanced doctrine (``balanced``); else empty."""
-    if _curation_doctrine_balanced():
-        return _STORAGE_BALANCED_DOCTRINE
-    if _curation_doctrine_functions_first():
-        return _STORAGE_FUNCTIONS_FIRST_DOCTRINE
-    return _STORAGE_COMPOSE_DOCTRINE if _curation_doctrine_compose() else ""
+    """The compose doctrine."""
+    return _STORAGE_COMPOSE_DOCTRINE
 
 
 # UNIFY_CURATION_DOCTRINE=minimal: the rulebook keeps what storage needs --
@@ -1387,83 +1185,38 @@ _STORAGE_MINIMAL_GUIDANCE = (
     "that failed in a non-obvious way and what worked instead. A function "
     "whose docstring covers its use needs no guidance entry.\n\n"
 )
-_STORAGE_MINIMAL_DOCTRINE = _STORAGE_MINIMAL_WHAT + _STORAGE_MINIMAL_GUIDANCE
-# functions_first: guidance goes with the functions (its doctrine says how).
-_STORAGE_FUNCTIONS_FIRST_GUIDANCE = (
-    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
-    "uses through `function_ids`) is short prose for what code cannot "
-    "carry: when and how to use the stored functions, a composition that "
-    "would be hard to rediscover, or an approach that failed in a "
-    "non-obvious way and what worked instead.\n\n"
-)
 
 
 def _storage_doctrine_sections() -> str:
-    """The rulebook sections before the instructions, per ``UNIFY_CURATION_DOCTRINE``."""
-    if _curation_doctrine_minimal():
-        guidance = (
-            _STORAGE_BALANCED_GUIDANCE
-            if _curation_doctrine_balanced()
-            else (
-                _STORAGE_FUNCTIONS_FIRST_GUIDANCE
-                if _curation_doctrine_functions_first()
-                else _STORAGE_MINIMAL_GUIDANCE
-            )
-        )
-        return (
-            f"{_STORAGE_MINIMAL_WHAT}"
-            f"{guidance}"
-            f"{_storage_environment_note()}"
-            f"{_storage_compose_note()}"
-            f"{_storage_update_first_note()}"
-        )
+    """The rulebook sections before the instructions (the minimal rulebook)."""
     return (
-        f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_STORAGE_MINIMAL_WHAT}"
+        f"{_STORAGE_MINIMAL_GUIDANCE}"
         f"{_storage_environment_note()}"
-        f"{_STORAGE_TWO_STORES}"
         f"{_storage_compose_note()}"
         f"{_storage_update_first_note()}"
-        f"{_STORAGE_SUB_AGENT_PATTERNS}"
-        f"{_STORAGE_RECURRING_DELIVERABLE}"
     )
 
 
 def _storage_update_first_note() -> str:
     """The review's update-before-add order."""
-    if _curation_doctrine_compose():
-        return (
-            "### Update before you add\n\n"
-            "When the trajectory shows a stored entry that was wrong, "
-            "incomplete or failed, (1) patch the entry the trajectory used "
-            "(`FunctionManager_patch_function` / "
-            "`GuidanceManager_patch_guidance`) when the fix keeps its "
-            "behaviour on the inputs it already handled; (2) otherwise add a "
-            "new focused entry, under a new name when the behaviour changes. "
-            "Do not move a fix into a broader entry the trajectory did not "
-            "use. A patch replaces excerpts of the entry: read its current "
-            "text first, copy each `old` with enough context to occur once, "
-            "and say `why`. Make several changes to one entry in one call as "
-            "`edits` (`[{old, new}, ...]`, applied in order, all or none). "
-            "The entry keeps its id, precondition, dependencies and links, a "
-            "patched function is checked like any function you add, and the "
-            "replaced version is kept in history. Rewrite a whole function "
-            "with `overwrite=True` only when most of it changes.\n\n"
-        )
     return (
         "### Update before you add\n\n"
-        "When the trajectory shows a stored entry that was wrong, incomplete "
-        "or failed, change the library in this order: (1) patch the entry the "
-        "trajectory used (`FunctionManager_patch_function` / "
-        "`GuidanceManager_patch_guidance`); (2) otherwise patch a broader "
-        "existing entry that should cover the case; (3) only then add a new "
-        "one. A patch replaces excerpts of the entry: read its current text "
-        "first, copy each `old` with enough context to occur once, and say "
-        "`why`. Make several changes to one entry in one call as `edits` "
-        "(`[{old, new}, ...]`, applied in order, all or none). The entry "
-        "keeps its id, precondition, dependencies and links, "
-        "a patched function is checked like any function you add, and the "
-        "replaced version is kept in history. Rewrite a whole function with "
-        "`overwrite=True` only when most of it changes.\n\n"
+        "When the trajectory shows a stored entry that was wrong, "
+        "incomplete or failed, (1) patch the entry the trajectory used "
+        "(`FunctionManager_patch_function` / "
+        "`GuidanceManager_patch_guidance`) when the fix keeps its "
+        "behaviour on the inputs it already handled; (2) otherwise add a "
+        "new focused entry, under a new name when the behaviour changes. "
+        "Do not move a fix into a broader entry the trajectory did not "
+        "use. A patch replaces excerpts of the entry: read its current "
+        "text first, copy each `old` with enough context to occur once, "
+        "and say `why`. Make several changes to one entry in one call as "
+        "`edits` (`[{old, new}, ...]`, applied in order, all or none). "
+        "The entry keeps its id, precondition, dependencies and links, a "
+        "patched function is checked like any function you add, and the "
+        "replaced version is kept in history. Rewrite a whole function "
+        "with `overwrite=True` only when most of it changes.\n\n"
     )
 
 
@@ -1587,23 +1340,6 @@ _STORAGE_SUB_AGENT_PATTERNS = (
     "right tool selection, scoping, or behavioral guidelines.\n\n"
 )
 
-_STORAGE_RECURRING_DELIVERABLE = (
-    "## Recurring Deliverables\n\n"
-    "A deliverable can be recurring: the requester hands the job over once "
-    '("every week, ...") and simply asks again each time, with the '
-    "conversation as the trigger. The first successful production is the "
-    "evidence for a stored function named after the deliverable: skeleton "
-    "in deterministic code, each judging substep at its own notch on the "
-    "dial. Stated-but-dormant requirements belong in the function — a rule "
-    'the requester stated ("if X ever happens, do Y") is evidence even '
-    "unexercised — but never freeze structure neither stated nor observed; "
-    "outside that envelope the function raises or returns early rather "
-    "than guessing. Later instances refine the same function in place "
-    "(`FunctionManager_add_functions` with `overwrite=True`), never "
-    "near-duplicates. Then say so in your summary — name, numeric "
-    "`function_id`, and calling convention — so the live session executes "
-    "the stored function next time instead of re-deriving the procedure.\n\n"
-)
 
 _STORAGE_COMPOSE_STEP_3 = (
     "3. Decide what would improve the library: new units and the root that "
@@ -1618,21 +1354,12 @@ _STORAGE_COMPOSE_STEP_3 = (
 
 
 def _storage_base_instructions() -> str:
-    if not _curation_doctrine_compose():
-        return _STORAGE_BASE_INSTRUCTIONS
     start = _STORAGE_BASE_INSTRUCTIONS.index("3. Decide")
     end = _STORAGE_BASE_INSTRUCTIONS.index("4. **Delete")
-    step_3 = (
-        _STORAGE_BALANCED_STEP_3
-        if _curation_doctrine_balanced()
-        else (
-            _STORAGE_FUNCTIONS_FIRST_STEP_3
-            if _curation_doctrine_functions_first()
-            else _STORAGE_COMPOSE_STEP_3
-        )
-    )
     return (
-        _STORAGE_BASE_INSTRUCTIONS[:start] + step_3 + _STORAGE_BASE_INSTRUCTIONS[end:]
+        _STORAGE_BASE_INSTRUCTIONS[:start]
+        + _STORAGE_COMPOSE_STEP_3
+        + _STORAGE_BASE_INSTRUCTIONS[end:]
     )
 
 
@@ -1676,12 +1403,6 @@ _STALE_STEERING_DOC = (
     ),
     (re.compile(r"interjecting(\s+)again"), '``action="interject"``'),
 )
-
-
-def _prompt_accuracy_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return SETTINGS.prompt_accuracy()
 
 
 # UNIFY_DELEGATION=off: execute_function's docs do not offer the sub-actor
@@ -1824,8 +1545,7 @@ def _correct_tool_docs(
     from unify.settings import SETTINGS
 
     rewrites: list = []
-    if _prompt_accuracy_enabled():
-        rewrites.extend(_STALE_STEERING_DOC)
+    rewrites.extend(_STALE_STEERING_DOC)
     if delegation_mode() == "off":
         rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
     if SETTINGS.lean_prompt():
@@ -2488,18 +2208,6 @@ def _review_recurrence_note() -> str:
     )
 
 
-_REVIEW_FORK_ROLE = (
-    "## Storage Review\n\n"
-    "The task above is over. You now act as a skill librarian: review this "
-    "conversation -- what was asked, what was done and what came of it (it is "
-    "the trajectory the rules below refer to) -- and decide whether anything "
-    "is worth persisting for future reuse. Often nothing is -- that is "
-    "perfectly fine.\n\n"
-    "Your tool list is the one the task used, but only the function and "
-    "guidance library tools work now; any other tool is refused. Library "
-    "writes that were read-only during the task are available to you now.\n\n"
-)
-
 # UNIFY_REVIEW_FRAMING=unified: the fork is the agent's own curation step.
 _REVIEW_FORK_ROLE_UNIFIED = (
     "## Curating The Library\n\n"
@@ -2554,14 +2262,7 @@ def _review_fork_role(*, core: bool = False) -> str:
 
 
 def _review_fork_role_shipped() -> str:
-    if _review_framing_unified():
-        return _REVIEW_FORK_ROLE_UNIFIED
-    if _review_opening_is_neutral():
-        return _REVIEW_FORK_ROLE.replace(
-            " Often nothing is -- that is perfectly fine.",
-            "",
-        )
-    return _REVIEW_FORK_ROLE
+    return _REVIEW_FORK_ROLE_UNIFIED
 
 
 _LATE_SESSION_MESSAGE_REFUSAL = (
@@ -2996,39 +2697,20 @@ def _start_storage_check_loop_inner(
 
     role_line = (
         (
-            "You are a skill librarian. A CodeActActor is running a "
-            "persistent interactive session and has just completed a "
-            "request turn. Your job is to review the session trajectory so "
-            "far and decide whether anything is worth persisting for future "
-            "reuse. Often nothing is — that is perfectly fine.\n\n"
+            "You are the agent running the persistent interactive "
+            "session below, and you have just completed a request turn. "
+            "This is the curation step that follows it: turn what the "
+            "latest work taught you into library entries a future "
+            "request can reuse.\n\n"
         )
         if live_session
         else (
-            "You are a skill librarian. A CodeActActor has just completed a task. "
-            "Your job is to review the execution trajectory and decide whether "
-            "anything is worth persisting for future reuse. Often nothing is — "
-            "that is perfectly fine.\n\n"
+            "You are the agent that just completed the task below. This "
+            "is the curation step that follows it: turn what the work "
+            "taught you into library entries a future task can reuse."
+            "\n\n"
         )
     )
-    if _review_framing_unified():
-        role_line = (
-            (
-                "You are the agent running the persistent interactive "
-                "session below, and you have just completed a request turn. "
-                "This is the curation step that follows it: turn what the "
-                "latest work taught you into library entries a future "
-                "request can reuse.\n\n"
-            )
-            if live_session
-            else (
-                "You are the agent that just completed the task below. This "
-                "is the curation step that follows it: turn what the work "
-                "taught you into library entries a future task can reuse."
-                "\n\n"
-            )
-        )
-    elif _review_opening_is_neutral():
-        role_line = role_line.replace(" Often nothing is — that is perfectly fine.", "")
     trajectory_header = (
         "## Session Trajectory So Far\n\n"
         if live_session
@@ -3061,7 +2743,7 @@ def _start_storage_check_loop_inner(
             f"{result_header}",
         )
         closing = core_surface.python_names(
-            _REVIEW_CLOSING_UNIFIED if _review_framing_unified() else "",
+            _REVIEW_CLOSING_UNIFIED,
         )
         handle = _start_storage_review_fork(
             fork_source=fork_source,
@@ -3094,7 +2776,7 @@ def _start_storage_check_loop_inner(
                 f"{outcome_note}"
                 f"{result_header}"
                 f"{original_result}"
-                f"{_REVIEW_CLOSING_UNIFIED if _review_framing_unified() else ''}"
+                f"{_REVIEW_CLOSING_UNIFIED}"
             ),
             parent_lineage=parent_lineage,
             mask_rules=lesson_rules or None,
@@ -3241,23 +2923,10 @@ def _start_proactive_storage_loop_inner(
     # Static doctrine first, volatile trajectory last — same prompt-cache
     # prefix as the post-run storage check.
     proactive_role = (
-        "You are a skill librarian. A CodeActActor is currently executing "
-        "a task and has proactively requested skill storage. Your job is "
-        "to review the execution trajectory so far and store the "
-        "requested skill(s) for future reuse. Often nothing is worth "
-        "storing — that is perfectly fine.\n\n"
+        "You are the agent executing the task below, and you asked to "
+        "store skills before finishing it. This is that curation step: "
+        "store the requested skill(s) for future reuse.\n\n"
     )
-    if _review_framing_unified():
-        proactive_role = (
-            "You are the agent executing the task below, and you asked to "
-            "store skills before finishing it. This is that curation step: "
-            "store the requested skill(s) for future reuse.\n\n"
-        )
-    elif _review_opening_is_neutral():
-        proactive_role = proactive_role.replace(
-            " Often nothing is worth storing — that is perfectly fine.",
-            "",
-        )
     system_prompt = (
         f"{proactive_role}"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
