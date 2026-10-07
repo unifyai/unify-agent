@@ -15,12 +15,9 @@ import hashlib
 import numpy as np
 import pytest
 
-from unify import db
 from unify.common import semantic_search
-from unify.guidance_manager import builtins
 from unify.guidance_manager.builtins import load_snapshot, stable_guidance_id
 from unify.guidance_manager.guidance_manager import GuidanceManager
-from unify.settings import ProductionSettings, SETTINGS
 from tests.helpers import _handle_project
 
 
@@ -53,20 +50,7 @@ def _store(gm: GuidanceManager) -> list[int]:
 
 
 @_handle_project
-def test_on_reads_include_the_built_in_catalogue(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", True)
-    gm = GuidanceManager()
-    _store(gm)
-    builtin_count = db.query_one("SELECT COUNT(*) AS n FROM builtin_guidance")["n"]
-    assert builtin_count > 0
-    assert gm._num_items() == 2 + builtin_count
-    rows = gm.search(references={"title": "make a slide deck"}, k=50)
-    assert any(row.is_builtin for row in rows)
-
-
-@_handle_project
-def test_off_every_read_sees_only_the_stored_entries(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+def test_every_read_sees_only_the_stored_entries():
     gm = GuidanceManager()
     ids = _store(gm)
     builtin = _a_builtin()
@@ -83,32 +67,7 @@ def test_off_every_read_sees_only_the_stored_entries(monkeypatch):
 
 
 @_handle_project
-def test_off_the_store_keeps_rows_an_earlier_process_seeded(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", True)
-    GuidanceManager()
-    before = db.query_one("SELECT COUNT(*) AS n FROM builtin_guidance")["n"]
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
-    gm = GuidanceManager()
-    assert gm._num_items() == 0
-    assert db.query_one("SELECT COUNT(*) AS n FROM builtin_guidance")["n"] == before
-
-
-def test_off_nothing_is_seeded(monkeypatch):
-    seeded = []
-    monkeypatch.setattr(builtins, "_SEEDED_FOR", set())
-    monkeypatch.setattr(builtins, "seed_builtin_guidance", lambda **_: seeded.append(1))
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
-    builtins.ensure_seeded()
-    assert seeded == [] and builtins._SEEDED_FOR == set()
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", True)
-    builtins.ensure_seeded()
-    assert seeded == [1]
-
-
-@_handle_project
-def test_off_a_built_in_title_is_not_a_read_only_entry(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_BUILTIN_GUIDANCE", False)
+def test_a_built_in_title_is_not_a_read_only_entry():
     gm = GuidanceManager()
     title = _a_builtin()["title"]
     with pytest.raises(ValueError, match="No stored guidance is titled"):
@@ -116,15 +75,3 @@ def test_off_a_built_in_title_is_not_a_read_only_entry(monkeypatch):
     out = gm.add_guidance(title=title, content="My own procedure.")
     gid = out["details"]["guidance_id"]
     assert gm.get_guidance(guidance_id=gid).content == "My own procedure."
-
-
-def test_the_setting_parses_booleans():
-    # Off by default since the code freeze (lean-all).
-    assert ProductionSettings().UNIFY_BUILTIN_GUIDANCE is False
-    assert (
-        ProductionSettings(UNIFY_BUILTIN_GUIDANCE="0").UNIFY_BUILTIN_GUIDANCE is False
-    )
-    assert (
-        ProductionSettings(UNIFY_BUILTIN_GUIDANCE="false").UNIFY_BUILTIN_GUIDANCE
-        is False
-    )
