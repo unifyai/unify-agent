@@ -122,14 +122,16 @@ async def test_outside_a_cell_stdin_is_the_processs_own(harness_stdin, monkeypat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cell", sorted(CELLS))
 async def test_a_cell_in_the_worker_reads_an_empty_stdin(cell, world, monkeypatch):
-    """Unchanged: the worker's descriptor 0 was already ``/dev/null``, and its
-    restricted builtins leave out ``help``."""
+    """Unchanged: the worker's descriptor 0 was already ``/dev/null``. Under
+    the core tool surface (the default) its ``help`` is the worker's own,
+    whose page comes from the harness: ``help()`` prints the objects' index
+    and reads nothing."""
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     code, _error = CELLS[cell]
     out, res, elapsed = await _run(code)
     assert elapsed < 30
     if cell == "help":
-        assert "NameError: name 'help' is not defined" in res["error"]
+        assert res["error"] is None, res["error"]
     elif cell == "input":
         assert "EOFError" in res["error"]
     else:

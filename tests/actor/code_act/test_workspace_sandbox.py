@@ -362,8 +362,9 @@ direct = os.environ.get('FAKE_SERVICE_TOKEN')
         assert shell_out.startswith("[]") and SSH_SECRET not in shell_out
         assert ENV_SECRET not in env_out and "mask-env-file" in env_out
         assert status == 0 and (world["workspace"] / "inside-workspace.txt").exists()
-        # The documented gap: the cell itself runs in the harness process.
-        assert direct == TOKEN_VALUE
+        # The cell itself runs in the sandboxed worker (the default), whose
+        # environment is scrubbed: the in-process gap is closed.
+        assert direct is None
     finally:
         await ex.close()
 
@@ -378,12 +379,16 @@ async def test_without_bubblewrap_nothing_runs_unconfined(world, monkeypatch, tm
         assert refused.value.rule == "sandbox-required"
         assert "rule `sandbox-required`" in str(refused.value)
         outside = tmp_path / "must-not-exist"
-        res = await ex.execute(
-            code=f"import subprocess\nsubprocess.run(['touch', {str(outside)!r}])",
-            state_mode="stateless",
-            session_id=None,
-        )
-        assert "sandbox-required" in res["error"] and not outside.exists()
+        # With Python in the sandboxed worker (the default) the cell is
+        # refused before it starts, as a shell cell is.
+        with pytest.raises(sandbox.SandboxRefusal) as refused:
+            await ex.execute(
+                code=f"import subprocess\nsubprocess.run(['touch', {str(outside)!r}])",
+                state_mode="stateless",
+                session_id=None,
+            )
+        assert refused.value.rule == "sandbox-required"
+        assert not outside.exists()
     finally:
         await ex.close()
 
