@@ -1266,12 +1266,6 @@ _STATEFUL_CELLS = (
 )
 
 
-def _prompt_trim_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(SETTINGS.UNIFY_PROMPT_TRIM)
-
-
 def _section_rewrites(
     environments: Mapping[str, "BaseEnvironment"],
     tools: Optional[Mapping[str, Callable]],
@@ -1283,23 +1277,22 @@ def _section_rewrites(
     # First: it removes the whole session sentence the trim would shorten.
     if cell_state.enabled():
         rewrites.extend(_STATEFUL_CELLS)
-    if _prompt_trim_enabled():
-        from unify.actor.environments.actor import delegation_mode
+    from unify.actor.environments.actor import delegation_mode
 
-        if "primitives" not in environments:
-            rewrites.extend(_TRIM_NO_PRIMITIVES)
-            if not environments:
-                rewrites.append((_TRIM_DISCOVERY_SCOPE, ""))
-            else:
-                rewrites.append(_TRIM_PRIMITIVE_CATALOGUE)
-        if not _injects_actor_primitives(environments):
-            rewrites.extend(_TRIM_NO_DELEGATE)
-        if delegation_mode() == "off":
-            rewrites.append(_TRIM_NO_SUB_AGENTS)
-        if tools is not None and not (
-            "list_sessions" in tools and "inspect_state" in tools
-        ):
-            rewrites.extend(_TRIM_NO_SESSION_TOOLS)
+    if "primitives" not in environments:
+        rewrites.extend(_TRIM_NO_PRIMITIVES)
+        if not environments:
+            rewrites.append((_TRIM_DISCOVERY_SCOPE, ""))
+        else:
+            rewrites.append(_TRIM_PRIMITIVE_CATALOGUE)
+    if not _injects_actor_primitives(environments):
+        rewrites.extend(_TRIM_NO_DELEGATE)
+    if delegation_mode() == "off":
+        rewrites.append(_TRIM_NO_SUB_AGENTS)
+    if tools is not None and not (
+        "list_sessions" in tools and "inspect_state" in tools
+    ):
+        rewrites.extend(_TRIM_NO_SESSION_TOOLS)
     return rewrites
 
 

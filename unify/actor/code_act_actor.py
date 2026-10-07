@@ -1525,19 +1525,14 @@ def _correct_tool_docs(
     from unify.actor import placeholder_note
     from unify.actor.environments.actor import delegation_mode
 
-    from unify.settings import SETTINGS
-
     rewrites: list = []
     rewrites.extend(_STALE_STEERING_DOC)
     if delegation_mode() == "off":
         rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
-    if SETTINGS.lean_prompt():
-        rewrites.extend(_LEAN_TOOL_DOCS)
-        rewrites.append(_LEAN_INSTALL_DOC)
-    if SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in (environments or {}):
+    rewrites.extend(_LEAN_TOOL_DOCS)
+    rewrites.append(_LEAN_INSTALL_DOC)
+    if "primitives" not in (environments or {}):
         rewrites.extend(_TRIM_NO_PRIMITIVES_DOC)
-    if not rewrites and not placeholder_note.enabled():
-        return
     for name in ("execute_code", "execute_function", "install_python_packages"):
         tool = tools.get(name)
         fn = tool.fn if isinstance(tool, ToolSpec) else tool
@@ -1546,10 +1541,10 @@ def _correct_tool_docs(
         doc = fn.__doc__
         for pattern, replacement in rewrites:
             doc = pattern.sub(replacement, doc)
-        if name == "execute_function" and placeholder_note.enabled():
+        if name == "execute_function":
             doc = placeholder_note.correct_doc(doc)
         fn.__doc__ = doc
-    if SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in (environments or {}):
+    if "primitives" not in (environments or {}):
         tool = tools.get("store_skills")
         fn = tool.fn if isinstance(tool, ToolSpec) else tool
         if fn is not None and fn.__doc__:
@@ -5898,12 +5893,9 @@ class CodeActActor(BaseCodeActActor):
         )
 
         _correct_tool_docs(tools, environments=self.environments)
-        # Aliased: a bare local import would shadow SETTINGS for the whole method.
-        from unify.settings import SETTINGS as _TRIM_SETTINGS
-
         # UNIFY_PROMPT_TRIM: only primitives read the conversation a code
         # tool is given.
-        if _TRIM_SETTINGS.UNIFY_PROMPT_TRIM and "primitives" not in self.environments:
+        if "primitives" not in self.environments:
             _hide_parent_chat_context(tools)
         from unify.actor import cell_state
 

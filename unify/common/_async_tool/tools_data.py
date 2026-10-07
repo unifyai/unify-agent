@@ -534,11 +534,6 @@ class ToolsData:
         self._lifecycle_notices: bool = (
             bool(SETTINGS.UNIFY_LIFECYCLE_NOTICES) and self.steering_tools
         )
-        # UNIFY_PROMPT_TRIM, read once: the visibility guidance names only
-        # the channels to the user this loop has (send_notification, a
-        # clarification request), and an interjection alone appends it only
-        # when there is one.
-        self._prompt_trim: bool = bool(SETTINGS.UNIFY_PROMPT_TRIM)
         self._can_notify_user: bool = (
             "send_notification" in self.normalized
             if can_notify_user is None
@@ -609,20 +604,18 @@ class ToolsData:
         """
         if self._visibility_guidance_injected:
             return
-        content = USER_VISIBILITY_GUIDANCE
-        if self._prompt_trim:
-            # UNIFY_PROMPT_TRIM: with no channel to the user besides the
-            # final reply, an interjection is a message like the first, and
-            # there is nothing it could be confused with. A progress or
-            # clarification message still appends the guidance (it is what
-            # tells the model that message is not the user's).
-            if interjection and not (self._can_notify_user or self._can_ask_user):
-                return
-            content = trimmed_visibility_guidance(
-                notify=self._can_notify_user,
-                clarify=self._can_ask_user,
-                lifecycle=self._lifecycle_notices,
-            )
+        # UNIFY_PROMPT_TRIM: with no channel to the user besides the
+        # final reply, an interjection is a message like the first, and
+        # there is nothing it could be confused with. A progress or
+        # clarification message still appends the guidance (it is what
+        # tells the model that message is not the user's).
+        if interjection and not (self._can_notify_user or self._can_ask_user):
+            return
+        content = trimmed_visibility_guidance(
+            notify=self._can_notify_user,
+            clarify=self._can_ask_user,
+            lifecycle=self._lifecycle_notices,
+        )
         await msg_dispatcher.append_msgs(
             [
                 {

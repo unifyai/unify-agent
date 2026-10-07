@@ -92,12 +92,6 @@ _DOC_ANCHOR = re.compile(
 )
 
 
-def enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_PLACEHOLDER_NOTE", False))
-
-
 def stand_in(parameter: Any, value: Any) -> bool:
     """Whether ``value``, passed for ``parameter``, stands in for a credential rather than being one."""
     from unify.function_manager.store_trust import (
@@ -126,8 +120,8 @@ def _shown(value: str) -> str:
 
 
 def note(call_kwargs: Optional[Mapping[str, Any]]) -> Optional[str]:
-    """The note for a call with these ``call_kwargs``; ``None`` when off or no argument is a stand-in."""
-    if not enabled() or not isinstance(call_kwargs, Mapping):
+    """The note for a call with these ``call_kwargs``; ``None`` when no argument is a stand-in."""
+    if not isinstance(call_kwargs, Mapping):
         return None
     found = [
         f"`{name}` received {_shown(value)}"
@@ -154,4 +148,4 @@ def correct_doc(doc: str) -> str:
     return _DOC_ANCHOR.sub(_add, doc, count=1)
 
 
-__all__ = ["DOC_SENTENCE", "correct_doc", "enabled", "note", "stand_in"]
+__all__ = ["DOC_SENTENCE", "correct_doc", "note", "stand_in"]

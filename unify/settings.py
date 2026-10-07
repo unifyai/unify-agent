@@ -240,15 +240,6 @@ class ProductionSettings(BaseSettings):
     # namespaces at start-up (unify/function_manager/primitives/environment.py).
     # Empty registers nothing.
     UNIFY_ENV_NAMESPACES: str = ""
-    # On: an ``execute_function`` result carries a short note when a
-    # credential-named argument received a stand-in (an unfilled template
-    # such as ``{{access_token}}``, an empty string, ``unknown``...), naming
-    # it and saying that values are passed as written and session variables
-    # are not substituted; the call runs unchanged and only stand-ins are
-    # echoed. The tool's description says the same in one sentence
-    # (unify/actor/placeholder_note.py). Off: results and description as
-    # shipped.
-    UNIFY_PLACEHOLDER_NOTE: bool = True
     # ``code+text``: model code in a cell can send the turn's reply with
     # ``reply(text)`` (in process and under UNIFY_WORKSPACE_PYTHON=worker).
     # It takes only a ``str``, ends the cell at once (its output so far is
@@ -488,18 +479,6 @@ class ProductionSettings(BaseSettings):
     # is lost when the cell ends (a later cell gets NameError), as shipped.
     # Read per cell; in-process and worker cells alike.
     UNIFY_CELL_SCOPE_FIX: bool = True
-    # Prompt text describes only what the session has. On: an interjection
-    # does not append the "User Visibility Context" message when the model
-    # has no channel to the user besides its final reply (no
-    # send_notification, no clarification request), and when a progress or
-    # clarification message appends it, it leaves out the channels and the
-    # announcements the loop does not have; without a primitives environment
-    # the prompt and the tool descriptions do not name `primitives.*`,
-    # sub-agents or the steerable handles only primitives return, and the
-    # code tools do not offer include_parent_chat_context (only primitives
-    # read the conversation it passes); and the session tools are named only
-    # where they are offered. Off: as shipped.
-    UNIFY_PROMPT_TRIM: bool = True
     # The loop's `wait` tool takes ``until="all"``: a turn that calls several
     # tools and adds wait(until="all") is woken once, when every call from
     # that turn has finished, instead of when the first one does (a turn
@@ -1071,7 +1050,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_OUTCOME",
         "UNIFY_REVIEW_LAST_REPLY",
         "UNIFY_REVIEW_GENERALISE",
-        "UNIFY_PLACEHOLDER_NOTE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
