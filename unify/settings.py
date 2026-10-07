@@ -506,31 +506,6 @@ class ProductionSettings(BaseSettings):
     # read the conversation it passes); and the session tools are named only
     # where they are offered. Off: as shipped.
     UNIFY_PROMPT_TRIM: bool = True
-    # Before the storage review that follows a session, one tool-free call
-    # (the review's model, at low effort unless UNIFY_REVIEW_REASONING_EFFORT
-    # sets the review's) reads the end of the trajectory, the checked outcome
-    # (UNIFY_OUTCOME) and the final reply, and answers whether the session
-    # left reusable working code, a lesson found by trial and error, or a
-    # stored entry needing repair; the review runs only on a yes
-    # (unify/actor/review_gate.py). A failed call or an unreadable reply runs
-    # the review. While the library holds nothing (0 functions, 0 guidance
-    # entries) the gate is not asked and the review runs. Turn reviews and
-    # store_skills are not gated. Off: as shipped.
-    UNIFY_REVIEW_GATE: bool = True
-    # Ask the UNIFY_REVIEW_GATE question as a fork of the session's own
-    # conversation: the gate's request is the actor's last request as sent
-    # (system prompt, messages, tools, tool choice; a forced choice is sent
-    # as ``auto``), the actor's reply to it, and one appended user message
-    # with the gate's criteria, the checked outcome and the final reply, so
-    # the provider serves all but that message from the session's cache.
-    # The gate offers no new tool and runs none: a reply that calls one
-    # states no decision and the review runs. It keeps the session's effort
-    # unless UNIFY_REVIEW_REASONING_EFFORT sets the review's. Needs
-    # UNIFY_CACHE_DISCIPLINE; without it, on another review model, or when
-    # the session was compressed, its history changed after its last request
-    # or it ended with unanswered tool calls, the gate is asked standalone and
-    # the log says why. Ignored without UNIFY_REVIEW_GATE. Off: as shipped.
-    UNIFY_REVIEW_GATE_FORK: bool = False
     # The loop's `wait` tool takes ``until="all"``: a turn that calls several
     # tools and adds wait(until="all") is woken once, when every call from
     # that turn has finished, instead of when the first one does (a turn
@@ -1102,9 +1077,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_OUTCOME",
         "UNIFY_REVIEW_LAST_REPLY",
         "UNIFY_BUILTIN_GUIDANCE",
-        "UNIFY_REVIEW_GATE",
         "UNIFY_REVIEW_GENERALISE",
-        "UNIFY_REVIEW_GATE_FORK",
         "UNIFY_PLACEHOLDER_NOTE",
         "UNIFY_DISCOVERY_SPECULATIVE_TURN",
         "UNIFY_DISCOVERY_GATE",

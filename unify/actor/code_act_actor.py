@@ -1090,23 +1090,6 @@ def _review_gate_client(actor: "CodeActActor") -> Any:
     return client
 
 
-def _review_gate_fork_client(fork_source: dict) -> Any:
-    """The ``UNIFY_REVIEW_GATE_FORK`` call's client: a fork of the session's.
-
-    It keeps the session's model, effort and cache affinity key, so its
-    request differs from the session's last only in what it appends.
-    """
-    from unify.actor import review_gate
-
-    client = fork_llm_client(
-        fork_source["client"],
-        origin=review_gate.ORIGIN,
-        purpose="planning",
-        messages=fork_source["messages"],
-    )
-    return client
-
-
 # UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
 GUIDANCE_ENTRY_TARGET_CHARS = 2000
 
@@ -2314,23 +2297,6 @@ def _review_fork_source(
             return None, why
         return {**source, "core": True}, None
     return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
-
-
-def _gate_fork_source(
-    inner: Any,
-    actor: "CodeActActor",
-) -> tuple[Optional[dict], Optional[str]]:
-    """What a forked review gate (``UNIFY_REVIEW_GATE_FORK``) continues from.
-
-    As :func:`_review_fork_source`, for the gate: ``(None, None)`` with the
-    switch off. The gate runs no tool, so the core surface's tool list does
-    not stop it from forking.
-    """
-    from unify.actor import review_gate
-
-    if not review_gate.fork_enabled():
-        return None, None
-    return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_GATE_FORK")
 
 
 def _session_fork_source(
@@ -3570,8 +3536,8 @@ class _StorageCheckHandle(SteerableToolHandle):
             # the library holds nothing, the gate is not asked: the review runs.
             from unify.actor import review_gate
 
-            ask_gate = review_gate.enabled()
-            if ask_gate and review_gate.library_is_empty(
+            ask_gate = True
+            if review_gate.library_is_empty(
                 _library_counts(
                     getattr(self._actor, "function_manager", None),
                     getattr(self._actor, "guidance_manager", None),
@@ -3592,32 +3558,12 @@ class _StorageCheckHandle(SteerableToolHandle):
                     )
                     + gate_origin_note
                 )
-                # UNIFY_REVIEW_GATE_FORK: ask it at the end of the session's
-                # own conversation when that can be continued exactly.
-                gate_fork, gate_fork_skipped = _gate_fork_source(
-                    self._inner,
-                    self._actor,
+                decision = await review_gate.decide(
+                    client_factory=lambda: _review_gate_client(self._actor),
+                    trajectory=trajectory,
+                    final_result=self._review_final_result(),
+                    outcome_note=gate_outcome_note,
                 )
-                if gate_fork_skipped:
-                    logger.info(
-                        f"StorageCheck gate fork skipped: {gate_fork_skipped}; "
-                        "asking the standalone gate",
-                    )
-                if gate_fork is not None:
-                    decision = await review_gate.decide_in_fork(
-                        client_factory=lambda: _review_gate_fork_client(gate_fork),
-                        fork_source=gate_fork,
-                        final_result=self._review_final_result(),
-                        outcome_note=gate_outcome_note,
-                        prompt_caching=getattr(self._actor, "_prompt_caching", None),
-                    )
-                else:
-                    decision = await review_gate.decide(
-                        client_factory=lambda: _review_gate_client(self._actor),
-                        trajectory=trajectory,
-                        final_result=self._review_final_result(),
-                        outcome_note=gate_outcome_note,
-                    )
                 logger.info(
                     f"StorageCheck gate: review={decision.review} "
                     f"decided={decision.decided} ({decision.reason})",
