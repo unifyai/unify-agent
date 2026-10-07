@@ -63,6 +63,7 @@ from unify.function_manager import inline_curation
 from unify.function_manager.base import BaseFunctionManager
 from unify.actor import review_outcome as _review_outcome
 from unify.function_manager import origin_capture as _origin_capture
+from unify.function_manager import escape_drift as _escape_drift
 from unify.function_manager import task_origin as _task_origin
 from unify.function_manager import entry_record as _entry_record
 from unify.function_manager import instance_lint as _instance_lint
@@ -4103,6 +4104,9 @@ class _StorageCheckHandle(SteerableToolHandle):
             ]
             _sc_lineage_token = TOOL_LOOP_LINEAGE.set(_sc_hierarchy)
             _sc_suffix_token = _PENDING_LOOP_SUFFIX.set(_sc_suffix)
+            # UNIFY_ESCAPE_DRIFT_CHECK: the review's writes are checked against
+            # the session's own cells.
+            _sc_drift_token = _escape_drift.enter(trajectory)
 
             try:
                 review_display_label = _DEFAULT_STORAGE_REVIEW_LABEL
@@ -4233,6 +4237,7 @@ class _StorageCheckHandle(SteerableToolHandle):
             finally:
                 _PENDING_LOOP_SUFFIX.reset(_sc_suffix_token)
                 TOOL_LOOP_LINEAGE.reset(_sc_lineage_token)
+                _escape_drift.leave(_sc_drift_token)
 
         except asyncio.CancelledError:
             pass

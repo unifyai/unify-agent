@@ -116,6 +116,7 @@ NEW_SWITCHES = {
     "UNIFY_AGENTS": "",
     "UNIFY_AGENTS_OPTIONS": "",
     "UNIFY_CELL_SCOPE_FIX": True,
+    "UNIFY_ESCAPE_DRIFT_CHECK": "",
 }
 
 # The UNIFY_ settings of the commit the actor golden was recorded on

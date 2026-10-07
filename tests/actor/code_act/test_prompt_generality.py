@@ -358,6 +358,16 @@ def _session_texts(tools: dict) -> dict[str, str]:
             tokens,
         ),
     }
+    # UNIFY_ESCAPE_DRIFT_CHECK: the refusal, with one and with many literals.
+    from unify.function_manager import escape_drift
+
+    hits = escape_drift.drifted(
+        'def f(xs):\n    return "".join(x + "\\\\n" for x in xs) + r"\\\\bE\\\\b"\n',
+        escape_drift.cell_literals(["s = '\\n'\nm = r'\\bE\\b'\n"]),
+    )
+    assert len(hits) == 2, hits
+    lint_texts["escape drift refusal"] = escape_drift.refusal("f", hits[:1])
+    lint_texts["escape drift refusal (many)"] = escape_drift.refusal("f", hits * 4)
     texts = {
         "library snapshot": caa._library_snapshot_line(
             (3, 0),

@@ -378,6 +378,16 @@ class ProductionSettings(BaseSettings):
     # guidance entry that names one is stored with a warning. Off stores
     # without the check.
     UNIFY_STORE_INSTANCE_LINT: bool = False
+    # ``on``: while the storage review that follows a session runs, a
+    # function it adds or patches is refused when a string literal in it
+    # (plain, raw, or an f-string's text) holds a backslash, is in none of
+    # the session's Python code cells, and with one level of backslash
+    # escaping removed is a literal of those cells (and is not also written
+    # elsewhere in the same source): the cell's ``'\n'`` stored as
+    # ``"\\n"``, its ``r'\bE\b'`` as ``r"\\bE\\b"``. The refusal names both
+    # spellings (unify/function_manager/escape_drift.py). Without the
+    # session's cells nothing is checked. Empty (also ``off``): as shipped.
+    UNIFY_ESCAPE_DRIFT_CHECK: str = ""
     # Path of a JSON file in which an external check of the session's outcome
     # admits (``{"admit": true}``) the review that runs when a session ends.
     # A missing, unreadable or malformed file, or any other ``admit``, skips
@@ -1432,6 +1442,17 @@ class ProductionSettings(BaseSettings):
         value = str(v or "").strip().lower()
         if value not in ("", "resolve"):
             raise ValueError(f"UNIFY_STORE_CHECK must be empty or 'resolve', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_ESCAPE_DRIFT_CHECK", mode="before")
+    @classmethod
+    def parse_escape_drift_check(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_ESCAPE_DRIFT_CHECK must be empty, 'off' or 'on', not {v!r}",
+            )
         return value
 
     @field_validator("UNIFY_INLINE_CURATION", mode="before")

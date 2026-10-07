@@ -1368,6 +1368,11 @@ class FunctionManager(BaseFunctionManager):
                     warning = self._instance_lint(name, node)
                     if warning:
                         instance_warnings[name] = warning
+                # UNIFY_ESCAPE_DRIFT_CHECK: in a storage review, a literal of
+                # the session's cells retyped with one more escape is refused.
+                from . import escape_drift
+
+                escape_drift.check(name, source)
                 if self._store_check_enabled():
                     self._store_check(
                         name=name,
