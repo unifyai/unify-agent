@@ -487,11 +487,13 @@ async def async_tool_loop_inner(
     One model turn runs at a time, and no turn starts while a tool call runs.
     A turn's tool calls run in call order, each to completion, and their
     results are appended in that order, each with its own ``tool_call_id``.
-    Nothing the outer application sends interrupts a model call or a tool
-    call: a message pushed onto ``interject_queue`` (``handle.submit``) is
-    appended at the next turn boundary. Setting ``cancel_event``
-    (``handle.stop``) cancels the model call or the tool call in flight and
-    ends the loop with ``asyncio.CancelledError``. Exceptions inside tools are
+    No message interrupts a model call or a tool call: a message pushed onto
+    ``interject_queue`` (``handle.submit``) is appended at the next turn
+    boundary. Setting ``cancel_event`` (``handle.stop``) cancels the model
+    call or the tool call in flight and ends the loop with
+    ``asyncio.CancelledError``; in a persistent loop the requester's cancel
+    of the request (``handle.cancel_request``) cancels them and ends the
+    request, keeping the session. Exceptions inside tools are
     serialised and shown to the model; ``max_consecutive_failures``
     back-to-back crashes abort the loop with ``RuntimeError``.
 
@@ -2282,7 +2284,9 @@ async def async_tool_loop_inner(
                     prefix=ICONS["completed"],
                 )
             else:
-                # The model call runs to completion; only a stop cancels it.
+                # The model call runs to completion; only a stop, or in a
+                # persistent loop the requester's cancel of the request,
+                # cancels it.
                 _gen_kwargs = {
                     "return_full_completion": True,
                     "tools": tmp_tools,
@@ -2320,17 +2324,28 @@ async def async_tool_loop_inner(
                     cancel_event.wait(),
                     name="CancelEventWait",
                 )
+                watchers = [cancel_waiter]
+                if persist:
+                    watchers.append(
+                        asyncio.create_task(
+                            _until_request_cancel(),
+                            name="RequestCancelWait",
+                        ),
+                    )
                 try:
                     await asyncio.wait(
-                        {llm_task, cancel_waiter},
+                        {llm_task, *watchers},
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                 finally:
-                    if not cancel_waiter.done():
-                        cancel_waiter.cancel()
-                    await asyncio.gather(cancel_waiter, return_exceptions=True)
+                    for watcher in watchers:
+                        if not watcher.done():
+                            watcher.cancel()
+                    await asyncio.gather(*watchers, return_exceptions=True)
                     if not llm_task.done():
-                        # A stop (or the loop's own cancellation).
+                        # A stop, the requester's cancel of the request, or
+                        # the loop's own cancellation. The unanswered
+                        # dispatch leaves the transcript as it was.
                         llm_task.cancel()
                         await asyncio.gather(llm_task, return_exceptions=True)
 
@@ -2338,6 +2353,9 @@ async def async_tool_loop_inner(
                     logger.emit_thinking_fallback()
 
                 if llm_task.cancelled():
+                    if not cancel_event.is_set() and _request_cancel_queued():
+                        # The drain at the top ends the request.
+                        continue
                     raise asyncio.CancelledError
                 if llm_task.exception() is not None:
                     try:
@@ -2504,6 +2522,23 @@ async def async_tool_loop_inner(
                 _interrupted: Optional[str] = None
                 for idx, call in enumerate(_turn_calls):  # capture index
                     name = call["function"]["name"]
+
+                    # The step limit counts every message, so this turn's
+                    # own message or its earlier calls' results can reach
+                    # it: the calls from that point are not run, and the
+                    # limit applies at the top of the loop as at any other
+                    # boundary.
+                    if timer.has_exceeded_msgs():
+                        _limit = f"max_steps ({max_steps}) exceeded"
+                        for later in _turn_calls[idx:]:
+                            if not _call_answered(later.get("id")):
+                                await _answer_call(
+                                    msg,
+                                    later,
+                                    f"Not run: the step limit ({_limit}) was "
+                                    "reached before this call started.",
+                                )
+                        break
 
                     # UNIFY_CACHE_DISCIPLINE: the session's tool list is fixed,
                     # so a tool this turn does not allow is refused here, by

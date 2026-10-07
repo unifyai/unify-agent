@@ -176,15 +176,16 @@ async def test_on_without_a_draft_the_reply_says_so(cap_reply):
 
 
 @pytest.mark.asyncio
-async def test_on_a_call_in_flight_is_cancelled_answered_and_not_run_again(cap_reply):
+async def test_on_a_call_after_the_limit_is_answered_and_not_run_again(cap_reply):
+    """A turn's calls run in order; once the limit is reached the calls
+    after it are answered as not run, and none is run for the next request."""
     cap_reply(True)
     started: list[int] = []
-    release = asyncio.Event()
 
     async def slow() -> str:
         """Take a long look."""
         started.append(1)
-        await release.wait()
+        await asyncio.Event().wait()
         return "done"
 
     class _SlowModel(_Model):
@@ -193,7 +194,8 @@ async def test_on_a_call_in_flight_is_cancelled_answered_and_not_run_again(cap_r
             self.requests.append(messages)
             if _last_request(messages) == CONTINUE:
                 return h.completion(content=FINAL)
-            # Two calls at once, which reach the limit while still pending.
+            # The first call's result reaches the limit (the loop's header,
+            # the request, this turn's message, that result).
             return h.completion(content=DRAFT, calls=[("look", {}), ("slow", {})])
 
     model = _SlowModel()
@@ -201,7 +203,7 @@ async def test_on_a_call_in_flight_is_cancelled_answered_and_not_run_again(cap_r
         import unillm.clients.uni_llm as uni_llm
 
         uni_llm._acompletion_with_transient_retry = model
-        handle = _start({"look": look, "slow": slow}, persist=True, max_steps=5)
+        handle = _start({"look": look, "slow": slow}, persist=True, max_steps=4)
         capped = (await h._next_response(handle))["content"]
         await handle.submit(CONTINUE)
         answered = (await h._next_response(handle))["content"]
@@ -210,17 +212,19 @@ async def test_on_a_call_in_flight_is_cancelled_answered_and_not_run_again(cap_r
 
     assert capped.startswith("🔚 Stopped at the step limit")
     assert answered == FINAL
-    # Cancelled at the limit, and not scheduled again for the next request.
-    assert len(started) <= 1
+    assert started == []
     last = model.requests[-1]
     _assert_every_call_answered(last)
-    cancelled = [
+    not_run = [
         m
         for m in last
         if m.get("role") == "tool"
-        and str(m.get("content")).startswith("Cancelled: the step limit")
+        and str(m.get("content")).startswith("Not run: the step limit")
     ]
-    assert len(cancelled) == 2
+    assert [m["name"] for m in not_run] == ["slow"]
+    assert any(
+        m.get("role") == "tool" and m.get("content") == "Nothing new." for m in last
+    )
 
 
 @pytest.mark.asyncio
