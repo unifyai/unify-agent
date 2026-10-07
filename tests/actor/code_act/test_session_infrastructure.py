@@ -235,8 +235,22 @@ async def test_read_only_session_zero_branches_off_the_bound_sandbox():
         assert what_if.session_id == 0
         assert parts_to_text(what_if.stdout).strip() == "80"
 
-        assert sandbox.global_state["total"] == 8
-        assert "draft" not in sandbox.global_state
+        # Read back through session 0 (with Python in the sandboxed worker its
+        # names live there, not in ``global_state``).
+        after = await execute_code(
+            thought="Check what session 0 kept.",
+            code=(
+                "try:\n"
+                "    draft\n"
+                "    print(total, 'KEPT')\n"
+                "except NameError:\n"
+                "    print(total, 'DISCARDED')"
+            ),
+            state_mode="stateful",
+            session_id=0,
+        )
+        assert after.error is None
+        assert parts_to_text(after.stdout).strip() == "8 DISCARDED"
     finally:
         _CURRENT_SANDBOX.reset(token)
         await sandbox.close()

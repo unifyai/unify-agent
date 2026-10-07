@@ -150,8 +150,12 @@ MODES = [
 
 
 def _mode(monkeypatch, mode: str) -> None:
-    if mode == "worker":
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
+    # Both pinned: the sandboxed worker is the default since the code freeze.
+    monkeypatch.setattr(
+        SETTINGS,
+        "UNIFY_WORKSPACE_PYTHON",
+        "worker" if mode == "worker" else "",
+    )
 
 
 @pytest.mark.parametrize("mode", MODES)
