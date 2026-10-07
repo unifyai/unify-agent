@@ -652,8 +652,10 @@ async def test_the_shortlist_lists_the_entry_point_and_its_guidance(
         ],
     )
     first = _first_user(requests[0])
-    assert ls._HEADER in first, first
-    block = first[first.index(ls._HEADER) :].split("\n\n", 1)[0]
+    # UNIFY_CORE_BIND_LISTED (baked on): the listed functions are bound, and
+    # the header says how to call them.
+    assert ls._HEADER_CALL in first, first
+    block = first[first.index(ls._HEADER_CALL) :].split("\n\n", 1)[0]
     assert "- function `summarize_pairs(text: str, sep: str = '; ') -> str`" in block
     assert "- guidance " in block and GUIDANCE_TITLE in block, block
     tool = [m for m in requests[-1]["messages"] if m.get("role") == "tool"]

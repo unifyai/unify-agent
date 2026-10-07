@@ -278,23 +278,25 @@ NAMED = "def mirror_7a4cf12e(grid: list) -> list:\n    return grid\n"
 TASK = "New instance. Task id: task-7a4cf12e. Reply with the grid."
 
 
+def _cell(code: str):
+    return lambda: h.completion(calls=[("execute_code", {"code": code})])
+
+
 def _act_replies(provider: h.Provider, store: str):
-    add = lambda: h.completion(  # noqa: E731
-        calls=[("FunctionManager_add_functions", {"implementations": NAMED})],
-    )
+    # The core surface (baked in): the actor and its forked review
+    # (UNIFY_REVIEW_FORK_CORE) write the library from execute_code cells.
+    add = _cell(f"await functions.add(implementations=[{NAMED!r}])")
 
     def later():
-        messages = provider.requests[-1]["messages"]
-        review_start = any(
-            "Review the trajectory" in str(m.get("content")) for m in messages
-        ) and not any(m.get("role") == "assistant" for m in messages)
+        last = provider.requests[-1]["messages"][-1]
+        # The review's first request ends with the curation step's message.
+        review_start = last.get("role") == "user" and str(
+            last.get("content"),
+        ).startswith("## Curating The Library")
         return add() if store == "review" and review_start else h.completion("done")
 
-    search = [
-        ("FunctionManager_search_functions", {"query": "mirror"}),
-        ("GuidanceManager_search", {}),
-    ]
-    first = [lambda: h.completion(calls=search)]
+    search = "print(await functions.search('mirror'))\nprint(await guidance.search())"
+    first = [_cell(search)]
     if store == "actor":
         first.append(add)
     return [*first, *([later] * 12)]
