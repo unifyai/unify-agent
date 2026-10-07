@@ -95,6 +95,19 @@ async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_res
     monkeypatch,
     tmp_path,
 ):
+    from unify.agents.views import RecordView
+
+    post = RecordView.post
+
+    def post_and_hear_back(self, text):
+        # Served in the harness while the cell waits for it: the user posts
+        # meanwhile.
+        out = post(self, text)
+        _pool().record.append("user", "posted during the cell")
+        return out
+
+    monkeypatch.setattr(RecordView, "post", post_and_hear_back)
+
     def first():
         _pool().record.append("user", "posted during the model call")
         return h.completion(
@@ -102,16 +115,16 @@ async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_res
                 (
                     "execute_code",
                     {
+                        # The sandbox's own global, as a real cell posts; the
+                        # sandboxed worker has no pool of its own to reach.
                         "thought": "t",
-                        "code": "from unify.agents.binding import current_root_pool\n"
-                        "current_root_pool().record.append('user', "
-                        "'posted during the cell')\n'ok'",
+                        "code": "record.post('noted')\n'ok'",
                     },
                 ),
             ],
         )
 
-    requests, _, result = await _run([first, *_DONE], monkeypatch, tmp_path)
+    requests, handle, result = await _run([first, *_DONE], monkeypatch, tmp_path)
     assert result == "done" and len(requests) == 2  # no extra or cancelled call
     assert "posted during" not in json.dumps(requests[0])
     msgs = requests[1]["messages"]
@@ -119,6 +132,9 @@ async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_res
     assert tool_i == len(msgs) - 2 and msgs[-1]["role"] == "user"
     block = json.dumps(msgs[-1]["content"])
     assert "posted during the model call" in block and "posted during the cell" in block
+    # the cell's own post is in the record, not delivered back to it
+    assert "noted" in [e.text for e in handle.agents_pool.record.entries]
+    assert "noted" not in block
     first_msgs = requests[0]["messages"]
     assert msgs[: len(first_msgs)] == first_msgs
 
