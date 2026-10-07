@@ -487,7 +487,13 @@ HOST_ENDED = "(The host then ended the session; no outcome was posted.)"
 
 def _is_review(messages: list) -> bool:
     text = json.dumps(messages, default=str)
-    return "## Storage Review" in text or "You are a skill librarian" in text
+    # The storage review as shipped, or framed as the agent's own curation
+    # step (UNIFY_REVIEW_FRAMING=unified, the default since the code freeze).
+    return (
+        "## Storage Review" in text
+        or "You are a skill librarian" in text
+        or "This is the curation step that follows" in text
+    )
 
 
 class _SessionModel:

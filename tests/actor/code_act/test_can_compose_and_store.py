@@ -13,6 +13,8 @@ from tests.baked_defaults import as_shipped  # noqa: F401
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (can_compose=False on the JSON tools; the core surface refuses it)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 async def test_code_act_can_compose_false_requires_function_manager():
