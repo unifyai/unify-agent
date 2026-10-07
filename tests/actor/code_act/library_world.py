@@ -222,10 +222,7 @@ def run_in_another_process(
 
 
 async def _session(spec: dict) -> dict:
-    from unify.function_manager import task_origin
-
     install_fake_embed()
-    token = task_origin.enter(spec["request"]) if spec.get("request") else None
     cells = Cells(new_actor())
     outs = []
     try:
@@ -240,8 +237,6 @@ async def _session(spec: dict) -> dict:
             )
     finally:
         await cells.close()
-        if token is not None:
-            task_origin.leave(token)
     return {"cells": outs, "pid": os.getpid()}
 
 

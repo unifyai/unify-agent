@@ -59,7 +59,7 @@ from .dependency_analysis import (
 from .types.function import Function
 from .source_labels import compile_function_source
 from .base import BaseFunctionManager
-from . import session_source, task_origin, verified_guard
+from . import session_source, task_origin
 from ..common.stale_reason import (
     StaleReason,
     coerce_stale_reasons,
@@ -153,18 +153,6 @@ def _encode_function_values(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 # The fields a search query is compared with, per function row.
 SEARCHED_FUNCTION_FIELDS = ("name", "docstring")
-
-# UNIFY_PROTECT_VERIFIED=versioned: the fields an unverified version keeps.
-VERSION_FIELDS = (
-    "argspec",
-    "docstring",
-    "implementation",
-    "depends_on",
-    "third_party_imports",
-    "dependencies",
-    "precondition",
-    "stale_reasons",
-)
 
 # UNIFY_FUNCTION_PATCH: the reason ``function_history`` records for an
 # overwrite. ``patch_function`` sets it around its ``add_functions`` call; a
@@ -865,39 +853,6 @@ class FunctionManager(BaseFunctionManager):
         Primitives are platform surface, not library memory, and are never
         traced.
         """
-        # UNIFY_LISTING_USAGE: keep the request this call ran under.
-        if task_origin.listing_usage_enabled() and not func_data.get("is_primitive"):
-            name = str(func_data.get("name") or "")
-            text = task_origin.current_request()
-            if name and text:
-                try:
-                    self._write_off_loop(
-                        lambda: task_origin.record_call(name, text),
-                        what=f"call request:{name}",
-                    )
-                except Exception:  # noqa: BLE001 - metering must never break a call
-                    pass
-        # UNIFY_ENTRY_RECORD: this session called the function (a review's
-        # calls are not counted).
-        from . import entry_record
-
-        if entry_record.enabled() and not func_data.get("is_primitive"):
-            name = str(func_data.get("name") or "")
-            text = task_origin.current_request()
-            reviewing = entry_record.in_review()
-            if name and text and not reviewing:
-                try:
-                    self._write_off_loop(
-                        lambda: entry_record.record_use(
-                            entry_record.FUNCTION,
-                            name,
-                            entry_record.CALL,
-                            text=text,
-                        ),
-                        what=f"entry use:{name}",
-                    )
-                except Exception:  # noqa: BLE001 - metering must never break a call
-                    pass
         settings = self.activation_settings
         if not settings.enabled:
             return
@@ -1119,10 +1074,6 @@ class FunctionManager(BaseFunctionManager):
         with db.transaction() as conn:
             conn.execute("DELETE FROM functions")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'functions'")
-        # UNIFY_ENTRY_RECORD: links to ids that will be given out again.
-        from . import entry_links
-
-        entry_links.clear()
         self._next_id = None
         self._in_process_sessions.clear()
 
@@ -1143,23 +1094,15 @@ class FunctionManager(BaseFunctionManager):
     @staticmethod
     def _compact_function_search_rows(
         rows: List[Dict[str, Any]],
-        marker: Optional[task_origin.Marker] = None,
     ) -> List[Dict[str, Any]]:
-        """Return actor-facing discovery rows without large structured payloads.
-
-        *marker* (``UNIFY_TRY_FIRST``) marks the rows stored while handling a
-        request similar to the current one; it weighs requests over the whole
-        library the rows came from.
-        """
-
-        marker = marker or task_origin.Marker(rows)
+        """Return actor-facing discovery rows without large structured payloads."""
         compact_rows: list[dict[str, Any]] = []
         for row in rows:
             compact = {
                 key: value for key, value in row.items() if key != "implementation"
             }
-            # UNIFY_TRY_FIRST: origin fields become ``similar_request``.
-            marker.annotate(compact)
+            # Origin fields a removed research switch recorded are never shown.
+            compact = task_origin.strip(compact)
             if compact.get("is_primitive"):
                 # Primitive docstrings are full manual pages; discovery
                 # results must not re-import what the actor prompt
@@ -1315,8 +1258,6 @@ class FunctionManager(BaseFunctionManager):
         # UNIFY_FUNCTION_CASES: what replaying an updated function's recorded
         # cases found, reported with its "updated" status.
         case_reports: Dict[str, str] = {}
-        # UNIFY_PROTECT_VERIFIED=versioned: (function_id, metadata) with a version kept.
-        versions_kept: List[Tuple[int, Dict[str, Any]]] = []
         # UNIFY_STORE_INSTANCE_LINT: docstrings that name this task instance.
         instance_warnings: Dict[str, str] = {}
 
@@ -1415,60 +1356,6 @@ class FunctionManager(BaseFunctionManager):
                         )
                     ],
                 }
-                # UNIFY_TRY_FIRST: record the request this version was stored from.
-                origin = task_origin.stamped(prior.get("metadata") if prior else None)
-                if origin is not None:
-                    entry_data["metadata"] = origin
-                # UNIFY_PROTECT_VERIFIED: a verified function stays while this
-                # session's answer is not known to be accepted; otherwise this
-                # session wrote the content.
-                if verified_guard.enabled():
-                    status = (
-                        verified_guard.protected("function", name, prior)
-                        if prior is not None
-                        else None
-                    )
-                    if status is not None and verified_guard.versioned():
-                        # Kept beside the content as an unverified version.
-                        versions_kept.append(
-                            (
-                                int(prior["function_id"]),
-                                verified_guard.with_version(
-                                    prior.get("metadata"),
-                                    {
-                                        k: entry_data[k]
-                                        for k in VERSION_FIELDS
-                                        if k in entry_data
-                                    },
-                                ),
-                            ),
-                        )
-                        results[name] = "kept; " + verified_guard.version_note(
-                            "function",
-                            name,
-                            status,
-                        )
-                        continue
-                    why = (
-                        verified_guard.refusal(
-                            "function",
-                            name,
-                            prior,
-                            action="update",
-                        )
-                        if prior is not None
-                        else None
-                    )
-                    if why is not None:
-                        results[name] = f"kept: {why}"
-                        continue
-                    written = verified_guard.stamped(
-                        entry_data.get("metadata")
-                        or (prior.get("metadata") if prior else None),
-                    )
-                    if written is not None:
-                        entry_data["metadata"] = written
-
                 if prior is not None:
                     # Update existing function
                     log_id = int(prior["function_id"])
@@ -1539,13 +1426,6 @@ class FunctionManager(BaseFunctionManager):
                     name = log_id_to_name.get(log_id)
                     if name and results.get(name) == "updated":
                         results[name] = f"error: Failed to update log - {e}"
-
-        # UNIFY_PROTECT_VERIFIED=versioned: the versions kept beside verified
-        # content (the content and its history are left as they are).
-        if versions_kept:
-            with db.transaction():
-                for function_id, metadata in versions_kept:
-                    self._update_function(function_id, {"metadata": metadata})
 
         # UNIFY_STORE_TRUST: an overwrite (a patch included) starts the
         # function's trust over on probation, keeping its failure history.
@@ -2884,7 +2764,7 @@ class FunctionManager(BaseFunctionManager):
             ):
                 if key in ent:
                     data[key] = ent.get(key)
-            # UNIFY_TRY_FIRST: a result never shows where a function came from.
+            # Origin fields a removed research switch recorded are never shown.
             data = task_origin.strip(data)
             if include_implementations:
                 data["implementation"] = ent.get("implementation")
@@ -3019,11 +2899,7 @@ class FunctionManager(BaseFunctionManager):
         deleted_functions: List[tuple[int, str]],
     ) -> None:
         """Drop deleted ids from every guidance entry citing them, recording why."""
-        from . import entry_links
-
         for function_id, name in deleted_functions:
-            # UNIFY_ENTRY_RECORD: its rows in the many-to-many link table too.
-            entry_links.drop(function_id=function_id)
             rows = db.query(
                 "SELECT guidance_id, function_ids, stale_reasons FROM guidance"
                 " WHERE EXISTS (SELECT 1 FROM json_each(function_ids) WHERE value = ?)",
@@ -3101,21 +2977,6 @@ class FunctionManager(BaseFunctionManager):
         all_rows = self._rows("is_primitive = 0")
         by_id = {int(row["function_id"]): row for row in all_rows}
         requested = [int(fid) for fid in function_ids if int(fid) in by_id]
-        # UNIFY_PROTECT_VERIFIED: a verified function stays while this
-        # session's answer is not known to be accepted.
-        if verified_guard.enabled():
-            refusals = [
-                verified_guard.refusal(
-                    "function",
-                    by_id[fid]["name"],
-                    by_id[fid],
-                    action="delete",
-                )
-                for fid in requested
-            ]
-            refusals = [r for r in refusals if r]
-            if refusals:
-                raise ValueError(" ".join(refusals))
         results: Dict[str, str] = {
             f"function_{fid}": "already_deleted"
             for fid in function_ids
@@ -3244,7 +3105,7 @@ class FunctionManager(BaseFunctionManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.FUNCTION_COLUMNS).payload
-        # UNIFY_TRY_FIRST: a result never shows where a function came from.
+        # Origin fields a removed research switch recorded are never shown.
         rows = [task_origin.strip(row) for row in rows]
 
         from . import store_cases
@@ -3334,8 +3195,6 @@ class FunctionManager(BaseFunctionManager):
             else n
         )
         library = self._rows(self._discovery_scope())
-        # UNIFY_TRY_FIRST: the whole library weighs the requests compared.
-        marker = task_origin.Marker(library)
         results = rank_by_similarity(
             library,
             {field: query for field in SEARCHED_FUNCTION_FIELDS},
@@ -3347,19 +3206,11 @@ class FunctionManager(BaseFunctionManager):
             n=n,
             include_dormant=include_dormant,
         )
-        # UNIFY_SEARCH_IDENTIFIERS: functions stored for a request naming an
-        # identifier of the query come first.
-        shared: Dict[str, List[str]] = {}
-        if self._identifier_search_enabled():
-            results, shared = self._identifier_first(library, results, query, n)
         self._bump_search_hits(results)
         from . import store_cases
 
         if not _return_callable:
-            records = self._search_records(results, library, shared)
-            compact_results = self._compact_function_search_rows(results, marker)
-            for compact in compact_results:
-                compact.update(records.get(str(compact.get("name")), {}))
+            compact_results = self._compact_function_search_rows(results)
             if include_implementations:
                 for compact, full in zip(compact_results, results, strict=True):
                     if "implementation" in full:
@@ -3380,10 +3231,7 @@ class FunctionManager(BaseFunctionManager):
             results = [row for row in results if row.get("name") not in unloadable]
 
         if _also_return_metadata:
-            records = self._search_records(results, library, shared)
-            metadata_rows = self._compact_function_search_rows(results, marker)
-            for compact in metadata_rows:
-                compact.update(records.get(str(compact.get("name")), {}))
+            metadata_rows = self._compact_function_search_rows(results)
             if include_implementations:
                 for compact, full in zip(metadata_rows, results, strict=True):
                     if "implementation" in full:
@@ -3398,104 +3246,6 @@ class FunctionManager(BaseFunctionManager):
 
         return callables_list  # type: ignore[return-value]
 
-    @staticmethod
-    def _identifier_search_enabled() -> bool:
-        from unify.settings import SETTINGS
-
-        return task_origin.enabled() and bool(
-            getattr(SETTINGS, "UNIFY_SEARCH_IDENTIFIERS", False),
-        )
-
-    @staticmethod
-    def _identifier_first(
-        library: List[Dict[str, Any]],
-        results: List[Dict[str, Any]],
-        query: str,
-        n: int,
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, List[str]]]:
-        """``UNIFY_SEARCH_IDENTIFIERS``: *results* with the functions whose recorded requests name a query identifier first."""
-        matched = task_origin.identifier_matches(query, library, key="name")
-        if not matched:
-            return results, {}
-        by_name = {str(row.get("name")): row for row in library}
-        first = [by_name[name] for name in matched if name in by_name]
-        rest = [row for row in results if row.get("name") not in matched]
-        return (first + rest)[: max(n, len(first))], matched
-
-    def _search_records(
-        self,
-        rows: List[Dict[str, Any]],
-        library: List[Dict[str, Any]],
-        shared: Dict[str, List[str]],
-    ) -> Dict[str, Dict[str, Any]]:
-        """``{name: fields}`` a search row adds: ``record`` (``UNIFY_ENTRY_RECORD``) and kept ``revisions``."""
-        from . import entry_record
-
-        recording = entry_record.enabled()
-        if not rows or not (recording or shared):
-            return {}
-        guidance = []
-        try:
-            from unify.guidance_manager.guidance_manager import GuidanceManager
-
-            guidance = [
-                {"guidance_id": r["guidance_id"], "metadata": r["metadata"]}
-                for r in GuidanceManager._evidence_rows_static()
-            ]
-        except Exception:  # noqa: BLE001 - the weights fall back to functions
-            guidance = []
-        marker = task_origin.Marker([*library, *guidance])
-        names = [str(row.get("name")) for row in rows if not row.get("is_primitive")]
-        uses = (
-            entry_record.uses_of([(entry_record.FUNCTION, name) for name in names])
-            if recording
-            else {}
-        )
-        out: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            name = str(row.get("name"))
-            if row.get("is_primitive"):
-                continue
-            parts = []
-            if shared.get(name):
-                parts.append(
-                    "stored while handling a request that also named "
-                    + " and ".join(f"`{w}`" for w in shared[name]),
-                )
-            if recording:
-                parts.append(
-                    entry_record.record_text(
-                        marker,
-                        entry_record.FUNCTION,
-                        row,
-                        uses.get((entry_record.FUNCTION, name)),
-                    ),
-                )
-            out[name] = {"record": "; ".join(parts)}
-        return out
-
-    def _evidence_rows(self) -> List[Dict[str, Any]]:
-        """The stored functions in scope (primitives excluded), with ``metadata``, ``usage_calls`` and source.
-
-        For the evidence list and the storage review's same-origin section;
-        no search hit is counted.
-        """
-        return [
-            {
-                key: row.get(key)
-                for key in (
-                    "function_id",
-                    "name",
-                    "argspec",
-                    "docstring",
-                    "implementation",
-                    "metadata",
-                    "usage_calls",
-                )
-            }
-            for row in self._rows(self._compositional_scope())
-        ]
-
     def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
         """``UNIFY_LIBRARY_SHORTLIST``: the *k* stored functions closest to *text*.
 
@@ -3503,15 +3253,13 @@ class FunctionManager(BaseFunctionManager):
         activation ranking that drops lapsed functions), over the stored
         functions in scope only, primitives excluded. Unlike a search it
         counts no hit: the harness, not the model, asked. Rows carry
-        ``name``, ``argspec``, ``docstring``, ``_similarity`` and, under
-        ``UNIFY_TRY_FIRST``, ``similar_request``.
+        ``function_id``, ``name``, ``argspec``, ``docstring`` and ``_similarity``.
         """
         if not str(text or "").strip() or k <= 0:
             return []
         library = self._rows(self._compositional_scope())
         if not library:
             return []
-        marker = task_origin.Marker(library)
         settings = self.activation_settings
         fetch = (
             min(
@@ -3532,141 +3280,15 @@ class FunctionManager(BaseFunctionManager):
         for row in ranked:
             compact = {
                 key: row.get(key)
-                for key in ("function_id", "name", "argspec", "docstring", "metadata")
+                for key in ("function_id", "name", "argspec", "docstring")
             }
             compact["_similarity"] = float(row.get(SIMILARITY_FIELD) or 0.0)
-            marker.annotate(compact)
-            compact.pop("metadata", None)
             rows.append(compact)
         return rows
 
     def _library_rows(self) -> List[Dict[str, Any]]:
-        """The stored functions in scope, primitives excluded, with their metadata (for the shortlist's notes)."""
+        """The stored functions in scope, primitives excluded, with their metadata."""
         return self._rows(self._compositional_scope())
-
-    def _gated_shortlist_rows(
-        self,
-        threshold: float,
-        k: int,
-        guidance: Sequence[Dict[str, Any]] = (),
-        *,
-        functions: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """``UNIFY_SHORTLIST_GATE``: the stored functions recorded under a request like this one.
-
-        The at most *k* stored functions in scope (primitives excluded) whose
-        ``similar_request`` to the current request is at least *threshold*,
-        ranked by it, then by calls, then newest. Nothing is embedded; the
-        activation ranking and its hiding of lapsed functions do not apply;
-        no search hit is counted. Rows carry ``function_id``, ``name``,
-        ``argspec``, ``docstring``, ``usage_calls``, ``similar_request`` and,
-        under ``UNIFY_ORIGIN_PROVENANCE``, ``origin`` when it has something
-        to say.
-
-        ``UNIFY_GUIDANCE_ORIGIN``: *guidance* holds the guidance rows with a
-        recorded origin (``GuidanceManager._origin_rows``); they weigh the
-        requests and compete for the *k* places like functions, and come back
-        as ``guidance_id``, ``title``, ``content`` and ``similar_request`` with
-        ``kind`` ``"guidance"`` (function rows then carry ``kind``
-        ``"function"``). Without *functions* only guidance is listed.
-        """
-        from unify.actor.library_shortlist import gate_rows
-
-        if k <= 0:
-            return []
-        library = self._rows(self._compositional_scope())
-        if not library and not guidance:
-            return []
-        marker = task_origin.Marker([*library, *guidance])
-        candidates = [
-            *(library if functions else []),
-            *({**row, "kind": "guidance"} for row in guidance),
-        ]
-        rows = []
-        notes = task_origin.listing_notes_enabled()
-        for row in gate_rows(candidates, marker, threshold, k=k):
-            if row.get("kind") == "guidance":
-                rows.append(
-                    {
-                        key: row.get(key)
-                        for key in (
-                            "kind",
-                            "guidance_id",
-                            "title",
-                            "content",
-                            "similar_request",
-                        )
-                    },
-                )
-                # UNIFY_LISTING_PROVENANCE, UNIFY_LESSON_STATUS
-                if notes:
-                    rows[-1].update(task_origin.listing_notes(marker, "guidance", row))
-                continue
-            out = {
-                key: row.get(key)
-                for key in (
-                    "function_id",
-                    "name",
-                    "argspec",
-                    "docstring",
-                    "usage_calls",
-                    "similar_request",
-                )
-            }
-            if guidance:
-                out["kind"] = "function"
-            # UNIFY_ORIGIN_PROVENANCE: why it passed the gate.
-            why = marker.provenance(row)
-            if why:
-                out[task_origin.ORIGIN_MARK] = why
-            # UNIFY_LISTING_PROVENANCE, UNIFY_LISTING_USAGE
-            if notes:
-                out.update(task_origin.listing_notes(marker, "function", row))
-            rows.append(out)
-        return rows
-
-    def _related_candidates(self) -> List[Dict[str, Any]]:
-        """``UNIFY_SHORTLIST_RELATED``: the stored functions in scope, for the possibly related tier.
-
-        Primitives excluded. Rows carry ``function_id``, ``name``,
-        ``argspec``, ``docstring`` and ``metadata`` (the statement and the
-        origin requests). No search hit is counted.
-        """
-        return [
-            {
-                key: row.get(key)
-                for key in ("function_id", "name", "argspec", "docstring", "metadata")
-            }
-            for row in self._rows(self._compositional_scope())
-        ]
-
-    def _set_use_when(self, name: str, statement: str) -> bool:
-        """``UNIFY_SHORTLIST_RELATED``: keep *statement* as the stored function *name*'s ``use_when``.
-
-        Only for a function in scope added or updated while handling the
-        current request (its origin records that request); ``False``
-        otherwise. The function's history is not touched.
-        """
-        from unify.actor.related_shortlist import STATEMENT
-
-        key = task_origin.current()
-        if key is None:
-            return False
-        rows = self._rows(
-            self._compositional_scope("name = ?"),
-            (str(name),),
-            limit=1,
-        )
-        if not rows:
-            return False
-        row = rows[0]
-        metadata = dict(row.get("metadata") or {})
-        if key not in (metadata.get(task_origin.FIELD) or []):
-            return False
-        metadata[STATEMENT] = statement
-        with db.transaction():
-            self._update_function(int(row["function_id"]), {"metadata": metadata})
-        return True
 
     # ------------------------------------------------------------------ #
     #  Inverse linkage: Functions → Guidance                              #

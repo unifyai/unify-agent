@@ -562,8 +562,6 @@ def _first_user(request: dict) -> str:
 
 
 async def _act_once(request: str, replies=None):
-    from unify.function_manager import task_origin
-
     actor = new_actor(can_store=False)
     try:
         with h.scripted(replies or [lambda: h.completion(content="done")] * 4) as p:
@@ -571,7 +569,6 @@ async def _act_once(request: str, replies=None):
             await asyncio.wait_for(handle.result(), 120)
     finally:
         await actor.close()
-        task_origin.leave(None)
     return h.session_requests(p.requests)
 
 

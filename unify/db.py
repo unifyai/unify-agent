@@ -287,12 +287,7 @@ class _Connection:
         _add_missing_columns(self.conn)
 
 
-_ADDED_COLUMNS = (
-    ("function_trust", "failure_hashes", "TEXT NOT NULL DEFAULT '[]'"),
-    # UNIFY_GUIDANCE_ORIGIN: the requests a guidance entry was written for
-    # (JSON, NULL when none were recorded). Not in ``all_guidance``.
-    ("guidance", "origin", "TEXT"),
-)
+_ADDED_COLUMNS = (("function_trust", "failure_hashes", "TEXT NOT NULL DEFAULT '[]'"),)
 """Columns added to a table after it first shipped: a store created earlier gets them on open."""
 
 
@@ -420,11 +415,6 @@ def clear() -> None:
         for table in USER_TABLES:
             conn.execute(f"DELETE FROM {table}")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
-        # UNIFY_ENTRY_RECORD: the link table, which only that switch creates.
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_links'",
-        ).fetchone():
-            conn.execute("DELETE FROM entry_links")
 
 
 __all__ = [

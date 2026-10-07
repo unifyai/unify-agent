@@ -19,11 +19,11 @@ observer pushed the wrapper takes the shipped path untouched.
 
 An environment's raw globals (``environment_globals()``, e.g. AppWorld's
 ``apis``) bypass the wrapper. While a feature that uses the seam is on
-(``UNIFY_EVIDENCE_LEDGER`` or ``UNIFY_SPECULATE``, read with a default so the
-seam ships before either exists), the sandbox gets each such global wrapped in
+(``UNIFY_SPECULATE``, read with a default so the seam ships before it
+exists), the sandbox gets each such global wrapped in
 a transparent proxy whose attribute-path calls (``apis.spotify.login(...)``)
 take the same before/after path as ``EnvCall(namespace="apis",
-method="spotify.login", effect="", via="global")``. With both off the
+method="spotify.login", effect="", via="global")``. With it off the
 globals are the registered objects themselves.
 
 Results are passed by reference: an observer that keeps one must copy or
@@ -318,7 +318,7 @@ async def dispatch_async(
 # ---------------------------------------------------------------------------
 
 _OFF_WORDS = frozenset({"", "0", "false", "no", "off", "none"})
-_SWITCHES = ("UNIFY_EVIDENCE_LEDGER", "UNIFY_SPECULATE")
+_SWITCHES = ("UNIFY_SPECULATE",)
 
 
 def _on(value: Any) -> bool:

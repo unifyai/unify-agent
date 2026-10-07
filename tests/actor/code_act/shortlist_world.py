@@ -18,7 +18,6 @@ from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.actor import library_shortlist as ls
 from unify.common import embeddings
-from unify.function_manager import task_origin
 
 PREAMBLE = (
     "You are working through a stream of table puzzles. Each instance gives a "
@@ -82,11 +81,8 @@ def computed(monkeypatch, tmp_path):
 
 
 def _in_task(request, fn):
-    token = task_origin.enter(request)
-    try:
-        return fn()
-    finally:
-        task_origin.leave(token)
+    """Run *fn* while handling *request* (the library reads no request context)."""
+    return fn()
 
 
 def _rotate_source() -> str:

@@ -17,56 +17,7 @@ from .base import BaseGuidanceManager
 from .types.guidance import (
     Guidance,
     GuidanceWithLinks,
-    GuidanceWithLinksAndRecord,
-    GuidanceWithRecord,
 )
-
-
-def _origin_for(guidance_id: Optional[int]) -> Optional[str]:
-    """``UNIFY_GUIDANCE_ORIGIN``: the entry's ``origin`` with the current request added.
-
-    The JSON to store, or ``None`` while the switch is off or no request is
-    keyed (the column is then left as it is). ``UNIFY_LISTING_PROVENANCE``
-    and ``UNIFY_LESSON_STATUS`` record it too, for the shortlist's lines.
-    """
-    from ..function_manager import task_origin
-
-    if not task_origin.guidance_recorded():
-        return None
-    from ..function_manager import verified_guard
-
-    prior = _stored_origin(guidance_id) if guidance_id is not None else None
-    stamped = task_origin.stamped(prior)
-    if stamped is None:
-        return None
-    # UNIFY_PROTECT_VERIFIED: this session wrote the entry's current content.
-    return db.dumps(verified_guard.stamped(stamped) or stamped)
-
-
-def _stored_origin(guidance_id: Any) -> Optional[Dict[str, Any]]:
-    """The hidden ``origin`` of stored entry *guidance_id* (a dict), or ``None``."""
-    row = db.query_one(
-        "SELECT origin FROM guidance WHERE guidance_id = ?",
-        (int(guidance_id),),
-    )
-    prior = db.loads(row["origin"]) if row and row["origin"] else None
-    return prior if isinstance(prior, dict) else None
-
-
-def _record_enabled() -> bool:
-    from ..function_manager import entry_record
-
-    return entry_record.enabled()
-
-
-def _identifier_search_enabled() -> bool:
-    from unify.settings import SETTINGS
-    from ..function_manager import task_origin
-
-    return task_origin.enabled() and bool(
-        getattr(SETTINGS, "UNIFY_SEARCH_IDENTIFIERS", False),
-    )
-
 
 logger = logging.getLogger(__name__)
 
@@ -311,10 +262,6 @@ class GuidanceManager(BaseGuidanceManager):
         with db.transaction() as conn:
             conn.execute("DELETE FROM guidance")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'guidance'")
-        # UNIFY_ENTRY_RECORD: links to ids that will be given out again.
-        from ..function_manager import entry_links
-
-        entry_links.clear()
 
     # -- Writes -----------------------------------------------------------------
 
@@ -344,25 +291,11 @@ class GuidanceManager(BaseGuidanceManager):
             ),
             db.now_iso(),
         )
-        # UNIFY_GUIDANCE_ORIGIN: the request this entry was written for.
-        origin = _origin_for(None)
-        if origin is None:
-            cursor = db.execute(
-                "INSERT INTO guidance (title, content, function_ids, stale_reasons, created_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                values,
-            )
-        else:
-            cursor = db.execute(
-                "INSERT INTO guidance (title, content, function_ids, stale_reasons,"
-                " created_at, origin) VALUES (?, ?, ?, ?, ?, ?)",
-                (*values, origin),
-            )
-        # UNIFY_ENTRY_RECORD: the links, in the many-to-many link table too.
-        if g.function_ids and _record_enabled():
-            from ..function_manager import entry_links
-
-            entry_links.set_guidance_links(int(cursor.lastrowid), g.function_ids)
+        cursor = db.execute(
+            "INSERT INTO guidance (title, content, function_ids, stale_reasons, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            values,
+        )
         return _with_warning(
             {
                 "outcome": "guidance created successfully",
@@ -410,93 +343,15 @@ class GuidanceManager(BaseGuidanceManager):
                     preserve_historical=False,
                 )
             ]
-        # UNIFY_PROTECT_VERIFIED: a verified entry stays while this
-        # session's answer is not known to be accepted (refused, or kept
-        # beside it as an unverified version).
-        kept = self._unverified_change(guidance_id, updates, title, content)
-        if kept is not None:
-            return kept
-        # UNIFY_GUIDANCE_ORIGIN: the request this revision was written for.
-        origin = _origin_for(guidance_id)
-        if origin is not None:
-            updates["origin"] = origin
         self._update_row(
             guidance_id,
             updates,
             reason=_UPDATE_REASON.get() or DEFAULT_UPDATE_REASON,
         )
-        # UNIFY_ENTRY_RECORD: the links, in the many-to-many link table too.
-        if "function_ids" in updates and _record_enabled():
-            from ..function_manager import entry_links
-
-            entry_links.set_guidance_links(guidance_id, updates["function_ids"])
         return _with_warning(
             {"outcome": "guidance updated", "details": {"guidance_id": guidance_id}},
             _instance_warning(title, content),
         )
-
-    @staticmethod
-    def _unverified_change(
-        guidance_id: int,
-        updates: Dict[str, Any],
-        title: Optional[str],
-        content: Optional[str],
-    ) -> Optional[ToolOutcome]:
-        """``UNIFY_PROTECT_VERIFIED``: the outcome when the change is not applied as asked; ``None`` to apply it.
-
-        ``versioned``: the change is kept as an unverified version. ``refuse``:
-        raises.
-        """
-        from ..function_manager import verified_guard
-
-        if not verified_guard.enabled():
-            return None
-        prior = _stored_origin(guidance_id) or {}
-        row = {"guidance_id": guidance_id, "metadata": prior}
-        status = verified_guard.protected("guidance", guidance_id, row)
-        if status is None:
-            return None
-        if not verified_guard.versioned():
-            GuidanceManager._refuse_unverified_change(guidance_id, "update")
-            return None
-        fields = {
-            k: v
-            for k, v in updates.items()
-            if k in ("title", "content", "function_ids")
-        }
-        db.execute(
-            "UPDATE guidance SET origin = ? WHERE guidance_id = ?",
-            (db.dumps(verified_guard.with_version(prior, fields)), int(guidance_id)),
-        )
-        return _with_warning(
-            {
-                "outcome": "guidance kept; change stored as an unverified version",
-                "details": {
-                    "guidance_id": guidance_id,
-                    "note": verified_guard.version_note(
-                        "guidance",
-                        guidance_id,
-                        status,
-                    ),
-                },
-            },
-            _instance_warning(title, content),
-        )
-
-    @staticmethod
-    def _refuse_unverified_change(guidance_id: int, action: str) -> None:
-        """``UNIFY_PROTECT_VERIFIED``: raise when this session may not change the entry."""
-        from ..function_manager import verified_guard
-
-        if not verified_guard.enabled():
-            return
-        row = {
-            "guidance_id": guidance_id,
-            "metadata": _stored_origin(guidance_id) or {},
-        }
-        why = verified_guard.refusal("guidance", guidance_id, row, action=action)
-        if why:
-            raise ValueError(why)
 
     @staticmethod
     def _update_row(
@@ -627,10 +482,6 @@ class GuidanceManager(BaseGuidanceManager):
             updated = self.update_guidance(guidance_id=guidance_id, content=patched)
         finally:
             _UPDATE_REASON.reset(token)
-        # UNIFY_PROTECT_VERIFIED=versioned: kept as a version, not patched.
-        if str(updated.get("outcome", "")).startswith("guidance kept"):
-            updated["details"]["edits"] = report
-            return updated
         return _with_warning(
             {
                 "outcome": "guidance patched",
@@ -671,7 +522,6 @@ class GuidanceManager(BaseGuidanceManager):
         *,
         guidance_id: int,
     ) -> ToolOutcome:
-        self._refuse_unverified_change(guidance_id, "delete")
         deleted = db.execute(
             "DELETE FROM guidance WHERE guidance_id = ?",
             (int(guidance_id),),
@@ -680,11 +530,6 @@ class GuidanceManager(BaseGuidanceManager):
             raise ValueError(
                 f"No guidance found with guidance_id {guidance_id} to delete.",
             )
-        # UNIFY_ENTRY_RECORD: its links go with it.
-        if _record_enabled():
-            from ..function_manager import entry_links
-
-            entry_links.drop(guidance_id=guidance_id)
         return {"outcome": "guidance deleted", "details": {"guidance_id": guidance_id}}
 
     @functools.wraps(BaseGuidanceManager.reconcile_dependencies, updated=())
@@ -742,147 +587,9 @@ class GuidanceManager(BaseGuidanceManager):
             limit=k,
             id_field="guidance_id",
         )
-        # UNIFY_SEARCH_IDENTIFIERS: entries recorded under a request naming
-        # an identifier of the query come first.
-        shared: Dict[int, List[str]] = {}
-        if _identifier_search_enabled():
-            rows, shared = self._identifier_first(rows, references, k)
-        return self._with_records(
-            _with_linked_functions(
-                [self._with_content_preview(Guidance(**row)) for row in rows],
-            ),
-            shared=shared,
+        return _with_linked_functions(
+            [self._with_content_preview(Guidance(**row)) for row in rows],
         )
-
-    def _identifier_first(
-        self,
-        rows: List[Dict[str, Any]],
-        references: Optional[Dict[str, str]],
-        k: int,
-    ) -> tuple[List[Dict[str, Any]], Dict[int, List[str]]]:
-        """``UNIFY_SEARCH_IDENTIFIERS``: *rows* with the entries whose recorded requests name a query identifier first."""
-        from ..function_manager import task_origin
-
-        query = " ".join(str(v or "") for v in (references or {}).values())
-        recorded = self._origin_rows()
-        matched = task_origin.identifier_matches(query, recorded)
-        if not matched:
-            return rows, {}
-        by_id = {int(r["guidance_id"]): r for r in self._rows(self._scope(None))}
-        first = [by_id[gid] for gid in matched if gid in by_id]
-        rest = [r for r in rows if int(r["guidance_id"]) not in matched]
-        return (first + rest)[: max(k, len(first))], matched
-
-    def _with_records(
-        self,
-        entries: List[Guidance],
-        *,
-        shared: Optional[Dict[int, List[str]]] = None,
-    ) -> List[Guidance]:
-        """``UNIFY_ENTRY_RECORD``: *entries* each with its record (and kept revisions). Off: as they are."""
-        from ..function_manager import entry_record, task_origin
-
-        if not entries or not (_record_enabled() or shared):
-            return entries
-        recorded = {int(r["guidance_id"]): r for r in self._origin_rows()}
-        library = [*recorded.values(), *self._function_origin_rows()]
-        marker = task_origin.Marker(library)
-        uses = (
-            entry_record.uses_of(
-                [(entry_record.GUIDANCE, str(e.guidance_id)) for e in entries],
-            )
-            if _record_enabled()
-            else {}
-        )
-        out = []
-        for entry in entries:
-            gid = int(entry.guidance_id)
-            row = recorded.get(gid) or {
-                "guidance_id": gid,
-                "metadata": {},
-                "is_builtin": entry.is_builtin,
-            }
-            if entry.is_builtin:
-                row = {**row, "is_builtin": True}
-            parts = []
-            if shared and shared.get(gid):
-                parts.append(
-                    "written while handling a request that also named "
-                    + " and ".join(f"`{w}`" for w in shared[gid]),
-                )
-            if _record_enabled():
-                parts.append(
-                    entry_record.record_text(
-                        marker,
-                        entry_record.GUIDANCE,
-                        row,
-                        uses.get((entry_record.GUIDANCE, str(gid))),
-                    ),
-                )
-            model = (
-                GuidanceWithLinksAndRecord
-                if isinstance(entry, GuidanceWithLinks)
-                else GuidanceWithRecord
-            )
-            out.append(
-                model(
-                    **entry.model_dump(),
-                    record="; ".join(parts),
-                ),
-            )
-        return out
-
-    @staticmethod
-    def _function_origin_rows() -> List[Dict[str, Any]]:
-        """The stored functions' origins (``metadata``), to weigh requests as the shortlist does."""
-        rows = []
-        for row in db.query("SELECT function_id, name, metadata FROM functions"):
-            metadata = db.loads(row["metadata"]) if row["metadata"] else None
-            if isinstance(metadata, dict):
-                rows.append({"name": row["name"], "metadata": metadata})
-        return rows
-
-    @staticmethod
-    def _evidence_rows_static() -> List[Dict[str, Any]]:
-        """Every stored entry with a recorded origin, as ``{guidance_id, metadata}`` (to weigh requests)."""
-        out = []
-        for row in db.query(
-            "SELECT guidance_id, origin FROM guidance WHERE origin IS NOT NULL",
-        ):
-            origin = db.loads(row["origin"])
-            if isinstance(origin, dict):
-                out.append({"guidance_id": row["guidance_id"], "metadata": origin})
-        return out
-
-    def _evidence_rows(self) -> List[Dict[str, Any]]:
-        """The stored entries in scope (built-ins excluded), each with its origin as ``metadata`` ({} without one).
-
-        Rows carry ``guidance_id``, ``title``, ``content``, ``function_ids``
-        and ``metadata``. For the evidence list; no
-        read the model makes returns the origin.
-        """
-        visible = self._rows(self._scope("is_builtin = 0"))
-        if not visible:
-            return []
-        origins = {
-            int(row["guidance_id"]): db.loads(row["origin"])
-            for row in db.query(
-                "SELECT guidance_id, origin FROM guidance WHERE origin IS NOT NULL",
-            )
-        }
-        out = []
-        for row in visible:
-            origin = origins.get(int(row["guidance_id"]))
-            out.append(
-                {
-                    "guidance_id": row["guidance_id"],
-                    "title": row["title"],
-                    "content": row["content"],
-                    "function_ids": list(row.get("function_ids") or []),
-                    "metadata": origin if isinstance(origin, dict) else {},
-                },
-            )
-        return out
 
     def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
         """``UNIFY_LIBRARY_SHORTLIST``: the *k* guidance entries in scope closest to *text*.
@@ -899,88 +606,15 @@ class GuidanceManager(BaseGuidanceManager):
             limit=k,
             id_field="guidance_id",
         )
-        from ..function_manager import task_origin
-
-        notes = task_origin.listing_notes_enabled()
         return [
             {
                 "guidance_id": row.get("guidance_id"),
                 "title": row.get("title"),
                 "content": row.get("content"),
                 "_similarity": float(row.get("_similarity") or 0.0),
-                # UNIFY_LESSON_STATUS: a built-in entry is not a lesson.
-                **({"is_builtin": bool(row.get("is_builtin"))} if notes else {}),
             }
             for row in rows
         ]
-
-    def _origin_rows(self) -> List[Dict[str, Any]]:
-        """``UNIFY_GUIDANCE_ORIGIN``: the stored entries in scope with a recorded origin.
-
-        Rows carry ``guidance_id``, ``title``, ``content`` and the origin as
-        ``metadata`` (the shape :class:`~unify.function_manager.task_origin.Marker`
-        reads). Built-in entries never have one. For the gated shortlist
-        only: no read the model makes returns the origin.
-        """
-        visible = {
-            int(row["guidance_id"]): row
-            for row in self._rows(self._scope("is_builtin = 0"))
-        }
-        if not visible:
-            return []
-        out = []
-        for row in db.query(
-            "SELECT guidance_id, origin FROM guidance"
-            " WHERE origin IS NOT NULL ORDER BY guidance_id",
-        ):
-            entry = visible.get(int(row["guidance_id"]))
-            origin = db.loads(row["origin"])
-            if entry is None or not isinstance(origin, dict):
-                continue
-            out.append(
-                {
-                    "guidance_id": entry["guidance_id"],
-                    "title": entry["title"],
-                    "content": entry["content"],
-                    "metadata": origin,
-                },
-            )
-        return out
-
-    def _set_use_when(self, guidance_id: Any, statement: str) -> bool:
-        """``UNIFY_SHORTLIST_RELATED``: keep *statement* in the entry's recorded origin.
-
-        Only for an entry in scope (not built-in) whose origin records the
-        current request (``UNIFY_GUIDANCE_ORIGIN``: added or updated while
-        handling it); ``False`` otherwise. No guidance read returns it.
-        """
-        from ..actor.related_shortlist import STATEMENT
-        from ..function_manager import task_origin
-
-        key = task_origin.current()
-        try:
-            gid = int(guidance_id)
-        except (TypeError, ValueError):
-            return False
-        if key is None or not self._rows(
-            self._scope(f"is_builtin = 0 AND guidance_id = {gid}"),
-        ):
-            return False
-        row = db.query_one(
-            "SELECT origin FROM guidance WHERE guidance_id = ?",
-            (gid,),
-        )
-        origin = db.loads(row["origin"]) if row and row["origin"] else None
-        if not isinstance(origin, dict) or key not in (
-            origin.get(task_origin.FIELD) or []
-        ):
-            return False
-        origin[STATEMENT] = statement
-        db.execute(
-            "UPDATE guidance SET origin = ? WHERE guidance_id = ?",
-            (db.dumps(origin), gid),
-        )
-        return True
 
     @functools.wraps(BaseGuidanceManager.filter, updated=())
     def filter(
@@ -999,10 +633,8 @@ class GuidanceManager(BaseGuidanceManager):
             )
         except sqlite3.Error as exc:
             return invalid_filter_error(exc, filter, db.GUIDANCE_COLUMNS).payload
-        return self._with_records(
-            _with_linked_functions(
-                [self._with_content_preview(Guidance(**row)) for row in rows],
-            ),
+        return _with_linked_functions(
+            [self._with_content_preview(Guidance(**row)) for row in rows],
         )
 
     @functools.wraps(BaseGuidanceManager.get_guidance, updated=())
@@ -1017,14 +649,4 @@ class GuidanceManager(BaseGuidanceManager):
         )
         if not rows:
             raise ValueError(f"No guidance found with guidance_id {guidance_id}.")
-        # UNIFY_ENTRY_RECORD: this session read the entry (a review's reads
-        # are not counted).
-        if _record_enabled() and not rows[0].get("is_builtin"):
-            from ..function_manager import entry_record
-
-            entry_record.record_use(
-                entry_record.GUIDANCE,
-                rows[0]["guidance_id"],
-                entry_record.READ,
-            )
-        return self._with_records(_with_linked_functions([Guidance(**rows[0])]))[0]
+        return _with_linked_functions([Guidance(**rows[0])])[0]
