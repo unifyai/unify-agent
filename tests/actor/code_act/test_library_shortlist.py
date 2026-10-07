@@ -20,10 +20,13 @@ import pytest
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.actor import library_shortlist as ls
+from unify.agents.binding import PROMPT_SECTION
 from unify.settings import ProductionSettings, SETTINGS
 
 TASK = "List the files in the workspace."
 HEADER = ls._HEADER
+# The shared agent record's section, which the first message carries.
+RECORD = PROMPT_SECTION
 
 
 @pytest.fixture
@@ -32,11 +35,9 @@ def switches(monkeypatch):
         *,
         shortlist: bool,
         gate: bool = False,
-        snapshot: bool = True,
     ):
         monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", shortlist)
         monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", gate)
-        monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SNAPSHOT", snapshot)
 
     return set_
 
@@ -100,7 +101,8 @@ async def test_off_the_first_message_is_as_shipped(switches):
     off, _ = await _act(seed=_seed)
     assert HEADER not in json.dumps(off[0]["messages"])
     assert _first_user(off[0]) == (
-        f"Library at task start: 1 stored function, 1 guidance entry.\n\n---\n\n{TASK}"
+        "Library at task start: 1 stored function, 1 guidance entry.\n\n"
+        f"{RECORD}\n\n---\n\n{TASK}"
     )
 
 
@@ -163,7 +165,8 @@ async def test_on_an_empty_library_adds_nothing(switches):
     switches(shortlist=True)
     on, _ = await _act()
     assert _first_user(on[0]) == (
-        f"Library at task start: 0 stored functions, 0 guidance entries.\n\n---\n\n{TASK}"
+        "Library at task start: 0 stored functions, 0 guidance entries.\n\n"
+        f"{RECORD}\n\n---\n\n{TASK}"
     )
 
 

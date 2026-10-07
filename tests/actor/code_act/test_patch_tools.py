@@ -1,13 +1,9 @@
-"""Symbolic: ``UNIFY_FUNCTION_PATCH`` offers the patch tools, and only where writes are allowed.
+"""Symbolic: the storage review has the patch tools and the update-before-add order.
 
-With the switch on, ``FunctionManager_patch_function`` and
-``GuidanceManager_patch_guidance`` join the actor's tools and the storage
-review's tools, and the review's prompt gains the update-before-add order.
-The note describes batching an entry's changes as `edits` in one call.
-They are store-only tools: an actor that cannot store, or whose writes are
-withheld until the environment admits the run, does not get them. Off, the
-tool sets and both review prompts are exactly as shipped. No model is called:
-the tool loop and the review loop are mocked.
+``FunctionManager_patch_function`` and ``GuidanceManager_patch_guidance`` are
+in the storage review's tools, and both review prompts carry the
+update-before-add order, which describes batching an entry's changes as
+`edits` in one call. No model is called: the review loop is mocked.
 """
 
 from __future__ import annotations
@@ -15,22 +11,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import unify.actor.code_act_actor as code_act_actor
 from unify.actor.code_act_actor import (
     _start_proactive_storage_loop,
     _start_storage_check_loop,
     _storage_update_first_note,
 )
-from unify.settings import SETTINGS
 
 PATCH_TOOLS = {"FunctionManager_patch_function", "GuidanceManager_patch_guidance"}
-
-
-@pytest.fixture
-def patch_on(monkeypatch):
-    """Baked in at the code freeze: the behaviour this pinned is the only path."""
 
 
 # --------------------------------------------------------------------------- #
@@ -50,13 +38,8 @@ def _storage_tool_names() -> set:
     return set(tools)
 
 
-def test_the_review_gets_the_patch_tools_only_while_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-    off = _storage_tool_names()
-    assert not PATCH_TOOLS & off
-    on = _storage_tool_names()
-    assert on - off == PATCH_TOOLS
-    assert off <= on
+def test_the_review_gets_the_patch_tools():
+    assert PATCH_TOOLS <= _storage_tool_names()
 
 
 def _review_prompts() -> list[str]:
@@ -89,12 +72,7 @@ def _review_prompts() -> list[str]:
     return prompts
 
 
-def test_the_update_first_order_is_in_both_review_prompts_only_while_on(
-    monkeypatch,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-    assert _storage_update_first_note() == ""
-    off = _review_prompts()
+def test_the_update_first_order_is_in_both_review_prompts():
     note = _storage_update_first_note()
     assert note.startswith("### Update before you add")
     for tool in PATCH_TOOLS:
@@ -102,16 +80,11 @@ def test_the_update_first_order_is_in_both_review_prompts_only_while_on(
     # Several changes to one entry go in one call, applied all or none.
     assert "in one call as `edits`" in note
     assert "all or none" in note
-    on = _review_prompts()
-    for before, after in zip(off, on):
-        assert "Update before you add" not in before
-        assert after == before.replace(
-            code_act_actor._STORAGE_TWO_STORES,
-            code_act_actor._STORAGE_TWO_STORES + note,
-        )
-    first, broader, add = (
-        note.index("(1) patch the entry the trajectory used"),
-        note.index("(2) otherwise patch a broader existing entry"),
-        note.index("(3) only then add a new one"),
+    for prompt in _review_prompts():
+        assert prompt.count(note) == 1
+    # Patch the entry the trajectory used, else add a focused new one; a fix
+    # never moves into a broader entry.
+    assert note.index("(1) patch the entry the trajectory used") < note.index(
+        "(2) otherwise add a new focused entry",
     )
-    assert first < broader < add
+    assert "Do not move a fix into a broader entry" in note

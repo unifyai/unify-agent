@@ -1,13 +1,12 @@
-"""Symbolic: ``UNIFY_PROMPT_TRIM``: prompt text describes only what the session has.
+"""Symbolic: the prompt trim (baked in): prompt text describes only what the session has.
 
 A lean-all ARC session has no primitives environment (``UNIFY_DELEGATION=off``,
 no registered namespace), yet its 11.5k-character prompt and its code tools
 told it how to route corrections to ``primitives.*`` handles, that function
 search covers the primitives catalogue, that a sub-agent cannot take a reply
 action for it, and that ``include_parent_chat_context`` passes the
-conversation to ``execute_code`` (only primitives read it). With the switch
-on each of these is left out where its capability is absent, and kept, word
-for word, where it is present. Off, nothing changes.
+conversation to ``execute_code`` (only primitives read it). Each of these is left out where its capability is absent, and kept, word
+for word, where it is present.
 
 The visibility message the loop appends is tested in
 tests/async_tool_loop/test_visibility_trim.py.
@@ -67,12 +66,6 @@ def trim(monkeypatch):
     """Baked in at the code freeze: the behaviour this pinned is the only path."""
 
 
-def test_on_by_default():
-    # Baked on at the code freeze: under the default core surface it still
-    # trims the SteerableToolHandle row and include_parent_chat_context.
-    assert SETTINGS.UNIFY_PROMPT_TRIM is True
-
-
 def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     prompt, schemas = _render(_actor())
@@ -85,7 +78,7 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
         "steerable handle reaches",
     ):
         assert gone not in prompt, gone
-    for name in ("execute_code", "execute_function", "store_skills"):
+    for name in ("execute_code", "store_skills"):
         description = schemas[name]["function"]["description"]
         assert "primitive" not in description, name
         assert (
@@ -96,7 +89,6 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
     for kept in (
         "### Responding to a steering checkpoint",
         "`query_llm`",
-        "### Function & Guidance Library",
         "### Skill Storage",
     ):
         assert kept in prompt, kept
@@ -112,55 +104,6 @@ def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
         "include_parent_chat_context"
         in on[1]["execute_code"]["function"]["parameters"]["properties"]
     )
-
-
-def test_off_without_primitives_the_text_is_as_shipped(profile, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
-    prompt, schemas = _render(_actor())
-    assert "When a correction concerns work already running in `primitives.*`" in prompt
-    assert (
-        "include_parent_chat_context"
-        in schemas["execute_code"]["function"]["parameters"]["properties"]
-    )
-
-
-def test_each_trim_removes_only_its_own_text(trim, monkeypatch):
-    """The lean profile, delegation off: every line the switch removes or
-    changes names a primitive, a sub-agent, a handle or the search scope."""
-    import difflib
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    # The reply note names sub-agents outside the agent record (deleted with
-    # the record's predecessor in step 5); under the record it is the
-    # reply-owner rule.
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
-    on, _ = _render(_actor())
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
-    off, _ = _render(_actor())
-    removed = [
-        line[1:]
-        for line in difflib.unified_diff(off.splitlines(), on.splitlines(), n=0)
-        if line.startswith("-") and not line.startswith("---")
-    ]
-    assert removed
-    text = " ".join(removed)
-    for subject in ("primitive", "sub-agent", "handle", "Discovery index scope"):
-        assert subject in text, subject
-    assert len(on) < len(off) - 1000
-
-
-def test_the_reply_note_keeps_sub_agents_while_delegation_is_on(trim, monkeypatch):
-    """A sub-agent can exist (delegation on) though this actor cannot start
-    one: the note still says what a sub-agent should do."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    # Outside the agent record (deleted in step 5): see above.
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "on")
-    prompt, _ = _render(_actor())
-    assert "If you are a sub-agent" in prompt
-    assert "Do not delegate a sub-task" not in prompt
 
 
 def test_session_text_follows_the_session_tools(trim, monkeypatch):
@@ -208,7 +151,4 @@ def test_a_core_session_prompt_names_no_primitive(trim, monkeypatch):
     core = PromptSurface(steering=True)
     kwargs = dict(environments={}, can_store=True, persist=True, core=core)
     on = pb.build_code_act_prompt(**kwargs)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_TRIM", False)
-    off = pb.build_code_act_prompt(**kwargs)
-    assert "primitives" in off
     assert "primitives" not in on and "SteerableToolHandle" not in on

@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_PROMPT_ACCURACY``: the actor is told only what its session has.
+"""Symbolic: the actor is told only what its session has (prompt accuracy, baked in).
 
 Captured requests of the 4 Oct ARC LOW runs carry statements that are false
 for the session that receives them. A persistent session is told a review
@@ -78,12 +78,7 @@ def _system_text(request: dict) -> str:
 # ── the storage schedule (D14) ──────────────────────────────────────────
 
 
-@pytest.mark.parametrize("framing", ["", "unified"])
-def test_on_a_persistent_session_without_turn_reviews_is_told_the_session_end(
-    monkeypatch,
-    framing,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FRAMING", framing)
+def test_on_a_persistent_session_without_turn_reviews_is_told_the_session_end():
     prompt = _flat(_prompt(persist=True, turn_reviews=False))
     assert _SESSION_END in prompt
     assert _PER_TURN not in prompt
@@ -94,28 +89,8 @@ def test_on_a_persistent_session_without_turn_reviews_is_told_the_session_end(
     assert "**Direct writes vs trajectory storage**" in prompt
 
 
-@pytest.mark.parametrize("framing", ["", "unified"])
-def test_on_a_session_with_turn_reviews_keeps_the_per_turn_notice(
-    monkeypatch,
-    framing,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FRAMING", framing)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    shipped = _prompt(persist=True, turn_reviews=True)
-    assert _prompt(persist=True, turn_reviews=True) == shipped
-    assert _PER_TURN in shipped
-
-
-def test_on_a_one_shot_session_keeps_its_notice(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    shipped = _prompt(persist=False, turn_reviews=False)
-    assert _prompt(persist=False, turn_reviews=False) == shipped
-
-
-def test_off_the_persistent_notice_is_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    prompt = _prompt(persist=True, turn_reviews=False)
-    assert pb._STORAGE_SESSION_NOTICE in prompt
+def test_on_a_session_with_turn_reviews_keeps_the_per_turn_notice():
+    assert _PER_TURN in _flat(_prompt(persist=True, turn_reviews=True))
 
 
 @pytest.mark.asyncio
@@ -124,8 +99,9 @@ def test_off_the_persistent_notice_is_as_shipped(monkeypatch):
 async def test_act_describes_the_schedule_the_session_gets(monkeypatch, turn_reviews):
     monkeypatch.setattr(SETTINGS, "UNIFY_TURN_STORAGE_REVIEWS", turn_reviews)
     system = _flat(_system_text(await _first_request(persist=True)))
-    assert (_PER_TURN in system) is turn_reviews
-    assert (_SESSION_END in system) is not turn_reviews
+    # The core surface's storage notice.
+    assert ("after each completed turn" in system) is turn_reviews
+    assert "when the session ends, and stores reusable functions" in system
 
 
 # ── the steering docs name `steer` (D20) ────────────────────────────────
@@ -137,7 +113,7 @@ def _tool_descriptions() -> dict[str, str]:
 
     actor = CodeActActor()
     out = {}
-    for name in ("execute_code", "execute_function"):
+    for name in ("execute_code",):
         tool = actor.get_tools("act")[name]
         fn = getattr(tool, "fn", tool)
         out[name] = method_to_schema(fn, name)["function"]["description"]
@@ -149,19 +125,6 @@ def test_on_the_steering_docs_name_the_steer_tool(monkeypatch):
         assert "stop_execute_" not in text, name
         assert 'steer(call_id=<id>, action="stop")' in text, name
         assert 'action="interject"' in text, name
-
-
-def test_off_the_steering_docs_are_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    docs = _tool_descriptions()
-    assert "``stop_execute_code_<call_id>``" in docs["execute_code"]
-    assert "``stop_execute_function_<call_id>``" in docs["execute_function"]
-
-
-def test_a_corrected_actor_leaves_the_next_actors_docs_alone(monkeypatch):
-    _tool_descriptions()
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    assert "``stop_execute_code_<call_id>``" in _tool_descriptions()["execute_code"]
 
 
 # ── no parent conversation for a loop without a parent (D23) ───────────────
@@ -200,13 +163,6 @@ async def test_on_a_top_level_actor_is_not_told_of_a_parent(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(180)
-async def test_off_a_top_level_actor_gets_the_shipped_section(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    assert _PARENT in _system_text(await _first_request(persist=False))
-
-
-@pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @pytest.mark.parametrize(
     "lineage, context, expected",
@@ -225,13 +181,6 @@ async def test_on_the_section_follows_whether_a_parent_exists(
 ):
     request = await _loop_request(lineage=lineage, parent_chat_context=context)
     assert (_PARENT in _system_text(request)) is expected
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-async def test_off_a_loop_without_a_parent_still_gets_the_section(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    assert _PARENT in _system_text(await _loop_request())
 
 
 # ── clarification only where it exists (D33, D31) ───────────────────────
@@ -254,23 +203,6 @@ def test_on_without_the_tool_the_rules_never_mention_clarification(monkeypatch):
     assert "request_clarification" not in prompt
     assert "request clarification" not in prompt
     assert "Proactive clarification" not in prompt
-    # What the rules say about evidence and batches is kept.
-    assert "If the evidence contradicts the result, fix and re-run." in prompt
-    assert "process a 5–10 item batch, and review it before scaling;" in prompt
-    assert "7. **Data provenance" in prompt
-
-
-def test_on_with_the_tool_the_rules_are_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    shipped = _clarify_prompt(can_clarify=True)
-    assert _clarify_prompt(can_clarify=True) == shipped
-
-
-def test_off_the_rules_mention_clarification_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", False)
-    prompt = _clarify_prompt(can_clarify=False)
-    assert pb._EXECUTION_RULES in prompt
-    assert pb._INCREMENTAL_EXECUTION in prompt
 
 
 @pytest.mark.asyncio
@@ -322,21 +254,18 @@ async def _sub_actor_clarification(monkeypatch, parent_can_clarify) -> bool:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "accuracy, parent, expected",
+    "parent, expected",
     [
-        (True, False, False),  # the parent cannot ask: neither can its sub-actor
-        (True, True, True),
-        (True, None, True),  # outside any actor: as shipped
-        (False, False, True),  # off: always offered, as shipped
+        (False, False),  # the parent cannot ask: neither can its sub-actor
+        (True, True),
+        (None, True),  # outside any actor: offered
     ],
 )
 async def test_a_sub_actor_asks_only_when_its_parent_can(
     monkeypatch,
-    accuracy,
     parent,
     expected,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_ACCURACY", accuracy)
     assert await _sub_actor_clarification(monkeypatch, parent) is expected
 
 
@@ -344,7 +273,10 @@ async def test_a_sub_actor_asks_only_when_its_parent_can(
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize("clarify", [False, True])
 async def test_act_tells_its_sandbox_whether_it_can_ask(monkeypatch, clarify):
-    """The value a sub-actor started from this actor's sandbox inherits."""
+    """The value a sub-actor started from this actor's sandbox inherits.
+
+    Under the shared agent record a question to the requester is a record
+    post, so the sandbox is never offered clarification."""
     from unify.actor.code_act_actor import CodeActActor
     from unify.actor.execution import _CAN_CLARIFY
 
@@ -361,30 +293,14 @@ async def test_act_tells_its_sandbox_whether_it_can_ask(monkeypatch, clarify):
             await asyncio.wait_for(handle.result(), 60)
     finally:
         await actor.close()
-    assert seen is clarify
-
-
-@pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
-def test_the_setting_parses_booleans(value, expected):
-    from unify.settings import ProductionSettings
-
-    assert (
-        ProductionSettings(UNIFY_PROMPT_ACCURACY=value).UNIFY_PROMPT_ACCURACY
-        is expected
-    )
-
-
-def test_the_default_is_off():
-    from unify.settings import ProductionSettings
-
-    assert ProductionSettings.model_fields["UNIFY_PROMPT_ACCURACY"].default is False
+    assert seen is False
 
 
 def test_no_fixed_text_names_a_benchmark():
     import re
 
     text = json.dumps(
-        [pb._STORAGE_SESSION_END_NOTICE, pb._STORAGE_SESSION_END_NOTICE_UNIFIED],
+        [pb._STORAGE_SESSION_END_NOTICE_UNIFIED],
     ).lower()
     words = set(re.findall(r"[a-z]+", text))
     for word in ("arc", "appworld", "scienceworld", "crafter", "grid", "benchmark"):
