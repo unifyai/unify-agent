@@ -13,7 +13,7 @@ unsupported hypotheses, and transient tool outputs".
 The gate is a separate request after the session, so the session's own
 requests and prefix are untouched. It reads the end of the trajectory as the
 review would (``_prepare_trajectory_for_storage_review``), the checked
-outcome when the environment posted one (``UNIFY_OUTCOME``) and the final
+outcome when the environment posted one (:mod:`unify.outcome`) and the final
 reply. A reply it cannot read, or a failed call, runs the review as
 shipped: the gate only ever saves a review, never loses one by accident.
 

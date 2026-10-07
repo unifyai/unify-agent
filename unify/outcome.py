@@ -1,4 +1,4 @@
-"""The checked outcome of a session, posted by the environment that ran it (``UNIFY_OUTCOME``).
+"""The checked outcome of a session, posted by the environment that ran it.
 
 The storage review that follows a session decides what the libraries keep,
 and until now it knew only what the agent said about its own work. An
@@ -53,13 +53,6 @@ class OutcomeReceiver(Protocol):
 
 
 _RECEIVERS: "weakref.WeakValueDictionary[str, Any]" = weakref.WeakValueDictionary()
-
-
-def enabled() -> bool:
-    """Whether ``UNIFY_OUTCOME`` is on."""
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_OUTCOME", False))
 
 
 def _text(value: Any, limit: int, what: str) -> str:
@@ -136,12 +129,10 @@ def register(session_id: str, receiver: OutcomeReceiver) -> None:
 def post(session_id: Optional[str], outcome: Any) -> dict:
     """Give the session *session_id* its checked outcome; returns it normalized.
 
-    Raises :class:`OutcomeError` when ``UNIFY_OUTCOME`` is off, the outcome is
-    malformed, no live session has that id, or the session no longer takes
-    one (its review has started).
+    Raises :class:`OutcomeError` when the outcome is malformed, no live
+    session has that id, or the session no longer takes one (its review has
+    started).
     """
-    if not enabled():
-        raise OutcomeError("UNIFY_OUTCOME is off")
     normalized = normalize(outcome)
     receiver = _RECEIVERS.get(session_id) if session_id else None
     if receiver is None:

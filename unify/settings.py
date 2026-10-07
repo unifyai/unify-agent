@@ -425,14 +425,6 @@ class ProductionSettings(BaseSettings):
     # calling or searching stays the model's choice, and no turn is forced. An empty or unranked library adds
     # nothing. Off: as shipped.
     UNIFY_LIBRARY_SHORTLIST: bool = True
-    # Take the session's checked outcome from the environment (unify/outcome.py:
-    # ``unify.outcome.post``, or an ``{"outcome": {...}}`` line on the stdin of
-    # ``unify act --jsonl``), held in memory, never in a file. The storage review
-    # then reads it in a section marked as the checker's verdict, not the
-    # agent's, and its "Final Result" is the agent's last reply before the
-    # outcome arrived instead of the stop notice of a persistent session.
-    # Off: no outcome is taken and the review is as shipped.
-    UNIFY_OUTCOME: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Session Transcripts
@@ -611,7 +603,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_TRANSCRIPTS",
-        "UNIFY_OUTCOME",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
         "UNIFY_CORE_BIND_LISTED",

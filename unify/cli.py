@@ -77,11 +77,10 @@ actor starts waiting, its content empty when the turn produced no text.
 model call and the tool calls still running are cancelled, and the turn's
 "response" line says "cancelled": true, its content the text the turn had
 drafted; with no turn running it is ignored. Without --persist it ends the
-session as {"quit": true} does. Progress still goes to stderr. With
-UNIFY_OUTCOME on, a stdin line {"outcome": {...}} gives the session its
-checked outcome for the storage review (see unify/outcome.py) and is
-answered with {"type": "outcome", "accepted": ...}; with it off such a line
-is ignored. With UNIFY_AGENTS=record a message is posted to the run's shared
+session as {"quit": true} does. Progress still goes to stderr. A
+stdin line {"outcome": {...}} gives the session its checked outcome for the
+storage review (see unify/outcome.py) and is answered with
+{"type": "outcome", "accepted": ...}. With UNIFY_AGENTS=record a message is posted to the run's shared
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).
@@ -634,7 +633,7 @@ class Act:
                         continue
                     if not isinstance(item, dict):
                         continue
-                    if "outcome" in item and self._outcome_enabled():
+                    if "outcome" in item:
                         self._post_outcome(item.get("outcome"))
                         continue
                     if item.get("quit"):
@@ -757,12 +756,6 @@ class Act:
         finally:
             self._cancel_answered.set()
             signal.signal(_CANCEL_INTERRUPT_SIGNAL, previous)
-
-    @staticmethod
-    def _outcome_enabled() -> bool:
-        from unify import outcome as outcome_mod
-
-        return outcome_mod.enabled()
 
     def _post_outcome(self, raw: object) -> None:
         """Hand an ``{"outcome": ...}`` line to the session and answer it.

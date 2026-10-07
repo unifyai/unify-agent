@@ -1784,8 +1784,8 @@ def _build_storage_tools(
 SESSION_ENDED = "session ended"
 
 # What a persistent session's result() returns when it is ended by a stop
-# (unify/common/async_tool_loop.py), and what the review reads under
-# UNIFY_OUTCOME when the agent's last reply had no text.
+# (unify/common/async_tool_loop.py), and what the review reads when the
+# agent's last reply had no text.
 _STOPPED_NOTICE = "processed stopped early, no result"
 _EMPTY_REPLY = "(the agent's last reply had no text)"
 
@@ -1795,7 +1795,6 @@ def review_final_result(
     *,
     last_reply: Optional[str],
     stop_reason: Optional[str],
-    outcome_active: bool,
     reply_at_outcome: Optional[str],
 ) -> str:
     """The "Final Result" a session's storage review reads.
@@ -1805,20 +1804,17 @@ def review_final_result(
     persistent session ended by a stop, ``_STOPPED_NOTICE``); ``last_reply``
     the content of its latest ``response`` notification (None before the
     first); ``stop_reason`` the reason of the stop that ended it (None when
-    nothing stopped it); ``outcome_active`` whether UNIFY_OUTCOME gave the
-    session an outcome channel, and ``reply_at_outcome`` the reply an
-    outcome arrived after.
+    nothing stopped it); ``reply_at_outcome`` the reply an outcome arrived
+    after.
 
-    Without an outcome channel it is the session's result. With one it is the
-    reply the outcome arrived after or, with no outcome, the last reply in
-    place of the stop notice.
+    It is the reply the outcome arrived after or, with no outcome, the last
+    reply in place of the stop notice; otherwise the session's result.
     """
     result = str(original_result)
-    if outcome_active:
-        if reply_at_outcome is not None:
-            return reply_at_outcome or _EMPTY_REPLY
-        if result == _STOPPED_NOTICE and last_reply is not None:
-            return last_reply or _EMPTY_REPLY
+    if reply_at_outcome is not None:
+        return reply_at_outcome or _EMPTY_REPLY
+    if result == _STOPPED_NOTICE and last_reply is not None:
+        return last_reply or _EMPTY_REPLY
     return result
 
 
@@ -2181,7 +2177,7 @@ def _start_storage_check_loop(
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
 
-    *outcome* is the session's checked outcome (``UNIFY_OUTCOME``), shown in
+    *outcome* is the session's checked outcome (:mod:`unify.outcome`), shown in
     its own section before the final result.
 
     With *fork_source* (see :func:`_review_fork_source`) the review is a fork
@@ -2680,18 +2676,16 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._latest_turn_response: str = ""
         self._reviewed_tool_msg_count: int = 0
 
-        # UNIFY_OUTCOME: the environment's checked outcome for this session,
-        # posted under ``outcome_session_id`` (unify/outcome.py), and the
-        # agent's replies it is read against. Off, none of this is touched.
-        self.outcome_session_id: Optional[str] = None
+        # The environment's checked outcome for this session, posted under
+        # ``outcome_session_id`` (unify/outcome.py), and the agent's replies
+        # it is read against.
+        self.outcome_session_id: str = uuid.uuid4().hex
         self._outcome: Optional[dict] = None
         self._last_reply: Optional[str] = None
         self._reply_at_outcome: Optional[str] = None
         from unify import outcome as outcome_mod
 
-        if outcome_mod.enabled():
-            self.outcome_session_id = uuid.uuid4().hex
-            outcome_mod.register(self.outcome_session_id, self)
+        outcome_mod.register(self.outcome_session_id, self)
 
         # Start the two-phase lifecycle manager.
         self._lifecycle_task = asyncio.create_task(self._run_lifecycle())
@@ -2747,11 +2741,7 @@ class _StorageCheckHandle(SteerableToolHandle):
         try:
             while True:
                 notif = await source.next_notification()
-                if (
-                    self.outcome_session_id is not None
-                    and isinstance(notif, dict)
-                    and notif.get("type") == "response"
-                ):
+                if isinstance(notif, dict) and notif.get("type") == "response":
                     self._last_reply = str(notif.get("content") or "")
                 await self._notification_q.put(notif)
                 if (
@@ -2794,7 +2784,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             self._original_result,
             last_reply=self._last_reply,
             stop_reason=self._stop_reason,
-            outcome_active=self.outcome_session_id is not None,
             reply_at_outcome=self._reply_at_outcome,
         )
 

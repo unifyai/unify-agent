@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_OUTCOME`` gives the storage review the environment's checked outcome.
+"""Symbolic: the storage review reads the environment's checked outcome.
 
 The review decided what to keep from the agent's own account of its work,
 which is wrong often enough to matter: 31 of Unify's 42 failed AppWorld runs
@@ -48,12 +48,10 @@ FAILED = {
 def switches(monkeypatch):
     def set_(
         *,
-        outcome: bool = False,
         discipline: bool = False,
         fork: bool = False,
         admission: str = "",
     ) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_OUTCOME", outcome)
         monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
         monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", admission)
@@ -132,12 +130,9 @@ class _Receiver:
         self.interjections.append(message)
 
 
-def test_post_needs_the_switch_and_a_live_session(switches):
+def test_post_needs_a_live_session(switches):
     receiver = _Receiver()
     outcome_mod.register("s1", receiver)
-    with pytest.raises(outcome_mod.OutcomeError, match="UNIFY_OUTCOME is off"):
-        outcome_mod.post("s1", FAILED)
-    switches(outcome=True)
     with pytest.raises(outcome_mod.OutcomeError, match="no session"):
         outcome_mod.post("s2", FAILED)
     assert outcome_mod.post("s1", FAILED)["solved"] is False
@@ -233,7 +228,6 @@ def _review_text(request: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_the_outcome_reaches_the_standalone_review(switches):
-    switches(outcome=True)
     note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
     assert note["message"] == REVIEW_SUMMARY
     text = _review_text(requests[3])
@@ -249,7 +243,7 @@ async def test_the_outcome_reaches_the_standalone_review(switches):
 
 @pytest.mark.asyncio
 async def test_the_outcome_reaches_the_forked_review(switches):
-    switches(outcome=True, discipline=True, fork=True)
+    switches(discipline=True, fork=True)
     note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
     assert note["message"] == REVIEW_SUMMARY
     review = requests[3]
@@ -269,7 +263,6 @@ async def test_the_outcome_reaches_the_forked_review(switches):
 
 @pytest.mark.asyncio
 async def test_without_an_outcome_there_is_no_section_but_the_reply_is_final(switches):
-    switches(outcome=True)
     _note, requests, _handle, _ = await _persistent_review(closing=False)
     text = _review_text(requests[2])
     assert outcome_mod.OUTCOME_HEADER not in text
@@ -277,17 +270,7 @@ async def test_without_an_outcome_there_is_no_section_but_the_reply_is_final(swi
 
 
 @pytest.mark.asyncio
-async def test_off_the_final_result_is_the_stop_notice_and_nothing_is_posted(switches):
-    _note, requests, handle, _ = await _persistent_review()
-    assert handle.outcome_session_id is None
-    text = _review_text(requests[3])
-    assert outcome_mod.OUTCOME_HEADER not in text
-    assert text.endswith(f"## Final Result\n\n{caa._STOPPED_NOTICE}")
-
-
-@pytest.mark.asyncio
 async def test_an_outcome_after_the_session_ended_is_refused(switches):
-    switches(outcome=True)
     _note, _requests, handle, _ = await _persistent_review()
     with pytest.raises(outcome_mod.OutcomeError, match="already ended"):
         outcome_mod.post(handle.outcome_session_id, FAILED)
@@ -356,7 +339,6 @@ async def test_the_outcome_never_reaches_the_disk_or_the_environment(switches):
     from unify.db import store_home
     from unify.workspace import get_local_root
 
-    switches(outcome=True)
     marker = "outcome-marker-7f3e9c"
     outcome = {**FAILED, "summary": marker}
     _note, requests, handle, _ = await _persistent_review(outcome=outcome)
@@ -388,7 +370,6 @@ async def test_the_jsonl_control_line_posts_and_is_answered(
 
     from unify.cli import Act
 
-    switches(outcome=True)
     handle = _Receiver("cli-session")
     received = handle.got
     outcome_mod.register("cli-session", handle)
@@ -411,25 +392,4 @@ async def test_the_jsonl_control_line_posts_and_is_answered(
     }
     assert lines[1]["accepted"] is False and "solved" in lines[1]["reason"]
     assert received[0]["checks"][0]["reason"] == "no email to Kim"
-    assert handle.stopped == caa.SESSION_ENDED
-
-
-@pytest.mark.asyncio
-async def test_off_the_jsonl_control_line_is_ignored(switches, monkeypatch, capsys):
-    import sys
-
-    from unify.cli import Act
-
-    handle = _Receiver()
-    read_fd, write_fd = os.pipe()
-    monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
-    session = Act(SimpleNamespace(persist=True, quiet=True, jsonl=True))
-    session._handle = handle
-    reader = asyncio.create_task(session._read_lines())
-    os.write(write_fd, (json.dumps({"outcome": FAILED}) + "\n").encode())
-    os.write(write_fd, b'{"quit": true}\n')
-    os.close(write_fd)
-    await asyncio.wait_for(reader, timeout=5)
-    assert capsys.readouterr().out == ""
-    assert handle.interjections == []
     assert handle.stopped == caa.SESSION_ENDED
