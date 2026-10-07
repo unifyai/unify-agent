@@ -449,19 +449,6 @@ async def test_off_an_interjection_during_the_unit_wait_wakes_the_model_at_once(
 # ── the actor ───────────────────────────────────────────────────────────────
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_off_the_actors_first_request_and_tools_are_unchanged(monkeypatch):
-    from tests.actor.code_act.test_switches_off_equivalence import NEW_SWITCHES
-
-    for name, value in NEW_SWITCHES.items():
-        monkeypatch.setattr(SETTINGS, name, value)
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_SPECULATIVE_TURN", False)
-    golden = json.loads(h.ACTOR_GOLDEN.read_text())
-    _result, _, requests = await h.scenario_actor()
-    assert h.actor_recording(requests) == golden
-
-
 ACTOR_FUNCTION_ONLY_REPLIES = (
     lambda: h.completion(calls=[(FM, {"query": "list files"})]),
     *([lambda: h.completion(content="done")] * 8),

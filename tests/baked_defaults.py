@@ -6,8 +6,10 @@ switches still exist, so a test of a path that is no longer the default
 pins it explicitly with the ``as_shipped`` fixture (import it, then request
 it or ``pytestmark = pytest.mark.usefixtures("as_shipped")``), as the
 module's tests ran before the freeze; a test that sets a switch itself
-still overrides it. Step 4 removes the switches, this module and the
-tests of removed paths.
+still overrides it. Step 4 removes the switches and the tests of removed
+paths; the pins left are on tests of the JSON tool surface and the
+steerable-handle and steering paths, which go with that code in step 5,
+and this module goes with the last of them.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import pytest
 from unify.settings import SETTINGS
 
 # Every switch whose default the code freeze changed, at its new default
-# (the switches-off values are NEW_SWITCHES in test_switches_off_equivalence.py).
+# (step 3 of the freeze).
 BAKED_DEFAULTS = {
     # The lean-all recipe (make_cells_ov1.env_for(bench, "lean")).
     "UNIFY_PROMPT_PROFILE": "lean",
@@ -63,8 +65,7 @@ BAKED_DEFAULTS = {
     "UNIFY_PROMPT_TRIM": True,
 }
 
-# The default of each before the freeze (upstream's behaviour; the
-# switches-off values of tests/actor/code_act/test_switches_off_equivalence.py).
+# The default of each before the freeze (upstream's behaviour).
 AS_SHIPPED = {
     "UNIFY_PROMPT_PROFILE": "",
     "UNIFY_PROMPT_ACCURACY": False,
@@ -118,8 +119,12 @@ def _env_value(value) -> str:
 def as_shipped(monkeypatch):
     """Every baked switch at its pre-freeze default, in SETTINGS and in the
     environment (for anything that reads settings afresh, such as a child
-    ``unify act`` process)."""
+    ``unify act`` process).
+
+    A switch the strip has already deleted is skipped: its baked value is
+    then the only code path."""
     for name, value in AS_SHIPPED.items():
-        assert hasattr(SETTINGS, name), name
+        if not hasattr(SETTINGS, name):
+            continue
         monkeypatch.setattr(SETTINGS, name, value)
         monkeypatch.setenv(name, _env_value(value))

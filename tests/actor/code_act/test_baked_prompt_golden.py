@@ -6,8 +6,8 @@ on a fresh actor's first call, byte for byte: the system prompt, the tool
 list (``execute_code`` alone), the tool choice and the first user message.
 Nothing is pinned: every setting is at its default. Requests are captured at
 unillm's transport (``tests/cache_discipline_helpers.py``), so nothing leaves
-the process. Step 4 of the freeze replaces the switches-off equivalence test
-with this golden.
+the process. Since step 4 of the freeze this golden replaces the
+switches-off equivalence test: the baked values are the only code path.
 
 To record it again after a deliberate change, run this file with
 ``UNIFY_RECORD_GOLDEN=1``: the recording is written to
@@ -64,11 +64,12 @@ async def record_first_request() -> dict:
 def test_the_defaults_are_the_baked_values():
     from unify.settings import ProductionSettings
 
+    # A switch the strip deleted has no field: its baked value is the code.
     fields = ProductionSettings.model_fields
     assert {
         name: fields[name].default
         for name in BAKED_DEFAULTS
-        if fields[name].default != BAKED_DEFAULTS[name]
+        if name in fields and fields[name].default != BAKED_DEFAULTS[name]
     } == {}
 
 

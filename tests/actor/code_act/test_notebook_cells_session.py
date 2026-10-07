@@ -6,8 +6,8 @@ The switch changes only what the model is sent and reads back: the
 fields, and the rendering of a cell's result. These tests run the same work
 both ways and compare what happens:
 
-* with the switch at ``legacy`` the actor's requests are upstream's, byte
-  for byte (the golden of ``test_switches_off_equivalence``);
+* with the switch at ``legacy`` the actor's first request is the default
+  one, byte for byte (the golden of ``test_baked_prompt_golden``);
 * the projected prompt is the legacy prompt with exactly the listed
   rewrites, on both tool surfaces and both prompt profiles, and names no
   field the model can no longer fill;
@@ -44,7 +44,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
 )
 from tests.actor.code_act.helpers import patch_actor_act
 from tests.actor.code_act.sandbox_world import needs_bwrap
-from tests.actor.code_act.test_switches_off_equivalence import NEW_SWITCHES
 from tests.async_helpers import _wait_for_condition
 from tests.helpers import _handle_project
 from unify.actor import notebook_cells as nb
@@ -126,24 +125,21 @@ def _execute_code(request: dict) -> dict:
     )
 
 
-# ── the switch at legacy: upstream's requests ───────────────────────────────
-
-
-@pytest.fixture
-def all_off(monkeypatch):
-    for name, value in NEW_SWITCHES.items():
-        monkeypatch.setattr(SETTINGS, name, value)
+# ── the switch at legacy: the default requests ──────────────────────────────
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_at_legacy_the_actors_requests_are_upstreams(all_off, monkeypatch):
+@pytest.mark.timeout(180)
+async def test_at_legacy_the_actors_first_request_is_the_default_one(monkeypatch):
+    from tests.actor.code_act.test_baked_prompt_golden import (
+        BAKED_GOLDEN,
+        record_first_request,
+    )
+
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", "legacy")
     assert SETTINGS.UNIFY_CODE_PROJECTION == "legacy"
     assert not nb.enabled()
-    golden = json.loads(h.ACTOR_GOLDEN.read_text())
-    _result, _, requests = await h.scenario_actor()
-    assert h.actor_recording(requests) == golden
+    assert await record_first_request() == json.loads(BAKED_GOLDEN.read_text())
 
 
 # ── the prompt and the schema ───────────────────────────────────────────────
