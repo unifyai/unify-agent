@@ -1583,9 +1583,9 @@ async def async_tool_loop_inner(
         clarification and notification queues, the loop's timeout and, in a
         persistent loop, the requester's cancel of the request are watched;
         a message for the session stays queued for the next boundary.
-        Returns ``None`` once the result is appended, ``"cancel_request"``
-        or ``"timeout"`` when the call is still running and was interrupted
-        (the caller cancels and answers it). A stop raises
+        Returns ``None`` once the result is appended, or ``"cancel_request"``
+        or ``"timeout"`` when the call was interrupted (the caller cancels
+        it if it still runs, and answers it). A stop raises
         ``asyncio.CancelledError``.
         """
         task = await tools_data.schedule_base_tool_call(
@@ -1661,8 +1661,13 @@ async def async_tool_loop_inner(
                 await _deliver_notification(info, watchers["notification"].result())
             if cancel_event.is_set():
                 raise asyncio.CancelledError
-            if _took("cancel_request") and not task.done():
+            if _took("cancel_request"):
                 return "cancel_request"
+        # A cancel that came as the call ended (a cell interrupted for it,
+        # say) still wins: the call is answered as cancelled, as one still
+        # running would be, rather than with what the interruption left.
+        if persist and _request_cancel_queued():
+            return "cancel_request"
         await tools_data.process_completed_task(
             task=task,
             consecutive_failures=consecutive_failures,
