@@ -911,6 +911,17 @@ class ProductionSettings(BaseSettings):
     # model; at most three tries), and a call whose return repeats that
     # reply is recorded as the function's case. Off: as shipped.
     UNIFY_CAPTURE_ACCEPTED: bool = False
+    # On: while the storage review runs, an implementation passed to
+    # ``add_functions`` (``FunctionManager_add_functions`` or
+    # ``functions.add``) that is only a function's name is that function's
+    # source as the latest of the session's Python code cells that defines it
+    # ran it -- the ``def`` with its decorators, byte for byte, with the
+    # module-level imports it uses moved into its body -- so the review need
+    # not retype code into a JSON string (office, 6-7 Oct: 16 of 41 retyped
+    # sources with an escape gained an escaping level; 0 of 74 cells did).
+    # The review is told it may. A name no cell defines is that entry's
+    # error. Off: as shipped.
+    UNIFY_STORE_FROM_SESSION: bool = False
     # With UNIFY_TASK_ORIGIN (or UNIFY_TRY_FIRST): each top-level request is
     # logged in ``<UNIFY_HOME>/request_log.sqlite`` (as
     # UNIFY_SIMILAR_REQUEST_CORPUS=stream logs it), and the storage review and
@@ -1338,6 +1349,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_LIBRARY_SHORTLIST",
         "UNIFY_ORIGIN_PROVENANCE",
         "UNIFY_CAPTURE_ACCEPTED",
+        "UNIFY_STORE_FROM_SESSION",
         "UNIFY_REVIEW_RECURRENCE",
         "UNIFY_REVIEW_OUTCOME",
         "UNIFY_GUIDANCE_ORIGIN",
