@@ -160,14 +160,17 @@ UPSTREAM_SETTINGS = frozenset(
 
 
 def test_every_lane_switch_is_here_and_its_default_is_off_or_baked():
-    from tests.actor.code_act.test_baked_prompt_golden import BAKED_DEFAULTS
+    from tests.baked_defaults import AS_SHIPPED, BAKED_DEFAULTS
     from unify.settings import ProductionSettings
 
     fields = ProductionSettings.model_fields
     added = {name for name in fields if name.startswith("UNIFY_")} - UPSTREAM_SETTINGS
     assert sorted(added - set(NEW_SWITCHES)) == []
     assert set(UPSTREAM_OFF) <= UPSTREAM_SETTINGS
-    expected = {**NEW_SWITCHES, **UPSTREAM_OFF, **BAKED_DEFAULTS}
+    off = {**NEW_SWITCHES, **UPSTREAM_OFF}
+    # The as_shipped fixture restores exactly these off values.
+    assert AS_SHIPPED == {name: off[name] for name in AS_SHIPPED}
+    expected = {**off, **BAKED_DEFAULTS}
     assert {
         name: (fields[name].default, value)
         for name, value in expected.items()

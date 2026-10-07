@@ -24,53 +24,7 @@ from pathlib import Path
 import pytest
 
 from tests import cache_discipline_helpers as h
-
-# Every switch whose default the code freeze changed, at its new default
-# (the switches-off values are NEW_SWITCHES in test_switches_off_equivalence.py).
-BAKED_DEFAULTS = {
-    # The lean-all recipe (make_cells_ov1.env_for(bench, "lean")).
-    "UNIFY_PROMPT_PROFILE": "lean",
-    "UNIFY_PROMPT_ACCURACY": True,
-    "UNIFY_REPLY_PROTOCOL_NOTE": True,
-    "UNIFY_BUILTIN_GUIDANCE": False,
-    "UNIFY_DELEGATION": "off",
-    "UNIFY_DISCOVERY_GATE": False,
-    "UNIFY_LIBRARY_SHORTLIST": True,
-    "UNIFY_LIBRARY_SNAPSHOT": True,
-    "UNIFY_CACHE_DISCIPLINE": True,
-    "UNIFY_TRANSCRIPTS": True,
-    "UNIFY_WORKSPACE": "sandboxed",
-    "UNIFY_OUTCOME": True,
-    "UNIFY_FUNCTION_PATCH": True,
-    "UNIFY_FUNCTION_CASES": True,
-    "UNIFY_STORE_DEDUPE": "warn",
-    "UNIFY_REVIEW_FORK": True,
-    "UNIFY_REVIEW_FRAMING": "unified",
-    "UNIFY_CURATION_DOCTRINE": "minimal",
-    "UNIFY_REVIEW_GATE": True,
-    "UNIFY_STORE_INSTANCE_LINT": True,
-    "UNIFY_PENDING_REQUIRED": False,
-    "UNIFY_BATCH_WAKE": True,
-    "UNIFY_LIFECYCLE_NOTICES": False,
-    "UNIFY_STORE_CHECK": "resolve",
-    "UNIFY_SEARCH_SKIP_UNLOADABLE": True,
-    # Python tool mode.
-    "UNIFY_WORKSPACE_PYTHON": "worker",
-    "UNIFY_TOOL_SURFACE": "core",
-    "UNIFY_CORE_BIND_LISTED": True,
-    "UNIFY_CORE_CALL_EXAMPLE": True,
-    "UNIFY_GUIDANCE_LINKED_NAMES": True,
-    "UNIFY_FUNCTION_HELPERS": True,
-    "UNIFY_REVIEW_FORK_CORE": True,
-    # The shared agent record.
-    "UNIFY_AGENTS": "record",
-    # Fixes.
-    "UNIFY_REVIEW_LAST_REPLY": True,
-    "UNIFY_STORE_FROM_SESSION": True,
-    "UNIFY_ESCAPE_DRIFT_CHECK": "on",
-    "UNIFY_PLACEHOLDER_NOTE": True,
-    "UNIFY_PROMPT_TRIM": True,
-}
+from tests.baked_defaults import BAKED_DEFAULTS
 
 BAKED_GOLDEN = Path(__file__).resolve().parents[2] / "actor_baked_prompt_golden.json"
 RECORDED = Path(__file__).resolve().parents[3] / "logs" / BAKED_GOLDEN.name
