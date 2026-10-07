@@ -24,7 +24,6 @@ from unify.function_manager.primitives import (
     register_environment,
 )
 from unify.function_manager.primitives.environment import clear_environment_namespaces
-from unify.settings import SETTINGS
 
 
 def _reseed() -> None:
@@ -32,11 +31,6 @@ def _reseed() -> None:
 
     fm_module._PRIMITIVES_SEEDED_FOR.clear()
     FunctionManager()
-
-
-@pytest.fixture
-def check_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "resolve")
 
 
 @pytest.fixture
@@ -77,7 +71,6 @@ def _refusal(fm: FunctionManager, source: str, **kwargs) -> str:
 
 @_handle_project
 def test_an_invented_namespace_is_refused_with_the_namespaces_that_exist(
-    check_on,
     weather,
 ):
     fm = FunctionManager()
@@ -92,7 +85,7 @@ def test_an_invented_namespace_is_refused_with_the_namespaces_that_exist(
 
 
 @_handle_project
-def test_a_method_that_does_not_exist_is_refused(check_on, weather):
+def test_a_method_that_does_not_exist_is_refused(weather):
     fm = FunctionManager()
     message = _refusal(
         fm,
@@ -108,7 +101,7 @@ def test_a_method_that_does_not_exist_is_refused(check_on, weather):
 
 
 @_handle_project
-def test_a_name_only_the_trajectory_had_is_refused(check_on, weather):
+def test_a_name_only_the_trajectory_had_is_refused(weather):
     fm = FunctionManager()
     message = _refusal(
         fm,
@@ -123,7 +116,7 @@ def test_a_name_only_the_trajectory_had_is_refused(check_on, weather):
 
 
 @_handle_project
-def test_importing_a_sandbox_global_is_refused(check_on):
+def test_importing_a_sandbox_global_is_refused():
     fm = FunctionManager()
     message = _refusal(
         fm,
@@ -133,7 +126,7 @@ def test_importing_a_sandbox_global_is_refused(check_on):
 
 
 @_handle_project
-def test_a_dependency_that_cannot_be_installed_is_refused(check_on, monkeypatch):
+def test_a_dependency_that_cannot_be_installed_is_refused(monkeypatch):
     def no_uv(requirements):
         if requirements:
             raise FileNotFoundError(2, "No such file or directory", "uv")
@@ -150,7 +143,7 @@ def test_a_dependency_that_cannot_be_installed_is_refused(check_on, monkeypatch)
 
 
 @_handle_project
-def test_code_that_resolves_is_stored(check_on, weather):
+def test_code_that_resolves_is_stored(weather):
     fm = FunctionManager()
     helper = "def city_label(city: str) -> str:\n    return city.title()\n"
     main = (
@@ -176,33 +169,9 @@ def test_code_that_resolves_is_stored(check_on, weather):
 
 
 @_handle_project
-def test_the_refusal_reaches_a_caller_that_raises(check_on):
+def test_the_refusal_reaches_a_caller_that_raises():
     fm = FunctionManager()
     with pytest.raises(ValueError, match="`primitives.spotify` does not exist"):
         fm.add_functions(
             implementations=["def f() -> None:\n    primitives.spotify.play()\n"],
         )
-
-
-@_handle_project
-def test_without_the_check_the_same_code_is_stored_as_shipped(monkeypatch):
-    # The check is on by default since the code freeze; this is the shipped path.
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "")
-    fm = FunctionManager()
-    source = (
-        "def rewind(u: str) -> dict:\n    return primitives.spotify.login(username=u)\n"
-    )
-    assert fm.add_functions(implementations=[source]) == {"rewind": "added"}
-    assert fm.list_functions()["rewind"]["depends_on"] == ["primitives.spotify.login"]
-
-
-def test_the_switch_accepts_only_resolve():
-    from unify.settings import ProductionSettings
-
-    assert (
-        ProductionSettings(UNIFY_STORE_CHECK="Resolve").UNIFY_STORE_CHECK == "resolve"
-    )
-    # resolve by default since the code freeze (lean-all).
-    assert ProductionSettings().UNIFY_STORE_CHECK == "resolve"
-    with pytest.raises(ValueError, match="UNIFY_STORE_CHECK"):
-        ProductionSettings(UNIFY_STORE_CHECK="strict")

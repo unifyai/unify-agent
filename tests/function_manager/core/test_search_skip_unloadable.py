@@ -22,7 +22,6 @@ from tests.helpers import _handle_project
 from unify.common import embeddings
 from unify.common.embeddings import Embedder
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import SETTINGS
 
 GOOD = (
     "def forecast_summary(city: str) -> str:\n"
@@ -70,22 +69,7 @@ def _library() -> FunctionManager:
 
 
 @_handle_project
-def test_shipped_one_broken_row_fails_the_whole_search(monkeypatch):
-    # On by default since the code freeze (lean-all); this is the shipped path.
-    monkeypatch.setattr(SETTINGS, "UNIFY_SEARCH_SKIP_UNLOADABLE", False)
-    fm = _library()
-    with pytest.raises(SyntaxError):
-        fm.search_functions(
-            query="summarise the forecast for a city",
-            _return_callable=True,
-            _namespace={},
-            _also_return_metadata=True,
-        )
-
-
-@_handle_project
-def test_search_leaves_the_broken_row_out_and_names_it(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_SEARCH_SKIP_UNLOADABLE", True)
+def test_search_leaves_the_broken_row_out_and_names_it():
     fm = _library()
     namespace: dict = {}
     result = fm.search_functions(
@@ -104,8 +88,7 @@ def test_search_leaves_the_broken_row_out_and_names_it(monkeypatch):
 
 
 @_handle_project
-def test_list_and_filter_skip_the_same_way(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_SEARCH_SKIP_UNLOADABLE", True)
+def test_list_and_filter_skip_the_same_way():
     fm = _library()
     listed = fm.list_functions(
         _return_callable=True,
@@ -126,17 +109,3 @@ def test_list_and_filter_skip_the_same_way(monkeypatch):
         "forecast_summary",
     ]
     assert "forecast_summary_broken" in filtered["metadata"][-1]["warning"]
-
-
-@_handle_project
-def test_a_search_with_nothing_broken_is_unchanged(monkeypatch):
-    fm = FunctionManager()
-    fm.add_functions(implementations=[GOOD])
-    kwargs = dict(query="forecast", _return_callable=True, _also_return_metadata=True)
-    off = fm.search_functions(_namespace={}, **kwargs)["metadata"]
-    monkeypatch.setattr(SETTINGS, "UNIFY_SEARCH_SKIP_UNLOADABLE", True)
-    on = fm.search_functions(_namespace={}, **kwargs)["metadata"]
-    strip = lambda rows: [
-        {k: v for k, v in r.items() if not k.startswith("usage")} for r in rows
-    ]
-    assert strip(on) == strip(off)

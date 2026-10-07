@@ -13,7 +13,6 @@ model is called.
 
 from __future__ import annotations
 
-import pytest
 
 from tests.helpers import _handle_project
 from unify.function_manager import near_duplicates
@@ -23,7 +22,6 @@ from unify.function_manager.near_duplicates import (
     code_tokens,
     similarity,
 )
-from unify.settings import ProductionSettings, SETTINGS
 
 REWIND = (
     "def rewind_spotify_until_artist(artist: str, max_steps: int = 20) -> dict:\n"
@@ -55,18 +53,6 @@ def _FM() -> FunctionManager:
     return FunctionManager(include_primitives=False)
 
 
-@pytest.fixture
-def warn_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_DEDUPE", "warn")
-
-
-def test_the_switch_is_off_by_default_and_takes_only_warn():
-    assert ProductionSettings.model_fields["UNIFY_STORE_DEDUPE"].default == ""
-    assert ProductionSettings(UNIFY_STORE_DEDUPE=" Warn ").UNIFY_STORE_DEDUPE == "warn"
-    with pytest.raises(ValueError, match="must be empty or 'warn'"):
-        ProductionSettings(UNIFY_STORE_DEDUPE="refuse")
-
-
 def test_similarity_ignores_names_docstrings_and_hints():
     assert similarity(REWIND, REWIND_COPY) == 1.0
     assert similarity(REWIND, UNRELATED) < 0.5
@@ -82,11 +68,7 @@ def test_similarity_ignores_names_docstrings_and_hints():
 
 
 @_handle_project
-def test_a_near_copy_is_stored_with_a_warning_naming_the_original(
-    warn_on,
-    monkeypatch,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
+def test_a_near_copy_is_stored_with_a_warning_naming_the_original():
     fm = _FM()
     assert fm.add_functions(implementations=REWIND) == {
         "rewind_spotify_until_artist": "added",
@@ -110,19 +92,7 @@ def test_a_near_copy_is_stored_with_a_warning_naming_the_original(
 
 
 @_handle_project
-def test_without_patching_the_warning_suggests_an_overwrite(warn_on, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-    fm = _FM()
-    fm.add_functions(implementations=REWIND)
-    status = fm.add_functions(implementations=REWIND_COPY)[
-        "rewind_appworld_spotify_until_artist"
-    ]
-    assert "FunctionManager_add_functions (overwrite=True)" in status
-    assert "patch_function" not in status
-
-
-@_handle_project
-def test_the_threshold_is_inclusive(warn_on, monkeypatch):
+def test_the_threshold_is_inclusive(monkeypatch):
     fm = _FM()
     fm.add_functions(implementations=REWIND)
     variant = REWIND_COPY.replace("'previous song'", "'next song'")
@@ -144,21 +114,11 @@ def test_the_threshold_is_inclusive(warn_on, monkeypatch):
 
 
 @_handle_project
-def test_distinct_functions_and_overwrites_are_not_warned(warn_on):
+def test_distinct_functions_and_overwrites_are_not_warned():
     fm = _FM()
     fm.add_functions(implementations=REWIND)
     assert fm.add_functions(implementations=UNRELATED) == {"total_minor": "added"}
     changed = REWIND.replace("max_steps: int = 20", "max_steps: int = 30")
     assert fm.add_functions(implementations=changed, overwrite=True) == {
         "rewind_spotify_until_artist": "updated",
-    }
-
-
-@_handle_project
-def test_off_the_statuses_are_as_shipped(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_DEDUPE", "")
-    fm = _FM()
-    fm.add_functions(implementations=REWIND)
-    assert fm.add_functions(implementations=REWIND_COPY) == {
-        "rewind_appworld_spotify_until_artist": "added",
     }

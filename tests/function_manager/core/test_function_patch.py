@@ -23,7 +23,6 @@ from unify.function_manager.function_manager import (
     DEFAULT_OVERWRITE_REASON,
     FunctionManager,
 )
-from unify.settings import SETTINGS
 
 SRC = (
     "def total_minor(rows: list) -> int:\n"
@@ -60,18 +59,13 @@ def _history_since(mark: int) -> list[dict]:
     return rows
 
 
-@pytest.fixture
-def patch_on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", True)
-
-
 # --------------------------------------------------------------------------- #
 #  patch_function                                                              #
 # --------------------------------------------------------------------------- #
 
 
 @_handle_project
-def test_a_unique_excerpt_is_patched_in_place_with_history(patch_on):
+def test_a_unique_excerpt_is_patched_in_place_with_history():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     before = _stored("total_minor")
@@ -111,7 +105,7 @@ def test_a_unique_excerpt_is_patched_in_place_with_history(patch_on):
     "old, count",
     [("total += row['amt']", "0 times"), ("total", "4 times")],
 )
-def test_zero_or_several_matches_change_nothing(patch_on, old, count):
+def test_zero_or_several_matches_change_nothing(old, count):
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -124,7 +118,7 @@ def test_zero_or_several_matches_change_nothing(patch_on, old, count):
 
 
 @_handle_project
-def test_precondition_and_dependencies_are_carried_over(patch_on):
+def test_precondition_and_dependencies_are_carried_over():
     fm = _FM()
     fm.add_functions(
         implementations=SRC,
@@ -148,7 +142,7 @@ def test_precondition_and_dependencies_are_carried_over(patch_on):
 
 
 @_handle_project
-def test_guidance_links_survive_a_patch(patch_on):
+def test_guidance_links_survive_a_patch():
     from unify.guidance_manager.guidance_manager import GuidanceManager
 
     fm = _FM()
@@ -164,8 +158,7 @@ def test_guidance_links_survive_a_patch(patch_on):
 
 
 @_handle_project
-def test_the_store_check_still_refuses_a_bad_patch(patch_on, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_STORE_CHECK", "resolve")
+def test_the_store_check_still_refuses_a_bad_patch():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -183,7 +176,7 @@ def test_the_store_check_still_refuses_a_bad_patch(patch_on, monkeypatch):
 
 
 @_handle_project
-def test_the_verify_gate_sees_the_patched_source(patch_on, monkeypatch):
+def test_the_verify_gate_sees_the_patched_source(monkeypatch):
     fm = _FM()
     fm.add_functions(implementations=SRC)
     seen: list[str] = []
@@ -234,7 +227,7 @@ def test_the_verify_gate_sees_the_patched_source(patch_on, monkeypatch):
         ),
     ],
 )
-def test_other_refusals_change_nothing(patch_on, kwargs, match):
+def test_other_refusals_change_nothing(kwargs, match):
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -247,24 +240,7 @@ def test_other_refusals_change_nothing(patch_on, kwargs, match):
 
 
 @_handle_project
-def test_off_the_method_refuses_and_changes_nothing(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-    fm = _FM()
-    fm.add_functions(implementations=SRC)
-    mark = _history_mark()
-    out = fm.patch_function(
-        name="total_minor",
-        old="total = 0",
-        new="total = 1",
-        why="w",
-    )
-    assert "UNIFY_FUNCTION_PATCH is off" in out["error"]
-    assert _stored("total_minor")["implementation"] == SRC
-    assert _history_since(mark) == []
-
-
-@_handle_project
-def test_a_patch_reason_differs_from_a_plain_overwrite(patch_on):
+def test_a_patch_reason_differs_from_a_plain_overwrite():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -280,7 +256,7 @@ def test_a_patch_reason_differs_from_a_plain_overwrite(patch_on):
 
 
 @_handle_project
-def test_a_batch_is_stored_once_with_one_history_row(patch_on):
+def test_a_batch_is_stored_once_with_one_history_row():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     before = _stored("total_minor")
@@ -318,7 +294,7 @@ def test_a_batch_is_stored_once_with_one_history_row(patch_on):
 
 
 @_handle_project
-def test_when_edit_two_of_three_fails_nothing_is_stored(patch_on):
+def test_when_edit_two_of_three_fails_nothing_is_stored():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -341,7 +317,7 @@ def test_when_edit_two_of_three_fails_nothing_is_stored(patch_on):
 
 
 @_handle_project
-def test_a_batch_whose_result_does_not_parse_is_refused(patch_on):
+def test_a_batch_whose_result_does_not_parse_is_refused():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -363,7 +339,7 @@ def test_a_batch_whose_result_does_not_parse_is_refused(patch_on):
 
 
 @_handle_project
-def test_the_stage_one_whitespace_miss_now_patches(patch_on):
+def test_the_stage_one_whitespace_miss_now_patches():
     """The one failed Stage 1 patch: `old` copied with the wrong indentation."""
     fm = _FM()
     fm.add_functions(implementations=SRC)
@@ -420,7 +396,7 @@ PICK = (
         ),
     ],
 )
-def test_an_ambiguous_fuzzy_match_is_never_applied(patch_on, old, when, lines):
+def test_an_ambiguous_fuzzy_match_is_never_applied(old, when, lines):
     fm = _FM()
     fm.add_functions(implementations=PICK)
     mark = _history_mark()
@@ -435,7 +411,7 @@ def test_an_ambiguous_fuzzy_match_is_never_applied(patch_on, old, when, lines):
 
 
 @_handle_project
-def test_replace_all_and_the_edit_tool_argument_names(patch_on):
+def test_replace_all_and_the_edit_tool_argument_names():
     fm = _FM()
     fm.add_functions(implementations=SRC)
     mark = _history_mark()
@@ -465,25 +441,6 @@ def test_replace_all_and_the_edit_tool_argument_names(patch_on):
         why="w",
     )
     assert "renames the function to 'acc_minor'" in out["error"]
-
-
-@_handle_project
-def test_with_the_switch_off_a_batch_is_refused_too(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_FUNCTION_PATCH", False)
-    fm = _FM()
-    fm.add_functions(implementations=SRC)
-    mark = _history_mark()
-    out = fm.patch_function(
-        name="total_minor",
-        why="w",
-        edits=[{"old": "total = 0", "new": "total = 1"}],
-    )
-    assert out == {
-        "name": "total_minor",
-        "error": "patching is not enabled here (UNIFY_FUNCTION_PATCH is off)",
-    }
-    assert _stored("total_minor")["implementation"] == SRC
-    assert _history_since(mark) == []
 
 
 def test_the_tool_schema_offers_old_new_or_a_batch_of_edits():
