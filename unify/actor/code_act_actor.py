@@ -1280,14 +1280,6 @@ _TRIM_NO_PRIMITIVES_DOC = (
         ),
         lambda m: f" and{m.group('ws')}at the top of every loop body.",
     ),
-    (
-        re.compile(
-            r"value — a steerable handle as the last expression is"
-            r"\s+automatically adopted by the outer loop for mid-flight"
-            r"\s+steering\)",
-        ),
-        "value)",
-    ),
 )
 
 
@@ -3632,24 +3624,8 @@ class CodeActActor(BaseCodeActActor):
             ------
             An ExecutionResult with: ``stdout`` / ``stderr`` (rich
             List[TextPart | ImagePart]), ``result`` (last expression's
-            value — a steerable handle as the last expression is
-            automatically adopted by the outer loop for mid-flight
-            steering), ``error``, ``state_mode``, ``session_id``,
+            value), ``error``, ``state_mode``, ``session_id``,
             ``session_name``, ``session_created``, ``duration_ms``.
-
-            Steering while the block runs
-            -----------------------------
-            Blocks are steerable in flight: checkpoints sit between
-            top-level statements, at the top of every loop body, and before
-            every ``primitives.*`` call. On a correction the block suspends
-            and you get a turn with a progress report:
-            ``stop_execute_code_<call_id>`` abandons the block (choose when
-            the correction changes the remaining work); interjecting again
-            resumes it as written. Generated code may read
-            ``steering.messages`` to adapt without being abandoned. A
-            checkpoint only runs when the block yields — synchronous
-            blocking calls hold execution, so prefer async calls in work
-            that may need correcting partway through.
             """
             _ = thought  # Thought is logged by the LLM; not used programmatically.
             if state_mode is None:
