@@ -318,6 +318,8 @@ class Act:
         self._cancel_answered = threading.Event()
         self._cancel_answered.set()
         self._main_thread = threading.main_thread().ident
+        # UNIFY_MEMORY_V2: this request's memory run (None while the switch is off).
+        self._mv2 = None
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -352,6 +354,9 @@ class Act:
                 await self._actor.close()
             except Exception:
                 pass
+        if self._mv2 is not None:
+            # A run not finished (a timeout, an error) records nothing.
+            self._mv2.abort()
 
     # ── output ───────────────────────────────────────────────────────────
 
@@ -585,6 +590,13 @@ class Act:
         """
         from unify import outcome as outcome_mod
 
+        if self._mv2 is not None:
+            # UNIFY_MEMORY_V2: only the checker's pass/fail is kept.
+            answer = self._mv2.take_outcome(raw)
+            if not answer["accepted"]:
+                self._progress(f"outcome refused: {answer['reason']}")
+            self._emit(**answer)
+            return
         session_id = getattr(self._handle, "outcome_session_id", None)
         try:
             if session_id is None:
@@ -612,6 +624,11 @@ class Act:
     async def _run(self, request: str) -> int:
         await self.start()
         args = self._args
+        from unify.memory_v2.integration import hooks as _mv2
+
+        # UNIFY_MEMORY_V2=on: export memory and open the request's record
+        # before the actor builds its prompt.
+        self._mv2 = _mv2.begin_request(request)
         interactive = sys.stdin.isatty()
         # Someone can answer only at a terminal: there the actor's posts to
         # @user are read and answered; otherwise the record says nobody reads
@@ -675,6 +692,13 @@ class Act:
             await asyncio.sleep(0.2)
         for task in watchers:
             task.cancel()
+        if self._mv2 is not None:
+            # Record the episode and run the due consolidation passes, blocking.
+            await self._mv2.finish(
+                self._handle,
+                progress=self._progress,
+                emit=(lambda event: self._emit(**event)) if args.jsonl else None,
+            )
         if args.jsonl:
             self._emit(type="ended")
         return 0
