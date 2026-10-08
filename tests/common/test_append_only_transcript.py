@@ -70,7 +70,6 @@ def _make_metadata(**overrides) -> ToolCallMetadata:
         call_idx=0,
         chat_context=None,
         assistant_msg={"role": "assistant", "content": None, "tool_calls": []},
-        is_interjectable=False,
         tool_schema={},
         llm_arguments={},
         raw_arguments_json="{}",

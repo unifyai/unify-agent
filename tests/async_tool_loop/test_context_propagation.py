@@ -217,22 +217,7 @@ class TestLoopContextState:
         """Verify initial state is empty."""
         state = LoopContextState()
         assert state.parent_chat_context == []
-        assert state._parent_chat_context_cont_received == []
         assert state.inner_tool_forwarding == {}
-
-    def test_receive_context_continuation(self):
-        """Verify context continuations are accumulated."""
-        state = LoopContextState()
-
-        state.receive_context_continuation([{"role": "user", "content": "msg1"}])
-        assert len(state._parent_chat_context_cont_received) == 1
-
-        state.receive_context_continuation([{"role": "user", "content": "msg2"}])
-        assert len(state._parent_chat_context_cont_received) == 2
-
-        # Empty list should not add anything
-        state.receive_context_continuation([])
-        assert len(state._parent_chat_context_cont_received) == 2
 
     def test_first_call_receives_full_context(self):
         """First call to a tool should receive the initial snapshot
@@ -291,44 +276,6 @@ class TestLoopContextState:
         # Second tool also gets full context (independent tracking)
         parent2, _ = state.compute_context_for_inner_tool("call_2", local_msgs)
         assert parent2 is not None
-
-    def test_cont_received_included_in_first_call(self):
-        """Accumulated cont should be included on first tool call."""
-        parent_ctx = [{"role": "user", "content": "parent msg"}]
-        state = LoopContextState(parent_chat_context=parent_ctx)
-
-        # Receive some cont before first tool call
-        state.receive_context_continuation([{"role": "user", "content": "cont msg"}])
-
-        local_msgs = [{"role": "user", "content": "local msg"}]
-
-        parent, cont = state.compute_context_for_inner_tool("call_1", local_msgs)
-
-        assert parent is not None
-        assert cont is not None
-        assert len(cont) == 1
-        assert cont[0]["content"] == "cont msg"
-
-    def test_new_cont_forwarded_to_existing_tool(self):
-        """New cont received should be forwarded to already-called tools."""
-        parent_ctx = [{"role": "user", "content": "parent msg"}]
-        state = LoopContextState(parent_chat_context=parent_ctx)
-
-        local_msgs = [{"role": "user", "content": "local msg"}]
-
-        # First call
-        state.compute_context_for_inner_tool("call_1", local_msgs)
-
-        # Receive new cont from above
-        state.receive_context_continuation([{"role": "user", "content": "new cont"}])
-
-        # Second call should get the new cont
-        parent, cont = state.compute_context_for_inner_tool("call_1", local_msgs)
-
-        assert parent is None
-        assert cont is not None
-        assert len(cont) == 1
-        assert cont[0]["content"] == "new cont"
 
     def test_initial_snapshot_keeps_user_turns_and_substantive_assistant_text(self):
         """The initial snapshot keeps exactly genuine user turns and
@@ -410,21 +357,6 @@ class TestLoopContextState:
 
         # Nothing new: the filtered-out messages must not resurface.
         parent, cont = state.compute_context_for_inner_tool("call_1", local)
-        assert parent is None
-        assert cont is None
-
-    def test_mark_cont_forwarded_to_tool(self):
-        """Verify marking cont as forwarded clears pending state."""
-        state = LoopContextState()
-
-        state.compute_context_for_inner_tool("call_1", [])
-        state.receive_context_continuation([{"role": "user", "content": "cont1"}])
-
-        # Mark as forwarded
-        state.mark_cont_forwarded_to_tool("call_1")
-
-        # After marking, the next compute has nothing new to forward
-        parent, cont = state.compute_context_for_inner_tool("call_1", [])
         assert parent is None
         assert cont is None
 
@@ -529,15 +461,12 @@ async def test_context_state_integration_symbolic() -> None:
         {"role": "user", "content": "msg2"},
     ]
 
-    # Receive cont from above
-    state.receive_context_continuation([{"role": "system", "content": "interjection"}])
-
     parent2, cont2 = state.compute_context_for_inner_tool("tool_a", msgs_at_call_2)
 
     assert parent2 is None, "Second call should NOT get full parent context"
     assert cont2 is not None, "Second call should get incremental cont"
-    # Should include new local messages + the interjection
-    assert len(cont2) == 3, f"Expected 3 incremental items, got {len(cont2)}"
+    # Only the new local messages
+    assert len(cont2) == 2, f"Expected 2 incremental items, got {len(cont2)}"
 
 
 # =============================================================================
@@ -599,7 +528,6 @@ def test_context_injection_defaults_off_when_arg_omitted():
         call_id="ask_inner_tool_omitted",
         accepts_parent_ctx=True,
         accepts_parent_ctx_cont=False,
-        is_continuation_only=False,
     )
     assert (
         "_parent_chat_context" not in extra_kwargs
@@ -618,7 +546,6 @@ def test_context_injection_defaults_off_when_arg_omitted():
         call_id="ask_inner_tool_always_omitted",
         accepts_parent_ctx=True,
         accepts_parent_ctx_cont=False,
-        is_continuation_only=False,
     )
     assert "_parent_chat_context" in extra_kwargs_always
     assert context_opted_in_always is True

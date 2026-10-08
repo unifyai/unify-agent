@@ -2029,10 +2029,9 @@ async def async_tool_loop_inner(
                 )
             else:
                 # Schema constancy beats schema minimalism: tools stay visible
-                # even while saturated on max_concurrent/max_total_calls —
-                # a saturated call is refused at execution time instead (see
-                # has_exceeded_concurrent_limit_for_tool / prune_over_quota_tool_calls),
-                # so hitting the cap never changes what the model can see.
+                # even past max_total_calls — an over-quota call is refused at
+                # execution time instead (see prune_over_quota_tool_calls), so
+                # hitting the cap never changes what the model can see.
                 visible_base_tools_schema = [
                     method_to_schema(
                         spec.fn,

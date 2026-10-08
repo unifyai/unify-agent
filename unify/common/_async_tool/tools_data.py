@@ -153,14 +153,8 @@ def compute_context_injection(
     call_id: str,
     accepts_parent_ctx: bool,
     accepts_parent_ctx_cont: bool,
-    target_context_opted_in: Optional[bool] = None,
-    is_continuation_only: bool = False,
 ) -> Tuple[dict, bool]:
     """Compute the parent-chat-context kwargs for one tool call.
-
-    Shared by base tool dispatch and dynamic tool dispatch so
-    ``include_parent_chat_context`` and ``include_parent_chat_context_cont``
-    are handled identically.
 
     ``args`` is the tool call's arguments and is mutated: the two control
     params are popped. ``propagate_chat_context`` is the loop's mode (ALWAYS,
@@ -169,11 +163,6 @@ def compute_context_injection(
     filtered out) and ``call_id`` identifies the call for context tracking.
     ``accepts_parent_ctx`` / ``accepts_parent_ctx_cont`` say whether the target
     function accepts ``_parent_chat_context`` / ``_parent_chat_context_cont``.
-    ``target_context_opted_in`` is, for steering tools, whether the target
-    tool initially opted into context; ``None`` means a fresh tool call, not
-    steering. ``is_continuation_only`` computes only the continuation context
-    (for interject_*) instead of the full initial context (base tools and
-    ask_*).
 
     Returns ``(extra_kwargs, context_opted_in)``: the context params to
     inject, and the opt-in decision.
@@ -183,45 +172,29 @@ def compute_context_injection(
     # Initial context injection is opt-in: an omitted
     # include_parent_chat_context means no parent context.
     llm_include_ctx = args.pop("include_parent_chat_context", False)
-    llm_include_ctx_cont = args.pop("include_parent_chat_context_cont", True)
+    # The continuation's control param, offered to steering calls that no
+    # longer exist: popped so it never reaches the tool.
+    args.pop("include_parent_chat_context_cont", None)
 
     should_inject_ctx = False
-
-    if is_continuation_only:
-        if target_context_opted_in:
-            if propagate_chat_context == ChatContextPropagation.ALWAYS:
-                should_inject_ctx = True
-            elif propagate_chat_context == ChatContextPropagation.LLM_DECIDES:
-                should_inject_ctx = llm_include_ctx_cont
-            # NEVER mode: should_inject_ctx stays False
-    else:
-        if accepts_parent_ctx or accepts_parent_ctx_cont:
-            if propagate_chat_context == ChatContextPropagation.ALWAYS:
-                should_inject_ctx = True
-            elif propagate_chat_context == ChatContextPropagation.NEVER:
-                should_inject_ctx = False
-            elif propagate_chat_context == ChatContextPropagation.LLM_DECIDES:
-                should_inject_ctx = llm_include_ctx
+    if accepts_parent_ctx or accepts_parent_ctx_cont:
+        if propagate_chat_context == ChatContextPropagation.ALWAYS:
+            should_inject_ctx = True
+        elif propagate_chat_context == ChatContextPropagation.NEVER:
+            should_inject_ctx = False
+        elif propagate_chat_context == ChatContextPropagation.LLM_DECIDES:
+            should_inject_ctx = llm_include_ctx
 
     if should_inject_ctx:
         cur_msgs = [m for m in client_messages if not m.get("_ctx_header")]
-
-        if is_continuation_only:
-            _, ctx_cont = context_state.compute_context_for_inner_tool(
-                call_id,
-                cur_msgs,
-            )
-            if ctx_cont and accepts_parent_ctx_cont:
-                extra_kwargs["_parent_chat_context_cont"] = ctx_cont
-        else:
-            parent_ctx, parent_ctx_cont = context_state.compute_context_for_inner_tool(
-                call_id,
-                cur_msgs,
-            )
-            if parent_ctx is not None and accepts_parent_ctx:
-                extra_kwargs["_parent_chat_context"] = parent_ctx
-            if parent_ctx_cont is not None and accepts_parent_ctx_cont:
-                extra_kwargs["_parent_chat_context_cont"] = parent_ctx_cont
+        parent_ctx, parent_ctx_cont = context_state.compute_context_for_inner_tool(
+            call_id,
+            cur_msgs,
+        )
+        if parent_ctx is not None and accepts_parent_ctx:
+            extra_kwargs["_parent_chat_context"] = parent_ctx
+        if parent_ctx_cont is not None and accepts_parent_ctx_cont:
+            extra_kwargs["_parent_chat_context_cont"] = parent_ctx_cont
 
     return extra_kwargs, should_inject_ctx
 
@@ -270,13 +243,6 @@ class ToolsData:
         limit = self.normalized[task_name].max_total_calls
         return limit is not None and self._quota_count(task_name) >= limit
 
-    def has_exceeded_concurrent_limit_for_tool(self, task_name: str) -> bool:
-        if task_name not in self.normalized:
-            return False
-
-        limit = self.normalized[task_name].max_concurrent
-        return limit is not None and self.active_count(task_name) >= limit
-
     def save_task(self, coro, metadata: ToolCallMetadata):
         self.pending.add(coro)
         self.info[coro] = metadata
@@ -287,9 +253,6 @@ class ToolsData:
         if info is not None:
             self.clarification_channels.pop(info.call_id, None)
         return info
-
-    def active_count(self, task_name: str) -> int:
-        return sum(1 for _t, _inf in self.info.items() if _inf.name == task_name)
 
     async def cancel_pending_tasks(self, *, grace: Optional[float] = None) -> set:
         """Cancel every pending call and wait for each to stop.
@@ -311,9 +274,6 @@ class ToolsData:
         def stop_tasks():
             handles = []
             for task in pending:
-                info = self.info.get(task)
-                if info and info.handle is not None:
-                    handles.append(info.handle)
                 if task.done() and not task.cancelled() and task.exception() is None:
                     try:
                         handles.extend(_returned_handles_for_cleanup(task.result()))
@@ -587,7 +547,6 @@ class ToolsData:
             call_id=call_id,
             accepts_parent_ctx=sig_accepts_parent_ctx,
             accepts_parent_ctx_cont=sig_accepts_parent_ctx_cont,
-            is_continuation_only=False,
         )
 
         extra_kwargs: dict = dict(ctx_extra_kwargs)
@@ -665,7 +624,6 @@ class ToolsData:
             assistant_msg=asst_msg,
             call_dict=call_dict,
             call_idx=call_idx,
-            is_interjectable=False,
             chat_context=extra_kwargs.get("_parent_chat_context"),
             clar_up_queue=clar_up_q,
             clar_down_queue=clar_down_q,
@@ -790,7 +748,7 @@ class ToolsData:
             await self._stop_returned_handles(raw, name)
             result = serialize_tool_content(tool_name=name, payload=raw, is_final=True)
 
-            if self._time_ctx is not None and not info.is_dynamic:
+            if self._time_ctx is not None:
                 result = self._time_ctx.wrap_result(result, info.scheduled_time)
 
             consecutive_failures.reset_failures()

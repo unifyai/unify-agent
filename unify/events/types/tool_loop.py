@@ -25,10 +25,6 @@ class ToolLoopKind(str, Enum):
     TOOL_CALL = "tool_call"
     RESPONSE = "response"
     TOOL_RESULT = "tool_result"
-    STEERING_PAUSE = "steering_pause"
-    STEERING_RESUME = "steering_resume"
-    STEERING_STOP = "steering_stop"
-    STEERING_HELPER = "steering_helper"
 
     # ── Noise (filtered from stream) ───────────────────────────────────
     RUNTIME_CONTEXT = "runtime_context"
@@ -41,13 +37,6 @@ class ToolLoopKind(str, Enum):
     SYSTEM_NOTICE = "system_notice"
 
 
-_STEERING_ACTION_MAP: dict[str, ToolLoopKind] = {
-    "pause": ToolLoopKind.STEERING_PAUSE,
-    "resume": ToolLoopKind.STEERING_RESUME,
-    "stop": ToolLoopKind.STEERING_STOP,
-}
-
-
 def classify_tool_loop_message(msg: dict) -> ToolLoopKind:
     """Derive the canonical :class:`ToolLoopKind` from a raw message dict.
 
@@ -57,9 +46,6 @@ def classify_tool_loop_message(msg: dict) -> ToolLoopKind:
     role = msg.get("role", "")
 
     if role == "system":
-        if msg.get("_steering"):
-            action = str(msg.get("_steering_action", "")).lower()
-            return _STEERING_ACTION_MAP.get(action, ToolLoopKind.STEERING_PAUSE)
         if msg.get("_visibility_guidance"):
             return ToolLoopKind.VISIBILITY_GUIDANCE
         if msg.get("_time_explanation"):
