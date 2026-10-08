@@ -1,7 +1,9 @@
 # tests/memory_v2/test_index.py
 import pytest
 from unify.memory_v2.index import IndexOverBudget, build_index
+from unify.memory_v2.memory_repo import items
 from tests.memory_v2.test_memory_repo import _checkout
+from tests.memory_v2.test_overrides import RULE_FN
 
 
 def test_index_lists_signatures_and_frames_as_candidates(tmp_path):
@@ -39,3 +41,24 @@ def test_index_line_names_the_declared_input_and_is_byte_stable(tmp_path):
     mod = root / "env" / "venmo" / "__init__.py"
     mod.write_text(mod.read_text().replace("Input: env", "Input: file"))
     assert "(input:" not in build_index(root)
+
+
+def test_index_marks_only_a_function_that_replaces_a_computed_value(tmp_path):
+    root = _checkout(tmp_path)
+    assert "applies a rule" not in build_index(root)
+    mod = root / "env" / "venmo" / "__init__.py"
+    mod.write_text(
+        mod.read_text().replace('"list_friends"]', '"list_friends", "me_or_closed"]')
+        + RULE_FN,
+    )
+    rule = next(i for i in items(root).items if i.name == "me_or_closed")
+    assert rule.rule_line and not rule.rule_unchecked
+    lines = {
+        ln.split("`")[1].split("(")[0]: ln
+        for ln in build_index(root).splitlines()
+        if ln.startswith("- `")
+    }
+    assert lines["me_or_closed"].endswith(
+        "— The logged-in user's id, or a marker for a closed account. (applies a rule; check it) (input: env)",
+    ), lines["me_or_closed"]
+    assert "applies a rule" not in lines["login"] + lines["list_friends"]
