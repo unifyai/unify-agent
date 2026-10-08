@@ -1169,3 +1169,17 @@ def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
     out = _run(sol)
     assert model.outputs["k1"] == "check error: OSError"
     assert any("/tmp/memv2-check-host" in r for r in out.reasons), out.reasons
+
+
+def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
+    tmp_path,
+):
+    misdeclared = {**MAN, "items": [{**ITEM, "input": "bytes"}]}
+    model = Turns([_checks("k", [json.dumps(misdeclared)])])
+    mem, ev, sol = _store_backed(tmp_path, model)
+    out = asyncio.run(sol.run(PassRequest("incremental", "venmo", ["e1"], False), "pi"))
+    reply = model.outputs["k1"].splitlines()
+    assert (
+        "G2: env/venmo:me declares input bytes, which a tool cover cannot give" in reply
+    )
+    assert out.checks == 1 and not out.passed

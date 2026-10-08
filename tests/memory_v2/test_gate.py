@@ -2116,3 +2116,27 @@ def test_tree_listing_hashes_in_python_and_refuses_names_git_would_not_take(tmp_
         "a\r": ("100644", blob_id(b"two")),
     }
     assert len(refused) == 1 and refused[0].startswith("unsafe path"), refused
+
+
+def test_preview_refuses_a_declared_input_form_the_covers_cannot_give(
+    world,
+    tmp_path,
+    monkeypatch,
+):
+    mem, ev, _ = world
+
+    def boom(*a, **kw):
+        raise AssertionError("preview must not plan or run held-out values")
+
+    monkeypatch.setattr("unify.memory_v2.gate.plan", boom)
+    monkeypatch.setattr("unify.memory_v2.gate.run_plan", boom)
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=_lookup)
+    files = {
+        **FILES,
+        "env/venmo/__init__.py": MOD.replace("Input: env", "Input: bytes"),
+    }
+    tree = _tree(tmp_path / "tree", files)
+    reasons = gate.preview(mem.head(), tree, _man(input="bytes"))
+    assert reasons == [
+        "G2: env/venmo:me declares input bytes, which a tool cover cannot give",
+    ], reasons

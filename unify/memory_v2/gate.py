@@ -100,6 +100,7 @@ from .gitio import GitError, Repo
 from .held_out import (
     MAX_POOL_ACTIONS,
     MAX_POOL_EPISODES,
+    _unfit_reason,
     plan,
     pool_actions,
     run_plan,
@@ -223,6 +224,32 @@ def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
         for i in functions
         if everything or i.split(":", 1)[0].split("/", 1)[1] in channels
     }
+
+
+def _unfit_forms(
+    covers: list[tuple[str, int, Action]],
+    input_kind: str | None,
+) -> list[str]:
+    """The reasons :func:`.held_out.plan` gives as ``unfit`` (run_plan's first failures), without planning.
+
+    The same covers in the same order (status ``ok``, not a rejection, not shell, each once) through the
+    same :func:`.held_out._unfit_reason`, deduplicated, so :meth:`Gate.preview` names exactly what G2 will.
+    """
+    out: list[str] = []
+    done: set[tuple[str, int]] = set()
+    for eid, idx, a in covers:
+        if (
+            getattr(a, "kind", "tool") == "shell"
+            or a.status != "ok"
+            or is_rejection(a)
+            or (eid, idx) in done
+        ):
+            continue
+        done.add((eid, idx))
+        why = _unfit_reason(a, input_kind)
+        if why is not None and why not in out:
+            out.append(why)
+    return out
 
 
 class _WithSources:
@@ -351,7 +378,8 @@ class Gate:
         (:func:`.snapshot.tree_listing` lists it without git; empty directories are no entries). *parent* is
         a :meth:`parent_snapshot` (then the preview runs no git at all) or a revision to snapshot now.
         Runs the manifest parse, the early layout and safety refusals, G1, G2's cover checks (each cover's
-        kind, record and channel; at most :data:`PREVIEW_MAX_COVERS` covers over
+        kind, record and channel, and the structural check that the covers can give the declared ``input``
+        form, without the held-out perturbation; at most :data:`PREVIEW_MAX_COVERS` covers over
         :data:`PREVIEW_MAX_EPISODES` episodes, each looked up once), G4, G5 and G6. Never G3 (no test runs),
         G2's held-out runs or a workflow's signals (nothing about outcomes, ruling R10), and never writes:
         no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
@@ -807,7 +835,8 @@ class Gate:
         preview: bool = False,
         lookup: Callable[[str, int], Action | None] | None = None,
     ) -> None:
-        """*preview* (:meth:`preview`) checks the covers only: no held-out runs, no workflow signals.
+        """*preview* (:meth:`preview`) checks the covers and their declared input form only: no held-out
+        runs, no workflow signals.
 
         *lookup* replaces the gate's action lookup (the preview's memoised one).
         """
@@ -838,7 +867,13 @@ class Gate:
                     for _, _, a in valid
                 ):
                     run.fail("G2", f"{it.item} covers only recorded rejections")
-                elif valid and not preview:
+                elif valid and preview:
+                    # the structural input-form check only: no held-out perturbation
+                    declared = self._doc_inputs(run).get(it.item, "")
+                    form = it.input or (declared if declared in INPUT_KINDS else None)
+                    for why in _unfit_forms(valid, form)[:5]:
+                        run.fail("G2", f"{it.item} {why}")
+                elif valid:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
                     declared = self._doc_inputs(run).get(it.item, "")
