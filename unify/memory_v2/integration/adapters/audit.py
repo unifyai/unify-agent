@@ -147,7 +147,19 @@ _KEY_SHAPED = re.compile(
     r"|AKIA[0-9A-Z]{16}",
 )
 _KEY_MASK = "<redacted:key-shaped>"
-_TRAILING_TOKEN = re.compile(r"[A-Za-z0-9_\-+/=.:~]+$")
+# The characters of a token that a clip may have cut through: a clipped text drops its trailing run of them.
+_TOKEN_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-+/=.:~")
+
+
+def _drop_trailing_token(text: str) -> str:
+    """*text* without its trailing run of token characters: a linear scan from the end (a ``[...]+$`` search
+    retries from every start position and is quadratic on a long run)."""
+    # ``$`` also matched before one final newline, which the old search kept: same here
+    tail = "\n" if text.endswith("\n") else ""
+    end = len(text) - len(tail)
+    while end and text[end - 1] in _TOKEN_CHARS:
+        end -= 1
+    return text[:end] + tail
 
 _STDLIB = frozenset(getattr(sys, "stdlib_module_names", ())) - {"__main__"}
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
@@ -175,7 +187,7 @@ def _clean(text: str) -> tuple[str, bool]:
     masked = _KEY_SHAPED.sub(_KEY_MASK, text[:MAX_SCAN])
     if len(text) <= MAX_SCAN and len(masked) <= MAX_STR:
         return masked, False
-    cut = _TRAILING_TOKEN.sub("", masked[:MAX_STR])
+    cut = _drop_trailing_token(masked[:MAX_STR])
     return cut + CLIP_MARK, True
 
 
