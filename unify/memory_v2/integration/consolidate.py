@@ -22,8 +22,10 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 * ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "sol_model",
   "sol_effort", "cap_usd"}``;
 * ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "checks",
-  "seconds", "gate_passed", "items", "index_tokens", "reason_codes"}`` (``calls`` counts model calls and
-  Sol's ``check`` calls; ``checks`` is the latter alone).
+  "seconds", "gate_passed", "items", "index_tokens", "reason_codes", "items_merged", "items_refused"}``
+  (``calls`` counts model calls and Sol's ``check`` calls; ``checks`` is the latter alone;
+  ``items_merged`` lists the manifest items that landed and ``items_refused`` maps each refused item to its
+  value-free codes, ``G1``..``G6``, ``dependency`` or ``pass``: per-item admission, :meth:`..gate.Gate.merge`).
 
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
@@ -527,6 +529,12 @@ def _end_event(
         "items": listed,
         "index_tokens": index_tokens,
         "reason_codes": reason_codes(outcome, failure_code),
+        "items_merged": list(outcome.items_merged) if outcome is not None else [],
+        "items_refused": (
+            {i: list(c) for i, c in sorted(outcome.items_refused.items())}
+            if outcome is not None
+            else {}
+        ),
     }
 
 

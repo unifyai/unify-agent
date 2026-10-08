@@ -23,16 +23,38 @@ CREATE TABLE IF NOT EXISTS item_evidence(item TEXT, episode_id TEXT, role TEXT, 
 CREATE TABLE IF NOT EXISTS covers(item TEXT, episode_id TEXT, action_index INTEGER,
   PRIMARY KEY(item, episode_id, action_index));
 CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel TEXT, parent TEXT, candidate TEXT,
-  passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
+  passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT, merged TEXT, items_merged TEXT, items_refused TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
 """
+# A pass row's columns. Per-item admission (stage 7) added the last three: the commit that landed (the
+# candidate or its reduction), the items merged (a JSON list) and the items refused (a JSON object of
+# value-free codes); stores made before them gain them, empty, when opened.
+_PASS_COLUMNS = (
+    "pass_id",
+    "kind",
+    "channel",
+    "parent",
+    "candidate",
+    "passed",
+    "reasons",
+    "usd",
+    "patch_blob",
+    "merged",
+    "items_merged",
+    "items_refused",
+)
 
 
 class EvidenceStore:
     def __init__(self, path: Path) -> None:
         self.db = sqlite3.connect(str(path))
         self.db.executescript(_SCHEMA)
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(passes)")}
+        with self.db:
+            for col in _PASS_COLUMNS:
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE passes ADD COLUMN {col} TEXT")
 
     def index_episode(self, ep: Episode, commit_sha: str) -> int:
         with self.db:
@@ -209,21 +231,9 @@ class EvidenceStore:
     def record_pass(self, row: dict) -> None:
         with self.db:
             self.db.execute(
-                "INSERT OR REPLACE INTO passes VALUES(?,?,?,?,?,?,?,?,?)",
-                tuple(
-                    row.get(k)
-                    for k in (
-                        "pass_id",
-                        "kind",
-                        "channel",
-                        "parent",
-                        "candidate",
-                        "passed",
-                        "reasons",
-                        "usd",
-                        "patch_blob",
-                    )
-                ),
+                f"INSERT OR REPLACE INTO passes({', '.join(_PASS_COLUMNS)}) "
+                f"VALUES({', '.join('?' for _ in _PASS_COLUMNS)})",
+                tuple(row.get(k) for k in _PASS_COLUMNS),
             )
 
     def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
