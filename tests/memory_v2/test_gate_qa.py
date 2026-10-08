@@ -259,7 +259,8 @@ HEALTH_TEST = (
     "def test_health_reads_the_status_line():\n"
     '    assert health("You see: tree\\n\\nYour status:\\nhealth: 9") == 9\n'
 )
-PINNED_TEST = HEALTH_TEST + f"""
+# passes only on variant 0's pinned values: the determinism rerun (variant 1) turns it red
+DEPENDS_ON_PINS_TEST = HEALTH_TEST + f"""
 
 def test_the_gate_pins_clock_and_randomness():
     import datetime, os, random, time
@@ -773,10 +774,11 @@ def test_a_test_with_two_outcomes_under_the_pins_is_refused_as_flaky(tmp_path):
         and "1 test(s) differ" in reason
     )
     pinned = [c for c in runner.calls if c[0] == HP_TEST]
-    assert all(
-        c[5]["PYTHONHASHSEED"] == "0" and "-p _memv2_pin" in c[5]["PYTEST_ADDOPTS"]
-        for c in pinned
-    )
+    assert all("-p _memv2_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
+    # every run under pin variant 0 but the rerun, which uses variant 1 (other epoch, seeds)
+    assert [(c[5]["PYTHONHASHSEED"], c[5]["MEMV2_PIN"]) for c in pinned] == [
+        ("0", "0"),
+    ] * (len(pinned) - 1) + [("1", "1")]
     assert all(c[1] == ["/inputs", "/memory"] for c in runner.calls)
     steady = _check(
         tmp_path / "steady",
@@ -1087,16 +1089,21 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
             [sys.executable, "-I", "-c", code, str(box)],
             capture_output=True,
             text=True,
-            env={"TZ": "UTC", "PATH": "/usr/bin:/bin"},
+            env={"TZ": "UTC", "PATH": "/usr/bin:/bin", "MEMV2_PIN": variant},
             timeout=60,
             check=True,
         ).stdout
-        for _ in range(2)
+        for variant in ("0", "0", "1")
     ]
-    assert runs[0] == runs[1]
+    assert (
+        runs[0] == runs[1] != runs[2]
+    )  # reproducible per variant, different across them
     a, b, now, rnd = runs[0].split()
     assert int(b) - int(a) == 1_000_000 and now.startswith("2001-09-09T01:46:40")
     assert float(rnd) == random.Random(0).random()
+    a, b, now, rnd = runs[2].split()
+    assert int(b) - int(a) == 1_000_000 and now.startswith("2033-05-18T03:33:20")
+    assert float(rnd) == random.Random(1).random()
 
 
 # --- end to end in the sandbox ---------------------------------------------------------------------------
@@ -1194,8 +1201,9 @@ def test_strict_accepts_tests_parametrised_over_the_drawn_inputs(tmp_path):
 
 
 @needs_bwrap
-def test_the_pins_hold_in_the_gates_runs(tmp_path):
-    files, man = _hp(PINNED_TEST)
+def test_a_test_that_depends_on_the_pinned_values_is_refused(tmp_path):
+    """The pins make runs reproducible but never make a test pass: the rerun's pins differ."""
+    files, man = _hp(DEPENDS_ON_PINS_TEST)
     res = _check(
         tmp_path / "pinned",
         CRAFTER,
@@ -1203,7 +1211,17 @@ def test_the_pins_hold_in_the_gates_runs(tmp_path):
         man,
         qa=QAConfig(determinism=True),
     )
-    assert res.passed, res.reasons
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    (reason,) = _qa_lines(res)
+    assert reason.startswith(f"G3: [qa:determinism] {HP_TEST} gives different outcomes")
+    assert "1 test(s) differ" in reason and "depends on the clock" in reason
+    steady = _check(
+        tmp_path / "steady",
+        CRAFTER,
+        *_hp(),
+        qa=QAConfig(determinism=True),
+    )
+    assert steady.passed, steady.reasons
     unpinned = _check(
         tmp_path / "unpinned",
         CRAFTER,

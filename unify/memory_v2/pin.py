@@ -4,11 +4,17 @@ Shipped into the gate's box as ``/inputs/_memv2_pin.py`` and loaded by pytest as
 ``PYTEST_ADDOPTS``) when ``UNIFY_MEMORY_V2_QA_DETERMINISM`` is on, and by the gate's probe whenever a stage-5
 check runs. The box also gets ``PYTHONHASHSEED=0`` and ``TZ=UTC`` from the gate. Importing it installs:
 
-* a clock that starts at :data:`EPOCH_NS` (2001-09-09T01:46:40Z) and advances :data:`STEP_NS` per read, so a
-  loop on the clock still ends and two runs read the same sequence: ``time.time``, ``time.time_ns``, and
-  ``datetime.datetime.now``/``utcnow``/``today`` (``datetime.datetime`` becomes a subclass whose ``now``
-  reads the pinned clock; ``datetime.date.today`` already reads ``time.time``);
-* ``random.seed(0)``.
+* a clock that starts at the variant's epoch (:data:`EPOCHS_NS`) and advances :data:`STEP_NS` per read, so a
+  loop on the clock still ends and two runs of one variant read the same sequence: ``time.time``,
+  ``time.time_ns``, and ``datetime.datetime.now``/``utcnow``/``today`` (``datetime.datetime`` becomes a
+  subclass whose ``now`` reads the pinned clock; ``datetime.date.today`` already reads ``time.time``);
+* ``random.seed`` with the variant's seed (:data:`SEEDS`).
+
+The variant is ``MEMV2_PIN`` in the environment (``0`` by default, or ``1``): 2001-09-09T01:46:40Z with seed 0,
+or 2033-05-18T03:33:20Z with seed 1. The gate runs a new test file's first run under variant 0 and its second
+under variant 1 (with ``PYTHONHASHSEED`` 0 and 1), so the pins make a run reproducible but never make a test
+pass: a test that asserts a pinned value (the year, a random draw, a hash order) gives different outcomes on the
+two runs and is refused. The pins therefore never become something a stored library depends on.
 
 It installs only under its box name ``_memv2_pin`` (or through :func:`install`): imported on the host as
 ``unify.memory_v2.pin`` it changes nothing.
@@ -23,17 +29,26 @@ catches what these leave nondeterministic. Standard library only.
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import random
 import time
 
-EPOCH_NS = 1_000_000_000 * 10**9
+EPOCHS_NS = (1_000_000_000 * 10**9, 2_000_000_000 * 10**9)  # per variant
+SEEDS = (0, 1)
+EPOCH_NS = EPOCHS_NS[0]
 STEP_NS = 1_000_000  # one millisecond per read
-_state = {"reads": 0, "installed": False}
+VARIANT_ENV = "MEMV2_PIN"
+_state = {"reads": 0, "installed": False, "variant": 0}
+
+
+def variant() -> int:
+    """The pin variant this process runs under (``MEMV2_PIN``: 1, else 0)."""
+    return 1 if os.environ.get(VARIANT_ENV, "0").strip() == "1" else 0
 
 
 def _now_ns() -> int:
     _state["reads"] += 1
-    return EPOCH_NS + STEP_NS * _state["reads"]
+    return EPOCHS_NS[_state["variant"]] + STEP_NS * _state["reads"]
 
 
 def _time() -> float:
@@ -59,7 +74,7 @@ class PinnedDateTime(_dt.datetime):
 def reset() -> None:
     """The clock back to its start and the global random generator reseeded."""
     _state["reads"] = 0
-    random.seed(0)
+    random.seed(SEEDS[_state["variant"]])
 
 
 def install() -> None:
@@ -67,6 +82,7 @@ def install() -> None:
     if _state["installed"]:
         return
     _state["installed"] = True
+    _state["variant"] = variant()
     time.time = _time
     time.time_ns = _now_ns
     _dt.datetime = PinnedDateTime

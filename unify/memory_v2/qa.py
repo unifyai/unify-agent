@@ -43,8 +43,9 @@ green, nothing is judged.
 
 **Determinism** (``UNIFY_MEMORY_V2_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memv2_pin``: a stepping clock from a fixed epoch, ``random`` seeded
-before each test). Each new or changed test file green in G3 runs once more; different outcomes refuse it as
-flaky. A second run that times out is noted, not judged.
+before each test). Each new or changed test file green in G3 runs once more under the other pin variant
+(another epoch, random seed and hash seed); different outcomes refuse it, so a test can neither be flaky nor
+depend on a pinned value. A second run that times out is noted, not judged.
 
 **The test kit** (:mod:`.testkit`). Every gate pytest run mounts the kit (``memlab``, the pin plugin, the
 blobs the tests name) read-only at ``/inputs`` when a switch is on **or** the library's tests use it, so a
@@ -136,6 +137,7 @@ MAX_SAMPLES_BYTES = 16 * 1024**2
 MAX_INPUT_FILE_BYTES = testkit.MAX_INPUT_FILE_BYTES
 PIN_MODULE = testkit.PIN_MODULE
 PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
+PIN_VARIANT_ENV = "MEMV2_PIN"  # :data:`.pin.VARIANT_ENV`
 # probe outcomes that say something about the function (equivalence is judged on these only)
 INFORMATIVE = frozenset({"handled", "refused", "error"})
 _NAMED = 5
@@ -206,8 +208,12 @@ def seed_of(candidate: str) -> bytes:
     return hashlib.sha256(f"memory-v2-qa\0{candidate}".encode()).digest()
 
 
-def pytest_env(cfg: QAConfig) -> dict[str, str]:
-    """The environment of every gate pytest run while the kit is mounted (a switch on, or the tests use it)."""
+def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
+    """The environment of every gate pytest run while the kit is mounted (a switch on, or the tests use it).
+
+    Under determinism the pins of *variant* (:mod:`.pin`): 0 for every run but the determinism rerun, which
+    uses 1 (another epoch, random seed and hash seed).
+    """
     env = {
         "PYTHONPATH": "/memory:/inputs",
         "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
@@ -215,6 +221,8 @@ def pytest_env(cfg: QAConfig) -> dict[str, str]:
     if cfg.determinism:
         env["PYTEST_ADDOPTS"] += f" -p {PIN_MODULE}"
         env.update(PINNED_ENV)
+        env["PYTHONHASHSEED"] = str(variant)
+        env[PIN_VARIANT_ENV] = str(variant)
     return env
 
 
@@ -750,6 +758,7 @@ class QAChecks:
         timeout_s: float,
         ro: dict[Path, str] | None = None,
         rw: dict[Path, str] | None = None,
+        env: dict[str, str] | None = None,
     ):
         qa_env = self.run.qa_env
         return self.gate.pytest(
@@ -759,7 +768,7 @@ class QAChecks:
             rw=dict(rw or {}),
             cwd="/memory",
             timeout_s=timeout_s,
-            env=dict(qa_env.env),
+            env=dict(env if env is not None else qa_env.env),
         )
 
     def _edited(self) -> list[Any]:
@@ -1025,7 +1034,13 @@ class QAChecks:
             if not _green(first):
                 continue
             to = self._timeout(self.cfg.run_s, f"the determinism rerun of {t}")
-            second = self._pytest(run.c_tree, t, to)
+            # the second run under the other pins: a test passing only on the pinned values is caught too
+            second = self._pytest(
+                run.c_tree,
+                t,
+                to,
+                env=pytest_env(self.cfg, variant=1),
+            )
             if second.timed_out:
                 self._note("determinism", f"the rerun of {t} timed out; not judged")
                 continue
@@ -1036,8 +1051,9 @@ class QAChecks:
             ):
                 self._fail(
                     "determinism",
-                    f"{t} gives different outcomes on two runs with the clock, hash seed and random "
-                    f"pinned ({len(differ)} test(s) differ): flaky",
+                    f"{t} gives different outcomes on two runs with the clock, hash seed and random pinned "
+                    f"to different values ({len(differ)} test(s) differ): it depends on the clock, "
+                    "randomness or hash order, or is flaky",
                 )
 
     def _fixtures(
@@ -1355,8 +1371,9 @@ def brief(cfg: QAConfig) -> str:
         )
     if cfg.determinism:
         lines.append(
-            "- Determinism: tests run twice with the clock, the hash seed and random pinned; a test whose "
-            "outcome differs between the runs is refused as flaky.",
+            "- Determinism: tests run twice with the clock, the hash seed and random pinned to different "
+            "values on each run; a test whose outcome differs between the runs is refused (never assert the "
+            "current time, a random draw or a hash order).",
         )
     if cfg.replay:
         lines.append(
