@@ -62,8 +62,9 @@ class Paths:
 
     @property
     def events(self) -> Path:
-        """Consolidation start and end events, one JSON object per line (also written to ``--jsonl``)."""
-        return self.home / "memory_v2" / "events.jsonl"
+        """Consolidation start and end events, one JSON object per line (also written to ``--jsonl``);
+        in the harness-only state directory."""
+        return self.state_dir / "events.jsonl"
 
     def harness_only(self) -> list[Path]:
         """Every path a cell must never see."""
@@ -74,5 +75,4 @@ class Paths:
             self.evidence,
             self.state_dir,
             self.worktree_git,
-            self.events.parent,
         ]

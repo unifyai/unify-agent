@@ -47,7 +47,6 @@ class Fakes:
     assemble_raise: BaseException | None = None
     pass_events: bool = True
     redactors: list = field(default_factory=list)
-    tool_actions: list = field(default_factory=list)
 
     def names(self) -> list[str]:
         return [c[0] for c in self.calls]
@@ -85,6 +84,9 @@ def install(monkeypatch) -> Fakes:
 
         def begin(self) -> None:
             f.calls.append(("worktree.begin", (), {}))
+
+        def abort(self) -> None:
+            f.calls.append(("worktree.abort", (), {}))
 
         def finish(self, cells):
             f.calls.append(("worktree.finish", (cells,), {}))
@@ -145,8 +147,6 @@ def install(monkeypatch) -> Fakes:
         f.calls.append(("assemble", (run, lines, memory_diff, ended_at), kw))
         if f.assemble_raise is not None:
             raise f.assemble_raise
-        drained = run.observer.drain() if run.observer is not None else None
-        f.tool_actions = list(getattr(drained, "actions", None) or [])
         ep = Episode(
             run.episode_id,
             run.started_at,
@@ -167,24 +167,12 @@ def install(monkeypatch) -> Fakes:
         )
         return ep, Redactor()
 
-    def learned_secrets(values):
-        out = {}
-        for prefix, value in values:
-            if isinstance(value, dict):
-                for k, v in value.items():
-                    if "TOKEN" in str(k).upper() and isinstance(v, str) and len(v) >= 8:
-                        out[f"{prefix}.{k}"] = v
-        return out
-
-    from unify.memory_v2.integration.adapters.tool import RecordingObserver
-
     traj.read_jsonl, traj.fold, traj.timed_cells, traj.assemble = (
         read_jsonl,
         fold,
         timed_cells,
         assemble,
     )
-    traj.learned_secrets, traj.TimedObserver = learned_secrets, RecordingObserver
 
     # -- Track B: consolidate -----------------------------------------------------------------
     cons = types.ModuleType(f"{PKG}.consolidate")

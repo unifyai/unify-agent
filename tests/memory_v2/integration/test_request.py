@@ -129,19 +129,19 @@ def test_begin_exports_memory_and_opens_the_scope(mv2):
             "WorktreeCapture",
             "worktree.begin",
         ]
-        # the transcript continues the episode id; the tool observer is pushed; costs are recorded
+        # the transcript continues the episode id; costs are recorded; no tool observer (not wired)
         from unify import transcripts
 
         assert mv2.ctx.run(transcripts._REQUESTED_ID.get) == run.episode_id
-        assert run.observer in mv2.ctx.run(observers._OBSERVERS.get)
         assert transcripts._REQUESTED_ID.get() is None  # only the run's context
+        assert run.observer is None and mv2.ctx.run(observers._OBSERVERS.get) == ()
         assert mv2.fakes.cost_active == [True]
         assert run.episode_id[:8].isdigit() and run.episode_id[8] == "T"
     finally:
         _abort(mv2, run)
     _left_nothing(mv2.paths)
     assert mv2.ctx.run(transcripts._REQUESTED_ID.get) is None
-    assert run.observer not in mv2.ctx.run(observers._OBSERVERS.get)
+    assert mv2.fakes.names()[-1] == "worktree.abort"
     assert mv2.fakes.cost_active == [True, False]
 
 
@@ -170,6 +170,19 @@ def test_begin_refuses_when_a_cell_could_read_harness_state(mv2, monkeypatch):
         _begin(mv2, "hi")
     _left_nothing(mv2.paths)
     assert mv2.fakes.cost_active == []
+
+
+def test_a_begin_failing_after_the_capture_began_aborts_it(mv2, monkeypatch):
+    from unify import transcripts
+
+    def broken(_eid):
+        raise ValueError("no session")
+
+    monkeypatch.setattr(transcripts, "resume_session", broken)
+    with pytest.raises(ValueError, match="no session"):
+        _begin(mv2, "hi")
+    assert mv2.fakes.names()[-2:] == ["worktree.begin", "worktree.abort"]
+    _left_nothing(mv2.paths)
 
 
 def test_hooks_open_no_run_while_the_switch_is_off(mv2, monkeypatch):
@@ -288,33 +301,16 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     assert not mv2.paths.errors.exists()
 
 
-def test_the_worktree_redactor_knows_what_the_tool_calls_revealed(mv2, monkeypatch):
-    """The capture's redactor factory runs at finish and knows the environment's secrets and the
-    credentials the request's tool calls returned; assemble reads the same tool actions.
-    """
-    from unify.function_manager.primitives.observers import EnvCall
-
-    monkeypatch.setenv("FAKE_SERVICE_TOKEN", "env-secret-12345678")
+def test_the_worktree_redactor_is_built_at_finish(mv2, monkeypatch):
+    """The capture's zero-argument redactor factory is called at finish and knows the environment's
+    secrets, including one set after the request began."""
     run = _begin(mv2, "hi")
-    call = EnvCall("apis", "spotify.login", "", (), {"username": "ada"}, "global")
-    run.observer.before(call)
-    run.observer.after(
-        call,
-        result={"access_token": "tok-abcdefgh123"},
-        error=None,
-        intercepted=False,
-        started=0.0,
-        elapsed_s=0.0,
-    )
+    assert mv2.fakes.redactors == []
+    monkeypatch.setenv("FAKE_SERVICE_TOKEN", "env-secret-12345678")
     _transcript(run)
     _finish(mv2, run)
     (redactor,) = mv2.fakes.redactors
-    text = redactor.text("tok-abcdefgh123 env-secret-12345678")
-    assert "tok-abcdefgh123" not in text and "env-secret-12345678" not in text
-    assert "<secret:spotify.login.access_token>" in text
-    assert [(a.channel, a.method) for a in mv2.fakes.tool_actions] == [
-        ("spotify", "login"),
-    ]
+    assert "env-secret-12345678" not in redactor.text("x env-secret-12345678 y")
 
 
 def test_without_jsonl_the_driver_gets_no_emitter(mv2):
@@ -355,6 +351,9 @@ def test_a_failed_episode_runs_no_pass(mv2):
 def test_a_missing_transcript_is_logged_not_raised(mv2):
     run = _begin(mv2, "hi")
     _finish(mv2, run)
+    assert (
+        mv2.fakes.names()[-1] == "worktree.abort"
+    )  # the capture never reached its finish
     errors = [json.loads(x) for x in mv2.paths.errors.read_text().splitlines()]
     assert [e["stage"] for e in errors] == ["episode"]
     _left_nothing(mv2.paths)
@@ -368,6 +367,7 @@ def test_abort_records_nothing(mv2):
     _abort(mv2, run)  # idempotent
     assert "assemble" not in mv2.fakes.names()
     assert "worktree.finish" not in mv2.fakes.names()
+    assert mv2.fakes.names().count("worktree.abort") == 1
     assert os.popen(f"git --git-dir {mv2.paths.episodes} rev-parse main").read() == head
     _left_nothing(mv2.paths)
 
@@ -377,6 +377,7 @@ def test_abort_after_finish_changes_nothing(mv2):
     _transcript(run)
     _finish(mv2, run)
     calls = list(mv2.fakes.calls)
+    assert "worktree.abort" not in mv2.fakes.names()  # finish ended the capture
     _abort(mv2, run)
     assert mv2.fakes.calls == calls
     _left_nothing(mv2.paths)

@@ -3,10 +3,10 @@
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
 ``main`` into the scratch export the worker mounts, renders the index the system prompt ends with, takes
 the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
-episode id, the tool observer is pushed and model costs are recorded). ``finish`` records the request as
+episode id and model costs are recorded). ``finish`` records the request as
 one episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
 start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to ``<UNIFY_HOME>/memory_v2/events.jsonl`` either way. ``abort`` cleans up
+appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
 and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
 
 Only pass/fail of a posted outcome is kept (ruling R10): ``take_outcome`` keeps ``solved`` and drops
@@ -133,20 +133,6 @@ def _plain(value: Any) -> Any:
     return value
 
 
-class _Drained:
-    """The tool observer after its one drain: ``assemble`` reads the same actions the redactor saw."""
-
-    def __init__(self, observer: Any, drained: Any) -> None:
-        self._observer, self._drained = observer, drained
-
-    def drain(self) -> Any:
-        return self._drained
-
-    def stamp_of(self, action: Any) -> Any:
-        stamp = getattr(self._observer, "stamp_of", None)
-        return stamp(action) if stamp is not None else None
-
-
 class RequestRun:
     """One request's memory run; create it with :meth:`begin`."""
 
@@ -162,10 +148,11 @@ class RequestRun:
         self.build = ""
         self.stores: Any = None
         self.state: Any = None
+        # The tool adapter is not wired in this build (deferred): ``assemble`` records no tool calls.
         self.observer: Any = None
         self.costs: Any = None
         self.worktree: Any = None
-        self._tool_drain: Any = None
+        self._worktree_finished = False
         # Only the checker's verdict of a posted outcome (R10): True, False or None (none posted).
         self.solved: bool | None = None
         self.outcome_at: str | None = None
@@ -201,10 +188,7 @@ class RequestRun:
         return run
 
     def _open(self, sandbox: Any, transcripts: Any) -> None:
-        from unify.function_manager.primitives.observers import observing
-
-        from ..redact import Redactor
-        from . import consolidate, cost, trajectory, worktree_capture
+        from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .prompt import render_index
         from .state import State
@@ -228,39 +212,18 @@ class RequestRun:
             self.redactor,
         )
         self.worktree.begin()
-        self.observer = trajectory.TimedObserver(Redactor.from_environ(os.environ))
         self._scope.enter_context(transcripts.resume_session(self.episode_id))
-        self._scope.enter_context(observing(self.observer))
         self.costs = cost.install()
         self.costs.activate()
         self._scope.callback(self.costs.deactivate)
 
     def redactor(self) -> Any:
-        """The run's redactor as far as it is known: the environment's secrets and those the tool
-        actions so far revealed (``trajectory.learned_secrets``). The work-tree capture calls it at
-        finish, after the tool actions were taken (:meth:`_take_tool_actions`)."""
-        from ..redact import _SECRET_NAME_PARTS, Redactor
-        from . import trajectory
+        """The run's redactor as far as it is known before the episode is assembled: the environment's
+        secrets. The work-tree capture calls it at finish. (No tool adapter records calls in this build,
+        so no credential is learned from a call's response before ``assemble``.)"""
+        from ..redact import Redactor
 
-        env = {
-            k: v
-            for k, v in os.environ.items()
-            if any(p in k.upper() for p in _SECRET_NAME_PARTS)
-        }
-        actions = list(getattr(self._tool_drain, "actions", None) or [])
-        learned = trajectory.learned_secrets(
-            [(f"{a.channel}.{a.method}", a.response) for a in actions]
-            + [(f"{a.channel}.{a.method}", a.kwargs) for a in actions],
-        )
-        return Redactor({**env, **learned})
-
-    def _take_tool_actions(self) -> None:
-        """Drain the tool observer once, at request end; ``assemble`` then reads the same drain."""
-        observer = self.observer
-        if observer is None or isinstance(observer, _Drained):
-            return
-        self._tool_drain = observer.drain()
-        self.observer = _Drained(observer, self._tool_drain)
+        return Redactor.from_environ(os.environ)
 
     # -- the outcome ------------------------------------------------------------------------------
 
@@ -290,7 +253,7 @@ class RequestRun:
     @staticmethod
     def _emitter(emit: Callable[[dict], None] | None) -> Callable[[dict], None] | None:
         """*emit* (the CLI's ``--jsonl`` output) with money as plain decimal strings, or None. The
-        consolidation driver also appends every event to ``<UNIFY_HOME>/memory_v2/events.jsonl``.
+        consolidation driver also appends every event to the events file (``Paths.events``).
         """
         if emit is None:
             return None
@@ -358,7 +321,7 @@ class RequestRun:
             transcripts.transcripts_dir() / f"{self.episode_id}.jsonl",
         )
         cells = trajectory.timed_cells(trajectory.fold(lines))
-        self._take_tool_actions()
+        self._worktree_finished = True  # finish ends the capture, whatever it returns
         wt = self.worktree.finish(cells)
         memory_diff = checkout_diff(
             paths.memory,
@@ -446,6 +409,16 @@ class RequestRun:
         from .state import release_lock
 
         self._close_scope()
+        if self.worktree is not None and not self._worktree_finished:
+            # A run that never reached the capture's finish (abort, a failed begin or a failed
+            # finish before it) ends the capture so the worker installs no audit hook for it.
+            self._worktree_finished = True
+            try:
+                self.worktree.abort()
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - abort never raises; belt and braces
+                logger.warning("memory v2: work-tree capture not aborted: %s", exc)
         try:
             remove_checkout(self.paths.checkout)
         except OSError as exc:
