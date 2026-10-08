@@ -188,3 +188,30 @@ def test_lock_is_exclusive_and_times_out(tmp_path):
     finally:
         release_lock(fd)
     release_lock(acquire_lock(lock, timeout_s=0.2))
+
+
+def test_untouched_generated_files_stay_out_of_the_diff(tmp_path):
+    from unify.memory_v2.catalogue import write_generated
+
+    mem, sha = _seed(tmp_path)
+    dest = tmp_path / "co"
+    export_checkout(mem.git_dir, sha, dest)
+    generated = write_generated(dest)
+    assert (dest / "README.md").is_file() and (dest / ".memory/catalog.json").is_file()
+    blobs = BlobStore(tmp_path / "b")
+    assert checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated) == ""
+    # without the list, the same files are new to the commit
+    assert "README.md" in checkout_diff(mem.git_dir, sha, dest, blobs)
+    # a generated file the request changed is recorded; the others stay out
+    (dest / "README.md").write_text("my notes on the library\n")
+    (dest / ".memory/proposal.txt").write_text("merge two readers\n")
+    d = checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated)
+    assert "+my notes on the library" in d and "proposal.txt" in d
+    assert "catalog.json" not in d and "memory.py" not in d
+    # a link put in place of a generated file is recorded, never followed
+    (dest / "memory.py").unlink()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SENTINEL-generated-link\n")
+    os.symlink(secret, dest / "memory.py")
+    d = checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated)
+    assert "memory.py" in d and "SENTINEL-generated-link" not in d

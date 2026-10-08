@@ -90,6 +90,42 @@ async def test_the_worker_imports_and_writes_the_export_and_sees_nothing_else(
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
+async def test_a_cell_imports_the_memory_helper_from_the_export(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    """v2.1: ``import memory`` in a cell is the export's generated helper; it reads only the catalogue."""
+    from unify.memory_v2.catalogue import write_generated
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
+    paths, _ = _home(world)
+    write_generated(paths.checkout)
+    monkeypatch.setattr(
+        request_mod,
+        "_CURRENT",
+        SimpleNamespace(index="", paths=paths),
+    )
+    ex = SessionExecutor(environments={})
+    try:
+        out = await _cell(
+            ex,
+            "import memory\n"
+            "[memory.__file__, memory.catalog().splitlines()[0], memory.find({'a': 1}),\n"
+            " memory.describe('hello').splitlines()[:2]]",
+        )
+    finally:
+        await ex.close()
+    assert list(out) == [
+        str(paths.checkout / "memory.py"),
+        "# Memory library",
+        [],
+        ["env.spotify.hello(apis, name)", "Say hi."],
+    ]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
 async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
     world,  # noqa: F811
     monkeypatch,

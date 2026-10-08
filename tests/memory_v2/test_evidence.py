@@ -40,3 +40,21 @@ def test_add_pass_notes_appends_to_the_recorded_reasons(tmp_path):
     assert row[1] == 1
     with pytest.raises(KeyError):
         ev.add_pass_notes("missing", ["x"])
+
+
+def test_input_shapes_are_kept_per_item_body_as_a_sorted_union(tmp_path):
+    from unify.memory_v2.evidence import MAX_INPUT_SHAPES
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    assert ev.input_shapes("env/w:read", "b1") is None
+    a = {"kind": "value", "tree": {"a": "int"}}
+    b = {"kind": "value", "tree": {"b": "str"}}
+    ev.add_input_shapes("env/w:read", "b1", [b])
+    ev.add_input_shapes("env/w:read", "b1", [a, b])
+    assert ev.input_shapes("env/w:read", "b1") == [a, b]
+    assert ev.input_shapes("env/w:read", "b2") is None  # another body has none
+    ev.add_input_shapes("env/w:read", "b2", [])
+    assert ev.input_shapes("env/w:read", "b2") is None
+    many = [{"kind": "value", "tree": {f"k{i:02d}": "int"}} for i in range(40)]
+    ev.add_input_shapes("env/w:other", "b1", many)
+    assert ev.input_shapes("env/w:other", "b1") == many[:MAX_INPUT_SHAPES]

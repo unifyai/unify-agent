@@ -13,6 +13,9 @@ from .experience import experience_tokens
 if TYPE_CHECKING:
     from .signals import Signal
 
+# Input-shape descriptors kept per function body (the catalogue's ``input_shapes``).
+MAX_INPUT_SHAPES = 16
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT UNIQUE, commit_sha TEXT,
   started_at TEXT, regime TEXT, memory_main TEXT, request TEXT);
@@ -26,6 +29,7 @@ CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel T
   passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
+CREATE TABLE IF NOT EXISTS input_shapes(item TEXT, body TEXT, shapes TEXT, PRIMARY KEY(item, body));
 """
 
 
@@ -205,6 +209,38 @@ class EvidenceStore:
             (r[0], int(r[1]))
             for r in self.db.execute("SELECT episode_id, action_index FROM covers")
         }
+
+    def add_input_shapes(self, item: str, body: str, shapes: list[dict]) -> None:
+        """Union *shapes* (input-shape descriptors, :mod:`.memory_helper`) into the row of *item* at body
+        digest *body* (:func:`.catalogue.body_digest`); kept sorted by canonical JSON, at most
+        :data:`MAX_INPUT_SHAPES`. Written only by a merge the gate passed."""
+        if not shapes:
+            return
+        with self.db:
+            row = self.db.execute(
+                "SELECT shapes FROM input_shapes WHERE item=? AND body=?",
+                (item, body),
+            ).fetchone()
+            known = json.loads(row[0]) if row and row[0] else []
+            canon = {
+                json.dumps(s, sort_keys=True, ensure_ascii=False)
+                for s in list(known) + list(shapes)
+            }
+            merged = [json.loads(c) for c in sorted(canon)[:MAX_INPUT_SHAPES]]
+            self.db.execute(
+                "INSERT OR REPLACE INTO input_shapes VALUES(?,?,?)",
+                (item, body, json.dumps(merged, sort_keys=True, ensure_ascii=False)),
+            )
+
+    def input_shapes(self, item: str, body: str) -> list[dict] | None:
+        """The recorded input shapes of *item* at body digest *body*, or None when none were recorded."""
+        row = self.db.execute(
+            "SELECT shapes FROM input_shapes WHERE item=? AND body=?",
+            (item, body),
+        ).fetchone()
+        if row is None or not row[0]:
+            return None
+        return json.loads(row[0]) or None
 
     def record_pass(self, row: dict) -> None:
         with self.db:
