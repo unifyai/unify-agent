@@ -333,6 +333,10 @@ class SandboxPolicy:
     root_args: list[str] = field(default_factory=list)
     root_visible: list[Path] = field(default_factory=list)
     created: float = field(default_factory=time.monotonic)
+    # The raw store's files (store.sqlite, -wal, -shm) at store_path(), and
+    # by name in the state directory: refused to the harness's file tools
+    # wherever they are, whatever mount would otherwise show them.
+    store_files: list[Path] = field(default_factory=list)
 
     # -- path checks ---------------------------------------------------------
     def readable_violation(self, path: Path) -> Optional[tuple[str, str]]:
@@ -340,6 +344,16 @@ class SandboxPolicy:
         resolved = Path(os.path.realpath(path))
         if _within(resolved, Path("/proc")):
             return "mask-proc", f"{resolved} is under /proc"
+        if self.workspace == self.state_dir:
+            # wrap_argv refuses this workspace (_workspace_refusal); the
+            # harness's file tools refuse it too, so nothing is read through
+            # a policy no sandbox would run.
+            return (
+                "root-allowlist",
+                f"the workspace {self.workspace} is the Unify state directory",
+            )
+        if resolved in self.store_files:
+            return "mask-unify-state", f"{resolved} is the Unify store"
         seen = (self.workspace, *self.readonly_state)
         for hidden, rule in self.hidden:
             if _within(resolved, hidden) and not any(
@@ -394,6 +408,18 @@ class SandboxPolicy:
                 f"{resolved} is outside every path the sandbox mounts",
             )
         return None
+
+
+def _store_files(store: Path, state_dir: Path) -> list[Path]:
+    """The raw store's files: at *store* (``store_path()``, resolved) and, by
+    their default name, in *state_dir*."""
+    out: list[Path] = []
+    for base in (store, state_dir / "store.sqlite"):
+        for name in (base.name, f"{base.name}-wal", f"{base.name}-shm"):
+            path = Path(os.path.realpath(base.parent / name))
+            if path not in out:
+                out.append(path)
+    return out
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -1521,6 +1547,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             notices_dir=notices,
             root_args=root_args,
             root_visible=root_visible,
+            store_files=_store_files(store, state_dir),
         )
         policy._key = key  # type: ignore[attr-defined]
         _POLICY_CACHE = policy

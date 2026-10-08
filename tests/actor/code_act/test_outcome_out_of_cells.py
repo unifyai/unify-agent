@@ -476,8 +476,15 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
         for path in hidden:
             assert policy.readable_violation(path) is not None, path
             assert policy.readable_violation(path / "x.jsonl") is not None, path
-        assert policy.readable_violation(workspace / "data.txt") is None
-        assert policy.readable_violation(home / "transcripts" / "s.jsonl") is None
+        for name in ("store.sqlite", "store.sqlite-wal", "store.sqlite-shm"):
+            assert policy.readable_violation(home / name) is not None, name
+        if layout == "the state directory":
+            # A refused workspace: the file tools refuse everything in it.
+            for path in (workspace / "data.txt", home / "transcripts" / "s.jsonl"):
+                assert policy.readable_violation(path) is not None, path
+        else:
+            assert policy.readable_violation(workspace / "data.txt") is None
+            assert policy.readable_violation(home / "transcripts" / "s.jsonl") is None
         if not sys.platform.startswith("linux") or sandbox.bwrap_path() is None:
             continue
         if layout == "the state directory":
@@ -494,6 +501,77 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
             assert not _visible(argv, path), (layout, path, argv)
         assert _visible(argv, workspace / "data.txt"), argv
         assert _visible(argv, home / "transcripts"), argv
+
+
+def _shows_host_file(argv: list[str], path: Path) -> bool:
+    """Replay the bubblewrap mounts in order: whether *path* in the sandbox is
+    the host's own *path* (a mask binds a notice over it, a tmpfs hides it)."""
+    shown, i = False, 1
+    while argv[i] != "--chdir":
+        flag = argv[i]
+        if flag in ("--ro-bind", "--bind", "--tmpfs"):
+            dest = Path(argv[i + (1 if flag == "--tmpfs" else 2)])
+            if path == dest or path.is_relative_to(dest):
+                if flag == "--tmpfs":
+                    shown = False
+                else:
+                    src = Path(argv[i + 1]) / path.relative_to(dest)
+                    shown = Path(os.path.realpath(src)) == Path(os.path.realpath(path))
+            i += 2 if flag == "--tmpfs" else 3
+        elif flag in ("--dev", "--proc"):
+            i += 2
+        else:
+            i += 1
+    return shown
+
+
+@pytest.mark.parametrize(
+    "store_at",
+    ["under UNIFY_HOME", "inside the workspace", "outside"],
+)
+def test_the_raw_store_is_refused_and_absent_wherever_it_is(
+    unify_home,
+    monkeypatch,
+    tmp_path,
+    store_at,
+):
+    """The store's files (store.sqlite, -wal, -shm) are refused to the
+    harness's file tools and never the host's own file in a cell, whether the
+    store is at its default place, inside the workspace or outside both."""
+    from unify import environment
+
+    home = Path(os.path.realpath(unify_home))
+    monkeypatch.setenv("UNIFY_HOME", str(home))
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", "")
+    workspace = home / "workspace"
+    store = {
+        "under UNIFY_HOME": home / "store.sqlite",
+        "inside the workspace": workspace / "db" / "store.sqlite",
+        "outside": Path(os.path.realpath(tmp_path)) / "elsewhere" / "store.sqlite",
+    }[store_at]
+    monkeypatch.setenv("UNIFY_STORE_PATH", str(store))
+    store.parent.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+    files = [store.parent / f"store.sqlite{x}" for x in ("", "-wal", "-shm")]
+    for f in files:
+        f.write_bytes(b"store bytes")
+    policy = sandbox.build_policy(fresh=True)
+    for f in files:
+        assert policy.readable_violation(f) is not None, f
+    assert policy.readable_violation(workspace / "data.txt") is None
+    if not sys.platform.startswith("linux") or sandbox.bwrap_path() is None:
+        return
+    argv = sandbox.wrap_argv(
+        ["true"],
+        policy,
+        writable=[environment.environment_dir(), environment.installer_cache()],
+    )
+    for f in files:
+        assert not _shows_host_file(argv, f), (store_at, f, argv)
+    assert (
+        _shows_host_file(argv, workspace / "data.txt")
+        or not (workspace / "data.txt").exists()
+    )
 
 
 def test_every_transcript_line_drops_the_outcome_section_the_harness_built(
