@@ -414,3 +414,130 @@ def test_default_hidden_paths_follow_the_sandbox_policy(
     result = cap.finish([])
     files = tree_files(Repo(paths.worktree_git), result.before)
     assert "data.txt" in files and ".env" not in files and "id_rsa" not in files
+
+
+# -- review fix round (I1, I2, M2, abort) -----------------------------------------------------------------
+
+
+def test_only_known_record_fields_are_kept_and_every_byte_counts(tmp_path, monkeypatch):
+    """The reviewer's probe: 64 MiB of extra fields in forged records keep at most the cap."""
+    paths, ws, cap = _world(tmp_path, monkeypatch)
+    monkeypatch.setattr(capture_mod, "MAX_AUDIT_BYTES", 64 * 1024)
+    cap.begin()
+    big = "w" * (8 * 1024 * 1024)
+    root = str(ws.resolve())
+    for _ in range(4):
+        hooks.worker_cell_done(
+            {
+                "records": [
+                    {"event": "open", "path": root + "/a", "mode": big, "junk": big},
+                    {"event": "open", "path": [big], "dst": {"x": big}, "mode": "r"},
+                    {
+                        "event": "os.rename",
+                        "path": root + "/b",
+                        "dst": root + "/c",
+                        "x": big,
+                    },
+                ],
+            },
+        )
+    kept = [r for _, records in cap._events for r in records]
+    assert kept[0] == {"event": "open", "path": root + "/a", "mode": "w" * 16}
+    assert kept[1] == {"event": "os.rename", "path": root + "/b", "dst": root + "/c"}
+    assert len(json.dumps(cap._events)) <= 64 * 1024
+    assert cap._kept_bytes <= 64 * 1024
+    # the non-string path record is never kept; over the cap, records are dropped and counted
+    hooks.worker_cell_done(
+        {
+            "records": [
+                {"event": "open", "path": root + "/" + "p" * 70_000, "mode": "r"},
+            ],
+        },
+    )
+    assert cap.dropped >= 1
+    result = cap.finish(_cells((0.0, float("inf"))))
+    assert result.after is not None
+
+
+def test_many_reads_stay_within_the_finish_deadline(tmp_path, monkeypatch):
+    import time
+
+    from unify.memory_v2.integration.adapters import worktree as wt_mod
+
+    paths, ws, cap = _world(tmp_path, monkeypatch)
+    for i in range(200):
+        (ws / f"r{i:03d}.txt").write_text(f"row {i}\n")
+    monkeypatch.setattr(capture_mod, "FINISH_SECONDS", 2.0)
+    cap.begin()
+    real = wt_mod._BlobReader.read
+
+    def slow(self, oid, deadline):
+        time.sleep(0.05)
+        return real(self, oid, deadline)
+
+    monkeypatch.setattr(wt_mod._BlobReader, "read", slow)
+    root = ws.resolve()
+    _done(
+        monkeypatch,
+        1.0,
+        {
+            "records": [
+                {"event": "open", "path": str(root / f"r{i:03d}.txt"), "mode": "r"}
+                for i in range(200)
+            ],
+        },
+    )
+    (ws / "out.txt").write_text("written\n")
+    start = time.monotonic()
+    result = cap.finish(_cells((0.0, 2.0)))
+    took = time.monotonic() - start
+    assert took < 4.0, took
+    assert result.after is not None  # the after snapshot is never lost to the records
+    reads = [a for a in result.actions if a.method == "read"]
+    assert 0 < len(reads) < 200
+    assert cap.cut_off == 200 - len(reads)
+    assert ("write", "out.txt") in {(a.method, a.args[0]) for a in result.actions}
+
+
+def test_a_crediting_error_never_loses_the_after_snapshot(tmp_path, monkeypatch):
+    paths, ws, cap = _world(tmp_path, monkeypatch)
+    cap.begin()
+    _done(
+        monkeypatch,
+        1.0,
+        {
+            "records": [
+                {"event": "open", "path": str(ws.resolve() / "pay.csv"), "mode": "r"},
+            ],
+        },
+    )
+    (ws / "new.txt").write_text("n\n")
+    result = cap.finish([object()])  # a cell with no window at all
+    assert cell_at(1.0, [object()]) == -1
+    assert result.after is not None and "+++ b/new.txt" in result.diff
+    assert {(a.method, a.args[0], a.cell) for a in result.actions} == {
+        ("read", "pay.csv", -1),
+        ("write", "new.txt", -1),
+    }
+
+
+def test_abort_deactivates_without_raising(tmp_path, monkeypatch):
+    paths, ws, cap = _world(tmp_path, monkeypatch)
+    cap.begin()
+    assert hooks.worker_audit() is not None
+    _done(
+        monkeypatch,
+        1.0,
+        {
+            "records": [
+                {"event": "open", "path": str(ws.resolve() / "pay.csv"), "mode": "r"},
+            ],
+        },
+    )
+    assert cap.abort() is None
+    assert capture_mod.active() is None and hooks.worker_audit() is None
+    assert cap._events == []
+    assert cap.abort() is None  # twice
+    assert cap.finish([]) == WorktreeResult([], None, None, "")
+    never = WorktreeCapture(paths, ws, lambda: Redactor({}), hidden=lambda rel: False)
+    assert never.abort() is None  # without begin
