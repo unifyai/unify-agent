@@ -886,8 +886,8 @@ def test_a_tag_constant_within_its_message_shape_across_the_store_is_identity():
 
 
 def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
-    def room(i, r):
-        return _dl(i, {"room": r, "steps": 3})
+    def room(i, r):  # each observation distinct in content (turn), so each counts
+        return _dl(i, {"room": r, "steps": 3, "turn": i})
 
     covers = [("b1", 0, room(0, "kitchen")), ("b2", 1, room(1, "kitchen"))]
     # the covers agree, but a same-shape observation elsewhere in the store differs: room varies
@@ -912,14 +912,117 @@ def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
         blob=lambda sha: b"",
         pool=one_ep,
     )
-    assert {c.field for c in q.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in q.cases if c.field} == {"room", "steps", "turn"}
     # two observations from two episodes: below the minimum, every field varies
     two = [(e, a) for e, _, a in covers]
     r = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"", pool=two)
-    assert {c.field for c in r.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in r.cases if c.field} == {"room", "steps", "turn"}
     # the default pool is the covers (and seen actions, here none)
     default = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"")
-    assert {c.field for c in default.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in default.cases if c.field} == {"room", "steps", "turn"}
+    # the same observation in three episodes is one observation: no support
+    same = [(e, room(0, "kitchen")) for e in ("b1", "b2", "b3")]
+    t = plan(
+        "env/dialogue_user:r",
+        covers[:1],
+        seen=[],
+        blob=lambda sha: b"",
+        pool=same,
+    )
+    assert {c.field for c in t.cases if c.field} == {"room", "steps", "turn"}
+
+
+def test_the_same_file_read_in_two_episodes_is_one_observation(recorded):
+    """N2: a shared expenses file read three times in two episodes does not make currency constant."""
+    store, _ = recorded
+    sha = store.put(_expenses([5, 7]))
+    reads = [
+        (eid, _wt_read(i, f"exp/2026/e{i}.csv", sha, 1))
+        for i, eid in enumerate(["d1", "d2", "d2"])
+    ]
+    covers = [(reads[0][0], 0, reads[0][1])]
+    p = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" in {c.field for c in p.cases}
+    assert not any("not perturbed" in n for n in p.notes)
+    # one more, different file: two distinct observations, still below the minimum of three
+    other = store.put(_expenses([9, 11]))
+    two = reads + [("d2", _wt_read(3, "exp/2026/e3.csv", other, 1))]
+    q = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=two)
+    assert "currency" in {c.field for c in q.cases}
+
+
+def _expenses(rows):
+    return b"id,amount,currency\n" + b"".join(
+        b"X-%d,%d.00,USD\n" % (i, amount) for i, amount in enumerate(rows)
+    )
+
+
+def test_a_capped_pool_keeps_no_field_constant(recorded, monkeypatch):
+    """N1: an unread observation could vary a field, so a cap makes constancy fail safe."""
+    import unify.memory_v2.held_out as held_out
+
+    store, _ = recorded
+    msgs, pool = _arc_pool()
+    capped = plan(
+        "env/dialogue_user:parse_feedback",
+        [("a1", 0, msgs[0])],
+        seen=msgs,
+        blob=store.get,
+        pool=pool,
+        pool_capped=True,
+    )
+    assert {"type", "version", "attempt"} <= {c.field for c in capped.cases}
+    assert any("stopped at its read cap" in n for n in capped.notes)
+    # three distinct expense files from two episodes: currency is USD in all of them
+    reads = [
+        (eid, _wt_read(i, f"exp/2026/e{i}.csv", store.put(_expenses(rows)), 1))
+        for i, (eid, rows) in enumerate(
+            [("c1", [5, 7]), ("c2", [9, 11]), ("c2", [13, 15])],
+        )
+    ]
+    covers = [(reads[0][0], 0, reads[0][1])]
+    kept = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" not in {c.field for c in kept.cases}
+    assert any("currency" in n and "not perturbed" in n for n in kept.notes)
+    # the file parse cap leaves a file of the family unread: currency is perturbed again
+    monkeypatch.setattr(held_out, "MAX_HOST_PARSES", 2)
+    cut = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" in {c.field for c in cut.cases}
+    assert any("parsed its cap of 2 recorded files" in n for n in cut.notes)
+
+
+def test_the_gate_reads_the_stores_episodes_first_in_store_order(tmp_path, monkeypatch):
+    """N1: the manifest's episodes cannot use up the read cap before the store's are read."""
+    from types import SimpleNamespace
+
+    import unify.memory_v2.held_out as held_out
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    recorded_eps = {
+        eid: [_dl(0, {"room": eid}), _dl(1, {"room": eid + "x"})]
+        for eid in ("s2", "s1", "n1")
+    }
+    for eid in ("s1", "s2"):  # store order: s1 before s2
+        ev.index_episode(_ep(episode_id=eid, actions=recorded_eps[eid]), "1" * 40)
+    lookup = lambda eid, i: (
+        recorded_eps[eid][i]
+        if eid in recorded_eps and i < len(recorded_eps[eid])
+        else None
+    )
+    gate = Gate(
+        Repo.init_bare(tmp_path / "m.git"),
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=lookup,
+    )
+    named = SimpleNamespace(source_episodes=["n1"], covers=[("n1", 0)])
+    run = SimpleNamespace(pools={}, man=SimpleNamespace(items=[named]))
+    cover = [("n1", 0, recorded_eps["n1"][0])]
+    pool, capped = gate._pool(run, cover)
+    assert [e for e, _ in pool] == ["s1", "s1", "s2", "s2", "n1", "n1"] and not capped
+    monkeypatch.setattr(held_out, "MAX_POOL_ACTIONS", 3)
+    pool, capped = gate._pool(SimpleNamespace(pools={}, man=run.man), cover)
+    assert [e for e, _ in pool] == ["s1", "s1"] and capped
 
 
 def test_a_tool_keyword_is_constant_only_across_every_recorded_call_in_the_pool(

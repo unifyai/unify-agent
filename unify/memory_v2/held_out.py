@@ -10,8 +10,10 @@ Perturbations come from types alone, never from task ids, stream positions, benc
 
 **A field with one value is identity or format, never perturbed.** The gate reads the recorded observations
 of the item's families from the whole evidence store (:func:`pool_actions`: the episodes the manifest names
-and the most recent :data:`MAX_POOL_EPISODES` episodes touching each covered channel, at most
-:data:`MAX_POOL_ACTIONS` actions), not only the covers the pass chose. A family is a tool call's
+and the most recent :data:`MAX_POOL_EPISODES` episodes touching each covered channel, read in the store's
+order before the manifest's own, at most :data:`MAX_POOL_ACTIONS` actions), not only the covers the pass
+chose. When a read cap stops the pool, or the file parse cap leaves a family's file unread, no field (of
+that family) is kept: an unread observation could vary it. A family is a tool call's
 ``channel.method`` (its keywords, or its ``ok`` responses for an item taking observations), a dialogue
 ``channel.method``, or a work-tree channel and path family (at most :data:`MAX_HOST_PARSES` files parsed).
 Among the observations of a cover's family *with the same set of field names* (key paths, columns, keyword
@@ -19,8 +21,10 @@ paths), a field is identity or format when it holds one value across at least
 :data:`MIN_CONSTANT_OBSERVATIONS` observations from at least :data:`MIN_CONSTANT_EPISODES` episodes: a
 message-kind tag (``"type": "SubmitFeedback"`` in every message of that shape), a schema version, a constant
 currency. Perturbing it would perturb what the input is, so it is kept, for strings, numbers and booleans
-alike, and a note names the field (never a value). With less support, or two or more values, the field is
-perturbed. Matching field-name sets keep a tag that separates message shapes constant within each shape,
+alike, and a note names the field (never a value). Observations are counted by content (a file's blob, a
+call's keywords, a response or an observation, canonically): the same file read in two episodes is one
+observation, credited to the first episode that showed it. With less support, or two or more values, the
+field is perturbed. Matching field-name sets keep a tag that separates message shapes constant within each shape,
 while a value field that varies among same-shape observations elsewhere in the store is still perturbed, so
 choosing few or similar covers does not hide a whitelist. Tool keywords count calls of every status, so a
 value only a rejected call used makes the field vary (the conservative side); responses count ``ok`` calls:
@@ -825,11 +829,17 @@ def _file_name(a: Action, n: int) -> str:
     return f"file{n}{_shapes.extension(path)[:16]}"
 
 
-def _blob_of(a: Action, blob: Callable[[str], bytes]) -> bytes | None:
+def _blob_sha(a: Action) -> str | None:
+    """The recorded file a work-tree action shows: a write's after-blob, else its before-blob."""
     r = a.response if isinstance(a.response, dict) else {}
     sha = r.get("blob_after") if a.method == "write" else r.get("blob_before")
     sha = sha or r.get("blob_before") or r.get("blob_after")
-    if not isinstance(sha, str):
+    return sha if isinstance(sha, str) else None
+
+
+def _blob_of(a: Action, blob: Callable[[str], bytes]) -> bytes | None:
+    sha = _blob_sha(a)
+    if sha is None:
         return None
     try:
         return blob(sha)
@@ -1048,6 +1058,7 @@ def plan(
     field_types: dict[str, str] | None = None,
     input_kind: str | None = None,
     pool: list[tuple[str, Action]] | None = None,
+    pool_capped: bool = False,
 ) -> Plan:
     """The cases that check *item* on its covered observations (see the module docstring).
 
@@ -1055,7 +1066,8 @@ def plan(
     *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21);
     *input_kind* its declared input form (None: each kind's convention); *pool* the recorded observations
     (episode id, action) a field's constancy is judged on, holding the covers (None: the covers, plus
-    *seen* under an unknown episode id ``""``, which never counts toward the episodes).
+    *seen* under an unknown episode id ``""``, which never counts toward the episodes); *pool_capped*
+    whether a read cap stopped the pool, in which case no field is kept as constant (fail safe).
     """
     out = Plan()
     field_types = dict(field_types or {})
@@ -1128,9 +1140,11 @@ def plan(
             d = _observation_doc(a.response)
             if d is not None:
                 ranged(rfam, d)
-    # constancy: the pool's observations by family and field-name set, each field's values per observation
-    shapes: dict[tuple, list[tuple[str, dict[str, set[str]]]]] = {}
-    parses, parse_capped = 0, False
+    # constancy: the pool's distinct observations (by content) by family and field-name set, each with the
+    # first episode that showed it and its fields' values
+    shapes: dict[tuple, dict[str, tuple[str, dict[str, set[str]]]]] = {}
+    parses = 0
+    parse_capped: set[tuple] = set()  # families with a file the parse cap left unread
     for eid, a in pool:
         kind = getattr(a, "kind", "tool")
         if kind == "shell":
@@ -1141,6 +1155,7 @@ def plan(
                 continue
             d = _Json(dict(a.kwargs), lambda o: o)
             ranged(fam, d)
+            content = "kwargs:" + _key(a.kwargs)
         elif kind == "tool":
             fam = ("tool_response", a.channel, a.method)
             if fam not in families or a.status != "ok":
@@ -1148,30 +1163,48 @@ def plan(
             d = _observation_doc(a.response)
             if d is not None:
                 ranged(fam, d)
+            content = "response:" + _key(a.response)
         else:
             fam = family(a)
             if fam not in families or a.status != "ok" or is_rejection(a):
                 continue
             if kind == "worktree":
                 if parses >= MAX_HOST_PARSES:
-                    parse_capped = True
+                    parse_capped.add(fam)
                     continue
                 parses += 1
+            content = (
+                f"blob:{_blob_sha(a)}"
+                if kind == "worktree"
+                else "observation:" + _key(a.response)
+            )
             d = _doc(a, blob, input_kind)
         if d is None:
             continue
         fields = d.fields()
-        shapes.setdefault((fam, frozenset(fields)), []).append(
-            (eid, {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()}),
+        seen_contents = shapes.setdefault((fam, frozenset(fields)), {})
+        if (
+            content not in seen_contents
+        ):  # identical content in two episodes is one observation
+            seen_contents[content] = (
+                eid,
+                {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()},
+            )
+    if pool_capped:
+        out.notes.append(
+            "the recorded-observation pool stopped at its read cap; no field is kept as identity or "
+            "format",
         )
     if parse_capped:
         out.notes.append(
-            f"constancy read {MAX_HOST_PARSES} recorded files of the item's families; the rest count "
-            "as unseen",
+            f"constancy parsed its cap of {MAX_HOST_PARSES} recorded files; no field of a family with "
+            "unread files is kept as identity or format",
         )
 
     def constant(fam: tuple, shape: frozenset, name: str) -> bool:
-        obs = shapes.get((fam, shape), [])
+        if pool_capped or fam in parse_capped:
+            return False  # an unread observation could vary the field: fail safe
+        obs = list(shapes.get((fam, shape), {}).values())
         values: set[str] = set()
         for _, by_name in obs:
             values |= by_name.get(name, set())
