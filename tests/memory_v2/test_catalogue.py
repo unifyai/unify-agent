@@ -821,3 +821,118 @@ def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
     assert catalogue.readme_for_sol(tree, budget_tokens=10**6).startswith(
         "Current library (its README",
     )
+
+
+# --- memory.catalog() is bounded (I-S1) ------------------------------------------------------------------
+
+
+def _big_tree(tree: Path, channels: dict[str, int], summary: str = "") -> None:
+    for ch, n in channels.items():
+        body = (f'"""{summary}"""\n\n\n' if summary else "") + "".join(
+            f"def f{i}(path):\n    \"\"\"{'Read one recorded kind of file into rows. ' * 3}\n\n"
+            '    Effect: read\n    Input: path\n    """\n    return path\n\n\n'
+            for i in range(n)
+        )
+        (tree / "env" / ch).mkdir(parents=True)
+        (tree / "env" / ch / "__init__.py").write_text(body)
+    catalogue.write_generated(tree)
+
+
+def _all_pages(memory, *args) -> list[str]:
+    """Every page of ``memory.catalog(*args, page=n)``, following each page's pointer to the next."""
+    pages = [memory.catalog(*args)]
+    while "prints the next" in pages[-1]:
+        pages.append(memory.catalog(*args, page=len(pages) + 1))
+        assert len(pages) < 100
+    return pages
+
+
+def test_the_catalog_is_bounded_and_points_at_find_and_the_channel_view(tmp_path):
+    """The guide asks for memory.catalog() at the start of every request, so its output is at most
+    CATALOG_MAX_TOKENS estimated tokens, however large the library grows: past it, the channel lines with
+    their counts and how to reach the rest."""
+    tree = tmp_path / "big"
+    _big_tree(tree, {"beta": 400, "alpha": 400, "gamma": 3})
+    memory = _helper(tree)
+    bound = memory.CATALOG_MAX_TOKENS
+    assert bound == 1500
+    text = memory.catalog()
+    assert catalogue.estimate_tokens(text) <= bound
+    # the channel lines with their counts, in name order
+    a, b, g = (
+        text.index("- `env.alpha`: 400 functions\n"),
+        text.index("- `env.beta`: 400 functions\n"),
+        text.index("- `env.gamma`: 3 functions\n"),
+    )
+    assert a < b < g
+    assert "Use memory.find(value) or memory.catalog(channel) for the rest" in text
+    assert "`env.alpha.f0(" not in text  # no function line past the bound
+    assert "memory.describe(" in text and "MemoryInputError" in text  # the footer stays
+    # deterministic: the same library prints the same bytes
+    assert text == memory.catalog() == _helper(tree).catalog()
+
+
+def test_a_channel_pages_its_functions_under_the_same_bound(tmp_path):
+    tree = tmp_path / "big"
+    _big_tree(tree, {"alpha": 400, "gamma": 3})
+    memory = _helper(tree)
+    pages = _all_pages(memory, "env.alpha")
+    assert len(pages) > 1
+    seen = []
+    for n, page in enumerate(pages, 1):
+        assert catalogue.estimate_tokens(page) <= memory.CATALOG_MAX_TOKENS, n
+        assert page.startswith("Memory library, channel `env.alpha`")
+        assert "- `env.alpha`: 400 functions" in page
+        assert "`env.gamma." not in page
+        if n < len(pages):
+            assert f"memory.catalog('alpha', page={n + 1}) prints the next" in page
+        else:
+            assert f"(page {n} of {len(pages)}, the last)" in page
+        seen += [
+            ln.split("`env.alpha.")[1].split("(")[0]
+            for ln in page.splitlines()
+            if ln.startswith("- `env.alpha.f")
+        ]
+    # every function once, in the catalogue's order, across the pages
+    assert seen == [f"f{i}" for i in range(400)]
+    # the same pages by any spelling of the channel, and the same bytes on every call
+    for spelling in ("alpha", "env/alpha"):
+        assert _all_pages(memory, spelling) == pages
+    assert memory.catalog("alpha", page=2) == memory.catalog("alpha", page=2)
+    # a small channel is one page, unmarked
+    small = memory.catalog("gamma")
+    assert "page=" not in small and ", the last)" not in small
+    assert small.count("- `env.gamma.f") == 3
+    with pytest.raises(LookupError, match="pages run from 1 to"):
+        memory.catalog("alpha", page=len(pages) + 1)
+    with pytest.raises(LookupError, match="pages run from 1 to 1"):
+        memory.catalog("gamma", page=0)
+    with pytest.raises(LookupError, match=r"no channel 'delta'"):
+        memory.catalog("delta")
+
+
+def test_many_channels_page_the_channel_lines_too(tmp_path):
+    """Even the channel lines alone may pass the bound: the overview pages them, in name order."""
+    tree = tmp_path / "wide"
+    names = [f"c{i:03d}" for i in range(200)]
+    _big_tree(
+        tree,
+        dict.fromkeys(reversed(names), 1),
+        summary="Readers for one of the many kinds of recorded files this library has met so far.",
+    )
+    memory = _helper(tree)
+    pages = _all_pages(memory)
+    assert len(pages) > 1
+    seen = []
+    for n, page in enumerate(pages, 1):
+        assert catalogue.estimate_tokens(page) <= memory.CATALOG_MAX_TOKENS, n
+        assert page.startswith("Memory library: 200 channels, 200 functions")
+        assert "memory.find(value) or memory.catalog(channel)" in page
+        if n < len(pages):
+            assert f"memory.catalog(page={n + 1}) prints the next" in page
+        seen += [
+            ln.split("`env.")[1].split("`")[0]
+            for ln in page.splitlines()
+            if ln.startswith("- `env.c")
+        ]
+    assert seen == names

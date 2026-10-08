@@ -5,7 +5,8 @@ In a cell::
     import memory
     memory.find(value)      # the functions whose recorded inputs have the shape of value
     memory.describe(fn)     # one function's documentation: signature, input form, sections, example
-    print(memory.catalog()) # every channel (counts, summary, suspect flag) and function
+    print(memory.catalog()) # every channel (counts, summary, suspect flag) and function, bounded
+    print(memory.catalog("env.<channel>"))  # one channel's functions (page=2, ... past the bound)
 
 *value* is data you hold: a path to a file, the file's bytes or text, or a parsed value (a dict or a list,
 or a string holding JSON). *fn* is an imported function, or its name (``"env.<channel>.<function>"`` or the
@@ -31,7 +32,12 @@ that is not a dict, list or JSON text has no shape here: pass its records or its
 The system prompt names no channel or function (it carries a constant guide pointing here), so
 :func:`catalog` is where a cell learns what the library holds: the channels with their function and note
 counts, one-line summaries and suspect flags (a channel the harness holds suspect: the environment changed
-since its functions were built), then one line per function.
+since its functions were built), then one line per function. The guide asks for it at the start of every
+request, so its output is bounded: at most :data:`CATALOG_MAX_TOKENS` estimated tokens (4 characters per
+token). Past that, ``catalog()`` prints the channel lines with their counts and points at
+``memory.find(value)`` and ``memory.catalog(channel)``; ``catalog(channel)`` lists one channel's functions
+under the same bound, in pages (``page=2``, ...). Channels are in name order and functions in the
+catalogue's order, so the same library always prints the same pages.
 
 The helper reads only the catalogue the harness wrote beside it (``.memory/catalog.json``, rendered from
 the library's commit, with the harness's suspect flags); it makes no network call and no call to the
@@ -61,6 +67,12 @@ _MAX_ELEMENTS = 50  # list elements walked for length classes
 # marked ``"truncated": true`` and shows the part walked, so a huge nested value is shaped in bounded time.
 MAX_NODES = 20_000
 _MAX_SIGNATURE_PATHS = 20_000
+# What one catalog() print may cost, in estimated tokens (ceil(characters / 4)); past it the view pages.
+CATALOG_MAX_TOKENS = 1500
+_CATALOG_MAX_CHARS = CATALOG_MAX_TOKENS * 4
+_LINE_MAX_CHARS = (
+    300  # one listed line in a paged view (a long summary is cut with "…")
+)
 
 
 def _load_shapes() -> Any:
@@ -549,7 +561,8 @@ def _entry(fn_or_name: Any) -> dict:
             f"memory: {wanted!r} names several functions ({names}); pass one of them",
         )
     raise LookupError(
-        f"memory: no function {wanted!r} in the catalogue; memory.catalog() lists every function",
+        f"memory: no function {wanted!r} in the catalogue; memory.catalog() lists every function (or "
+        "memory.catalog(channel) a channel's, past its bound)",
     )
 
 
@@ -629,36 +642,153 @@ def describe(fn_or_name: Any) -> str:
     return _Text("\n".join(out).rstrip() + "\n")
 
 
-def catalog() -> str:
+def _function_line(e: dict) -> str:
+    line = f"- `{e['module']}.{e.get('signature') or e['name']}`"
+    if e.get("summary"):
+        line += f": {e['summary']}"
+    if e.get("input"):
+        line += f" (input: {e['input']})"
+    return line + "\n"
+
+
+def _cut(line: str) -> str:
+    """*line* (ending in a newline) at most :data:`_LINE_MAX_CHARS` characters."""
+    if len(line) <= _LINE_MAX_CHARS:
+        return line
+    return line[: _LINE_MAX_CHARS - 2] + "…\n"
+
+
+def _pages(lines: list[str], room: int) -> list[list[str]]:
+    """*lines* packed in order into pages of at most *room* characters (every page holds one line at least)."""
+    pages: list[list[str]] = [[]]
+    used = 0
+    for line in lines:
+        if pages[-1] and used + len(line) > room:
+            pages.append([])
+            used = 0
+        pages[-1].append(line)
+        used += len(line)
+    return pages
+
+
+def _page_of(
+    head: str,
+    lines: list[str],
+    tail: str,
+    page: int,
+    call: str,
+) -> str:
+    """*head*, page *page* of *lines* and *tail*, at most :data:`_CATALOG_MAX_CHARS` characters; a page
+    that is not the last says how to print the next (``memory.catalog(<call>page=N)``).
+    """
+    lines = [_cut(ln) for ln in lines]
+    nav = (
+        "- ... page 999999 of 999999 (999999 more lines): "
+        f"memory.catalog({call}page=999999) prints the next\n"
+    )
+    room = max(_CATALOG_MAX_CHARS - len(head) - len(tail) - len(nav), _LINE_MAX_CHARS)
+    pages = _pages(lines, room)
+    if (
+        not isinstance(page, int)
+        or isinstance(page, bool)
+        or not 1 <= page <= len(pages)
+    ):
+        raise LookupError(
+            f"memory: no catalog page {page!r}; pages run from 1 to {len(pages)}",
+        )
+    body = "".join(pages[page - 1])
+    if page < len(pages):
+        rest = sum(len(p) for p in pages[page:])
+        body += (
+            f"- ... page {page} of {len(pages)} ({rest} more lines): "
+            f"memory.catalog({call}page={page + 1}) prints the next\n"
+        )
+    elif len(pages) > 1:
+        body += f"- (page {page} of {len(pages)}, the last)\n"
+    return head + body + tail
+
+
+def _forms_line(cat: dict) -> str:
+    forms = cat.get("input_forms") or {}
+    if not forms:
+        return ""
+    return (
+        "Input forms (what a function's first parameter takes): "
+        + "; ".join(f"`{k}` {v}" for k, v in forms.items())
+        + ".\n"
+    )
+
+
+def _channel_name(channel: Any) -> str:
+    name = str(channel).strip()
+    if name.startswith("env."):
+        name = name[4:]
+    elif name.startswith("env/"):
+        name = name[4:].rstrip("/")
+    return name
+
+
+def catalog(channel: str | None = None, page: int = 1) -> str:
     """What the library holds: each channel (function and note counts, summary, suspect flag), then each
     function (``env.<channel>.<signature>``, summary, input form), then how to use them. Read from
-    ``.memory/catalog.json``; ``print()`` it."""
+    ``.memory/catalog.json``; ``print()`` it.
+
+    At most :data:`CATALOG_MAX_TOKENS` estimated tokens. When everything does not fit, only the channel
+    lines are printed (in pages, if even they do not fit), with how to reach the functions:
+    ``memory.find(value)``, or ``memory.catalog(channel)`` for one channel's functions (``"env.<channel>"``
+    or ``"<channel>"``), itself paged past the bound (``page=2``, ...).
+    """
     cat = _catalog()
-    rows = cat.get("channels", [])
+    rows = sorted(cat.get("channels", []), key=lambda r: str(r.get("channel")))
     fns = cat.get("functions", [])
     if not rows:
         return _Text(_EMPTY)
-    out = [
+    if channel is not None:
+        return _Text(_channel_catalog(cat, rows, fns, _channel_name(channel), page))
+    order = {r["channel"]: n for n, r in enumerate(rows)}
+    fns = sorted(
+        fns,
+        key=lambda e: order.get(e.get("channel"), len(order)),
+    )  # stable: the catalogue's order within a channel
+    head = (
         f"Memory library: {_plural(len(rows), 'channel')}, {_plural(len(fns), 'function')}, at {_HERE} "
-        "(first on the import path).\n",
-        "Channels:\n",
-        *(channel_line(r, bool(r.get("suspect"))) + "\n" for r in rows),
-    ]
+        "(first on the import path).\nChannels:\n"
+    )
+    lines = [channel_line(r, bool(r.get("suspect"))) + "\n" for r in rows]
+    full = head + "".join(lines)
     if fns:
-        out.append("Functions:\n")
-    for e in fns:
-        line = f"- `{e['module']}.{e.get('signature') or e['name']}`"
-        if e.get("summary"):
-            line += f": {e['summary']}"
-        if e.get("input"):
-            line += f" (input: {e['input']})"
-        out.append(line + "\n")
-    forms = cat.get("input_forms") or {}
-    if forms:
-        out.append(
-            "Input forms (what a function's first parameter takes): "
-            + "; ".join(f"`{k}` {v}" for k, v in forms.items())
-            + ".\n",
+        full += "Functions:\n" + "".join(_function_line(e) for e in fns)
+    full += _forms_line(cat) + _FOOTER
+    if len(full) <= _CATALOG_MAX_CHARS and page == 1:
+        return _Text(full)
+    tail = (
+        f"Functions: {len(fns)}, not listed here: the whole list is over this view's bound of "
+        f"{CATALOG_MAX_TOKENS} tokens. Use memory.find(value) or memory.catalog(channel) for the rest "
+        '(e.g. memory.catalog("env.<channel>")).\n' + _FOOTER
+    )
+    return _Text(_page_of(head, lines, tail, page, ""))
+
+
+def _channel_catalog(
+    cat: dict,
+    rows: list[dict],
+    fns: list[dict],
+    name: str,
+    page: int,
+) -> str:
+    row = next((r for r in rows if r.get("channel") == name), None)
+    if row is None:
+        raise LookupError(
+            f"memory: no channel {name!r} in the catalogue; memory.catalog() lists the channels",
         )
-    out.append(_FOOTER)
-    return _Text("".join(out))
+    mine = [e for e in fns if e.get("channel") == name]
+    head = (
+        f"Memory library, channel `env.{name}` (at {_HERE}):\n"
+        + _cut(channel_line(row, bool(row.get("suspect"))) + "\n")
+        + ("Functions:\n" if mine else "")
+    )
+    tail = _forms_line(cat) + (
+        "Import with `from env.<channel> import <function>`; `help(<function>)` or "
+        '`memory.describe("env.<channel>.<function>")` shows one with its example.\n'
+    )
+    return _page_of(head, [_function_line(e) for e in mine], tail, page, f"{name!r}, ")
