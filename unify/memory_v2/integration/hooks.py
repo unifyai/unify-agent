@@ -7,8 +7,12 @@ objects are withdrawn.
 
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 from typing import Any, TypeVar
+
+logger = logging.getLogger(__name__)
 
 _LIBRARY_OBJECTS = ("functions", "guidance")
 _HELP_ONLY = "Read live docs in-sandbox with\n`help(...)`"
@@ -68,3 +72,42 @@ def worker_mounts() -> list[Path]:
     """Paths the worker's sandbox binds read-write: the run's memory export, nothing else."""
     run = _run()
     return [] if run is None else [Path(run.paths.checkout)]
+
+
+def worker_audit() -> dict | None:
+    """The ``audit`` entry of the worker's init message, or None (then the key is left out and the child
+    installs no hook).
+
+    Only while a memory-v2 request captures the work tree: the workspace root (the sandbox binds it at its
+    own path, so the child sees the same path) and the file of the audit hook, which the child loads by path
+    (stdlib only; no ``unify`` import there).
+    """
+    if _run() is None:
+        return None
+    from .worktree_capture import active
+
+    capture = active()
+    if capture is None:
+        return None
+    from .adapters import audit
+
+    return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
+
+
+def worker_cell_done(events: Any) -> None:
+    """Hand one cell's drained audit records (the ``done`` message's ``audit``) to the request's work-tree
+    capture, stamped now on the harness clock; worker-side times are never used. Inert while off, with no
+    run or no capture; never raises."""
+    if events is None or _run() is None:
+        return
+    try:
+        from .worktree_capture import active
+
+        capture = active()
+        if capture is not None:
+            capture.cell_done(time.time(), events)
+    except Exception as exc:  # noqa: BLE001 - recording never fails a cell
+        logger.warning(
+            "memory v2: a cell's audit records were lost (%s)",
+            type(exc).__name__,
+        )
