@@ -2572,6 +2572,11 @@ _TUNNEL_IDLE_S = 300.0
 # arrive within this many bytes (record headers included) and seconds.
 _CLIENT_HELLO_LIMIT = 16384
 _CLIENT_HELLO_S = 10.0
+# The encrypted_client_hello extension (TLS ECH): it hides the real server
+# name, so a hello carrying it is refused.
+_ECH_EXTENSION = 0xFE0D
+# At most this many tunnels are open at once; more are refused.
+_MAX_TUNNELS = 32
 # The well-known NAT64 prefix (RFC 6052): the last 32 bits are the IPv4
 # address a translator reaches, link-local and private ones included. The
 # local-use prefix (64:ff9b:1::/48, RFC 8215) embeds it at a position its
@@ -2756,6 +2761,10 @@ def _client_hello_sni(body: bytes) -> str:
         if kind in seen:
             raise _HelloRefused(f"the ClientHello repeats extension {kind}")
         seen.add(kind)
+        if kind == _ECH_EXTENSION:
+            # Encrypted Client Hello hides the real server name behind an
+            # outer (public) one, so the SNI checked here could be a decoy.
+            raise _HelloRefused("the ClientHello uses encrypted_client_hello")
         if kind != 0:  # server_name
             continue
         entries = _Reader(data)
@@ -2815,6 +2824,11 @@ class EgressProxy:
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server.bind(str(self.path))
         self._server.listen(64)
+        # At most _MAX_TUNNELS connections are handled at once, and close()
+        # shuts every open one, so no tunnel outlives the install.
+        self._slots = threading.BoundedSemaphore(_MAX_TUNNELS)
+        self._open: set[socket.socket] = set()
+        self._open_lock = threading.Lock()
         threading.Thread(
             target=self._serve,
             daemon=True,
@@ -2840,7 +2854,23 @@ class EgressProxy:
         except OSError:
             pass
         self._server.close()
+        with self._open_lock:
+            still_open = list(self._open)
+        for s in still_open:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         shutil.rmtree(self.directory, ignore_errors=True)
+
+    def _track(self, s: socket.socket) -> socket.socket:
+        with self._open_lock:
+            self._open.add(s)
+        return s
+
+    def _untrack(self, s: socket.socket) -> None:
+        with self._open_lock:
+            self._open.discard(s)
 
     def _serve(self) -> None:
         while True:
@@ -2848,14 +2878,24 @@ class EgressProxy:
                 conn, _ = self._server.accept()
             except OSError:
                 return
+            if not self._slots.acquire(blocking=False):
+                self._refuse(
+                    conn,
+                    "?",
+                    "503 Service Unavailable",
+                    f"more than {_MAX_TUNNELS} tunnels at once",
+                )
+                conn.close()
+                continue
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
     def _note_refusal(self, target: str, reason: str) -> None:
         import logging
 
         self.refused.append((target, reason))
+        # repr(): a target or reason quoting client bytes cannot forge log lines.
         logging.getLogger(__name__).warning(
-            "installer proxy: refused %s: %s",
+            "installer proxy: refused %r: %r",
             target,
             reason,
         )
@@ -2874,6 +2914,7 @@ class EgressProxy:
 
     def _handle(self, conn: socket.socket) -> None:
         up: Optional[socket.socket] = None
+        self._track(conn)
         try:
             conn.settimeout(_PROXY_HANDSHAKE_S)
             head = b""
@@ -2913,6 +2954,7 @@ class EgressProxy:
             if up is None:
                 self._refuse(conn, name, "403 Forbidden", reason)
                 return
+            self._track(up)
             conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
             # Nothing the client sends reaches the index host before its
             # ClientHello names that host; otherwise the tunnel is closed (no
@@ -2945,7 +2987,9 @@ class EgressProxy:
         finally:
             for s in (conn, up):
                 if s is not None:
+                    self._untrack(s)
                     s.close()
+            self._slots.release()
 
     def _connect(self, host: str, port: int) -> tuple[Optional[socket.socket], str]:
         try:

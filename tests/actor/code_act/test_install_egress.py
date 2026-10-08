@@ -120,6 +120,58 @@ def _connect(target: str) -> bytes:
     return f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode()
 
 
+def _client_hello(sni: str | None, *, ech: bool = False) -> bytes:
+    """A minimal TLS ClientHello record naming *sni* (none when None),
+    with an encrypted_client_hello extension when *ech*."""
+    extensions = b""
+    if sni is not None:
+        name = sni.encode()
+        entry = b"\x00" + len(name).to_bytes(2, "big") + name
+        data = len(entry).to_bytes(2, "big") + entry
+        extensions += b"\x00\x00" + len(data).to_bytes(2, "big") + data
+    if ech:
+        extensions += b"\xfe\x0d" + (4).to_bytes(2, "big") + b"\x00\x01\x02\x03"
+    body = (
+        b"\x03\x03"
+        + bytes(32)  # random
+        + b"\x00"  # session id
+        + b"\x00\x02\x13\x01"  # one cipher suite
+        + b"\x01\x00"  # null compression
+        + len(extensions).to_bytes(2, "big")
+        + extensions
+    )
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03\x01" + len(handshake).to_bytes(2, "big") + handshake
+
+
+def _tunnel(proxy: sandbox.EgressProxy, target: str, first: bytes) -> tuple[str, bytes]:
+    """CONNECT to *target*, send *first* in the tunnel: the status line and
+    whatever came back through the tunnel before it closed."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(15)
+    try:
+        s.connect(str(proxy.path))
+        s.sendall(_connect(target))
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head, _, rest = data.partition(b"\r\n\r\n")
+        status = head.split(b"\r\n", 1)[0].decode()
+        if status.startswith("HTTP/1.1 200"):
+            s.sendall(first)
+            try:
+                while chunk := s.recv(4096):
+                    rest += chunk
+            except OSError:
+                pass
+        return status, rest
+    finally:
+        s.close()
+
+
 # ── the proxy itself ────────────────────────────────────────────────────────
 
 
@@ -261,7 +313,11 @@ def test_the_proxy_tunnels_to_an_allowed_host(listener, monkeypatch):
         lambda a: a == "127.0.0.1" or _REAL_PUBLIC(a),
     )
     with sandbox.egress_proxy([("index.test", listener.port)]) as proxy:
-        status, data = _ask(proxy, _connect(f"index.test:{listener.port}"))
+        status, data = _tunnel(
+            proxy,
+            f"index.test:{listener.port}",
+            _client_hello("Index.Test."),
+        )
         assert status == "HTTP/1.1 200 Connection established", status
         assert data == b"from host\n"
         status, _ = _ask(proxy, _connect(f"other.test:{listener.port}"))
@@ -269,6 +325,85 @@ def test_the_proxy_tunnels_to_an_allowed_host(listener, monkeypatch):
     assert listener.accepted == 1
     # Closed: the socket's directory is gone.
     assert not proxy.directory.exists()
+
+
+@pytest.mark.parametrize(
+    ("first", "reason"),
+    [
+        (_client_hello("evil.example"), "SNI must be the CONNECT host"),
+        (_client_hello(None), "no SNI"),
+        (_client_hello("index.test", ech=True), "encrypted_client_hello"),
+        (b"GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n", "not a TLS handshake"),
+        (b"\x16\x03\x01\xff\xff" + bytes(16), "out of bounds"),
+    ],
+)
+@pytest.mark.timeout(60)
+def test_a_tunnel_carries_nothing_unless_its_tls_server_is_the_connect_host(
+    listener,
+    monkeypatch,
+    first,
+    reason,
+):
+    """The index hosts share a CDN's addresses with other sites, so a tunnel
+    relays only after a ClientHello naming the CONNECT host itself; another
+    name, none, an encrypted ClientHello, plaintext or a malformed record
+    closes it with nothing relayed either way."""
+    monkeypatch.setattr(
+        sandbox,
+        "_resolve",
+        lambda host, port: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ],
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "public_address",
+        lambda a: a == "127.0.0.1" or _REAL_PUBLIC(a),
+    )
+    with sandbox.egress_proxy([("index.test", listener.port)]) as proxy:
+        status, data = _tunnel(proxy, f"index.test:{listener.port}", first)
+        assert status == "HTTP/1.1 200 Connection established", status
+        assert data == b""
+        reasons = [r for _, r in proxy.refused]
+    assert any(reason in r for r in reasons), reasons
+
+
+@pytest.mark.timeout(60)
+def test_tunnels_are_capped_and_closed_with_the_proxy(monkeypatch):
+    monkeypatch.setattr(sandbox, "_MAX_TUNNELS", 1)
+    held = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    held.settimeout(15)
+    with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as proxy:
+        # A connection that never finishes its request head holds the slot.
+        held.connect(str(proxy.path))
+        held.sendall(b"CONNECT pypi.org:443 HTTP/1.1\r\n")
+        deadline = 50
+        while not proxy._open and deadline:
+            threading.Event().wait(0.1)
+            deadline -= 1
+        status, body = _ask(proxy, _connect("pypi.org:443"))
+        assert status.startswith("HTTP/1.1 503"), status
+        assert b"tunnels at once" in body
+    # close() ended the held connection rather than leaving it to time out.
+    assert held.recv(4096) == b""
+    held.close()
+
+
+def test_userinfo_never_survives_in_an_index_or_proxy_url():
+    strip = environment._without_userinfo
+    proxy = "http://u:tok@proxy:3128"  # pragma: allowlist secret
+    assert strip(proxy) == "http://proxy:3128"
+    named = "idx=https://u:p@m.example/simple"  # pragma: allowlist secret
+    assert strip(named) == "idx=https://m.example/simple"
+    assert strip("https://host/simple") == "https://host/simple"
+    # Unparseable shapes are dropped whole, never passed on with the secret.
+    assert strip("u:tok@host/simple") == ""  # pragma: allowlist secret
+    assert strip("https://u:p/ss@host/simple") == ""  # pragma: allowlist secret
+    hosts = environment.index_hosts(
+        {"UV_INDEX_URL": "https://zero.example:0/s https://ok.example:8443/s"},
+    )
+    assert ("ok.example", 8443) in hosts
+    assert not any(host == "zero.example" for host, _ in hosts)
 
 
 # ── the allow-list: the harness's, never a cell's ──────────────────────────
@@ -335,6 +470,17 @@ def direct(host, port):
         s.close()
 
 
+def hello(sni):
+    name = sni.encode()
+    entry = b"\\x00" + len(name).to_bytes(2, "big") + name
+    data = len(entry).to_bytes(2, "big") + entry
+    ext = b"\\x00\\x00" + len(data).to_bytes(2, "big") + data
+    body = (b"\\x03\\x03" + bytes(32) + b"\\x00" + b"\\x00\\x02\\x13\\x01" + b"\\x01\\x00"
+            + len(ext).to_bytes(2, "big") + ext)
+    hs = b"\\x01" + len(body).to_bytes(3, "big") + body
+    return b"\\x16\\x03\\x01" + len(hs).to_bytes(2, "big") + hs
+
+
 def via_proxy(target):
     host, port = os.environ["HTTPS_PROXY"].rsplit("/", 1)[1].rsplit(":", 1)
     try:
@@ -349,6 +495,8 @@ def via_proxy(target):
             data += chunk
         head, _, rest = data.partition(b"\\r\\n\\r\\n")
         if head.startswith(b"HTTP/1.1 200"):
+            # As a TLS client would: a ClientHello naming the target host.
+            s.sendall(hello(target.rsplit(":", 1)[0]))
             rest += s.recv(64)
         s.close()
         return head.split(b"\\r\\n", 1)[0].decode() + " | " + rest.decode().strip()
