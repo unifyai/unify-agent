@@ -15,6 +15,7 @@ import pytest
 from tests.scripted_model import (
     Always,
     COMPRESS_TOOLS,
+    COMPRESS_TURN_FRAGMENT,
     HELPER_FRAGMENT,
     LAST_WORD_FRAGMENT,
     PROACTIVE_STORAGE_PREFIX,
@@ -41,6 +42,7 @@ def test_each_fixed_fragment_is_in_the_code_that_writes_it():
 
     assert HELPER_FRAGMENT in _source(binding)
     assert LAST_WORD_FRAGMENT in _source(loop)
+    assert COMPRESS_TURN_FRAGMENT in _source(loop)
     actor_source = _source(code_act_actor)
     assert STANDALONE_REVIEW_PREFIX in actor_source
     assert PROACTIVE_STORAGE_PREFIX in actor_source
@@ -75,7 +77,10 @@ def test_each_kind_is_recognised():
         "compression_fork": _request(
             users=("Do it.", cache_discipline.COMPRESSION_FORK_INSTRUCTION),
         ),
-        "compress_turn": _request(tools=("compress_context", "store_skills")),
+        "compress_turn": _request(
+            users=("Do it.", COMPRESS_TURN_FRAGMENT + " You must call it now."),
+            tools=("compress_context", "store_skills"),
+        ),
         "compactor": _request(
             system=context_compression.COMPRESSION_PROMPT,
             tools=("update",),
@@ -95,6 +100,9 @@ def test_each_kind_is_recognised():
     assert {kind: kind_of(req) for kind, req in cases.items()} == {
         kind: kind for kind in cases
     }
+    # A loop with no tools of its own offers compress_context on demand: its
+    # turns are still the actor's until the loop forces the compress turn.
+    assert kind_of(_request(tools=("compress_context",))) == "actor"
 
 
 # ── the script ───────────────────────────────────────────────────────────────
