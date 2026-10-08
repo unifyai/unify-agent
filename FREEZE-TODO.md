@@ -16,22 +16,12 @@ This branch is the overhauled Unify harness. **Lean-all is the base config, in P
   - provider-key tests carry `requires_provider_key`: skipped by name without a key, and failing under `UNIFY_TEST_REQUIRE_PROVIDER_KEY=1` if the key is missing.
 - **Untouched:** ordinary context compression. `conversation_manager` moved to `unify/legacy/` (see Legacy below).
 
-## Remaining research switches (17)
+## The tool-surface switches: removed (PR E, 8 Oct 2026)
 
-Groups 1–5 of the first list (the lexical and per-task-review memory cluster; the function summary and notices; INLINE_CURATION; REVIEW_FAILED and its lessons path; OUTCOME and STORE_TRUST) were removed in follow-up PRs after the freeze push.
-
-What is left is the tool-surface tangle below. `tests/test_no_research_switches.py` lists these switches until they are gone.
-
-### 1. The tool-surface tangle (prompt building)
-
-**Switches:** PROMPT_PROFILE (lean), DISCOVERY_GATE (off), DELEGATION (off), AGENTS (record) + AGENTS_OPTIONS, CACHE_DISCIPLINE, REVIEW_FORK + REVIEW_FORK_CORE, TOOL_SURFACE (core) with CORE_BIND_LISTED, CORE_CALL_EXAMPLE, GUIDANCE_LINKED_NAMES and FUNCTION_HELPERS, WORKSPACE (sandboxed), WORKSPACE_PYTHON (worker), LIBRARY_SHORTLIST, TRANSCRIPTS.
-
-**Known couplings:**
-- `lean_prompt()` is still a settings method, and `prompt_builders` has `lean` branches;
-- `delegation_mode()` lives in `environments/actor.py`;
-- `agents.enabled()` is read by `sandbox.py`, `cli.py` and `loop.py`;
-- `core_surface` refuses any non-core combination, so the switch can simply go.
-- **CACHE_DISCIPLINE also selects the compression fork summary. That part must stay,** as a fixed constant inside the compression module.
+The last 17 research switches went (`tests/test_no_research_switches.py` passes): TRANSCRIPTS, LIBRARY_SHORTLIST, DISCOVERY_GATE, CORE_BIND_LISTED, CORE_CALL_EXAMPLE, GUIDANCE_LINKED_NAMES, FUNCTION_HELPERS, CACHE_DISCIPLINE, REVIEW_FORK, REVIEW_FORK_CORE, DELEGATION, AGENTS, AGENTS_OPTIONS, WORKSPACE, WORKSPACE_PYTHON, TOOL_SURFACE and PROMPT_PROFILE, each baked with its losing path deleted. What remains is configuration and the WIP switches.
+- **Compression's fork summary** is the fixed constant `context_compression.FORK_SUMMARY = True`, read where the switch was read in `AsyncToolLoopHandle._compact_context`; compression behaves as before.
+- **In-process Python** is gone from the actor (cells always run in the sandboxed worker; the actor refuses otherwise). The function manager keeps its in-process loaders for non-actor callers behind the #202 choke points: `worker.enabled()` always returns True, and tests of those loaders select the in-process mode with the test-only fixture `python_in_process` (or `monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)`).
+- **Follow-ups (dead now, not yet deleted):** the actor's clarification plumbing (`_on_clar_req`/`_on_clar_ans`, the env clarification queues, `core_surface._clarification_factory`; `clarification_enabled` is always False under the record), the CLI's interrupt escalation for a cell holding the event loop (cells no longer run in the harness), the in-process branches left in the FM-facing helpers, the `prepare=` parameter of `SessionExecutor.execute`, and the `_TRIM_*` rewrites whose targets were in the deleted JSON prompt.
 
 ### 2. Leftovers from the JSON-tool removal
 - `close_session` / `close_all_sessions`, which two WIP tests still pin;
