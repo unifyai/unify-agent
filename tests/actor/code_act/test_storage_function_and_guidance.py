@@ -85,7 +85,7 @@ class _TrackingGuidanceManager:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
-async def test_storage_loop_stores_both_function_and_guidance():
+async def test_storage_loop_stores_both_function_and_guidance(monkeypatch):
     """The storage check stores both functions (FM) and guidance (GM).
 
     The task produces a single reusable utility function AND demonstrates
@@ -99,7 +99,29 @@ async def test_storage_loop_stores_both_function_and_guidance():
     - The utility function as genuinely reusable → store via FM.
     - The adaptive procedure with quality gates and conditional strategy
       selection as a non-trivial orchestration recipe → store via GM.
+
+    The review gate is answered "review" here, so the review it opens runs
+    as shipped. When the session stores ``normalize_text`` itself the
+    library is no longer empty, the gate is asked, and the frozen gate can
+    skip the review (the 7299344a6 re-record: "review=False ... The reusable
+    normalize_text code was already stored successfully"; a known
+    limitation of the frozen review, FREEZE-TODO). This test is of the
+    review's function/guidance split, not of the gate.
     """
+    from unify.actor import review_gate
+
+    gate_asked: list[bool] = []
+
+    async def _review(**_kwargs):
+        gate_asked.append(True)
+        return review_gate.GateDecision(
+            review=True,
+            reason="test: the storage review runs",
+            decided=True,
+        )
+
+    monkeypatch.setattr(review_gate, "decide", _review)
+
     fm = FunctionManager(include_primitives=False)
     gm = _TrackingGuidanceManager()
 
@@ -156,6 +178,10 @@ async def test_storage_loop_stores_both_function_and_guidance():
             if asyncio.get_event_loop().time() > deadline:
                 raise TimeoutError("Storage loop did not complete in time")
             await asyncio.sleep(0.5)
+
+        # The gate is asked once at most: only when the library holds an
+        # entry (the session stored one itself) at the end of the task.
+        assert len(gate_asked) <= 1
 
         # The storage check should have stored at least one function.
         stored = fm.filter_functions()
