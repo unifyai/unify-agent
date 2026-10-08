@@ -1755,3 +1755,75 @@ def test_a_pre_v4_record_with_a_section_counts_as_legacy_text():
         rec.update({"version": version, "memory_section_shown": {"shown": shown}})
         row = {r[0]: r for r in _use_rows("e1", rec)}["env/x:parse"]
         assert (row[col], row[unknown]) == want, version
+
+
+# --- in-cell exposure under the catalogue (memory-v2-int2) -----------------------------------------------
+
+
+def _static(codes: list[str]) -> dict:
+    """The record of cells that are only read (the counts are static: nothing needs to run)."""
+    cells = [(code, None) for code in codes]
+    return use.request_use(_lines(cells), ITEMS, cell_status=_status(cells))
+
+
+def test_catalogue_lookups_in_cells_count_as_exposure():
+    rec = _static(
+        [
+            "import memory\nprint(memory.catalog())\n",
+            "print(memory.catalog('env.x'))\nmemory.find({'a': 1})\n",
+            "help(memory)\n",  # the helper itself is no memory function
+        ],
+    )
+    assert rec["cell_exposure"] == {
+        "items": ITEMS,  # the channel view lists its functions
+        "channels": ["x"],
+        "calls": {"catalog": 2, "find": 1, "describe": 0, "help": 0},
+    }
+    only = _static(["import memory as m\nm.catalog(page=2)\n"])["cell_exposure"]
+    assert only["items"] == [] and only["channels"] == ["x"]  # channel lines only
+
+
+def test_describe_and_help_show_one_function_and_nothing_is_guessed():
+    rec = _static(
+        [
+            "from memory import describe\ndescribe('env/x:strict')\n",
+            "from env.x import parse\nhelp(parse)\n",
+            "describe(name)\nmemory.catalog(channel)\n",  # unresolved, and memory is unbound here
+            "from memory import describe as d\nd('x.nope')\nd('lookup')\n",
+        ],
+    )
+    assert rec["cell_exposure"] == {
+        "items": ["env/x:lookup", "env/x:parse", "env/x:strict"],
+        "channels": ["x"],
+        "calls": {"catalog": 0, "find": 0, "describe": 4, "help": 1},
+    }
+    # help(parse) is still a reference of parse; describe('env/x:strict') touches nothing
+    assert rec["items"]["env/x:parse"]["referenced"] == 1
+    assert "env/x:strict" not in rec["items"]
+    names = _static(["import env.x as mod\nhelp(mod)\n"])["cell_exposure"]
+    assert names["items"] == ITEMS and names["calls"]["help"] == 1
+
+
+def test_a_function_looked_up_in_a_cell_and_never_used_is_flagged(tmp_path):
+    from unify.memory_v2 import usage
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    # catalogue mode: the prompt showed the guide only (no item, no channel)
+    rec = _static(
+        [
+            "import memory\nprint(memory.catalog())\nprint(memory.describe('x.strict'))\n",
+            "from env.x import parse\nparse('a')\n",
+        ],
+    )
+    assert rec["shown_items"] == [] and rec["shown_channels"] == []
+    _index(ev, "e1", rec, "2026-10-08T01:00:00Z")
+    strict = usage.item_signals("env/x:strict", ev)
+    assert strict["never_used"] and strict["never_used_basis"] == "item"
+    lookup = usage.item_signals("env/x:lookup", ev)
+    assert lookup["never_used"] and lookup["never_used_basis"] == "channel"
+    assert not usage.item_signals("env/x:parse", ev)["never_used"]
+    # a record from before the field shows nothing in cells, as before
+    old = {k: v for k, v in rec.items() if k != "cell_exposure"}
+    ev2 = EvidenceStore(tmp_path / "e2.sqlite")
+    _index(ev2, "e1", old, "2026-10-08T01:00:00Z")
+    assert usage.item_signals("env/x:strict", ev2)["never_used_basis"] is None

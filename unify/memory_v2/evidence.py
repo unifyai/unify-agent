@@ -153,7 +153,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
     channel plus on ``env`` itself; ``shown`` whether the item's own line was in the prompt's memory
     section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
-    channel's files (its refusals and errors are then in the ``_modified`` columns only);
+    channel's files (its refusals and errors are then in the ``_modified`` columns only). What the cells
+    asked the library helper to show (``cell_exposure``: ``memory.catalog``/``describe`` and ``help`` on
+    a memory object) counts as shown too, an item's channel with it, whatever the exposure source;
     ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
     what the prompt showed, the legacy reading of the prompt's text, or unknown); ``prompt_unconfirmed``
     is 1 when the shown lists came from the record but no recorded system prompt ends with its text;
@@ -177,6 +179,23 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
         listed("shown_channels"),
         listed("modified_channels"),
     )
+    # in-cell exposure (analysis.use cell_exposure): what the cells looked up counts as shown
+    cell = (
+        use.get("cell_exposure") if isinstance(use.get("cell_exposure"), dict) else {}
+    )
+    cell_items, cell_channels = cell.get("items"), cell.get("channels")
+    looked_up = {
+        v
+        for v in (cell_items if isinstance(cell_items, list) else [])
+        if isinstance(v, str) and v.startswith("env/")
+    }
+    shown |= looked_up
+    channels |= {
+        v
+        for v in (cell_channels if isinstance(cell_channels, list) else [])
+        if isinstance(v, str)
+    }
+    channels |= {i.split(":", 1)[0].removeprefix("env/") for i in looked_up}
     unknown = (
         use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
     )

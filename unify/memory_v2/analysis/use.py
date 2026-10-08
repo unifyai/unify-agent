@@ -83,6 +83,25 @@ v2 index's opening line (:data:`HEADER_PREFIX`) and read by its ``## env.<channe
 ``- env.<channel>`` catalogue lines and ``- `name(...)` `` item lines; or ``unknown`` when neither is
 there, and when the record is there but no system prompt was recorded (``prompt_confirmed`` false: nothing
 can say whether the section reached the model, so nothing counts as shown).
+
+What the cells asked the library helper to show counts as exposure too (``cell_exposure``), read from each
+cell's syntax tree like the call sites, never from its output: under ``UNIFY_MEMORY_V2_SURFACING=catalogue``
+the prompt names no channel or function, and the model looks them up. The helper is the export's ``memory``
+module (``import memory [as m]``, ``from memory import catalog, find, describe``):
+
+* ``memory.catalog()`` shows every channel of the pin (its lines and counts; whether it also lists the
+  functions depends on the library's size, which the code does not show, so no function counts);
+* ``memory.catalog(<channel>)``, with the channel a constant (``env.<ch>``, ``<ch>`` or ``env/<ch>``),
+  shows that channel and its functions (every page is counted as shown: an approximation for a channel
+  longer than one page);
+* ``memory.describe(<function>)`` and ``help(<function>)`` show that function: a bound item, or for
+  ``describe`` a constant naming it (``env/<ch>:<fn>``, ``env.<ch>.<fn>``, ``<ch>.<fn>`` or a name only one
+  channel has); ``help(<channel module>)`` shows the channel and its functions;
+* ``memory.find(<value>)`` shows functions that depend on the value at run time, so it is only counted.
+
+``cell_exposure`` holds ``items`` and ``channels`` (a shown item's channel is shown too) and ``calls``, the
+number of call sites of ``catalog``, ``find``, ``describe`` and ``help`` (on a memory object). An argument
+the tree cannot resolve shows nothing (never guessed). The evidence store counts these as shown.
 """
 
 from __future__ import annotations
@@ -119,7 +138,7 @@ __all__ = [
     "use_from_episode_dir",
 ]
 
-VERSION = 5
+VERSION = 6
 SHOWN_VERSION = 1
 
 #: The start of the v2 index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
@@ -180,6 +199,10 @@ MAX_DIFF_CHARS = 2_000_000
 MAX_RENDERER_CHARS = 64
 MAX_EXITS = 50
 MAX_NAME_CHARS = 200
+#: The library helper's module (the export's generated ``memory.py``, :mod:`..memory_helper`) and the
+#: functions of it whose calls show the library (``cell_exposure``).
+HELPER_MODULE = "memory"
+HELPER_FUNCTIONS = ("catalog", "find", "describe")
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
@@ -939,7 +962,8 @@ def _exposure(
 # --- imports and calls -----------------------------------------------------------------------------------
 
 # A binding: ("item", item id) | ("module", channel) | ("package",) | ("dynamic", channel or "*") |
-# ("reaches", item ids, channel keys): a function or class of the session whose body touched those
+# ("reaches", item ids, channel keys): a function or class of the session whose body touched those |
+# ("helper",): the library helper module | ("helper_fn", name): one of its HELPER_FUNCTIONS
 _Binding = tuple
 
 _ROW_KEYS = (
@@ -961,6 +985,13 @@ class _Tally:
         self.module_imports: dict[str, int] = {}
         self.unknown: dict[str, int] = {}
         self.unattributed: dict[str, int] = {}
+        # cell_exposure: what the cells asked the library helper (or help()) to show
+        self.exposed_items: set[str] = set()
+        self.exposed_channels: set[str] = set()
+        self.helper_calls: dict[str, int] = dict.fromkeys(
+            (*HELPER_FUNCTIONS, "help"),
+            0,
+        )
 
     def row(self, item: str) -> dict:
         r = self.items.get(item)
@@ -1072,6 +1103,10 @@ class _Cell(ast.NodeVisitor):
             base = self.resolve(node.value)
             if base is None:
                 return None
+            if base[0] == "helper":
+                return (
+                    ("helper_fn", node.attr) if node.attr in HELPER_FUNCTIONS else None
+                )
             if base[0] == "package":
                 return ("module", node.attr)
             if base[0] == "module":
@@ -1115,6 +1150,9 @@ class _Cell(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             parts = alias.name.split(".")
+            if alias.name == HELPER_MODULE:
+                self._bind(alias.asname or HELPER_MODULE, ("helper",))
+                continue
             if parts[0] != "env":
                 self._unbind(alias.asname or parts[0])
                 continue
@@ -1132,6 +1170,16 @@ class _Cell(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         mod = node.module or ""
         parts = mod.split(".")
+        if not node.level and mod == HELPER_MODULE:
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in HELPER_FUNCTIONS:
+                        self._bind(name, ("helper_fn", name))
+                elif alias.name in HELPER_FUNCTIONS:
+                    self._bind(alias.asname or alias.name, ("helper_fn", alias.name))
+                else:
+                    self._unbind(alias.asname or alias.name)
+            return
         if node.level or parts[0] != "env" or len(parts) > 2:
             for alias in node.names:
                 if alias.name != "*":
@@ -1326,8 +1374,82 @@ class _Cell(ast.NodeVisitor):
     )
 
     # -- uses -------------------------------------------------------------------------------------------
+    def _show_channel(self, channel: str, items: bool) -> None:
+        if channel in self.items.channels:
+            self.t.exposed_channels.add(channel)
+            if items:
+                self.t.exposed_items.update(
+                    f"env/{channel}:{n}" for n in self.items.by_channel.get(channel, [])
+                )
+
+    def _named_item(self, text: str) -> str | None:
+        """The item a constant names as :func:`..memory_helper.describe` reads it, or None."""
+        text = text.strip()
+        m = _ITEM_ID.match(text)
+        if m is not None:
+            return self.items.item(m.group(1), m.group(2))
+        parts = text.split(".")
+        if parts[0] == "env":
+            parts = parts[1:]
+        if len(parts) == 2:
+            return self.items.item(parts[0], parts[1])
+        if len(parts) == 1:
+            found = [
+                f"env/{ch}:{text}"
+                for ch, names in self.items.by_channel.items()
+                if text in names
+            ]
+            return found[0] if len(found) == 1 else None
+        return None
+
+    def _exposure(self, name: str, node: ast.Call) -> None:
+        """A call of the library helper's *name* (or of ``help``): what it shows (``cell_exposure``)."""
+        arg = node.args[0] if node.args else None
+        if arg is None and name == "catalog":
+            arg = next((k.value for k in node.keywords if k.arg == "channel"), None)
+        const = (
+            arg.value
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            else None
+        )
+        target = self.resolve(arg) if arg is not None else None
+        if name == "help":
+            if target is None or target[0] not in ("item", "module"):
+                return  # not a memory object: not counted
+            self.t.helper_calls["help"] += 1
+        else:
+            self.t.helper_calls[name] += 1
+        if name == "catalog":
+            if arg is None:
+                for channel in self.items.channels:
+                    self._show_channel(channel, items=False)
+            elif const is not None:
+                self._show_channel(
+                    const.strip().removeprefix("env.").removeprefix("env/").rstrip("/"),
+                    items=True,
+                )
+        elif name in ("describe", "help"):
+            iid = None
+            if target is not None and target[0] == "item":
+                iid = target[1]
+            elif target is not None and target[0] == "module":
+                self._show_channel(target[1], items=True)
+            elif const is not None and name == "describe":
+                iid = self._named_item(const)
+            if iid is not None and iid in self.items.known:
+                self.t.exposed_items.add(iid)
+                self.t.exposed_channels.add(iid.split(":", 1)[0][len("env/") :])
+
     def visit_Call(self, node: ast.Call) -> None:
         target = self.resolve(node.func)
+        if target is not None and target[0] == "helper_fn":
+            self._exposure(target[1], node)
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "help"
+            and node.func.id not in self.b
+        ):
+            self._exposure("help", node)
         if target is not None and target[0] == "item":
             self._use(target[1], "called")
             if self.guard:
@@ -1734,6 +1856,11 @@ def request_use(
         "module_imports": dict(sorted(tally.module_imports.items())),
         "unknown_calls": dict(sorted(tally.unknown.items())),
         "unattributed_errors": dict(sorted(tally.unattributed.items())),
+        "cell_exposure": {
+            "items": sorted(tally.exposed_items)[:MAX_ITEMS_AT_PIN],
+            "channels": sorted(tally.exposed_channels)[:MAX_CHANNEL_KEYS],
+            "calls": dict(tally.helper_calls),
+        },
         "truncated": truncated,
     }
 
