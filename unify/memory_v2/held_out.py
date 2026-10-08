@@ -1481,7 +1481,7 @@ def _read_results(path: Path) -> list[dict]:
     for line in data.decode("utf-8", "replace").splitlines():
         try:
             row = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):  # a nesting too deep to parse is a bad line too
             continue
         if isinstance(row, dict):
             rows.append(row)
