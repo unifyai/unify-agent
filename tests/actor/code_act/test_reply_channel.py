@@ -28,7 +28,11 @@ from types import SimpleNamespace
 import pytest
 
 from tests import cache_discipline_helpers as h
-from tests.actor.code_act.helpers import WORKER_START_BOUND_S
+from tests.actor.code_act.helpers import (
+    WARM_UP_BOUND_S,
+    WORKER_START_BOUND_S,
+    warm_up,
+)
 from tests.actor.code_act.helpers import worker_starts  # noqa: F401
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor import core_surface, notebook_cells
@@ -275,7 +279,7 @@ def test_off_the_sandbox_has_no_reply(monkeypatch):
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(WORKER_START_BOUND_S + 30)
+@pytest.mark.timeout(WARM_UP_BOUND_S + WORKER_START_BOUND_S + 30)
 async def test_a_one_shot_act_answers_with_the_cells_reply(
     channel,
     world,
@@ -288,6 +292,9 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(
 
     actor = CodeActActor()
     try:
+        # A fresh actor's first request (prompt and loop build, first model
+        # call, the worker's start) is not this request's time.
+        await warm_up(actor)
         replies = [
             h.completion(calls=[("execute_code", {"code": "import json\n" + CELL})]),
         ]
@@ -299,7 +306,7 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(
                 can_store=False,
                 clarification_enabled=False,
             )
-            # The cell starts the worker; its start is not the act's time.
+            # Should the worker start again, its start is not the act's time.
             result = await asyncio.wait_for(
                 handle.result(),
                 SESSION_BOUND_S + WORKER_START_BOUND_S,
@@ -326,7 +333,7 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(WARM_UP_BOUND_S + 30)
 async def test_a_text_reply_still_answers_with_the_switch_on(
     channel,
     world,
@@ -338,6 +345,8 @@ async def test_a_text_reply_still_answers_with_the_switch_on(
 
     actor = CodeActActor()
     try:
+        # A fresh actor's first request is not this request's time.
+        await warm_up(actor)
         with h.scripted([h.completion(content=ANSWER.strip())]) as provider:
             handle = await actor.act(
                 "Move the piece.",
@@ -444,8 +453,11 @@ def jsonl_session(monkeypatch, channel):
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
 
+    # A test that warmed an actor first (``_warm_actor``) hands it over.
+    warmed: list[_Actor] = []
+
     async def start(self) -> None:
-        self._actor = _Actor()
+        self._actor = warmed.pop() if warmed else _Actor()
 
     monkeypatch.setattr(Act, "start", start)
     session = Act(
@@ -464,8 +476,24 @@ def jsonl_session(monkeypatch, channel):
     def send(payload: dict) -> None:
         os.write(write_fd, (json.dumps(payload) + "\n").encode())
 
-    yield session, lines, send
+    yield session, lines, send, warmed
     os.close(write_fd)
+
+
+async def _warm_actor() -> _Actor:
+    """The session's actor, after one throwaway request on its CodeActActor
+    (``warm_up``): the actor's build, its first request and its worker's
+    start are not the session's time, nor is the first import of the bridge
+    the session attaches."""
+    import unify.agents.cli_bridge  # noqa: F401
+
+    actor = _Actor()
+    try:
+        await warm_up(actor._actor)
+    except BaseException:
+        await actor.close()
+        raise
+    return actor
 
 
 async def _until(predicate, timeout: float = SESSION_BOUND_S) -> None:
@@ -481,12 +509,13 @@ def _responses(lines: list[dict]) -> list[dict]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(WORKER_START_BOUND_S + 10)
+@pytest.mark.timeout(WARM_UP_BOUND_S + 2 * WORKER_START_BOUND_S + 10)
 async def test_the_cli_response_line_carries_the_cells_reply(
     jsonl_session,
     worker_starts,  # noqa: F811
 ):
-    session, lines, send = jsonl_session
+    session, lines, send, warmed = jsonl_session
+    warmed.append(await _warm_actor())
     model = _Model()
     started = time.monotonic()
     with h.scripted(()):
@@ -494,7 +523,7 @@ async def test_the_cli_response_line_carries_the_cells_reply(
 
         uni_llm._acompletion_with_transient_retry = model
         run = asyncio.create_task(session.run(TASK))
-        # The first request's cell starts the worker.
+        # Should the worker start again, its start is not the session's time.
         await _until(
             lambda: len(_responses(lines)) == 1,
             SESSION_BOUND_S + WORKER_START_BOUND_S,
@@ -503,9 +532,13 @@ async def test_the_cli_response_line_carries_the_cells_reply(
         assert len(model.requests) == 1
         send({"message": FOLLOW_UP})
         await _until(lambda: len(_responses(lines)) == 2)
+        steady = time.monotonic() - started - worker_starts.seconds(since=started)
         send({"quit": True})
-        code = await asyncio.wait_for(run, SESSION_BOUND_S)
-    steady = time.monotonic() - started - worker_starts.seconds(since=started)
+        # The quit runs the session's first storage review (its loop's first
+        # build and imports, which the warm-up, storing nothing, never ran):
+        # cold work, with the start budget too. The lines and requests below
+        # show what it did.
+        code = await asyncio.wait_for(run, SESSION_BOUND_S + WORKER_START_BOUND_S)
     assert steady < 2 * SESSION_BOUND_S
 
     assert code == 0

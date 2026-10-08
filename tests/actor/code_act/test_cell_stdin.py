@@ -22,6 +22,7 @@ import os
 import sys
 import threading
 import time
+from typing import Callable
 
 import pytest
 
@@ -66,11 +67,19 @@ def harness_stdin(monkeypatch):
 async def _run(
     code: str,
     starts: WorkerStarts | None = None,
+    *,
+    warmed: Callable[[], None] | None = None,
 ) -> tuple[str, dict, float]:
     """Run *code* in a fresh session. The elapsed time leaves out the
-    sandboxed worker's start when *starts* times it."""
+    sandboxed worker's start when *starts* times it. With *warmed*, a
+    throwaway first cell runs before the clock starts (the worker's start,
+    the session's first policy build and first execution), and *warmed* is
+    called once it has."""
     ex = SessionExecutor(environments={}, timeout=None)
     try:
+        if warmed is not None:
+            await ex.execute(code="1", state_mode="stateful", session_id=0)
+            warmed()
         started = time.monotonic()
         res = await ex.execute(code=code, state_mode="stateful", session_id=0)
         elapsed = time.monotonic() - started
@@ -151,7 +160,9 @@ STARTED = {
 def driver_channel(monkeypatch):
     """Descriptor 0 is a pipe holding the driver's next line, as under
     ``unify act --jsonl``; the pipe closes after the watchdog, so a cell that
-    reads it still ends."""
+    reads it still ends. The fixture gives the watchdog's start: a test arms
+    it once its cold work is done, so the channel is still open when the
+    timed cell runs."""
     read_fd, write_fd = os.pipe()
     saved = os.dup(0)
     os.dup2(read_fd, 0)
@@ -165,11 +176,11 @@ def driver_channel(monkeypatch):
         closed.set()
 
     watchdog = threading.Timer(WATCHDOG_S, close_channel)
-    watchdog.start()
-    yield
+    yield watchdog.start
     # A test that ended before the watchdog has nothing left to free.
     watchdog.cancel()
-    watchdog.join()
+    if watchdog.ident is not None:
+        watchdog.join()
     if not closed.is_set():
         os.close(write_fd)
     os.dup2(saved, 0)
@@ -189,7 +200,13 @@ async def test_what_a_cell_starts_reads_end_of_input(
     from unify.cli import _stdin_reader
 
     with _stdin_reader() as reader:
-        out, res, elapsed = await _run(STARTED[started], worker_starts)
+        # The worker's start and the session's first policy build are not
+        # the cell's time; the watchdog starts once they are done.
+        out, res, elapsed = await _run(
+            STARTED[started],
+            worker_starts,
+            warmed=driver_channel,
+        )
         assert res["error"] is None, res["error"]
         assert (
             elapsed < WATCHDOG_S

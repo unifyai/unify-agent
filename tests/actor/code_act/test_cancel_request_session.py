@@ -163,9 +163,15 @@ def jsonl_session(monkeypatch):
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
     tools = _Tools()
+    # Built before any test's clock starts: the actor's build (its own
+    # function and guidance managers) and the first import of the bridge the
+    # session attaches are not the session's time.
+    import unify.agents.cli_bridge  # noqa: F401
+
+    actor = _Actor(tools)
 
     async def start(self) -> None:
-        self._actor = _Actor(tools)
+        self._actor = actor
         self._actor.real_cells = tools.real_cells
 
     monkeypatch.setattr(Act, "start", start)

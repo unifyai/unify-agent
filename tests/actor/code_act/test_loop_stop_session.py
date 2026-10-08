@@ -30,6 +30,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.helpers import WORKER_START_BOUND_S
 from unify.settings import SETTINGS
 
 PROTOCOL = "Reply with one action as a JSON object on the last line."
@@ -158,8 +159,15 @@ def jsonl_session(monkeypatch):
     read_fd, write_fd = os.pipe()
     monkeypatch.setattr(sys, "stdin", os.fdopen(read_fd, "r"))
 
+    # Built before any test's clock starts: the actor's build (its own
+    # function and guidance managers) and the first import of the bridge the
+    # session attaches are not the session's time.
+    import unify.agents.cli_bridge  # noqa: F401
+
+    actor = _Actor()
+
     async def start(self) -> None:
-        self._actor = _Actor()
+        self._actor = actor
 
     monkeypatch.setattr(Act, "start", start)
     session = Act(
@@ -214,7 +222,10 @@ async def test_narration_cells_end_the_request_and_the_session_goes_on(
         send({"message": FOLLOW_UP})
         await _until(lambda: _types(lines).count("response") == 2)
         send({"quit": True})
-        code = await asyncio.wait_for(run, BOUND)
+        # The quit runs the session's first storage review (its loop's first
+        # build and imports): cold work, with the start budget too. The lines
+        # below show what it did.
+        code = await asyncio.wait_for(run, BOUND + WORKER_START_BOUND_S)
 
     assert code == 0
     assert _types(lines) == ["response", "response", "result", "ended"]

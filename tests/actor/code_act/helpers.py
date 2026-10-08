@@ -5,11 +5,13 @@ a handle's history.  ``StaticActorRunner`` and ``patch_actor_act`` stand in
 for ``primitives.actor`` so a test can exercise handle adoption, output
 capture and context forwarding without spawning a real inner actor.
 ``WORKER_START_BOUND_S`` and the ``worker_starts`` fixture keep a sandboxed
-worker's start out of a test's tight steady-state bound.
+worker's start out of a test's tight steady-state bound; ``warm_up`` keeps a
+fresh actor's first-request costs out of it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import time
@@ -70,6 +72,43 @@ def worker_starts(monkeypatch) -> WorkerStarts:
 
     monkeypatch.setattr(worker.PythonWorker, "_start", timed)
     return starts
+
+
+#: What a throwaway warm-up request (``warm_up``) may take: its cell may
+#: start the worker, and the rest is two scripted model calls.
+WARM_UP_BOUND_S = WORKER_START_BOUND_S + 20
+
+
+async def warm_up(actor) -> None:
+    """Run one throwaway request on *actor* so a timed request after it runs
+    on a warm actor.
+
+    A fresh actor's first request pays one-time costs that are not that
+    request's: the first prompt and tool-loop build, the first model-call
+    plumbing, imports on first use, and the first cell's worker start and
+    first execution (the worker stays with the actor's executor for its later
+    requests). On a loaded host these take seconds, so a tight bound over a
+    first request measures the host. The warm-up runs one cell and answers in
+    text, in its own scripted block, so a timed request's provider sees only
+    that request's model calls."""
+    from tests import cache_discipline_helpers as h
+
+    replies = [
+        h.completion(calls=[("execute_code", {"code": "1"})]),
+        h.completion(content="warm"),
+    ]
+    with h.scripted(replies) as provider:
+        handle = await actor.act(
+            "Warm up.",
+            persist=False,
+            can_store=False,
+            clarification_enabled=False,
+        )
+        assert await asyncio.wait_for(handle.result(), WARM_UP_BOUND_S) == "warm"
+        done = getattr(handle, "_completion_event", None)
+        if done is not None:
+            await asyncio.wait_for(done.wait(), WARM_UP_BOUND_S)
+    assert len(provider.requests) == 2
 
 
 def _iter_tool_calls(chat_history: list[dict[str, Any]]) -> Iterator[dict]:

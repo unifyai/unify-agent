@@ -67,7 +67,9 @@ printf 'REPORTED=%s\\n' "$REPORTED_COMPLETIONS"
             ],
             capture_output=True,
             text=True,
-            timeout=5,
+            # A hang guard, not a bound: bash's start is not what the test
+            # proves, and on a loaded host it can take seconds.
+            timeout=60,
             env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"},
         )
     finally:

@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# The session's /quit imports the actor module lazily (unify/cli.py); its first
+# import is not the 5 s the reader has, so it happens here.
+import unify.actor.code_act_actor  # noqa: F401
 from unify.agents.cli_bridge import CliBridge, attach_bridge
 from unify.agents.options import Options
 from unify.agents.pool import Pool

@@ -58,6 +58,12 @@ def pytest_ignore_collect(collection_path, config):
     return not any(p == tree or tree in p.parents for p in invoked)
 
 
+#: A hang guard for one tmux command, not a bound: a tmux client's start on a
+#: loaded host can take seconds, and a timed-out ``ls`` would read as no
+#: sessions.
+TMUX_TIMEOUT_S = 60
+
+
 def get_unity_sockets() -> List[str]:
     """Get all unity* tmux sockets for the current user."""
     socket_dir = Path(f"/tmp/tmux-{os.getuid()}")
@@ -134,7 +140,7 @@ def list_tmux_sessions(socket: Optional[str] = None) -> List[TmuxSession]:
                 ["tmux", "-L", sock, "ls"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode != 0:
                 continue
@@ -180,7 +186,7 @@ def kill_tmux_session(name: str, socket: Optional[str] = None) -> bool:
             result = subprocess.run(
                 ["tmux", "-L", sock, "kill-session", "-t", name],
                 capture_output=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode == 0:
                 return True
@@ -317,7 +323,7 @@ def _kill_tmux_server(socket: str) -> None:
         subprocess.run(
             ["tmux", "-L", socket, "kill-server"],
             capture_output=True,
-            timeout=5,
+            timeout=TMUX_TIMEOUT_S,
         )
     except Exception:
         pass
