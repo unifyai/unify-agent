@@ -11,7 +11,6 @@ from .utils import maybe_await
 from ...logger import LOGGER
 from ...common.hierarchical_logger import DEFAULT_ICON
 from contextlib import suppress, contextmanager
-from .tools_utils import create_tool_call_message
 
 # Sent-watermark invariant: a message is immutable once it has been included
 # in any dispatched LLM request; everything from the watermark index onward
@@ -250,46 +249,6 @@ def compact_reviewed_messages(client, reviewed_message_count: int) -> int:
     return saved
 
 
-async def emit_completion_pair(
-    result: str,
-    call_id: str,
-    msg_dispatcher: Any,
-) -> dict:
-    """
-    Append a synthetic assistant→tool pair carrying *result* for *call_id*
-    at the tail of the transcript instead of splicing it into an
-    already-dispatched (below-watermark) position. This is the sole
-    below-watermark delivery path for late tool results and, via
-    ``insert_tool_message_after_assistant``'s gate, any other reply that
-    would otherwise land below the mark.
-    """
-    status_call_id = f"{call_id}_completed"
-    status_tool_name = f"check_status_{call_id}"
-
-    assistant_stub = {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {
-                "id": status_call_id,
-                "type": "function",
-                "function": {
-                    "name": status_tool_name,
-                    "arguments": "{}",
-                },
-            },
-        ],
-    }
-    tool_msg = create_tool_call_message(
-        name=status_tool_name,
-        call_id=status_call_id,
-        content=result,
-    )
-
-    await msg_dispatcher.append_msgs([assistant_stub, tool_msg])
-    return tool_msg
-
-
 @contextmanager
 def _preserve_canonical_messages(client, canonical_msgs):
     """Make ``client.messages`` return *canonical_msgs* for the duration of the block.
@@ -447,13 +406,8 @@ async def generate_with_preprocess(
         # A dispatch that ends without a response — cancelled because a tool
         # result or steering event superseded it, a read-only cache miss, a
         # provider error — adds nothing to the transcript, so it is undone
-        # as if it had never been sent. Were its tail left frozen, the next
-        # request would depend on whether the superseding event landed just
-        # before this dispatch (a result is written into its placeholder) or
-        # just after it (the result arrives as a check_status pair): a few
-        # milliseconds of tool latency that a cached replay cannot reproduce.
-        # The price is whatever prefix the provider cached for that
-        # unanswered tail.
+        # as if it had never been sent. The price is whatever prefix the
+        # provider cached for that unanswered tail.
         client._sent_watermark = prev_watermark
         client._sent_watermark_hash = prev_hash
         raise
@@ -717,25 +671,17 @@ async def insert_tool_message_after_assistant(
     updating the per-assistant `results_count` bookkeeping.
 
     If *skip_event_bus* is True, the message is appended to the client
-    transcript but not published to the EventBus — used for placeholder
-    messages that are updated in place later.
+    transcript but not published to the EventBus.
 
-    If the insertion position falls below the client's sent watermark,
-    splicing there would shift every already-dispatched message that
-    follows and break the provider's cached prefix from that point on, so
-    the message is instead delivered as a check_status pair appended at
-    the tail — *unless* the transcript would otherwise become illegal:
-    when ``tool_msg``'s call_id has no reply anywhere yet, this insertion
-    is the first-ever reply, and redirecting it would permanently orphan
-    the original ``tool_calls`` entry (a check_status pair answers a
-    different, synthesized call_id). That case always splices, whether or
-    not the caller passed *bypass_watermark* — legality beats cache,
-    enforced here rather than trusted to every call site. A caller with
-    its own reason to force the splice (the backfill/restore escape hatch)
-    passes *bypass_watermark* explicitly.
+    A call has one reply. The first one always splices directly after its
+    assistant message, even below the sent watermark (legality beats
+    cache: an unanswered ``tool_calls`` entry makes every later request
+    invalid). A further reply to a call that already has one would rewrite
+    already-dispatched history, so it is dropped, unless the caller passes
+    *bypass_watermark* to force the splice.
 
-    A sanctioned below-watermark splice re-baselines the stored watermark
-    hash immediately, so the next dispatch's integrity check (when enabled)
+    A below-watermark splice re-baselines the stored watermark hash
+    immediately, so the next dispatch's integrity check (when enabled)
     reads it as the new legitimate state rather than a violation.
     """
     call_id = tool_msg.get("tool_call_id") if isinstance(tool_msg, dict) else None
@@ -756,19 +702,13 @@ async def insert_tool_message_after_assistant(
     below_watermark = insert_pos is not None and insert_pos < watermark
 
     if below_watermark and not bypass_watermark:
-        content = (
-            tool_msg.get("content") if isinstance(tool_msg, dict) else str(tool_msg)
-        )
-        await emit_completion_pair(
-            content,
-            call_id or "unknown",
-            msg_dispatcher,
+        LOGGER.error(
+            f"{DEFAULT_ICON} A second reply to call {call_id!r} was dropped: "
+            "the call already has one, and splicing below the sent "
+            "watermark would rewrite dispatched history.",
         )
         return
 
-    # Only now mark the parent handled — a reply diverted to check_status
-    # above must not suppress the preflight repair that looks for
-    # unanswered tool_calls entries.
     meta = assistant_meta.setdefault(id(parent_msg), {"results_count": 0})
     await msg_dispatcher.append_msgs([tool_msg], skip_event_bus=skip_event_bus)
     final_insert_pos = _message_index(client, parent_msg) + 1 + meta["results_count"]

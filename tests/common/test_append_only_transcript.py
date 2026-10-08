@@ -2,8 +2,8 @@
 
 Covers the mechanism itself (is_mutable, generate_with_preprocess's watermark
 advancement and dev-mode integrity assertion) plus the below-watermark gate
-of insert_tool_message_after_assistant and the check_status pair it falls
-back to. No LLM calls — these are symbolic tests of the
+of insert_tool_message_after_assistant: a call's first reply always
+splices, a second one is dropped. No LLM calls — these are symbolic tests of the
 transcript-manipulation infrastructure, not of model behaviour.
 """
 
@@ -14,7 +14,6 @@ import asyncio
 import pytest
 
 from unify.common._async_tool.messages import (
-    emit_completion_pair,
     generate_with_preprocess,
     insert_tool_message_after_assistant,
     is_mutable,
@@ -194,17 +193,12 @@ async def test_dev_mode_assertion_fires_on_below_watermark_mutation():
 
 
 # ---------------------------------------------------------------------------
-# 3. ensure_placeholders_for_pending — self-describing, always-bypass stub
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 4. insert_tool_message_after_assistant — the watermark gate + escape hatch
+# 3. insert_tool_message_after_assistant — one reply per call, the escape hatch
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_insert_below_watermark_routes_to_check_status_pair():
+async def test_a_second_reply_below_the_watermark_is_dropped():
     asst_msg = {
         "role": "assistant",
         "content": None,
@@ -235,18 +229,10 @@ async def test_insert_below_watermark_routes_to_check_status_pair():
         dispatcher,
     )
 
-    # Below-watermark bytes are untouched — no splice happened.
-    assert client.messages[0] is asst_msg
-    assert client.messages[1] is stub
+    # The call already has its reply: dispatched bytes stay untouched and
+    # nothing is appended (a call has one reply).
+    assert client.messages == [asst_msg, stub]
     assert stub["content"] == "pending"
-    assert len(client.messages) == 4  # + synthetic assistant/tool check_status pair
-
-    check_stub, check_reply = client.messages[2], client.messages[3]
-    assert check_stub["role"] == "assistant"
-    assert check_stub["tool_calls"][0]["function"]["name"] == "check_status_c1"
-    assert check_reply["role"] == "tool"
-    assert check_reply["tool_call_id"] == "c1_completed"
-    assert check_reply["content"] == "the real result"
 
 
 @pytest.mark.asyncio
@@ -327,50 +313,3 @@ async def test_insert_above_watermark_splices_normally():
     )
 
     assert client.messages == [asst_msg, reply]
-
-
-# ---------------------------------------------------------------------------
-# 5. prune_wait_tool_call — below-mark leaves tool_calls untouched, acks instead
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 6. record_progress — coalesce-then-freeze, separate from tool_reply_msg
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 7. record_clarification — separate tail message, never touches tool_reply_msg
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 8. emit_completion_pair — shape of the sole below-watermark result path
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_emit_completion_pair_shape():
-    client = _FakeClient()
-    dispatcher = _FakeMsgDispatcher(client)
-
-    tool_msg = await emit_completion_pair("the result", "c1", dispatcher)
-
-    assert len(client.messages) == 2
-    stub, reply = client.messages
-    assert stub["role"] == "assistant"
-    assert stub["tool_calls"][0]["id"] == "c1_completed"
-    assert stub["tool_calls"][0]["function"]["name"] == "check_status_c1"
-    assert reply is tool_msg
-    assert reply["tool_call_id"] == "c1_completed"
-    assert reply["content"] == "the result"
-
-
-# ---------------------------------------------------------------------------
-# 9. multi-handle: FINAL per-child result vs shared placeholder freeze
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# 10. process_completed_task — the placeholder-result-write site end to end
-# ---------------------------------------------------------------------------
