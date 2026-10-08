@@ -130,7 +130,15 @@ FLOOR_S = 5.0  # no run starts with less of the budget left
 PROBE_CASE_S = 2  # one call in the probe
 FIXTURE_MAX_BYTES = 64 * 1024
 MIN_KILL = Decimal("0.5")
-RESPONSE_BLOB_BYTES = 4096  # exported responses at least this large also become blobs (fixture-size switch)
+# Under the fixture-size switch, an exported response at least 1/RESPONSE_BLOB_SHARE of the fixture bound also
+# becomes a blob (1024 bytes at the default 64 KiB bound): a test file then holds at least 64 inline copies of
+# responses under the threshold, and the brief's "handful" (8 or so) takes at most 1/8 of the bound. Dialogue
+# observations are capped at 4000 characters by the recorder, so a capped Crafter screen (about 4 KB, which the
+# old fixed 4096-byte threshold just missed) is always a blob; a blob reference costs 66 bytes of JSON, so the
+# 1.1 MB Crafter fixture, if it held ~275 screens of ~4 KB (inferred from its size), would take ~18 KB as
+# references.
+RESPONSE_BLOB_SHARE = 64
+RESPONSE_BLOB_BYTES = FIXTURE_MAX_BYTES // RESPONSE_BLOB_SHARE
 MAX_CONTEXT = 64  # recorded calls an ``env`` input's replay answers
 MAX_ROW_BYTES = 1024**2
 MAX_SAMPLES_BYTES = 16 * 1024**2
@@ -184,6 +192,11 @@ class QAConfig:
     def strict(self) -> bool:
         """``UNIFY_MEMORY_V2_QA_FIXTURES=strict``: what the checks could not judge refuses the pass."""
         return self.fixtures == "strict"
+
+    @property
+    def response_blob_bytes(self) -> int:
+        """The size from which Sol's export writes a response as a blob (relative to the fixture bound)."""
+        return max(1, self.fixture_max_bytes // RESPONSE_BLOB_SHARE)
 
     @classmethod
     def from_settings(cls, settings: Any) -> "QAConfig":
@@ -1388,7 +1401,8 @@ def brief(cfg: QAConfig) -> str:
         lines.append(
             f"- Fixture size: a test or data file over {cfg.fixture_max_bytes} bytes is refused. Reference "
             "recorded payloads by id instead of copying them: memlab.inputs.blob(<id>) reads a recorded file "
-            "(blob_before/blob_after) or a recorded response (the episode's response_blobs[i]). Do not copy "
+            "(blob_before/blob_after) or a recorded response (the episode's response_blobs[i], for responses of "
+            f"at least {cfg.response_blob_bytes} bytes). Do not copy "
             "every observation; test a handful and let the gate draw more. A truncated recording is marked "
             "(the episode's truncated[i]); never assert on text at the cut.",
         )

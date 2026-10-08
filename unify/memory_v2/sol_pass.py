@@ -314,6 +314,7 @@ def export_for_sol(
     dest: Path,
     *,
     response_blobs: tuple[BlobStore, Path] | None = None,
+    blob_min_bytes: int = _qa.RESPONSE_BLOB_BYTES,
 ) -> None:
     """Write ``<dest>/<episode_id>.json`` per episode: the request, cells and actions, and nothing else.
 
@@ -327,7 +328,8 @@ def export_for_sol(
 
     With *response_blobs* (``(store, blobs dir)``; the stage-5 fixture-size switch, :mod:`.qa`) each episode
     also lists, per action, ``response_blobs[i]`` (the blob id of its response's canonical JSON when that is
-    at least :data:`.qa.RESPONSE_BLOB_BYTES`, put in the store and written to the blobs dir, else null) and
+    at least *blob_min_bytes*, the gate's :attr:`.qa.QAConfig.response_blob_bytes`, put in the store and
+    written to the blobs dir, else null) and
     ``truncated[i]`` (where the recorder cut it: ``end``, ``middle`` or ``start``, else null), beside the
     actions like ``memory_channels``.
     """
@@ -371,7 +373,7 @@ def export_for_sol(
             for a in ep.actions:
                 payload = json.dumps(a.response, sort_keys=True, default=str).encode()
                 sha = None
-                if a.response is not None and len(payload) >= _qa.RESPONSE_BLOB_BYTES:
+                if a.response is not None and len(payload) >= blob_min_bytes:
                     sha = store.put(payload)
                     if not (bdir / sha).exists():
                         (bdir / sha).write_bytes(payload)
@@ -835,6 +837,7 @@ class SolPass:
                 if self._qa.fixture_size and isinstance(store, BlobStore)
                 else None
             ),
+            blob_min_bytes=self._qa.response_blob_bytes,
         )
         export_blobs(
             self.load,

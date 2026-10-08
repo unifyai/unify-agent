@@ -9,7 +9,7 @@ from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import Action
 from unify.memory_v2.integration.adapters.dialogue import cap_text
 from unify.memory_v2.integration.adapters.tool import TRUNCATED
-from unify.memory_v2.qa import REWRITES, QAConfig, system
+from unify.memory_v2.qa import FIXTURE_MAX_BYTES, REWRITES, QAConfig, system
 from unify.memory_v2.sol_pass import SOL_SYSTEM, export_for_sol
 from tests.memory_v2.test_episodes import _ep
 
@@ -96,3 +96,43 @@ def test_the_export_lists_response_blobs_and_cuts_beside_the_actions(tmp_path):
     assert row["truncated"] == [None, None, "end", "middle"]
     for a in row["actions"]:  # the documented rebuild still works
         Action(**{k: v for k, v in a.items() if k != "index"})
+
+
+def test_the_blob_threshold_is_relative_to_the_fixture_bound_and_catches_crafter_screens(
+    tmp_path,
+):
+    cfg = QAConfig(fixture_size=True)
+    assert cfg.response_blob_bytes == FIXTURE_MAX_BYTES // 64 == 1024
+    assert QAConfig(fixture_max_bytes=8192).response_blob_bytes == 128
+    # 64 inline copies of a response just under the threshold fill the bound; a handful (8) takes 1/8
+    assert 64 * cfg.response_blob_bytes == cfg.fixture_max_bytes
+    # a whole Crafter screen of ~3.9 KB, under the recorder's 4000-character cap: the old fixed 4096-byte
+    # threshold left it inline, so Sol had to copy it into a fixture
+    screen = "You see: " + "grass " * 640 + "\n\nYour status:\nhealth: 9"
+    assert cfg.response_blob_bytes <= len(json.dumps(screen)) < 4096
+    small = "You see: tree\n\nYour status:\nhealth: 9"
+    ep = _ep(
+        episode_id="e9",
+        actions=[_dl(screen, "dialogue:crafter"), _dl(small, "dialogue:crafter")],
+    )
+    store = BlobStore(tmp_path / "store")
+    export_for_sol(
+        lambda eid: ep,
+        ["e9"],
+        tmp_path / "episodes",
+        response_blobs=(store, tmp_path / "blobs"),
+        blob_min_bytes=cfg.response_blob_bytes,
+    )
+    row = json.loads((tmp_path / "episodes" / "e9.json").read_text())
+    sha, none = row["response_blobs"]
+    assert (
+        none is None and json.loads((tmp_path / "blobs" / sha).read_bytes()) == screen
+    )
+    assert "at least 1024 bytes" in system(SOL_SYSTEM, cfg)
+
+
+def test_sols_brief_says_how_tests_read_blobs_and_that_library_code_never_imports_the_kit():
+    text = system(SOL_SYSTEM, QAConfig(determinism=True))
+    assert "memlab.inputs.blob(<id>), never by its /inputs path" in text
+    assert "Library code outside tests never imports memlab" in text
+    assert "pinned to different values on each run" in text
