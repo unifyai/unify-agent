@@ -273,7 +273,12 @@ async def test_persist_stop_with_memoize_intent_stores_function():
         # specifically, not for the first tool result of any kind, and one
         # that succeeded: a cell that raised (the 09184dc6d re-record's only
         # cell, before the sandbox put ``python`` on PATH) leaves nothing
-        # that ran, so the review rightly stores nothing.
+        # that ran, so the review rightly stores nothing. And the cell must
+        # be one that defines ``format_currency``: in the 7299344a6
+        # re-record the only cell before the stop was
+        # ``help(functions.add)``, which succeeded, so the stop landed before
+        # the utility existed and the review rightly said "The task stopped
+        # before `format_currency` was implemented or tested".
         def _succeeded(message: dict) -> bool:
             content = message.get("content")
             if isinstance(content, list):
@@ -291,6 +296,16 @@ async def test_persist_stop_with_memoize_intent_stores_function():
                 return False
             return isinstance(head, dict) and not head.get("error")
 
+        def _defines_format_currency(call: dict) -> bool:
+            arguments = call.get("function", {}).get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except ValueError:
+                    return "def format_currency" in arguments
+            code = arguments.get("code") if isinstance(arguments, dict) else None
+            return isinstance(code, str) and "def format_currency" in code
+
         def _execute_code_round_trip_happened() -> bool:
             client = getattr(handle._inner, "_client", None)
             msgs = [
@@ -303,6 +318,7 @@ async def test_persist_stop_with_memoize_intent_stores_function():
                 for m in msgs
                 for call in (m.get("tool_calls") or [])
                 if call.get("function", {}).get("name") == "execute_code"
+                and _defines_format_currency(call)
             }
             return any(
                 m.get("role") == "tool"
@@ -319,7 +335,7 @@ async def test_persist_stop_with_memoize_intent_stores_function():
             if asyncio.get_event_loop().time() > exec_deadline:
                 pytest.skip(
                     "Actor did not complete a successful execute_code call "
-                    "within 120s — "
+                    "defining format_currency within 120s — "
                     "this is an eval-sensitive path",
                 )
             await asyncio.sleep(1.0)
