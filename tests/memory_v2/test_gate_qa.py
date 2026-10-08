@@ -307,6 +307,23 @@ def test_reads_the_recorded_clock():
     env = RecordedEnv([Action(0, "phone", "get_current_date_and_time", [], {{}}, CLOCK, "ok")])
     assert current_datetime(env) == CLOCK
 """
+# the harness's replay helper (memlab.replay.env_from over exported rows), asserting the calls it served
+CLOCK_ENV_FROM_TEST = f"""from memlab.replay import calls, env_from
+
+from env.phone import current_datetime
+
+CLOCK = {CLOCK!r}
+ROWS = [
+    {{"channel": "phone", "method": "get_current_date_and_time", "args": [], "kwargs": {{}},
+      "response": CLOCK, "status": "ok", "effect": "read"}},
+]
+
+
+def test_reads_the_recorded_clock():
+    env = env_from(ROWS)
+    assert current_datetime(env) == CLOCK
+    assert env.issued() == calls(ROWS) and not env.misses
+"""
 CLOCK_FAKE_TEST = f"""from types import SimpleNamespace
 
 from env.phone import current_datetime
@@ -978,6 +995,8 @@ def test_preview_refuses_a_stand_in_environment_and_accepts_the_replay(tmp_path)
     assert not any(v in reason for v in RECORDED_VALUES)
     files, man = _cl(CLOCK_REPLAY_TEST)
     assert _preview(tmp_path / "b", PHONE, files, man, QAConfig(replay=True)) == []
+    files, man = _cl(CLOCK_ENV_FROM_TEST)  # the harness's replay helper
+    assert _preview(tmp_path / "e", PHONE, files, man, QAConfig(replay=True)) == []
     files, man = _cl(CLOCK_FAKE_TEST)
     assert (
         _preview(tmp_path / "c", PHONE, files, man, QAConfig()) == []
@@ -1265,6 +1284,11 @@ def test_the_recorded_replay_runs_in_the_gate_and_a_stand_in_is_refused(tmp_path
     # every switch off: a library whose tests import memlab is checked with the kit all the same (B2)
     replay_off = _check(tmp_path / "replay-off", PHONE, files, man)
     assert replay_off.passed, replay_off.reasons
+    # the harness's replay helper, under the replay switch and with every switch off (the kit is mounted)
+    files, man = _cl(CLOCK_ENV_FROM_TEST)
+    for name, kw in (("env-from", {"qa": QAConfig(replay=True)}), ("env-from-off", {})):
+        res = _check(tmp_path / name, PHONE, files, man, **kw)
+        assert res.passed, res.reasons
     files, man = _cl(CLOCK_FAKE_TEST)
     fake = _check(tmp_path / "fake", PHONE, files, man, qa=QAConfig(replay=True))
     assert not fake.passed and any("[qa:replay]" in r for r in fake.reasons)

@@ -1,7 +1,7 @@
 """The library test kit (memory v2.1 stage 5): one versioned ``memlab`` wherever a library's tests run.
 
-A stored library's tests may import ``memlab`` (``memlab.replay.RecordedEnv``, ``memlab.inputs``, the analysis
-tools) and read recorded payloads by blob id (``memlab.inputs.blob``). Whether they can must never depend on a
+A stored library's tests may import ``memlab`` (``memlab.replay.env_from``/``RecordedEnv``, the harness's
+exact-call replay, so tests never fake the environment themselves; ``memlab.inputs``; the analysis tools) and read recorded payloads by blob id (``memlab.inputs.blob``). Whether they can must never depend on a
 gate switch: a library merged while a stage-5 switch was on must stay testable when every switch is off, in
 another arm, in Sol's box and in the actor's export. So the kit is a property of the library, not of the
 switches. :func:`stage` writes the same kit (the module set :data:`MODULES` at :data:`KIT_VERSION`, the pin
@@ -37,6 +37,8 @@ from typing import Callable, Iterable
 from .manifest import TESTKIT, TESTS_DIR
 
 KIT_VERSION = "1"  # bump when a module's public names change; stored tests are checked against the kit
+# (replay.env_from/calls/call_of and RecordedEnv.issued/misses were added within "1": additive, and no stored
+# library used the kit before them)
 # Sol's toolkit before stage 5 (the order matters to nothing); the kit adds memlab.inputs.
 BASE_MODULES = (
     "analysis",

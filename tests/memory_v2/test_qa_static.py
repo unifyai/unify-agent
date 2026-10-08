@@ -98,6 +98,60 @@ def test_clock():
     assert _lines(keyword) == []
 
 
+# a root test kit Sol wrote before the harness provided the replay, re-exporting it: still accepted
+REEXPORT_KIT = b"""from memlab.replay import env_from
+"""
+
+
+def test_the_harness_replay_env_from_is_accepted():
+    """memlab.replay.env_from is the kit's replay in every spelling, and through a root kit re-exporting it."""
+    direct = f"""
+from memlab.replay import env_from
+from env.phone import current_datetime
+
+ROWS = [{{"channel": "phone", "method": "get_current_date_and_time", "args": [], "kwargs": {{}},
+         "response": {CLOCK}, "status": "ok"}}]
+
+def test_clock():
+    env = env_from(ROWS)
+    assert current_datetime(env)["time"]
+    assert env.issued() == [{{"channel": "phone", "method": "get_current_date_and_time", "args": [],
+                              "kwargs": {{}}}}]
+"""
+    assert _lines(direct) == []
+    via_module = """
+from memlab import replay
+from env.phone import current_datetime
+
+def test_clock():
+    current_datetime(replay.env_from([]))
+"""
+    assert _lines(via_module) == []
+    via_fixture = """
+import pytest
+import memlab.replay
+from env.phone import current_datetime
+
+@pytest.fixture
+def apis():
+    return memlab.replay.env_from([])
+
+def test_clock(apis):
+    current_datetime(apis)
+"""
+    assert _lines(via_fixture) == []
+    via_old_kit = """
+from unify_memory_testkit import env_from
+from env.phone import current_datetime
+
+def test_clock():
+    current_datetime(env_from([]))
+"""
+    assert _lines(via_old_kit, REEXPORT_KIT) == []
+    # the same name, defined by a root kit of Sol's own (test_gate.py's fake): a stand-in
+    assert _lines(via_old_kit, KIT) == [6]
+
+
 def test_stand_ins_are_refused_with_their_lines():
     kit_fake = """from unify_memory_testkit import env_from
 from env.phone import current_datetime

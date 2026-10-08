@@ -54,8 +54,9 @@ or changed library code that uses it, and tests importing what it does not provi
 are refused (``[qa:kit]``).
 
 **Replay fidelity** (``UNIFY_MEMORY_V2_QA_REPLAY``). A new or changed test that passes an environment-taking
-function a stand-in of its own instead of ``memlab.replay.RecordedEnv``, while the function has recorded
-calls, is refused (:func:`.qa_static.stand_ins`, structural).
+function a stand-in of its own instead of the kit's replay (``memlab.replay.env_from`` or ``RecordedEnv``, the
+harness's exact-call replay, :mod:`.replay`), while the function has recorded calls, is refused
+(:func:`.qa_static.stand_ins`, structural).
 
 **Fixture size** (``UNIFY_MEMORY_V2_QA_FIXTURE_SIZE``). A new or changed file under ``env/<channel>/tests/``, the
 test kit or a support file larger than :data:`FIXTURE_MAX_BYTES` is refused: recorded payloads are referenced
@@ -954,7 +955,7 @@ class QAChecks:
                         self._fail(
                             "replay",
                             f"{t} line {line} passes {item} an environment the tests make (a class, "
-                            "function or literal of their own); test it through memlab.replay.RecordedEnv "
+                            "function or literal of their own); test it through memlab.replay.env_from "
                             "over its recorded calls",
                         )
         if cfg.fixture_size:
@@ -1346,11 +1347,16 @@ REWRITES: tuple[tuple[str, str, str], ...] = (
         'env={"PYTHONPATH": "/memory", "PYTHONDONTWRITEBYTECODE": "1"})',
         'env={"PYTHONPATH": "/memory:/inputs", "PYTHONDONTWRITEBYTECODE": "1"})',
     ),
+    # the harness provides the replay (memlab.replay.env_from) wherever the kit is mounted, so Sol no longer
+    # writes the root unify_memory_testkit.py to fake the environment (one already in a library stays accepted)
     (
-        "replay",
+        "on",
+        "use the recorded responses; /memory/unify_memory_testkit.py, the only helper\nmodule allowed at the root, "
         "may build the fake environment",
-        "may hold shared helpers; build environments with memlab.replay.RecordedEnv",
+        "serve the recorded calls with memlab.replay.env_from(<recorded actions>), the harness's exact-call\n"
+        "replay; never a fake environment of your own",
     ),
+    ("on", '"support":["unify_memory_testkit.py"]', '"support":[]'),
     (
         "fixture_size",
         "or every\nrecorded (action, next observation) pair in its scope",
@@ -1375,7 +1381,10 @@ def brief(cfg: QAConfig) -> str:
         "the gate then does; tests may import memlab.replay and memlab.inputs, which the gate provides (the "
         "same test kit wherever the library's tests run). Read a recorded blob with memlab.inputs.blob(<id>), "
         "never by its /inputs path. Library code outside tests never imports memlab: the working model "
-        "imports the library without it.",
+        "imports the library without it. env = memlab.replay.env_from(<recorded actions>) answers only the "
+        "identical recorded call (a call with no recording raises ReplayMiss, a recorded failure re-raises "
+        "RecordedError), and env.issued() lists the calls it served: a test of a function with effects asserts "
+        'env.issued(effect="write") == memlab.replay.calls(<recorded actions>, effect="write").',
     ]
     if cfg.fixtures:
         strict = (
@@ -1410,7 +1419,7 @@ def brief(cfg: QAConfig) -> str:
         )
     if cfg.replay:
         lines.append(
-            "- Replay: test a function that takes the environment through memlab.replay.RecordedEnv(<recorded "
+            "- Replay: test a function that takes the environment through memlab.replay.env_from(<recorded "
             "actions>) (exact-call replay); a class, lambda, function or literal of your own standing in for "
             "the environment is refused.",
         )

@@ -9,7 +9,8 @@ structurally, by where its first argument comes from (assignments in the calling
 pytest fixtures named by the test's parameters, and the return values of helper functions, through the test
 kit ``unify_memory_testkit``, to a depth of :data:`MAX_DEPTH`):
 
-* ``replay``: a call of ``RecordedEnv`` (or ``RecordedEnv.from_jsonl``) imported from ``memlab.replay``;
+* ``replay``: a call of the kit's replay, ``env_from``, ``RecordedEnv`` or ``RecordedEnv.from_jsonl``, imported
+  from ``memlab.replay`` (directly, or re-exported or returned by a root ``unify_memory_testkit``);
 * ``stand-in``: an instance of a class the tests or the test kit define (a subclass of ``RecordedEnv``
   included), a lambda, a literal container, ``type(...)`` with three arguments, or anything imported from
   ``unittest.mock`` or ``types.SimpleNamespace``;
@@ -51,6 +52,10 @@ _BLOB_TOKEN = re.compile(rb"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")
 # The dialogue recorder's elision marker (adapters.dialogue.cap_text); a test keeps the two in step.
 ELIDED = re.compile(r"\n\[\.\.\. \d+ chars, middle elided \.\.\.\]\n")
 _REPLAY = "memlab.replay.RecordedEnv"
+# the kit's replay constructors (memlab.replay, :mod:`.replay`): exact-call replay of recorded rows
+REPLAY_ORIGINS = frozenset(
+    (_REPLAY, _REPLAY + ".from_jsonl", "memlab.replay.env_from"),
+)
 _TESTKIT_MODULE = "unify_memory_testkit"
 
 
@@ -151,7 +156,7 @@ class _Resolver:
             return "stand-in"
         if isinstance(expr, ast.Call):
             origin, where = self.origin(expr.func, scope)
-            if origin in (_REPLAY, _REPLAY + ".from_jsonl"):
+            if origin in REPLAY_ORIGINS:
                 return "replay"
             if origin.startswith("local-class:"):
                 return "stand-in"

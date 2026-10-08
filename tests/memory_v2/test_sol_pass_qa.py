@@ -65,6 +65,25 @@ def test_sols_brief_gains_one_paragraph_per_switch_and_its_rewrites():
     assert "Replay:" in only and "Mutants:" not in only and "or every\nrecorded" in only
 
 
+def test_with_any_switch_on_sol_is_pointed_at_the_harness_replay_not_a_root_kit_of_its_own():
+    """The kit (mounted whenever a switch is on) provides memlab.replay.env_from, so the brief no longer asks
+    Sol to write unify_memory_testkit.py to fake the environment; with every switch off it is as before.
+    """
+    assert "may build the fake environment" in SOL_SYSTEM
+    assert '"support":["unify_memory_testkit.py"]' in SOL_SYSTEM
+    for cfg in (
+        QAConfig(mutation=True),
+        QAConfig(replay=True),
+        QAConfig(fixtures="on"),
+    ):
+        text = system(SOL_SYSTEM, cfg)
+        assert "may build the fake environment" not in text
+        assert '"support":["unify_memory_testkit.py"]' not in text
+        assert "memlab.replay.env_from(<recorded actions>)" in text
+        assert 'env.issued(effect="write") == memlab.replay.calls(' in text
+    assert "memlab.replay.env_from" not in system(SOL_SYSTEM, QAConfig())
+
+
 def test_the_export_lists_response_blobs_and_cuts_beside_the_actions(tmp_path):
     big = {"items": [{"sku": f"A-{i}"} for i in range(400)]}
     acts = [
