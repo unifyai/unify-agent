@@ -191,6 +191,7 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     return home
 
 
+@contextlib.contextmanager
 def _channel_pump(
     loop: asyncio.AbstractEventLoop,
     fd: int,
