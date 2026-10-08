@@ -352,6 +352,14 @@ class ProductionSettings(BaseSettings):
     # whose actions are text in the replies (Continual-ARC) leaves coverable
     # actions. Empty (also ``off``): episodes as shipped.
     UNIFY_MEMORY_V2_DIALOGUE: str = ""
+    # Memory v2 (both parsed by unify/memory_v2/integration/switch.py; read only
+    # with UNIFY_MEMORY_V2 on): ``_DIALOGUE_DRIFT`` ``lines`` (default) or
+    # ``structure`` (the dialogue drift fingerprint without line-count buckets);
+    # ``_OBSERVATIONS`` empty/off or ``on`` (under catalogue surfacing, the
+    # counterpart's messages so far written beside the export before each cell,
+    # read by ``memory.observation()``).
+    UNIFY_MEMORY_V2_DIALOGUE_DRIFT: str = "lines"
+    UNIFY_MEMORY_V2_OBSERVATIONS: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
     # ``on`` replaces the storage review, the ``functions``/``guidance``
     # objects and the library shortlist with a per-request export of the
@@ -633,6 +641,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_QA_DETERMINISM",
         "UNIFY_MEMORY_V2_QA_REPLAY",
         "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+        "UNIFY_MEMORY_V2_DIALOGUE_DRIFT",
+        "UNIFY_MEMORY_V2_OBSERVATIONS",
         mode="before",
     )
     @classmethod

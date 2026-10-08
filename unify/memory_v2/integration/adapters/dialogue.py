@@ -24,7 +24,10 @@ Everything here is structural:
   into the blob store whole (``EpisodeWriter._capped``), so a capped observation is only one over the
   adapter's bound;
 - the observation fingerprint (:func:`response_shape`) keeps line-count buckets, whether the text ends
-  in a ``(… k/N)`` counter, and its JSON kind and key shape, never a value.
+  in a ``(… k/N)`` counter, and its JSON kind and key shape, never a value. With
+  ``UNIFY_MEMORY_V2_DIALOGUE_DRIFT=structure`` (``lines=False``) the line-count bucket is left out: a
+  message's length is its content's size (a larger grid, a longer list), not its structure, so it is no
+  sign that the counterpart changed.
 
 Assistant messages that carry tool calls (``execute_code`` cells) are not dialogue; the tool, shell and
 worktree adapters record those. Loop-authored user messages (``_loop_authored``: progress notices,
@@ -222,17 +225,18 @@ def observation_value(text: str, cap: int = DEFAULT_OBSERVATION_CAP) -> Any:
     return cap_text(text, cap)
 
 
-def response_shape(response: Any) -> str | None:
+def response_shape(response: Any, *, lines: bool = True) -> str | None:
     """The fingerprint shape of a recorded observation (:func:`observation_shape` of its text; a
     structured observation is shaped as its one-line JSON), or None when there is no observation.
+    *lines* False leaves the line-count bucket out (``UNIFY_MEMORY_V2_DIALOGUE_DRIFT=structure``).
     """
     if response is None:
         return None
     if isinstance(response, str):
-        return observation_shape(response)
+        return observation_shape(response, lines=lines)
     if isinstance(response, (dict, list)) and _shallow(response):
-        return observation_shape(json.dumps(response, ensure_ascii=False))
-    return "lines=1;counter=n;json=deep"
+        return observation_shape(json.dumps(response, ensure_ascii=False), lines=lines)
+    return "lines=1;counter=n;json=deep" if lines else "counter=n;json=deep"
 
 
 def dialogue_actions(
@@ -307,6 +311,34 @@ def dialogue_actions(
     return actions
 
 
+#: At most this many counterpart messages are kept for ``memory.observations()``: the request and the
+#: latest ones (a long session's earlier messages are left out).
+MAX_COUNTERPART_MESSAGES = 64
+
+
+def counterpart_messages(
+    transcript_lines: Iterable[dict],
+    *,
+    redactor: Redactor | None = None,
+    max_observation_chars: int = DEFAULT_OBSERVATION_CAP,
+    max_messages: int = MAX_COUNTERPART_MESSAGES,
+) -> list[Any]:
+    """The counterpart's messages so far, oldest first: every genuine user-role message (the request, then
+    each observation or follow-up; loop-authored notices skipped), each redacted and bounded by
+    :func:`observation_value` exactly as :func:`dialogue_actions` records an observation, so a function
+    built on recorded observations takes these as it took those. Past *max_messages*, the first message
+    and the latest ``max_messages - 1``.
+    """
+    red = redactor if redactor is not None else Redactor()
+    msgs = [m for m in _messages(transcript_lines) if _is_observation(m)]
+    if len(msgs) > max_messages:
+        msgs = msgs[:1] + msgs[len(msgs) - (max_messages - 1) :]
+    return [
+        observation_value(red.text(_text(m.get("content"))), max_observation_chars)
+        for m in msgs
+    ]
+
+
 def _line_bucket(n: int) -> str:
     if n == 0:
         return "0"
@@ -338,27 +370,33 @@ def _json_kind(text: str) -> str:
     return "none"
 
 
-def observation_shape(text: str) -> str:
-    """A value-free structural summary of one observation."""
-    lines = sum(1 for ln in text.splitlines() if ln.strip())
+def observation_shape(text: str, *, lines: bool = True) -> str:
+    """A value-free structural summary of one observation; without its line-count bucket when *lines*
+    is False."""
     counter = "y" if _TRAILING_COUNTER.search(text) else "n"
-    return f"lines={_line_bucket(lines)};counter={counter};json={_json_kind(text)}"
+    if not lines:
+        return f"counter={counter};json={_json_kind(text)}"
+    n = sum(1 for ln in text.splitlines() if ln.strip())
+    return f"lines={_line_bucket(n)};counter={counter};json={_json_kind(text)}"
 
 
 def observation_fingerprint(
     actions: Iterable[Action],
+    *,
+    lines: bool = True,
 ) -> dict[str, dict[str, list[str]]]:
     """Observation shapes per ``<channel>.<method>``, in the format ``fingerprint.Generations`` reads.
 
     Only recorded dialogue actions count; ``errors`` is always empty (an observation is never an
     error). Each shape is :func:`response_shape` of the recorded response, so a counterpart whose
-    messages change shape (lines, a trailing counter, JSON kind or keys) shows a new shape.
+    messages change shape (lines, a trailing counter, JSON kind or keys) shows a new shape; with
+    *lines* False (``UNIFY_MEMORY_V2_DIALOGUE_DRIFT=structure``) a change of length alone does not.
     """
     out: dict[str, set[str]] = {}
     for a in actions:
         if a.kind != "dialogue" or a.status != "ok":
             continue
-        got = response_shape(a.response)
+        got = response_shape(a.response, lines=lines)
         if got is None:
             continue
         out.setdefault(f"{a.channel}.{a.method}", set()).add(got)

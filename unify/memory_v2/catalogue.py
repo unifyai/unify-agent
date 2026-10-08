@@ -49,6 +49,8 @@ README = "README.md"
 HELPER = "memory.py"
 CATALOG = ".memory/catalog.json"
 SHAPES = ".memory/shapes.py"
+# Written before each cell under UNIFY_MEMORY_V2_OBSERVATIONS=on (RequestRun.refresh_observations), not at export.
+OBSERVATIONS = ".memory/observations.json"
 GENERATED = (README, HELPER, CATALOG, SHAPES)
 CATALOG_VERSION = 1
 # The soft size of the catalogue (README plus the channel lines ``memory.catalog()`` prints), in estimated
@@ -290,16 +292,29 @@ def catalogue_tokens(tree: Path) -> int:
     return estimate_tokens(render_readme(tree)) + estimate_tokens(channel_lines(tree))
 
 
+def helper_bytes(observations: bool = False) -> bytes:
+    """The export's ``memory.py``: the helper's file, with the observations addition appended only when
+    *observations* (``UNIFY_MEMORY_V2_OBSERVATIONS=on``); without it, the helper byte for byte.
+    """
+    data = (_HERE / "memory_helper.py").read_bytes()
+    if observations:
+        from .memory_helper_observations import SOURCE
+
+        data += SOURCE.encode("utf-8")
+    return data
+
+
 def generated(
     tree: Path,
     shapes: ShapeLookup | None = None,
     suspect: Iterable[str] = (),
+    observations: bool = False,
 ) -> dict[str, bytes]:
     """Every generated file of the export of *tree*, by relative path."""
     return {
         README: render_readme(tree).encode("utf-8"),
         CATALOG: render_catalog(tree, shapes, suspect).encode("utf-8"),
-        HELPER: (_HERE / "memory_helper.py").read_bytes(),
+        HELPER: helper_bytes(observations),
         SHAPES: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }
 
@@ -308,15 +323,17 @@ def write_generated(
     checkout: Path,
     shapes: ShapeLookup | None = None,
     suspect: Iterable[str] = (),
+    observations: bool = False,
 ) -> dict[str, bytes]:
     """Write the generated files into the export at *checkout*, replacing whatever is there; returns them.
-    The channels in *suspect* (the harness's drift state) are flagged in the catalog.
+    The channels in *suspect* (the harness's drift state) are flagged in the catalog; *observations*
+    appends the helper's observations addition (:func:`helper_bytes`).
 
     A path the export already holds (a commit from before the paths were reserved) is replaced: the
     generated file wins. Nothing is followed: an existing link or directory at a generated path is removed.
     """
     checkout = Path(checkout)
-    files = generated(checkout, shapes, suspect)
+    files = generated(checkout, shapes, suspect, observations)
     for rel, data in files.items():
         dest = checkout / rel
         parent = dest.parent

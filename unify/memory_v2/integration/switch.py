@@ -41,6 +41,18 @@ The contract (online build, spec §F1 and D23):
   episode also records the dialogue actions of its transcript (each turn-ending reply's action, paired with
   the counterpart's next message; :mod:`.adapters.dialogue`) on the channel ``env``, which is the memory
   channel ``env`` (``env/env/``). Off, the episode is recorded exactly as without the setting.
+- ``UNIFY_MEMORY_V2_DIALOGUE_DRIFT``: ``lines`` (or empty; the default) or ``structure``. The dialogue
+  observation fingerprint that drift (a channel turning suspect) reads: ``lines`` keeps each message's
+  line-count bucket, as before; ``structure`` leaves it out, so a counterpart whose messages only grow or
+  shrink (a larger grid, a longer list) is not taken for a changed environment. A trailing counter, a JSON
+  kind or a change of keys still is.
+- ``UNIFY_MEMORY_V2_OBSERVATIONS``: ``off`` (or empty; the default) or ``on``, read under
+  ``UNIFY_MEMORY_V2_SURFACING=catalogue`` only. On, before each code cell the harness writes the
+  counterpart's messages so far in this request (the request itself first, then each reply the counterpart
+  sent; redacted and capped exactly as the dialogue recorder keeps an observation) to the export's
+  ``.memory/observations.json``, and the ``memory`` helper reads them back (``memory.observation()``,
+  ``memory.observations()``), so a stored function whose input form is ``observation`` can take the
+  current one without the cell pasting it. Off, nothing is written and the helper behaves as before.
 
 The v2.1 surfacing switches (lane S1). Each default restores the behaviour of the v2 screen build
 (``9deefbfd1``) exactly, so a paired v2 vs v2.1 comparison runs on one build:
@@ -117,6 +129,8 @@ DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
 SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
 DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
+DIALOGUE_DRIFT = "UNIFY_MEMORY_V2_DIALOGUE_DRIFT"
+OBSERVATIONS = "UNIFY_MEMORY_V2_OBSERVATIONS"
 
 QA_FIXTURES = "UNIFY_MEMORY_V2_QA_FIXTURES"
 QA_MUTATION = "UNIFY_MEMORY_V2_QA_MUTATION"
@@ -720,3 +734,44 @@ def parse_dialogue(v: Any) -> str:
 
 
 PARSERS[DIALOGUE] = parse_dialogue
+
+#: ``UNIFY_MEMORY_V2_DIALOGUE_DRIFT``: whether the dialogue drift fingerprint keeps line-count buckets.
+DIALOGUE_DRIFT_MODES = ("lines", "structure")
+
+
+def parse_dialogue_drift(v: Any) -> str:
+    """``lines`` (empty means it) or ``structure``."""
+    value = _stripped(v).lower() or "lines"
+    if value not in DIALOGUE_DRIFT_MODES:
+        raise ValueError(
+            f"{DIALOGUE_DRIFT} must be empty, 'lines' or 'structure', not {v!r}",
+        )
+    return value
+
+
+def parse_observations(v: Any) -> str:
+    """``on``, or ``""`` for off (empty or ``off``)."""
+    value = _stripped(v).lower()
+    if value in ("", "off"):
+        return ""
+    if value != "on":
+        raise ValueError(f"{OBSERVATIONS} must be empty, 'off' or 'on', not {v!r}")
+    return value
+
+
+PARSERS[DIALOGUE_DRIFT] = parse_dialogue_drift
+PARSERS[OBSERVATIONS] = parse_observations
+
+
+def dialogue_drift_lines() -> bool:
+    """Whether the dialogue drift fingerprint keeps line-count buckets (``UNIFY_MEMORY_V2_DIALOGUE_DRIFT``)."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, DIALOGUE_DRIFT, "lines") != "structure"
+
+
+def observations_on() -> bool:
+    """``UNIFY_MEMORY_V2_OBSERVATIONS=on`` (read under catalogue surfacing only)."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, OBSERVATIONS, "") == "on"

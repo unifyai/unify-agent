@@ -134,6 +134,20 @@ def worker_audit() -> dict | None:
         return None
 
 
+def before_cell() -> None:
+    """Before a code cell runs: the request run's per-cell refresh of what the export shows
+    (``UNIFY_MEMORY_V2_OBSERVATIONS``: ``RequestRun.refresh_observations``). Inert while the switch is off or
+    no request run is active; never raises (the cell runs either way)."""
+    run = _run()
+    refresh = getattr(run, "refresh_observations", None) if run is not None else None
+    if refresh is None:
+        return
+    try:
+        refresh()
+    except Exception as exc:  # noqa: BLE001 - the cell runs without a fresh file
+        logger.warning("memory v2: observations not refreshed (%s)", type(exc).__name__)
+
+
 def result_hook() -> Callable[..., None] | None:
     """The tool loop's hook for a finished tool call (:func:`tool_result`), or None while the switch is
     off or no request run is active: the loop then never enters it (``tools_data``), so with memory v2
