@@ -337,3 +337,92 @@ def test_a_deletion_whose_covers_are_taken_over_passes(arc):
     res = gate.merge(parent, cand, man, "p2", "incremental", "dialogue:arc", "0")
     assert res.passed, res.reasons
     assert (PSF, "a1", 3) in ev.covers()
+
+
+# --- the clean-up exemption holds only for a change that keeps behaviour (review batch B) ------------------
+
+# the merge, but the retry with three attempts (a recorded input no old test uses) now reads as exhausted
+STATE_TWISTED = STATE_MERGED.replace(
+    'return "exhausted" if observation["failed"] else "retry"',
+    'return "exhausted" if observation["failed"] or observation["attempts_used"] == 3 else "retry"',
+)
+# the same code as the parent's submit_state, one tuple reordered: no less code
+STATE_REORDERED = STATE_INLINE.replace(
+    'for k in ("correct", "failed", "valid")',
+    'for k in ("valid", "correct", "failed")',
+)
+
+
+def _refused_reason(item, why):
+    return (
+        f"G3: {item} is edited in a clean-up pass without a red test, and {why}; a change of "
+        "behaviour needs a test that is red on the parent's library"
+    )
+
+
+def test_a_shrinking_pass_that_changes_a_result_on_a_recorded_cover_is_refused(arc):
+    mem, ev, gate, ep, parent = arc
+    # an earlier pass recorded submit_state on cover 3; this pass lists only covers 0-2, which its old test uses
+    ev.add_cover(SS, "a1", 3)
+    man = {"items": [_item(SS, [T_SS], RECORDED[SS])]}
+    twisted = _candidate(mem, {MODULE: HEAD + READ + STATE_TWISTED})
+    res = gate.check(parent, twisted, man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    refusal = [r for r in res.reasons if r.startswith("G3:")]
+    assert refusal == [
+        _refused_reason(
+            SS,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        ),
+    ], res.reasons
+    assert "retry" not in refusal[0] and "exhausted" not in refusal[0]
+    # the pure merge does the same as the parent on all four recorded covers, and lands without a red test
+    merged = _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED})
+    res = gate.check(parent, merged, man)
+    assert res.passed, res.reasons
+
+
+def test_deleting_comments_does_not_make_a_clean_up_pass(arc):
+    mem, ev, gate, ep, parent = arc
+    commented = _merged(
+        mem,
+        {
+            MODULE: "# Parsers for ARC dialogue observations.\n# Shape checks only.\n"
+            + PARENT_MODULE,
+        },
+    )
+    # fewer lines (the comments are gone) but no less code: an edited function still needs a red test
+    cand = _candidate(mem, {MODULE: HEAD + READ + STATE_REORDERED})
+    res = gate.check(commented, cand, {"items": [_item(SS, [T_SS], RECORDED[SS])]})
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert f"G3: {SS} has no new or changed test" in res.reasons, res.reasons
+
+
+def test_a_parent_test_that_only_imports_the_function_does_not_hold_it(arc):
+    mem, ev, gate, ep, parent = arc
+    # submit_state's old test file imports it but calls only parse_submit_feedback (the review's example)
+    imports_only = _test(
+        "parse_submit_feedback",
+        [(SOLVED, SOLVED)],
+        {"type": "SubmitFeedback"},
+    ).replace(
+        "from env.dialogue_arc import parse_submit_feedback\n",
+        "from env.dialogue_arc import parse_submit_feedback, submit_state\n",
+    )
+    base = _merged(mem, {T_SS: imports_only})
+    man = {"items": [_item(SS, [T_SS], RECORDED[SS])]}
+    res = gate.check(base, _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED}), man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert (
+        _refused_reason(SS, "no parent test that passed on the parent calls it")
+        in res.reasons
+    ), res.reasons
+    # a call through the module counts
+    calls = imports_only + (
+        "\n\ndef test_state_through_the_module():\n"
+        "    import env.dialogue_arc as arc\n\n"
+        f"    assert arc.submit_state({SOLVED!r}) == 'solved'\n"
+    )
+    base = _merged(mem, {T_SS: calls})
+    res = gate.check(base, _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED}), man)
+    assert res.passed, res.reasons

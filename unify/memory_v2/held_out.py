@@ -116,6 +116,13 @@ that field); every allowed refusal is noted. Every refusal an exemption allows i
 * Under R16 (careless, not malicious) the check is not hidden from the item: the replay's type, the
   ``/cases`` paths and the results file in the same process are visible to code that looks for them.
 
+**Same results (D26).** The gate also uses this runner and its replay, without perturbation, to show that an
+edited function still does what its parent version did (:func:`output_cases`, :func:`run_outputs`): each
+recorded input runs on both versions, and what each returns (canonical JSON), refuses or raises, and which
+environment calls it issues, are compared on the host. A recorded tool rejection is replayed as the
+recorded error. A return value that is not JSON, a timeout or a case that did not run cannot be compared.
+Under R16 the comparison is not hidden from the item either.
+
 Bounds: :data:`MAX_COVERS_PER_ITEM` covers (chosen by a hash of item and cover),
 :data:`MAX_FIELDS_PER_COVER` fields per cover, :data:`PER_CASE_S` per call and :data:`ITEM_BUDGET_S` per
 item, all in one confined process (:func:`.sandbox_run.run_confined`).
@@ -146,6 +153,9 @@ from .manifest import SEMANTIC_TYPES
 from .sandbox_run import SandboxResult, run_confined
 
 MAX_COVERS_PER_ITEM = 8
+# :func:`run_outputs` (the gate's same-results check of an edited function): covers compared, seconds per tree
+MAX_OUTPUT_COVERS = 128
+OUTPUTS_BUDGET_S = 120.0
 MAX_FIELDS_PER_COVER = 16
 PER_CASE_S = 2
 ITEM_BUDGET_S = 60.0
@@ -1344,11 +1354,12 @@ def plan(
 
 # Runs inside the box: /memory (the tree, read-only), /cases (cases.json, files/), /out. Standard library only.
 _RUNNER = r"""
-import importlib, inspect, json, signal, sys
+import hashlib, importlib, inspect, json, signal, sys
 sys.path.insert(0, "/memory")
 sys.dont_write_bytecode = True
 
 class ReplayMiss(LookupError): pass
+class RecordedError(RuntimeError): pass
 
 def _key(channel, method, args, kwargs):
     return json.dumps([channel, method, list(args), dict(sorted(kwargs.items()))], sort_keys=True, default=str)
@@ -1362,14 +1373,23 @@ class _Channel:
 class Replay:
     def __init__(self, a):
         self._k = _key(a["channel"], a["method"], a["args"], a["kwargs"]); self._r = a["response"]; self._calls = 0
+        self._error = a.get("status") == "error"; self._issued = hashlib.sha256()
     def __getattr__(self, ch):
         if ch.startswith("_"): raise AttributeError(ch)
         return _Channel(self, ch)
     def _serve(self, channel, method, args, kwargs):
         self._calls += 1
-        if _key(channel, method, args, kwargs) != self._k:
+        key = _key(channel, method, args, kwargs)
+        self._issued.update(key.encode("utf-8", "surrogatepass") + b"\0")
+        if key != self._k:
             raise ReplayMiss(channel + "." + method)
+        if self._error:  # a recorded rejection (outputs mode only; the held-out cases are never one)
+            raise RecordedError(channel + "." + method)
         return json.loads(json.dumps(self._r))
+
+def _digest(value):
+    text = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 class Timeout(BaseException): pass
 state = {"timed_out": False}
@@ -1381,6 +1401,7 @@ signal.signal(signal.SIGALRM, _alarm)
 _NOTED = ("KeyError", "AssertionError", "ValueError")
 
 spec = json.load(open("/cases/cases.json"))
+outputs = bool(spec.get("outputs"))  # record what each case returned (run_outputs), not only whether it refused
 out = open("/out/results.jsonl", "w")
 try:
     fn = getattr(importlib.import_module(spec["module"]), spec["function"])
@@ -1411,7 +1432,12 @@ for case in spec["cases"]:
     signal.alarm(spec["per_case_s"])
     try:
         try:
-            fn(first, **kwargs); row["outcome"] = "handled"
+            result = fn(first, **kwargs); row["outcome"] = "handled"
+            if outputs:
+                try:
+                    row["digest"] = _digest(result)
+                except Exception:  # not JSON: cannot be compared
+                    row["digest"] = None
         finally:
             signal.alarm(0)
     except Timeout:
@@ -1421,10 +1447,14 @@ for case in spec["cases"]:
         row["outcome"] = "refused" if "MemoryInputError" in names_ else "error"
         if row["outcome"] == "error":
             row["raised"] = next((n for n in _NOTED if n in names_), None)
+            if outputs:
+                row["error_class"] = (type(exc).__module__ + "." + type(exc).__qualname__)[:200]
     signal.alarm(0)
     if state["timed_out"]:
         row["outcome"], row["timeout"] = "error", True
     row["calls"] = replay._calls if replay is not None else 0
+    if outputs:
+        row["issued"] = replay._issued.hexdigest() if replay is not None else None
     out.write(json.dumps(row) + "\n"); out.flush()
 """
 
@@ -1494,6 +1524,48 @@ def _fail(verdict: Verdict, c: Case, what: str) -> None:
         verdict.failures.append(text)
 
 
+def _run_box(
+    item: str,
+    cases: list[Case],
+    *,
+    tree: Path,
+    python: Path,
+    work: Path,
+    runner: Callable[..., SandboxResult],
+    timeout_s: float,
+    outputs: bool = False,
+) -> list[dict]:
+    """Run *cases* on *item* of the memory *tree* in one confined process; the result rows it wrote."""
+    module, _, function = item.partition(":")
+    cases_dir, out_dir = work / "cases", work / "out"
+    (cases_dir / "files").mkdir(parents=True)
+    out_dir.mkdir()
+    spec_cases = []
+    for n, c in enumerate(cases):
+        if c.file is not None:
+            (cases_dir / "files" / str(n)).mkdir()
+            (cases_dir / "files" / str(n) / c.name).write_bytes(c.file)
+        spec_cases.append({**c.payload, "id": n, "param": c.param})
+    spec: dict[str, Any] = {
+        "module": module.replace("/", "."),
+        "function": function,
+        "per_case_s": PER_CASE_S,
+        "cases": spec_cases,
+    }
+    if outputs:
+        spec["outputs"] = True
+    (cases_dir / "cases.json").write_text(json.dumps(spec, default=str))
+    (cases_dir / "run.py").write_text(_RUNNER)
+    runner(
+        [str(python), "-I", "/cases/run.py"],
+        ro={tree: "/memory", cases_dir: "/cases"},
+        rw={out_dir: "/out"},
+        cwd="/memory",
+        timeout_s=timeout_s,
+    )
+    return _read_results(out_dir / "results.jsonl")
+
+
 def run_plan(
     item: str,
     p: Plan,
@@ -1511,32 +1583,15 @@ def run_plan(
         )
     if not p.cases:
         return verdict
-    module, _, function = item.partition(":")
-    cases_dir, out_dir = work / "cases", work / "out"
-    (cases_dir / "files").mkdir(parents=True)
-    out_dir.mkdir()
-    spec_cases = []
-    for n, c in enumerate(p.cases):
-        if c.file is not None:
-            (cases_dir / "files" / str(n)).mkdir()
-            (cases_dir / "files" / str(n) / c.name).write_bytes(c.file)
-        spec_cases.append({**c.payload, "id": n, "param": c.param})
-    spec = {
-        "module": module.replace("/", "."),
-        "function": function,
-        "per_case_s": PER_CASE_S,
-        "cases": spec_cases,
-    }
-    (cases_dir / "cases.json").write_text(json.dumps(spec, default=str))
-    (cases_dir / "run.py").write_text(_RUNNER)
-    runner(
-        [str(python), "-I", "/cases/run.py"],
-        ro={tree: "/memory", cases_dir: "/cases"},
-        rw={out_dir: "/out"},
-        cwd="/memory",
+    rows = _run_box(
+        item,
+        p.cases,
+        tree=tree,
+        python=python,
+        work=work,
+        runner=runner,
         timeout_s=ITEM_BUDGET_S,
     )
-    rows = _read_results(out_dir / "results.jsonl")
     fatal = next((r["fatal"] for r in rows if "fatal" in r), None)
     if fatal is not None:
         verdict.notes.append(
@@ -1641,6 +1696,141 @@ def run_plan(
             "those covers are not checked",
         )
     return verdict
+
+
+def output_cases(
+    covers: list[tuple[str, int, Action]],
+    blob: Callable[[str], bytes],
+    input_kind: str | None,
+) -> tuple[list[Case], list[tuple[str, int]]]:
+    """Each cover's recorded input, unperturbed, in the item's input form, for :func:`run_outputs`.
+
+    The calling convention is G2's (see the module docstring): ``env`` gets a replay of the recorded call
+    (a recorded rejection raises), ``observation`` the recorded response or observation as recorded,
+    ``path``/``bytes`` the recorded file, ``text`` its decoded text. The second value lists the covers that
+    cannot be given: a shell cover, a form the cover's kind cannot give, or a file blob that cannot be read.
+    """
+    cases: list[Case] = []
+    unfit: list[tuple[str, int]] = []
+    for eid, idx, a in covers:
+        kind, form = getattr(a, "kind", "tool"), _form(a, input_kind)
+        if (
+            kind == "shell"
+            or form not in _FORMS.get(kind, ())
+            or _unfit_reason(a, input_kind) is not None
+        ):
+            unfit.append((eid, idx))
+            continue
+        c = Case((eid, idx), None, family(a), kind, {})
+        if kind == "tool" and form == "env":
+            c.payload = {
+                "kind": kind,
+                "form": form,
+                "action": {
+                    "channel": a.channel,
+                    "method": a.method,
+                    "args": list(a.args),
+                    "kwargs": dict(a.kwargs or {}),
+                    "response": a.response,
+                    "status": a.status,
+                },
+                "kwargs": dict(a.kwargs or {}),
+            }
+        elif kind == "tool":
+            c.payload = {
+                "kind": kind,
+                "form": form,
+                "kwargs": dict(a.kwargs or {}),
+                "observation": a.response,
+            }
+        elif kind == "worktree":
+            data = _blob_of(a, blob)
+            if data is None:
+                unfit.append((eid, idx))
+                continue
+            if form == "text":
+                c.payload = {
+                    "kind": kind,
+                    "form": form,
+                    "observation": _shapes.decode(data)[1],
+                }
+            else:
+                c.name, c.file = _file_name(a, len(cases)), data
+                c.payload = {
+                    "kind": kind,
+                    "form": form,
+                    "path": f"/cases/files/{len(cases)}/{c.name}",
+                }
+        else:
+            c.payload = {"kind": kind, "form": form, "observation": a.response}
+        cases.append(c)
+    return cases, unfit
+
+
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def run_outputs(
+    item: str,
+    cases: list[Case],
+    *,
+    tree: Path,
+    python: Path,
+    work: Path,
+    runner: Callable[..., SandboxResult] = run_confined,
+) -> dict[tuple[str, int], tuple[str, str, str | None] | None]:
+    """What *item* of the memory *tree* does on each case (:func:`output_cases`), run confined, by cover.
+
+    ``(outcome, result, calls)``: ``handled`` with the SHA-256 of its return value as canonical JSON
+    (sorted keys), ``refused`` (its ``MemoryInputError``) with an empty result, or ``error`` with the
+    exception's class; *calls* is the SHA-256 of the environment calls it issued (``env`` form), else
+    None. None when the case cannot be compared: it did not run within :data:`OUTPUTS_BUDGET_S`, timed
+    out, returned a value that is not JSON, or the module could not be loaded. Only digests and class
+    names leave the box, and the host only compares them.
+    """
+    out: dict[tuple[str, int], tuple[str, str, str | None] | None] = {
+        c.cover: None for c in cases
+    }
+    if not cases:
+        return out
+    rows = _run_box(
+        item,
+        cases,
+        tree=tree,
+        python=python,
+        work=work,
+        runner=runner,
+        timeout_s=OUTPUTS_BUDGET_S,
+        outputs=True,
+    )
+    if any("fatal" in r for r in rows):
+        return out
+    by_id = {
+        r["id"]: r
+        for r in rows
+        if isinstance(r.get("id"), int) and 0 <= r["id"] < len(cases)
+    }
+    for n, c in enumerate(cases):
+        r = by_id.get(n)
+        if r is None or r.get("timeout"):
+            continue
+        outcome, calls = r.get("outcome"), r.get("issued")
+        if outcome == "handled":
+            result = r.get("digest")
+            if not (isinstance(result, str) and _HEX64.fullmatch(result)):
+                continue
+        elif outcome == "refused":
+            result = ""
+        elif outcome == "error" and isinstance(r.get("error_class"), str):
+            result = r["error_class"][:200]
+        else:
+            continue
+        if calls is not None and not (
+            isinstance(calls, str) and _HEX64.fullmatch(calls)
+        ):
+            continue
+        out[c.cover] = (outcome, result, calls)
+    return out
 
 
 def seen_actions(
