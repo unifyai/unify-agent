@@ -777,9 +777,15 @@ def test_a_test_with_two_outcomes_under_the_pins_is_refused_as_flaky(tmp_path):
     pinned = [c for c in runner.calls if c[0] == HP_TEST]
     assert all("-p _memv2_pin" in c[5]["PYTEST_ADDOPTS"] for c in pinned)
     # every run under pin variant 0 but the rerun, which uses variant 1 (other epoch, seeds)
-    assert [(c[5]["PYTHONHASHSEED"], c[5]["MEMV2_PIN"]) for c in pinned] == [
-        ("0", "0"),
-    ] * (len(pinned) - 1) + [("1", "1")]
+    assert [
+        (c[5]["PYTHONHASHSEED"], c[5]["MEMV2_PIN"], c[5]["TZ"]) for c in pinned
+    ] == [
+        ("0", "0", "UTC"),
+    ] * (
+        len(pinned) - 1
+    ) + [
+        ("1", "1", "<+0545>-05:45"),
+    ]
     assert all(c[1] == ["/inputs", "/memory"] for c in runner.calls)
     steady = _check(
         tmp_path / "steady",
@@ -1103,7 +1109,7 @@ def test_the_pin_installs_only_under_its_box_name(tmp_path):
     assert int(b) - int(a) == 1_000_000 and now.startswith("2001-09-09T01:46:40")
     assert float(rnd) == random.Random(0).random()
     a, b, now, rnd = runs[2].split()
-    assert int(b) - int(a) == 1_000_000 and now.startswith("2033-05-18T03:33:20")
+    assert int(b) - int(a) == 7_000_000 and now.startswith("2033-05-18T03:33:20")
     assert float(rnd) == random.Random(1).random()
 
 

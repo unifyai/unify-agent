@@ -44,8 +44,8 @@ green, nothing is judged.
 **Determinism** (``UNIFY_MEMORY_V2_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memv2_pin``: a stepping clock from a fixed epoch, ``random`` seeded
 before each test). Each new or changed test file green in G3 runs once more under the other pin variant
-(another epoch, random seed and hash seed); different outcomes refuse it, so a test can neither be flaky nor
-depend on a pinned value. A second run that times out is noted, not judged.
+(another epoch, clock step, random seed, hash seed and time zone); different outcomes refuse it, so a test can
+neither be flaky nor depend on a pinned value. A second run that times out is noted, not judged.
 
 **The test kit** (:mod:`.testkit`). Every gate pytest run mounts the kit (``memlab``, the pin plugin, the
 blobs the tests name) read-only at ``/inputs`` when a switch is on **or** the library's tests use it, so a
@@ -145,6 +145,8 @@ MAX_SAMPLES_BYTES = 16 * 1024**2
 MAX_INPUT_FILE_BYTES = testkit.MAX_INPUT_FILE_BYTES
 PIN_MODULE = testkit.PIN_MODULE
 PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
+# TZ per pin variant: UTC, and UTC+05:45 as a POSIX string (no tz database needed in the box)
+PIN_TZ = ("UTC", "<+0545>-05:45")
 PIN_VARIANT_ENV = "MEMV2_PIN"  # :data:`.pin.VARIANT_ENV`
 # probe outcomes that say something about the function (equivalence is judged on these only)
 INFORMATIVE = frozenset({"handled", "refused", "error"})
@@ -225,7 +227,7 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
     """The environment of every gate pytest run while the kit is mounted (a switch on, or the tests use it).
 
     Under determinism the pins of *variant* (:mod:`.pin`): 0 for every run but the determinism rerun, which
-    uses 1 (another epoch, random seed and hash seed).
+    uses 1 (another epoch, clock step, random seed, hash seed and time zone).
     """
     env = {
         "PYTHONPATH": "/memory:/inputs",
@@ -235,6 +237,7 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
         env["PYTEST_ADDOPTS"] += f" -p {PIN_MODULE}"
         env.update(PINNED_ENV)
         env["PYTHONHASHSEED"] = str(variant)
+        env["TZ"] = PIN_TZ[variant]
         env[PIN_VARIANT_ENV] = str(variant)
     return env
 
