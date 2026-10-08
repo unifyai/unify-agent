@@ -1237,3 +1237,37 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
         "G2: env/venmo:me declares input bytes, which a tool cover cannot give" in reply
     )
     assert out.checks == 1 and not out.passed
+
+
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
+    """index (default): v2's "Current index"; catalogue: the README (capped, M9) and never the index."""
+    from unify.memory_v2.catalogue import readme_for_sol
+    from unify.memory_v2.integration.checkout import export_checkout
+
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        (wt / "env/venmo").mkdir(parents=True)
+        (wt / "env/venmo/__init__.py").write_text(MOD)
+        sha = mem.commit_all(wt, "seed", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    seen: list = []
+
+    async def record(messages, tools):
+        seen.append([dict(m) for m in messages])
+        raise RuntimeError("recorded")
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), surfacing=surfacing)
+    sol = SolPass(mem, gate, ev, load=_never, model_turn=record, config=PassConfig())
+    asyncio.run(sol.run(PassRequest("incremental", "venmo", [], False), "p-s"))
+    first = seen[0][1]["content"]
+    export_checkout(mem.git_dir, sha, tmp_path / "co")
+    if surfacing == "catalogue":
+        assert first.endswith("\n\n" + readme_for_sol(tmp_path / "co"))
+        assert "Current index" not in first
+        assert "README.md, memory.py and .memory/" in seen[0][0]["content"]
+    else:
+        assert "\n\nCurrent index:\n" in first and "README" not in first
+        assert seen[0][0]["content"] == SOL_SYSTEM

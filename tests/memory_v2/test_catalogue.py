@@ -720,3 +720,39 @@ def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
     assert elapsed < 0.25, elapsed  # about 12 ms on the laptop when measured
     small = memory_helper.value_shape(nest(3, 4))
     assert "truncated" not in small and small["tree"] == [[["int"]]]
+
+
+def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
+    """M9: Sol's first message carries the README while it fits SOL_README_BUDGET_TOKENS; past it, the
+    channel lines and one line per function as fit, and how to read the rest. Bounded at any size.
+    """
+    _, _, export, _, _ = library
+    small = catalogue.readme_for_sol(export)
+    assert small == (
+        "Current library (its README, which the harness generates; never write it):\n"
+        + catalogue.render_readme(export)
+    )
+    tree = tmp_path / "big"
+    for ch in ("alpha", "beta"):
+        body = "".join(
+            f"def f{i}(path):\n    \"\"\"{'Read one recorded kind of file into rows. ' * 3}\n\n"
+            '    Effect: read\n    Input: path\n    """\n    return path\n\n\n'
+            for i in range(400)
+        )
+        (tree / "env" / ch).mkdir(parents=True)
+        (tree / "env" / ch / "__init__.py").write_text(body)
+    readme = catalogue.render_readme(tree)
+    per_function = (catalogue.estimate_tokens(readme) - 150) / 800
+    assert 30 < per_function < 60  # the README grows by about 40 tokens a function
+    text = catalogue.readme_for_sol(tree)
+    budget = catalogue.SOL_README_BUDGET_TOKENS
+    assert catalogue.estimate_tokens(text) <= budget
+    assert "compact view" in text and "help(env.<channel>.<function>)" in text
+    assert (
+        "- `env.alpha`: 400 functions" in text and "- `env.beta`: 400 functions" in text
+    )
+    assert "- env.alpha.f0: Read one recorded kind of file" in text
+    assert "more functions (help(env.<channel>) lists them)" in text
+    assert catalogue.readme_for_sol(tree, budget_tokens=10**6).startswith(
+        "Current library (its README",
+    )

@@ -41,7 +41,7 @@ from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
 from .gate import Gate, ParentSnapshot
-from .catalogue import render_readme
+from .catalogue import readme_for_sol
 from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import Repo
 from .index import build_index
@@ -874,13 +874,11 @@ class SolPass:
         """The library part of Sol's first message: v2's index, or the generated README (``catalogue``)."""
         if switches["catalogue"]:
             try:
-                readme = render_readme(wt)
+                return readme_for_sol(
+                    wt,
+                )  # the README, or a compact view past its budget (M9)
             except ValueError as exc:  # an unreadable notes file
-                readme = f"(catalogue not built: {exc})"
-            return (
-                "Current library (its README, which the harness generates; never write it):\n"
-                f"{readme}"
-            )
+                return f"Current library: (catalogue not built: {exc})"
         try:
             index = (
                 build_index(wt, budget_tokens=sys.maxsize)
