@@ -51,7 +51,7 @@ Then hand the actor a request:
 .venv/bin/python -m unify act "Count the rows in ~/exports/run-42.csv"
 ```
 
-`unify` with no subcommand runs `act` on a request read from stdin. `unify chat`, the old conversation loop (`unify/legacy/`), is legacy and unsupported.
+`unify` with no subcommand runs `act` on a request read from stdin. `unify chat`, the old conversation loop (`unify/legacy/`), is legacy and unsupported: it only says so and exits.
 
 Progress streams to stderr and the result to stdout, so it slots into a benchmark runner. The request can come from stdin, `--json` adds the token accounting, `--no-store` skips the storage review, `--persist` keeps the sandbox alive for follow-up lines, and a question the actor asks is answered by typing at the terminal. This is the like-for-like unit against single-loop harnesses such as Prime Agent.
 
