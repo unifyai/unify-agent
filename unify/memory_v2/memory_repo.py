@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .analysis.overrides import find_overrides
 from .gitio import Repo
 
 _EFFECT = re.compile(r"^\s*Effect:\s*(read|write|unknown)\s*$", re.M)
@@ -38,6 +39,11 @@ class Item:
     input_lines: int = (
         0  # how many ``Input:`` lines the docstring holds (the gate allows one)
     )
+    # an environment function that replaces a value it computed from its input under a condition
+    # (:mod:`.analysis.overrides`): the first such line of its module, else 0; ``rule_unchecked`` when the
+    # analysis stopped at a bound
+    rule_line: int = 0
+    rule_unchecked: bool = False
 
 
 @dataclass
@@ -104,6 +110,7 @@ def items(checkout: Path) -> ItemsReport:
                 doc = ast.get_docstring(node) or ""
                 m = _EFFECT.search(doc)
                 form = _INPUT.search(doc)
+                rule = find_overrides(node)
                 rep.items.append(
                     Item(
                         f"env/{channel}:{node.name}",
@@ -116,6 +123,8 @@ def items(checkout: Path) -> ItemsReport:
                         listed is None or node.name in listed,
                         form.group(1) if form else "",
                         len(_INPUT_LINE.findall(doc)),
+                        rule.line,
+                        rule.truncated,
                     ),
                 )
     for notes in sorted(checkout.glob("env/*/NOTES.md")):

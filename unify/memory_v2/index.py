@@ -9,7 +9,9 @@ constant guide (:mod:`.integration.prompt`) and the catalogue is the export's ge
 
 A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
 that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:
-text)``. The index is a function of the tree alone, so the same commit gives the same bytes.
+text)``. A function that replaces a value it computed from its input under a condition
+(:mod:`.analysis.overrides`) has `` (applies a rule; check it)`` after its summary. The index is a function
+of the tree alone, so the same commit gives the same bytes.
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ HEADER = (
     "Each function checks its inputs and raises MemoryInputError with a diagnosis when they differ from what it "
     "was built from; when that happens, do the work directly.\n"
 )
+
+
+RULE_FLAG = " (applies a rule; check it)"
 
 
 class IndexOverBudget(ValueError):
@@ -74,6 +79,8 @@ def index_with_names(
             if it.kind == "env_function"
             else f"- note: {it.name} — {it.doc}"
         )
+        if it.kind == "env_function" and it.rule_line:
+            line += RULE_FLAG
         if it.kind == "env_function" and it.input in INPUT_KINDS:
             line += f" (input: {it.input})"
         if it.kind == "env_function":

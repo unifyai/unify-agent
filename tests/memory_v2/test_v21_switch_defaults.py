@@ -149,7 +149,8 @@ def test_each_switch_takes_only_its_values(monkeypatch, name, parse, values):
 # Declared changes to v2 behaviour that are not v2.1 switches, merged into the frozen build (memory-v2-int1):
 # D26 (memory-v2-sol-hygiene) gives Sol's brief one paragraph and a longer gate summary, and its first message
 # the pass's functions with their cover counts; use telemetry (memory-v2.1-tele) records each request's use of
-# the library in an ``item_use`` table. Everything else at the switch defaults is 9deefbfd1's, byte for byte.
+# the library in an ``item_use`` table; the later merges' brief sentences are in ``INSERTS``. Everything else at
+# the switch defaults is 9deefbfd1's, byte for byte.
 D26_PARAGRAPH = (
     "Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each\n"
     "function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where\n"
@@ -172,13 +173,26 @@ D26_FIRST_MESSAGE_TAIL = (
     "\n\nFunctions on this pass's channels:\n(none yet)"  # no episode: no channel
 )
 TELEMETRY_TABLES = {"item_use"}
+# Merged into memory-v2-int2: the override rule (memory-v2-override-rule) adds one sentence to the brief's
+# covers paragraph. Each entry is (anchor, text inserted after it).
+INSERTS = [
+    (
+        "nonzero exit) that justifies a value check (never covers made only of rejections).\n",
+        "A function that replaces a value it computed from its input under a condition encodes a policy; it needs covers\n"
+        "from at least two episodes.\n",
+    ),
+]
 
 
 def _v2_template() -> str:
-    """The golden v2 brief template with the declared D26 changes applied (each must apply exactly once)."""
+    """The golden v2 brief template with the declared changes applied (each must apply exactly once)."""
     text = GOLDEN["sol_prompt_template"]
     assert text.count(D26_AFTER) == 1 and text.count(D26_SUMMARY[0]) == 1
-    return text.replace(D26_AFTER, D26_AFTER + D26_PARAGRAPH).replace(*D26_SUMMARY)
+    text = text.replace(D26_AFTER, D26_AFTER + D26_PARAGRAPH).replace(*D26_SUMMARY)
+    for anchor, inserted in INSERTS:
+        assert text.count(anchor) == 1, anchor
+        text = text.replace(anchor, anchor + inserted)
+    return text
 
 
 def _v2_brief() -> str:

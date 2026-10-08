@@ -10,7 +10,7 @@ import unify.memory_v2.manifest as manifest_module
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import Action, Cell, CostRow
 from unify.memory_v2.evidence import EvidenceStore
-from unify.memory_v2.gate import Gate
+from unify.memory_v2.gate import RULE_EPISODES, Gate
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.sol_pass import (
     SOL_SYSTEM,
@@ -397,6 +397,15 @@ def test_sol_system_states_that_scope_is_shape_not_observed_values():
     assert "Bad: `if colour not in" in SOL_SYSTEM
     assert "Good: `if not isinstance(colour" in SOL_SYSTEM
     assert "rejection must then be one of the" in SOL_SYSTEM
+
+
+def test_sol_system_states_the_two_episode_rule_for_overriding_functions():
+    """The gate's G2 rule (``gate.RULE_EPISODES``), in one sentence."""
+    assert RULE_EPISODES == 2
+    assert (
+        "A function that replaces a value it computed from its input under a condition encodes a policy; it "
+        "needs covers\nfrom at least two episodes." in SOL_SYSTEM
+    )
 
 
 def test_sol_system_asks_each_function_to_declare_its_input_from_the_one_constant():

@@ -54,6 +54,11 @@ The checks:
   names the field only. A field declared with a semantic type (``field_types``, D21) is checked two-sided:
   unseen in-domain values must be accepted and an out-of-domain value refused. Other exceptions, unused keywords, timeouts and refused baselines are notes.
   Shell covers are skipped with a note. A ``workflow`` is promotable under the job-level rule over its recorded and source episodes.
+  An added or changed environment function that replaces a value it computed from its input under a condition
+  (:mod:`.analysis.overrides`; the F3 expense case paid an over-cap claim 0 instead of the cap) encodes a
+  decision rule its recordings cannot mark wrong: its validated covers must come from at least
+  :data:`RULE_EPISODES` episodes, else it is refused with its first such line (a function the analysis cannot
+  bound is noted, not refused).
 * **G3 red→green and regression.** Every added or changed environment function has a new or changed
   test; each such test passes on the candidate and is red on the parent: it fails on the parent tree with
   the changed tests and the ``support`` helpers copied in (ruling R2; a run there that times out counts as
@@ -202,6 +207,9 @@ _REDACTED = "<redacted:key-shaped>"
 EXAMPLES_TEST = "_memory_examples/test_examples.py"
 # Input-shape descriptors computed per item at a merge (the evidence store keeps at most its own cap).
 MAX_SHAPE_COVERS = 32
+
+# An environment function that encodes a rule (G2) needs validated covers from at least this many episodes.
+RULE_EPISODES = 2
 
 # A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
 PREVIEW_MAX_COVERS = 500
@@ -1139,6 +1147,8 @@ class Gate:
                             and getattr(action, "kind", "tool") != "shell"
                         ):
                             run.rejections.add((eid, idx))
+                if valid:
+                    self._rule(run, it.item, valid)
                 if valid and all(
                     is_rejection(a) and getattr(a, "kind", "tool") != "shell"
                     for _, _, a in valid
@@ -1219,6 +1229,28 @@ class Gate:
             Exception
         ):  # noqa: BLE001 - shapes are a catalogue aid, never a gate reason
             return snapshot_rows(run.c_tree, {}, run.shapes)
+
+    @staticmethod
+    def _rule(run: _Run, item: str, valid: list[tuple[str, int, Action]]) -> None:
+        """An added or changed function that replaces a computed value under a condition needs covers from
+        :data:`RULE_EPISODES` episodes (module docstring, G2)."""
+        if run.p_bodies.get(item, ("", ""))[:2] == run.c_bodies.get(item, ("", ""))[:2]:
+            return
+        found = [
+            i for i in (run.c_report.items if run.c_report else []) if i.item_id == item
+        ]
+        if not found:
+            return  # an absent item (or an unreadable module) is refused elsewhere
+        info = found[0]
+        if info.rule_unchecked:
+            run.note(f"G2 rule check: {item} is too large to analyse; not checked")
+        elif info.rule_line and len({eid for eid, _, _ in valid}) < RULE_EPISODES:
+            run.fail(
+                "G2",
+                f"{item} replaces a value it computed from its input under a condition (line "
+                f"{info.rule_line} of {info.path}); a function that encodes such a rule needs covers from at "
+                f"least {RULE_EPISODES} episodes",
+            )
 
     @staticmethod
     def _named_episodes(run: _Run) -> list[str]:
