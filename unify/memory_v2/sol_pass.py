@@ -40,8 +40,9 @@ from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
 from .gate import Gate, ParentSnapshot
+from .catalogue import render_readme
+from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import Repo
-from .index import build_index
 from .redact import KEY_SHAPED
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .trigger import PassRequest
@@ -123,6 +124,9 @@ What to build, in priority order:
    Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
    `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as
    "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
+   Docstrings follow the lean standard, so that `help(fn)` alone tells the working model how to use a function:
+   {docstring_standard}. The harness renders README.md, memory.py and .memory/ at the library root from your
+   commit for the working model (a catalogue of the library); never write them: the gate refuses them.
    Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
    differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
    when you add it, together with every public function of the module in items).
@@ -161,11 +165,12 @@ with status "ok" and a response, shell commands with an output tail, worktree re
 dialogue actions with status "ok" and an observation, and any recorded rejection (status "error" with its error, or a
 nonzero exit) that justifies a value check (never covers made only of rejections).
 Before finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's
-manifest, provenance, scope, cover-channel, index and safety checks (not the tests) on your current files, changes
-nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
+manifest, provenance, scope, docstring, cover-channel, size and safety checks (not the tests or examples) on your
+current files, changes nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
 already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
 A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
-test suite, an index budget, that the library only grows when it covers new recorded calls, and safety. Its rules
+test suite, the docstring standard and its examples, that the library only grows when it covers new recorded calls,
+and safety; past a soft size it notes that the library is due for hygiene, and never refuses growth. Its rules
 follow; a pass that breaks one is refused whole.
 """
 
@@ -176,6 +181,7 @@ SOL_SYSTEM = (
     .replace("{checks}", str(MAX_CHECKS))
     .replace("{semantic_types}", _manifest.describe_semantic_types())
     .replace("{input_kinds}", _manifest.describe_input_kinds())
+    .replace("{docstring_standard}", describe_docstring_standard())
     + "\n"
     + _manifest_rules()
     + "\n"
@@ -221,7 +227,8 @@ _TOOLS = [
             "name": "check",
             "description": (
                 "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
-                "provenance and scope, covers and their channels, index, safety; not the tests). Returns 'ok' "
+                "provenance and scope, docstrings, covers and their channels, size, safety; not the tests or "
+                "examples). Returns 'ok' "
                 f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
             ),
             "parameters": {
@@ -986,14 +993,17 @@ class SolPass:
             self._stage_inputs(req, inputs)
             _channel_dirs(box, _exported_channels(inputs / "episodes"))
             try:
-                index = build_index(wt)
-            except ValueError as exc:  # over budget, or an unreadable notes file
-                index = f"(index not built: {exc})"
+                readme = render_readme(wt)
+            except ValueError as exc:  # an unreadable notes file
+                readme = f"(catalogue not built: {exc})"
             messages: list[dict] = [
                 {"role": "system", "content": SOL_SYSTEM},
                 {
                     "role": "user",
-                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}",
+                    "content": (
+                        f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent library (its README, "
+                        f"which the harness generates; never write it):\n{readme}"
+                    ),
                 },
             ]
             finished = False

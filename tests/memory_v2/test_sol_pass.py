@@ -404,6 +404,19 @@ def test_sol_system_asks_each_function_to_declare_its_input_from_the_one_constan
     assert "{input_kinds}" not in SOL_SYSTEM
 
 
+def test_sol_system_states_the_docstring_standard_from_the_constants():
+    """v2.1: the lean docstring standard is generated from its constants; the catalogue is the harness's."""
+    from unify.memory_v2 import docstrings
+
+    flat = " ".join(SOL_SYSTEM.split())
+    assert " ".join(docstrings.describe_standard().split()) in flat
+    for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
+        assert f"`{name}:`" in flat
+    assert "{docstring_standard}" not in SOL_SYSTEM
+    assert "README.md, memory.py and .memory/" in flat and "never write them" in flat
+    assert "an index budget" not in flat  # growth is never refused for size
+
+
 def test_sol_system_lists_the_declared_semantic_types_from_the_one_constant():
     """D21: values are restricted only through the fixed type list, declared in the manifest."""
     flat = SOL_SYSTEM.replace("\n   ", " ")
