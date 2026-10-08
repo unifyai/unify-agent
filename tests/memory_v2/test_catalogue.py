@@ -702,7 +702,10 @@ def test_suspect_channels_are_flagged_in_the_catalog_and_in_describe(library):
         in text
     )
     assert "is suspect" in memory.describe("parse_feedback")
-    assert "suspect" not in memory.describe("read_ledger")
+    # describe names the export's directory, which sits under this test's tmp_path ("test_suspect_…"): look
+    # for the flag's text, not the bare word
+    assert "is suspect" not in memory.describe("read_ledger")
+    assert memory_helper.SUSPECT_NOTE not in memory.describe("read_ledger")
     # with no suspect channel the catalog is byte for byte what it was
     again = catalogue.write_generated(export, shapes=_shapes(ev, sha))
     assert again == written
