@@ -261,3 +261,11 @@ def test_before_cell_is_inert_without_a_run_and_never_raises(
         mv2.ctx.run(hooks.before_cell)  # logged, not raised
     finally:
         _abort(mv2, run)
+
+
+def test_before_cell_never_raises_when_finding_the_run_fails(monkeypatch):
+    def broken():
+        raise RuntimeError("bad settings state")
+
+    monkeypatch.setattr(hooks, "_run", broken)
+    hooks.before_cell()  # logged, not raised: every cell still runs

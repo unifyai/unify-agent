@@ -138,12 +138,13 @@ def before_cell() -> None:
     """Before a code cell runs: the request run's per-cell refresh of what the export shows
     (``UNIFY_MEMORY_V2_OBSERVATIONS``: ``RequestRun.refresh_observations``). Inert while the switch is off or
     no request run is active; never raises (the cell runs either way)."""
-    run = _run()
-    refresh = getattr(run, "refresh_observations", None) if run is not None else None
-    if refresh is None:
-        return
     try:
-        refresh()
+        run = _run()
+        refresh = (
+            getattr(run, "refresh_observations", None) if run is not None else None
+        )
+        if refresh is not None:
+            refresh()
     except Exception as exc:  # noqa: BLE001 - the cell runs without a fresh file
         logger.warning("memory v2: observations not refreshed (%s)", type(exc).__name__)
 
