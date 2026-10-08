@@ -71,9 +71,10 @@ link-local or private address, whatever a name resolves to (rule
 metadata server (``169.254.169.254``) are unreachable from it.
 
 Without bubblewrap nothing runs: the harness refuses rather than run the
-command unconfined. What this does not confine is Python cells themselves:
-they run in the harness's own process (``exec``), so only the subprocesses they
-start go through the sandbox.
+command unconfined. Python cells run in the sandboxed worker
+(unify/actor/execution/worker.py), a persistent ``python -I -S`` started under
+this policy, never in the harness's own process: a cell's code and every
+subprocess it starts are confined alike.
 """
 
 from __future__ import annotations
