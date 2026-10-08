@@ -389,6 +389,10 @@ class SandboxPolicy:
                 rule = _secret_rule(part)
                 if rule is not None and (i == len(parts) - 1 or not _is_env_file(part)):
                     return rule, f"{resolved} has a credential's name"
+            # A private key under any name, read again on every request (the
+            # scan's finds can be older than the file's content).
+            if _holds_private_key(resolved):
+                return "mask-credentials", f"{resolved} holds a private key"
             # A state directory inside the workspace is hidden again over the
             # workspace's mount, but for the views put back.
             if (
@@ -457,18 +461,89 @@ _PUBLIC_PEM = {"cacert.pem", "roots.pem", "ca-bundle.pem", "ca-certificates.pem"
 _CREDENTIAL_NAMES = {Path(p).name for p in CREDENTIAL_PATHS}
 
 
+# Private keys and secret stores by their own name: OpenSSH's default key
+# files (and any ``id_*`` that starts with one of these stems but for ``.pub``
+# public halves), and the suffixes of key, keystore and password-database
+# files. ``.netrc``'s Windows name. Public halves (``*.pub``), ``known_hosts``
+# and ``authorized_keys`` never match.
+_SSH_KEY_STEMS = (
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_ecdsa_sk",
+    "id_ed25519_sk",
+)
+_SECRET_SUFFIXES = (".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk", ".kdbx")
+_SECRET_FILE_NAMES = {"_netrc"}
+
+
 def _secret_rule(name: str) -> Optional[str]:
     """The mask rule for a file or directory named *name* in a mounted root."""
     if _is_env_file(name):
         return "mask-env-file"
     lower = name.lower()
-    if name in _CREDENTIAL_NAMES:
+    if name in _CREDENTIAL_NAMES or lower in _SECRET_FILE_NAMES:
         return "mask-credentials"
     if lower.endswith(".pem") and lower not in _PUBLIC_PEM:
         return "mask-credentials"
     if lower.endswith(".json") and "key" in lower:
         return "mask-credentials"
+    if lower.endswith(".pub"):
+        return None
+    if lower.startswith(_SSH_KEY_STEMS) or lower.endswith(_SECRET_SUFFIXES):
+        return "mask-credentials"
     return None
+
+
+# A workspace file is also masked by its content: a regular file of at most
+# _ARMOUR_MAX_SIZE bytes whose first _ARMOUR_READ bytes hold a private key's
+# PEM or PGP armour (PKCS#1/#8, OpenSSH, SEC1, DSA, encrypted PKCS#8, a PGP
+# secret key block; a JSON service-account key holds it too). Public-key and
+# certificate armour never matches.
+_ARMOUR_MAX_SIZE = 64 * 1024
+_ARMOUR_READ = 4096
+# The shortest armour line: a smaller file cannot hold one and is never read.
+_ARMOUR_MIN_SIZE = len(b"-----BEGIN PRIVATE KEY-----")  # pragma: allowlist secret
+_PRIVATE_ARMOUR = re.compile(
+    rb"-----BEGIN (?:(?:OPENSSH|RSA|EC|DSA|ENCRYPTED) )?PRIVATE KEY-----"  # pragma: allowlist secret
+    rb"|-----BEGIN PGP PRIVATE KEY BLOCK-----",  # pragma: allowlist secret
+)
+
+
+def _holds_private_key(path: str | os.PathLike) -> bool:
+    """Whether *path* is a regular file of at most :data:`_ARMOUR_MAX_SIZE`
+    bytes whose first :data:`_ARMOUR_READ` bytes hold private-key armour.
+
+    Opened with ``O_NOFOLLOW`` (a link is never followed: its target is
+    checked by its own path) and ``O_NONBLOCK`` (a FIFO swapped in never
+    blocks), only when it is a regular file by ``lstat`` of a size that can
+    hold armour, then checked again on the open descriptor. A file that
+    cannot be opened or read is not masked by content.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0)
+    try:
+        st = os.lstat(path)
+        # Never opened unless it is a small regular file now (a device is
+        # never opened); checked again on the descriptor.
+        if not (
+            stat.S_ISREG(st.st_mode)
+            and _ARMOUR_MIN_SIZE <= st.st_size <= _ARMOUR_MAX_SIZE
+        ):
+            return False
+        fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _ARMOUR_MAX_SIZE:
+            return False
+        head = os.read(fd, _ARMOUR_READ)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return _PRIVATE_ARMOUR.search(head) is not None
 
 
 # The interpreter roots' scan (_find_secret_files with ``cached``): about 60k
@@ -479,8 +554,9 @@ _SECRET_SCAN_CACHE: dict[Path, tuple[str, list, list]] = {}
 # Bump when the scan's matching or walking rules change (_secret_rule,
 # _secret_entries): every cache entry written under another version is stale.
 # The rule tables themselves (_CREDENTIAL_NAMES, _PUBLIC_PEM,
-# _ENV_FILE_ALLOWED) are part of the key as they are.
-_ROOT_SCAN_RULES_VERSION = 1
+# _ENV_FILE_ALLOWED, _SSH_KEY_STEMS, _SECRET_SUFFIXES, _SECRET_FILE_NAMES)
+# are part of the key as they are. Version 2: private keys by name.
+_ROOT_SCAN_RULES_VERSION = 2
 _ROOT_SCAN_SCHEMA = 2
 # How deep below the root and below each of its site-packages the fingerprint
 # lists directories: a new entry at depth 1 to 3 below either changes it.
@@ -501,6 +577,9 @@ def _rules_digest() -> str:
         sorted(_CREDENTIAL_NAMES),
         sorted(_PUBLIC_PEM),
         sorted(_ENV_FILE_ALLOWED),
+        sorted(_SSH_KEY_STEMS),
+        sorted(_SECRET_SUFFIXES),
+        sorted(_SECRET_FILE_NAMES),
     ]
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
@@ -694,6 +773,8 @@ def _scan_cache_store(
 def _secret_entries(
     directory: Path,
     skip_names: frozenset[str] = frozenset(),
+    *,
+    content: bool = False,
 ) -> Optional[tuple[list, list, list, int]]:
     """One directory's ``(files, dirs, subdirectories, entries)`` for the scan.
 
@@ -701,6 +782,12 @@ def _secret_entries(
     secret name masks its target; a directory of a :data:`CREDENTIAL_PATHS`
     name is masked whole and not entered); ``subdirectories`` are the ones to
     enter (not those named in *skip_names*). ``None`` if it cannot be read.
+
+    With *content* (the workspace scan only, never the interpreter roots',
+    whose packages carry test keys), a regular file of another name that
+    :func:`_holds_private_key` is masked too (``mask-credentials``); each
+    file read (one of a size that can hold armour) counts once more in
+    ``entries``, so the scan's cap bounds the reads as well.
     """
     try:
         entries = list(os.scandir(directory))
@@ -709,6 +796,7 @@ def _secret_entries(
     files: list[tuple[Path, str]] = []
     dirs: list[tuple[Path, str]] = []
     subdirs: list[Path] = []
+    reads = 0
     for entry in entries:
         rule = _secret_rule(entry.name)
         try:
@@ -726,9 +814,19 @@ def _secret_entries(
                     subdirs.append(Path(entry.path))
             elif rule is not None and entry.is_file():
                 files.append((Path(entry.path), rule))
+            elif (
+                content
+                and entry.is_file(follow_symlinks=False)
+                and _ARMOUR_MIN_SIZE
+                <= entry.stat(follow_symlinks=False).st_size
+                <= _ARMOUR_MAX_SIZE
+            ):
+                reads += 1
+                if _holds_private_key(entry.path):
+                    files.append((Path(entry.path), "mask-credentials"))
         except OSError:
             continue
-    return files, dirs, subdirs, len(entries)
+    return files, dirs, subdirs, len(entries) + reads
 
 
 def _walk_secret_files(
@@ -762,9 +860,12 @@ def _find_secret_files(
     """``(files, dirs)`` to mask, with rules, anywhere under each mounted root.
 
     Every depth, hidden directories included: ``.env*`` files, ``*.pem``
-    other than public CA bundles, ``*key*.json`` and the names of
+    other than public CA bundles, ``*key*.json``, the names of
     :data:`CREDENTIAL_PATHS` (a directory of those names is masked whole and
-    not entered). A link of such a name masks its target.
+    not entered), OpenSSH private keys (``id_rsa``, ``id_ed25519``, ... but
+    ``*.pub``), ``_netrc`` and the key and keystore suffixes
+    (:data:`_SECRET_SUFFIXES`). A link of such a name masks its target. No
+    file is read here (the workspace scan alone checks content).
 
     The scan of a root in *cached* (the interpreter's, about 60k entries) is
     reused while its fingerprint (:func:`_root_fingerprint`) is unchanged: in
@@ -863,6 +964,15 @@ def _scan_workspace(
     Past *limit*, unchanged directories are still reused but changed ones are
     not read (``capped``): their secrets are not masked in cells, and the
     harness's file tools refuse them by name.
+
+    Files are also masked by content (private-key armour in a small regular
+    file, :func:`_holds_private_key`), read when their directory is read.
+    Residual: a directory's mtime moves when an entry is made, removed or
+    renamed, not when a file's content is rewritten in place, so armour
+    written into an existing file of an unchanged directory is not masked in
+    cells until that directory changes (or the harness process restarts);
+    the harness's file tools read the file again on every request and refuse
+    it.
     """
     if limit is None:
         limit = _WORKSPACE_SCAN_LIMIT
@@ -888,7 +998,7 @@ def _scan_workspace(
             out.capped = True
             continue
         else:
-            found = _secret_entries(directory, _WORKSPACE_SCAN_SKIP)
+            found = _secret_entries(directory, _WORKSPACE_SCAN_SKIP, content=True)
             if found is None:
                 continue
             out.rescanned += 1
