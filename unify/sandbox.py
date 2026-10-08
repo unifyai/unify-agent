@@ -2568,9 +2568,11 @@ _PROXY_HEAD_LIMIT = 8192
 _PROXY_HANDSHAKE_S = 30.0
 _PROXY_CONNECT_S = 10.0
 _TUNNEL_IDLE_S = 300.0
-# NAT64 prefixes (RFC 6052, RFC 8215): the last 32 bits are an IPv4 address
-# a translator reaches, link-local and private ones included.
-_NAT64 = ("64:ff9b::/96", "64:ff9b:1::/48")
+# The well-known NAT64 prefix (RFC 6052): the last 32 bits are the IPv4
+# address a translator reaches, link-local and private ones included. The
+# local-use prefix (64:ff9b:1::/48, RFC 8215) embeds it at a position its
+# length decides, so it is refused with the rest outside 2000::/3.
+_NAT64_WELL_KNOWN = "64:ff9b::/96"
 
 
 def _resolve(host: str, port: int) -> list[tuple]:
@@ -2583,8 +2585,15 @@ def public_address(address: str) -> bool:
 
     False for loopback, link-local (the cloud metadata server,
     ``169.254.169.254``), private, shared (CGNAT), reserved, unspecified and
-    multicast addresses, and for an IPv6 address that embeds one of those
-    (IPv4-mapped, 6to4, NAT64).
+    multicast addresses. An IPv6 address must be global unicast, inside
+    ``2000::/3``, and outside every special range: so IPv4-compatible
+    (``::a9fe:a9fe``), IPv4-mapped, SIIT (``::ffff:0:a9fe:a9fe``),
+    site-local (``fec0::/10``) and unique-local addresses are refused, and
+    so is 6to4 (``2002::/16``: not globally reachable for
+    :mod:`ipaddress`, and never around a non-public IPv4 address whatever
+    its version says). The one exception is the
+    well-known NAT64 prefix (``64:ff9b::/96``), whose last 32 bits are the
+    IPv4 address a translator reaches: public only if that address is.
     """
     import ipaddress
 
@@ -2593,10 +2602,11 @@ def public_address(address: str) -> bool:
     except ValueError:
         return False
     if ip.version == 6:
-        embedded = ip.ipv4_mapped or ip.sixtofour
-        if embedded is None and any(ip in ipaddress.ip_network(net) for net in _NAT64):
-            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-        if embedded is not None and not public_address(str(embedded)):
+        if ip in ipaddress.ip_network(_NAT64_WELL_KNOWN):
+            return public_address(str(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)))
+        if ip not in ipaddress.ip_network("2000::/3"):
+            return False
+        if ip.sixtofour is not None and not public_address(str(ip.sixtofour)):
             return False
     return ip.is_global and not ip.is_multicast
 

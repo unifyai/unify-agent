@@ -228,6 +228,15 @@ def test_the_proxy_never_reaches_a_non_public_address_whatever_a_name_resolves_t
         ("2002:a9fe:a9fe::1", False),  # 6to4 around the metadata server
         ("64:ff9b::a9fe:a9fe", False),  # NAT64 to the metadata server
         ("64:ff9b::7f00:1", False),  # NAT64 to loopback
+        ("64:ff9b::9765:df", True),  # NAT64 to pypi.org
+        ("64:ff9b:1::a9fe:a9fe", False),  # local-use NAT64
+        ("::a9fe:a9fe", False),  # IPv4-compatible, the metadata server
+        ("::7f00:1", False),  # IPv4-compatible loopback
+        ("::ffff:0:a9fe:a9fe", False),  # SIIT (IPv4-translated)
+        ("fec0::1", False),  # site-local
+        ("5f00::1", False),  # outside 2000::/3
+        ("2001:db8::1", False),  # documentation
+        ("2002:9765:df::1", False),  # 6to4, even around a public address
         ("not-an-address", False),
     ],
 )
