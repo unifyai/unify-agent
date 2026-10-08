@@ -493,7 +493,8 @@ def test_gate_g3_suite_must_stay_green(world):
 # --- G4, G5, G6 ------------------------------------------------------------------------------------------
 
 
-def test_gate_g4_index_budget(tmp_path, world):
+def test_gate_g4_is_a_soft_budget(tmp_path, world):
+    """v2.1: past the budget G4 notes that hygiene is due; it never refuses growth."""
     mem, ev, _ = world
     gate = Gate(
         mem,
@@ -504,7 +505,8 @@ def test_gate_g4_index_budget(tmp_path, world):
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
-    assert not res.checks["G4"]
+    assert res.passed and res.checks["G4"], res.reasons
+    assert any(r.startswith("note: G4 hygiene due:") for r in res.reasons), res.reasons
 
 
 def test_gate_g5_growth_must_cover_a_new_call(world):
