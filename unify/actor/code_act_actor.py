@@ -539,13 +539,19 @@ def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
     )
 
 
-def _review_gate_client(actor: "CodeActActor") -> Any:
-    """The ``UNIFY_REVIEW_GATE`` call's client: the review's model, at ``low``
-    effort."""
+def _review_gate_client(actor: "CodeActActor", session_client: Any = None) -> Any:
+    """The ``UNIFY_REVIEW_GATE`` call's client: the review's model, at the
+    effort the session ran at.
+
+    Effort is a fixed condition of a run, never the harness's to change: with
+    the session's client, the gate's request carries that client's reasoning
+    effort (none when it has none); without one, the effort the standalone
+    review's client gets from the actor's model."""
     from unify.actor import review_gate
 
     client = _storage_review_client(actor, origin=review_gate.ORIGIN)
-    client.set_reasoning_effort(review_gate.GATE_EFFORT)
+    if session_client is not None:
+        client.set_reasoning_effort(getattr(session_client, "reasoning_effort", None))
     # Its prompt carries the checked outcome: never where a cell can read it.
     return transcripts.mark_internal(client)
 
@@ -2479,7 +2485,10 @@ class _StorageCheckHandle(ToolLoopHandle):
             if ask_gate:
                 gate_outcome_note = _storage_review_outcome_note(self._outcome)
                 decision = await review_gate.decide(
-                    client_factory=lambda: _review_gate_client(self._actor),
+                    client_factory=lambda: _review_gate_client(
+                        self._actor,
+                        getattr(self._inner, "_client", None),
+                    ),
                     trajectory=trajectory,
                     final_result=self._review_final_result(),
                     outcome_note=gate_outcome_note,

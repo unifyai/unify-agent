@@ -197,7 +197,8 @@ async def test_a_no_skips_the_review(monkeypatch):
     (gate_request,) = _gate_requests(requests)
     assert _review_requests(requests) == []
     assert gate_request["tools"] in (None, [])
-    assert gate_request["reasoning_effort"] == review_gate.GATE_EFFORT
+    # the session's own effort (test_review_gate_effort.py)
+    assert gate_request["reasoning_effort"] == requests[0]["reasoning_effort"]
     assert "List the files in the workspace." in gate_request["messages"][1]["content"]
 
 

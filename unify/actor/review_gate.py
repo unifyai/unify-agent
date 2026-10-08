@@ -41,8 +41,6 @@ GATE_TAIL_CHARS = 40_000
 # The most of one message it shows, head and tail around an elision.
 _MESSAGE_HEAD = 2_500
 _MESSAGE_TAIL = 1_000
-# The effort the gate runs at.
-GATE_EFFORT = "low"
 ORIGIN = "StorageCheckGate"
 
 GATE_SYSTEM_PROMPT = (
