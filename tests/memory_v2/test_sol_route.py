@@ -32,6 +32,16 @@ from unify import sandbox
 from unify.memory_v2 import sol_pass
 from unify.memory_v2.integration import consolidate, switch
 from unify.memory_v2.sandbox_run import run_confined
+
+
+@pytest.fixture(autouse=True)
+def _otel_off_unless_a_test_turns_it_on(monkeypatch):
+    """The route refuses while unillm records OTel spans; these tests must not depend on the host's
+    ``UNILLM_OTEL`` (a host with it set made every case fail). A test that wants it on sets it itself."""
+    unillm_logger = importlib.import_module("unillm.logger")
+    monkeypatch.delenv("UNILLM_OTEL", raising=False)
+    if hasattr(unillm_logger, "_OTEL_ENABLED"):
+        monkeypatch.setattr(unillm_logger, "_OTEL_ENABLED", False)
 from unify.memory_v2.sol_pass import SolRoute, unillm_turn
 
 SOL_TOKEN = "sol-route-placeholder-token"  # pragma: allowlist secret
