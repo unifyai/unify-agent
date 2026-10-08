@@ -1041,6 +1041,19 @@ async def async_tool_loop_inner(
             )
             draft = await _last_word(reason, stop) or draft
         await tools_data.cancel_pending_tasks(grace=_CANCEL_GRACE_S)
+        # A call the limit came before (one a seeded or resumed transcript
+        # carried) is answered too, so the transcript the loop ends with
+        # leaves no call unanswered.
+        for entry in find_unreplied_assistant_entries(client):
+            for call in entry["assistant_msg"].get("tool_calls") or []:
+                if call.get("id") in entry["missing"] and not _call_answered(
+                    call.get("id"),
+                ):
+                    await _answer_call(
+                        entry["assistant_msg"],
+                        call,
+                        f"Not run: {reason} before this call started.",
+                    )
 
         notice = {
             "role": "assistant",
