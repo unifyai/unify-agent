@@ -71,6 +71,9 @@ The checks:
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   key-shaped string in a changed file or the manifest; every public function of a changed module declares
   ``Effect:`` and is defined once; every module parses.
+
+:meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
+uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
 """
 
 from __future__ import annotations
@@ -112,6 +115,7 @@ from .snapshot import (
     materialise,
     module_skeleton,
     notes_preamble,
+    tree_listing,
     without_listed,
 )
 
@@ -292,6 +296,61 @@ class Gate:
         res.reasons.extend(notes)
         return res
 
+    def preview(self, parent: str, tree: Path, manifest: object) -> list[str]:
+        """The cheap, read-only checks of :meth:`check` on an uncommitted *tree*: failure reasons, [] if none.
+
+        For a consolidator's ``check`` tool before it finishes. *tree* holds the files the pass would commit
+        (:func:`.snapshot.tree_listing` lists it as ``git add -A`` would; empty directories are no entries).
+        Runs the manifest parse, the early layout and safety refusals, G1, G2's cover checks (each cover's
+        kind, record and channel), G4, G5 and G6. Never G3 (no test runs), G2's held-out runs or a workflow's
+        signals (nothing about outcomes, ruling R10), and never writes: no commit, git object, evidence or
+        pass row. A clean preview does not mean the gate will pass.
+        """
+        res = GateResult(True, {c: True for c in CHECKS})
+        tmp = Path(tempfile.mkdtemp(prefix="memv2-preview-"))
+        run = _Run(res, Manifest(), manifest, parent, "", tmp)
+        try:
+            try:
+                run.man = parse_manifest(manifest)
+            except ManifestError as exc:
+                run.fail("G1", f"malformed manifest: {exc}")
+                return list(res.reasons)
+            p_sha = self._resolve(parent)
+            if p_sha is None:
+                run.fail("G1", "unresolvable parent revision")
+                return list(res.reasons)
+            run.parent = p_sha
+            run.p_files, _ = listing(self.mem, p_sha)
+            run.c_files, refused = tree_listing(self.mem, Path(tree))
+            early = self._early(run, refused)
+            if early:
+                for check, reason in early:
+                    run.fail(check, reason)
+                return list(res.reasons)
+            run.p_tree = materialise(self.mem, run.p_files, tmp / "parent")
+            run.c_tree = tmp / "cand"
+            run.c_tree.mkdir()
+            for (
+                rel
+            ) in (
+                run.c_files
+            ):  # exactly the listed files: no empty directory, nothing skipped
+                (run.c_tree / rel).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(
+                    Path(tree) / rel,
+                    run.c_tree / rel,
+                    follow_symlinks=False,
+                )
+            self._read_trees(run)
+            self._g1(run)
+            self._g2(run, preview=True)
+            self._g4(run)
+            self._g5(run)
+            self._g6(run)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return list(res.reasons)
+
     def merge(
         self,
         parent: str,
@@ -452,6 +511,18 @@ class Gate:
             return False
         run.p_files, _ = listing(self.mem, p_sha)
         run.c_files, refused = listing(self.mem, c_sha)
+        early = self._early(run, refused)
+        if early:
+            run.stop(early)
+            return False
+        run.p_tree = materialise(self.mem, run.p_files, run.tmp / "parent")
+        run.c_tree = materialise(self.mem, run.c_files, run.tmp / "cand")
+        self._read_trees(run)
+        return True
+
+    @staticmethod
+    def _early(run: _Run, refused: list[str]) -> list[tuple[str, str]]:
+        """What must never be extracted or run (refused entries, forbidden files, layout); sets ``changed``."""
         early = [("G6", f"the candidate holds {r}") for r in refused[:10]]
         early += [
             ("G6", f"forbidden file {p}") for p in sorted(run.c_files) if forbidden(p)
@@ -461,22 +532,20 @@ class Gate:
             for p in sorted(run.c_files)
             if not layout_allowed(p)
         ]
-        if early:
-            run.stop(early)
-            return False
         run.changed = sorted(
             p
             for p in set(run.p_files) | set(run.c_files)
             if run.p_files.get(p) != run.c_files.get(p)
         )
-        run.p_tree = materialise(self.mem, run.p_files, run.tmp / "parent")
-        run.c_tree = materialise(self.mem, run.c_files, run.tmp / "cand")
+        return early
+
+    @staticmethod
+    def _read_trees(run: _Run) -> None:
         run.p_bodies, run.c_bodies = item_bodies(run.p_tree), item_bodies(run.c_tree)
         try:
             run.c_report = items(run.c_tree)
         except ValueError as exc:  # an undecodable notes file, say
             run.report_error = str(exc)
-        return True
 
     def _g1(self, run: _Run) -> None:
         man, pb, cb = run.man, run.p_bodies, run.c_bodies
@@ -617,7 +686,8 @@ class Gate:
                     f"the preamble of {path} changed without a skeleton declaration of {channel}",
                 )
 
-    def _g2(self, run: _Run) -> None:
+    def _g2(self, run: _Run, *, preview: bool = False) -> None:
+        """*preview* (:meth:`preview`) checks the covers only: no held-out runs, no workflow signals."""
         seen: list[Action] | None = (
             None  # the recorded actions of every episode the manifest names
         )
@@ -644,7 +714,7 @@ class Gate:
                     for _, _, a in valid
                 ):
                     run.fail("G2", f"{it.item} covers only recorded rejections")
-                elif valid:
+                elif valid and not preview:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
                     self._held_out(
@@ -655,7 +725,7 @@ class Gate:
                         run.tmp / f"held-out-{n}",
                         it.field_types,
                     )
-            elif it.kind == "workflow":
+            elif it.kind == "workflow" and not preview:
                 status = job_item_status(
                     it.item,
                     _WithSources(self.ev, it.item, it.source_episodes),

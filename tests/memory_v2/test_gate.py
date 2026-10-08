@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -1922,3 +1923,68 @@ def test_r5_notes_follow_every_failure_reason_including_the_merge(r2):
     kinds = ["note" if r.startswith("note:") else "reason" for r in res.reasons]
     assert "note" in kinds and any(r.startswith("merge:") for r in res.reasons)
     assert kinds == sorted(kinds, key=lambda k: k == "note"), res.reasons
+
+
+# --- preview: the cheap, read-only checks on an uncommitted tree (Sol's check tool) ------------------------
+
+
+def _tree(root, files):
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    return root
+
+
+def _objects(mem):
+    return sorted(
+        p.relative_to(mem.git_dir) for p in (mem.git_dir / "objects").rglob("*")
+    )
+
+
+def test_preview_judges_an_uncommitted_tree_without_tests_held_out_runs_or_writes(
+    world,
+    tmp_path,
+    monkeypatch,
+):
+    mem, ev, _ = world
+
+    def boom(*a, **kw):
+        raise AssertionError("preview must not run tests or held-out values")
+
+    monkeypatch.setattr("unify.memory_v2.gate.run_plan", boom)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=_lookup,
+        pytest_runner=boom,
+    )
+    tree = _tree(tmp_path / "tree", FILES)
+    (tree / "env" / "empty" / "tests").mkdir(
+        parents=True,
+    )  # git tracks no empty directory
+    before, parent = _objects(mem), mem.head()
+    assert gate.preview(parent, tree, MAN) == []
+    # the cover names a slack action, but the item lives in env/venmo: the channel mismatch
+    wrong = gate.preview(parent, tree, _man(covers=[["e1", 2]]))
+    assert "G2: env/venmo:me covers (e1,2), a tool action on slack" in wrong, wrong
+    assert all(len(r) <= 300 and not r.endswith("not evaluated") for r in wrong)
+    malformed = gate.preview(parent, tree, {"items": 3})
+    assert malformed == ["G1: malformed manifest: items must be a list"]
+    # nothing is written: no git object, no pass row, no evidence
+    assert _objects(mem) == before and mem.head() == parent
+    assert ev.db.execute("SELECT COUNT(*) FROM passes").fetchone() == (0,)
+    assert ev.covered() == set()
+
+
+def test_preview_refuses_links_and_executables_as_the_committed_listing_would(
+    world,
+    tmp_path,
+):
+    mem, ev, gate = world
+    tree = _tree(tmp_path / "tree", FILES)
+    (tree / "env" / "venmo" / "tests" / "data.txt").symlink_to("/etc/hostname")
+    os.chmod(tree / "unify_memory_testkit.py", 0o755)
+    reasons = gate.preview(mem.head(), tree, MAN)
+    assert "G6: the candidate holds symlink env/venmo/tests/data.txt" in reasons
+    assert "G6: the candidate holds executable file unify_memory_testkit.py" in reasons

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -65,6 +66,58 @@ def listing(repo: Repo, sha: str) -> tuple[dict[str, tuple[str, str]], list[str]
             refused.append(f"{what.get(mode, 'entry of mode ' + mode)} {path}")
             continue
         files[path] = (mode, obj)
+    return files, refused
+
+
+def tree_listing(
+    repo: Repo,
+    tree: Path,
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """:func:`listing` for an uncommitted directory: what ``git add -A`` of *tree* would commit.
+
+    Walks with ``lstat`` and never follows a link. Directories are not entries (git tracks no empty
+    directory); a regular file with the owner's execute bit is an executable file (mode 100755), as git
+    records it, and is refused like links and special files. Blob ids come from ``git hash-object
+    --no-filters`` in *repo*, which writes no object. ``.gitignore`` files are not applied: the gate judges
+    the commit itself.
+    """
+    regular: list[str] = []
+    refused: list[str] = []
+    stack = [(Path(tree), "")]
+    while stack:
+        d, rel = stack.pop()
+        with os.scandir(d) as it:
+            entries = sorted(it, key=lambda e: e.name)
+        for e in entries:
+            r = rel + e.name
+            try:
+                path = safe_rel(r)
+            except ManifestError:
+                refused.append(f"unsafe path {r[:80]!r}")
+                continue
+            st = os.lstat(e.path)
+            if stat.S_ISDIR(st.st_mode):
+                stack.append((Path(e.path), r + "/"))
+            elif stat.S_ISLNK(st.st_mode):
+                refused.append(f"symlink {path}")
+            elif not stat.S_ISREG(st.st_mode):
+                refused.append(f"special file {path}")
+            elif st.st_mode & stat.S_IXUSR:
+                refused.append(f"executable file {path}")
+            else:
+                regular.append(path)
+    files: dict[str, tuple[str, str]] = {}
+    if regular:
+        root = Path(tree).absolute()
+        out = _git_bytes(
+            repo,
+            ["hash-object", "--no-filters", "--stdin-paths"],
+            ("\n".join(str(root / p) for p in regular) + "\n").encode(),
+        )
+        ids = out.decode("ascii").split()
+        if len(ids) != len(regular):
+            raise GitError("hash-object returned an unexpected number of ids")
+        files = {p: ("100644", obj) for p, obj in zip(regular, ids)}
     return files, refused
 
 
