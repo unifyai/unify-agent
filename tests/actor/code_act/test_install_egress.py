@@ -26,7 +26,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import textwrap
 import threading
 import types
@@ -554,7 +553,7 @@ def _stub_uv(world, monkeypatch, listener, targets) -> Path:
 
 @needs_bwrap
 @pytest.mark.timeout(60)
-def test_a_proxy_socket_the_sandbox_would_show_is_refused(world, monkeypatch):
+def test_a_proxy_socket_the_sandbox_would_show_is_refused(world):
     """The proxy's socket is reachable in the sandbox only where the
     forwarder finds it: a ``TMPDIR`` inside the workspace (or a socket inside
     one of the command's binds) would let any cell connect to it, so the
@@ -571,13 +570,15 @@ def test_a_proxy_socket_the_sandbox_would_show_is_refused(world, monkeypatch):
                 egress=egress,
             )
     assert raised.value.rule == "installer-index-only"
-    shown = world["workspace"] / "tmp"
-    shown.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(shown))
-    with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as egress:
-        assert sandbox._within(egress.directory, shown)
-        with pytest.raises(sandbox.SandboxRefusal) as raised:
-            sandbox.wrap_argv(["true"], policy, egress=egress)
+    # A proxy whose directory a TMPDIR inside the workspace put there. Only
+    # its directory matters to the refusal, which comes before anything is
+    # bound, so no socket is made: a workspace path can be longer than a unix
+    # socket address allows (108 bytes), as on the gate hosts.
+    shown = world["workspace"] / "tmp" / "unify-installer-proxy-x"
+    shown.mkdir(parents=True)
+    egress = types.SimpleNamespace(directory=shown, path=shown / "proxy.sock")
+    with pytest.raises(sandbox.SandboxRefusal) as raised:
+        sandbox.wrap_argv(["true"], policy, egress=egress)
     assert raised.value.rule == "installer-index-only"
     assert "TMPDIR" in str(raised.value)
 
