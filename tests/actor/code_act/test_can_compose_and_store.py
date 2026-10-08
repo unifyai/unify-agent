@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from tests.scripted_model import ScriptedModel, scripted
 from unify.actor.code_act_actor import CodeActActor
 from unify.function_manager.function_manager import FunctionManager
 
@@ -186,9 +187,13 @@ async def test_can_store_true_merges_redundant_functions(monkeypatch):
 # Description type acceptance
 # ---------------------------------------------------------------------------
 
+# These tests stop the handle as soon as act() returns, so no turn is needed;
+# whatever request starts first (the actor's, or the storage review after the
+# stop) is answered in process rather than by a provider.
+_STOPPED_AT_ONCE = {"actor", "review", "gate"}
+
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_code_act_accepts_dict_description():
     """
@@ -197,27 +202,27 @@ async def test_code_act_accepts_dict_description():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        # We just verify the call doesn't raise TypeError and creates a handle
-        # The handle will run an LLM loop, but we stop it immediately
-        handle = await actor.act(
-            {"role": "user", "content": "What is 2+2?"},
-            persist=False,
-            clarification_enabled=False,
-        )
-        # Verify we got a handle back (not testing the full loop completion)
-        assert handle is not None
-        # Stop the handle to avoid waiting for LLM
-        await handle.stop()
-    finally:
+    # The handle is stopped at once; a request that starts before the stop
+    # is answered in process.
+    with scripted(ScriptedModel(allow=_STOPPED_AT_ONCE)):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            # We just verify the call doesn't raise TypeError and creates a handle
+            handle = await actor.act(
+                {"role": "user", "content": "What is 2+2?"},
+                persist=False,
+                clarification_enabled=False,
+            )
+            # Verify we got a handle back (not testing the full loop completion)
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
 @pytest.mark.timeout(300)
 async def test_code_act_accepts_list_description():
     """
@@ -226,23 +231,23 @@ async def test_code_act_accepts_list_description():
     actor = CodeActActor(
         timeout=30,
     )
-    try:
-        # We just verify the call doesn't raise TypeError and creates a handle
-        handle = await actor.act(
-            [
-                {"role": "user", "content": "Hello"},
-                {"role": "assistant", "content": "Hi there!"},
-                {"role": "user", "content": "What is 2+2?"},
-            ],
-            persist=False,
-            clarification_enabled=False,
-        )
-        # Verify we got a handle back
-        assert handle is not None
-        # Stop the handle to avoid waiting for LLM
-        await handle.stop()
-    finally:
+    with scripted(ScriptedModel(allow=_STOPPED_AT_ONCE)):
         try:
-            await actor.close()
-        except Exception:
-            pass
+            # We just verify the call doesn't raise TypeError and creates a handle
+            handle = await actor.act(
+                [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi there!"},
+                    {"role": "user", "content": "What is 2+2?"},
+                ],
+                persist=False,
+                clarification_enabled=False,
+            )
+            # Verify we got a handle back
+            assert handle is not None
+            await handle.stop()
+        finally:
+            try:
+                await actor.close()
+            except Exception:
+                pass
