@@ -22,8 +22,9 @@ Python worker run inside bubblewrap (Linux) under one policy (the
   kernel through another architecture's system calls (rule
   ``socket-families``).
 * The Unify state directory (``UNIFY_HOME``) is hidden behind an empty tmpfs,
-  except read-only views of the transcripts directory, the store file and the
-  package venv, and the writable workspace. The harness's internal
+  except read-only views of the transcripts directory (every session's) and
+  the package venv, and the writable workspace; the store file is not mounted
+  (cells reach the library through its API). The harness's internal
   transcripts (``internal-transcripts``: the storage review, whose prompt
   carries the environment's checked outcome) stay hidden even when a mount
   that is seen contains them (a workspace configured as ``UNIFY_HOME``).
@@ -114,7 +115,7 @@ RULES: dict[str, str] = {
     ),
     "mask-unify-state": (
         "the Unify state directory is hidden, except read-only views of the "
-        "transcripts, the store file and the package venv, and the workspace"
+        "transcripts and the package venv, and the workspace"
     ),
     "mask-harness-logs": (
         "the harness's log directories (every LLM request and reply, traces) "
@@ -715,7 +716,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     ``read_file`` and ``grep``, but a shell cell sees it until the rebuild.
     """
     global _POLICY_CACHE
-    from unify.db import store_home, store_path
+    from unify.db import store_home
     from unify.settings import SETTINGS
     from unify.workspace import get_local_root
 
@@ -724,7 +725,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         key = (
             str(store_home()),
             get_local_root(),
-            store_path(),
             str(Path.home()),
             os.getcwd(),
             getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", ""),
@@ -747,20 +747,28 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         state_dir = Path(os.path.realpath(store_home()))
         workspace = Path(os.path.realpath(get_local_root()))
         workspace.mkdir(parents=True, exist_ok=True)
-        store = Path(os.path.realpath(store_path()))
         # Mounted only if present, and sessions pointed at it must find it.
         (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
         # Cells may read (grep, tail) their own run's agent record, as
         # transcripts; never another run's, and only the harness writes it.
         records = _current_run_records()
+        # What a cell sees of the state directory, read-only (the harness's
+        # file tools check the same list):
+        # - transcripts/: every session's and every agent's, across sessions,
+        #   by the lead's design (8 Oct: "the model should be able to grep any
+        #   transcript even other sessions' and other agents' transcripts too.
+        #   That's by design."). Every line is outcome-free (the outcome
+        #   section the harness rendered is redacted, unify/outcome.py), and
+        #   the harness-internal sessions (reviews, gates) are written to
+        #   internal-transcripts/, which is never mounted (``hidden`` below).
+        # - not the raw store (store.sqlite, -wal, -shm): cells reach the
+        #   library through the functions/guidance API, and the file holds
+        #   what the API does not give (recorded cases, trust, history).
         readonly = [
             p
             for p in (
                 state_dir / "transcripts",
                 *((records,) if records is not None else ()),
-                store,
-                Path(f"{store}-wal"),
-                Path(f"{store}-shm"),
                 state_dir / "venv",
             )
             if p.exists()

@@ -6,10 +6,10 @@ in a fresh home, also when the function is a helper of the entry point that
 was run, and an unreachable package index ends the call with a clear error
 rather than a hang. Stored code runs only in the sandboxed worker: without
 the harness's credentials or network, without the harness's ``/tmp``,
-unable to write the store, and with the harness objects' underscored
-attributes refused; what another session recorded in the store carries no
-credential it was passed; an environment's globals reach it as proxies; a
-sub-agent cannot be granted store writes its caller lacks. Guidance stored
+unable to open the store file (not mounted), and with the harness objects'
+underscored attributes refused; what another session recorded in the store
+carries no credential it was passed; an environment's globals reach it as
+proxies; a sub-agent cannot be granted store writes its caller lacks. Guidance stored
 from code is found from code and listed in the task's first message per the
 shortlist rules, the gated list naming the entry point and the request it
 was stored for.
@@ -310,12 +310,16 @@ async def test_stored_code_runs_only_in_the_sandboxed_worker(library):
             assert SSH_SECRET not in json.dumps(files)
             assert files[paths[1]] == "FileNotFoundError"
             assert files[paths[2]] in ("FileNotFoundError", "PermissionError")
-        # The store is readable (as shipped) but never writable.
+        # The store is not mounted (cells use the functions/guidance API):
+        # neither readable nor writable.
         store = db.store_path()
         out = await cells(
             "import sqlite3\n"
-            f"con = sqlite3.connect('file:{store}?mode=ro', uri=True)\n"
-            "names = [r[0] for r in con.execute('select name from functions')]\n"
+            "try:\n"
+            f"    con = sqlite3.connect('file:{store}?mode=ro', uri=True)\n"
+            "    names = [r[0] for r in con.execute('select name from functions')]\n"
+            "except sqlite3.OperationalError as exc:\n"
+            "    names = str(exc)\n"
             "try:\n"
             f"    sqlite3.connect({store!r}).execute('delete from functions')\n"
             "    wrote = True\n"
@@ -323,7 +327,10 @@ async def test_stored_code_runs_only_in_the_sandboxed_worker(library):
             "    wrote = False\n"
             "(names, wrote)",
         )
-        assert out.result == (["probe"], False), out.error
+        assert out.result == ("unable to open database file", False), out.error
+        assert [r["name"] for r in db.query("SELECT name FROM functions")] == [
+            "probe",
+        ]
         # Underscored attributes of the harness objects are refused.
         for expression in (
             "functions._fm",
@@ -380,12 +387,22 @@ async def test_a_stored_function_cannot_read_another_sessions_credentials(librar
     assert db.query("SELECT count(*) AS n FROM function_cases")[0]["n"] >= 1
     cells = Cells(new_actor(can_store=False))
     try:
+        # What was recorded carries no credential (read on the host: the
+        # store file is not mounted in the worker).
+        tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table'")
+        recorded = json.dumps(
+            [db.query(f"SELECT * FROM {t['name']}") for t in tables],
+            default=str,
+        )
+        assert "fetch_profile" in recorded
+        assert "<redacted:" in recorded and OTHER_SECRET not in recorded
         out = await cells(
             f"await functions.run('dump_store', path={db.store_path()!r})",
         )
-        assert out.error is None, out.error
-        assert "fetch_profile" in out.result and "<redacted:" in out.result
-        assert OTHER_SECRET not in out.result
+        assert out.error is not None and "unable to open database file" in (
+            out.error
+        ), out.error
+        assert OTHER_SECRET not in str(out.result) + out.error
         out = await cells("await functions.search('profile access token', n=5)")
         assert out.error is None and OTHER_SECRET not in json.dumps(
             out.result,

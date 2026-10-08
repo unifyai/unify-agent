@@ -130,11 +130,16 @@ The last 17 research switches went (`tests/test_no_research_switches.py` passes)
 - Every transcript line, in either directory, has each outcome section the harness rendered (`unify.outcome.render`) replaced by `[REDACTED:outcome]`, keyed on the exact section, never on words.
 - The sandbox hides `internal-transcripts/` after every mount, so no mount that contains it (a workspace set to `UNIFY_HOME`) shows it, and hides the harness's log directories (`UNILLM_LOG_DIR`, which holds every LLM request and reply, `UNILLM_OTEL_LOG_DIR`, `UNIFY_LOG_DIR`, `UNIFY_OTEL_LOG_DIR`) wherever they are configured (rule `mask-harness-logs`).
 
+**Closed (PR "SECURITY: stop mounting the raw store into sandboxed cells", branch `freeze-store-unmount`, 8 Oct 2026):**
+- The raw store (`store.sqlite`, `-wal`, `-shm`) is no longer mounted into cells, shell or Python, or into the installer: cells reach the library through the functions/guidance API, and the file holds what that API does not give (earlier tasks' recorded cases, trust, history). The harness's file tools refuse it by the same list (rule `mask-unify-state`); nothing inside the sandbox opened it.
+- `transcripts/` stays mounted whole, read-only: every session's and every agent's transcript is readable from a cell by the lead's design (8 Oct: "the model should be able to grep any transcript even other sessions' and other agents' transcripts too. That's by design."). The conditions: transcript lines stay outcome-free (the redaction above) and harness-internal sessions stay in `internal-transcripts/`, never mounted; `test_outcome_out_of_cells.py::test_a_cell_reads_other_sessions_transcripts_and_no_outcome_in_them` checks both.
+
 **In-process Python (`UNIFY_WORKSPACE_PYTHON` empty) is for tests only, never for benchmarks or real work.** Model code then runs in the harness's own process: it can read the harness's environment (provider keys), the internal transcripts, the LLM request logs and anything else the harness can, including checked outcomes. No code change confines it; the worker (the default) is the only confined mode.
 
 **Still open:**
 - The storage review's own cells (core fork, `ReviewSandbox`) run in a worker whose workspace is writable, and the review has read the outcome; a review model that writes the verdict into the workspace or into a library entry puts it where later cells read it. Bounding that is a review-policy decision (a read-only workspace for the review's worker), not done here.
 - A log directory inside a mounted path (the workspace) that itself holds another mounted path cannot be hidden by a mount without hiding that path; the harness's file tools still refuse it, but a cell's own `open` can read it. Keep log directories outside the workspace, or under `UNIFY_HOME` (hidden as the state directory).
+- A workspace configured as `UNIFY_HOME` itself (`UNIFY_LOCAL_ROOT` = the state directory) is bound writable over the whole state directory, so the store file shows there, writable, whatever the readonly list says (as before this change). Hiding it would need a file mask applied after the workspace bind; not done here.
 
 ## Security: an allowlisted root and a socket-family filter (8 Oct 2026)
 

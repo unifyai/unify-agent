@@ -11,9 +11,14 @@ has the outcome section the harness built replaced by ``[REDACTED:outcome]``.
 Task 1 is a scripted persistent session whose outcome is posted, so its review
 sees it. Task 2 is a cell in the real sandboxed worker (bubblewrap), which
 searches everything the sandbox mounts for it -- the workspace, the
-transcripts, the store, the venv, the state directory as it sees it, the
-home -- its own environment and ``/proc/self/environ``, and then opens the
-review's transcript by its absolute path.
+transcripts, the venv, the state directory as it sees it, the home -- and the
+store file's path (not mounted: cells use the functions/guidance API), its own
+environment and ``/proc/self/environ``, and then opens the review's transcript
+by its absolute path.
+
+Every session's transcript is readable from a cell, other sessions' and other
+agents' too, by the lead's design (8 Oct); what keeps the outcome out is the
+redaction and ``internal-transcripts/``, never a narrower mount.
 """
 
 from __future__ import annotations
@@ -193,6 +198,8 @@ def _places(world) -> dict[str, str]:  # noqa: F811
             for p in policy.readonly_state
         },
         "internal-transcripts": state / "internal-transcripts",
+        # Not mounted; searched by its path all the same.
+        "store.sqlite": Path(db.store_path()),
         "state directory (UNIFY_HOME)": state,
         "home": world["home"],
     }
@@ -246,7 +253,12 @@ async def test_a_later_cell_finds_no_outcome_anywhere_it_can_read(
     found = {k: v["found"] for k, v in report["roots"].items() if v["found"]}
     assert found == {}, found
     assert report["roots"]["mounted transcripts"]["files"] > 0
-    assert report["roots"]["mounted store.sqlite"]["files"] > 0
+    # The store is on the host (task 1 wrote it) and absent in the cell.
+    assert Path(places["store.sqlite"]).is_file()
+    assert not any(
+        "store.sqlite" in label for label in places if label != "store.sqlite"
+    )
+    assert report["roots"]["store.sqlite"]["files"] == 0
     assert report["roots"]["workspace"]["files"] >= 0
     # The task's own transcript stays readable, and holds none of it.
     assert report["pointer"].get("bytes", 0) > 0, report["pointer"]
@@ -280,6 +292,94 @@ async def test_a_later_cell_cannot_open_the_internal_transcripts(
     assert "read" not in report, report
     assert report.get("error") in ("FileNotFoundError", "PermissionError"), report
     assert Path(target).name not in report.get("listing", []), report
+
+
+# Run in the worker: another session's transcript, everything under the
+# mounted transcripts/ searched for the rendered outcome section, and the
+# internal transcripts.
+ACROSS = r"""
+import json, os
+other = {other!r}
+transcripts = {transcripts!r}
+internal = {internal!r}
+review = {review!r}
+forms = [f.encode() for f in json.loads({forms!r})]
+out = {{"files": 0, "found": []}}
+with open(other, "rb") as fh:
+    out["other"] = fh.read().decode("utf-8", "replace")
+for dirpath, _dirs, files in os.walk(transcripts):
+    for name in files:
+        with open(os.path.join(dirpath, name), "rb") as fh:
+            data = fh.read()
+        out["files"] += 1
+        out["found"] += [name for f in forms if f in data]
+out["internal_exists"] = os.path.exists(internal)
+try:
+    with open(review, "rb") as fh:
+        out["review"] = len(fh.read())
+except OSError as exc:
+    out["review_error"] = type(exc).__name__
+out["state_listing"] = sorted(os.listdir(os.path.dirname(transcripts)))
+print(json.dumps(out))
+"""
+
+
+def _outcome_forms(section: str) -> list[str]:
+    """*section* raw and JSON-escaped once and twice: the exact renderings the
+    redaction keys on (unify/outcome.py), never words of it."""
+    once = json.dumps(section, ensure_ascii=False)[1:-1]
+    twice = json.dumps(once, ensure_ascii=False)[1:-1]
+    return list(dict.fromkeys((section, once, twice)))
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_a_cell_reads_other_sessions_transcripts_and_no_outcome_in_them(
+    outcome_world,
+    monkeypatch,
+):
+    """By the lead's design (8 Oct) a cell can read every session's transcript,
+    another session's included; the outcome stays out of all of them."""
+    # One internal (review) session that carries the outcome.
+    await _task_one(monkeypatch, "standalone")
+    state = outcome_world["state"]
+    readable, internal = state / "transcripts", state / "internal-transcripts"
+    reviews = _review_sessions(internal)
+    assert reviews, f"no review session indexed in {internal}"
+    review = reviews[0]["path"]
+    # Another session, whose transcript went through the real redaction path
+    # while a message carried the rendered outcome section.
+    note = outcome_mod.render(outcome_mod.normalize(OUTCOME))
+    assert outcome_mod.OUTCOME_HEADER in note and MARKER in note
+    client = h.new_client("system")
+    cfg = type("Cfg", (), {"label": "other", "loop_id": "other"})()
+    other = contextvars.copy_context().run(transcripts.attach, client, cfg)
+    assert other is not None and other.path.parent == readable
+    other.observe([{"role": "user", "content": f"before\n{note}after"}])
+    host_text = other.path.read_text()
+    assert "before\\n[REDACTED:outcome]after" in host_text
+    own = [r for r in _sessions(readable) if r.get("origin") == "CodeActActor.act"]
+    assert len(own) == 1 and own[0]["path"] != str(other.path)
+    forms = _outcome_forms(note)
+    report = await _cell(
+        ACROSS.format(
+            other=str(other.path),
+            transcripts=str(readable),
+            internal=str(internal),
+            review=review,
+            forms=json.dumps(forms),
+        ),
+    )
+    # 1. The other session's transcript reads in full.
+    assert report["other"] == host_text
+    # 2. Nothing under transcripts/ holds the rendered section, in any form.
+    assert report["files"] >= 2 and report["found"] == [], report
+    # 3. The internal transcripts do not exist for the cell.
+    assert report["internal_exists"] is False, report
+    assert report.get("review_error") in ("FileNotFoundError", "PermissionError")
+    assert "review" not in report, report
+    assert "internal-transcripts" not in report["state_listing"], report
 
 
 @pytest.mark.asyncio

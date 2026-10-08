@@ -296,20 +296,29 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
             "os.environ.get('DB_PASSWORD'), os.environ.get('UNIFY_SANDBOX_PROBE'))",
         )
         assert out == "None None visible\n", res["error"]
-        # The store reads but does not write.
+        # The store is not mounted (cells use the functions/guidance API):
+        # neither read nor written.
         out, res = await run(
             ex,
             "import sqlite3\n"
-            f"con = sqlite3.connect({str(store)!r})\n"
-            "print(con.execute('select name from functions').fetchall())\n"
             "try:\n"
+            f"    con = sqlite3.connect('file:{store}?mode=ro', uri=True)\n"
+            "    print(con.execute('select name from functions').fetchall())\n"
+            "except sqlite3.OperationalError as e:\n"
+            "    print('refused:', e)\n"
+            "try:\n"
+            f"    con = sqlite3.connect({str(store)!r})\n"
             "    con.execute(\"insert into functions values ('evil')\")\n"
             "    con.commit()\n"
             "    print('wrote')\n"
             "except sqlite3.OperationalError as e:\n"
             "    print('refused:', e)",
         )
-        assert out.startswith("[('f',)]\nrefused:"), (out, res["error"])
+        assert out.startswith("refused: unable to open database file\n"), (
+            out,
+            res["error"],
+        )
+        assert "('f',)" not in out
         con = sqlite3.connect(store)
         assert con.execute("select name from functions").fetchall() == [("f",)]
         con.close()
@@ -340,6 +349,57 @@ async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
     finally:
         srv.close()
         await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_a_cell_cannot_open_the_store_or_its_wal_by_absolute_path(worker_world):
+    """The raw store is not mounted: cells reach the library through the
+    functions/guidance API, and the file holds what that API does not give."""
+    from unify import sandbox
+
+    store = worker_world["state"] / "store.sqlite"
+    # The write-ahead log and shared memory exist on the host, as they do while
+    # the harness has the store open.
+    wal, shm = (store.with_name(store.name + s) for s in ("-wal", "-shm"))
+    wal.write_text(STATE_SECRET)
+    shm.write_text(STATE_SECRET)
+    paths = [str(store), str(wal), str(shm)]
+    ex, _ = executor_with_fakes()
+    try:
+        out, res = await run(
+            ex,
+            "import os, sqlite3\n"
+            "seen = {}\n"
+            f"for path in {paths!r}:\n"
+            "    try:\n"
+            "        with open(path, 'rb') as fh:\n"
+            "            seen[path] = fh.read()[:64]\n"
+            "    except OSError as e:\n"
+            "        seen[path] = type(e).__name__\n"
+            "try:\n"
+            f"    sqlite3.connect('file:{store}?mode=ro', uri=True).execute(\n"
+            "        'select name from functions').fetchall()\n"
+            "    seen['sqlite'] = 'opened'\n"
+            "except sqlite3.OperationalError as e:\n"
+            "    seen['sqlite'] = str(e)\n"
+            f"seen['listing'] = sorted(os.listdir({str(store.parent)!r}))\n"
+            "seen",
+        )
+        assert res["error"] is None, res["error"]
+        seen = res["result"]
+        assert all(seen[p] == "FileNotFoundError" for p in paths), seen
+        assert seen["sqlite"] == "unable to open database file", seen
+        assert not {store.name, wal.name, shm.name} & set(seen["listing"]), seen
+        assert STATE_SECRET not in str(seen)
+    finally:
+        await ex.close()
+    # The harness's own file tools refuse the same paths.
+    policy = sandbox.build_policy(fresh=True)
+    for path in (store, wal, shm):
+        with pytest.raises(sandbox.SandboxRefusal) as refused:
+            sandbox.check_readable(path, policy)
+        assert refused.value.rule == "mask-unify-state", refused.value
 
 
 @needs_bwrap

@@ -158,22 +158,24 @@ async def test_writes_land_only_in_the_workspace_and_private_tmp(world):
         assert not (world["home"] / "escape.txt").exists()
         assert "Read-only file system" in out
         assert "rule `workspace-write`" in res["error"]
-        # The store file and the transcripts are readable, never writable.
+        # The store file is not mounted: cells use the functions/guidance
+        # API. Nothing a cell does reaches the host's file.
         store = world["state"] / "store.sqlite"
         out, res = await bash(
             ex,
             "python3 -c \"import sqlite3; c=sqlite3.connect('file:"
             f"{store}?mode=ro', uri=True); "
-            "print(c.execute('select name from functions').fetchall())\"",
+            "print(c.execute('select name from functions').fetchall())\" 2>&1",
         )
-        assert out.strip() == "[('f',)]"
+        assert "('f',)" not in out and "unable to open database file" in out, out
         before = store.read_bytes()
         out, res = await bash(
             ex,
             f"python3 -c \"import sqlite3; c=sqlite3.connect('{store}'); "
             "c.execute('create table evil (x)'); c.commit()\"",
         )
-        assert res["result"] != 0 and store.read_bytes() == before
+        assert store.read_bytes() == before
+        # The transcripts are readable, never writable.
         out, res = await bash(ex, f"echo x >> {world['state']}/transcripts/s.jsonl")
         assert "Read-only file system" in out
         assert (world["state"] / "transcripts" / "s.jsonl").read_text() == (
@@ -235,7 +237,6 @@ async def test_masked_paths_read_as_a_notice_naming_the_rule(world):
         out, _ = await bash(ex, f"ls -A {state}")
         assert set(out.split()) == {
             sandbox.MASK_NOTICE_NAME,
-            "store.sqlite",
             "transcripts",
             "workspace",
         }
