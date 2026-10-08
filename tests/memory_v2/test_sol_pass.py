@@ -1271,7 +1271,9 @@ def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
     first = seen[0][1]["content"]
     export_checkout(mem.git_dir, sha, tmp_path / "co")
     if surfacing == "catalogue":
-        assert first.endswith("\n\n" + readme_for_sol(tmp_path / "co"))
+        # the README, then (D26) the pass's functions with their cover counts
+        library = first.split("\n\nFunctions on this pass's channels:\n", 1)[0]
+        assert library.endswith("\n\n" + readme_for_sol(tmp_path / "co"))
         assert "Current index" not in first
         assert "README.md, memory.py and .memory/" in seen[0][0]["content"]
     else:

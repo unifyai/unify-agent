@@ -152,7 +152,14 @@ def test_with_the_switch_off_sols_first_message_is_the_screen_builds(tmp_path):
     req = PassRequest("batched", None, ["e1"], False)
     with mem.temp_checkout() as wt:
         index = build_index(wt)
-    assert got == f"Pass p1: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
+    # the index, then (D26, memory-v2-sol-hygiene) the pass's functions with their cover counts; no table
+    head = f"Pass p1: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
+    tail = "\n\nFunctions on this pass's channels:\n"
+    assert got.startswith(head + tail), got
+    rest = got[len(head + tail) :].splitlines()
+    assert rest == ["(none yet)"] or all(
+        line.startswith("- env/") and " recorded cover" in line for line in rest
+    ), rest
     assert usage.USAGE_HEADING not in got
 
 

@@ -141,6 +141,9 @@ def _identity_hooks() -> types.ModuleType:
     hooks.worker_cell_done = lambda events: None
     hooks.result_hook = lambda: None
     hooks.tool_result = lambda name, call_id, raw, *, raised=None: None
+    hooks.cell_error = (
+        lambda text: text
+    )  # worker.py: a failed cell's error, unchanged (v2.1 surfacing)
 
     def __getattr__(name: str):  # a new call site must be added here, deliberately
         raise AttributeError(

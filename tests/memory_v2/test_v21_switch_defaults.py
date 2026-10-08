@@ -146,9 +146,44 @@ def test_each_switch_takes_only_its_values(monkeypatch, name, parse, values):
 # --- Sol ---------------------------------------------------------------------------------------------------
 
 
+# Declared changes to v2 behaviour that are not v2.1 switches, merged into the frozen build (memory-v2-int1):
+# D26 (memory-v2-sol-hygiene) gives Sol's brief one paragraph and a longer gate summary, and its first message
+# the pass's functions with their cover counts; use telemetry (memory-v2.1-tele) records each request's use of
+# the library in an ``item_use`` table. Everything else at the switch defaults is 9deefbfd1's, byte for byte.
+D26_PARAGRAPH = (
+    "Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each\n"
+    "function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where\n"
+    "it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside\n"
+    "the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or\n"
+    "unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused\n"
+    "an input the environment accepted. Test first here as well: every old test keeps passing against the result, or\n"
+    'is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A pass that\n'
+    "adds nothing and shrinks the library needs no red test for an edited function an old passing test exercises.\n\n"
+)
+D26_AFTER = "the library must earn its place.\n\n"
+D26_SUMMARY = (
+    "test suite, an index budget, that the library only grows when it covers new recorded calls, and safety. Its rules\n"
+    "follow; a pass that breaks one is refused whole.\n",
+    "test suite, an index budget, that the library only grows when it covers new recorded calls or shrinks, that what\n"
+    "deleted functions covered stays covered, and safety. Its rules follow; a pass that breaks one is refused\n"
+    "whole.\n",
+)
+D26_FIRST_MESSAGE_TAIL = (
+    "\n\nFunctions on this pass's channels:\n(none yet)"  # no episode: no channel
+)
+TELEMETRY_TABLES = {"item_use"}
+
+
+def _v2_template() -> str:
+    """The golden v2 brief template with the declared D26 changes applied (each must apply exactly once)."""
+    text = GOLDEN["sol_prompt_template"]
+    assert text.count(D26_AFTER) == 1 and text.count(D26_SUMMARY[0]) == 1
+    return text.replace(D26_AFTER, D26_AFTER + D26_PARAGRAPH).replace(*D26_SUMMARY)
+
+
 def _v2_brief() -> str:
     return (
-        GOLDEN["sol_prompt_template"]
+        _v2_template()
         .replace("{entries}", str(sol_pass.QUOTA_ENTRIES))
         .replace("{file_mib}", str(sol_pass.QUOTA_FILE_BYTES // 1024**2))
         .replace("{total_mib}", str(sol_pass.QUOTA_TOTAL_BYTES // 1024**2))
@@ -217,6 +252,7 @@ def test_sols_first_message_at_the_defaults_is_the_v2_index(
         .replace("{pass_id}", "p-golden")
         .replace("{json.dumps(req.__dict__)}", json.dumps(req.__dict__))
         .replace("{index}", index)
+        + D26_FIRST_MESSAGE_TAIL
     )
     assert turn.messages[0] == {"role": "system", "content": _v2_brief()}
     assert turn.messages[1] == {"role": "user", "content": want}
@@ -309,6 +345,6 @@ def test_a_merge_at_the_defaults_keeps_the_v2_evidence_schema(
     assert res.passed, res.reasons
     base = sqlite3.connect(":memory:")
     base.executescript(GOLDEN["evidence_schema"])
-    assert _tables(ev.db) == _tables(base)
+    assert _tables(ev.db) == _tables(base) | TELEMETRY_TABLES
     assert ev.commit_shapes(mem.head()) is None
     assert not any(r.startswith(("note: G4", "G3: the examples")) for r in res.reasons)
