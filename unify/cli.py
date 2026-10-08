@@ -52,7 +52,10 @@ terminal, nobody reads @user posts). With --persist the actor stays alive after 
 further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
-follow-up, which may span lines), {"cancel": true} or {"quit": true}; each
+follow-up, which may span lines), {"cancel": true} or {"quit": true}
+(with UNIFY_MEMORY_V2=on, {"quit": true, "consolidate": false} records the
+episode but starts no due consolidation pass: a driver ending its stream
+uses it, since no pass may be tied to the stream's end); each
 stdout line is {"type": "result" | "response" | "record" | "storage" |
 "ended", ...}. With --persist every turn ends in one "response" line as the
 actor starts waiting, its content empty when the turn produced no text.
@@ -320,6 +323,8 @@ class Act:
         self._main_thread = threading.main_thread().ident
         # UNIFY_MEMORY_V2: this request's memory run (None while the switch is off).
         self._mv2 = None
+        # {"quit": true, "consolidate": false}: record the episode, start no due pass.
+        self._mv2_consolidate = True
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -462,6 +467,8 @@ class Act:
                         self._post_outcome(item.get("outcome"))
                         continue
                     if item.get("quit"):
+                        if item.get("consolidate") is False:
+                            self._mv2_consolidate = False
                         line = "/quit"
                     elif item.get("cancel"):
                         if self._bridge is not None:
@@ -696,6 +703,7 @@ class Act:
             # Record the episode and run the due consolidation passes, blocking.
             await self._mv2.finish(
                 self._handle,
+                consolidate=self._mv2_consolidate,
                 progress=self._progress,
                 emit=(lambda event: self._emit(**event)) if args.jsonl else None,
             )
