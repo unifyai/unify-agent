@@ -25,11 +25,11 @@ The contract (online build, spec §F1 and D23):
   (:func:`settle_sol_route_env`). Every refusal of the route is a :class:`SolRouteRefused`.
 - ``UNIFY_MEMORY_V2_SOL_TOKEN_FD``: instead of ``UNIFY_MEMORY_V2_SOL_TOKEN`` (exactly one of the two), the number
   (above 2) of a descriptor the launcher passes the controller, holding the token (one trailing newline
-  allowed). It is read once, when settings are first settled, at most :data:`TOKEN_FD_MAX_BYTES` bytes and
-  :data:`TOKEN_FD_TIMEOUT_S` seconds, then closed, so no later child inherits it; the token never enters
-  ``os.environ`` (which carries only the number) and is registered with the redactors. Not open, not
-  inherited, not a pipe or file, empty, oversize, slow or not a bearer token: every pass is refused, naming
-  the rule, never the value.
+  allowed). Settings only normalise it. When settings are first settled it is parsed and the descriptor read
+  once (at most :data:`TOKEN_FD_MAX_BYTES` bytes and :data:`TOKEN_FD_TIMEOUT_S` seconds), then closed, so no
+  later child inherits it; the token never enters ``os.environ`` (which carries only the number) and is
+  registered with the redactors. A bad number, or a descriptor not open, not inherited, not a pipe or file,
+  empty, oversize, slow or not holding a bearer token: every pass is refused, naming the rule, never a value.
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -144,6 +144,14 @@ def sol_token_setting(v: Any) -> SecretStr:
     """``UNIFY_MEMORY_V2_SOL_TOKEN`` as settings hold it: a stripped ``SecretStr``, never refused."""
     getter = getattr(v, "get_secret_value", None)
     return SecretStr(_stripped(getter() if callable(getter) else v))
+
+
+def sol_token_fd_setting(v: Any) -> str:
+    """``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` as settings hold it: stripped, never refused (a settings error would
+    print its input, a token set there by mistake included); :func:`settle_sol_route_env` parses it with
+    :func:`parse_sol_token_fd`.
+    """
+    return _stripped(v)
 
 
 def parse_sol_token_fd(v: Any) -> int | None:
@@ -333,7 +341,7 @@ def sol_token(settings: Any) -> Any:
     """The token Sol's route uses: the one read from ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` when that is set (empty
     if it could not be read; :func:`sol_route` then refuses), else ``UNIFY_MEMORY_V2_SOL_TOKEN``.
     """
-    if getattr(settings, SOL_TOKEN_FD, None) is not None:
+    if _stripped(getattr(settings, SOL_TOKEN_FD, "")):
         return _FD_TOKEN if _FD_TOKEN is not None else SecretStr("")
     return getattr(settings, SOL_TOKEN, "")
 
@@ -362,15 +370,17 @@ def settle_sol_route_env(
     )
     register_secret(SOL_TOKEN, held_token)
     held_base = _stripped(getattr(settings, SOL_BASE_URL, ""))
-    held_fd = getattr(settings, SOL_TOKEN_FD, None)
+    held_fd = _stripped(getattr(settings, SOL_TOKEN_FD, ""))
     fd_refusal = None
-    if held_fd is not None and not _FD_TRIED:
+    if held_fd and not _FD_TRIED:
         _FD_TRIED = True
-        try:
-            _FD_TOKEN = SecretStr(_read_token_fd(int(held_fd)))
-        except SolRouteRefused as exc:
+        try:  # a SolRouteRefused is a ValueError; neither quotes a value
+            fd = parse_sol_token_fd(held_fd)
+            _FD_TOKEN = SecretStr(_read_token_fd(int(fd or 0)))
+        except ValueError as exc:
+            register_secret(SOL_TOKEN_FD, held_fd)  # a token set there by mistake
             fd_refusal = f"{exc}; no consolidation pass starts"
-    if held_fd is not None and held_token:
+    if held_fd and held_token:
         fd_refusal = fd_refusal or (
             f"{SOL_TOKEN} and {SOL_TOKEN_FD} are both set (set exactly one); no consolidation pass starts"
         )
@@ -384,11 +394,7 @@ def settle_sol_route_env(
         if _stripped(environ.get(name)) != held_base:
             stray.append(SOL_BASE_URL)
     for name in [k for k in environ if k.upper() == SOL_TOKEN_FD]:
-        try:
-            same = parse_sol_token_fd(environ.get(name)) == held_fd
-        except ValueError:
-            same = False
-        if not same:
+        if _stripped(environ.get(name)) != held_fd:
             stray.append(SOL_TOKEN_FD)
     if fd_refusal and _ENV_REFUSAL is None:
         _ENV_REFUSAL = fd_refusal
@@ -411,5 +417,5 @@ PARSERS = {
     # normalised only; checked by sol_route when a pass starts
     SOL_BASE_URL: sol_base_url_setting,
     SOL_TOKEN: sol_token_setting,
-    SOL_TOKEN_FD: parse_sol_token_fd,
+    SOL_TOKEN_FD: sol_token_fd_setting,
 }
