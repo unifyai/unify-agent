@@ -5,7 +5,9 @@ At import, before any test here runs:
 * record whether a real provider key was loadable (set in the environment, or fetchable through unillm's Secret
   Manager source because its service-account key file exists), comparing values only, never printing them;
 * replace every provider key, in the environment and in unillm's loaded settings, with a placeholder, so request
-  bodies a test builds can only ever hold the placeholder.
+  bodies a test builds can only ever hold the placeholder;
+* do the same check for memory v2's Sol route (``UNIFY_MEMORY_V2_SOL_TOKEN`` / ``_BASE_URL``) and drop it from the
+  environment.
 
 ``test_no_real_provider_key_is_loadable`` then fails the suite on a host where a real key was loadable: these tests
 run only on keyless hosts.
@@ -14,6 +16,7 @@ run only on keyless hosts.
 from __future__ import annotations
 
 import os
+import sys
 
 PLACEHOLDER = "test-placeholder-not-a-key"  # pragma: allowlist secret
 
@@ -57,7 +60,25 @@ def _real_key_seen() -> list[str]:
     return sorted(set(seen))
 
 
-REAL_KEY_SEEN = _real_key_seen()
+#: Sol's route (unify/memory_v2/integration/switch.py): its token is a credential as well, and a test never runs
+#: with a real route. The controller's settings may already hold it (unify.settings removes it from the
+#: environment once read), so both places are looked at; names only, never values.
+SOL_ROUTE = ("UNIFY_MEMORY_V2_SOL_TOKEN", "UNIFY_MEMORY_V2_SOL_BASE_URL")
+
+
+def _sol_token_seen() -> list[str]:
+    name = SOL_ROUTE[0]
+    seen = [name] if (os.environ.get(name) or "").strip() else []
+    loaded = getattr(sys.modules.get("unify.settings"), "SETTINGS", None)
+    if loaded is not None and _secret_value(getattr(loaded, name, "")).strip():
+        seen.append(f"{name} (loaded)")
+    return seen
+
+
+REAL_KEY_SEEN = sorted(set(_real_key_seen() + _sol_token_seen()))
+
+for _name in SOL_ROUTE:
+    os.environ.pop(_name, None)
 
 for _name in PROVIDER_KEYS:
     os.environ[_name] = PLACEHOLDER
