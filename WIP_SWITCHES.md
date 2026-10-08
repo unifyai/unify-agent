@@ -66,3 +66,17 @@ At the code freeze of 7 October 2026 every other research switch was either made
 - **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
 
 The three long-horizon switches share the step-limit reply path.
+
+## UNIFY_MEMORY_V2
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, no storage review runs, and the `functions` and `guidance` objects and the library shortlist are gone. Each request instead imports from a scratch export of the memory repo's `main`, mounted read-write in the worker and discarded after the request, and sees the memory index at the end of the system prompt. The index is rendered only from the memory commit, so two requests on the same commit send the same prompt prefix. Recording each request as one episode and Sol's gated consolidation passes are wired in later steps of the integration plan.
+- **Evidence:** matched screens pending (memory-v2 preregistrations, continual-harness-research). Design: `docs/design/memory-redesign-spec.md` there.
+
+## UNIFY_MEMORY_V2_SOL_MODEL, UNIFY_MEMORY_V2_SOL_BUDGET_USD and UNIFY_MEMORY_V2_TRIGGER
+
+- **Values:** `UNIFY_MEMORY_V2_SOL_MODEL` is a model id. `UNIFY_MEMORY_V2_SOL_BUDGET_USD` is a non-negative decimal string. `UNIFY_MEMORY_V2_TRIGGER` is `d6` or `batched`.
+- **Defaults:** `openai/gpt-6-sol`, `2.50` and `d6`.
+- **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. They name the model that runs the consolidation passes, the most those passes may spend in one run (a runaway guard, not the expected cutoff), and when a pass runs: `d6` is the per-environment trigger with periodic maintenance, and `batched` is the batched trigger of the spec's F1.
+- **Evidence:** the trigger choice is decided by the offline cadence replay and the memory-v2 preregistrations (continual-harness-research); the budget follows the lead's USD 2.50 per v2 run ruling.

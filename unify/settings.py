@@ -276,6 +276,18 @@ class ProductionSettings(BaseSettings):
     # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
+    # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
+    # ``on`` replaces the storage review, the ``functions``/``guidance``
+    # objects and the library shortlist with a per-request export of the
+    # memory repo (``<UNIFY_HOME>/memory``) on the worker's import path and
+    # its index at the end of the system prompt (unify/memory_v2/integration).
+    # Needs the sandboxed worker and the core tool surface. Empty or ``off``:
+    # as shipped. The companions name Sol's model, its USD budget per run (a
+    # decimal string) and the consolidation trigger (``d6`` or ``batched``).
+    UNIFY_MEMORY_V2: str = ""
+    UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
+    UNIFY_MEMORY_V2_SOL_BUDGET_USD: str = "2.50"
+    UNIFY_MEMORY_V2_TRIGGER: str = "d6"
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -443,6 +455,24 @@ class ProductionSettings(BaseSettings):
                 f"UNIFY_STEP_CAP_COMPACT must be empty, 'off' or 'on', not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_MEMORY_V2", "UNIFY_MEMORY_V2_TRIGGER", mode="before")
+    @classmethod
+    def parse_memory_v2(cls, v: Any, info: Any) -> str:
+        from unify.memory_v2.integration.switch import parse_choice
+
+        return parse_choice(info.field_name, v)
+
+    @field_validator(
+        "UNIFY_MEMORY_V2_SOL_MODEL",
+        "UNIFY_MEMORY_V2_SOL_BUDGET_USD",
+        mode="before",
+    )
+    @classmethod
+    def parse_memory_v2_sol(cls, v: Any, info: Any) -> str:
+        from unify.memory_v2.integration.switch import parse_sol
+
+        return parse_sol(info.field_name, v)
 
     @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
     @classmethod
