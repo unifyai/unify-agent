@@ -393,6 +393,9 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         keep_prefix = isinstance(restart_message, list)
         # Its first measured call says whether what it kept fits.
         self._runtime_state.keep_prefix_unmeasured = keep_prefix
+        # And, for one the context threshold asked for, whether it brought
+        # the context under it (UNIFY_STEP_CAP_COMPACT=continue counts it).
+        self._runtime_state.compaction_unmeasured = at_step_limit is None
         # UNIFY_STEP_CAP_COMPACT=continue: the summary the loop restarts from
         # is loop-authored, so it starts no request (the loop stop's count
         # goes on across it). The marker is an underscore key, which unillm
