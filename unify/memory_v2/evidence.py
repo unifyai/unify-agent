@@ -49,6 +49,7 @@ _USE_COUNTS = (
     "exposure_legacy_text",
     "exposure_unknown",
     "outcome_unknown",
+    "prompt_unconfirmed",
 )
 # Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
 # where its shown lists came from), never as known. Every insert sets every column, so the default only
@@ -65,6 +66,7 @@ _REQUEST_FLAGS = (
     "exposure_legacy_text",
     "exposure_unknown",
     "outcome_unknown",
+    "prompt_unconfirmed",
 )
 # Per-item sums over the requests whose outcome for the item was known (``outcome_unknown = 0``).
 _KNOWN_SUMS = (
@@ -143,7 +145,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
     channel's files (its refusals and errors are then in the ``_modified`` columns only);
     ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
-    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
+    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``prompt_unconfirmed``
+    is 1 when the shown lists came from the record but no recorded system prompt ends with its text;
+    ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
     (``items_outcome_unknown``; for a record without that list, every item unless ``outcomes_known``),
     and that row's refusal and error columns are then lower bounds.
     """
@@ -168,6 +172,12 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     )
     source = _exposure_source(use)
     exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
+    section = use.get("memory_section_shown")
+    unconfirmed = int(
+        source == "record"
+        and isinstance(section, dict)
+        and section.get("prompt_confirmed") is False,
+    )
 
     def n(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -197,6 +207,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 n(r.get("errored_modified")),
                 *exposure,
                 int(item in unknown_items),
+                unconfirmed,
             ),
         )
     return out

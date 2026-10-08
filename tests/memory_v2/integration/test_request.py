@@ -463,6 +463,8 @@ def test_finish_records_how_the_request_used_the_library(mv2):
     assert (hello["imported"], hello["called"]) == (1, 1)
     assert (hello["refused"], hello["refused_modified"]) == (0, 1)
     assert rec["outcomes_known"] and rec["cells_without_metadata"] == 0
+    assert rec["items_outcome_unknown"] == [] and rec["cells_outcome_unknown"] == 0
+    assert set(rec["cells_without_metadata_by_cause"].values()) == {0}
     assert [c["status"] for c in rec["cell_status"]] == ["error"]
     assert hello["modified_in_request"] is True
     shown = rec["memory_section_shown"]
@@ -480,6 +482,7 @@ def test_finish_records_how_the_request_used_the_library(mv2):
     assert (row["called"], row["refused"], row["refused_modified"]) == (1, 0, 1)
     assert (row["shown"], row["channel_shown"], row["modified"]) == (1, 1, 1)
     assert (row["exposure_record"], row["exposure_legacy_text"]) == (1, 0)
+    assert (row["outcome_unknown"], row["prompt_unconfirmed"]) == (0, 0)
     assert not mv2.paths.errors.exists()
     _left_nothing(mv2.paths)
 

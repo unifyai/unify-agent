@@ -629,6 +629,7 @@ def test_the_evidence_counts_where_each_requests_shown_lists_came_from(tmp_path)
         "exposure_legacy_text": 1,
         "exposure_unknown": 2,
         "outcome_unknown": 0,
+        "prompt_unconfirmed": 0,
     }
     assert ev.request_flags(["e1", "e3"])["exposure_legacy_text"] == 1
     assert ev.request_flags([]) == dict.fromkeys(ev.request_flags(), 0)
@@ -670,7 +671,7 @@ def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_
     assert (row["called"], row["shown"], row["refused_modified"]) == (2, 0, 0)
     # the row indexed before the columns existed reads as unknown, never as known (DEFAULT 1)
     assert (row["outcome_unknown"], row["exposure_unknown"]) == (1, 1)
-    assert row["exposure_record"] == 0
+    assert (row["exposure_record"], row["prompt_unconfirmed"]) == (0, 0)
     assert ev.db.execute(
         "SELECT outcome_unknown, exposure_unknown FROM item_use WHERE episode_id='e9'",
     ).fetchone() == (1, 1)
@@ -785,12 +786,21 @@ def test_a_recorded_section_the_prompt_does_not_end_with_still_counts_and_says_s
     rec = use.request_use(later, ITEMS, shown=shown)
     assert rec["shown_items"] == ["env/x:parse"]
     assert rec["memory_section_shown"]["prompt_confirmed"] is False
-    # no system prompt was sent at all: nothing was shown
+    # the record is unconfirmed: the evidence row says so, and Sol's table counts it
+    rows = {r[0]: r for r in _use_rows("e1", rec)}
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("prompt_unconfirmed")] == 1
+    # no system prompt recorded at all: flagged unknown and unconfirmed, nothing counts as shown
     unsent = [ln for ln in _lines([]) if ln["type"] != "system_prompt"]
     rec = use.request_use(unsent, ITEMS, shown=shown)
-    assert rec["exposure_source"] == "record" and rec["shown_items"] == []
-    assert not rec["memory_section_shown"]["shown"]
-    assert rec["memory_section_shown"]["prompt_confirmed"] is None
+    assert rec["exposure_source"] == "unknown" and rec["shown_items"] == []
+    assert rec["shown_channels"] == [] and rec["shown_record"] == shown
+    section = rec["memory_section_shown"]
+    assert not section["shown"] and section["prompts"] == 0
+    assert section["prompt_confirmed"] is False and section["source"] == "unknown"
+    rows = {r[0]: r for r in _use_rows("e1", rec)}
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_unknown")] == 1
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_record")] == 0
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("prompt_unconfirmed")] == 0
     # only items and channels of the pin count
     other = use.record_shown(
         S1_GUIDE,

@@ -76,12 +76,13 @@ What the prompt showed is a structured record, not a reading of the prompt's tex
 memory section calls :func:`record_shown` with the channel and item names it rendered and the exact text
 it appended (kept only as a SHA-256, its UTF-8 byte count and the index's token estimate), and the record
 keeps that as ``shown_record``. ``shown_channels`` and ``shown_items`` are its names (items and channels of
-the pin) when a system prompt was sent; ``memory_section_shown.prompt_confirmed`` says whether a recorded
-system prompt ends with exactly that text. ``exposure_source`` says where the shown lists came from:
-``record``; ``legacy_text`` for a recording without the record, where the section is found by the v2
-index's opening line (:data:`HEADER_PREFIX`) and read by its ``## env.<channel>`` headings, ``- env.<channel>``
-catalogue lines and ``- `name(...)` `` item lines; or ``unknown`` when neither is there (nothing can say
-whether a section was shown).
+the pin) when a system prompt was recorded; ``memory_section_shown.prompt_confirmed`` says whether a
+recorded system prompt ends with exactly that text. ``exposure_source`` says where the shown lists came
+from: ``record``; ``legacy_text`` for a recording without the record, where the section is found by the
+v2 index's opening line (:data:`HEADER_PREFIX`) and read by its ``## env.<channel>`` headings,
+``- env.<channel>`` catalogue lines and ``- `name(...)` `` item lines; or ``unknown`` when neither is
+there, and when the record is there but no system prompt was recorded (``prompt_confirmed`` false: nothing
+can say whether the section reached the model, so nothing counts as shown).
 """
 
 from __future__ import annotations
@@ -893,10 +894,21 @@ def _exposure(
     shown: Any,
     its: _Items,
 ) -> tuple[str, dict, dict | None, list[str], list[str]]:
-    """(exposure source, ``memory_section_shown``, the shown record kept, shown items, shown channels)."""
+    """(exposure source, ``memory_section_shown``, the shown record kept, shown items, shown channels).
+
+    A record with no system prompt recorded is ``unknown`` (``prompt_confirmed`` false, nothing shown):
+    nothing says whether the section reached the model.
+    """
     record = _valid_shown(shown)
+    if record is not None and not prompts:
+        section = {
+            **memory_section(prompts),
+            "prompt_confirmed": False,
+            "source": "unknown",
+        }
+        return "unknown", section, record, [], []
     if record is not None:
-        sent = bool(prompts) and record["sha256"] is not None
+        sent = record["sha256"] is not None
         section = {
             "shown": sent,
             "sha256": record["sha256"] if sent else None,

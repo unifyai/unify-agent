@@ -191,6 +191,11 @@ def usage_table(
             "recorded and whose code could reach a function; only those functions count the request "
             "as unknown, and their 'then accepted' is at least the number shown, marked +?)",
         )
+    if flags.get("prompt_unconfirmed", 0):
+        lines.append(
+            f"(shown counts: {flags['prompt_unconfirmed']} of these requests' recorded prompts did not "
+            "end with the section the harness recorded rendering; their shown counts are the record's)",
+        )
     legacy, unknown = flags.get("exposure_legacy_text", 0), flags.get(
         "exposure_unknown",
         0,
