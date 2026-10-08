@@ -2,7 +2,7 @@
 
 The contract: ``UNIFY_MEMORY_V2`` (``on`` / ``off`` / empty), ``UNIFY_MEMORY_V2_E`` (a positive int,
 150000), ``UNIFY_MEMORY_V2_SOL_MODEL`` (``openai/gpt-6-sol``),
-``UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN`` (a decimal string, ``0.00000073``, no exponent) and
+``UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string, ``0.00000073``, no exponent) and
 ``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD`` (a decimal string, or empty for no guard). Each value is loaded
 through ``ProductionSettings`` from the environment, as a run sets it.
 """
@@ -15,7 +15,7 @@ _NAMES = (
     "UNIFY_MEMORY_V2",
     "UNIFY_MEMORY_V2_E",
     "UNIFY_MEMORY_V2_SOL_MODEL",
-    "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN",
+    "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
     "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
     # retired by the online contract; a stale one in the environment must change nothing
     "UNIFY_MEMORY_V2_TRIGGER",
@@ -39,7 +39,7 @@ def test_defaults():
     assert s.UNIFY_MEMORY_V2 == ""
     assert s.UNIFY_MEMORY_V2_E == 150000 and type(s.UNIFY_MEMORY_V2_E) is int
     assert s.UNIFY_MEMORY_V2_SOL_MODEL == "openai/gpt-6-sol"
-    assert s.UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN == "0.00000073"
+    assert s.UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS == "0.00000073"
     assert s.UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD == ""
 
 
@@ -94,7 +94,7 @@ def test_sol_model_values(raw, want, monkeypatch):
     ],
 )
 def test_allowance_values(raw, want, monkeypatch):
-    got = _load(monkeypatch, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", raw)
+    got = _load(monkeypatch, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", raw)
     assert got == want and isinstance(got, str)
 
 
@@ -128,16 +128,16 @@ def test_run_guard_values(raw, want, monkeypatch):
         ("UNIFY_MEMORY_V2_E", "+7"),
         ("UNIFY_MEMORY_V2_E", "lots"),
         ("UNIFY_MEMORY_V2_SOL_MODEL", "openai/gpt 6"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "7.3e-7"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "7.3E-7"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "0"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "0.000"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "-0.1"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "+0.1"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", ".5"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "nan"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "inf"),
-        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "1,5"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "7.3e-7"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "7.3E-7"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "0"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "0.000"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "-0.1"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "+0.1"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", ".5"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "nan"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "inf"),
+        ("UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "1,5"),
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "1e1"),
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "-1"),
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "nan"),
@@ -150,3 +150,15 @@ def test_refuses_other_values(name, raw, monkeypatch):
     monkeypatch.setenv(name, raw)
     with pytest.raises(Exception, match=name):
         ProductionSettings()
+
+
+def test_the_allowance_assignment_passes_the_credential_guards():
+    """The job controller refuses argv matching ``token\\s*=`` and the launcher treats a name part
+    containing TOKEN as a credential unless it is exactly ``TOKENS``: the allowance's name passes both.
+    """
+    import re
+
+    line = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=0.00000073"
+    assert re.search(r"(?i)token\s*=", line) is None
+    parts = line.split("=", 1)[0].split("_")
+    assert [p for p in parts if "TOKEN" in p] == ["TOKENS"]

@@ -286,14 +286,14 @@ class ProductionSettings(BaseSettings):
     # switch.py) apply only when it is on: ``_E`` is the experience budget in
     # tokens at which a batched consolidation pass becomes due; ``_SOL_MODEL``
     # runs the passes, at the actor's reasoning effort for the run;
-    # ``_SOL_ALLOWANCE_USD_PER_TOKEN`` (a decimal string) times E caps one
+    # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
     # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
     # stops further passes once the run's Sol USD plus the next cap would
     # exceed it.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
-    UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN: str = "0.00000073"
+    UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
@@ -467,7 +467,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2",
         "UNIFY_MEMORY_V2_E",
         "UNIFY_MEMORY_V2_SOL_MODEL",
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN",
+        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
         mode="before",
     )

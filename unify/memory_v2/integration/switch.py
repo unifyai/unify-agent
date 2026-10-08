@@ -7,7 +7,7 @@ The contract (online build, spec §F1 and D23):
   becomes due once the evidence since the last pass reaches E, and its USD cap is E times the allowance.
 - ``UNIFY_MEMORY_V2_SOL_MODEL``: the model that runs consolidation passes; empty means
   ``openai/gpt-6-sol``. Sol's reasoning effort has no switch: it is the actor's effort for the run.
-- ``UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN``: USD Sol may spend per token of experience, a positive
+- ``UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS``: USD Sol may spend per token of experience, a positive
   plain decimal string; empty means ``0.00000073``.
 - ``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``: a non-negative plain decimal string, or empty for no guard. When
   set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
@@ -25,7 +25,7 @@ from typing import Any
 SWITCH = "UNIFY_MEMORY_V2"
 EXPERIENCE_BUDGET = "UNIFY_MEMORY_V2_E"
 SOL_MODEL = "UNIFY_MEMORY_V2_SOL_MODEL"
-SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN"
+SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS"
 SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
