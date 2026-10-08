@@ -13,10 +13,10 @@ pip install uv && uv sync --all-groups
 cp .env.example .env      # add one LLM provider key
 ```
 
-This installs Unify and `unillm` (linked via `[tool.uv.sources]` in `pyproject.toml`). Then chat with the assistant:
+This installs Unify and `unillm` (linked via `[tool.uv.sources]` in `pyproject.toml`). Then hand the actor a request:
 
 ```bash
-.venv/bin/python -m unify
+.venv/bin/python -m unify act "Count the rows in ~/exports/run-42.csv"
 ```
 
 ## Running tests

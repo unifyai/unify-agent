@@ -372,7 +372,7 @@ The core architecture (handles, loops, CodeAct, the libraries) is independent of
 ```
 unify/
 ├── unify/
-│   ├── cli.py                          # Terminal chat, `python -m unify`
+│   ├── cli.py                          # `unify act` (the default), `python -m unify`
 │   ├── workspace.py                    # The assistant's working directory
 │   ├── db.py                           # The store: five tables, two views, read-only path for model SQL
 │   ├── common/
