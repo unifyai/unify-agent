@@ -45,18 +45,23 @@ def _schema(tools, name):
     return method_to_schema(getattr(tool, "fn", tool), name)
 
 
+# The core lean prompt's sentences that name a cell mode.
+STATELESS_SENTENCE = ' `state_mode="stateless"` or a\n   named session isolates a cell.'
+READ_ONLY_SENTENCE = (
+    ' `state_mode="read_only"` tries an alternative on the current\n'
+    "state without changing it."
+)
+
+
 def _prompt(tools, environments=None):
     return pb.build_code_act_prompt(
         environments=environments or {},
         can_store=True,
         persist=True,
         core=PromptSurface(clarification=False),
+        # No clock: two builds compare equal across a minute boundary.
+        session_sections=False,
     )
-
-
-@pytest.fixture(params=["", "lean"])
-def profile(request, monkeypatch):
-    return request.param
 
 
 def test_off_by_default():
@@ -128,26 +133,29 @@ def test_the_switch_reaches_only_the_actor_built_with_it(monkeypatch):
     )
 
 
-def test_the_prompt_names_no_cell_mode_and_no_session_tool(monkeypatch, profile):
+def test_the_prompt_names_no_cell_mode_and_no_session_tool(monkeypatch):
     off_tools = dict(_actor().get_tools("act"))
     off = _prompt(off_tools)
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)
     tools = dict(_actor().get_tools("act"))
     on = _prompt(tools)
-    assert 'state_mode="stateless"' in off and "list_sessions()" in off
+    # The core surface has no session tools, so only the modes are named.
+    assert 'state_mode="stateless"' in off and 'state_mode="read_only"' in off
     for gone in (
         'state_mode="stateless"',
         'state_mode="read_only"',
         "list_sessions",
         "inspect_state",
-        "the session's\n`state_mode`",
     ):
         assert gone not in on, gone
-    # The notebook framing stays. (The function modes table is part of the
-    # library section, which only the library's JSON tools brought in.)
+    # The notebook framing stays.
     assert "persistent" in on
     # Only these sentences change: what is left is the shipped text.
-    assert len(on) < len(off)
+    assert on == off.replace(STATELESS_SENTENCE, "", 1).replace(
+        READ_ONLY_SENTENCE,
+        "",
+        1,
+    )
 
 
 def test_read_only_reads_the_one_session(monkeypatch):

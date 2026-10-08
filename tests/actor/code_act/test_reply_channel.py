@@ -92,14 +92,8 @@ def actor_tools():
     return actor, dict(actor.get_tools("act"))
 
 
-def _prompt(actor_tools, surface: str) -> str:
-    actor, tools = actor_tools
-    if surface == "core":
-        return pb.build_code_act_prompt(
-            environments=actor.environments,
-            can_store=True,
-            core=core_surface.PromptSurface(),
-        )
+def _prompt(actor_tools) -> str:
+    actor, _tools = actor_tools
     return pb.build_code_act_prompt(
         environments=actor.environments,
         can_store=True,
@@ -107,26 +101,15 @@ def _prompt(actor_tools, surface: str) -> str:
     )
 
 
-@pytest.mark.parametrize("profile", ["", "lean"])
-@pytest.mark.parametrize("surface", ["json", "core"])
-def test_the_prompt_says_it_once_where_the_reply_rule_is(
-    monkeypatch,
-    actor_tools,
-    profile,
-    surface,
-):
+def test_the_prompt_says_it_once_where_the_reply_rule_is(monkeypatch, actor_tools):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "")
-    off = _flat(_prompt(actor_tools, surface))
+    off = _flat(_prompt(actor_tools))
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    on = _flat(_prompt(actor_tools, surface))
+    on = _flat(_prompt(actor_tools))
     assert FROM_CELL not in off and NOTE_FROM_CELL not in off
     assert on.count(FROM_CELL) == 1
     # Beside the reply rule.
-    rule = (
-        "Your answer is your final reply: a message without a tool call."
-        if profile == "lean"
-        else "never via a tool call."
-    )
+    rule = "Your answer is your final reply: a message without a tool call."
     assert f"{rule} {FROM_CELL}" in on
     # The reply-protocol note is gone.
     assert NOTE_FROM_CELL not in on

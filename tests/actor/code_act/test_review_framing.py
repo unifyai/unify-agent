@@ -6,8 +6,9 @@ review. The fork is the actor's own conversation, whose system prompt says a
 *dedicated review* extracts skills; the appended message then switches it to
 a "skill librarian" whose first instruction is "Often nothing is", and,
 unlike the standalone review, it never gets the closing instruction to
-store. ``unified`` frames the review as the agent's own curation step in
-both prompts and gives the fork that instruction; ``compose`` replaces the
+store. ``unified`` frames the forked review as the agent's own curation step
+and gives the fork that instruction (the core lean prompt says only that a
+review follows); ``compose`` replaces the
 rulebook's discouragements with rules for small, composed, behaviour-named
 units that a patch must not break. Requests are captured at unillm's
 transport (``tests/cache_discipline_helpers.py``).
@@ -16,12 +17,10 @@ transport (``tests/cache_discipline_helpers.py``).
 from __future__ import annotations
 
 
-from unify.actor.core_surface import PromptSurface
 import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
-from unify.actor import prompt_builders as pb
 
 OFTEN_NOTHING = "Often nothing is"
 
@@ -78,32 +77,3 @@ async def test_unified_the_fork_is_the_agents_own_curation_step():
     assert appended.endswith(caa._REVIEW_CLOSING_UNIFIED)
     assert appended.index("## Final Result") < appended.index("## Now")
     assert "store any reusable functions and compositional guidance" in appended
-
-
-# ── the actor's own prompt ───────────────────────────────────────────────
-
-
-def _prompt(persist: bool) -> str:
-    from unify.actor.code_act_actor import CodeActActor
-
-    actor = CodeActActor()
-    return pb.build_code_act_prompt(
-        environments={},
-        can_store=True,
-        persist=persist,
-        core=PromptSurface(),
-    )
-
-
-@pytest.mark.parametrize("persist", [False, True])
-def test_unified_the_actor_is_told_it_curates_after_the_task(persist):
-    prompt = _prompt(persist)
-    assert "dedicated review extracts" not in prompt
-    assert "dedicated skill-consolidation process" not in prompt
-    # A persistent session's curation step follows each turn.
-    follows = "the turn" if persist else "the task"
-    assert f"curation step that follows {follows}" in prompt
-    if persist:
-        assert "curate the libraries from your\ntrajectory yourself" in prompt
-    else:
-        assert "you also curate the libraries from your full" in prompt

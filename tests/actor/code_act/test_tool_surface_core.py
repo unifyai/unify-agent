@@ -105,13 +105,11 @@ async def test_a_session_finds_runs_and_calls_a_stored_function_in_code(
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 @_handle_project
-@pytest.mark.parametrize("profile", ["", "lean"])
 @pytest.mark.parametrize("structured", [False, True])
 async def test_the_only_json_tool_is_execute_code(
     core_world,
     monkeypatch,
     structured,
-    profile,
 ):
     from pydantic import BaseModel
 

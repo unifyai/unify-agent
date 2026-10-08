@@ -35,7 +35,7 @@ import pytest
 from tests import cache_discipline_helpers as h
 from tests.actor.code_act.core_world import core_world  # noqa: F401
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
-from unify.actor import core_surface, notebook_cells
+from unify.actor import notebook_cells
 from unify.actor import prompt_builders as pb
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
@@ -245,14 +245,8 @@ def actor_tools():
     return actor, dict(actor.get_tools("act"))
 
 
-def _prompt(actor_tools, surface: str) -> str:
-    actor, tools = actor_tools
-    if surface == "core":
-        return pb.build_code_act_prompt(
-            environments=actor.environments,
-            can_store=True,
-            core=core_surface.PromptSurface(),
-        )
+def _prompt(actor_tools) -> str:
+    actor, _tools = actor_tools
     return pb.build_code_act_prompt(
         environments=actor.environments,
         can_store=True,
@@ -260,19 +254,15 @@ def _prompt(actor_tools, surface: str) -> str:
     )
 
 
-@pytest.mark.parametrize("profile", ["", "lean"])
-@pytest.mark.parametrize("surface", ["json", "core"])
 @pytest.mark.parametrize("projection", ["", "notebook"])
 def test_the_prompt_says_it_once_where_the_sandbox_is_described(
     monkeypatch,
     actor_tools,
-    profile,
-    surface,
     projection,
 ):
 
     def render() -> str:
-        text = _prompt(actor_tools, surface)
+        text = _prompt(actor_tools)
         return notebook_cells.rewrite_prompt(text) if projection else text
 
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "")

@@ -285,14 +285,15 @@ async def test_unset_session_is_unchanged(monkeypatch):
     assert "store_skills" in set(captured["tools"])
     assert captured["extra_compression_tools"] == ["store_skills"]
     assert captured["prompt_kwargs"]["can_store"] is True
-    assert "library_read_only" not in captured["prompt_kwargs"]
+    assert captured["prompt_kwargs"]["library_read_only"] is False
     assert "### Library Writes" not in captured["prompt"]
+    assert captured["prompt_kwargs"]["core"].turn_reviews is True
+    assert "after each completed turn" in captured["prompt"]
     assert captured["handle"]._turn_reviews_enabled is True
 
 
 def test_prompt_default_has_no_read_only_notice():
     """The builder's default leaves the prompt as shipped."""
-    tools = {"execute_code": None, "FunctionManager_search_functions": None}
     for can_store in (True, False):
         for persist in (True, False):
             prompt = build_code_act_prompt(

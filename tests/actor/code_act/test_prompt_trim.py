@@ -53,17 +53,12 @@ def _with_primitives():
     return _actor([ActorEnvironment()])
 
 
-@pytest.fixture(params=["", "lean"])
-def profile(request, monkeypatch):
-    return request.param
-
-
 @pytest.fixture
 def trim(monkeypatch):
     """Baked in at the code freeze: the behaviour this pinned is the only path."""
 
 
-def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
+def test_without_primitives_no_text_names_them(trim, monkeypatch):
     prompt, schemas = _render(_actor())
     for gone in (
         "primitives",
@@ -89,7 +84,7 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
         assert kept in prompt, kept
 
 
-def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
+def test_with_primitives_the_text_is_as_shipped(monkeypatch):
     off = _render(_with_primitives())
     on = _render(_with_primitives())
     assert on == off
