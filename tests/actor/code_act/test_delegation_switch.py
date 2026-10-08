@@ -1,4 +1,4 @@
-"""Symbolic: a top-level actor gets no sub-actors (``UNIFY_DELEGATION=off``, baked at the code freeze).
+"""Symbolic: a top-level actor gets no sub-actors (delegation was baked off at the code freeze).
 
 Every top-level actor is built with the sub-actor environment
 (``primitives.actor``), whose 2,338-token ``act`` docstring rides every

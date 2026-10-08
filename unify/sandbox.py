@@ -437,11 +437,7 @@ def _notices_dir() -> Path:
 
 
 def _current_run_records() -> Optional[Path]:
-    """UNIFY_AGENTS=record: the folder holding this run's record, if one is open."""
-    from unify.settings import SETTINGS
-
-    if getattr(SETTINGS, "UNIFY_AGENTS", "") != "record":
-        return None
+    """The folder holding this run's agent record, if one is open."""
     from unify.agents.binding import current_root_pool
 
     pool = current_root_pool()
@@ -740,7 +736,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             os.getcwd(),
             getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", ""),
             getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0),
-            getattr(SETTINGS, "UNIFY_AGENTS", ""),
             str(_current_run_records() or ""),
             tuple(_log_dir_settings()),
             sys.prefix,
@@ -762,9 +757,9 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         store = Path(os.path.realpath(store_path()))
         # Mounted only if present, and sessions pointed at it must find it.
         (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
-        # UNIFY_AGENTS=record: cells may read (grep, tail) their own run's record,
-        # as transcripts; never another run's, and only the harness writes it.
-        records = _current_run_records() if SETTINGS.UNIFY_AGENTS == "record" else None
+        # Cells may read (grep, tail) their own run's agent record, as
+        # transcripts; never another run's, and only the harness writes it.
+        records = _current_run_records()
         readonly = [
             p
             for p in (

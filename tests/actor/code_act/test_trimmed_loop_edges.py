@@ -898,7 +898,7 @@ async def test_10_record_posts_during_a_cell_arrive_once_at_the_next_boundary():
             handle = await _act(actor, "Wait a little.")
             assert (
                 getattr(handle, "agents_pool", None) is not None
-            ), "UNIFY_AGENTS=record is the default"
+            ), "the agent record is always on"
             bridge = attach_bridge(handle, lambda **_: None)
             # Wait until the cell runs (the first model call has answered).
             deadline = asyncio.get_running_loop().time() + 30

@@ -184,7 +184,6 @@ def test_read_only_reads_the_one_session(monkeypatch):
 def test_composes_with_delegation(monkeypatch, delegation):
     from unify.actor.environments import ActorEnvironment
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", delegation)
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)
     envs = [ActorEnvironment()] if delegation == "on" else []
     actor = _actor(environments=envs)

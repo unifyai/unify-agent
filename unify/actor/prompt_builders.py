@@ -1020,7 +1020,7 @@ _TRIM_NO_DELEGATE = (
         "",
     ),
 )
-# UNIFY_DELEGATION=off: there are no sub-agents.
+# There are no sub-agents (delegation through primitives.actor is off).
 _TRIM_NO_SUB_AGENTS = (
     re.compile(
         r" If you are a sub-agent and your task seems to need one,"
@@ -1115,8 +1115,6 @@ def _section_rewrites(
     # First: it removes the whole session sentence the trim would shorten.
     if cell_state.enabled():
         rewrites.extend(_STATEFUL_CELLS)
-    from unify.actor.environments.actor import delegation_mode
-
     if "primitives" not in environments:
         rewrites.extend(_TRIM_NO_PRIMITIVES)
         if not environments:
@@ -1125,8 +1123,8 @@ def _section_rewrites(
             rewrites.append(_TRIM_PRIMITIVE_CATALOGUE)
     if not _injects_actor_primitives(environments):
         rewrites.extend(_TRIM_NO_DELEGATE)
-    if delegation_mode() == "off":
-        rewrites.append(_TRIM_NO_SUB_AGENTS)
+    # No sub-agents: helpers come from the agent record.
+    rewrites.append(_TRIM_NO_SUB_AGENTS)
     if tools is not None and not (
         "list_sessions" in tools and "inspect_state" in tools
     ):

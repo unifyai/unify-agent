@@ -20,11 +20,10 @@ _STEERING = {
 }
 
 
-async def _run(replies, monkeypatch, tmp_path, mode="record"):
+async def _run(replies, monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", mode)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
     actor = CodeActActor(
         environments=actor_env.top_level_environments(),
@@ -83,14 +82,6 @@ async def test_record_and_agents_are_in_the_sandbox(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_switch_off_binds_nothing(monkeypatch, tmp_path):
-    requests, handle, _ = await _run(_DONE, monkeypatch, tmp_path, mode="")
-    assert getattr(handle, "agents_pool", None) is None
-    assert "### Team record" not in json.dumps(requests[0]["messages"])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_result(
     monkeypatch,
     tmp_path,
@@ -139,11 +130,10 @@ async def test_posts_during_a_call_and_a_cell_arrive_together_after_the_tool_res
     assert msgs[: len(first_msgs)] == first_msgs
 
 
-async def _run_slow_cell(monkeypatch, tmp_path, mode):
+async def _run_slow_cell(monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", mode)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
     actor = CodeActActor(
         environments=actor_env.top_level_environments(),
@@ -183,7 +173,7 @@ async def _run_slow_cell(monkeypatch, tmp_path, mode):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_a_long_cell_never_wakes_the_model_in_record_mode(monkeypatch, tmp_path):
-    requests, result = await _run_slow_cell(monkeypatch, tmp_path, "record")
+    requests, result = await _run_slow_cell(monkeypatch, tmp_path)
     assert result == "done"
     assert len(requests) == 2  # the cell's call, then one call after the cell ended
     assert "Still working on the code step" not in json.dumps(requests)
@@ -202,7 +192,6 @@ async def _actor(monkeypatch, tmp_path):
     from unify.actor.code_act_actor import CodeActActor
     from unify.agents import binding
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "record")
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
     return CodeActActor(
         environments=actor_env.top_level_environments(),

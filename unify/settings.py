@@ -289,26 +289,6 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
-    # Delegation for the actor `unify act` and the conversation manager
-    # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
-    # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
-    # no sub-actor: no ``primitives`` global, no delegation docs, no
-    # sub-actor notch in the query_llm doctrine, and execute_function
-    # refuses ``primitives.actor.*``, for runs that are one task with no
-    # use for delegates. ``on_demand`` installs it, and the prompt carries a
-    # three-line pointer instead of the docs, which ``help(primitives.actor.act)``
-    # returns in the sandbox.
-    UNIFY_DELEGATION: str = "off"
-    # The shared agent record. ``record``: every agent of a run, the user (or
-    # the benchmark driving the run) and the harness talk through one
-    # append-only thread, read only at turn boundaries; the steering tools,
-    # interjections that cancel calls, clarification and notification
-    # channels, lifecycle notices and primitives.actor are not used, and
-    # ``agents.spawn`` starts helpers. Empty: as shipped.
-    UNIFY_AGENTS: str = "record"
-    # Tunables for UNIFY_AGENTS=record, ``key=value,…`` (unify/agents/options.py).
-    # Empty: the documented defaults.
-    UNIFY_AGENTS_OPTIONS: str = ""
     # ``lean``: an actor prompt for a non-interactive session (one requester,
     # no reader of progress notifications), which describes the session's
     # mechanisms and states few rules. It opens with the role and the
@@ -528,42 +508,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "lean"):
             raise ValueError(
                 f"UNIFY_PROMPT_PROFILE must be empty or 'lean', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_AGENTS", mode="before")
-    @classmethod
-    def parse_agents(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "record"):
-            raise ValueError(f"UNIFY_AGENTS must be empty or 'record', not {v!r}")
-        return value
-
-    @field_validator("UNIFY_AGENTS_OPTIONS", mode="before")
-    @classmethod
-    def parse_agents_options(cls, v: Any) -> str:
-        from unify.agents.options import parse_options
-
-        text = str(v or "").strip()
-        parse_options(text)
-        return text
-
-    @field_validator("UNIFY_DELEGATION", mode="before")
-    @classmethod
-    def parse_delegation(cls, v: Any) -> str:
-        value = str("on" if v is None else v).strip().lower() or "on"
-        # A boolean spelling is the plain on/off of the switch.
-        value = {
-            "true": "on",
-            "1": "on",
-            "yes": "on",
-            "false": "off",
-            "0": "off",
-            "no": "off",
-        }.get(value, value)
-        if value not in ("on", "off", "on_demand"):
-            raise ValueError(
-                f"UNIFY_DELEGATION must be 'on', 'off' or 'on_demand', not {v!r}",
             )
         return value
 

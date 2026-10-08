@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from unify.agents import enabled
 from unify.agents.log import RecordLog
-from unify.agents.options import current_options
+from unify.agents.options import Options
 from unify.agents.pool import Pool
 from unify.agents.record import USER, Record
 from unify.agents.views import AgentsView, RecordView
@@ -141,10 +140,8 @@ async def _start_helper(
         await actor.close()
 
 
-def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
-    """None with the switch off; else the helper this act() was started for, or a new main agent."""
-    if not enabled():
-        return None
+def bind_for_act(*, request: str, user_reads: bool) -> Binding:
+    """The helper this act() was started for, or a new main agent."""
     current = _CURRENT.get()
     if current is not None:
         pool, name = current
@@ -156,7 +153,7 @@ def bind_for_act(*, request: str, user_reads: bool) -> Optional[Binding]:
         )
     record = Record(
         RecordLog(records_dir() / _run_id() / "record.jsonl", create=True),
-        options=current_options(),
+        options=Options(),
         root=ROOT,
         user_reads=user_reads,
     )

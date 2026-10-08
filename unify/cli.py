@@ -80,7 +80,7 @@ drafted; with no turn running it is ignored. Without --persist it ends the
 session as {"quit": true} does. Progress still goes to stderr. A
 stdin line {"outcome": {...}} gives the session its checked outcome for the
 storage review (see unify/outcome.py) and is answered with
-{"type": "outcome", "accepted": ...}. With UNIFY_AGENTS=record a message is posted to the run's shared
+{"type": "outcome", "accepted": ...}. A message is posted to the run's shared agent
 record and reaches the actor at its next step instead of interrupting it,
 and each record entry that mentions @user is written out as
 {"type": "record", ...} (a "record>" line without --jsonl).
@@ -487,7 +487,7 @@ class Act:
         self._args = args
         self._actor = None
         self._handle = None
-        # UNIFY_AGENTS=record: routes lines into the shared record (None: off).
+        # Routes lines into the shared agent record.
         self._bridge = None
         self._pending_clarifications: asyncio.Queue[dict] = asyncio.Queue()
         self._closing = asyncio.Event()
@@ -545,7 +545,7 @@ class Act:
         print(json.dumps(payload, default=str), flush=True)
 
     def _emit_record(self, **entry: object) -> None:
-        """A record entry that mentions @user (UNIFY_AGENTS=record)."""
+        """A record entry that mentions @user."""
         if self._args.jsonl:
             self._emit(**entry)
         else:
@@ -668,7 +668,7 @@ class Act:
                     await self._handle.stop(SESSION_ENDED)
                     return
                 if self._bridge is not None:
-                    # UNIFY_AGENTS=record: a post, read at the next boundary.
+                    # A record post, read at the next boundary.
                     await self._bridge.user_message(line)
                     continue
                 if not self._pending_clarifications.empty():

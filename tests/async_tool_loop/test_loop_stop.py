@@ -334,7 +334,7 @@ async def test_a_loop_that_is_not_persistent_ends_with_the_last_word(loop_stop):
 
 @pytest.mark.asyncio
 async def test_record_blocks_at_the_boundary_do_not_reset_the_count(loop_stop):
-    """UNIFY_AGENTS=record: a loop-authored block is not a requester message."""
+    """The agent record: a loop-authored block is not a requester message."""
     blocks = []
 
     async def boundary():

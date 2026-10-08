@@ -899,8 +899,8 @@ _STALE_STEERING_DOC = (
 )
 
 
-# UNIFY_DELEGATION=off: execute_function's docs do not offer the sub-actor
-# primitive as their example of a primitive.
+# No delegation through primitives.actor: execute_function's docs do not
+# offer the sub-actor primitive as their example of a primitive.
 _SUB_ACTOR_EXAMPLES_DOC = (
     (
         re.compile(r"a primitive\s+\(``primitives\.actor\.act``\) or a stored"),
@@ -1026,12 +1026,10 @@ def _correct_tool_docs(
     With the switches off the docstrings are as shipped.
     """
     from unify.actor import placeholder_note
-    from unify.actor.environments.actor import delegation_mode
 
     rewrites: list = []
     rewrites.extend(_STALE_STEERING_DOC)
-    if delegation_mode() == "off":
-        rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
+    rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
     rewrites.extend(_LEAN_TOOL_DOCS)
     rewrites.append(_LEAN_INSTALL_DOC)
     if "primitives" not in (environments or {}):
@@ -2874,20 +2872,13 @@ def _synthesize_python_call(
     return f"{preamble}{call_expr}"
 
 
-def _agents_mode() -> bool:
-    """``UNIFY_AGENTS=record``: the shared agent record is on."""
-    from unify import agents
-
-    return agents.enabled()
-
-
 async def _end_agents_request(
     agents_binding,
     *,
     reply: Optional[str] = None,
     reason: str = "",
 ) -> None:
-    """UNIFY_AGENTS=record: end the main agent's request in its record.
+    """End the main agent's request in its agent record.
 
     With a reply, the reply is recorded and running helpers are stopped;
     without one, the helpers are stopped with ``reason``. Only the main agent
@@ -3403,10 +3394,9 @@ class CodeActActor(BaseCodeActActor):
                     "thought": thought[:500],
                 },
             )
-            if _agents_mode():
-                # UNIFY_AGENTS=record: nothing reaches the model while its cell
-                # runs, so neither the heartbeat nor in-cell progress is wired.
-                _notification_up_q = None
+            # The agent record: nothing reaches the model while its cell
+            # runs, so neither the heartbeat nor in-cell progress is wired.
+            _notification_up_q = None
             heartbeat_task: asyncio.Task[None] | None = None
             try:
                 heartbeat_task = asyncio.create_task(
@@ -3992,17 +3982,16 @@ class CodeActActor(BaseCodeActActor):
             "wait for the user to provide instructions via interjection."
         )
 
-        # UNIFY_AGENTS=record: this act() joins its run's shared record, as the
-        # main agent or as the helper a pool started. Off: nothing is bound.
+        # The agent record: this act() joins its run's shared record, as the
+        # main agent or as the helper a pool started.
         from unify.agents.binding import bind_for_act
 
         _agents = bind_for_act(
             request=str(request or ""),
             user_reads=bool(clarification_enabled),
         )
-        if _agents is not None:
-            # A question to the requester is a record post in this mode.
-            clarification_enabled = False
+        # A question to the requester is a record post.
+        clarification_enabled = False
 
         # Clarification queues for sandbox env injection (managers called from
         # execute_code). Separate from the tool-loop clarification_queues below:
@@ -4411,23 +4400,6 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     pass
 
-        async def _on_notify(message: str):
-            try:
-                await EVENT_BUS.publish(
-                    Event(
-                        type="ManagerMethod",
-                        calling_id=_call_id,
-                        payload={
-                            "manager": "CodeActActor",
-                            "method": "act",
-                            "action": "notification",
-                            "message": message,
-                        },
-                    ),
-                )
-            except Exception:
-                pass
-
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] starting async tool loop")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
@@ -4458,17 +4430,18 @@ class CodeActActor(BaseCodeActActor):
             )
             if shortlist:
                 first_message_parts.append(shortlist)
-            if _agents is not None:
-                sandbox.global_state.update(_agents.globals())
-                if isinstance(getattr(sandbox, "core_globals", None), dict):
-                    sandbox.core_globals.update(_agents.globals())
-                first_message_parts.append(_agents.prompt_section())
+            sandbox.global_state.update(_agents.globals())
+            if isinstance(getattr(sandbox, "core_globals", None), dict):
+                sandbox.core_globals.update(_agents.globals())
+            first_message_parts.append(_agents.prompt_section())
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
                 tools,
                 loop_id=f"CodeActActor.act",
-                parent_chat_context=(_parent_chat_context if _agents is None else None),
+                # The record carries what a helper is told, so no parent
+                # chat context reaches the loop.
+                parent_chat_context=None,
                 log_steps=True,
                 tool_policy=tool_policy,
                 response_format=response_format,
@@ -4489,25 +4462,15 @@ class CodeActActor(BaseCodeActActor):
                 clarification_queues=_clar_queues if core_session is None else None,
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
-                # UNIFY_PROMPT_PROFILE=lean: no notification channel; nor
-                # under UNIFY_TOOL_SURFACE=core.
-                on_notify=(
-                    None
-                    if SETTINGS.lean_prompt()
-                    or core_session is not None
-                    or _agents is not None
-                    else _on_notify
-                ),
+                # No notification channel: nothing reads progress
+                # notifications under the agent record.
+                on_notify=None,
                 **(
                     {"compression_tools_on_demand": True}
                     if core_session is not None
                     else {}
                 ),
-                **(
-                    {"on_turn_boundary": _agents.on_turn_boundary}
-                    if _agents is not None
-                    else {}
-                ),
+                on_turn_boundary=_agents.on_turn_boundary,
                 **(
                     {
                         "first_message_context": "\n\n".join(
@@ -4544,7 +4507,7 @@ class CodeActActor(BaseCodeActActor):
                         reason="the main agent's run failed",
                     )
                     raise
-                # UNIFY_AGENTS=record: the main agent's answer ends its request;
+                # The agent record: the main agent's answer ends its request;
                 # helpers still running are stopped and checked to have ended. A
                 # stopped run or a finished session has no answer to record.
                 stop_event = getattr(_loop_handle, "_stop_event", None)
@@ -4563,8 +4526,7 @@ class CodeActActor(BaseCodeActActor):
 
         # Update agent context with handle reference
         new_ctx.handle = handle
-        if _agents is not None:
-            handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
+        handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
 
         # Wrap in StorageCheckHandle for post-completion function review. A
         # persistent session is reviewed once, when it ends (its stop is a
@@ -4591,9 +4553,8 @@ class CodeActActor(BaseCodeActActor):
             self._live_storage_handles.add(handle)
 
         _instance_lint.leave(instance_token)
-        if _agents is not None:
-            # The handle the caller holds (the storage wrapper by default).
-            handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
+        # The handle the caller holds (the storage wrapper by default).
+        handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
         return handle
 
     async def close(self):

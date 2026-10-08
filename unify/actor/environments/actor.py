@@ -700,55 +700,23 @@ class _ActorRunner:
 
 
 # ---------------------------------------------------------------------------
-# UNIFY_DELEGATION
+# Top-level environments
 # ---------------------------------------------------------------------------
 
 
-def delegation_mode() -> str:
-    """``UNIFY_DELEGATION``: ``on`` (as shipped), ``off`` or ``on_demand``.
-
-    ``UNIFY_AGENTS=record`` reads as ``off``: helpers come from
-    ``agents.spawn``, never from ``primitives.actor``.
-    """
-    from unify import agents
-    from unify.settings import SETTINGS
-
-    if agents.enabled():
-        return "off"
-    return SETTINGS.UNIFY_DELEGATION
-
-
 def top_level_environments() -> List[BaseEnvironment]:
-    """The environments a top-level actor is built with, per ``UNIFY_DELEGATION``.
+    """The environments a top-level actor is built with.
 
-    The sub-actor environment (unless ``off``), then the namespaces the
-    environment registered (``UNIFY_ENV_NAMESPACES``), which a top-level actor
-    always gets. ``on`` is ``[ActorEnvironment(), *registered_environments()]``,
-    as shipped.
+    The namespaces the environment registered (``UNIFY_ENV_NAMESPACES``). No
+    sub-actor environment: helpers come from the agent record's
+    ``agents.spawn``, never from ``primitives.actor`` (delegation through
+    ``primitives.actor`` was baked off at the code freeze).
     """
     from unify.actor.environments.environment_namespaces import (
         registered_environments,
     )
 
-    sub_actor = [] if delegation_mode() == "off" else [ActorEnvironment()]
-    return [*sub_actor, *registered_environments()]
-
-
-def refuses_sub_actor(function_name: str) -> bool:
-    """Whether ``execute_function`` must refuse *function_name*: a sub-actor
-    primitive while ``UNIFY_DELEGATION=off``."""
-    prefix = f"{ActorEnvironment.NAMESPACE}.{ActorEnvironment.MANAGER_ALIAS}."
-    return delegation_mode() == "off" and str(function_name).startswith(prefix)
-
-
-# UNIFY_DELEGATION=on_demand: the prompt points at the docs instead of
-# carrying them; help() in the sandbox returns them, appended as a result.
-_ON_DEMAND_DOCS = (
-    "`await primitives.actor.act(request, ...)` starts a sub-actor on a "
-    "sub-task and returns a `SteerableToolHandle`. When a sub-actor helps, "
-    "what it can and cannot do, and every parameter are in "
-    "`help(primitives.actor.act)`, which prints them in `execute_code`."
-)
+    return [*registered_environments()]
 
 
 # ---------------------------------------------------------------------------
@@ -841,8 +809,6 @@ class ActorEnvironment(BaseEnvironment):
             return filtered_docs
 
         fq_prefix = f"{self.NAMESPACE}.{self.MANAGER_ALIAS}"
-        if delegation_mode() == "on_demand":
-            return f"### `{fq_prefix}` — Actor Delegation\n\n{_ON_DEMAND_DOCS}"
 
         registry = get_registry()
         full_doc = inspect.getdoc(_ActorRunner.act) or ""

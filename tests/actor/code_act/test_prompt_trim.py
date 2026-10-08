@@ -1,6 +1,6 @@
 """Symbolic: the prompt trim (baked in): prompt text describes only what the session has.
 
-A lean-all ARC session has no primitives environment (``UNIFY_DELEGATION=off``,
+A lean-all ARC session has no primitives environment (no delegation,
 no registered namespace), yet its 11.5k-character prompt and its code tools
 told it how to route corrections to ``primitives.*`` handles, that function
 search covers the primitives catalogue, that a sub-agent cannot take a reply
@@ -67,7 +67,6 @@ def trim(monkeypatch):
 
 
 def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     prompt, schemas = _render(_actor())
     for gone in (
         "primitives",
@@ -95,7 +94,6 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
 
 
 def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "on")
     off = _render(_with_primitives())
     on = _render(_with_primitives())
     assert on == off
@@ -131,7 +129,6 @@ def test_session_text_follows_the_session_tools(trim, monkeypatch):
 @pytest.mark.parametrize("cells", [False, True])
 def test_composes_with_stateful_cells(trim, monkeypatch, cells):
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", cells)
     prompt, schemas = _render(_actor())
     assert "primitives" not in prompt
@@ -147,7 +144,6 @@ def test_a_core_session_prompt_names_no_primitive(trim, monkeypatch):
     from unify.actor.core_surface import PromptSurface
 
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DELEGATION", "off")
     core = PromptSurface(steering=True)
     kwargs = dict(environments={}, can_store=True, persist=True, core=core)
     on = pb.build_code_act_prompt(**kwargs)

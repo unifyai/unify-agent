@@ -612,7 +612,7 @@ async def async_tool_loop_inner(
         Called just before each model call, after every tool result (and any
         footer) is appended. A non-empty string it returns is appended as one
         loop-authored user message. Never called while a model call or a tool
-        runs, nor after a turn has ended (``UNIFY_AGENTS=record``).
+        runs, nor after a turn has ended (the agent record).
 
     bind_request : ``bool`` or ``RequestSlot``, default ``False``
         ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
@@ -2246,7 +2246,7 @@ async def async_tool_loop_inner(
                     stop=_stop,
                 )
 
-            # UNIFY_AGENTS=record: what is new in the shared record for this
+            # The agent record: what is new in the shared record for this
             # agent, appended after this turn's tool results. Reached only when
             # a model call is about to be made, so never after a turn has ended
             # (a cell's reply() above ends it with no model call).

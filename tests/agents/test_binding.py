@@ -8,13 +8,7 @@ from unify.settings import SETTINGS
 
 @pytest.fixture
 def record_mode(monkeypatch, tmp_path):
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "record")
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
-
-
-def test_off_binds_nothing(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_AGENTS", "")
-    assert binding.bind_for_act(request="x", user_reads=False) is None
 
 
 def test_the_first_act_is_the_main_agent_and_has_seen_the_request(record_mode):
