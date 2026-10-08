@@ -476,6 +476,55 @@ async def test_a_huge_first_message_is_kept_and_the_tail_compacted(keep_prefix):
 
 
 @pytest.mark.asyncio
+async def test_a_kept_prefix_over_the_threshold_is_not_compacted_again(keep_prefix):
+    """When what a compaction kept is itself over the threshold, the first
+    call after it is too, and the next compaction rebuilds as shipped from
+    the summary alone: two compactions, not one per turn until the limit."""
+    from unify.common.async_tool_loop import start_async_tool_loop
+
+    huge = "data " * 50_000
+
+    def actor(call):
+        # The kept huge first message fills the context: the model looks once
+        # and then compresses (the forced turn keeps the session's tools, so
+        # it is an actor call); without it, it looks once and answers.
+        full = any(m.get("content") == huge for m in call.messages)
+        looked = any(m["role"] == "tool" for m in call.messages)
+        if full:
+            if looked:
+                return reply(calls=[("compress_context", {})], prompt_tokens=900_000)
+            return reply(calls=[("look", {})], prompt_tokens=900_000)
+        if call.messages[-1]["role"] == "tool":
+            return reply("done", prompt_tokens=1_000)
+        return reply(calls=[("look", {})], prompt_tokens=1_000)
+
+    model = ScriptedModel(
+        actor=Always(actor),
+        compress_turn=Always(actor),
+        compression_fork=Always(lambda call: reply(SUMMARY)),
+    )
+    client = h.new_client(SYSTEM)
+    with scripted(model):
+        handle = start_async_tool_loop(
+            client,
+            huge,
+            {"look": look},
+            log_steps=False,
+            timeout=WAIT,
+            max_steps=60,
+        )
+        assert await asyncio.wait_for(handle.result(), WAIT) == "done"
+    assert model.kinds().count("compression_fork") == 2
+    assert handle._runtime_state.keep_prefix_fallbacks == 1
+    # The first compaction kept the huge message; the second did not.
+    forks = [i for i, k in enumerate(model.kinds()) if k == "compression_fork"]
+    after_first = next(c for c in model.calls[forks[0] :] if c.kind == "actor")
+    after_second = next(c for c in model.calls[forks[1] :] if c.kind == "actor")
+    assert any(m.get("content") == huge for m in after_first.messages)
+    assert not any(m.get("content") == huge for m in after_second.messages)
+
+
+@pytest.mark.asyncio
 async def test_a_record_block_queued_during_the_compaction_follows_the_summary(
     keep_prefix,
 ):

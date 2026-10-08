@@ -172,7 +172,15 @@ class ProductionSettings(BaseSettings):
     # shipped (a fork of the last request). The tools and their order stay
     # the same, the fallback compactor's rebuild included: it then neither
     # rewrites the system prompt nor adds ``unpack_messages``, and its
-    # compressed entries are the summary. Empty (also ``off``): as shipped.
+    # compressed entries are the summary. "Byte for byte" covers the system
+    # prompt, the first message and the kept requester messages; the loop's
+    # own runtime-context system messages are rebuilt at the restart (the
+    # same bytes for the actor, not for a nested loop given a
+    # ``parent_chat_context``, which a restart drops). When the first call
+    # after such a compaction is still over the threshold, what was kept is
+    # too large on its own, and the next compaction rebuilds as shipped, so a
+    # request is never compacted around the same prefix twice in a row.
+    # Empty (also ``off``): as shipped.
     UNIFY_COMPACTION_KEEP_PREFIX: str = ""
     # ``on``: a request to the actor's task loop (the one that answers the
     # requester; never a sub-agent's, a review's or its fork's) whose tool

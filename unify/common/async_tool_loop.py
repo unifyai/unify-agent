@@ -386,6 +386,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # hold the session's first message as it was sent. A shipped
         # compaction always restarts from one string.
         keep_prefix = isinstance(restart_message, list)
+        # Its first measured call says whether what it kept fits.
+        self._runtime_state.keep_prefix_unmeasured = keep_prefix
         self._client._messages = restart_messages
         if not forked and not keep_prefix:
             self._client._system_message = None
@@ -466,11 +468,12 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
         n_archived = len(self._client.messages)
-        forked = await self._summarise_as_fork(cfg) if FORK_SUMMARY else None
+        keep = self._keep_prefix_this_pass()
+        forked = await self._summarise_as_fork(cfg, keep) if FORK_SUMMARY else None
         if forked is not None:
             restart_messages, restart_tools, restart_message = forked
             return n_archived, restart_messages, restart_tools, restart_message, True
-        if keep_prefix_enabled():
+        if keep:
             result = await compress_and_rebuild(
                 self._compression,
                 self._client.messages,
@@ -493,9 +496,30 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             False,
         )
 
+    def _keep_prefix_this_pass(self) -> bool:
+        """Whether this compaction keeps the sent prefix
+        (``UNIFY_COMPACTION_KEEP_PREFIX=on``): not when the first call after
+        the session's last keep-prefix compaction was still over the
+        threshold. That pass rebuilds as shipped, and the next one may keep
+        the prefix again."""
+        if not keep_prefix_enabled():
+            return False
+        state = self._runtime_state
+        if state.keep_prefix_shipped_next:
+            state.keep_prefix_shipped_next = False
+            state.keep_prefix_fallbacks += 1
+            LOGGER.info(
+                f"[{getattr(self, '_log_label', None) or self._loop_id}] "
+                "the kept prefix did not fit under the threshold; this "
+                "compaction rebuilds as shipped",
+            )
+            return False
+        return True
+
     async def _summarise_as_fork(
         self,
         cfg: dict,
+        keep_prefix: bool = False,
     ) -> Optional[tuple[list[dict], dict, str]]:
         """Compress by forking the conversation (``FORK_SUMMARY``).
 
@@ -510,7 +534,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         ``None`` -- and logs why -- when there is no recorded request or the
         fork yields no summary; the caller then compresses as shipped.
 
-        ``UNIFY_COMPACTION_KEEP_PREFIX=on``: *first_message* is a list
+        *keep_prefix* (``UNIFY_COMPACTION_KEEP_PREFIX=on``, unless
+        :meth:`_keep_prefix_this_pass` declined it): *first_message* is a list
         instead: the session's first user message and the requester
         messages of the current request (``kept_prefix``), unchanged, then
         the summary as one loop-authored message, so the restarted session
@@ -563,7 +588,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             return None
         self._compression.count += 1
         history = self._client.messages or []
-        if keep_prefix_enabled():
+        if keep_prefix:
             return self._keep_prefix_restart(cfg, history, summary)
         system = [
             m for m in history[:1] if isinstance(m, dict) and m.get("role") == "system"
