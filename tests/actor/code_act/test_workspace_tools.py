@@ -6,8 +6,14 @@ switch off the actor's tools and the schema the model sees are as shipped.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import re
 import shutil
+import time
+import uuid
+from pathlib import Path
 
 import pytest
 
@@ -68,10 +74,10 @@ def test_read_file_reads_numbered_ranges_and_refuses_hidden_paths(world):
 
 
 @needs_bwrap
-@pytest.mark.parametrize("engine", ["ripgrep", "python"])
+@pytest.mark.parametrize("engine", ["ripgrep", "python-sandboxed"])
 @pytest.mark.asyncio
 async def test_grep_never_searches_hidden_paths(world, monkeypatch, engine):
-    if engine == "python":
+    if engine == "python-sandboxed":
         real_which = shutil.which
         monkeypatch.setattr(
             file_tools.shutil,
@@ -105,6 +111,149 @@ async def test_grep_never_searches_hidden_paths(world, monkeypatch, engine):
     with pytest.raises(sandbox.SandboxRefusal) as refused:
         await file_tools.grep("x", str(home / ".ssh"), policy=policy)
     assert refused.value.rule == "mask-credentials"
+
+
+def _without_ripgrep(monkeypatch):
+    real_which = shutil.which
+    monkeypatch.setattr(
+        file_tools.shutil,
+        "which",
+        lambda name: None if name == "rg" else real_which(name),
+    )
+
+
+def _spy_on_regex_compiles(monkeypatch) -> list:
+    """Every pattern ``re`` compiles in this (the harness's) process."""
+    seen: list = []
+    real = re._compile
+
+    def spy(pattern, flags):
+        seen.append(pattern)
+        return real(pattern, flags)
+
+    monkeypatch.setattr(re, "_compile", spy)
+    return seen
+
+
+def _processes_naming(token: str) -> list[int]:
+    found = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                if token.encode() in fh.read():
+                    found.append(int(entry))
+        except OSError:
+            continue
+    return found
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_grep_without_ripgrep_matches_in_the_sandbox_not_the_harness(
+    world,
+    monkeypatch,
+):
+    """The fallback's model-chosen regex is compiled and run by a sandboxed
+    child; the harness only parses its hits and checks each path."""
+    _without_ripgrep(monkeypatch)
+    policy = sandbox.build_policy(fresh=True)
+    project = world["workspace"] / "project"
+    project.mkdir()
+    (project / "a.txt").write_text("x\nneedle-7f3e here\n")
+    (project / "b.txt").write_text("needle-7f3e again\n")
+    pattern = r"needle-7f3e\s\w+"
+    try:
+        re.compile("(unclosed")
+    except re.error as exc:
+        expected = f"Invalid regular expression '(unclosed': {exc}"
+    seen = _spy_on_regex_compiles(monkeypatch)
+    out = await file_tools.grep(pattern, str(project), policy=policy)
+    assert out["engine"] == "python-sandboxed"
+    assert out["hits"] == [
+        f"{project / 'a.txt'}:2:needle-7f3e here",
+        f"{project / 'b.txt'}:1:needle-7f3e again",
+    ]
+    assert out["truncated"] is False
+    assert pattern not in seen
+    assert not hasattr(file_tools, "_grep_python")
+    # An invalid pattern: the child's compile error, the same message as before.
+    with pytest.raises(ToolInputError) as bad:
+        await file_tools.grep("(unclosed", str(project), policy=policy)
+    assert str(bad.value) == expected
+    assert "(unclosed" not in seen
+    # A hit in a path the policy refuses is dropped, whatever the child saw.
+    real_violation = policy.readable_violation
+    monkeypatch.setattr(
+        policy,
+        "readable_violation",
+        lambda path: (
+            ("mask-test", "refused by the test")
+            if Path(path).name == "b.txt"
+            else real_violation(path)
+        ),
+    )
+    out = await file_tools.grep("needle-7f3e", str(project), policy=policy)
+    assert [h.split(":", 1)[0] for h in out["hits"]] == [str(project / "a.txt")]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_grep_fallback_times_out_on_catastrophic_backtracking(
+    world,
+    monkeypatch,
+):
+    """``(a+)+$`` on ``aaaa...b`` backtracks for ~2^60 steps: the child is
+    killed at the wall limit, the harness gets a clear error, and its event
+    loop keeps running throughout."""
+    _without_ripgrep(monkeypatch)
+    monkeypatch.setattr(file_tools, "GREP_TIMEOUT_S", 2.0)
+    policy = sandbox.build_policy(fresh=True)
+    token = f"redos-{uuid.uuid4().hex[:12]}"
+    target = world["workspace"] / token
+    target.mkdir()
+    (target / "long.txt").write_text("a" * 60 + "b\n")
+    seen = _spy_on_regex_compiles(monkeypatch)
+    ticks = 0
+
+    async def ticker():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    beat = asyncio.create_task(ticker())
+    started = time.monotonic()
+    try:
+        with pytest.raises(ToolInputError, match="timed out after 2s"):
+            await file_tools.grep(r"(a+)+$", str(target), policy=policy)
+    finally:
+        beat.cancel()
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0 + 8.0, elapsed
+    assert ticks >= 20, ticks  # ~40 expected over 2 s; never blocked
+    assert r"(a+)+$" not in seen
+    # Verified termination: no process still names the search.
+    deadline = time.monotonic() + 5.0
+    while _processes_naming(token) and time.monotonic() < deadline:
+        await asyncio.sleep(0.1)
+    assert _processes_naming(token) == []
+
+
+@pytest.mark.asyncio
+async def test_grep_without_bubblewrap_refuses_and_never_matches_in_process(
+    world,
+    monkeypatch,
+):
+    _without_ripgrep(monkeypatch)
+    monkeypatch.setattr(sandbox, "bwrap_path", lambda: None)
+    policy = sandbox.build_policy(fresh=True)
+    seen = _spy_on_regex_compiles(monkeypatch)
+    with pytest.raises(sandbox.SandboxRefusal) as refused:
+        await file_tools.grep("line 1[0-9]?", "data.txt", policy=policy)
+    assert refused.value.rule == "sandbox-required"
+    assert "line 1[0-9]?" not in seen
 
 
 # ── the actor's tools ────────────────────────────────────────────────────────

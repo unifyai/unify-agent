@@ -3,15 +3,18 @@
 Both read only what a sandboxed shell cell could read (unify/sandbox.py):
 ``read_file`` checks the resolved path against the sandbox policy before
 opening it, and ``grep`` runs ripgrep inside the sandbox itself, or, without
-ripgrep, walks the tree in Python applying the same check to every entry.
+ripgrep, a small fixed Python script inside the sandbox (the harness's own
+interpreter, isolated). The model's regular expression is never compiled or
+matched in the harness process, and without bubblewrap ``grep`` is refused.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -122,31 +125,20 @@ async def grep(
             received={"path": path},
         )
     max_hits = max(1, min(int(max_hits or 100), MAX_GREP_HITS))
+    # Both engines run only inside the sandbox: without bubblewrap, refuse.
+    sandbox.require_bwrap()
     rg = shutil.which("rg")
-    if (
-        rg is not None
-        and sandbox.bwrap_path() is not None
-        and policy.readable_violation(Path(rg)) is None
-    ):
+    if rg is not None and policy.readable_violation(Path(rg)) is None:
         hits, truncated = await _grep_ripgrep(rg, pattern, target, max_hits, policy)
         engine = "ripgrep"
     else:
-        try:
-            compiled = re.compile(pattern)
-        except re.error as exc:
-            raise ToolInputError(
-                f"Invalid regular expression {pattern!r}: {exc}",
-                suggestion="Escape special characters, or pass a simpler pattern.",
-                received={"pattern": pattern},
-            ) from exc
-        hits, truncated = await asyncio.to_thread(
-            _grep_python,
-            compiled,
+        hits, truncated = await _grep_sandboxed_python(
+            pattern,
             target,
             max_hits,
             policy,
         )
-        engine = "python"
+        engine = "python-sandboxed"
     return {
         "pattern": pattern,
         "path": str(target),
@@ -229,42 +221,149 @@ async def _grep_ripgrep(
     return hits, truncated
 
 
-def _grep_python(
-    compiled: re.Pattern,
+# The fallback's child: fixed code, run as ``python -I -S -c`` inside the
+# sandbox. Its one argument is JSON data (pattern, target, limits); it writes
+# one JSON object per line: ``{"hit": [file, line, text]}``, then
+# ``{"done": true}``, or ``{"error": "invalid-regex", "detail": ...}``.
+_GREP_CHILD = r"""
+import json, os, re, sys
+cfg = json.loads(sys.argv[1])
+def emit(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+try:
+    compiled = re.compile(cfg["pattern"])
+except re.error as exc:
+    emit({"error": "invalid-regex", "detail": str(exc)})
+    sys.exit(3)
+target, skip = cfg["target"], set(cfg["skip_dirs"])
+def files():
+    if os.path.isfile(target):
+        yield target
+        return
+    for root, dirs, names in os.walk(target):
+        dirs[:] = sorted(d for d in dirs if d not in skip and not d.startswith("."))
+        for name in sorted(names):
+            yield os.path.join(root, name)
+for path in files():
+    try:
+        if not os.path.isfile(path) or os.stat(path).st_size > cfg["max_file_bytes"]:
+            continue
+        with open(path, "rb") as fh:
+            if b"\0" in fh.read(8192):
+                continue
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for number, line in enumerate(fh, start=1):
+                if compiled.search(line):
+                    text = line.rstrip("\n")[: cfg["max_line_chars"]]
+                    emit({"hit": [path, number, text]})
+    except OSError:
+        continue
+emit({"done": True})
+"""
+
+
+async def _grep_sandboxed_python(
+    pattern: str,
     target: Path,
     max_hits: int,
     policy: sandbox.SandboxPolicy,
 ) -> tuple[list[str], bool]:
+    """Search without ripgrep: :data:`_GREP_CHILD` under bubblewrap.
+
+    The harness only parses the child's JSON lines and drops any hit in a
+    path the policy refuses (a cell could not read it either); every
+    directory walk, file read, compile and match happens in the child, which
+    is killed (its process group) at the wall limit.
+    """
+    config = json.dumps(
+        {
+            "pattern": pattern,
+            "target": str(target),
+            "skip_dirs": sorted(_SKIP_DIRS),
+            "max_file_bytes": MAX_GREP_FILE_BYTES,
+            "max_line_chars": _MAX_LINE_CHARS,
+        },
+    )
+    argv = [sys.executable, "-I", "-S", "-c", _GREP_CHILD, config]
+    with sandbox.unconfined():  # already wrapped; never wrap twice
+        proc = await asyncio.create_subprocess_exec(
+            *sandbox.wrap_argv(argv, policy, cwd=str(policy.workspace)),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=sandbox.sandbox_env(policy),
+            start_new_session=True,
+            limit=1 << 20,
+        )
     hits: list[str] = []
+    truncated = False
+    done = False
+    error: Optional[str] = None
+    refused: dict[str, bool] = {}
 
-    def files():
-        if target.is_file():
-            yield target
-            return
-        for root, dirs, names in os.walk(target):
-            dirs[:] = sorted(
-                d
-                for d in dirs
-                if d not in _SKIP_DIRS
-                and not d.startswith(".")
-                and policy.readable_violation(Path(root) / d) is None
-            )
-            for name in sorted(names):
-                yield Path(root) / name
-
-    for file in files():
-        if policy.readable_violation(file) is not None or not file.is_file():
-            continue
-        try:
-            if file.stat().st_size > MAX_GREP_FILE_BYTES or _is_binary(file):
+    async def collect() -> None:
+        nonlocal truncated, done, error
+        assert proc.stdout is not None
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            try:
+                record = json.loads(line)
+            except ValueError:
                 continue
-            with open(file, encoding="utf-8", errors="replace") as fh:
-                for number, line in enumerate(fh, start=1):
-                    if compiled.search(line):
-                        if len(hits) >= max_hits:
-                            return hits, True
-                        text = line.rstrip("\n")[:_MAX_LINE_CHARS]
-                        hits.append(f"{file}:{number}:{text}")
-        except OSError:
-            continue
-    return hits, False
+            if "error" in record:
+                error = str(record.get("detail", ""))
+                return
+            if record.get("done"):
+                done = True
+                return
+            file, number, text = record["hit"]
+            if file not in refused:
+                refused[file] = policy.readable_violation(Path(file)) is not None
+            if refused[file]:
+                continue
+            if len(hits) >= max_hits:
+                truncated = True
+                return
+            hits.append(f"{file}:{number}:{text}")
+
+    timed_out = False
+    try:
+        await asyncio.wait_for(collect(), timeout=GREP_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        timed_out = True
+    finally:
+        if proc.returncode is None:
+            try:
+                os.killpg(proc.pid, 9)
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+    if error is not None:
+        raise ToolInputError(
+            f"Invalid regular expression {pattern!r}: {error}",
+            suggestion="Escape special characters, or pass a simpler pattern.",
+            received={"pattern": pattern},
+        )
+    if timed_out:
+        if hits:
+            return hits, True
+        raise ToolInputError(
+            f"grep timed out after {GREP_TIMEOUT_S:g}s with no matching line; "
+            "the search was stopped",
+            suggestion=(
+                "Use a simpler pattern (nested quantifiers such as (a+)+ can "
+                "take exponential time), or search a smaller path."
+            ),
+            received={"pattern": pattern, "path": str(target)},
+        )
+    if not done and not truncated:
+        assert proc.stderr is not None
+        err = (await proc.stderr.read()).decode("utf-8", errors="replace")
+        raise ToolInputError(
+            f"grep failed: {err.strip()[:2000] or f'exit status {proc.returncode}'}",
+            received={"pattern": pattern, "path": str(target)},
+        )
+    return hits, truncated
