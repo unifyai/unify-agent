@@ -73,3 +73,10 @@ At the code freeze of 7 October 2026 every other research switch was either made
 - **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
 
 The three long-horizon switches share the step-limit reply path.
+
+## UNIFY_CLOCK_PLACEMENT
+
+- **Values:** empty (the same as `system`) or `first_message`.
+- **Default:** empty.
+- **What it does:** As shipped, the system prompt carries a "Current Time" section that tells the model to resolve "today" against it and to prefer it over any clock read in code. With `first_message`, the system prompt has no clock section, and the session's first user message opens with one line: "The host clock reads <time>. Dates stated in the request or in the files and records you work with take precedence." The time is sampled once, when the session starts. Later requests in a persistent session do not repeat the line. The system prompt, and the cache affinity key derived from it, are then the same for every session of one configuration, whenever it starts.
+- **Evidence:** office-v2 defect note P2c (the clock read as an authority over dates in the work, and a per-minute timestamp that breaks the cross-session prompt cache); unscreened. To be compared with the shipped placement under the per-instance fake clock, reporting the cache-hit rate and clock-attributable losses from traces.

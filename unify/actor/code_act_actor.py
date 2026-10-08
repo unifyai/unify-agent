@@ -61,7 +61,10 @@ from unify.common.tool_spec import ToolSpec, llm_soft_required
 from unify.function_manager import escape_drift as _escape_drift
 from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
-from unify.actor.prompt_builders import build_code_act_prompt
+from unify.actor.prompt_builders import (
+    build_code_act_prompt,
+    first_message_clock_line,
+)
 from unify.events.manager_event_logging import log_manager_call
 from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from unify.common.hierarchical_logger import log_boundary_event
@@ -4168,9 +4171,13 @@ class CodeActActor(BaseCodeActActor):
             # named the session fields and tools.
             system_prompt = notebook_cells.rewrite_prompt(system_prompt)
         # What opens the session's first user message (first_message_context),
-        # in this order: the library's size (UNIFY_LIBRARY_SNAPSHOT), then a
-        # rule and the request.
+        # in this order: the host clock (UNIFY_CLOCK_PLACEMENT=first_message),
+        # the library's size (UNIFY_LIBRARY_SNAPSHOT), then a rule and the
+        # request.
         first_message_parts: list[str] = []
+        if core_session is not None or "execute_code" in base_tools:
+            # Where the system prompt would have carried it.
+            first_message_parts.append(first_message_clock_line())
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
             f"({len(system_prompt)} chars, {len(base_tools)} tools)",

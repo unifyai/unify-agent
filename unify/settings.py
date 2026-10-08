@@ -182,6 +182,22 @@ class ProductionSettings(BaseSettings):
     # request is never compacted around the same prefix twice in a row.
     # Empty (also ``off``): as shipped.
     UNIFY_COMPACTION_KEEP_PREFIX: str = ""
+    # Where the actor's session states the host clock. Empty (also
+    # ``system``): as shipped, a "Current Time" section near the end of the
+    # system prompt, which tells the model to resolve "today" against it and
+    # to prefer it over a clock read in ``execute_code``. ``first_message``:
+    # the system prompt has no clock section, and the session's first user
+    # message opens with one line, "The host clock reads <time>. Dates stated
+    # in the request or in the files and records you work with take
+    # precedence.", the time sampled once when the session starts (the
+    # moment the system prompt would have sampled it), before the library's
+    # size and the rest of the first message's context. The line is in the
+    # first user message only: a persistent session's later requests do not
+    # repeat it, and a session restarted after context compression opens its
+    # new first message with the same line. The system prompt, and so the
+    # cache affinity key derived from it, is then the same for every session
+    # of one configuration whenever it starts.
+    UNIFY_CLOCK_PLACEMENT: str = ""
     # ``on``: a request to the actor's task loop (the one that answers the
     # requester; never a sub-agent's, a review's or its fork's) whose tool
     # calls stop making progress ends early. A
@@ -578,6 +594,18 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_CODE_PROJECTION must be empty, 'legacy' or 'notebook', "
                 f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CLOCK_PLACEMENT", mode="before")
+    @classmethod
+    def parse_clock_placement(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "system" else value
+        if value not in ("", "first_message"):
+            raise ValueError(
+                "UNIFY_CLOCK_PLACEMENT must be empty, 'system' or "
+                f"'first_message', not {v!r}",
             )
         return value
 
