@@ -380,8 +380,6 @@ async def test_storage_check_receives_proactive_summaries():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -457,8 +455,6 @@ async def test_storage_check_no_proactive_summaries_passes_none():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -592,8 +588,6 @@ async def test_proactive_storage_publishes_manager_method_events():
     mock_handle._client = MagicMock()
     mock_handle._client.messages = [{"role": "user", "content": "test"}]
     mock_handle._task = MagicMock()
-    mock_handle._task.get_ask_tools = MagicMock(return_value={})
-    mock_handle._task.get_completed_tool_metadata = MagicMock(return_value={})
     ctx.handle = mock_handle
 
     token = _CURRENT_AGENT_CONTEXT.set(ctx)

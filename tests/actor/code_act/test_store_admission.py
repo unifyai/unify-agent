@@ -55,8 +55,6 @@ def _inner_handle(result_future: "asyncio.Future[str]") -> MagicMock:
     mock_client.messages = [{"role": "user", "content": "do something"}]
     inner._client = mock_client
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
     return inner
 

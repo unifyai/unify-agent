@@ -731,30 +731,51 @@ async def test_consecutive_failures_survive_compression_restart(
 
 @pytest.mark.asyncio
 @_handle_project
-async def test_compression_failure_returns_gracefully(llm_config, monkeypatch):
-    """When compress_and_rebuild raises, result() returns gracefully."""
-    trigger, reset, check = _make_threshold_trigger()
-    monkeypatch.setattr(_loop_mod, "context_over_threshold", check)
+async def test_compression_failure_returns_gracefully(monkeypatch):
+    """When compression fails, result() returns gracefully.
+
+    Under UNIFY_CACHE_DISCIPLINE (the baked default) compression first
+    forks the conversation for a summary and uses ``compress_and_rebuild``
+    only when the fork yields none, so both are made to fail. The model is
+    scripted: the first turn fills the context, the next must compress.
+    """
+    from tests import cache_discipline_helpers as h
+
+    async def _no_fork(self, cfg):
+        return None
 
     async def _boom(*args, **kwargs):
         raise RuntimeError("boom")
 
+    monkeypatch.setattr(_atl_mod.AsyncToolLoopHandle, "_summarise_as_fork", _no_fork)
     monkeypatch.setattr(_atl_mod, "compress_and_rebuild", _boom)
 
-    add = _make_add(trigger)
-    client = new_llm_client(**llm_config)
-    client.set_system_message(_SYS)
+    async def add(a: int, b: int) -> int:
+        """Add two numbers.
 
-    handle = start_async_tool_loop(
-        client=client,
-        message="Add the numbers",
-        tools={"add": add},
-        timeout=120,
-        max_parallel_tool_calls=1,
-    )
+        Args:
+            a: The first.
+            b: The second.
+        """
+        return a + b
 
-    result = await handle.result()
-    assert isinstance(result, str)
+    replies = [
+        lambda: h.completion(
+            calls=[("add", {"a": 1, "b": 2})],
+            prompt_tokens=900_000,
+        ),
+        lambda: h.completion(calls=[("compress_context", {})]),
+    ]
+    with h.scripted(replies):
+        handle = start_async_tool_loop(
+            h.new_client(),
+            "Add the numbers",
+            {"add": add},
+            log_steps=False,
+            timeout=30,
+        )
+        result = await asyncio.wait_for(handle.result(), 30)
+    assert result == "processed stopped early, no result"
     assert handle._compression.count == 0
 
 

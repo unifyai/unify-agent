@@ -289,8 +289,6 @@ def _inner_handle(result_future: "asyncio.Future[str]") -> MagicMock:
     inner.next_notification = AsyncMock(side_effect=lambda: asyncio.Event().wait())
     inner._client = MagicMock(messages=[{"role": "user", "content": "do something"}])
     inner._task = MagicMock()
-    inner._task.get_ask_tools = MagicMock(return_value={})
-    inner._task.get_completed_tool_metadata = MagicMock(return_value={})
     return inner
 
 

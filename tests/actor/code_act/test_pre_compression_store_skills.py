@@ -8,9 +8,11 @@ preserving, then ``compress_context``.  The LLM may skip ``store_skills``
 if it judges there is nothing new to store.
 
 This test monkeypatches ``context_over_threshold`` to simulate reaching the
-70% threshold after the LLM has executed non-trivial code, and verifies
-that the infrastructure works and that ordering is correct when both tools
-are called.
+70% threshold after the model has run two cells, and verifies that the
+turn that must compress offers exactly those tools with the call required,
+and that both calls run, ``store_skills`` first. The model is scripted
+(``tests/cache_discipline_helpers``): which turn reaches the threshold no
+longer depends on a live model's choices, and nothing leaves the process.
 """
 
 import asyncio
@@ -18,11 +20,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests import cache_discipline_helpers as h
 from unify.actor.code_act_actor import CodeActActor
 from unify.common.async_tool_loop import AsyncToolLoopHandle
 from unify.function_manager.function_manager import FunctionManager
-
-pytestmark = pytest.mark.llm_call
 
 
 class _StubGuidanceManager:
@@ -78,11 +79,8 @@ def _make_delayed_threshold(trigger_after: int = 2):
 @pytest.mark.timeout(180)
 async def test_compress_threshold_exposes_extra_tools_and_compress_is_called():
     """When the 70% threshold fires with ``extra_compression_tools``, the
-    loop exposes ``store_skills`` + ``compress_context``, and the LLM
-    eventually calls ``compress_context``.
-
-    If the LLM also calls ``store_skills``, it must precede
-    ``compress_context``."""
+    loop exposes ``store_skills`` + ``compress_context`` (required) on that
+    turn only, and a turn calling both runs ``store_skills`` first."""
 
     fm = FunctionManager(include_primitives=False)
     gm = _StubGuidanceManager()
@@ -107,7 +105,26 @@ async def test_compress_threshold_exposes_extra_tools_and_compress_is_called():
 
         self._task = asyncio.create_task(_done())
 
+    def _cell(code: str):
+        return lambda: h.completion(
+            calls=[("execute_code", {"thought": "Running it.", "code": code})],
+        )
+
+    replies = [
+        _cell(
+            "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a",
+        ),
+        _cell("print(fib(10))"),
+        lambda: h.completion(
+            calls=[
+                ("store_skills", {"request": "Store the iterative fib function."}),
+                ("compress_context", {}),
+            ],
+        ),
+    ]
+
     with (
+        h.scripted(replies) as provider,
         patch(
             "unify.common._async_tool.loop.context_over_threshold",
             _make_delayed_threshold(trigger_after=1),
@@ -140,6 +157,18 @@ async def test_compress_threshold_exposes_extra_tools_and_compress_is_called():
             )
             result = await asyncio.wait_for(handle.result(), timeout=120)
 
+            # Only the turn that must compress offers the compression tools.
+            names = [
+                sorted(t["function"]["name"] for t in r["tools"] or [])
+                for r in h.session_requests(provider.requests)
+            ]
+            assert names == [
+                ["execute_code"],
+                ["execute_code"],
+                ["compress_context", "store_skills"],
+            ]
+            assert provider.requests[2]["tool_choice"] == "required"
+
             history = handle.get_history()
             tool_names: list[str] = []
             for msg in history:
@@ -147,18 +176,15 @@ async def test_compress_threshold_exposes_extra_tools_and_compress_is_called():
                     for tc in msg["tool_calls"]:
                         tool_names.append(tc["function"]["name"])
 
-            assert (
-                "compress_context" in tool_names
-            ), f"Expected compress_context to be called, got: {tool_names}"
-
-            if "store_skills" in tool_names:
-                ss_idx = tool_names.index("store_skills")
-                cc_idx = tool_names.index("compress_context")
-                assert ss_idx < cc_idx, (
-                    f"store_skills (index {ss_idx}) must precede "
-                    f"compress_context (index {cc_idx}) when both are "
-                    f"called. Full order: {tool_names}"
-                )
+            assert tool_names == [
+                "execute_code",
+                "execute_code",
+                "store_skills",
+                "compress_context",
+            ]
+            answered = {m.get("name") for m in history if m.get("role") == "tool"}
+            assert {"store_skills", "compress_context"} <= answered
+            assert result == "Context compressed. Continuing from where you left off."
         finally:
             try:
                 await actor.close()

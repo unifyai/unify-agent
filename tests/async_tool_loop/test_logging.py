@@ -216,8 +216,7 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
-async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
+async def test_inline_log_file_paths(unify_logs, tmp_path):
     """
     Verify that when UNILLM_LOG_DIR is set, the async tool loop emits a
     combined "LLM thinking… → /path" line that merges the thinking indicator
@@ -230,7 +229,12 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
        a "→ …/path.txt" reference — all in one line
     4. Asserts the referenced file actually exists on disk
     5. Asserts no separate 📝 filepath lines exist (they are combined now)
+
+    The model is scripted (``tests/cache_discipline_helpers``), so the call
+    runs with the LLM cache off: its pending file is ``{base}.pending.txt``
+    (``{base}.cache_pending.txt`` with the cache on).
     """
+    from tests import cache_discipline_helpers as h
     import unillm.logger as unillm_logger
 
     log_dir = tmp_path / "unillm_logs"
@@ -243,19 +247,20 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
         def noop_tool() -> str:
             return "ok"
 
-        client = new_llm_client(**llm_config)
-        client.set_system_message("Call noop_tool, then reply 'done'.")
-
-        handle = start_async_tool_loop(
-            client=client,
-            message="start",
-            tools={"noop_tool": noop_tool},
-            loop_id="LogFileTest",
-            max_steps=5,
-            timeout=60,
-        )
-
-        await handle.result()
+        replies = [
+            lambda: h.completion(calls=[("noop_tool", {})]),
+            lambda: h.completion(content="done"),
+        ]
+        with h.scripted(replies):
+            handle = start_async_tool_loop(
+                client=h.new_client("Call noop_tool, then reply 'done'."),
+                message="start",
+                tools={"noop_tool": noop_tool},
+                loop_id="LogFileTest",
+                max_steps=5,
+                timeout=60,
+            )
+            await handle.result()
 
         logged_lines = unify_logs.text.splitlines()
 
@@ -282,9 +287,10 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
                 str(log_dir) in path_str
             ), f"Log file {path_str} is not under expected dir {log_dir}"
 
-            # The pending path (.cache_pending.txt) gets renamed after the LLM
-            # call completes. Verify a finalized file with the same base exists.
-            base = os.path.basename(path_str).split(".cache_pending.")[0]
+            # The pending path ({base}.pending.txt, or .cache_pending.txt with
+            # the cache on) is renamed after the call completes. Verify a
+            # finalized file with the same base exists.
+            base = re.split(r"\.(?:cache_)?pending\.", os.path.basename(path_str))[0]
             finalized = [
                 f
                 for f in os.listdir(log_dir)
