@@ -12,7 +12,10 @@ may touch and keep every old test passing against the new library. Documented li
 
 * **Test adequacy** is not judged: a weak test that is red on the parent and green on the candidate passes
   (unless a stage-5 switch of :mod:`.qa` is on: drawn inputs, mutants, determinism, replay, fixture size).
-* **Effect: lines** are checked for presence, not truthfulness.
+* **Effect: lines** are checked for presence, and for ``write`` only where the recording shows it: a
+  function taking the environment that covers a tool call recorded with effect ``write`` must declare
+  ``Effect: write``. A call the environment did not declare an effect for (``unknown``) proves nothing,
+  and a ``read`` or ``unknown`` declaration on a function covering no recorded write is not checked.
 * **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
   successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
   that the item agrees with it: the item's own tests over recorded fixtures check that (spec F3).
@@ -106,7 +109,19 @@ The checks:
   directory named like a standard-library or pytest module; and no other root entry than ``env/``,
   ``workflows/`` and the test kit (G1) (:func:`.manifest.unsafe_path`, all refused before anything is
   extracted or run); no key-shaped string in a changed file or the manifest; every public function of a
-  changed module declares ``Effect:`` and is defined once; every module parses.
+  changed module declares ``Effect:`` and is defined once; every module parses. **Structural Effect:** an
+  environment function in ``items`` that covers a tool call whose recorded effect is ``write``
+  (:attr:`.episodes.Action.effect`, the effect the environment declared for the method; never inferred from
+  names) declares ``Effect: write``, unless its declared input is a recorded value (``path``, ``text``,
+  ``bytes``, ``observation``: it parses what a call returned and makes no call).
+
+Per-item admission (:meth:`Gate.merge`): a failure that belongs to manifest items refuses those items
+(and what depends on them, :mod:`.reduction`) instead of the pass, when no failure is pass-wide; the
+reduced candidate passes the whole gate again before it lands. The item-scoped checks are G1's per-item
+checks (and the docstring standard's), G2 (covers, held-out values, the rule check, workflow status),
+G3's per-item checks (an item's own tests, its examples, a clean-up edit no old test holds, and new
+failures only in its own test files), the stage-5 checks of one function or of tests only items list
+(drawn inputs, mutants, replay, truncation, determinism), and G6's ``Effect:`` checks.
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
@@ -157,6 +172,7 @@ from .held_out import (
     run_plan,
     seen_actions,
 )
+from . import reduction
 from .manifest import (
     MODULE_PATH,
     NOTES_PATH,
@@ -217,6 +233,19 @@ PREVIEW_MAX_EPISODES = 32
 
 
 @dataclass
+class _Reduced:
+    """A refused candidate reduced to its admissible items (:meth:`Gate._reduce`), committed on the parent."""
+
+    sha: str
+    manifest: dict
+    refused: dict[
+        str,
+        list[str],
+    ]  # item -> value-free codes (checks, or ``dependency``)
+    reasons: list[str]  # why each dependent item goes with a refused one
+
+
+@dataclass
 class ParentSnapshot:
     """A parent revision taken once for repeated previews: its sha, its files and their extracted tree."""
 
@@ -234,6 +263,13 @@ class GateResult:
     refused: list[str] = field(default_factory=list)
     # The manifest could not be parsed (refused under G1).
     manifest_invalid: bool = False
+    # The commit ``main`` moved to: the candidate, or its reduction to the admitted items (None: nothing landed).
+    merged: str | None = None
+    # Per-item admission: the manifest items that landed, and each refused item's value-free reason codes
+    # (the checks that refused it, ``dependency`` for an item refused with one it depends on, ``pass`` for
+    # an item refused only because the whole pass was).
+    items_merged: list[str] = field(default_factory=list)
+    items_refused: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -300,6 +336,38 @@ def _library_size(
         1 for p in mods for line in (tree / p).read_bytes().splitlines() if line.strip()
     )
     return len(mods), lines, sum(1 for b in bodies.values() if b[0] == "env_function")
+
+
+def _owners(man: Manifest, test: str) -> list[str]:
+    """The manifest items that list test file *test* ([]: none, so a failure in it is pass-wide)."""
+    return [it.item for it in man.items if test in it.tests]
+
+
+# The input forms that hand a function a recorded value, not the environment: such a function parses what a
+# call returned and makes no call itself, so the effect of the calls it covers is not its own.
+_VALUE_FORMS = frozenset({"path", "text", "bytes", "observation"})
+
+
+def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> bool:
+    """Whether a function makes a recorded write call: structural, from the recording, never from names.
+
+    A tool call's effect is what the recording holds (:attr:`.episodes.Action.effect`, the effect the
+    environment declared for the method; ``unknown`` when undeclared, which proves nothing). No other
+    kind counts: a file, shell or dialogue cover is an observation the function reads. A function whose
+    declared input is a recorded value (:data:`_VALUE_FORMS`) parses a response and makes no call.
+    """
+    if form in _VALUE_FORMS:
+        return False
+    return any(
+        getattr(a, "kind", "tool") == "tool" and getattr(a, "effect", "") == "write"
+        for _, _, a in covers
+    )
+
+
+def _test_file(test_id: str, tests_dir: str) -> str:
+    """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*)."""
+    path = test_id.split("::", 1)[0]
+    return path if path.startswith("env/") else f"{tests_dir}/{path}"
 
 
 def _unfit_forms(
@@ -435,14 +503,36 @@ class _Run:
     # tests do not use the test kit), and G3's first candidate run of each new or changed test file
     qa_env: QAEnv | None = None
     qa_first: dict[str, PytestOutcome] = field(default_factory=dict)
+    # environment functions that cover a recorded write call (structural Effect; G6)
+    writes: set[str] = field(default_factory=set)
+    # per-item admission: item -> the checks that refused it, and whether any failure is pass-wide
+    item_fail: dict[str, list[str]] = field(default_factory=dict)
+    pass_wide: bool = False
 
-    def fail(self, check: str, reason: str) -> None:
+    def fail(
+        self,
+        check: str,
+        reason: str,
+        item: str | list[str] | None = None,
+    ) -> None:
+        """Record a failure of *check*; *item* names the manifest item(s) it belongs to (None: pass-wide).
+
+        Only a failure attributed to items can be resolved by refusing those items alone (per-item
+        admission, :meth:`Gate.merge`); an unattributed failure refuses the whole pass.
+        """
         # reasons are stored in the evidence store; test output in them is model-controlled
         self.res.checks[check] = False
         self.res.passed = False
         if check not in self.res.refused:
             self.res.refused.append(check)
         self.res.reasons.append(KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}"))
+        owners = [item] if isinstance(item, str) else list(item or [])
+        if not owners:
+            self.pass_wide = True
+        for owner in owners:
+            codes = self.item_fail.setdefault(owner, [])
+            if check not in codes:
+                codes.append(check)
 
     def note(self, reason: str) -> None:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
@@ -502,7 +592,11 @@ class Gate:
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(self, parent: str, candidate: str, manifest: dict) -> GateResult:
-        res, _, notes, _ = self._check(parent, candidate, manifest)
+        """The whole gate on *candidate*, without merging; no per-item reduction is tried.
+
+        ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them.
+        """
+        res, _, notes, _, _ = self._check(parent, candidate, manifest)
         res.reasons.extend(notes)
         return res
 
@@ -623,7 +717,19 @@ class Gate:
         channel: str | None,
         usd: str,
     ) -> GateResult:
-        """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate."""
+        """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
+
+        Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
+        items (an item's G1 checks, its G2 evidence and held-out runs, its own tests' red→green and new
+        failures in its own test files under G3, its G6 ``Effect:`` checks), those items are refused with
+        everything that depends on them (:mod:`.reduction`). The candidate reduced to the other items is
+        committed as a child of *parent* and the whole gate runs on it once more; it lands if it passes,
+        and otherwise the pass is refused whole. A pass-wide failure (layout, unsafe or forbidden files,
+        a malformed manifest, undeclared changes, the suites' lost tests and regression runs, G4, G5,
+        key-shaped strings, unparsable modules) refuses the whole pass at once. One round; no search over
+        subsets. :attr:`GateResult.items_merged` and :attr:`GateResult.items_refused` (value-free codes)
+        are recorded in the pass row.
+        """
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record
             return _failed(f"pass {pass_id} is already recorded")
@@ -644,8 +750,35 @@ class Gate:
                 patch_ok=False,
             )
             return res
+        landed, landed_manifest = c_sha, manifest
         try:
-            res, covers, notes, shapes = self._check(p_sha, c_sha, manifest)
+            res, covers, notes, shapes, reduced = self._check(
+                p_sha,
+                c_sha,
+                manifest,
+                reduce_as=pass_id,
+            )
+            if reduced is not None:
+                again, covers2, notes2, shapes2, _ = self._check(
+                    p_sha,
+                    reduced.sha,
+                    reduced.manifest,
+                )
+                if again.passed:
+                    again.reasons = [
+                        f"item refused: {r}" for r in res.reasons + reduced.reasons
+                    ]
+                    again.refused = []
+                    res, covers, notes, shapes = again, covers2, notes2, shapes2
+                    landed, landed_manifest = reduced.sha, reduced.manifest
+                else:
+                    res.reasons.append(
+                        "per-item admission: the candidate without the refused items "
+                        f"({reduced.sha[:12]}) was refused too",
+                    )
+                    res.reasons += [f"reduced: {r}" for r in again.reasons]
+                    res.refused += [c for c in again.refused if c not in res.refused]
+                res.items_refused = reduced.refused
         except BaseException as exc:
             self._record(
                 p_sha,
@@ -659,19 +792,28 @@ class Gate:
             raise
         if res.passed:
             try:
-                self.mem.fast_forward("main", c_sha, expected_old=p_sha)
+                self.mem.fast_forward("main", landed, expected_old=p_sha)
             except GitError as exc:
                 res.passed = False
                 res.reasons.append(f"merge: {exc}")
         res.reasons.extend(notes)  # after every failure reason, including the merge's
         if res.passed:
-            for it in parse_manifest(manifest).items:
+            res.merged = landed
+            res.items_merged = [it.item for it in parse_manifest(landed_manifest).items]
+            for it in parse_manifest(landed_manifest).items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
             if self.surfacing == "catalogue":
-                self.ev.write_commit_shapes(c_sha, shapes)
+                self.ev.write_commit_shapes(landed, shapes)
+        else:
+            try:
+                ids = [it.item for it in parse_manifest(manifest).items]
+            except ManifestError:
+                ids = []
+            res.items_merged = []
+            res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
         return res
 
@@ -732,9 +874,11 @@ class Gate:
         patch_ok: bool = True,
     ) -> None:
         patch = None
-        if not res.passed and patch_ok:
+        # a refused pass keeps its whole patch; a reduced one keeps what it refused
+        base = parent if not res.passed else res.merged
+        if patch_ok and base is not None and base != candidate:
             try:
-                patch = self.blobs.put(self.mem.diff(parent, candidate).encode())
+                patch = self.blobs.put(self.mem.diff(base, candidate).encode())
             except GitError:
                 patch = None
         self.ev.record_pass(
@@ -748,6 +892,9 @@ class Gate:
                 "reasons": json.dumps(res.reasons),
                 "usd": usd,
                 "patch_blob": patch,
+                "merged": res.merged,
+                "items_merged": json.dumps(res.items_merged),
+                "items_refused": json.dumps(res.items_refused, sort_keys=True),
             },
         )
 
@@ -757,17 +904,22 @@ class Gate:
         parent: str,
         candidate: str,
         manifest: dict,
+        reduce_as: str | None = None,
     ) -> tuple[
         GateResult,
         set[tuple[str, str, int]],
         list[str],
         dict[str, dict],
+        _Reduced | None,
     ]:
-        """The result (failure reasons only), the validated covers if it passed, the ``note:`` lines, and
-        the candidate's shape snapshot to freeze if it passed (:mod:`.shape_rows`)."""
+        """The result (failure reasons only), the validated covers if it passed, the ``note:`` lines, the
+        candidate's shape snapshot to freeze if it passed (:mod:`.shape_rows`), and with *reduce_as* (the
+        pass id) the committed reduction of a candidate refused item by item.
+        """
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memv2-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
+        reduced = None
         try:
             if self._prepare(run):
                 self._g1(run)
@@ -783,7 +935,11 @@ class Gate:
                 self._g5(run)
                 self._g6(run)
                 if self.qa.on:
-                    qa.dynamic()  # last: only a candidate the rest of the gate accepts
+                    # last: only a candidate the rest of the gate accepts, or, under per-item admission,
+                    # one refused item by item only, so that a stage-5 refusal joins the reduction
+                    qa.dynamic(item_scoped=reduce_as is not None)
+                if reduce_as is not None and not res.passed:
+                    reduced = self._reduce(run, reduce_as)
             snapshot = (
                 self._snapshot(run)
                 if res.passed and self.surfacing == "catalogue"
@@ -791,8 +947,86 @@ class Gate:
             )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+        res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
         passed = res.passed
-        return res, (run.covers if passed else set()), run.notes, snapshot
+        return res, (run.covers if passed else set()), run.notes, snapshot, reduced
+
+    def _reduce(self, run: _Run, pass_id: str) -> _Reduced | None:
+        """The candidate without the items its failures belong to, committed on the parent; None if none.
+
+        Only when no failure is pass-wide and each names a manifest item (:meth:`_Run.fail`).
+        """
+        ids = {it.item for it in run.man.items}
+        if run.pass_wide or not run.item_fail or not set(run.item_fail) <= ids:
+            return None
+        dest = run.tmp / "reduced"
+        try:
+            refused, reasons = reduction.with_dependents(
+                run.man,
+                run.item_fail,
+                run.c_tree,
+            )
+            manifest = reduction.build(
+                run.man,
+                run.manifest_raw,
+                refused,
+                set(run.p_files),
+                {i for i, b in run.p_bodies.items() if b[0] == "env_function"},
+                run.p_tree,
+                run.c_tree,
+                dest,
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - no reduction: the pass stays refused whole
+            run.note(
+                f"per-item admission: the candidate could not be reduced ({exc!r})"[
+                    :300
+                ],
+            )
+            return None
+        if (
+            manifest is None
+        ):  # nothing would be admitted, or a refused item cannot be separated
+            return None
+        sources = sorted(
+            {
+                e
+                for it in run.man.items
+                if it.item not in refused
+                for e in it.source_episodes
+            },
+        )
+        try:
+            with self.mem.temp_checkout(run.parent) as wt:
+                for entry in wt.iterdir():
+                    if entry.name == ".git":
+                        continue
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                shutil.copytree(dest, wt, dirs_exist_ok=True)
+                sha = self.mem.commit_all(
+                    wt,
+                    f"consolidation pass {pass_id}: the admitted items",
+                    {
+                        "Pass": pass_id,
+                        "Reduced-From": run.candidate,
+                        "Episode": sources,
+                        "Evidence": sources,
+                    },
+                )
+        except (GitError, OSError) as exc:
+            run.note(
+                f"per-item admission: the reduced candidate was not committed ({exc})"[
+                    :300
+                ],
+            )
+            return None
+        if sha == run.parent:
+            return None
+        return _Reduced(sha, manifest, refused, reasons)
 
     def _prepare(self, run: _Run) -> bool:
         """Parse, resolve and extract; refuse what must never be extracted or run. False stops the check."""
@@ -908,12 +1142,16 @@ class Gate:
             self._standard(run)
         for it in man.items:
             if cb.get(it.item, ("",))[0] != it.kind:
-                run.fail("G1", f"{it.item} ({it.kind}) is not in the candidate")
+                run.fail(
+                    "G1",
+                    f"{it.item} ({it.kind}) is not in the candidate",
+                    it.item,
+                )
             if not it.source_episodes:
-                run.fail("G1", f"{it.item} names no source episode")
+                run.fail("G1", f"{it.item} names no source episode", it.item)
             for eid in it.source_episodes:
                 if not self.ev.episode_exists(eid):
-                    run.fail("G1", f"{it.item} cites unknown episode {eid}")
+                    run.fail("G1", f"{it.item} cites unknown episode {eid}", it.item)
 
     @staticmethod
     def _doc_inputs(run: _Run) -> dict[str, str]:
@@ -936,7 +1174,7 @@ class Gate:
             if it.kind != "env_function" or it.item not in doc:
                 continue  # an absent item (or an unreadable module) is refused elsewhere
             if lines.get(it.item, 0) > 1:
-                run.fail("G1", f"{it.item} has more than one Input: line")
+                run.fail("G1", f"{it.item} has more than one Input: line", it.item)
                 continue
             if it.input is None:
                 changed = (
@@ -947,12 +1185,14 @@ class Gate:
                     run.fail(
                         "G1",
                         f"{it.item} declares no input (one of {', '.join(INPUT_KINDS)})",
+                        it.item,
                     )
             elif doc[it.item] != it.input:
                 run.fail(
                     "G1",
                     f"{it.item} declares input {it.input} but its docstring's Input: line says "
                     f"{doc[it.item] or 'missing'}",
+                    it.item,
                 )
 
     @staticmethod
@@ -1008,15 +1248,16 @@ class Gate:
                 name=name,
                 channel=channel,
             ):
-                run.fail("G1", f"{item} docstring {problem}")
+                run.fail("G1", f"{item} docstring {problem}", item)
             for path in docstrings.fixture_paths(docstrings.parse(doc), channel):
                 if path not in run.c_files:
                     run.fail(
                         "G1",
                         f"{item} docstring Example: reads {path}, which the commit does not hold",
+                        item,
                     )
             for problem in docstrings.refusal_problems(node):
-                run.fail("G1", f"{item} {problem}")
+                run.fail("G1", f"{item} {problem}", item)
 
     def _unlisted_ok(self, run: _Run, eid: str) -> bool:
         """An unlisted item is present on both sides, unlisted now, and otherwise byte-for-byte the same."""
@@ -1132,13 +1373,17 @@ class Gate:
         for n, it in enumerate(run.man.items):
             if it.kind == "env_function":
                 if not it.covers:
-                    run.fail("G2", f"{it.item} covers no recorded action")
+                    run.fail("G2", f"{it.item} covers no recorded action", it.item)
                 valid: list[tuple[str, int, Action]] = []
                 for eid, idx in it.covers:
                     action = lookup(eid, idx)
                     problem = cover_problem(action, it.channel, self.blobs.has)
                     if problem is not None:
-                        run.fail("G2", f"{it.item} covers ({eid},{idx}), {problem}")
+                        run.fail(
+                            "G2",
+                            f"{it.item} covers ({eid},{idx}), {problem}",
+                            it.item,
+                        )
                     else:
                         run.covers.add((it.item, eid, idx))
                         valid.append((eid, idx, action))
@@ -1147,23 +1392,28 @@ class Gate:
                             and getattr(action, "kind", "tool") != "shell"
                         ):
                             run.rejections.add((eid, idx))
+                declared = self._doc_inputs(run).get(it.item, "")
+                form = it.input or (declared if declared in INPUT_KINDS else None)
+                if _covers_a_write(valid, form):
+                    run.writes.add(it.item)
                 if valid:
                     self._rule(run, it.item, valid)
                 if valid and all(
                     is_rejection(a) and getattr(a, "kind", "tool") != "shell"
                     for _, _, a in valid
                 ):
-                    run.fail("G2", f"{it.item} covers only recorded rejections")
+                    run.fail(
+                        "G2",
+                        f"{it.item} covers only recorded rejections",
+                        it.item,
+                    )
                 elif valid and preview:
                     # the structural input-form check only: no held-out perturbation
-                    declared = self._doc_inputs(run).get(it.item, "")
-                    form = it.input or (declared if declared in INPUT_KINDS else None)
                     for why in _unfit_forms(valid, form)[:5]:
-                        run.fail("G2", f"{it.item} {why}")
+                        run.fail("G2", f"{it.item} {why}", it.item)
                 elif valid:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
-                    declared = self._doc_inputs(run).get(it.item, "")
                     if self.surfacing == "catalogue" or self.docstring_standard:
                         # the catalogue's shapes and the examples' fixture check
                         self._record_shapes(
@@ -1179,7 +1429,7 @@ class Gate:
                         seen,
                         run.tmp / f"held-out-{n}",
                         it.field_types,
-                        it.input or (declared if declared in INPUT_KINDS else None),
+                        form,
                         self._pool(run, valid),
                     )
             elif it.kind == "workflow" and not preview:
@@ -1189,7 +1439,7 @@ class Gate:
                     reader_promotes=self.reader_promotes,
                 )
                 if status != "promotable":
-                    run.fail("G2", f"{it.item} is {status}")
+                    run.fail("G2", f"{it.item} is {status}", it.item)
 
     def _record_shapes(
         self,
@@ -1250,6 +1500,7 @@ class Gate:
                 f"{item} replaces a value it computed from its input under a condition (line "
                 f"{info.rule_line} of {info.path}); a function that encodes such a rule needs covers from at "
                 f"least {RULE_EPISODES} episodes",
+                item,
             )
 
     @staticmethod
@@ -1315,9 +1566,9 @@ class Gate:
         )
         verdict = run_plan(item, p, tree=run.c_tree, python=self.python, work=work)
         for f in verdict.refused[:5]:
-            run.fail("G2", f"{item} held-out value refused: {f[:80]}")
+            run.fail("G2", f"{item} held-out value refused: {f[:80]}", item)
         for text in verdict.failures[:5]:
-            run.fail("G2", f"{item} {text}")
+            run.fail("G2", f"{item} {text}", item)
         for note in verdict.notes:
             run.note(f"G2 held-out values: {item} {note}")
 
@@ -1340,10 +1591,10 @@ class Gate:
                 if cleanup:
                     unseen.add(it.item)
                 else:
-                    run.fail("G3", f"{it.item} has no new or changed test")
+                    run.fail("G3", f"{it.item} has no new or changed test", it.item)
         missing = [t for t in new_tests if t not in run.c_files]
         for t in missing:
-            run.fail("G3", f"listed test {t} is not in the candidate")
+            run.fail("G3", f"listed test {t} is not in the candidate", _owners(man, t))
         runnable = [t for t in new_tests if t not in missing]
         classic: set[str] = (
             set()
@@ -1369,6 +1620,7 @@ class Gate:
                         "G3",
                         f"{t} is not green on the candidate ({_describe(on_cand)}) "
                         f"{on_cand.output[-300:]}",
+                        _owners(man, t),
                     )
         # each edited function is seen changing behaviour by at least one classically red test
         for it in man.items:
@@ -1380,6 +1632,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"{it.item} is edited, but none of its tests is red on the parent's library",
+                        it.item,
                     )
         protected = self._suites(run)
         for item in sorted(unseen):
@@ -1388,6 +1641,7 @@ class Gate:
                     "G3",
                     f"{item} is edited in a clean-up pass without a red test, and no parent test that "
                     "passed on the parent exercises it",
+                    item,
                 )
         if self.docstring_standard:
             self._examples(run)
@@ -1430,6 +1684,7 @@ class Gate:
                     "G3",
                     f"an example in the docstring of {item} fails as a doctest "
                     f"{outcome.output[-300:]}",
+                    item,
                 )
 
     def _fixture_shape(self, run: _Run, item: str) -> None:
@@ -1466,6 +1721,7 @@ class Gate:
                 "G3",
                 f"the examples of {item} read no fixture shaped like an input it covers "
                 f"({', '.join(paths[:5])})",
+                item,
             )
 
     def _test_only_repair(
@@ -1496,7 +1752,7 @@ class Gate:
                 f"; nor can it count as a repair of a red test, since the pass edits "
                 f"{carried[:5]}, which it exercises"
             )
-        run.fail("G3", f"the tests in {test} {why}")
+        run.fail("G3", f"the tests in {test} {why}", _owners(run.man, test))
         return False
 
     def _repaired(self, run: _Run, test: str, on_cand: PytestOutcome) -> bool:
@@ -1612,10 +1868,18 @@ class Gate:
                         if broken is not None
                         else ""
                     )
+                    # new failures only in test files the manifest's items list are those items' own
+                    # (per-item admission); anything else refuses the whole pass
+                    owners = [_owners(run.man, _test_file(t, rel)) for t in new_red]
                     run.fail(
                         "G3",
                         f"suite {rel} has new failures or is unreadable on the candidate "
                         f"({_describe(suite)}; new {new_red[:5]}{repair}) {suite.output[-300:]}",
+                        (
+                            sorted({o for found in owners for o in found})
+                            if readable and all(owners)
+                            else None
+                        ),
                     )
                 elif suite.failed:
                     run.note(
@@ -1745,9 +2009,27 @@ class Gate:
                             "G6",
                             f"{path} defines public function {name} more than once",
                         )
+            listed_ids = {it.item for it in run.man.items}
+            effects = {}
             for i in run.c_report.items:
-                if i.kind == "env_function" and i.path in changed and not i.effect:
-                    run.fail("G6", f"{i.item_id} has no Effect: line")
+                if i.kind != "env_function":
+                    continue
+                effects[i.item_id] = i.effect
+                if i.path in changed and not i.effect:
+                    run.fail(
+                        "G6",
+                        f"{i.item_id} has no Effect: line",
+                        i.item_id if i.item_id in listed_ids else None,
+                    )
+            # structural Effect: a function that covers a recorded write call is a writer
+            for item in sorted(run.writes):
+                if effects.get(item, "write") != "write":
+                    run.fail(
+                        "G6",
+                        f"{item} covers a recorded write call, so it must declare Effect: write "
+                        f"(it declares {effects[item] or 'none'})",
+                        item,
+                    )
         for p in run.changed:
             if p in run.c_files:
                 text = (run.c_tree / p).read_bytes().decode("utf-8", "ignore")

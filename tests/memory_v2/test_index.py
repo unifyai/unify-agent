@@ -62,3 +62,22 @@ def test_index_marks_only_a_function_that_replaces_a_computed_value(tmp_path):
         "— The logged-in user's id, or a marker for a closed account. (applies a rule; check it) (input: env)",
     ), lines["me_or_closed"]
     assert "applies a rule" not in lines["login"] + lines["list_friends"]
+
+
+def test_index_marks_a_function_that_declares_a_write(tmp_path):
+    root = _checkout(tmp_path)
+    mod = root / "env" / "venmo" / "__init__.py"
+    assert "(writes)" not in build_index(root)
+    mod.write_text(
+        mod.read_text().replace(
+            "Effect: read\n    Input: env",
+            "Effect: write\n    Input: env",
+        ),
+    )
+    lines = {
+        ln.split("`")[1].split("(")[0]: ln
+        for ln in build_index(root).splitlines()
+        if ln.startswith("- `")
+    }
+    assert lines["login"].endswith("(input: env) (writes)"), lines["login"]
+    assert "(writes)" not in lines["list_friends"]

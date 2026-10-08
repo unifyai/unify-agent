@@ -137,7 +137,8 @@ What to build, in priority order:
      (delimiter, columns, types, sign and date conventions) that raise on files of another shape;
    - dialogue channels: observation parsers, an action grammar, transition facts and small predictors.
    Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
-   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as
+   `Effect: unknown` (a function taking the environment that covers a call recorded with effect "write" must say
+   `Effect: write`), and a line `Input: <form>` saying what its first parameter takes, the same form as
    "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
 {v21_docstrings}   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
    differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
@@ -193,8 +194,10 @@ nothing, and counts as a call ({checks} per pass at most). The folders env/<chan
 already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
 A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
 test suite, {gate_checks}that the library only grows when it covers new recorded calls or shrinks, that what
-deleted functions covered stays covered, and safety{soft_note}. Its rules follow; a pass that breaks one is refused
-whole.
+deleted functions covered stays covered, and safety{soft_note}. Its rules follow. An item that breaks an item rule
+is refused alone, with every item that calls it, imports it in a test or shares a test file with it, and the rest
+can still merge; a pass that breaks a pass-wide rule (layout, undeclared changes, lost or regressed tests, the
+library's size and growth, deleted functions' covers, secrets) is refused whole.
 """
 
 
@@ -402,6 +405,9 @@ class PassOutcome:
         default_factory=list,
     )  # structured causes (the CODE_* constants)
     checks: int = 0  # check calls run (included in calls)
+    # per-item admission (the gate's): the manifest items that landed, and each refused item's codes
+    items_merged: list[str] = field(default_factory=list)
+    items_refused: dict[str, list[str]] = field(default_factory=dict)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1137,6 +1143,8 @@ class SolPass:
                 "reasons": json.dumps(reasons),
                 "usd": _usd(spend.usd),
                 "patch_blob": None,
+                "items_merged": "[]",
+                "items_refused": "{}",
             },
         )
         return reasons
@@ -1193,6 +1201,8 @@ class SolPass:
             passed: bool,
             commit: str | None,
             reasons: list[str],
+            merged: list[str] | None = None,
+            refused: dict[str, list[str]] | None = None,
         ) -> PassOutcome:
             return PassOutcome(
                 pass_id,
@@ -1205,6 +1215,8 @@ class SolPass:
                 spend.unknown,
                 [CODE_OK] if passed else list(causes),
                 checks,
+                list(merged or []),
+                dict(refused or {}),
             )
 
         with (
@@ -1466,10 +1478,14 @@ class SolPass:
         # the pass's own notes (left-out entries, deadline, model failures) follow the gate's reasons
         tail = notes + _unpriced(spend.unknown)
         self.ev.add_pass_notes(pass_id, tail)
+        # the commit that landed: the candidate, or its reduction to the admitted items
+        landed = getattr(res, "merged", None) or candidate
         return outcome(
             res.passed,
-            candidate if res.passed else None,
+            landed if res.passed else None,
             res.reasons + tail,
+            getattr(res, "items_merged", None),
+            getattr(res, "items_refused", None),
         )
 
 

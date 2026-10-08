@@ -755,8 +755,19 @@ class QAChecks:
         self.started: float | None = None
 
     # -- shared -------------------------------------------------------------------------------------------
-    def _fail(self, tag: str, reason: str) -> None:
-        self.run.fail("G3", f"[qa:{tag}] {reason}")
+    def _fail(
+        self,
+        tag: str,
+        reason: str,
+        item: str | list[str] | None = None,
+    ) -> None:
+        """A G3 refusal; *item* names the manifest item(s) it belongs to (None: the whole pass), for the
+        gate's per-item admission (:meth:`.gate.Gate.merge`)."""
+        self.run.fail("G3", f"[qa:{tag}] {reason}", item)
+
+    def _owners(self, path: str) -> list[str]:
+        """The manifest items listing test file *path* ([]: none, so a refusal of it is pass-wide)."""
+        return [it.item for it in self.run.man.items if path in it.tests]
 
     def _note(self, tag: str, reason: str) -> None:
         self.run.note(f"[qa:{tag}] {reason}")
@@ -800,11 +811,13 @@ class QAChecks:
         )
 
     def _edited(self) -> list[Any]:
+        """New or changed environment functions, less those the gate already refused (per-item admission)."""
         run = self.run
         return [
             it
             for it in run.man.items
             if it.kind == "env_function"
+            and it.item not in run.item_fail
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         ]
@@ -900,6 +913,7 @@ class QAChecks:
                     "kit",
                     f"{p} line {line} imports {what}, which the test kit (version "
                     f"{testkit.KIT_VERSION}) does not provide",
+                    self._owners(p),
                 )
             for line in testkit.dynamic_unnamed(source):
                 self._fail(
@@ -907,12 +921,14 @@ class QAChecks:
                     f"{p} line {line} imports a module whose name is not a constant string "
                     "(import_module, importorskip or __import__); name it with a constant, so the test "
                     "kit is staged wherever the library's tests run",
+                    self._owners(p),
                 )
             for line in testkit.names_inputs_path(source):
                 self._fail(
                     "kit",
                     f"{p} line {line} names a path under /inputs; read recorded blobs through "
                     "memlab.inputs.blob(<id>), which works wherever the library's tests run",
+                    self._owners(p),
                 )
 
     # -- static: fixture size, replay fidelity, cuts ------------------------------------------------------
@@ -930,6 +946,7 @@ class QAChecks:
                         f"{p} has {size} bytes, over the {cfg.fixture_max_bytes}-byte bound for test "
                         "files: reference recorded payloads by blob id (memlab.inputs.blob) instead of "
                         "copying them",
+                        self._owners(p),
                     )
         items = [it for it in run.man.items if it.kind == "env_function"]
         if cfg.replay:
@@ -957,6 +974,7 @@ class QAChecks:
                             f"{t} line {line} passes {item} an environment the tests make (a class, "
                             "function or literal of their own); test it through memlab.replay.env_from "
                             "over its recorded calls",
+                            item,
                         )
         if cfg.fixture_size:
             for it in items:
@@ -972,15 +990,21 @@ class QAChecks:
                             "truncation",
                             f"{t} line {line} asserts on text at the recorder's cut of a truncated "
                             "recording; assert on what the environment returned, not on the cut",
+                            it.item,
                         )
 
     # -- after G3: determinism, drawn inputs, mutants -----------------------------------------------------
-    def dynamic(self) -> None:
-        """Determinism, drawn inputs and mutants, in that order, within one time budget."""
+    def dynamic(self, item_scoped: bool = False) -> None:
+        """Determinism, drawn inputs and mutants, in that order, within one time budget.
+
+        They run on a candidate the rest of the gate accepts; with *item_scoped* (the gate's per-item
+        admission) also on one refused only item by item, skipping the refused items, so a stage-5 refusal
+        of another item joins the reduction instead of refusing the reduced candidate whole.
+        """
         run, cfg = self.run, self.cfg
         if not (cfg.determinism or cfg.draws):
             return
-        if not run.res.passed:
+        if not run.res.passed and not (item_scoped and not run.pass_wide):
             self._note(
                 "skipped",
                 "dynamic stage-5 checks not run: the candidate is already refused",
@@ -1091,6 +1115,7 @@ class QAChecks:
                     f"{t} gives different outcomes on two runs with the clock, hash seed and random pinned "
                     f"to different values ({len(differ)} test(s) differ): it depends on the clock, "
                     "randomness or hash order, or is flaky",
+                    self._owners(t),
                 )
 
     def _fixtures(
@@ -1146,12 +1171,14 @@ class QAChecks:
                     "fixtures",
                     f"{item} raises on {crashed} of {n} drawn recorded inputs of its family ({kinds}); it "
                     "must return or raise MemoryInputError",
+                    item,
                 )
             if refused:
                 self._fail(
                     "fixtures",
                     f"{item} refuses {refused} of {n} drawn recorded inputs shaped like its covers, which "
                     "the environment accepted",
+                    item,
                 )
             if allowed:
                 self._note(
@@ -1189,6 +1216,7 @@ class QAChecks:
                     "fixtures",
                     f"{t} is not green with the drawn inputs appended ({len(outcome.failed)} test "
                     f"case(s) fail, timed_out={outcome.timed_out})",
+                    item,
                 )
             for row in _read_results(reads / "reads.jsonl"):
                 node = row.get("test")
@@ -1206,7 +1234,11 @@ class QAChecks:
                 "parametrised over memlab.inputs.inputs reads them)"
             )
             if self.cfg.fixtures == "strict":
-                self._fail("fixtures", text + "; every drawn input must be exercised")
+                self._fail(
+                    "fixtures",
+                    text + "; every drawn input must be exercised",
+                    item,
+                )
             else:
                 self._note("fixtures", text)
 
@@ -1283,7 +1315,7 @@ class QAChecks:
                         "mutants survive and the probe got no output of the function on any recorded or "
                         "structurally broken input (replay misses, unbound arguments)"
                     )
-                    self._fail("mutation", why)
+                    self._fail("mutation", why, item)
                     return
                 for site, text in survived:
                     target.write_text(text, encoding="utf-8")
@@ -1305,6 +1337,7 @@ class QAChecks:
                     f"{item}'s tests kill {len(killed)} of {judged} mutants that change its outputs "
                     f"(threshold {cfg.min_kill}; {len(equivalent)} likely equivalent left out); "
                     f"surviving: {where}",
+                    item,
                 )
             else:
                 self._note(

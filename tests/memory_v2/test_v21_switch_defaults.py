@@ -149,8 +149,8 @@ def test_each_switch_takes_only_its_values(monkeypatch, name, parse, values):
 # Declared changes to v2 behaviour that are not v2.1 switches, merged into the frozen build (memory-v2-int1):
 # D26 (memory-v2-sol-hygiene) gives Sol's brief one paragraph and a longer gate summary, and its first message
 # the pass's functions with their cover counts; use telemetry (memory-v2.1-tele) records each request's use of
-# the library in an ``item_use`` table; the later merges' brief sentences are in ``INSERTS``. Everything else at
-# the switch defaults is 9deefbfd1's, byte for byte.
+# the library in an ``item_use`` table; the later merges' brief changes are in ``REPLACES`` and ``INSERTS``.
+# Everything else at the switch defaults is 9deefbfd1's, byte for byte.
 D26_PARAGRAPH = (
     "Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each\n"
     "function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where\n"
@@ -173,8 +173,24 @@ D26_FIRST_MESSAGE_TAIL = (
     "\n\nFunctions on this pass's channels:\n(none yet)"  # no episode: no channel
 )
 TELEMETRY_TABLES = {"item_use"}
-# Merged into memory-v2-int2: the override rule (memory-v2-override-rule) adds one sentence to the brief's
-# covers paragraph. Each entry is (anchor, text inserted after it).
+# Merged into memory-v2-int2. Per-item admission and structural Effect (memory-v2-item-admission) extend the
+# Effect: sentence and say which rules refuse an item alone. Each entry is (old, new), applied once each.
+REPLACES = [
+    (
+        "   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as\n",
+        '   `Effect: unknown` (a function taking the environment that covers a call recorded with effect "write" must say\n'
+        "   `Effect: write`), and a line `Input: <form>` saying what its first parameter takes, the same form as\n",
+    ),
+    (
+        "and safety. Its rules follow; a pass that breaks one is refused\nwhole.\n",
+        "and safety. Its rules follow. An item that breaks an item rule\n"
+        "is refused alone, with every item that calls it, imports it in a test or shares a test file with it, and the rest\n"
+        "can still merge; a pass that breaks a pass-wide rule (layout, undeclared changes, lost or regressed tests, the\n"
+        "library's size and growth, deleted functions' covers, secrets) is refused whole.\n",
+    ),
+]
+# The override rule (memory-v2-override-rule) adds one sentence to the brief's covers paragraph. Each entry is
+# (anchor, text inserted after it).
 INSERTS = [
     (
         "nonzero exit) that justifies a value check (never covers made only of rejections).\n",
@@ -189,6 +205,9 @@ def _v2_template() -> str:
     text = GOLDEN["sol_prompt_template"]
     assert text.count(D26_AFTER) == 1 and text.count(D26_SUMMARY[0]) == 1
     text = text.replace(D26_AFTER, D26_AFTER + D26_PARAGRAPH).replace(*D26_SUMMARY)
+    for old, new in REPLACES:
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
     for anchor, inserted in INSERTS:
         assert text.count(anchor) == 1, anchor
         text = text.replace(anchor, anchor + inserted)

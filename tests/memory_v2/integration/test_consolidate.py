@@ -430,6 +430,8 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "items",
         "index_tokens",
         "reason_codes",
+        "items_merged",
+        "items_refused",
     }
     assert end["phase"] == "end" and end["pass_id"] == "e1.p0"
     assert end["usd"] == "0.0000001" and MONEY.match(end["usd"])
@@ -437,6 +439,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     assert end["checks"] == 0
     assert end["gate_passed"] is False and end["reason_codes"] == ["no_manifest"]
     assert end["items"] == 0 and isinstance(end["index_tokens"], int)
+    assert end["items_merged"] == [] and end["items_refused"] == {}
     assert _events(stores) == got  # the same rows, always appended to the events file
     assert events_path(stores.paths) == stores.paths.state_dir / "events.jsonl"
     for line in events_path(stores.paths).read_text().splitlines():
