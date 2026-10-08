@@ -3339,7 +3339,7 @@ class FunctionManager(BaseFunctionManager):
         return callables_list  # type: ignore[return-value]
 
     def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
-        """``UNIFY_LIBRARY_SHORTLIST``: the *k* stored functions closest to *text*.
+        """The library shortlist: the *k* stored functions closest to *text*.
 
         Ranked as ``search_functions`` ranks them (similarity, then the
         activation ranking that drops lapsed functions), over the stored

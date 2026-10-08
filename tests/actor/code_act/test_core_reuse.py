@@ -224,7 +224,6 @@ async def test_a_listed_function_is_callable_in_the_first_cell_only_when_bound(
     monkeypatch,
     bind,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_CORE_BIND_LISTED", bind)
     _pin_ranking(monkeypatch)
     actor = _actor(can_store=False)
@@ -259,7 +258,6 @@ async def test_binding_changes_only_the_list_in_the_first_request(
     core_world,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
     _pin_ranking(monkeypatch)
     firsts = {}
     for bind in (False, True):

@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_LIBRARY_SHORTLIST`` lists the library entries closest to a task in its first message.
+"""Symbolic: the library entries closest to a task are listed in its first message.
 
 With the discovery gate off (``UNIFY_DISCOVERY_GATE=0``) the model searches
 the libraries only when it chooses to, and optional-only access is known to
@@ -21,7 +21,7 @@ from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.actor import library_shortlist as ls
 from unify.agents.binding import PROMPT_SECTION
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 TASK = "List the files in the workspace."
 HEADER = ls._HEADER
@@ -33,10 +33,8 @@ RECORD = PROMPT_SECTION
 def switches(monkeypatch):
     def set_(
         *,
-        shortlist: bool,
         gate: bool = False,
     ):
-        monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", shortlist)
         monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", gate)
 
     return set_
@@ -91,21 +89,6 @@ def _shortlist(text: str) -> str | None:
     return block.split("\n\n", 1)[0]
 
 
-# ── off ──────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_off_the_first_message_is_as_shipped(switches):
-    switches(shortlist=False)
-    off, _ = await _act(seed=_seed)
-    assert HEADER not in json.dumps(off[0]["messages"])
-    assert _first_user(off[0]) == (
-        "Library at task start: 1 stored function, 1 guidance entry.\n\n"
-        f"{RECORD}\n\n---\n\n{TASK}"
-    )
-
-
 # ── on ───────────────────────────────────────────────────────────────────
 
 
@@ -113,10 +96,8 @@ async def test_off_the_first_message_is_as_shipped(switches):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_the_first_message_lists_the_closest_function_and_guidance(switches):
-    switches(shortlist=False)
-    off, _ = await _act(seed=_seed)
-    switches(shortlist=True)
-    on, actor = await _act()  # the same store
+    switches()
+    on, actor = await _act(seed=_seed)
     first = _first_user(on[0])
     block = _shortlist(first)
     assert block is not None
@@ -131,16 +112,14 @@ async def test_on_the_first_message_lists_the_closest_function_and_guidance(swit
         "Library at task start: 1 stored function, 1 guidance entry.\n\n" + HEADER,
     )
     assert first.endswith(f"\n\n---\n\n{TASK}")
-    assert on[0]["messages"][0] == off[0]["messages"][0]
-    assert h.request_bytes(on[0])["tools"] == h.request_bytes(off[0])["tools"]
-    assert on[0]["tool_choice"] == off[0]["tool_choice"] == "auto"
+    assert on[0]["tool_choice"] == "auto"
 
 
 @pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_the_list_is_written_once_and_never_repeated(switches):
-    switches(shortlist=True)
+    switches()
     on, _ = await _act(
         [
             lambda: h.completion(calls=[("execute_code", {"code": "print(1)"})]),
@@ -162,7 +141,7 @@ async def test_on_the_list_is_written_once_and_never_repeated(switches):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_an_empty_library_adds_nothing(switches):
-    switches(shortlist=True)
+    switches()
     on, _ = await _act()
     assert _first_user(on[0]) == (
         "Library at task start: 0 stored functions, 0 guidance entries.\n\n"
@@ -173,7 +152,7 @@ async def test_on_an_empty_library_adds_nothing(switches):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_on_the_ranking_counts_no_search_hit(switches):
-    switches(shortlist=True)
+    switches()
 
     def seed(actor):
         _add_function(actor)
@@ -250,11 +229,3 @@ def test_the_header_asks_nothing_and_names_no_benchmark():
     for word in ("must", "always", "first", "before", "try"):
         assert word not in text.replace(",", " ").split()
     assert not BENCHMARK_WORDS.search(HEADER)
-
-
-@pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
-def test_the_setting_parses_booleans(value, expected):
-    assert (
-        ProductionSettings(UNIFY_LIBRARY_SHORTLIST=value).UNIFY_LIBRARY_SHORTLIST
-        is expected
-    )

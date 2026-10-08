@@ -592,7 +592,7 @@ class GuidanceManager(BaseGuidanceManager):
         )
 
     def _shortlist_rows(self, text: str, k: int) -> List[Dict[str, Any]]:
-        """``UNIFY_LIBRARY_SHORTLIST``: the *k* guidance entries in scope closest to *text*.
+        """The library shortlist: the *k* guidance entries in scope closest to *text*.
 
         Ranked as ``search`` ranks them, by the similarity of the title and
         the content to *text*. Rows carry ``guidance_id``, ``title``,

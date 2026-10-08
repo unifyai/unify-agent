@@ -274,7 +274,7 @@ def _session_texts(tools: dict) -> dict[str, str]:
         "loop stop cancel": loop_stop.Stop(k=10, last_word=True).cancelled,
         "case refusal": store_cases.refusal("f", replays),
         "case report": store_cases.report("f", replays),
-        # UNIFY_LIBRARY_SHORTLIST
+        # The library shortlist
         "library shortlist header": library_shortlist._HEADER,
         "store_verify.doctrine()": store_verify.doctrine(),
         # UNIFY_VARIABLE_INVENTORY: the harness's words around the model's

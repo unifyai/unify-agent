@@ -56,7 +56,6 @@ from tests.actor.code_act.sandbox_world import (
 )
 from tests.helpers import _handle_project
 from unify import db, environment, sandbox
-from unify.settings import SETTINGS
 
 
 @pytest.fixture
@@ -637,7 +636,6 @@ async def test_the_shortlist_lists_the_entry_point_and_its_guidance(
 
     assert _store_in_another_process()[0]["error"] is None
     db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_LIBRARY_SHORTLIST", True)
     requests = await _act_once(
         REQUEST,
         [

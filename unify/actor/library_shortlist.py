@@ -1,4 +1,4 @@
-"""``UNIFY_LIBRARY_SHORTLIST``: the library entries closest to a task, listed once in its first message.
+"""The library entries closest to a task, listed once in its first message.
 
 At the start of each ``act()`` (a sub-agent's task included) the harness ranks
 the stored functions and guidance entries in scope against the request text

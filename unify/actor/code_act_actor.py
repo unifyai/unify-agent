@@ -4781,33 +4781,27 @@ class CodeActActor(BaseCodeActActor):
         instance_token = _instance_lint.enter(request)
         core_token = core_session.enter() if core_session is not None else None
         try:
-            # UNIFY_LIBRARY_SHORTLIST: the library entries closest to the
-            # request, after the snapshot line.
-            if SETTINGS.UNIFY_LIBRARY_SHORTLIST:
-                from unify.actor.library_shortlist import shortlist_block
+            # The library entries closest to the request, after the snapshot line.
+            from unify.actor.library_shortlist import shortlist_block
 
-                shortlist = shortlist_block(
-                    self.function_manager,
-                    self.guidance_manager,
-                    request,
-                    functions=any(
-                        str(k).startswith("FunctionManager_") for k in base_tools
-                    )
-                    or (core_session is not None and core_session.prompt.functions),
-                    guidance=any(
-                        str(k).startswith("GuidanceManager_") for k in base_tools
-                    )
-                    or (core_session is not None and core_session.prompt.guidance),
-                    # UNIFY_CORE_BIND_LISTED: the listed functions are bound
-                    # as a read binds them, and the header says how to call.
-                    bind=(
-                        core_session.listed_binder(sandbox)
-                        if core_session is not None
-                        else None
-                    ),
-                )
-                if shortlist:
-                    first_message_parts.append(shortlist)
+            shortlist = shortlist_block(
+                self.function_manager,
+                self.guidance_manager,
+                request,
+                functions=any(str(k).startswith("FunctionManager_") for k in base_tools)
+                or (core_session is not None and core_session.prompt.functions),
+                guidance=any(str(k).startswith("GuidanceManager_") for k in base_tools)
+                or (core_session is not None and core_session.prompt.guidance),
+                # UNIFY_CORE_BIND_LISTED: the listed functions are bound
+                # as a read binds them, and the header says how to call.
+                bind=(
+                    core_session.listed_binder(sandbox)
+                    if core_session is not None
+                    else None
+                ),
+            )
+            if shortlist:
+                first_message_parts.append(shortlist)
             if _agents is not None:
                 sandbox.global_state.update(_agents.globals())
                 if isinstance(getattr(sandbox, "core_globals", None), dict):
