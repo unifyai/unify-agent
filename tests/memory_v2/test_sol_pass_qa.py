@@ -80,7 +80,13 @@ def test_with_any_switch_on_sol_is_pointed_at_the_harness_replay_not_a_root_kit_
         assert "may build the fake environment" not in text
         assert '"support":["unify_memory_testkit.py"]' not in text
         assert "memlab.replay.env_from(<recorded actions>)" in text
-        assert 'env.issued(effect="write") == memlab.replay.calls(' in text
+        # the unfiltered comparison over the function's own rows (I-Q1): an effect filter is vacuous where
+        # the recordings' effect is unknown, as for every dialogue action
+        assert (
+            "env.issued() == memlab.replay.calls(<the function's own recorded actions>)"
+            in text
+        )
+        assert 'env.issued(effect="write")' not in text and "UnknownEffect" in text
     assert "memlab.replay.env_from" not in system(SOL_SYSTEM, QAConfig())
 
 

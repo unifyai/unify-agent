@@ -1382,9 +1382,11 @@ def brief(cfg: QAConfig) -> str:
         "same test kit wherever the library's tests run). Read a recorded blob with memlab.inputs.blob(<id>), "
         "never by its /inputs path. Library code outside tests never imports memlab: the working model "
         "imports the library without it. env = memlab.replay.env_from(<recorded actions>) answers only the "
-        "identical recorded call (a call with no recording raises ReplayMiss, a recorded failure re-raises "
-        "RecordedError), and env.issued() lists the calls it served: a test of a function with effects asserts "
-        'env.issued(effect="write") == memlab.replay.calls(<recorded actions>, effect="write").',
+        "identical recorded call, repeated calls in recorded order (a call with no recording raises "
+        "ReplayMiss, a recorded failure re-raises RecordedError), and env.issued() lists the calls it served: "
+        "a test asserts env.issued() == memlab.replay.calls(<the function's own recorded actions>) and not "
+        'env.misses. Filtering on effect="read" or "write" works only where the recordings carry an effect; '
+        "it raises UnknownEffect where one is unknown, as for every dialogue action.",
     ]
     if cfg.fixtures:
         strict = (
