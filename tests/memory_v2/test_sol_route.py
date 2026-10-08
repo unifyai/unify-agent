@@ -13,10 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
+import json
 import logging
 import os
 import secrets
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -965,6 +970,110 @@ def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
     assert not leaked
     with pytest.raises(ValueError):
         consolidate.sol_settings(settings)
+
+
+def test_sol_settings_settles_again_so_a_late_value_is_refused_off_the_cli(monkeypatch):
+    """An embedder that loads ``.env`` after importing unify never runs the CLI's settle: the pass start
+    settles again, so the late route is refused (not silently replaced by the actor's) and its token leaves.
+    """
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+        monkeypatch.delenv(name)
+    settings = SimpleNamespace()  # as read before the late values arrived: neither set
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_BASE_URL", SOL_BASE)
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    with pytest.raises(ValueError) as info:
+        consolidate.sol_settings(settings)
+    text = str(info.value)
+    token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
+    leaked = SOL_TOKEN in text or SOL_BASE in text
+    assert not token_left and not leaked
+    assert ".env" in text and "no consolidation pass starts" in text
+
+
+def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
+    """``cli._configure_environment`` settles after ``load_dotenv``, so a route only in ``.env`` is refused
+    on the CLI path too, and the refusal it prints names settings, never values.
+    """
+    from unify import cli
+
+    unify_logger = importlib.import_module("unify.logger")
+    order: list[str] = []
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("UNIFY_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(unify_logger, "configure_log_dir", lambda d: None)
+
+    def fake_load_dotenv(*a, **k):
+        order.append("load_dotenv")
+        os.environ["UNIFY_MEMORY_V2_SOL_BASE_URL"] = SOL_BASE
+        os.environ["UNIFY_MEMORY_V2_SOL_TOKEN"] = SOL_TOKEN
+        return True
+
+    real_settle = switch.settle_sol_route_env
+
+    def settle(environ, settings):
+        order.append("settle")
+        return real_settle(environ, settings)
+
+    monkeypatch.setattr(cli, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(switch, "settle_sol_route_env", settle)
+    try:
+        cli._configure_environment(
+            SimpleNamespace(home=str(tmp_path / "home"), debug=True),
+        )
+        token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
+        refused = switch._ENV_REFUSAL is not None
+    finally:
+        for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+            os.environ.pop(name, None)
+    err = capsys.readouterr().err
+    leaked = SOL_TOKEN in err or SOL_BASE in err
+    assert order == ["load_dotenv", "settle"]
+    assert refused and not token_left and not leaked
+    assert "memory v2:" in err and ".env" in err
+
+
+def test_importing_settings_takes_the_token_out_of_the_environment(tmp_path):
+    """``import unify.settings`` (a fresh process) leaves no case variant of the token in ``os.environ`` and
+    holds it in SETTINGS; the child prints booleans only.
+    """
+    import unify
+
+    root = Path(unify.__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _ROUTE_NAMES}
+    env.update(
+        {
+            "UNIFY_MEMORY_V2_SOL_BASE_URL": SOL_BASE,
+            "unify_memory_v2_sol_token": SOL_TOKEN,
+            "PYTHONPATH": os.pathsep.join(
+                [str(root), *filter(None, [env.get("PYTHONPATH", "")])],
+            ),
+        },
+    )
+    code = (
+        "import hashlib, json, os\n"
+        "import unify.settings as s\n"
+        "t = s.SETTINGS.UNIFY_MEMORY_V2_SOL_TOKEN.get_secret_value()\n"
+        "print(json.dumps({'left': [k.upper() for k in os.environ"
+        " if k.upper() == 'UNIFY_MEMORY_V2_SOL_TOKEN'],"
+        " 'held': hashlib.sha256(t.encode()).hexdigest()}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    shown = SOL_TOKEN in proc.stdout or SOL_TOKEN in proc.stderr
+    assert not shown
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    held = out["held"] == hashlib.sha256(SOL_TOKEN.encode()).hexdigest()
+    assert out["left"] == [] and held
 
 
 def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(

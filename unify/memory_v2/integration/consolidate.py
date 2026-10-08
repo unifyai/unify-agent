@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -73,7 +74,12 @@ from ..sol_pass import PassConfig, PassOutcome, SolPass, SolRoute, unillm_turn
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
-from .switch import SOL_BASE_URL, SOL_TOKEN, sol_route
+from .switch import (
+    SOL_BASE_URL,
+    SOL_TOKEN,
+    settle_sol_route_env,
+    sol_route,
+)
 
 __all__ = [
     "DEADLINE_S",
@@ -277,8 +283,12 @@ def sol_settings(settings: Any) -> SolSettings:
     """The Sol model, E, the USD allowance per token, the run guard and Sol's route from *settings*.
 
     Defaults if unset. :func:`run_due_passes` reads them before anything else, so a refused value (Sol's
-    route with one of its two settings empty, say) starts no pass and makes no call.
+    route with one of its two settings empty, say) starts no pass and makes no call. Sol's route is settled
+    against the process environment again first (:func:`.switch.settle_sol_route_env`), so a value that
+    reached the environment late (``.env`` loaded by an embedder after unify was imported) is refused here
+    too, not only on the CLI's path.
     """
+    settle_sol_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
     raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
     if isinstance(raw_e, bool):
