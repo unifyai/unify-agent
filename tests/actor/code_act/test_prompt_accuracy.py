@@ -89,22 +89,6 @@ async def test_act_describes_the_schedule_the_session_gets(monkeypatch, turn_rev
     assert "when the session ends, and stores reusable functions" in system
 
 
-# ── the steering docs name `steer` (D20) ────────────────────────────────
-
-
-def _tool_descriptions() -> dict[str, str]:
-    from unify.actor.code_act_actor import CodeActActor
-    from unify.common.llm_helpers import method_to_schema
-
-    actor = CodeActActor()
-    out = {}
-    for name in ("execute_code",):
-        tool = actor.get_tools("act")[name]
-        fn = getattr(tool, "fn", tool)
-        out[name] = method_to_schema(fn, name)["function"]["description"]
-    return out
-
-
 # ── no parent conversation for a loop without a parent (D23) ───────────────
 
 _PARENT = "## Parent Chat Context"

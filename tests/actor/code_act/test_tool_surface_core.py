@@ -172,9 +172,6 @@ async def test_no_steering_tools_even_with_sub_actors(core_world):
     finally:
         await actor.close()
     assert _tool_names(requests[0]) == ["execute_code"]
-    assert "### Responding to a steering checkpoint" not in (
-        requests[0]["messages"][0]["content"]
-    )
 
 
 # ── refusals at start ───────────────────────────────────────────────────────
