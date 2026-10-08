@@ -66,7 +66,6 @@ def _flat(text: str) -> str:
 def channel(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
 
 
 # ── the switch and the prompt ────────────────────────────────────────────
@@ -258,24 +257,10 @@ async def _cell_checks(ex: SessionExecutor) -> None:
         cell_reply.unbind(token)
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_a_cell_replies_in_process(channel):
-    ex = SessionExecutor()
-    try:
-        started = time.monotonic()
-        await _cell_checks(ex)
-        assert time.monotonic() - started < SESSION_BOUND_S
-        assert ex.python_session(session_id=0)._worker is None
-    finally:
-        await ex.close()
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(20)
 async def test_a_cell_replies_in_the_worker(channel, world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     ex = SessionExecutor()
     try:
         await _run(ex, "1")  # starts the worker
@@ -306,7 +291,6 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(channel, world, monke
     from unify.actor.code_act_actor import CodeActActor
 
     # The core surface runs cells in the sandboxed worker.
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
     actor = CodeActActor()
     try:
@@ -353,7 +337,6 @@ async def test_a_text_reply_still_answers_with_the_switch_on(
     from unify.actor.code_act_actor import CodeActActor
 
     # The core surface runs cells in the sandboxed worker.
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
     actor = CodeActActor()
     try:

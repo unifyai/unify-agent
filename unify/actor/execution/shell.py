@@ -9,7 +9,7 @@ and stderr interleaved, up to the sentinel.
 
 A cell that outruns its timeout kills the whole session (its process group,
 or the sandbox's PID namespace) and says so; the next cell starts a fresh
-session. Under ``UNIFY_WORKSPACE=sandboxed`` the process runs inside the
+session. The process runs inside the
 workspace sandbox (unify/sandbox.py).
 """
 

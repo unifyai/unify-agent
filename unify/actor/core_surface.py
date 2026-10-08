@@ -83,12 +83,12 @@ def require_prerequisites(*, can_compose: bool) -> None:
     from unify.actor.execution import worker
 
     if not worker.enabled():
+        # Only a test of the function manager's in-process loaders gets here.
         raise ToolSurfaceError(
-            "UNIFY_TOOL_SURFACE=core needs UNIFY_WORKSPACE=sandboxed and "
-            "UNIFY_WORKSPACE_PYTHON=worker: library writes and package installs "
-            "are Python calls from cells, and only a sandboxed worker reaches "
-            "them through the harness's proxy. Cells run in this process "
-            "would hold the real store and the harness's environment.",
+            "the actor needs Python in the sandboxed worker: library writes and "
+            "package installs are Python calls from cells, and only a sandboxed "
+            "worker reaches them through the harness's proxy. Cells run in this "
+            "process would hold the real store and the harness's environment.",
         )
     try:
         sandbox.require_bwrap()
@@ -974,8 +974,7 @@ install.__doc__ = _INSTALL_DOC
 
 def _file_tools() -> Dict[str, Callable[..., Any]]:
     """``read_file`` and ``grep``: what the JSON tools of the same names do
-    under ``UNIFY_WORKSPACE=sandboxed`` (unify/actor/workspace_tools.py), as
-    awaitables a cell calls."""
+    (unify/actor/workspace_tools.py), as awaitables a cell calls."""
     from unify.actor.workspace_tools import workspace_tools
 
     async def _never(*_: Any, **__: Any) -> Any:  # execute_code is not used
@@ -1082,17 +1081,10 @@ def review_fork_refusal(tool_names: List[str]) -> Optional[str]:
     *tool_names* are those of the session's last request: the fork reuses
     that list, and its ``execute_code`` is what the review stores through.
     """
-    from unify.actor.execution import worker as worker_mod
     from unify.function_manager import store_verify
 
     if "execute_code" not in tool_names:
         return "the session's tool list has no execute_code for the review's cells"
-    if not worker_mod.enabled():
-        return (
-            "the forked review runs its cells in the sandboxed "
-            "worker, which needs UNIFY_WORKSPACE=sandboxed and "
-            "UNIFY_WORKSPACE_PYTHON=worker"
-        )
     if store_verify.enabled():
         return (
             "UNIFY_STORE_VERIFY checks a function before it is stored, and the "

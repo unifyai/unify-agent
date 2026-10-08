@@ -88,14 +88,8 @@ def tiny(monkeypatch, tmp_path):
     store_verify.reset()
 
 
-@pytest.fixture
-def worker_python(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-
-
-def test_the_verifier_is_refused_with_python_in_the_worker(tiny, worker_python):
-    with pytest.raises(store_verify.StoreVerifyError, match="UNIFY_WORKSPACE_PYTHON"):
+def test_the_verifier_is_refused_with_python_in_the_worker(tiny):
+    with pytest.raises(store_verify.StoreVerifyError, match="sandboxed worker"):
         store_verify.verifier()
     assert tiny == [], "the factory was called"
 
@@ -103,7 +97,6 @@ def test_the_verifier_is_refused_with_python_in_the_worker(tiny, worker_python):
 @_handle_project
 def test_check_function_executes_nothing_with_python_in_the_worker(
     tiny,
-    worker_python,
     executed,
 ):
     from unify.function_manager.function_manager import FunctionManager
@@ -112,7 +105,7 @@ def test_check_function_executes_nothing_with_python_in_the_worker(
     out = fm.check_function(implementation=DOUBLE, call_kwargs={"x": 21})
     assert executed == [], f"the harness executed {executed} while checking"
     assert all(not v.asked for v in tiny), [v.asked for v in tiny]
-    assert "passed" not in out and "UNIFY_WORKSPACE_PYTHON" in out["error"]
+    assert "passed" not in out and "sandboxed worker" in out["error"]
     assert store_verify.passed(store_verify.source_sha256(DOUBLE)) is None
 
 
@@ -120,12 +113,12 @@ def test_check_function_executes_nothing_with_python_in_the_worker(
 def test_with_python_in_process_the_verifier_still_runs_the_candidate(
     tiny,
     executed,
-    monkeypatch,
+    python_in_process,
 ):
-    """Where cells run in this process anyway, the check runs the candidate as before."""
+    """With Python in this process (the function manager's non-actor mode),
+    the check runs the candidate as before."""
     from unify.function_manager.function_manager import FunctionManager
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     fm = FunctionManager(include_primitives=False)
     out = fm.check_function(implementation=DOUBLE, call_kwargs={"x": 21})
     assert out["passed"] is True, out

@@ -2,7 +2,7 @@
 
 A benchmark adapter registers, beside its namespaces, globals bound to the
 harness's connection to the environment: AppWorld's ``apis`` is a client of a
-relay socket under the harness's ``/tmp``. Under ``UNIFY_WORKSPACE_PYTHON=worker``
+relay socket under the harness's ``/tmp``. In the sandboxed worker
 (which ``UNIFY_TOOL_SURFACE=core`` requires) such a global was installed in the
 worker by importing it by name -- ``appworld_client.apis`` -- so cell code got
 a fresh client inside the sandbox, whose private ``/tmp`` has no relay socket,
@@ -30,7 +30,6 @@ from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify import sandbox
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
-from unify.settings import SETTINGS
 
 TOKEN = "relay-token-5d1f"  # pragma: allowlist secret
 
@@ -96,7 +95,6 @@ async def test_an_environment_global_is_served_from_the_harness(
     relay_env,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     harness = fake_relay_env.process_id()
     ex = SessionExecutor(environments={})
     try:

@@ -1,4 +1,4 @@
-"""Symbolic: under ``UNIFY_WORKSPACE=sandboxed`` the actor gets bash cells, ``read_file`` and ``grep``.
+"""Symbolic: the actor gets bash cells, ``read_file`` and ``grep`` in the workspace sandbox.
 
 Nothing here reaches a model; the tools are the actor's real ones. With the
 switch off the actor's tools and the schema the model sees are as shipped.
@@ -6,7 +6,6 @@ switch off the actor's tools and the schema the model sees are as shipped.
 
 from __future__ import annotations
 
-import inspect
 import json
 import shutil
 
@@ -25,40 +24,14 @@ from unify.actor.execution.types import parts_to_text
 from unify.common import llm_helpers as llmh
 from unify.common.tool_errors import ToolInputError
 from unify.common.tool_spec import ToolSpec
-from unify.settings import SETTINGS
 
-# ── off: exactly as shipped ─────────────────────────────────────────────────
+# ── helpers ─────────────────────────────────────────────────────────────────
 
 
 def _schema(actor, name):
     spec = actor.get_tools("act")[name]
     fn = spec.fn if isinstance(spec, ToolSpec) else spec
     return fn, llmh.method_to_schema(fn, name)
-
-
-@pytest.mark.asyncio
-async def test_off_the_actor_has_no_shell_language_and_no_file_tools(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "")
-    actor = CodeActActor(environments=[])
-    try:
-        tools = set(actor.get_tools("act"))
-        assert not {"read_file", "grep"} & tools
-        fn, schema = _schema(actor, "execute_code")
-        params = schema["function"]["parameters"]["properties"]
-        assert "language" not in params and "_language" not in params
-        assert "there is no shell cell" in schema["function"]["description"]
-        # The hidden parameter changes nothing the model sees: the schema is
-        # the one the function had without it.
-        sig = inspect.signature(fn)
-        fn.__signature__ = sig.replace(
-            parameters=[p for p in sig.parameters.values() if p.name != "_language"],
-        )
-        try:
-            assert llmh.method_to_schema(fn, "execute_code") == schema
-        finally:
-            del fn.__signature__
-    finally:
-        await actor.close()
 
 
 # ── read_file and grep ───────────────────────────────────────────────────────

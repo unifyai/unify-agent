@@ -7,8 +7,8 @@ dependencies always win — of the process cells run in. Nothing is ever
 removed from it: a package installed during one task is importable in every
 later task and session.
 
-With Python in the sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``) that
-process is the worker, which puts the environment on its own path
+Python runs in the sandboxed worker, so that process is the worker, which
+puts the environment on its own path
 (unify/actor/execution/worker.py). The harness, which holds the provider
 credentials, then never imports from it: :func:`activate` refuses, and
 :func:`missing` reads the installed distributions' metadata from the
@@ -21,8 +21,8 @@ are missing right before the function runs.
 The packages are the model's choice, and installing one can run its build
 steps (an sdist's ``setup.py`` or build backend). So ``uv`` never gets the
 harness's environment, which holds the provider credentials: it gets the
-few variables an install needs (:func:`installer_env`). With
-``UNIFY_WORKSPACE=sandboxed`` the install also runs inside bubblewrap under
+few variables an install needs (:func:`installer_env`). The install also
+runs inside bubblewrap under
 the workspace policy (unify/sandbox.py): ``/`` read-only, credential
 locations and ``.env`` files hidden, and only this environment and the
 installer's own cache writable. It keeps the host's network, as it had
@@ -96,8 +96,9 @@ def site_packages() -> Path:
 
 
 def imports_in_process() -> bool:
-    """Whether cells run in this process, which then imports the environment's
-    packages; ``False`` with Python in the sandboxed worker."""
+    """Whether this process imports the environment's packages: ``False``,
+    since Python runs in the sandboxed worker, except for a test of the
+    function manager's in-process loaders (tests' ``python_in_process``)."""
     from unify.actor.execution import worker
 
     return not worker.enabled()
@@ -151,13 +152,11 @@ def installer_env() -> Dict[str, str]:
 def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str]]:
     """``(argv, env, cwd)`` for running the installer command *argv*.
 
-    With ``UNIFY_WORKSPACE=sandboxed``, *argv* runs inside bubblewrap under
-    the workspace policy, with this environment and the installer's cache
-    bound writable and the host's network kept.
+    *argv* runs inside bubblewrap under the workspace policy, with this
+    environment and the installer's cache bound writable and the host's
+    network kept.
     """
     env = installer_env()
-    if not sandbox.enabled():
-        return argv, env, None
     venv = environment_dir()
     cache = installer_cache()
     for path in (venv, cache):
@@ -239,7 +238,7 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
             *specifiers,
         ],
     )
-    # Never wrapped by a cell's subprocess confinement (UNIFY_WORKSPACE): the
+    # Never wrapped by a cell's subprocess confinement (the workspace sandbox): the
     # command is the harness's, and already wrapped when the sandbox is on.
     with unconfined():
         result = subprocess.run(

@@ -17,10 +17,9 @@ from unify.function_manager.function_manager import FunctionManager
 
 @pytest.fixture(autouse=True)
 def _python_in_process(monkeypatch):
-    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty), the mode these tests exercise: stored functions run in this process. With the sandboxed worker nothing runs here (tests/actor/code_act/test_bind_load_confinement.py)."""
-    from unify.settings import SETTINGS
+    """Python in process (the function manager's in-process mode, for non-actor callers), the mode these tests exercise: stored functions run in this process. With the sandboxed worker nothing runs here (tests/actor/code_act/test_bind_load_confinement.py)."""
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 # ────────────────────────────────────────────────────────────────────────────

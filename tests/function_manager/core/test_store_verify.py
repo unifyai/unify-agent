@@ -196,7 +196,7 @@ def phone_env():
 def in_process_python(monkeypatch):
     """Python in this process: the verifier loads and calls candidates here, so it is
     refused with Python in the sandboxed worker (test_store_verify_confinement)."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @pytest.fixture

@@ -28,7 +28,6 @@ import pytest
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
-from unify.settings import SETTINGS
 
 HOST_LINE = '{"message": "the host\'s next message"}\n'
 # The watchdog writes the host's line only this late: a cell still reading
@@ -84,34 +83,7 @@ CELLS = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cell", sorted(CELLS))
-async def test_a_cell_in_process_reads_an_empty_stdin(cell, harness_stdin, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    code, error = CELLS[cell]
-    harness_stdin.arm()
-    out, res, elapsed = await _run(code)
-
-    assert (
-        elapsed < WATCHDOG_S
-    ), f"the cell waited on the harness's stdin ({elapsed:.1f}s)"
-    if error is None:
-        assert res["error"] is None, res["error"]
-    else:
-        assert error in res["error"]
-    if cell in ("read", "readline"):
-        assert res["result"] == ""
-    if cell == "iterate":
-        assert res["result"] == []
-    if cell == "help":
-        assert "help>" in out
-    # The host's line is still there for the harness to read.
-    time.sleep(WATCHDOG_S - elapsed + 0.5)
-    assert harness_stdin.readline() == HOST_LINE
-
-
-@pytest.mark.asyncio
 async def test_outside_a_cell_stdin_is_the_processs_own(harness_stdin, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     await _run("x = 1")
     # The cell's empty stdin ended with the cell.
     assert sys.stdin.fileno() == harness_stdin.fileno()
@@ -126,7 +98,6 @@ async def test_a_cell_in_the_worker_reads_an_empty_stdin(cell, world, monkeypatc
     the core tool surface (the default) its ``help`` is the worker's own,
     whose page comes from the harness: ``help()`` prints the objects' index
     and reads nothing."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     code, _error = CELLS[cell]
     out, res, elapsed = await _run(code)
     assert elapsed < 30
@@ -202,7 +173,6 @@ async def test_what_a_cell_starts_reads_end_of_input(
 
     from unify.cli import _stdin_reader
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     with _stdin_reader() as reader:
         out, res, elapsed = await _run(STARTED[started])
         assert res["error"] is None, res["error"]

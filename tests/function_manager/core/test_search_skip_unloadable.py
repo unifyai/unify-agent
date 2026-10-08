@@ -22,7 +22,6 @@ from tests.helpers import _handle_project
 from unify.common import embeddings
 from unify.common.embeddings import Embedder
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import SETTINGS
 
 GOOD = (
     "def forecast_summary(city: str) -> str:\n"
@@ -72,7 +71,9 @@ def _library() -> FunctionManager:
 @_handle_project
 @pytest.mark.parametrize("python", ["worker", ""])
 def test_search_leaves_the_broken_row_out_and_names_it(python, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
+    if not python:
+        # The function manager's in-process mode (non-actor callers).
+        monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = _library()
     namespace: dict = {}
     result = fm.search_functions(

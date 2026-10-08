@@ -1,4 +1,4 @@
-"""The child half of the sandboxed Python worker (``UNIFY_WORKSPACE_PYTHON=worker``).
+"""The child half of the sandboxed Python worker.
 
 This file runs inside bubblewrap as ``python -I -S`` and imports nothing from
 ``unify``: the harness starts it by path (``runpy.run_path``), so no package

@@ -1,4 +1,4 @@
-"""The actor's shell and file tools under ``UNIFY_WORKSPACE=sandboxed``.
+"""The actor's shell and file tools.
 
 ``execute_code`` gains ``language="bash"``, and ``read_file`` and ``grep`` read
 what a sandboxed shell cell could read (unify/sandbox.py). With the switch off

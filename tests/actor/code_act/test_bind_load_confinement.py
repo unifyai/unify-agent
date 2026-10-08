@@ -32,7 +32,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from unify.actor import core_surface
-from unify.settings import SETTINGS
 
 HALVE = (
     "def halve(x: int) -> int:\n"
@@ -214,8 +213,6 @@ async def test_with_python_in_the_worker_nothing_stored_executes_in_process(
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[HALVE, DOUBLE])
     double = fm.filter_functions(filter="name = 'double'")[0]
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     message = "would execute model-written code in the harness"
     with pytest.raises(RuntimeError, match=message):
         fm._create_in_process_callable(dict(double), namespace={})
@@ -295,7 +292,7 @@ def test_with_python_in_process_a_read_still_loads_in_process(
 ):
     from unify.function_manager.function_manager import FunctionManager
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[HALVE, DOUBLE])
     harness.clear()

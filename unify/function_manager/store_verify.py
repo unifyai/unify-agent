@@ -34,7 +34,7 @@ A verifier is any object with
     it with ``call_kwargs`` and judge the outcome.
 
 Both run in the process that asks (the harness), so a candidate executes there. With Python in the sandboxed
-worker (``UNIFY_WORKSPACE=sandboxed``, ``UNIFY_WORKSPACE_PYTHON=worker``) model-written code must run only in the
+worker model-written code must run only in the
 worker, never beside the credentials, so :func:`verifier` refuses the switch there and start-up stops.
 
 With the switch unset nothing here is imported by the storage path, no tool is added and every prompt is the
@@ -229,8 +229,8 @@ def enabled() -> bool:
 
 
 IN_WORKER_REFUSAL = (
-    "UNIFY_STORE_VERIFY is refused with Python in the sandboxed worker "
-    "(UNIFY_WORKSPACE=sandboxed, UNIFY_WORKSPACE_PYTHON=worker): its verifier loads "
+    "UNIFY_STORE_VERIFY is refused with Python in the sandboxed worker: its "
+    "verifier loads "
     "and calls each candidate function in this process, and model-written code "
     "must not run here, outside the sandbox and beside the credentials"
 )

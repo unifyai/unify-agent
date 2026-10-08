@@ -23,7 +23,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from unify.actor import core_surface
-from unify.settings import SETTINGS
 
 DOUBLE = (
     "def double(x: int) -> int:\n"
@@ -108,8 +107,6 @@ def test_the_store_check_executes_nothing_with_python_in_the_worker(
 ):
     from unify.function_manager.function_manager import FunctionManager
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[DOUBLE])
     assert executed == []
@@ -123,7 +120,7 @@ def test_with_python_in_process_the_check_still_loads_the_function(
     """Where cells run in this process anyway, the def is loaded and a broken one refused."""
     from unify.function_manager.function_manager import FunctionManager
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[DOUBLE])
     assert "double" in executed

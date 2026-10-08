@@ -230,10 +230,10 @@ def test_switches_off_inject_the_registered_globals_themselves(weather):
 
 @pytest.fixture
 def python_in_process(monkeypatch):
-    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty): these tests run stored functions in this process. With the
+    """Python in process (the function manager's in-process mode, for non-actor callers): these tests run stored functions in this process. With the
     sandboxed worker that is refused, and the worker's observer tests cover it (tests/actor/code_act/test_bind_load_confinement.py).
     """
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @pytest.mark.asyncio

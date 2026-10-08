@@ -208,6 +208,19 @@ def _patch_every_copy(monkeypatch, original, replacement) -> None:
 from unify.manager_registry import ManagerRegistry
 
 
+@pytest.fixture
+def python_in_process(monkeypatch):
+    """Python in this process, for tests of the function manager's in-process
+    loaders (non-actor callers of ``list_functions(_return_callable=True)``,
+    ``execute_function``, the dynamic store check, the case replay, a store
+    verifier). Python always runs in the sandboxed worker otherwise
+    (``unify.actor.execution.worker.enabled``); under this fixture the #202
+    choke points let the loaders run, and the actor refuses to start."""
+    from unify.actor.execution import worker
+
+    monkeypatch.setattr(worker, "enabled", lambda: False)
+
+
 @pytest.fixture(autouse=True)
 def _clear_singletons_between_tests():
     """Ensure *singleton* instances never leak from one test to the next."""

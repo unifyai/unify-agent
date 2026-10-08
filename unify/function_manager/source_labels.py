@@ -34,7 +34,7 @@ def compile_function_source(name: str, source: str) -> CodeType:
 class StoredSource:
     """A stored function bound in a session by its source, never executed here.
 
-    With Python in the sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``) a
+    With Python in the sandboxed worker a
     read that binds the functions it returns (``functions.get``, ``search``,
     ``filter``, ``list``) binds each as one of these: the worker defines the
     function from ``source`` and runs it there, confined

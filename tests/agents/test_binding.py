@@ -3,7 +3,6 @@
 import pytest
 
 from unify.agents import binding
-from unify.settings import SETTINGS
 
 
 @pytest.fixture
@@ -43,15 +42,13 @@ async def test_the_boundary_callback_returns_the_block(record_mode):
     assert "#2 user: use 2024" in await b.on_turn_boundary()
 
 
-@pytest.mark.parametrize(
-    "workspace, python, ok",
-    [("sandboxed", "worker", True), ("", "", False), ("sandboxed", "", False)],
-)
-def test_spawning_needs_the_worker_sandbox(monkeypatch, workspace, python, ok):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", workspace)
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
+def test_spawning_is_permitted_with_python_in_the_worker():
+    assert binding.spawn_permitted() == (True, "")
+
+
+def test_spawning_needs_the_worker_sandbox(python_in_process):
     allowed, why = binding.spawn_permitted()
-    assert allowed is ok and (ok or "UNIFY_WORKSPACE_PYTHON=worker" in why)
+    assert allowed is False and "sandboxed worker" in why
 
 
 def test_the_prompt_section_states_the_rules():

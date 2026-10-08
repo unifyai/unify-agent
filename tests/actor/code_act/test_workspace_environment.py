@@ -17,7 +17,6 @@ from unify import environment
 from unify.actor.code_act_actor import CodeActActor
 from unify.actor.execution import parts_to_text
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import SETTINGS
 
 # Absent from the runtime's own environment, so an install has to happen.
 _ABSENT_PACKAGE = "humanize"
@@ -53,7 +52,7 @@ def in_process(monkeypatch):
     then imports from the environment and runs stored functions itself. With
     Python in the sandboxed worker it does neither
     (test_bind_load_confinement.py)."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +153,6 @@ def test_with_python_in_the_worker_the_harness_reads_the_environment_by_path(
     an install put in the environment: only the worker does."""
     from unify.function_manager import store_check
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     assert environment.missing(["bindprobe>=1", "bindprobe>=2"]) == ["bindprobe>=2"]
     assert environment.missing(["packaging>=20"]) == []
     environment.ensure(["bindprobe==1.2"])
@@ -213,7 +210,7 @@ async def test_execute_function_installs_missing_dependencies(
         dependencies=[_ABSENT_PACKAGE],
     )
     assert environment.missing([_ABSENT_PACKAGE]) == [_ABSENT_PACKAGE]
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
     result = await fm.execute_function(
         function_name="humanise",

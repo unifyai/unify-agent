@@ -44,10 +44,10 @@ The network is shared: tests call model providers. The sandbox therefore
 bounds what model code can *read and write*; it does not hide the provider
 keys this process holds in its environment and ``.env``, nor stop a request
 to the network. Code a model writes in a Python cell runs in a child
-process without credentials or network under the default workspace
-(``UNIFY_WORKSPACE=sandboxed`` with ``UNIFY_WORKSPACE_PYTHON=worker``); a test
-that pins in-process Python runs it in this same process, so anything the
-process can reach, that code can reach.
+process without credentials or network (the sandboxed worker); a test of the
+function manager's in-process loaders (the ``python_in_process`` fixture)
+runs stored code in this same process, so anything the process can reach,
+that code can reach.
 
 ``UNIFY_TEST_SANDBOX`` selects the behaviour: ``auto`` (the default) confines
 the run where bubblewrap exists (Linux) and runs as before elsewhere, with a

@@ -1,8 +1,8 @@
 """Execution sessions and the unified SessionExecutor.
 
-Provides PythonExecutionSession (in-process stateful sandbox),
-SessionExecutor (the orchestrator over the in-process sessions), and the
-validation of execution parameters.
+Provides PythonExecutionSession (a stateful session whose cells run in its
+sandboxed worker), SessionExecutor (the orchestrator over the sessions), and
+the validation of execution parameters.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from unify.common._async_tool import time_context
 from unify.common.hierarchical_logger import DEFAULT_ICON
 from unify.common.tool_errors import ToolInputError
 
-from . import worker_child as child
 from .capture import _stdout_parts, capture_sandbox_output
 from unify.function_manager.steering import (
     DEFAULT_TOOL_NAMESPACES,
@@ -450,13 +449,9 @@ class PythonExecutionSession:
 
             self.global_state["reply"] = Reply(precheck=cell_reply.precheck)
 
-        # UNIFY_WORKSPACE_PYTHON=worker: cells run in this child process and
-        # ``global_state`` holds only what the harness provides them.
+        # Cells run in this sandboxed child process and ``global_state``
+        # holds only what the harness provides them.
         self._worker: Optional["PythonWorker"] = None
-
-        # UNIFY_VARIABLE_INVENTORY=on: what this session's cells bound in
-        # process (a worker keeps its own).
-        self._inventory: Any = None
 
         # UNIFY_TOOL_SURFACE=core: the harness objects of the act() this
         # sandbox belongs to (``functions``, ``guidance``, ``install``, ...),
@@ -500,26 +495,20 @@ class PythonExecutionSession:
             except Exception:
                 pass
 
-    def _python_worker(self) -> Optional["PythonWorker"]:
-        """This session's sandboxed worker, when ``UNIFY_WORKSPACE_PYTHON=worker``."""
+    def _python_worker(self) -> "PythonWorker":
+        """This session's sandboxed worker, started on first use."""
         from unify import sandbox
 
         from . import worker as worker_mod
 
-        if not worker_mod.enabled():
-            return None
         sandbox.require_bwrap()
         if self._worker is None:
             self._worker = worker_mod.PythonWorker()
         return self._worker
 
-    async def worker_variables(self) -> Optional[Dict[str, str]]:
-        """The worker's variables (name -> short repr); None when cells run in
-        process. Waits for a running cell, like another cell would."""
-        from . import worker as worker_mod
-
-        if not worker_mod.enabled():
-            return None
+    async def worker_variables(self) -> Dict[str, str]:
+        """The worker's variables (name -> short repr). Waits for a running
+        cell, like another cell would."""
         if self._worker is None:
             return {}
         async with self._execution_lock:
@@ -825,32 +814,19 @@ class PythonExecutionSession:
 
                 spawned_handles: list[Any] = []
                 spawned_token = _SANDBOX_SPAWNED_HANDLES.set(spawned_handles)
-                # UNIFY_VARIABLE_INVENTORY: what the namespace held before
-                # the cell, so what the cell bound can be told apart.
-                before = (
-                    child.Inventory.snapshot(self.global_state)
-                    if inventory and worker is None
-                    else None
-                )
 
                 async def _exec_wrapped(wrapped: str) -> Any:
-                    """Define ``__exec_wrapper`` from *wrapped* and await it."""
-                    if worker is not None:
-                        return await worker.run_cell(
-                            wrapped,
-                            self.global_state,
-                            timeout=timeout,
-                            scratch=scratch,
-                            stdout=stdout_parts,
-                            stderr=stderr_parts,
-                            display=display_fn,
-                            **({"inventory": True} if inventory else {}),
-                        )
-                    exec(wrapped, self.global_state)
-                    execution = self.global_state["__exec_wrapper"]()
-                    if timeout is None:
-                        return await execution
-                    return await asyncio.wait_for(execution, timeout=timeout)
+                    """Run the cell defined by *wrapped* in the worker."""
+                    return await worker.run_cell(
+                        wrapped,
+                        self.global_state,
+                        timeout=timeout,
+                        scratch=scratch,
+                        stdout=stdout_parts,
+                        stderr=stderr_parts,
+                        display=display_fn,
+                        **({"inventory": True} if inventory else {}),
+                    )
 
                 async def _run_once(body: str) -> Any:
                     """Compile and run one attempt at this block."""
@@ -879,9 +855,7 @@ class PythonExecutionSession:
                         )
                     await _await_orphan_sandbox_handles(spawned=spawned_handles)
                 finally:
-                    if before is not None:
-                        listed = self._list_variables(before)
-                    elif inventory and worker is not None:
+                    if inventory:
                         listed = worker.inventory
                     _SANDBOX_SPAWNED_HANDLES.reset(spawned_token)
                     if _orig_prims is not None:
@@ -897,9 +871,7 @@ class PythonExecutionSession:
                 result = None
                 error = cell_reply.deliver(replied.text, replied.from_value)
             except asyncio.TimeoutError:
-                error = f"Python execution timed out after {timeout}s"
-                if worker is not None:
-                    error += KILLED_NOTE
+                error = f"Python execution timed out after {timeout}s" + KILLED_NOTE
             except WorkerCellError as failed:
                 error = failed.traceback
             except Exception:
@@ -917,20 +889,6 @@ class PythonExecutionSession:
         if listed is not None:
             out["inventory"] = listed
         return out
-
-    def _list_variables(self, before: Dict[str, int]) -> Optional[str]:
-        """UNIFY_VARIABLE_INVENTORY: the line after an in-process cell, or None."""
-        if self._inventory is None:
-            self._inventory = child.Inventory()
-        try:
-            return self._inventory.after_cell(
-                self.global_state,
-                before,
-                self.core_globals,
-            )
-        except Exception:  # noqa: BLE001 - never the cell's error
-            logger.debug("variable inventory failed", exc_info=True)
-            return None
 
 
 # ---------------------------------------------------------------------------
@@ -957,8 +915,7 @@ class SessionExecutor:
 
         self._python_sessions: Dict[int, PythonExecutionSession] = {}
         self._python_session_meta: Dict[int, dict[str, str]] = {}
-        # Persistent bash sessions (UNIFY_WORKSPACE=sandboxed), keyed like the
-        # Python ones.
+        # Persistent bash sessions, keyed like the Python ones.
         self._shell_sessions: Dict[int, "BashSession"] = {}
 
         self._fm_globals: Dict[str, Any] = {}
@@ -1048,12 +1005,6 @@ class SessionExecutor:
         from unify import sandbox
         from .shell import DEFAULT_SHELL_TIMEOUT_S, BashSession
 
-        if not sandbox.enabled():
-            raise ToolInputError(
-                "language='bash' needs UNIFY_WORKSPACE=sandboxed.",
-                suggestion="Run shell commands from Python with subprocess.",
-                received={"language": "bash"},
-            )
         if state_mode == "read_only":
             _refuse(
                 message="state_mode='read_only' applies to Python sessions only.",
@@ -1154,12 +1105,8 @@ class SessionExecutor:
             from unify import sandbox
 
             listing_kw = {"inventory": True} if listing else {}
-            if not sandbox.enabled():
-                return await sb.execute(code, timeout=self._timeout, **listing_kw)
-            # In process, the cell runs here and what it starts through
-            # subprocess, os.system or asyncio runs in the sandbox; in a worker
-            # the cell is confined whole and this confines what the harness
-            # objects it calls start.
+            # The cell is confined whole in its worker; this confines what the
+            # harness objects it calls start.
             with sandbox.confined_subprocesses(sandbox.build_policy()):
                 if scratch:
                     return await sb.execute(
@@ -1188,7 +1135,7 @@ class SessionExecutor:
                 "session_created": False,
                 "duration_ms": _duration_ms(),
             }
-        # Stateless: fresh in-process sandbox per call.
+        # Stateless: a fresh session per call.
         if state_mode == "stateless":
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] creating stateless sandbox",
@@ -1224,7 +1171,7 @@ class SessionExecutor:
         # Persistent sessions.
         if session_id is None:
             raise ValueError(
-                "session_id is required for in-process stateful/read_only execution",
+                "session_id is required for stateful/read_only execution",
             )
 
         key = int(session_id)
@@ -1255,60 +1202,37 @@ class SessionExecutor:
             }
 
         if state_mode == "read_only":
-            # Create a throwaway sandbox seeded with current state.
+            # A cell on a copy of the session's namespace, in its worker.
             base = self.python_session(session_id=key)
             if base is None:
                 raise ValueError(
                     f"Session {key} not found for read_only execution",
                 )
-            from .worker import enabled as _worker_enabled
-
-            if _worker_enabled():
-                # The session's variables live in its worker: the cell runs
-                # there against a copy of its namespace.
-                self._inject_fm_globals(base)
-                if prepare is None:
-                    res = await _execute_in_python_session(base, scratch=True)
-                else:
-                    # What prepare defines is the cell's, not the session's:
-                    # the session's own bindings come back afterwards.
-                    before = dict(base.global_state)
-                    prepare(base.global_state)
-                    defined = {
-                        name: value
-                        for name, value in base.global_state.items()
-                        if name not in before or before[name] is not value
-                    }
-                    try:
-                        res = await _execute_in_python_session(base, scratch=True)
-                    finally:
-                        for name, value in defined.items():
-                            if base.global_state.get(name) is not value:
-                                continue
-                            if name in before:
-                                base.global_state[name] = before[name]
-                            else:
-                                del base.global_state[name]
-                return {
-                    **res,
-                    "state_mode": state_mode,
-                    "session_id": session_id,
-                    "session_created": False,
-                    "duration_ms": _duration_ms(),
+            # The session's variables live in its worker: the cell runs
+            # there against a copy of its namespace.
+            self._inject_fm_globals(base)
+            if prepare is None:
+                res = await _execute_in_python_session(base, scratch=True)
+            else:
+                # What prepare defines is the cell's, not the session's:
+                # the session's own bindings come back afterwards.
+                before = dict(base.global_state)
+                prepare(base.global_state)
+                defined = {
+                    name: value
+                    for name, value in base.global_state.items()
+                    if name not in before or before[name] is not value
                 }
-            sb = self._new_session()
-            try:
-                # Shallow copy globals to allow read access while avoiding persistence.
-                sb.global_state.update(dict(base.global_state))
-                self._inject_fm_globals(sb)
-                if prepare is not None:
-                    prepare(sb.global_state)
-                res = await _execute_in_python_session(sb)
-            finally:
                 try:
-                    await sb.close()
-                except Exception:
-                    pass
+                    res = await _execute_in_python_session(base, scratch=True)
+                finally:
+                    for name, value in defined.items():
+                        if base.global_state.get(name) is not value:
+                            continue
+                        if name in before:
+                            base.global_state[name] = before[name]
+                        else:
+                            del base.global_state[name]
             return {
                 **res,
                 "state_mode": state_mode,
@@ -1317,6 +1241,4 @@ class SessionExecutor:
                 "duration_ms": _duration_ms(),
             }
 
-        raise ValueError(
-            f"Unsupported state_mode for in-process execution: {state_mode}",
-        )
+        raise ValueError(f"Unsupported state_mode: {state_mode}")

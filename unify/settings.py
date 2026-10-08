@@ -208,7 +208,7 @@ class ProductionSettings(BaseSettings):
     # Empty registers nothing.
     UNIFY_ENV_NAMESPACES: str = ""
     # ``code+text``: model code in a cell can send the turn's reply with
-    # ``reply(text)`` (in process and under UNIFY_WORKSPACE_PYTHON=worker).
+    # ``reply(text)`` (in the sandboxed worker).
     # It takes only a ``str``, ends the cell at once (its output so far is
     # kept), and the turn ends with exactly that text as the reply, as if the
     # model had replied with it, without another model call (UniLLM strips
@@ -227,7 +227,7 @@ class ProductionSettings(BaseSettings):
     # Empty: replies are text only, as shipped.
     UNIFY_REPLY_CHANNEL: str = ""
     # ``on``: model code in a cell reads the current request as ``request``
-    # (in process and under UNIFY_WORKSPACE_PYTHON=worker): ``request.text``
+    # (in the sandboxed worker): ``request.text``
     # is the requester's latest message, the request or a later message of a
     # persistent session, as the model reads it (without the session context
     # the harness opens the first message with); ``request.data`` is the
@@ -253,8 +253,8 @@ class ProductionSettings(BaseSettings):
     # cell keeps nothing, so its result has none. Names a cell did not bind
     # are left out (primitives, request, reply, the libraries, injected
     # stored functions), as are modules and names starting with ``_``. No
-    # value is printed whole. It is computed where the cell ran (in process
-    # or in the UNIFY_WORKSPACE_PYTHON=worker child), is the tool's own
+    # value is printed whole. It is computed where the cell ran (the sandboxed
+    # worker), is the tool's own
     # result, and the prompt and tools are unchanged (unify/actor/execution/worker_child.py
     # ``Inventory``). Empty: results as shipped.
     UNIFY_VARIABLE_INVENTORY: str = ""
@@ -273,7 +273,7 @@ class ProductionSettings(BaseSettings):
     # to the review only while this is set) and static checks against request
     # details and credentials (unify/function_manager/store_verify.py). Needs
     # UNIFY_STORE_ADMISSION. The verifier loads and calls candidates in this
-    # process, so with UNIFY_WORKSPACE_PYTHON=worker it is refused and
+    # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
@@ -338,26 +338,10 @@ class ProductionSettings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
     # ─────────────────────────────────────────────────────────────────────────
-    # ``sandboxed``: execute_code also takes ``language="bash"`` (a persistent
-    # bash session), the actor gets ``read_file`` and ``grep``, and bash cells
-    # and every subprocess a Python cell starts run inside bubblewrap: ``/``
-    # read-only, only the workspace and a private /tmp writable, Unify's
-    # state, credential directories and .env files hidden, credential-named
-    # variables removed, no network (unify/sandbox.py). Without bubblewrap
-    # those commands are refused, never run unconfined. Python cells
-    # themselves still run in this process unless UNIFY_WORKSPACE_PYTHON says
-    # otherwise. Empty: none of this exists.
-    UNIFY_WORKSPACE: str = "sandboxed"
-    # ``worker`` (with ``sandboxed``): each Python session runs its cells in a
-    # persistent child process inside the same bubblewrap policy, and reaches
-    # ``primitives``, steering and the other harness objects only through a
-    # proxy the harness serves (unify/actor/execution/worker.py). Empty: Python
-    # cells run by ``exec`` in this process. That is for tests only, never for
-    # benchmarks or real work: model code then runs with everything the
-    # harness can read, including its environment (provider keys), the
-    # internal transcripts, the LLM request logs (UNILLM_LOG_DIR) and so the
-    # environment's checked outcomes the storage review was given.
-    UNIFY_WORKSPACE_PYTHON: str = "worker"
+    # Bash cells, every subprocess a Python cell starts, and the Python worker
+    # that runs every cell are confined by bubblewrap (unify/sandbox.py,
+    # unify/actor/execution/worker.py); without bubblewrap they are refused,
+    # never run unconfined.
     # ``proxy``: the sandbox's only network is one loopback port forwarded to
     # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
     # Empty: no network at all.
@@ -384,8 +368,7 @@ class ProductionSettings(BaseSettings):
     # ``compress_context`` (and ``store_skills``) are offered only on the
     # turn the loop asks for it, not on every turn. The session tools,
     # ``send_notification`` and ``install_python_packages`` are not offered.
-    # Needs UNIFY_WORKSPACE=sandboxed, UNIFY_WORKSPACE_PYTHON=worker
-    # (bubblewrap installed) and UNIFY_DISCOVERY_GATE off: an actor refuses
+    # Needs bubblewrap: an actor refuses
     # to start otherwise, and never runs model code unconfined
     # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
     UNIFY_TOOL_SURFACE: str = "core"
@@ -555,16 +538,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_WORKSPACE", mode="before")
-    @classmethod
-    def parse_workspace(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "sandboxed"):
-            raise ValueError(
-                f"UNIFY_WORKSPACE must be empty or 'sandboxed', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
     @classmethod
     def parse_workspace_network(cls, v: Any) -> str:
@@ -572,16 +545,6 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "proxy"):
             raise ValueError(
                 f"UNIFY_WORKSPACE_NETWORK must be empty or 'proxy', not {v!r}",
-            )
-        return value
-
-    @field_validator("UNIFY_WORKSPACE_PYTHON", mode="before")
-    @classmethod
-    def parse_workspace_python(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "worker"):
-            raise ValueError(
-                f"UNIFY_WORKSPACE_PYTHON must be empty or 'worker', not {v!r}",
             )
         return value
 

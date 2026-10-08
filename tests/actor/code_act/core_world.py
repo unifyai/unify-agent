@@ -24,7 +24,6 @@ def core_world(world, monkeypatch):  # noqa: F811
     """
     (world["state"] / "store.sqlite").unlink()
     db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     yield world
     db.reset_store()

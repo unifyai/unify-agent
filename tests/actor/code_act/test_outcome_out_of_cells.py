@@ -115,7 +115,6 @@ def outcome_world(world, monkeypatch):  # noqa: F811
     """The sandbox world with worker Python, transcripts on and a real store."""
     (world["state"] / "store.sqlite").unlink()
     db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     yield world
     db.reset_store()
 
@@ -337,7 +336,6 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
     with the LLM request log outside or inside the workspace."""
     from unify import environment
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
     home = Path(os.path.realpath(unify_home))
     internal = home / "internal-transcripts"
     for local_root in ("", str(home)):

@@ -21,7 +21,6 @@ import pytest
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
-from unify.settings import SETTINGS
 
 BOUND = 2.0
 BLOCKING_PAGER = "sleep 30"
@@ -54,43 +53,11 @@ def pager_configured(monkeypatch):
     monkeypatch.setattr(pydoc, "pager", pager)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "code",
-    ["help(str)", "def f():\n    'Adds the numbers.'\nhelp(f)"],
-    ids=["builtin", "defined-function"],
-)
-async def test_help_on_an_object_in_process_prints_its_page(
-    code,
-    pager_configured,
-    monkeypatch,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    out, res, elapsed = await _run(code)
-    assert res["error"] is None, res["error"]
-    assert elapsed < BOUND, f"help paged ({elapsed:.1f}s)"
-    assert "Help on " in out
-    assert ("class str" in out) if "str" in code else ("Adds the numbers." in out)
-
-
-@pytest.mark.asyncio
-async def test_in_process_pydoc_chooses_the_plain_pager(pager_configured, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    _out, res, _elapsed = await _run(
-        "import pydoc, sys\n"
-        "(pydoc.getpager() is pydoc.plainpager, sys.stdin.isatty(), "
-        "sys.stdout.isatty())",
-    )
-    assert res["error"] is None, res["error"]
-    assert res["result"] == (True, False, False)
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_pydoc_help_in_the_worker_prints_its_page(world, monkeypatch):
     monkeypatch.setenv("PAGER", BLOCKING_PAGER)
     monkeypatch.setenv("MANPAGER", BLOCKING_PAGER)
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     out, res, elapsed = await _run("import pydoc\npydoc.help(str)")
     assert res["error"] is None, res["error"]
     # The worker starts a sandboxed process first; the page itself is quick.

@@ -1,4 +1,4 @@
-"""``read_file`` and ``grep`` for the actor under ``UNIFY_WORKSPACE=sandboxed``.
+"""``read_file`` and ``grep`` for the actor.
 
 Both read only what a sandboxed shell cell could read (unify/sandbox.py):
 ``read_file`` checks the resolved path against the sandbox policy before

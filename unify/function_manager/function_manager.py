@@ -1758,7 +1758,7 @@ class FunctionManager(BaseFunctionManager):
         loads it (stored callees injected, the ``def`` executed) into a scratch
         namespace that is thrown away. Executing a ``def`` runs its default
         values and decorators, so with Python in the sandboxed worker
-        (``UNIFY_WORKSPACE_PYTHON=worker``) the check stays static: model-written
+        the check stays static: model-written
         code never runs in the harness's process, which holds the credentials.
         A function that fails as it loads then fails where it runs, in the
         worker. The raised ``ValueError`` names what failed; the storage review

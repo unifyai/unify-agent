@@ -27,7 +27,7 @@ not run twice), so this switch records them and replays the record:
   replay, which makes the case *inconclusive*, as does a function that reads the clock or randomness, imports
   a module that is not plainly deterministic, or needs packages, and a replay that takes longer than
   :data:`REPLAY_TIMEOUT_S`. A replay executes the new source in this process, so with Python in the
-  sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``) nothing is replayed: a case that returned is
+  sandboxed worker nothing is replayed: a case that returned is
   *not replayed* and refuses the change like a divergence (the same two ways on), and a case that raised
   is inconclusive, so model-written code never runs beside the credentials;
 - **policy**: a case that diverges, returns something else or now raises refuses the change, naming the case,

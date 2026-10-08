@@ -66,17 +66,15 @@ def _run_id() -> str:
 
 
 def spawn_permitted() -> tuple[bool, str]:
-    from unify.settings import SETTINGS
+    """Helpers start only where each agent's code runs in its own confined
+    worker: always, outside a test that runs Python in this process."""
+    from unify.actor.execution import worker
 
-    if (
-        SETTINGS.UNIFY_WORKSPACE == "sandboxed"
-        and SETTINGS.UNIFY_WORKSPACE_PYTHON == "worker"
-    ):
+    if worker.enabled():
         return True, ""
     return False, (
-        "starting helpers needs UNIFY_WORKSPACE=sandboxed and "
-        "UNIFY_WORKSPACE_PYTHON=worker, so that each agent's code runs in its own "
-        "confined process"
+        "starting helpers needs Python in the sandboxed worker, so that each "
+        "agent's code runs in its own confined process"
     )
 
 

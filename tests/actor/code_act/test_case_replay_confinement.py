@@ -27,7 +27,6 @@ from tests.actor.code_act.test_store_check_confinement import (  # noqa: F401
     executed,
 )
 from tests.helpers import _handle_project
-from unify.settings import SETTINGS
 
 DOUBLE = (
     "def double(x: int) -> int:\n"
@@ -97,15 +96,14 @@ async def test_a_function_whose_case_raised_is_still_fixed_from_a_cell(
 def test_with_python_in_the_worker_a_change_is_not_replayed(monkeypatch, executed):
     from unify.function_manager.function_manager import FunctionManager
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(implementations=[DOUBLE])
     namespace: dict = {}
     fm.list_functions(_return_callable=True, _namespace=namespace)
     assert namespace["double"](21) == 42  # one recorded case
     executed.clear()
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: True)
     out = fm.add_functions(
         implementations=[TRIPLE],
         overwrite=True,
@@ -115,7 +113,7 @@ def test_with_python_in_the_worker_a_change_is_not_replayed(monkeypatch, execute
     patched = fm.patch_function(name="double", old="2 * x", new="3 * x", why="probe")
     assert "could not be checked against the new source" in patched["error"]
     assert executed == [], f"the harness executed {executed} while replaying"
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     out = fm.add_functions(
         implementations=[TRIPLE],
         overwrite=True,

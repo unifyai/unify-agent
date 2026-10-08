@@ -223,9 +223,9 @@ def test_environment_modules_and_globals(weather):
 @_handle_project
 @pytest.mark.parametrize("python", ["worker", ""])
 def test_stored_function_records_and_gets_the_namespace(weather, python, monkeypatch):
-    from unify.settings import SETTINGS
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
+    if not python:
+        # The function manager's in-process mode (non-actor callers).
+        monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = FunctionManager()
     source = (
         "def two_forecasts(a: str, b: str) -> list:\n"

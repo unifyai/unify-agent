@@ -26,7 +26,7 @@ Pieces, in the order a request travels:
 * Before each cell the session executor calls :func:`install`, which binds a
   fresh ``worker_child.Request`` as the sandbox global ``request``, or
   removes it when the running loop has no request.
-* Under ``UNIFY_WORKSPACE_PYTHON=worker`` the request's text crosses the
+* In the sandboxed worker the request's text crosses the
   boundary (``worker.py``) and the worker builds its own ``Request`` from it,
   a fresh one for each cell (``worker_child.py``).
 

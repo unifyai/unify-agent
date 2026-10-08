@@ -1,6 +1,6 @@
-"""Symbolic: an environment observer sees a cell's calls in process and from the sandboxed worker.
+"""Symbolic: an environment observer sees a cell's calls from the sandboxed worker.
 
-Under ``UNIFY_WORKSPACE_PYTHON=worker`` a cell runs in a child process, and
+A cell runs in a child process (the sandboxed worker), and
 its ``primitives.<ns>.<method>`` call (or a raw global's ``apis.app.api``)
 comes back to the harness as an ``{"op": "call"}`` request, which the harness
 serves by calling the very wrapper an in-process cell calls. An observer
@@ -8,8 +8,8 @@ pushed with ``observing()`` where the harness runs the cell must therefore be
 in force when that request is served: each request is served in a task
 created from the running cell's context, so ``ContextVar`` scoping is the same
 as in process -- a cell outside the scope, or a cell of another session
-running at the same time, is not observed. Cells run in process and in the
-real sandboxed worker; no model is called.
+running at the same time, is not observed. Cells run in the real sandboxed
+worker; no model is called.
 """
 
 from __future__ import annotations
@@ -143,19 +143,11 @@ async def _cell(ex: SessionExecutor, code: str, session_id: int = 0) -> Any:
     return res["result"]
 
 
+# Cells run only in the sandboxed worker since the code freeze (the
+# in-process mode went with UNIFY_WORKSPACE_PYTHON).
 MODES = [
-    pytest.param("in_process", id="in_process"),
     pytest.param("worker", id="worker", marks=needs_bwrap),
 ]
-
-
-def _mode(monkeypatch, mode: str) -> None:
-    # Both pinned: the sandboxed worker is the default since the code freeze.
-    monkeypatch.setattr(
-        SETTINGS,
-        "UNIFY_WORKSPACE_PYTHON",
-        "worker" if mode == "worker" else "",
-    )
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -167,7 +159,6 @@ async def test_a_cells_environment_calls_reach_the_observer(
     monkeypatch,
     mode,
 ):
-    _mode(monkeypatch, mode)
     ex = _executor()
     try:
         # The session (and its worker) starts before any observer exists: the
@@ -229,7 +220,6 @@ async def test_a_raw_global_call_reaches_the_observer_when_a_feature_is_on(
     monkeypatch,
     mode,
 ):
-    _mode(monkeypatch, mode)
     # The switch does not exist yet: placed where ``getattr(SETTINGS, ...)`` finds it.
     monkeypatch.setitem(vars(SETTINGS), "UNIFY_SPECULATE", "writes")
     ex = _executor()
@@ -261,7 +251,6 @@ async def test_concurrent_worker_cells_keep_their_own_observer_scope(
 ):
     """Two sessions' workers serve calls at the same time; only the cell run
     inside ``observing()`` is observed, as two in-process tasks would be."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     ex = _executor()
     rec = Recorder()
     code = (

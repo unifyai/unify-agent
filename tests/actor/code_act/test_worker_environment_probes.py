@@ -22,7 +22,6 @@ import pytest
 
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor.execution.session import SessionExecutor
-from unify.settings import SETTINGS
 
 
 class NoSuchApp(Exception):
@@ -134,7 +133,6 @@ async def test_no_probe_reaches_the_environment_and_real_calls_work(
     apis_env,
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     ex = SessionExecutor(environments={})
     try:
         res = await ex.execute(

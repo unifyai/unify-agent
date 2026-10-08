@@ -1,8 +1,8 @@
-"""Python cells in a sandboxed child process (``UNIFY_WORKSPACE_PYTHON=worker``).
+"""Python cells in a sandboxed child process.
 
-With ``UNIFY_WORKSPACE=sandboxed`` and ``UNIFY_WORKSPACE_PYTHON=worker`` each
-Python session owns one :class:`PythonWorker`: a persistent ``python -I -S``
-started inside the workspace sandbox (unify/sandbox.py) -- scrubbed
+Each Python session owns one :class:`PythonWorker` (the
+``UNIFY_WORKSPACE_PYTHON=worker`` switch until the code freeze baked it in):
+a persistent ``python -I -S`` started inside the workspace sandbox (unify/sandbox.py) -- scrubbed
 environment, store read-only, state directory hidden, network per
 ``UNIFY_WORKSPACE_NETWORK``. Cells run there, so a cell's variables persist
 from one cell to the next exactly as in the in-process session, but the cell
@@ -100,13 +100,16 @@ _DUNDER_SENT = frozenset({"__sandbox_id__"})
 
 
 def enabled() -> bool:
-    """``UNIFY_WORKSPACE=sandboxed`` and ``UNIFY_WORKSPACE_PYTHON=worker``."""
-    from unify.settings import SETTINGS
+    """Whether Python runs in the sandboxed worker: always.
 
-    return (
-        sandbox.enabled()
-        and getattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "") == "worker"
-    )
+    The function manager's in-process loaders, which execute stored code in
+    this process, refuse while this holds (the #202 choke points). A test of
+    those loaders, which serve non-actor callers, patches this to ``False``
+    (tests' ``python_in_process`` fixture); the actor then refuses to start
+    (:func:`unify.actor.core_surface.require_prerequisites`), so a cell never
+    runs in this process.
+    """
+    return True
 
 
 class WorkerCellError(Exception):

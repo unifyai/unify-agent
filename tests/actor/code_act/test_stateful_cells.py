@@ -66,9 +66,7 @@ def test_off_by_default():
     assert not cell_state.enabled()
 
 
-@pytest.mark.parametrize("workspace", ["", "sandboxed"])
-def test_off_the_cell_tool_and_the_session_tools_are_as_shipped(monkeypatch, workspace):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", workspace)
+def test_off_the_cell_tool_and_the_session_tools_are_as_shipped(monkeypatch):
     tools = dict(_actor().get_tools("act"))
     params = _schema(tools, "execute_code")["function"]["parameters"]["properties"]
     assert {"state_mode", "session_id", "session_name"} <= set(params)
@@ -77,9 +75,7 @@ def test_off_the_cell_tool_and_the_session_tools_are_as_shipped(monkeypatch, wor
     assert "**state_mode**: omit it and the cell runs" in doc
 
 
-@pytest.mark.parametrize("workspace", ["", "sandboxed"])
-def test_on_execute_code_has_no_mode_and_no_session(monkeypatch, workspace):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", workspace)
+def test_on_execute_code_has_no_mode_and_no_session(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)
     tools = dict(_actor().get_tools("act"))
     code = _schema(tools, "execute_code")["function"]
@@ -228,7 +224,6 @@ async def test_a_cell_keeps_what_the_last_one_computed_in_the_sandboxed_worker(
     if surface == "core":
         (world["state"] / "store.sqlite").unlink()
         db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)

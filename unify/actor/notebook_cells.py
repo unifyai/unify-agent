@@ -107,7 +107,7 @@ def enabled() -> bool:
 class Capabilities:
     """What the session can do with a magic."""
 
-    #: ``%%bash``: the sandboxed workspace's shell (``UNIFY_WORKSPACE=sandboxed``).
+    #: ``%%bash``: the sandboxed workspace's shell.
     bash: bool = False
     #: ``%pip install``: the harness-side install into the workspace environment.
     install: bool = True
@@ -595,18 +595,10 @@ def describe(
             "environment, where they stay; the rest of the cell then runs.",
         )
     if caps.sessions:
-        from unify.actor.execution.worker import enabled as worker_enabled
-
-        # The worker runs a what-if on a full copy of the notebook. In process
-        # the copy holds the same objects (as `read_only` always has), so only
-        # what the cell binds is discarded; say so rather than promise more.
+        # The worker runs a what-if on a full copy of the notebook.
         what_if = (
             "- `%%what_if` runs it on a copy of this notebook; its changes are "
             "discarded."
-            if worker_enabled()
-            else "- `%%what_if` runs it on a copy of this notebook's names: the "
-            "names it binds are discarded, but an object it changes in place "
-            "(say, a list it appends to) stays changed."
         )
         magics += [
             "- `%%scratch` runs the cell in a fresh namespace that nothing keeps.",

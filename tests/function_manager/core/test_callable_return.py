@@ -5,16 +5,15 @@ import pytest
 from tests.helpers import _handle_project
 from unify.function_manager.execution_env import create_base_globals
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import SETTINGS
 
 
 @pytest.fixture(autouse=True)
 def _python_in_process(monkeypatch):
-    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty): these tests load
+    """Python in process (the function manager's in-process mode, for non-actor callers): these tests load
     stored functions into this process and call them. With the sandboxed
     worker a read binds them by source and nothing runs here
     (tests/actor/code_act/test_bind_load_confinement.py)."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @_handle_project

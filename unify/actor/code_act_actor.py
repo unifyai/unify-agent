@@ -29,7 +29,7 @@ from unify.actor.base import BaseCodeActActor
 from unify.common._async_tool import cell_reply
 from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
-from unify import environment, sandbox, transcripts
+from unify import environment, transcripts
 from unify.actor.workspace_tools import workspace_tools as _workspace_tools
 from unify.actor.grants import CALLER_GRANTS, ActorGrants
 from unify.actor.execution import (
@@ -3421,8 +3421,8 @@ class CodeActActor(BaseCodeActActor):
                         clarification_down_q=_clarification_down_q,
                         notification_q=notification_q,
                     ) as _steering:
-                        # Only UNIFY_WORKSPACE=sandboxed routes another
-                        # language here (see _workspace_tools).
+                        # The workspace tools route another language here
+                        # (see _workspace_tools).
                         _lang_kw = (
                             {"language": _language} if _language != "python" else {}
                         )
@@ -3549,8 +3549,7 @@ class CodeActActor(BaseCodeActActor):
                 display_label="Installing Python packages",
             ),
         }
-        if sandbox.enabled():
-            tools.update(_workspace_tools(execute_code))
+        tools.update(_workspace_tools(execute_code))
 
         # ── Proactive skill storage tool ──────────────────────────────
         if self.function_manager and self.guidance_manager:
@@ -3765,29 +3764,10 @@ class CodeActActor(BaseCodeActActor):
                     "error": f"Session {resolved} not found",
                     "error_type": "validation",
                 }
-            names: list[str] = []
-            full_map: dict[str, str] = {}
-            # UNIFY_WORKSPACE_PYTHON=worker: the variables live in the worker.
-            worker_variables = getattr(sb, "worker_variables", None)
-            in_worker = await worker_variables() if worker_variables else None
-            if in_worker is not None:
-                names, full_map = list(in_worker), dict(in_worker)
-            items = sb.global_state.items() if in_worker is None else ()
-            for k, v in items:
-                if not isinstance(k, str) or k.startswith("_"):
-                    continue
-                if callable(v) or isinstance(v, type):
-                    continue
-                names.append(k)
-                if detail == "full":
-                    try:
-                        s = repr(v)
-                        if len(s) > 500:
-                            s = s[:500] + "..."
-                    except Exception:
-                        s = f"<{type(v).__name__}>"
-                    full_map[k] = s
-            names = sorted(names)
+            # The variables live in the session's worker.
+            in_worker = await sb.worker_variables()
+            full_map: dict[str, str] = dict(in_worker)
+            names = sorted(in_worker)
             state_obj = {
                 "variables": full_map if detail == "full" else names,
                 "functions": [],
@@ -4079,10 +4059,8 @@ class CodeActActor(BaseCodeActActor):
             f"⏱️ [CodeActActor.act +{_act_ms()}] actor slot ready, creating sandbox",
         )
         # Packages installed by earlier tasks and sessions are importable
-        # before the first cell runs: here only where cells run in this
-        # process; the sandboxed worker puts them on its own path.
-        if environment.imports_in_process():
-            environment.activate()
+        # before the first cell runs: the sandboxed worker puts them on its
+        # own path.
         sandbox = PythonExecutionSession(environments=sandbox_envs)
         token = _CURRENT_SANDBOX.set(sandbox)
         env_token = _CURRENT_ENVIRONMENTS.set(sandbox_envs)
@@ -4226,14 +4204,12 @@ class CodeActActor(BaseCodeActActor):
         from unify.actor import notebook_cells
 
         if notebook_cells.enabled() and "execute_code" in base_tools:
-            from unify import sandbox as _workspace_sandbox
             from unify.actor.prompt_builders import _injects_actor_primitives
             from unify.actor.workspace_tools import _network_text
 
-            _workspace = _workspace_sandbox.enabled()
             base_tools = notebook_cells.project_tools(
                 base_tools,
-                caps=notebook_cells.Capabilities(bash=_workspace),
+                caps=notebook_cells.Capabilities(bash=True),
                 steering=(
                     core_session.prompt.steering if core_session is not None else True
                 ),
@@ -4241,7 +4217,7 @@ class CodeActActor(BaseCodeActActor):
                 parent_context=_injects_actor_primitives(sandbox_envs),
                 resolve_session_name=self._resolve_session_name,
                 session_tools=_act_tools,
-                network=_network_text() if _workspace else "",
+                network=_network_text(),
             )
 
         effective_guidelines = (

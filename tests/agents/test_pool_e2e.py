@@ -87,10 +87,7 @@ async def _run(scripts, monkeypatch, tmp_path):
 
     # As record mode will be screened: on lean-all, whose discovery gate is off
     # (the shipped gate forces a library search before any reply).
-    for key, value in {
-        "UNIFY_WORKSPACE": "sandboxed",
-        "UNIFY_WORKSPACE_PYTHON": "worker",
-    }.items():
+    for key, value in {}.items():
         monkeypatch.setattr(SETTINGS, key, value)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")
     actor = CodeActActor(

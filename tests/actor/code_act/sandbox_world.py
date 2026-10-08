@@ -71,7 +71,6 @@ def world(unify_home, monkeypatch, request):
     monkeypatch.setenv("DB_PASSWORD", TOKEN_VALUE)
     monkeypatch.setenv("UNIFY_SANDBOX_PROBE", "visible")
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0)
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)

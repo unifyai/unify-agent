@@ -23,7 +23,6 @@ and a failing run ends when the work does (4-6 s).
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 
 import pytest
@@ -110,70 +109,6 @@ async def test_a_tool_that_ignores_its_cancel_is_abandoned(jsonl_session, monkey
     assert str(reply["content"]).startswith("Cancelled")
     assert "abandoned" in str(reply["content"])
     assert tools.calls == 1
-
-
-@pytest.mark.asyncio
-async def test_a_cell_holding_the_loop_is_interrupted(
-    jsonl_session,
-    tmp_path,
-    monkeypatch,
-):
-    from unify.settings import SETTINGS
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    session, lines, send, tools = jsonl_session
-    tools.real_cells = True
-    marker = tmp_path / "cell-started"
-    code = (
-        "import time\n"
-        f"open({str(marker)!r}, 'w').write('started')\n"
-        f"time.sleep({STUBBORN_S})\n"
-        "print('the cell finished')"
-    )
-    model = _Model(
-        lambda n: (
-            h.completion(
-                content=DRAFT,
-                calls=[("execute_code", {"thought": "Studying.", "code": code})],
-            )
-            if n == 1
-            else None
-        ),
-    )
-    sent_at: list[float] = []
-
-    def host() -> None:
-        # The event loop is held by the cell, so the host's side runs on a
-        # thread: it sends the cancel once the cell has started.
-        deadline = time.monotonic() + 20
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        sent_at.append(time.monotonic())
-        send({"cancel": True})
-
-    with h.scripted(()):
-        _install(model)
-        run = asyncio.create_task(session.run(base.TASK))
-        threading.Thread(target=host, daemon=True).start()
-        await _until(lambda: "response" in _types(lines), 20)
-        answered_at = time.monotonic()
-        model.release.set()
-        code_ = await _finish(run, send, lines)
-
-    elapsed = answered_at - sent_at[0]
-    assert elapsed < BOUND_S, f"the cancelled response took {elapsed:.1f}s"
-    assert code_ == 0
-    assert _types(lines) == ["response", "response", "result", "ended"]
-    cancelled = next(line for line in lines if line["type"] == "response")
-    assert cancelled["cancelled"] is True
-    (reply,) = [
-        m
-        for m in _follow_up_request(model)
-        if m.get("role") == "tool" and m.get("name") == "execute_code"
-    ]
-    # Interrupted (it would have slept 5 s), then answered as cancelled.
-    assert str(reply["content"]).startswith("Cancelled")
-    assert "the cell finished" not in str(reply["content"])
 
 
 def test_a_signal_outside_a_cell_interrupts_nothing():

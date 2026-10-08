@@ -199,7 +199,7 @@ def test_on_with_recorded_cases_a_change_reports_both(lint, monkeypatch):
     # UNIFY_FUNCTION_CASES reports the replay with the status; the warning
     # comes after it, and a patch returns each under its own key. Python in
     # this process: with it in the worker nothing is replayed.
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
     fm = FunctionManager()
     base = "def make_playlist(title: str) -> dict:\n    return {'title': title}\n"
     fm.add_functions(implementations=[base])

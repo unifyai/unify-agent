@@ -11,9 +11,9 @@ annotation is dropped, because an annotated name cannot be declared global).
 Off, it is the names bound by top-level assignments, imports, defs and
 classes only, as shipped. Nested scopes keep their own names either way.
 
-Cells run through the real ``SessionExecutor``: in this process, and in the
-sandboxed worker (``UNIFY_WORKSPACE_PYTHON=worker``, skipped, saying so,
-where bubblewrap is missing). Nothing here reaches a model.
+Cells run through the real ``SessionExecutor``, in the sandboxed worker
+(skipped, saying so, where bubblewrap is missing). Nothing here reaches a
+model.
 """
 
 from __future__ import annotations
@@ -41,13 +41,9 @@ def last_line(error) -> str:
     return str(error).strip().splitlines()[-1] if error else ""
 
 
-@pytest.fixture(params=["in_process", pytest.param("worker", marks=needs_bwrap)])
-def where(request, monkeypatch):
-    if request.param == "worker":
-        request.getfixturevalue("world")
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-    else:
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+@pytest.fixture(params=[pytest.param("worker", marks=needs_bwrap)])
+def where(request):
+    request.getfixturevalue("world")
     return request.param
 
 

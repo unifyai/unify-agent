@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_WORKSPACE=sandboxed`` runs shell cells and cell subprocesses confined.
+"""Symbolic: the workspace sandbox runs shell cells and cell subprocesses confined.
 
 Nothing here reaches a model. Cells run through the real ``SessionExecutor``
 and the confinement is the real bubblewrap; tests that need bubblewrap are
@@ -34,50 +34,12 @@ from unify.settings import ProductionSettings, SETTINGS
 # ── settings ────────────────────────────────────────────────────────────────
 
 
-def test_settings_default_sandboxed_and_reject_unknown_values():
+def test_settings_default_no_network_and_reject_unknown_values():
     s = ProductionSettings()
-    # The workspace is sandboxed by default since the code freeze.
-    assert s.UNIFY_WORKSPACE == "sandboxed" and s.UNIFY_WORKSPACE_NETWORK == ""
+    assert s.UNIFY_WORKSPACE_NETWORK == ""
     assert s.UNIFY_WORKSPACE_PROXY_PORT == 0
-    assert ProductionSettings(UNIFY_WORKSPACE="Sandboxed").UNIFY_WORKSPACE == (
-        "sandboxed"
-    )
-    with pytest.raises(ValueError):
-        ProductionSettings(UNIFY_WORKSPACE="yolo")
     with pytest.raises(ValueError):
         ProductionSettings(UNIFY_WORKSPACE_NETWORK="host")
-
-
-# ── off: exactly as shipped ─────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_off_python_cell_subprocesses_are_not_confined(monkeypatch, tmp_path):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "")
-    # Even with the Popen wrapper installed by an earlier sandboxed cell, a
-    # subprocess started outside a sandboxed cell runs as shipped.
-    sandbox._install_popen_patch()
-    outside = tmp_path / "written-by-subprocess"
-    executor = SessionExecutor()
-    res = await executor.execute(
-        code=(
-            "import subprocess, os\n"
-            f"subprocess.run(['touch', {str(outside)!r}], check=True)\n"
-            "os.environ.get('FAKE_SERVICE_TOKEN')"
-        ),
-        state_mode="stateless",
-        session_id=None,
-    )
-    assert res["error"] is None and outside.exists()
-    needs_switch = "UNIFY_WORKSPACE=sandboxed"  # pragma: allowlist secret
-    with pytest.raises(ToolInputError, match=needs_switch):
-        await executor.execute(
-            code="echo hi",
-            state_mode="stateful",
-            session_id=0,
-            language="bash",
-        )
-    await executor.close()
 
 
 # ── bash sessions ────────────────────────────────────────────────────────────

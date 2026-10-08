@@ -40,7 +40,6 @@ from unify.function_manager.primitives.environment import (
     clear_environment_namespaces,
     namespace_object,
 )
-from unify.settings import SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 TRIPLE_AS_DOUBLE = "def double(x: int) -> int:\n    return x * 3\n"
@@ -139,7 +138,7 @@ def in_process_python(monkeypatch):
     """Python in this process: these cases are recorded and replayed here. With
     Python in the sandboxed worker nothing is replayed (test_case_replay_confinement).
     """
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @pytest.fixture
@@ -780,7 +779,10 @@ def test_a_case_recorded_before_redaction_replays_unredacted(
     assert old.salt is None and old.call["args"][1] == PASSWORD
     assert old.trace[0]["result"]["access_token"] == TOKEN
     monkeypatch.undo()
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")  # undone above
+    monkeypatch.setattr(
+        "unify.actor.execution.worker.enabled",
+        lambda: False,
+    )  # undone above
     out = fm.add_functions(implementations=[SYNC_REWRITTEN], overwrite=True)
     assert out["sync"] == "updated; cases: 1 recorded call(s) replayed unchanged"
 

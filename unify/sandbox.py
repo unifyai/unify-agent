@@ -1,7 +1,8 @@
-"""OS confinement for the shell and file access the actor gets (``UNIFY_WORKSPACE``).
+"""OS confinement for the shell and file access the actor gets.
 
-With ``UNIFY_WORKSPACE=sandboxed`` every shell cell, and every subprocess a
-Python cell starts, runs inside bubblewrap (Linux) under one policy:
+Every shell cell, every subprocess a Python cell starts, and the sandboxed
+Python worker run inside bubblewrap (Linux) under one policy (the
+``UNIFY_WORKSPACE=sandboxed`` switch until the code freeze baked it in):
 
 * The root is an allowlist, read-only (:data:`_ROOT_ALLOWLIST`): the system
   directories (``/usr``, ``/bin``, ``/lib*``, ``/sbin``), a few files of
@@ -86,7 +87,6 @@ __all__ = [
     "build_policy",
     "check_readable",
     "confined_subprocesses",
-    "enabled",
     "scrubbed_env",
     "unconfined",
     "wrap_argv",
@@ -95,8 +95,8 @@ __all__ = [
 # Rule name -> what it does, as a refused action reports it.
 RULES: dict[str, str] = {
     "sandbox-required": (
-        "UNIFY_WORKSPACE=sandboxed runs shell commands only inside bubblewrap, "
-        "never unconfined"
+        "shell commands and Python cells run only inside bubblewrap, never "
+        "unconfined"
     ),
     "workspace-write": (
         "only the workspace and a private /tmp are writable; everything else is "
@@ -238,13 +238,6 @@ class SandboxRefusal(ToolInputError):
             f"Refused by workspace sandbox rule `{rule}` ({RULES[rule]}): {detail}",
             suggestion=suggestion,
         )
-
-
-def enabled() -> bool:
-    """Whether ``UNIFY_WORKSPACE=sandboxed``."""
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_WORKSPACE", "") == "sandboxed"
 
 
 # ---------------------------------------------------------------------------
@@ -847,10 +840,7 @@ def require_bwrap() -> str:
             "sandbox-required",
             "bubblewrap (bwrap) is not available on this machine, so the command "
             "was not run",
-            suggestion=(
-                "Install bubblewrap (apt install bubblewrap), or unset "
-                "UNIFY_WORKSPACE to run without shell cells and file tools."
-            ),
+            suggestion="Install bubblewrap (apt install bubblewrap).",
         )
     return path
 

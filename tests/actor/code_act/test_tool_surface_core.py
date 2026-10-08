@@ -222,16 +222,13 @@ async def test_the_actor_refuses_to_start_without_confinement(
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     actor = _actor(can_store=False)
     try:
-        # Cells in this process would hold the real store.
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-        with pytest.raises(core_surface.ToolSurfaceError, match="PYTHON=worker"):
+        # Cells in this process (a test of the function manager's
+        # in-process loaders) would hold the real store.
+        monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
+        with pytest.raises(core_surface.ToolSurfaceError, match="sandboxed worker"):
             await actor.act("Do the task.")
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "")
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-        with pytest.raises(core_surface.ToolSurfaceError, match="WORKSPACE=sandboxed"):
-            await actor.act("Do the task.")
+        monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: True)
         # execute_code is the surface's only tool.
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
         with pytest.raises(core_surface.ToolSurfaceError, match="can_compose"):
             await actor.act("Do the task.", can_compose=False)
     finally:

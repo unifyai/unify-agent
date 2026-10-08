@@ -84,9 +84,6 @@ def _flat(text: str) -> str:
 def bound(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    # In-process cells are the JSON tools' (the core surface needs the
-    # worker); its tests use core_world.
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "")
 
 
@@ -397,24 +394,10 @@ async def _cell_checks(ex: SessionExecutor) -> None:
         bound_request.unbind(token)
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_a_cell_reads_the_request_in_process(bound):
-    ex = SessionExecutor()
-    try:
-        started = time.monotonic()
-        await _cell_checks(ex)
-        assert time.monotonic() - started < SESSION_BOUND_S
-        assert ex.python_session(session_id=0)._worker is None
-    finally:
-        await ex.close()
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(20)
 async def test_a_cell_reads_the_request_in_the_worker(bound, world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     ex = SessionExecutor()
     try:
         await _run(ex, "1")  # starts the worker

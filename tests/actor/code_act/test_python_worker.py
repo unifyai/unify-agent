@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_WORKSPACE_PYTHON=worker`` runs Python cells in a sandboxed child.
+"""Symbolic: Python cells run in a sandboxed child (the worker).
 
 Nothing here reaches a model. Cells run through the real ``SessionExecutor``,
 the worker is a real child process inside the real bubblewrap policy, and the
@@ -27,7 +27,7 @@ from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
 from unify.actor.execution import worker as worker_mod
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 
 def process_id() -> str:
@@ -132,7 +132,6 @@ def executor_with_fakes(timeout=None):
 
 @pytest.fixture
 def worker_world(world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     return world
 
 
@@ -143,52 +142,6 @@ async def run(ex, code, *, mode="stateful", session_id=0):
         session_id=session_id if mode != "stateless" else None,
     )
     return parts_to_text(res["stdout"]), res
-
-
-# ── settings and the switch off ─────────────────────────────────────────────
-
-
-def test_setting_defaults_to_the_worker_and_rejects_unknown_values():
-    # The worker is the default since the code freeze.
-    assert ProductionSettings().UNIFY_WORKSPACE_PYTHON == "worker"
-    assert (
-        ProductionSettings(UNIFY_WORKSPACE_PYTHON="Worker").UNIFY_WORKSPACE_PYTHON
-        == "worker"
-    )
-    with pytest.raises(ValueError):
-        ProductionSettings(UNIFY_WORKSPACE_PYTHON="subprocess")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("workspace", ["", "sandboxed"])
-async def test_without_the_worker_switch_cells_run_in_process(
-    workspace,
-    monkeypatch,
-    world,
-):
-    # UNIFY_WORKSPACE unset, or sandboxed with the sub-switch unset: the
-    # cell is exec'd in this process exactly as before.
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", workspace)
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    # The sub-switch alone does nothing either.
-    if not workspace:
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-    ex, calls = executor_with_fakes()
-    try:
-        out, res = await run(
-            ex,
-            "import os\nx = 41\nr = await primitives.files.search('q', limit=1)\n"
-            f"print({PROCESS_ID}, r['hits'])\ntype(primitives.files).__name__",
-        )
-        assert res["error"] is None
-        assert out.split(maxsplit=1) == [str(HARNESS_PID), "['q-0']\n"]
-        assert res["result"] == "FakeFiles"
-        out, res = await run(ex, "x + 1")
-        assert res["result"] == 42
-        assert ex.python_session(session_id=0)._worker is None
-        assert calls == [("search", "q", 1, HARNESS_PID)]
-    finally:
-        await ex.close()
 
 
 # ── the worker ───────────────────────────────────────────────────────────────
@@ -730,19 +683,6 @@ async def test_inspect_state_reads_the_workers_variables(worker_world):
         _CURRENT_SANDBOX.reset(token)
         await sandbox_session.close()
         await actor.close()
-
-
-@pytest.mark.asyncio
-async def test_inspect_state_without_the_worker_reads_the_namespace(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    ex, _ = executor_with_fakes()
-    try:
-        await run(ex, "colour = 'teal'")
-        sb = ex.python_session(session_id=0)
-        assert await sb.worker_variables() is None
-        assert sb.global_state["colour"] == "teal"
-    finally:
-        await ex.close()
 
 
 def worker_pid(ex) -> int:

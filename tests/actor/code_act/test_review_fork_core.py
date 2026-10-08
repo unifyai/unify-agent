@@ -233,8 +233,6 @@ def _recorded_session(tool: str = "execute_code"):
 @pytest.fixture
 def core_switches(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
 
 
 def test_the_fork_source_is_marked_core(core_switches):
@@ -246,7 +244,6 @@ def test_the_fork_source_is_marked_core(core_switches):
 @pytest.mark.parametrize(
     "case, reason",
     [
-        ("no worker", "needs UNIFY_WORKSPACE=sandboxed and UNIFY_WORKSPACE_PYTHON"),
         ("store verify", "UNIFY_STORE_VERIFY"),
         ("no execute_code", "no execute_code"),
     ],
@@ -257,8 +254,6 @@ def test_the_core_review_falls_back_and_says_why(
     case,
     reason,
 ):
-    if case == "no worker":
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     if case == "store verify":
         from unify.function_manager import store_verify
 

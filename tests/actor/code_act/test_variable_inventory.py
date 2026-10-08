@@ -66,7 +66,6 @@ def _cell_ns(source: str, ns: dict | None = None) -> tuple[dict, dict]:
 @pytest.fixture
 def on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_VARIABLE_INVENTORY", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
 
 
 # ── the switch ───────────────────────────────────────────────────────────
@@ -391,30 +390,10 @@ async def _drive(ex: SessionExecutor, bound: float = SESSION_BOUND_S) -> list:
     return seen
 
 
-@pytest.mark.asyncio
-@pytest.mark.timeout(20)
-async def test_the_session_reports_its_variables_in_process(on, monkeypatch):
-    # The harness's own names stay out under the switches that add them.
-    monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    from unify.common._async_tool import bound_request
-
-    token = bound_request.bind(True)
-    bound_request.current().text = "[[1, 2]]"
-    ex = SessionExecutor()
-    try:
-        assert await _drive(ex) == EXPECTED
-        assert ex.python_session(session_id=0)._worker is None
-    finally:
-        bound_request.unbind(token)
-        await ex.close()
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(90)
 async def test_the_worker_reports_the_same(on, world, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
     from unify.common._async_tool import bound_request
@@ -536,7 +515,6 @@ async def test_an_act_on_the_core_surface_lists_the_workers_variables(
     cells run in the worker, which lists what they bound and not those."""
     from tests.actor.code_act.core_world import new_actor
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = new_actor()
     try:

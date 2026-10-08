@@ -143,22 +143,16 @@ async def test_at_legacy_the_actors_first_request_is_the_default_one(monkeypatch
 
 # ── the prompt and the schema ───────────────────────────────────────────────
 
-#: (tool surface, workspace python, sandboxed workspace, prompt profile)
+#: (tool surface, prompt profile)
 CONFIGS = [
-    ("core", "worker", "sandboxed", ""),
-    ("core", "worker", "sandboxed", "lean"),
-    ("", "", "sandboxed", ""),
-    ("", "", "sandboxed", "lean"),
-    ("", "", "", ""),
-    ("", "", "", "lean"),
+    ("core", ""),
+    ("core", "lean"),
 ]
 
 
 async def _first_request(monkeypatch, projection: str, config) -> dict:
-    surface, python, workspace, profile = config
+    surface, profile = config
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", python)
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", workspace)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = new_actor(can_store=False)
@@ -206,7 +200,7 @@ async def test_the_projected_prompt_is_the_legacy_prompt_with_the_magics(
         assert tool["parameters"]["required"] == ["code"], config
         for field in FIELDS + ("thought",):
             assert field not in tool["description"], (config, field)
-        assert ("%%bash" in tool["description"]) == bool(config[2]), config
+        assert "%%bash" in tool["description"], config
         assert "%sessions" in tool["description"]
         assert "thought" in _execute_code(legacy)["parameters"]["properties"]
     # Every rewrite applies to some shipped prompt: a reworded prompt fails

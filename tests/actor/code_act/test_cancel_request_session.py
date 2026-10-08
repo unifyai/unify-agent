@@ -301,58 +301,6 @@ async def test_a_cancel_ends_a_request_waiting_on_a_running_tool(jsonl_session):
 
 
 @pytest.mark.asyncio
-async def test_a_cancel_ends_a_request_waiting_on_a_running_cell(
-    jsonl_session,
-    tmp_path,
-    monkeypatch,
-):
-    """The actor's own ``execute_code``, in process, on a cell that awaits
-    for an hour (as the recorded cell awaited its ``query_llm`` call)."""
-    from unify.settings import SETTINGS
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    session, lines, send, tools = jsonl_session
-    tools.real_cells = True
-    marker = tmp_path / "cell-started"
-    code = (
-        "import asyncio\n"
-        f"open({str(marker)!r}, 'w').write('started')\n"
-        "await asyncio.sleep(3600)\n"
-        "print('the cell finished')"
-    )
-    model = _Model(
-        lambda n: (
-            h.completion(
-                content=DRAFT,
-                calls=[("execute_code", {"thought": "Studying.", "code": code})],
-            )
-            if n == 1
-            else None
-        ),
-    )
-    with h.scripted(()):
-        import unillm.clients.uni_llm as uni_llm
-
-        uni_llm._acompletion_with_transient_retry = model
-        run = asyncio.create_task(session.run(TASK))
-        await _until(marker.exists)
-        elapsed = await _cancel(send, lines)
-        model.release.set()
-        code_ = await _finish(run, send, lines)
-
-    assert code_ == 0
-    assert elapsed < CANCEL_BOUND_S
-    assert _types(lines) == ["response", "response", "result", "ended"]
-    cancelled = next(line for line in lines if line["type"] == "response")
-    assert cancelled == {"type": "response", "content": DRAFT, "cancelled": True}
-    turn = _follow_up_request(model)
-    (reply,) = [
-        m for m in turn if m.get("role") == "tool" and m.get("name") == "execute_code"
-    ]
-    assert str(reply["content"]).startswith("Cancelled")
-
-
-@pytest.mark.asyncio
 async def test_a_cancel_with_no_request_running_is_ignored(jsonl_session):
     """Each request still ends in exactly one response line."""
     session, lines, send, _tools = jsonl_session

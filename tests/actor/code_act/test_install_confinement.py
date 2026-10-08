@@ -4,8 +4,8 @@ A stored function's ``dependencies``, ``install(...)`` from a cell and
 ``%pip install`` all name packages the model chose, and the harness installs
 them with ``uv`` into the workspace environment. An install can run the
 package's build steps (an sdist's ``setup.py`` or build backend), so a
-model-chosen package runs code wherever ``uv`` runs. With
-``UNIFY_WORKSPACE=sandboxed`` the installer therefore runs inside bubblewrap
+model-chosen package runs code wherever ``uv`` runs. The
+installer therefore runs inside bubblewrap
 like a shell cell: credentials hidden, ``/`` read-only, and only the
 environment and the installer's own cache writable. It keeps the network the
 harness gives it today (it has to reach the package index). Wherever it runs,
@@ -20,7 +20,6 @@ what it can see and touch.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -137,24 +136,6 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
     # The index has to be reachable; nothing else about the network changes.
     assert "--share-net" in options
     assert env["TMPDIR"] == "/tmp"
-
-
-def test_without_the_sandbox_the_installer_still_gets_a_minimal_environment(
-    monkeypatch,
-    unify_home,
-    credentials,
-    launched,
-):
-    from unify.settings import SETTINGS
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "")
-    monkeypatch.setenv("UNIFY_SANDBOX_PROBE", "visible")
-    environment.install(["humanize"])
-    for argv, env, _ in launched:
-        assert argv[0] == "uv"
-        assert env is not None and _secret_named(env) == []
-        assert "UNIFY_SANDBOX_PROBE" not in env
-        assert env.get("PATH") == os.environ["PATH"]
 
 
 def test_an_install_takes_packages_never_installer_options(

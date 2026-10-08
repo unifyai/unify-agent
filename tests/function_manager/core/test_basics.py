@@ -17,7 +17,6 @@ from __future__ import annotations
 import pytest
 from tests.helpers import _handle_project
 from unify.function_manager.function_manager import FunctionManager
-from unify.settings import SETTINGS
 
 
 def _FM(**kwargs) -> FunctionManager:
@@ -587,9 +586,9 @@ def test_clear():
 
 @pytest.fixture
 def python_in_process(monkeypatch):
-    """Python in process (``UNIFY_WORKSPACE_PYTHON`` empty): ``_inject_dependencies`` loads stored callees into this process. With the
+    """Python in process (the function manager's in-process mode, for non-actor callers): ``_inject_dependencies`` loads stored callees into this process. With the
     sandboxed worker it refuses (tests/actor/code_act/test_bind_load_confinement.py)."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
 
 
 @_handle_project
