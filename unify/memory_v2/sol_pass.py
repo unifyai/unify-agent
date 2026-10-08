@@ -39,7 +39,7 @@ from . import manifest as _manifest
 from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
-from .gate import Gate
+from .gate import Gate, ParentSnapshot
 from .gitio import Repo
 from .index import build_index
 from .redact import KEY_SHAPED
@@ -62,6 +62,8 @@ EXPORT_TOTAL_BYTES = 32 * 1024**2
 MAX_CHECKS = 5
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
+# A check starts only with at least this much of the pass deadline left (it runs to completion).
+CHECK_FLOOR_S = 60.0
 
 _RULES_HEADING = "Manifest rules for consolidators"
 
@@ -292,13 +294,14 @@ class PassOutcome:
     passed: bool
     commit: str | None
     usd: str
-    calls: int
+    calls: int  # model calls plus check calls: both count against PassConfig.max_calls
     reasons: list[str] = field(default_factory=list)
     summary: str = ""
     unknown_cost_calls: int = 0
     codes: list[str] = field(
         default_factory=list,
     )  # structured causes (the CODE_* constants)
+    checks: int = 0  # check calls run (included in calls)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -840,33 +843,37 @@ class SolPass:
             content += f"\n(exit status {r.returncode})"
         return content
 
-    def _check(self, raw: object, box: Path, parent: str) -> str:
-        """The ``check`` tool: :meth:`.gate.Gate.preview` of a manifest against a copy of *box*, host-side.
+    def _check(
+        self,
+        raw: object,
+        box: Path,
+        base: ParentSnapshot | str,
+    ) -> tuple[str, str | None]:
+        """The ``check`` tool: (reply, host-side detail of an error). Runs on the loop's thread.
 
-        The copy is what the commit would hold (:func:`_mirror` without ``.pass``), so the box is only read.
-        Called between cells, when no box runs, after :func:`_measure` made every entry readable.
+        :meth:`.gate.Gate.preview` of a manifest against a copy of *box*: the copy is what the commit would
+        hold (:func:`_mirror` without ``.pass``), so the box is only read. Called between cells, when no box
+        runs, after :func:`_measure` made every entry readable. It stays on the event loop's thread, as
+        :meth:`.gate.Gate.merge` does, because the evidence store's connection belongs to that thread. An
+        error is answered with its type only (its text can name host paths) and returned as the detail.
         """
         manifest, problem = _check_manifest(raw)
         if problem is not None:
-            return problem
+            return problem, None
         try:
             with tempfile.TemporaryDirectory(prefix="memv2-check-") as tmp:
                 tree = Path(tmp) / "tree"
                 tree.mkdir()
                 _mirror(box, tree, skip_top=frozenset({".pass"}))
-                reasons = self.gate.preview(parent, tree, manifest)
+                reasons = self.gate.preview(base, tree, manifest)
         except Exception as exc:  # a broken check never ends the pass
-            return _redact(f"check error: {type(exc).__name__}: {exc}")[
-                :_CHECK_REASON_CHARS
-            ]
-        return _check_reply(reasons)
+            detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
+            return f"check error: {type(exc).__name__}", detail
+        return _check_reply(reasons), None
 
     async def _run_cell(self, *args) -> str:
-        return await self._off_loop(self._cell, *args)
-
-    async def _off_loop(self, fn: Callable[..., str], *args) -> str:
-        """*fn* on a worker thread; on cancellation, wait for it before the pass cleans up."""
-        fut = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+        """The confined cell on a worker thread; on cancellation, wait for the box before the pass cleans up."""
+        fut = asyncio.ensure_future(asyncio.to_thread(self._cell, *args))
         try:
             return await asyncio.shield(fut)
         except asyncio.CancelledError:
@@ -929,6 +936,9 @@ class SolPass:
         reserve = cap / max_calls if max_calls > 0 else cap
         deadline = time.monotonic() + float(self.cfg.deadline_s)
         calls, checks, summary = 0, 0, ""
+        base: ParentSnapshot | str | None = (
+            None  # the parent, taken once for every check
+        )
         notes: list[str] = []
         stop: str | None = None  # why no further cell runs: deadline or quota
         over_quota: str | None = None
@@ -957,6 +967,7 @@ class SolPass:
                 summary,
                 spend.unknown,
                 [CODE_OK] if passed else list(causes),
+                checks,
             )
 
         with (
@@ -1062,19 +1073,31 @@ class SolPass:
                             )
                         elif calls >= max_calls:
                             content = "not run: the pass's call cap is reached"
-                        elif remaining() <= 0:
-                            stop = f"pass deadline of {self.cfg.deadline_s} s reached"
-                            cause(CODE_DEADLINE)
-                            content = f"not run: {stop}"
+                        elif remaining() < CHECK_FLOOR_S:
+                            content = (
+                                "not run: too little time left before the pass deadline"
+                            )
                         else:
                             checks += 1
                             calls += 1  # a check is a call against max_calls
-                            content = await self._off_loop(
-                                self._check,
+                            if base is None:
+                                try:
+                                    base = self.gate.parent_snapshot(
+                                        parent,
+                                        Path(tmp) / "check-parent",
+                                    )
+                                except (
+                                    Exception
+                                ):  # GitError, OSError: the preview retries
+                                    base = None
+                                base = base or parent
+                            content, detail = self._check(
                                 args.get("manifest"),
                                 box,
-                                parent,
+                                base,
                             )
+                            if detail is not None:
+                                notes.append(detail)
                     elif name != "execute_code":
                         content = (
                             f"unknown tool {name!r}; use execute_code, check or finish"[

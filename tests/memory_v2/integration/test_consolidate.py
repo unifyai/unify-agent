@@ -421,6 +421,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "usd",
         "unknown_cost_calls",
         "calls",
+        "checks",
         "seconds",
         "gate_passed",
         "items",
@@ -430,6 +431,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     assert end["phase"] == "end" and end["pass_id"] == "e1.p0"
     assert end["usd"] == "0.0000001" and MONEY.match(end["usd"])
     assert (end["calls"], end["unknown_cost_calls"], end["seconds"]) == (1, 0, 2.5)
+    assert end["checks"] == 0
     assert end["gate_passed"] is False and end["reason_codes"] == ["no_manifest"]
     assert end["items"] == 0 and isinstance(end["index_tokens"], int)
     assert _events(stores) == got  # the same rows, always appended to the events file

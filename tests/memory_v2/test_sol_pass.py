@@ -1088,3 +1088,73 @@ def test_sol_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
 def test_sol_system_tells_sol_to_check_before_finish():
     assert "call check(manifest)" in SOL_SYSTEM
     assert "fix every reason it returns" in SOL_SYSTEM
+
+
+def _store_backed(tmp_path, model, **cfg):
+    """A pass over e1 (venmo and slack actions) whose lookups read the evidence store, as production's do."""
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ep = _marked([_ME, _SLACK])
+    ev.index_episode(ep, "1" * 40)
+
+    def lookup(eid, i):  # the store's connection belongs to the thread that opened it
+        ok = ev.episode_exists(eid) and 0 <= i < len(ep.actions)
+        return ep.actions[i] if ok else None
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    cfg.setdefault("max_calls", 10)
+    sol = SolPass(
+        mem,
+        gate,
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(**cfg),
+    )
+    return mem, ev, sol
+
+
+_MISPLACED = {
+    **MAN,
+    "items": [
+        {**ITEM, "item": "env/slack:me", "tests": ["env/slack/tests/test_me.py"]},
+    ],
+}
+
+
+def test_check_with_an_item_returns_the_gates_reasons_on_the_stores_thread(tmp_path):
+    model = Turns([_checks("k", [json.dumps(_MISPLACED)])])
+    mem, ev, sol = _store_backed(tmp_path, model)
+    out = asyncio.run(sol.run(PassRequest("incremental", "venmo", ["e1"], False), "pt"))
+    reply = model.outputs["k1"]
+    assert "check error" not in reply, reply
+    assert (
+        "G2: env/slack:me covers (e1,0), a tool action on venmo" in reply.splitlines()
+    )
+    assert out.checks == 1 and out.calls == 3
+
+
+def test_check_is_refused_when_too_little_of_the_deadline_is_left(tmp_path):
+    model = Turns([_checks("k", ["{}"])])
+    mem, ev, sol = _sol(tmp_path, model, deadline_s=30.0)
+    out = _run(sol)
+    assert (
+        model.outputs["k1"] == "not run: too little time left before the pass deadline"
+    )
+    assert out.checks == 0 and out.calls == 2
+
+
+def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
+    tmp_path,
+    monkeypatch,
+):
+    model = Turns([_checks("k", ["{}"])])
+    mem, ev, sol = _sol(tmp_path, model)
+
+    def broken(*a, **kw):
+        raise OSError("cannot read /tmp/memv2-check-host/tree/x")
+
+    monkeypatch.setattr(sol.gate, "preview", broken)
+    out = _run(sol)
+    assert model.outputs["k1"] == "check error: OSError"
+    assert any("/tmp/memv2-check-host" in r for r in out.reasons), out.reasons
