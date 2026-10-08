@@ -2,18 +2,25 @@
 
 Standard library only, and no other module of this package is imported, so the file can be copied
 into an offline analyser as it is. The harness computes the record at a request's ``finish``
-(:func:`request_use` over the request's transcript lines, the memory items at its pin and its recorded
-actions) and the offline funnel analyser recomputes it from an exported episode directory
-(:func:`use_from_episode_dir`); both run the same code.
+(:func:`request_use` over the request's redacted transcript lines, the memory items at its pin, its
+recorded actions, its ``memory.diff``, the export's root and the library's import surface at the pin)
+and the offline funnel analyser recomputes it from an exported episode directory
+(:func:`use_from_episode_dir`); both run the same code on the same bytes.
 
 Everything is structural. Imports and calls come from each cell's syntax tree; errors come from the
-frames of the traceback the cell's result records (its ``error`` field), by file path and function
-name. No message, output or other text is read for meaning, and nothing is keyed on a task.
+frames of the traceback in the executor's metadata block of the cell's result (its ``error`` field,
+never the cell's printed output), by file path and function name. Text is read only for its structure:
+the traceback's header, frame and chaining lines and the exception's type token, the index's channel
+headings and item lines, and the diff's file headers. An exception message is never read for meaning;
+a message deliberately written to imitate CPython's chain line, header and frame lines could still
+forge a block. Nothing is keyed on a task.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 
 * ``imported``: import statements that bind the item by name (``from env.<channel> import name``,
-  aliases included, and ``from env.<channel> import *``);
+  aliases included, and ``from env.<channel> import *``, which binds the module's ``__all__``, or its
+  public names when it has none, as at the pin); a name another channel re-exports
+  (``from env.b import g`` in ``env/a/__init__.py``) resolves to the defining item ``env/b:g``;
 * ``called``: call sites in cell code whose callee resolves to the item (a bound name or alias, an
   ``env.<channel>.name`` or ``<module alias>.name`` attribute, or a plain assignment of one of these);
   a static count of sites, not of executions;
@@ -22,9 +29,12 @@ Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/
   there leaves no traceback, so it cannot be counted);
 * ``refused``: exceptions whose type is ``MemoryInputError`` and which left the item into cell code
   (see :func:`attribute_errors`); ``errored``: any other exception that left the item;
-* ``refused_then_accepted``: refusals followed, in a later cell of the same request, by an action on the
-  item's channel that the environment recorded as ``ok`` (a channel-level proxy for "the environment
-  accepted the input when it was handled directly"; the input itself is not compared).
+* ``modified_in_request``: the request's ``memory.diff`` changed a file of the item's channel (the
+  scratch export the cells import from), so its refusals and errors are booked as ``refused_modified``
+  and ``errored_modified`` instead: the code that raised may be the agent's edit, not the stored item;
+* ``refused_then_accepted``: (unmodified) refusals followed, in a later cell of the same request, by an
+  action on the item's channel that the environment recorded as ``ok`` (a channel-level proxy for "the
+  environment accepted the input when it was handled directly"; the input itself is not compared).
 
 Calls the syntax tree cannot resolve to one item (``getattr(module, name)(...)``, ``vars(module)``,
 ``importlib.import_module("env...")``, a module's ``__dict__``) are counted per channel in
@@ -32,9 +42,15 @@ Calls the syntax tree cannot resolve to one item (``getattr(module, name)(...)``
 are channels of the pin, ``*``, or ``?`` for a name the pin has no channel for (no text from cell code is
 kept beyond item ids and channel names).
 
-``memory_section_shown`` describes the memory index in the request's system prompts: the text from the
-index's fixed header to the end of the prompt (the harness appends the index last), as a SHA-256, its
-UTF-8 byte count and the index's own token estimate (characters / 4).
+Names bound by a cell persist into later cells of the same execution session (the result metadata's
+``session_id``) and are dropped when a result reports a new session (``session_created``).
+
+``memory_section_shown`` describes the memory section of the request's system prompts: the text from the
+index's fixed header to the end of the prompt (the harness appends it last), as a SHA-256, its UTF-8 byte
+count and the index's own token estimate (characters / 4). ``shown_channels`` are the channels it names
+(``## env.<channel>`` headings, or ``- env.<channel>`` catalogue lines) and ``shown_items`` the items whose
+own lines (``- `name(...)` ``) appear under a shown channel's heading; with a catalogue of channels only,
+the item list is empty.
 """
 
 from __future__ import annotations
@@ -43,6 +59,7 @@ import ast
 import hashlib
 import json
 import math
+import os
 import re
 import traceback
 from pathlib import Path
@@ -53,14 +70,18 @@ __all__ = [
     "VERSION",
     "attribute_errors",
     "env_channel",
+    "library_surface",
     "memory_section",
+    "modified_channels",
     "parse_traceback",
     "request_use",
+    "roots_of",
+    "shown_in",
     "transcript_cells",
     "use_from_episode_dir",
 ]
 
-VERSION = 1
+VERSION = 2
 
 #: The start of the index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
 HEADER_PREFIX = "Memory library: candidates to check, not authority."
@@ -77,11 +98,24 @@ MAX_CELL_REFS = 20
 MAX_SECTIONS = 4
 MAX_CHANNEL_KEYS = 200
 MAX_ACTIONS = 100_000
+MAX_STAR_NAMES = 500
+MAX_REEXPORTS = 500
+MAX_ROOTS = 4
+MAX_REEXPORT_HOPS = 8
+MAX_DIFF_CHARS = 2_000_000
 
-_ITEM_ID = re.compile(r"^env/([A-Za-z_][A-Za-z0-9_]*):([A-Za-z_][A-Za-z0-9_]*)\Z")
+_IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+_ITEM_ID = re.compile(rf"^env/({_IDENT}):({_IDENT})\Z")
 _FRAME = re.compile(r'^  File "(?P<file>.*)", line \d+, in (?P<func>.+)$')
 _TYPE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)(?::|$)")
 _HEADER = "Traceback (most recent call last):"
+# CPython's exception-group layout (traceback.TracebackException.format): the top-level group's lines
+# start with "  | ", its members' with "    | ", and separators with "  +-+" or "    +".
+_GROUP_HEADER = "  + Exception Group Traceback (most recent call last):"
+_GROUP_LINE = "  | "
+_MEMBER_LINE = "    | "
+_SEPARATORS = ("  +-+", "    +")
+_NESTED_GROUP = "Exception Group Traceback"
 # The lines CPython's traceback module puts between chained exceptions (its own format, never a message).
 _CHAIN = frozenset(
     s.strip()
@@ -99,15 +133,103 @@ _CHAIN = frozenset(
     )
 )
 _NOT_NAME = re.compile(r"[^a-z0-9_]+")
+_SHOWN_CHANNEL = re.compile(rf"^(?:## |- `?)env\.({_IDENT})\b")
+_SHOWN_ITEM = re.compile(rf"^- `({_IDENT})\(")
+_DIFF_GIT = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+_DIFF_TRUNCATED = re.compile(
+    r"^\[memory\.diff truncated at \d+ of \d+ bytes; blob [0-9A-Za-z]+\]$",
+)
+_SAFE_LOAD = (ValueError, TypeError, RecursionError)
 
 
-# --- the items -----------------------------------------------------------------------------------------
+# --- the library at the pin ------------------------------------------------------------------------------
+
+
+def _all_names(tree: ast.Module) -> list[str] | None:
+    for node in tree.body:
+        value = None
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
+            value = node.value
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "__all__"
+        ):
+            value = node.value
+        if isinstance(value, (ast.List, ast.Tuple)):
+            return [
+                e.value
+                for e in value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            ]
+    return None
+
+
+def _public_names(tree: ast.Module) -> list[str]:
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.append(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                if a.name != "*":
+                    names.append(a.asname or a.name.split(".")[0])
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
+                for n in ast.walk(t):
+                    if isinstance(n, ast.Name):
+                        names.append(n.id)
+    return [n for n in names if not n.startswith("_")]
+
+
+def library_surface(root: str | Path) -> dict:
+    """The import surface of the library at *root* (the export, read before any cell runs):
+    ``{"star": {channel: names a star import binds}, "reexports": {"env/a:g": "env/b:g"}}``.
+
+    ``star`` is the module's ``__all__``, or its public top-level names without one. A re-export is a
+    top-level ``from env.<b> import g [as h]`` (or ``from ..<b> import g``) in ``env/<a>/__init__.py``.
+    """
+    star: dict[str, list[str]] = {}
+    reexports: dict[str, str] = {}
+    for mod in sorted(Path(root).glob("env/*/__init__.py")):
+        channel = mod.parent.name
+        if not re.fullmatch(_IDENT, channel) or len(star) >= MAX_CHANNEL_KEYS:
+            continue
+        try:
+            tree = ast.parse(mod.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+        names = _all_names(tree)
+        if names is None:
+            names = _public_names(tree)
+        star[channel] = sorted({n for n in names if re.fullmatch(_IDENT, n)})[
+            :MAX_STAR_NAMES
+        ]
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            parts = (node.module or "").split(".")
+            if node.level == 0 and len(parts) == 2 and parts[0] == "env":
+                source = parts[1]
+            elif node.level == 2 and len(parts) == 1 and parts[0]:
+                source = parts[0]
+            else:
+                continue
+            for a in node.names:
+                if a.name != "*" and len(reexports) < MAX_REEXPORTS:
+                    reexports[f"env/{channel}:{a.asname or a.name}"] = (
+                        f"env/{source}:{a.name}"
+                    )
+    return {"star": star, "reexports": dict(sorted(reexports.items()))}
 
 
 class _Items:
-    """The memory items at the request's pin, by channel."""
+    """The memory items at the request's pin, by channel, with the library's import surface."""
 
-    def __init__(self, ids: Iterable[str]) -> None:
+    def __init__(self, ids: Iterable[str], surface: Any = None) -> None:
         self.ids: list[str] = []
         self.by_channel: dict[str, list[str]] = {}
         for raw in sorted({i for i in ids if isinstance(i, str)}):
@@ -117,10 +239,36 @@ class _Items:
             self.ids.append(raw)
             self.by_channel.setdefault(m.group(1), []).append(m.group(2))
         self.known = frozenset(self.ids)
+        surface = surface if isinstance(surface, dict) else {}
+        star = surface.get("star")
+        self.star: dict[str, list[str]] | None = None
+        if isinstance(star, dict):
+            self.star = {
+                k: sorted({n for n in v if isinstance(n, str)})
+                for k, v in star.items()
+                if isinstance(k, str) and isinstance(v, list)
+            }
+        rex = surface.get("reexports")
+        self.reexports = (
+            {k: v for k, v in rex.items() if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(rex, dict)
+            else {}
+        )
+        self.channels = frozenset(self.by_channel) | frozenset(self.star or ())
 
     def item(self, channel: str, name: str) -> str | None:
-        iid = f"env/{channel}:{name}"
-        return iid if iid in self.known else None
+        """The item ``<channel>.<name>`` resolves to (following re-exports), or None."""
+        iid: str | None = f"env/{channel}:{name}"
+        for _ in range(MAX_REEXPORT_HOPS):
+            if iid is None or iid in self.known:
+                return iid
+            iid = self.reexports.get(iid)
+        return None
+
+    def star_names(self, channel: str) -> list[str]:
+        if self.star is not None and channel in self.star:
+            return list(self.star[channel])
+        return list(self.by_channel.get(channel, []))
 
 
 def env_channel(kind: Any, channel: Any) -> str | None:
@@ -136,19 +284,55 @@ def env_channel(kind: Any, channel: Any) -> str | None:
     return f"{kind}_{name}" if name else None
 
 
+def modified_channels(
+    diff: str,
+    items: Iterable[str] | _Items,
+) -> tuple[list[str], bool]:
+    """(channels of the pin whose files the request's ``memory.diff`` changed, whether it was truncated).
+
+    Read from the diff's ``diff --git a/<path> b/<path>`` headers only. A changed file directly under
+    ``env/`` touches every channel, and so does a truncated diff (its later files are unknown).
+    """
+    its = items if isinstance(items, _Items) else _Items(items)
+    if not isinstance(diff, str) or not diff:
+        return [], False
+    changed: set[str] = set()
+    every = truncated = False
+    for line in diff[:MAX_DIFF_CHARS].splitlines():
+        m = _DIFF_GIT.match(line)
+        if m is not None:
+            for path in m.groups():
+                parts = path.split("/")
+                if parts[0] != "env":
+                    continue
+                if len(parts) >= 3:
+                    changed.add(parts[1])
+                else:
+                    every = True
+        elif _DIFF_TRUNCATED.match(line):
+            truncated = True
+    if len(diff) > MAX_DIFF_CHARS:
+        truncated = True
+    if every or truncated:
+        changed |= set(its.channels)
+    return sorted(changed & set(its.channels)), truncated
+
+
+def roots_of(checkout: str | Path) -> list[str]:
+    """The paths cells may see the export at: as given (its import path) and resolved (its bind)."""
+    given = str(checkout)
+    return _roots([given, os.path.realpath(given)])
+
+
+def _roots(roots: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    for r in roots:
+        if isinstance(r, str) and r and r not in out and len(out) < MAX_ROOTS:
+            out.append(r)
+    return out
+
+
 # --- cells from the transcript ---------------------------------------------------------------------------
-
-
-def _text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(
-            p.get("text", "")
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str)
-        )
-    return ""
 
 
 def _fold(lines: Iterable[Any]) -> list[dict]:
@@ -181,27 +365,41 @@ def _arguments(fn: dict) -> dict:
         return args
     try:
         parsed = json.loads(args)
-    except (TypeError, ValueError):
+    except _SAFE_LOAD:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _result_error(content: Any) -> str | None:
-    """The ``error`` field of an ``execute_code`` result: the JSON object its content starts with."""
-    raw = _text(content).lstrip()
-    if not raw.startswith("{"):
-        return None
+def _result_meta(content: Any) -> dict:
+    """The executor's metadata block of an ``execute_code`` result, or ``{}``.
+
+    ``ExecutionResult.to_llm_content`` writes it as the result's first part, a JSON object that always
+    carries an integer ``duration_ms``. Only that part is read (of a string result, only the JSON object
+    it starts with), so what a cell prints, which comes after it, never stands in for it.
+    """
     try:
-        meta, _ = json.JSONDecoder().raw_decode(raw)
-    except ValueError:
-        return None
-    err = meta.get("error") if isinstance(meta, dict) else None
-    return err if isinstance(err, str) and err else None
+        if isinstance(content, list):
+            first = content[0] if content else None
+            raw = first.get("text") if isinstance(first, dict) else None
+            meta = json.loads(raw) if isinstance(raw, str) else None
+        elif isinstance(content, str) and content.startswith("{"):
+            meta, _ = json.JSONDecoder().raw_decode(content)
+        else:
+            meta = None
+    except _SAFE_LOAD:
+        return {}
+    if not isinstance(meta, dict):
+        return {}
+    ms = meta.get("duration_ms")
+    if isinstance(ms, bool) or not isinstance(ms, int):
+        return {}
+    return meta
 
 
 def transcript_cells(lines: Iterable[Any]) -> list[dict]:
     """Every ``execute_code`` cell with a result, in result order (the episode's cell indices):
-    ``{"index", "code", "language", "error"}``, where ``error`` is the traceback the result recorded.
+    ``{"index", "code", "language", "error", "session", "fresh"}``; ``error`` is the traceback in the
+    result's metadata block, ``session`` its ``session_id`` and ``fresh`` its ``session_created``.
     """
     pending: dict[Any, tuple[str, str]] = {}
     cells: list[dict] = []
@@ -219,12 +417,22 @@ def transcript_cells(lines: Iterable[Any]) -> list[dict]:
             pending[tc.get("id")] = ("" if code is None else str(code), str(lang))
         if msg.get("role") == "tool" and msg.get("tool_call_id") in pending:
             code, lang = pending.pop(msg["tool_call_id"])
+            meta = _result_meta(msg.get("content"))
+            err = meta.get("error")
+            session = meta.get("session_id")
             cells.append(
                 {
                     "index": len(cells),
                     "code": code,
                     "language": lang,
-                    "error": _result_error(msg.get("content")),
+                    "error": err if isinstance(err, str) and err else None,
+                    "session": (
+                        session
+                        if isinstance(session, (int, str))
+                        and not isinstance(session, bool)
+                        else None
+                    ),
+                    "fresh": meta.get("session_created") is True,
                 },
             )
     return cells
@@ -246,10 +454,7 @@ def _system_prompts(lines: Iterable[Any]) -> list[str]:
     return out
 
 
-def memory_section(prompts: Iterable[str], header: str = HEADER_PREFIX) -> dict:
-    """The memory index the system prompts carried: ``{"shown", "sha256", "bytes", "est_tokens",
-    "prompts", "distinct"}`` of the first one (the text from the header's last occurrence to the end).
-    """
+def _sections(prompts: Iterable[str], header: str) -> tuple[int, list[str]]:
     seen: list[str] = []
     n = 0
     for text in prompts:
@@ -260,6 +465,14 @@ def memory_section(prompts: Iterable[str], header: str = HEADER_PREFIX) -> dict:
         section = text[at:]
         if section not in seen and len(seen) < MAX_SECTIONS:
             seen.append(section)
+    return n, seen
+
+
+def memory_section(prompts: Iterable[str], header: str = HEADER_PREFIX) -> dict:
+    """The memory section the system prompts carried: ``{"shown", "sha256", "bytes", "est_tokens",
+    "prompts", "distinct"}`` of the first one (the text from the header's last occurrence to the end).
+    """
+    n, seen = _sections(prompts, header)
     if not seen:
         return {
             "shown": False,
@@ -280,10 +493,55 @@ def memory_section(prompts: Iterable[str], header: str = HEADER_PREFIX) -> dict:
     }
 
 
+def shown_in(
+    sections: Iterable[str],
+    items: Iterable[str] | _Items,
+) -> tuple[list[str], list[str]]:
+    """(item ids, channels) the memory sections show, by structure and id.
+
+    A channel is shown by a ``## env.<channel>`` heading or a ``- env.<channel>`` (or
+    ``- `env.<channel>``...) catalogue line; an item by its own ``- `name(...)`` line under a shown
+    channel's heading. Only items and channels of the pin count.
+    """
+    its = items if isinstance(items, _Items) else _Items(items)
+    shown: set[str] = set()
+    channels: set[str] = set()
+    for section in sections:
+        channel = None
+        for line in section.splitlines():
+            m = _SHOWN_CHANNEL.match(line)
+            if m is not None:
+                channel = m.group(1) if m.group(1) in its.channels else None
+                if channel is not None:
+                    channels.add(channel)
+                continue
+            if line.startswith("## "):
+                channel = None
+                continue
+            m = _SHOWN_ITEM.match(line)
+            if m is not None and channel is not None:
+                iid = f"env/{channel}:{m.group(1)}"
+                if iid in its.known:
+                    shown.add(iid)
+    return sorted(shown)[:MAX_ITEMS_AT_PIN], sorted(channels)[:MAX_CHANNEL_KEYS]
+
+
 # --- imports and calls -----------------------------------------------------------------------------------
 
 # A binding: ("item", item id) | ("module", channel) | ("package",) | ("dynamic", channel or "*")
 _Binding = tuple
+
+_ROW_KEYS = (
+    "imported",
+    "called",
+    "referenced",
+    "guarded",
+    "refused",
+    "errored",
+    "refused_modified",
+    "errored_modified",
+    "refused_then_accepted",
+)
 
 
 class _Tally:
@@ -297,13 +555,8 @@ class _Tally:
         r = self.items.get(item)
         if r is None:
             r = self.items[item] = {
-                "imported": 0,
-                "called": 0,
-                "referenced": 0,
-                "guarded": 0,
-                "refused": 0,
-                "errored": 0,
-                "refused_then_accepted": 0,
+                **dict.fromkeys(_ROW_KEYS, 0),
+                "modified_in_request": False,
                 "cells": [],
             }
         return r
@@ -321,7 +574,7 @@ class _Tally:
 
 
 class _Cell(ast.NodeVisitor):
-    """Walks one cell in statement order; *bindings* persist from earlier cells of the request."""
+    """Walks one cell in statement order; *bindings* persist from earlier cells of the session."""
 
     def __init__(
         self,
@@ -336,7 +589,7 @@ class _Cell(ast.NodeVisitor):
     # -- names ------------------------------------------------------------------------------------------
     def _key(self, channel: str) -> str:
         """A channel as a record key: a channel of the pin, ``*`` (the package), else ``?``."""
-        return channel if channel == "*" or channel in self.items.by_channel else "?"
+        return channel if channel == "*" or channel in self.items.channels else "?"
 
     def _unbind(self, name: str | None) -> None:
         if name:
@@ -460,8 +713,11 @@ class _Cell(ast.NodeVisitor):
         channel = parts[1]
         for alias in node.names:
             if alias.name == "*":
-                for name in self.items.by_channel.get(channel, []):
-                    iid = f"env/{channel}:{name}"
+                for name in self.items.star_names(channel):
+                    iid = self.items.item(channel, name)
+                    if iid is None:
+                        self._unbind(name)
+                        continue
                     self._bind(name, ("item", iid))
                     self.t.bump(iid, "imported", self.cell)
                 continue
@@ -655,41 +911,114 @@ class _Cell(ast.NodeVisitor):
 # --- errors ----------------------------------------------------------------------------------------------
 
 
+def _chained(lines: list[str], i: int) -> bool:
+    """Whether the header at *i* follows one of CPython's chain lines (blank, chain line, blank)."""
+    return i >= 2 and lines[i - 1].strip() == "" and lines[i - 2].strip() in _CHAIN
+
+
+def _plain_block(lines: list[str], i: int) -> tuple[dict, int]:
+    """The block whose header is at *i*: its frames and type, and the index after its type line."""
+    frames: list[tuple[str, str]] = []
+    i += 1
+    while i < len(lines) and lines[i].startswith(" "):
+        m = _FRAME.match(lines[i])
+        if m is not None:
+            frames.append((m.group("file"), m.group("func")))
+        i += 1
+    m = _TYPE.match(lines[i]) if i < len(lines) else None
+    return {"frames": frames, "type": m.group(1) if m else None}, i + 1
+
+
+def _group(lines: list[str], i: int) -> tuple[list[dict], int]:
+    """The exception group whose header is at *i*, then its first-level members, and the index after it.
+
+    Each member's escaping block starts with the group's frames (the frames it left the cell through);
+    a member that is itself a group is skipped.
+    """
+    gid = i
+    frames: list[tuple[str, str]] = []
+    gtype = None
+    i += 1
+    while i < len(lines) and lines[i].startswith(_GROUP_LINE.rstrip()):
+        body = lines[i][len(_GROUP_LINE) :] if lines[i].startswith(_GROUP_LINE) else ""
+        m = _FRAME.match(body)
+        if m is not None:
+            frames.append((m.group("file"), m.group("func")))
+        elif body and not body.startswith(" ") and gtype is None:
+            t = _TYPE.match(body)
+            gtype = t.group(1) if t else None
+        i += 1
+    subs: list[list[str]] = []
+    while i < len(lines) and lines[i].startswith(
+        _SEPARATORS + (_MEMBER_LINE.rstrip(),),
+    ):
+        line = lines[i]
+        if line.startswith(_SEPARATORS):
+            subs.append([])
+        elif subs:
+            subs[-1].append(
+                line[len(_MEMBER_LINE) :] if line.startswith(_MEMBER_LINE) else "",
+            )
+        i += 1
+    blocks: list[dict] = [{"frames": frames, "type": gtype, "group": gid}]
+    for sub in subs:
+        while sub and not sub[-1].strip():
+            sub.pop()
+        if not sub or sub[0].startswith(_NESTED_GROUP):
+            continue
+        inner = _blocks(sub, groups=False)
+        if not inner:
+            t = _TYPE.match(sub[0])
+            inner = [{"frames": [], "type": t.group(1) if t else None}]
+        inner[-1] = {**inner[-1], "frames": frames + inner[-1]["frames"]}
+        blocks.extend({**b, "member_of": gid} for b in inner)
+    return blocks, i
+
+
+def _blocks(lines: list[str], *, groups: bool) -> list[dict]:
+    blocks: list[dict] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line == _HEADER and (not blocks or _chained(lines, i)):
+            block, i = _plain_block(lines, i)
+            blocks.append(block)
+            continue
+        if groups and line == _GROUP_HEADER and (not blocks or _chained(lines, i)):
+            found, i = _group(lines, i)
+            blocks.extend(found)
+            continue
+        i += 1
+    return blocks
+
+
 def parse_traceback(text: str) -> list[dict]:
     """The exceptions a formatted traceback shows, oldest first: ``{"frames": [(file, function)], "type"}``.
 
     Only the traceback's structure is read: a block starts at the header line (the first one, or one
     after a chaining line of CPython's own format), its frames are the ``File "...", line N, in f`` lines,
-    and its type is the dotted name the exception line starts with. The message is never read.
+    and its type is the dotted name the exception line starts with. An exception group adds its own block
+    (with ``"group"``) and its first-level members' blocks (with ``"member_of"``), each member's escaping
+    block starting with the group's frames. The message is never read for meaning.
     """
     if not isinstance(text, str) or len(text) > MAX_TRACEBACK_CHARS:
         return []
-    lines = text.splitlines()
-    blocks: list[dict] = []
-    i, prev = 0, None
-    while i < len(lines):
-        line = lines[i]
-        if line == _HEADER and (not blocks or prev in _CHAIN):
-            frames: list[tuple[str, str]] = []
-            i += 1
-            while i < len(lines) and lines[i].startswith(" "):
-                m = _FRAME.match(lines[i])
-                if m is not None:
-                    frames.append((m.group("file"), m.group("func")))
-                i += 1
-            m = _TYPE.match(lines[i]) if i < len(lines) else None
-            blocks.append({"frames": frames, "type": m.group(1) if m else None})
-            prev = None
-            i += 1
-            continue
-        if line.strip():
-            prev = line.strip()
-        i += 1
-    return blocks
+    return _blocks(text.splitlines(), groups=True)
 
 
-def _module_channel(path: str, items: _Items) -> str | None:
-    parts = path.replace("\\", "/").split("/")
+def _module_channel(path: str, items: _Items, roots: tuple[str, ...]) -> str | None:
+    """The channel whose ``env/<channel>/__init__.py`` *path* is: exactly under one of the export
+    *roots* when they are known, else by its last three components."""
+    path = path.replace("\\", "/")
+    if roots:
+        for root in roots:
+            prefix = root.replace("\\", "/").rstrip("/") + "/"
+            if path.startswith(prefix):
+                parts = path[len(prefix) :].split("/")
+                if len(parts) == 3 and parts[0] == "env" and parts[2] == "__init__.py":
+                    return parts[1] if parts[1] in items.by_channel else None
+        return None
+    parts = path.split("/")
     if len(parts) >= 3 and parts[-1] == "__init__.py" and parts[-3] == "env":
         return parts[-2] if parts[-2] in items.by_channel else None
     return None
@@ -698,33 +1027,48 @@ def _module_channel(path: str, items: _Items) -> str | None:
 def attribute_errors(
     text: str | None,
     items: Iterable[str] | _Items,
+    *,
+    roots: Iterable[str] = (),
+    modified: Iterable[str] = (),
 ) -> list[tuple[str, str]]:
     """``(outcome, item or channel)`` per exception of a cell's traceback that left a memory item.
 
     An exception left an item when its outermost frame is outside the memory modules (cell code) and
-    some later frame is in ``env/<channel>/__init__.py``; the first such frame names the item (its
-    function). An exception whose outermost frame is itself in a memory module was caught inside it,
-    so it is not counted. ``outcome`` is ``refused`` for a ``MemoryInputError``, ``errored`` for any
-    other type, and ``unattributed`` (with the channel) when that frame is not a public item.
+    some later frame is in ``env/<channel>/__init__.py`` (exactly under an export root when *roots* are
+    given); the first such frame names the item (its function). An exception whose outermost frame is
+    itself in a memory module was caught inside it, so it is not counted; a group that left an item is
+    counted once, without its members. ``outcome`` is ``refused`` for a ``MemoryInputError`` and
+    ``errored`` for any other type, each with ``_modified`` when the item's channel is in *modified*, and
+    ``unattributed`` (with the channel) when that frame is not a public item.
     """
     its = items if isinstance(items, _Items) else _Items(items)
+    root_list = tuple(_roots(roots))
+    changed = frozenset(modified)
     if not text:
         return []
     out: list[tuple[str, str]] = []
+    left_groups: set[int] = set()
     for block in parse_traceback(text):
+        if block.get("member_of") in left_groups:
+            continue
         frames = block["frames"]
-        if not frames or _module_channel(frames[0][0], its) is not None:
+        if not frames or _module_channel(frames[0][0], its, root_list) is not None:
             continue
         for path, func in frames[1:]:
-            channel = _module_channel(path, its)
+            channel = _module_channel(path, its, root_list)
             if channel is None:
                 continue
-            iid = its.item(channel, func)
-            if iid is None:
+            iid = f"env/{channel}:{func}"
+            if iid not in its.known:
                 out.append(("unattributed", channel))
             else:
                 kind = (block["type"] or "").rsplit(".", 1)[-1]
-                out.append(("refused" if kind == REFUSAL_TYPE else "errored", iid))
+                outcome = "refused" if kind == REFUSAL_TYPE else "errored"
+                if channel in changed:
+                    outcome += "_modified"
+                out.append((outcome, iid))
+            if "group" in block:
+                left_groups.add(block["group"])
             break
     return out
 
@@ -732,80 +1076,113 @@ def attribute_errors(
 # --- the record ------------------------------------------------------------------------------------------
 
 
-def _action_rows(actions: Iterable[Any]) -> list[tuple[int, str | None, str]]:
-    rows: list[tuple[int, str | None, str]] = []
-    for a in actions:
-        if len(rows) >= MAX_ACTIONS:
+def _ok_after(actions: Iterable[Any]) -> dict[str, int]:
+    """Per memory channel, the latest cell holding an action the environment recorded as ``ok``."""
+    latest: dict[str, int] = {}
+    for n, a in enumerate(actions):
+        if n >= MAX_ACTIONS:
             break
         get = (
             a.get if isinstance(a, dict) else (lambda k, d=None, a=a: getattr(a, k, d))
         )
         cell = get("cell", -1)
-        if isinstance(cell, bool) or not isinstance(cell, int):
+        if isinstance(cell, bool) or not isinstance(cell, int) or get("status") != "ok":
             continue
-        rows.append(
-            (cell, env_channel(get("kind", "tool"), get("channel")), get("status")),
-        )
-    return rows
+        channel = env_channel(get("kind", "tool"), get("channel"))
+        if channel is not None and cell > latest.get(channel, -1):
+            latest[channel] = cell
+    return latest
 
 
 def request_use(
     lines: Iterable[Any],
     items: Iterable[str],
     actions: Iterable[Any] = (),
+    *,
+    memory_diff: str = "",
+    export_roots: Iterable[str] = (),
+    surface: Any = None,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
     *lines* are the request's transcript lines, *items* the item ids at its pin, *actions* its recorded
-    actions (dicts or objects with ``cell``, ``kind``, ``channel`` and ``status``).
+    actions (dicts or objects with ``cell``, ``kind``, ``channel`` and ``status``), *memory_diff* what it
+    wrote into its export, *export_roots* the export's path(s) as the cells import it (:func:`roots_of`),
+    and *surface* the library's import surface at the pin (:func:`library_surface`).
     """
     lines = list(lines)
-    its = _Items(items)
+    its = _Items(items, surface)
+    roots = _roots(export_roots)
+    changed, diff_truncated = modified_channels(memory_diff, its)
     tally = _Tally()
-    bindings: dict = {}
+    sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
     unparsed = 0
     refusals: list[tuple[int, str]] = []
     for cell in cells[:MAX_CELLS]:
         idx = cell["index"]
-        if str(cell["language"]).lower() not in ("python", "py", "python3"):
-            continue
-        code = cell["code"]
-        try:
-            if len(code) > MAX_CODE_CHARS:
-                raise ValueError("cell too large")
-            tree = ast.parse(code)
-        except (SyntaxError, ValueError, RecursionError, MemoryError):
-            unparsed += 1
-            tree = None
-        if tree is not None:
-            visitor = _Cell(its, bindings, tally, idx)
+        if cell["fresh"]:
+            sessions.pop(cell["session"], None)
+        bindings = sessions.setdefault(cell["session"], {})
+        if str(cell["language"]).lower() in ("python", "py", "python3"):
+            code = cell["code"]
             try:
-                for stmt in tree.body:
-                    visitor.visit(stmt)
-            except RecursionError:
+                if len(code) > MAX_CODE_CHARS:
+                    raise ValueError("cell too large")
+                tree = ast.parse(code)
+            except (SyntaxError, ValueError, RecursionError, MemoryError):
                 unparsed += 1
-        for outcome, what in attribute_errors(cell["error"], its):
+                tree = None
+            if tree is not None:
+                visitor = _Cell(its, bindings, tally, idx)
+                try:
+                    for stmt in tree.body:
+                        visitor.visit(stmt)
+                except RecursionError:
+                    unparsed += 1
+        for outcome, what in attribute_errors(
+            cell["error"],
+            its,
+            roots=roots,
+            modified=changed,
+        ):
             if outcome == "unattributed":
                 tally.add(tally.unattributed, what)
             else:
                 tally.bump(what, outcome, idx)
                 if outcome == "refused":
                     refusals.append((idx, what))
-    acts = _action_rows(actions)
+    latest_ok = _ok_after(actions)
     for idx, iid in refusals:
         channel = iid.split(":", 1)[0][len("env/") :]
-        if any(c > idx and ch == channel and st == "ok" for c, ch, st in acts):
+        if latest_ok.get(channel, -1) > idx:
             tally.row(iid)["refused_then_accepted"] += 1
+    for iid, row in tally.items.items():
+        row["modified_in_request"] = iid.split(":", 1)[0][len("env/") :] in changed
+    prompts = _system_prompts(lines)
+    _, sections = _sections(prompts, HEADER_PREFIX)
+    shown_items, shown_channels = shown_in(sections, its)
     rows = {k: tally.items[k] for k in sorted(tally.items)}
-    truncated = len(rows) > MAX_ITEM_ROWS or len(its.ids) > MAX_ITEMS_AT_PIN
-    if len(cells) > MAX_CELLS:
-        truncated = True
+    truncated = (
+        len(rows) > MAX_ITEM_ROWS
+        or len(its.ids) > MAX_ITEMS_AT_PIN
+        or len(cells) > MAX_CELLS
+    )
+    star = its.star or {}
     return {
         "version": VERSION,
+        "export_roots": roots,
         "items_at_pin": its.ids[:MAX_ITEMS_AT_PIN],
         "items_at_pin_count": len(its.ids),
-        "memory_section_shown": memory_section(_system_prompts(lines)),
+        "surface": {
+            "star": {k: star[k] for k in sorted(star)[:MAX_CHANNEL_KEYS]},
+            "reexports": dict(sorted(its.reexports.items())[:MAX_REEXPORTS]),
+        },
+        "memory_section_shown": memory_section(prompts),
+        "shown_items": shown_items,
+        "shown_channels": shown_channels,
+        "modified_channels": changed,
+        "memory_diff_truncated": diff_truncated,
         "cells": len(cells),
         "unparsed_cells": unparsed,
         "items": dict(list(rows.items())[:MAX_ITEM_ROWS]),
@@ -825,7 +1202,7 @@ def _jsonl(path: Path) -> list[dict]:
     for ln in text.splitlines():
         try:
             row = json.loads(ln)
-        except ValueError:
+        except _SAFE_LOAD:
             continue
         if isinstance(row, dict):
             out.append(row)
@@ -833,23 +1210,30 @@ def _jsonl(path: Path) -> list[dict]:
 
 
 def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -> dict:
-    """:func:`request_use` over an exported episode directory (``transcript.jsonl``, ``actions.jsonl``).
+    """:func:`request_use` over an exported episode directory (``transcript.jsonl``, ``actions.jsonl``,
+    ``memory.diff``), with the export roots and import surface its ``memory_use.json`` recorded.
 
-    *items* default to the ``items_at_pin`` its ``memory_use.json`` recorded (empty without one).
+    *items* default to the ``items_at_pin`` recorded there (empty without one).
     """
     path = Path(path)
+    try:
+        recorded = json.loads((path / "memory_use.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, *_SAFE_LOAD):
+        recorded = {}
+    if not isinstance(recorded, dict):
+        recorded = {}
     if items is None:
-        try:
-            recorded = json.loads(
-                (path / "memory_use.json").read_text(encoding="utf-8"),
-            )
-        except (FileNotFoundError, ValueError):
-            recorded = {}
-        items = (
-            (recorded.get("items_at_pin") or []) if isinstance(recorded, dict) else []
-        )
+        items = recorded.get("items_at_pin") or []
+    try:
+        diff = (path / "memory.diff").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        diff = ""
+    roots = recorded.get("export_roots")
     return request_use(
         _jsonl(path / "transcript.jsonl"),
         items,
         _jsonl(path / "actions.jsonl"),
+        memory_diff=diff,
+        export_roots=roots if isinstance(roots, list) else (),
+        surface=recorded.get("surface"),
     )

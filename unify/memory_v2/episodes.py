@@ -211,9 +211,9 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
         replies = json.loads(read("replies.json"))
     except GitError:
         replies = []
-    try:  # absent from episodes recorded without use telemetry
+    try:  # absent from episodes recorded without use telemetry; unreadable is the same as absent
         memory_use = json.loads(read("memory_use.json"))
-    except GitError:
+    except (GitError, ValueError, RecursionError):
         memory_use = None
     actions = []
     for row in lines("actions.jsonl"):

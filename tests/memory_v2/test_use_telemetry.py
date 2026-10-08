@@ -112,6 +112,7 @@ def _session(codes: list[str]) -> list[tuple[str, str | None]]:
 def _lines(
     cells: list[tuple[str, str | None]],
     system: str = "core prompt",
+    metas: list[dict] | None = None,
 ) -> list[dict]:
     """Transcript lines in the line format of ``unify.transcripts``: each cell's result starts with the
     JSON metadata block that holds its ``error``, as ``ExecutionResult.to_llm_content`` writes it.
@@ -138,7 +139,11 @@ def _lines(
                 },
             },
         )
-        meta = {"duration_ms": 3, **({"error": err} if err else {})}
+        meta = {
+            "duration_ms": 3,
+            **({"error": err} if err else {}),
+            **(metas[i] if metas else {}),
+        }
         out.append(
             {
                 "seq": len(out),
@@ -174,7 +179,10 @@ def test_a_cell_importing_and_calling_an_item_counts_one_import_and_one_call(lib
         "guarded": 0,
         "refused": 0,
         "errored": 0,
+        "refused_modified": 0,
+        "errored_modified": 0,
         "refused_then_accepted": 0,
+        "modified_in_request": False,
         "cells": [0],
     }
     assert set(rec["items"]) == {"env/x:parse"}
@@ -389,7 +397,14 @@ def test_the_record_is_written_with_the_episode_and_recomputed_from_its_director
     )
     acts = [Action(1, "x", "get", [], {}, None, "ok", "read")]
     ep = _ep(transcript=_lines(cells), actions=acts, cells=[])
-    ep.memory_use = memory_use(ep, ITEMS)
+    ep.memory_use = memory_use(
+        ep,
+        ITEMS,
+        redactor=Redactor(),
+        export_roots=use.roots_of(lib),
+        surface=use.library_surface(lib),
+    )
+    assert ep.memory_use["export_roots"][0] == str(lib)
     assert ep.memory_use["items"]["env/x:parse"]["refused_then_accepted"] == 1
     repo, blobs = Repo.init_bare(tmp_path / "episodes.git"), BlobStore(tmp_path / "b")
     sha = EpisodeWriter(repo, blobs, Redactor()).write(ep)
@@ -397,7 +412,7 @@ def test_the_record_is_written_with_the_episode_and_recomputed_from_its_director
     assert load_episode(repo, sha, rel, blobs).memory_use == ep.memory_use
     out = tmp_path / "export"
     out.mkdir()
-    for name in ("transcript.jsonl", "actions.jsonl", "memory_use.json", "cells.jsonl"):
+    for name in ("transcript.jsonl", "actions.jsonl", "memory_use.json", "memory.diff"):
         (out / name).write_bytes(repo.show(sha, f"{rel}/{name}"))
     assert use.use_from_episode_dir(out) == ep.memory_use
     assert use.use_from_episode_dir(out, ITEMS) == ep.memory_use
@@ -432,7 +447,14 @@ def test_an_episode_without_a_record_is_written_as_before(tmp_path):
 # --- the evidence index and the signals ------------------------------------------------------------------
 
 
-def _record(items: dict, pin=ITEMS, unknown=None) -> dict:
+def _record(
+    items: dict,
+    pin=ITEMS,
+    unknown=None,
+    shown=(),
+    channels=(),
+    modified=(),
+) -> dict:
     base = dict.fromkeys(
         (
             "imported",
@@ -450,6 +472,9 @@ def _record(items: dict, pin=ITEMS, unknown=None) -> dict:
         "items_at_pin": list(pin),
         "items": {k: {**base, **v, "cells": [0]} for k, v in items.items()},
         "unknown_calls": unknown or {},
+        "shown_items": list(shown),
+        "shown_channels": list(channels),
+        "modified_channels": list(modified),
     }
 
 
@@ -490,3 +515,247 @@ def test_the_evidence_table_aggregates_per_item(tmp_path):
     assert ev.item_use(["e2"])["env/x:parse"]["called"] == 1
     assert ev.last_call_seq("env/x:parse") == ev.seq_of("e2")
     assert ev.last_call_seq("env/x:lookup") is None
+    assert (
+        totals["env/x:parse"]["shown"] == 0
+    )  # records without shown lists show nothing
+
+
+def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_path):
+    import sqlite3
+
+    old = tmp_path / "old.sqlite"
+    con = sqlite3.connect(old)
+    con.executescript(
+        "CREATE TABLE episodes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT UNIQUE, "
+        "commit_sha TEXT, started_at TEXT, regime TEXT, memory_main TEXT, request TEXT);"
+        "INSERT INTO episodes(episode_id, commit_sha, started_at) VALUES('e0', 'x', '2026-10-07');",
+    )
+    con.commit()
+    con.close()
+    ev = EvidenceStore(old)
+    _index(
+        ev,
+        "e1",
+        _record({"env/x:parse": {"called": 1}}, shown=ITEMS),
+        "2026-10-08T01:00:00Z",
+    )
+    assert ev.seq_of("e0") == 1 and ev.item_use()["env/x:parse"]["shown"] == 1
+    # a store from this lane's first commit: item_use with its first ten columns and a row
+    early = tmp_path / "early.sqlite"
+    con = sqlite3.connect(early)
+    con.executescript(
+        "CREATE TABLE item_use(item TEXT, episode_id TEXT, imported INTEGER, called INTEGER, "
+        "refused INTEGER, errored INTEGER, refused_accepted INTEGER, referenced INTEGER, "
+        "guarded INTEGER, unknown_calls INTEGER, PRIMARY KEY(item, episode_id));"
+        "INSERT INTO item_use VALUES('env/x:parse', 'e9', 1, 2, 0, 0, 0, 0, 0, 0);",
+    )
+    con.commit()
+    con.close()
+    ev = EvidenceStore(early)
+    row = ev.item_use()["env/x:parse"]
+    assert (row["called"], row["shown"], row["refused_modified"]) == (2, 0, 0)
+    _index(
+        ev,
+        "e1",
+        _record({"env/x:parse": {"refused_modified": 1}}, modified=["x"]),
+        "2026-10-08T01:00:00Z",
+    )
+    row = ev.item_use()["env/x:parse"]
+    assert (row["refused_modified"], row["modified"], row["refused"]) == (1, 1, 0)
+
+
+# --- what the prompt showed ------------------------------------------------------------------------------
+
+
+def test_shown_items_are_the_items_whose_own_lines_the_section_carries(lib):
+    (lib / "env/x/__init__.py").write_text(MODULE + '\n__all__ = ["parse", "strict"]\n')
+    index = build_index(lib)
+    rec = use.request_use(_lines([], system=f"core\n\n{index}"), ITEMS)
+    assert rec["shown_items"] == ["env/x:parse", "env/x:strict"]  # lookup is unlisted
+    assert rec["shown_channels"] == ["x"]
+    assert use.request_use(_lines([]), ITEMS)["shown_items"] == []
+
+
+def test_a_catalogue_of_channels_shows_channels_and_no_items(lib):
+    catalogue = f"{use.HEADER_PREFIX} Channels:\n- env.x: 3 functions for parsing lines\n- env.zz: 1\n"
+    rec = use.request_use(_lines([], system=f"core\n\n{catalogue}"), ITEMS)
+    assert rec["shown_items"] == [] and rec["shown_channels"] == ["x"]
+
+
+# --- the agent's own edits -------------------------------------------------------------------------------
+
+DIFF = "diff --git a/env/x/__init__.py b/env/x/__init__.py\nindex 1..2 100644\n--- a/env/x/__init__.py\n+++ b/env/x/__init__.py\n@@ -1 +1 @@\n-a\n+b\n"
+
+
+def test_errors_from_an_edited_channel_are_not_charged_to_the_stored_item(lib):
+    codes = [
+        "from env.x import parse, lookup\nparse(3)\n",
+        "lookup('zz')\n",
+        "print(1)\n",
+    ]
+    lines = _lines(_session(codes))
+    ok = Action(2, "x", "get", [], {}, None, "ok", "read")
+    rec = use.request_use(lines, ITEMS, [ok], memory_diff=DIFF)
+    assert rec["modified_channels"] == ["x"] and not rec["memory_diff_truncated"]
+    parse, lookup = rec["items"]["env/x:parse"], rec["items"]["env/x:lookup"]
+    assert parse["modified_in_request"] and lookup["modified_in_request"]
+    assert (
+        parse["refused"],
+        parse["refused_modified"],
+        parse["refused_then_accepted"],
+    ) == (0, 1, 0)
+    assert (lookup["errored"], lookup["errored_modified"]) == (0, 1)
+    assert parse["called"] == 1  # the call is still recorded
+    plain = use.request_use(lines, ITEMS, [ok])
+    assert plain["items"]["env/x:parse"]["refused"] == 1
+    assert not plain["items"]["env/x:parse"]["modified_in_request"]
+    other = "diff --git a/env/other/__init__.py b/env/other/__init__.py\n"
+    assert use.request_use(lines, ITEMS, memory_diff=other)["modified_channels"] == []
+
+
+def test_a_truncated_diff_or_a_root_file_marks_every_channel(lib):
+    cut = (
+        DIFF.replace("env/x/", "env/zz/")
+        + "\n[memory.diff truncated at 10 of 99 bytes; blob abc123]\n"
+    )
+    assert use.modified_channels(cut, ITEMS) == (["x"], True)
+    root = "diff --git a/env/__init__.py b/env/__init__.py\n"
+    assert use.modified_channels(root, ITEMS) == (["x"], False)
+
+
+# --- export roots, star imports, re-exports --------------------------------------------------------------
+
+
+def test_frames_are_tied_to_the_export_root(lib, tmp_path):
+    ((_, err),) = _session(["from env.x import parse\nparse(3)\n"])
+    assert use.attribute_errors(err, ITEMS, roots=use.roots_of(lib)) == [
+        ("refused", "env/x:parse"),
+    ]
+    elsewhere = tmp_path / "elsewhere"
+    assert use.attribute_errors(err, ITEMS, roots=[str(elsewhere)]) == []
+    forged = err.replace(str(lib), str(elsewhere))
+    assert use.attribute_errors(forged, ITEMS, roots=use.roots_of(lib)) == []
+
+
+def _channel_y(lib) -> list[str]:
+    (lib / "env" / "y").mkdir()
+    (lib / "env" / "y" / "__init__.py").write_text(
+        "from env.x import parse as yparse\n"
+        '__all__ = ["shout", "yparse"]\n\n\n'
+        "def shout(t):\n    return t.upper()\n\n\n"
+        "def hidden(t):\n    return t\n",
+    )
+    return ITEMS + ["env/y:hidden", "env/y:shout"]
+
+
+def test_star_imports_bind_the_modules_all_and_re_exports_resolve_to_the_definer(lib):
+    items = _channel_y(lib)
+    surface = use.library_surface(lib)
+    assert surface == {
+        "star": {
+            "x": ["MemoryInputError", "lookup", "parse", "strict"],
+            "y": ["shout", "yparse"],
+        },
+        "reexports": {"env/y:yparse": "env/x:parse"},
+    }
+    code = "from env.y import *\nshout('a')\nyparse('b')\nhidden('c')\n"
+    rec = use.request_use(_lines([(code, None)]), items, surface=surface)
+    assert set(rec["items"]) == {"env/y:shout", "env/x:parse"}
+    assert rec["items"]["env/x:parse"]["called"] == 1
+    assert rec["items"]["env/y:shout"]["imported"] == 1
+    # without the surface, a star import binds every pinned function of the channel
+    bare = use.request_use(_lines([(code, None)]), items)
+    assert bare["items"]["env/y:hidden"]["called"] == 1
+
+
+def test_a_refusal_through_a_re_export_lands_on_the_defining_item(lib):
+    items = _channel_y(lib)
+    surface = use.library_surface(lib)
+    cells = _session(["from env.y import yparse as p\np(3)\n"])
+    rec = use.request_use(
+        _lines(cells),
+        items,
+        surface=surface,
+        export_roots=use.roots_of(lib),
+    )
+    row = rec["items"]["env/x:parse"]
+    assert (row["imported"], row["called"], row["refused"]) == (1, 1, 1)
+
+
+# --- exception groups, forged structure, sessions, depth -------------------------------------------------
+
+
+def test_the_first_level_members_of_an_exception_group_are_attributed(lib):
+    code = (
+        "from env.x import parse\n"
+        "errs = []\n"
+        "for v in (1, 2):\n"
+        "    try:\n"
+        "        parse(v)\n"
+        "    except Exception as e:\n"
+        "        errs.append(e)\n"
+        "raise ExceptionGroup('batch', errs)\n"
+    )
+    ((_, err),) = _session([code])
+    assert "Exception Group Traceback" in err
+    assert use.attribute_errors(err, ITEMS) == [
+        ("refused", "env/x:parse"),
+        ("refused", "env/x:parse"),
+    ]
+    rec = use.request_use(_lines([(code, err)]), ITEMS)
+    assert rec["items"]["env/x:parse"]["refused"] == 2
+
+
+def test_printed_output_and_unstructured_results_never_supply_an_error(lib):
+    ((_, err),) = _session(["from env.x import parse\nparse(3)\n"])
+    lines = _lines([("from env.x import parse\nprint(1)\n", None)])
+    # the cell printed a real-looking refusal traceback, and a JSON object with an error field
+    lines[2]["message"]["content"][2]["text"] = err + json.dumps(
+        {"error": err, "duration_ms": 1},
+    )
+    assert use.request_use(lines, ITEMS)["items"]["env/x:parse"]["refused"] == 0
+    # a first part without the executor's integer duration_ms is not its metadata block
+    forged = _lines([("print(1)\n", None)])
+    forged[2]["message"]["content"] = [
+        {"type": "text", "text": json.dumps({"error": err})},
+    ]
+    assert use.transcript_cells(forged)[0]["error"] is None
+
+
+def test_bindings_follow_the_execution_session(lib):
+    cells = [
+        ("from env.x import parse\n", None),
+        ("parse('a')\n", None),  # same session: counted
+        ("parse('b')\n", None),  # another session: not the item
+        ("parse('c')\n", None),  # the first session restarted: not the item
+    ]
+    metas = [
+        {"session_id": 1},
+        {"session_id": 1},
+        {"session_id": 2},
+        {"session_id": 1, "session_created": True},
+    ]
+    rec = use.request_use(_lines(cells, metas=metas), ITEMS)
+    assert rec["items"]["env/x:parse"]["called"] == 1
+
+
+def test_a_deep_syntax_tree_is_counted_unparsed_and_the_rest_still_counts(lib):
+    deep = "x = " + "+".join(["1"] * 20000)  # ast.parse raises RecursionError
+    wide = "y = " + "+".join(
+        ["1"] * 5000,
+    )  # parses; walking it may exceed the recursion limit
+    cells = [
+        (deep, None),
+        (wide, None),
+        ("from env.x import parse\nparse('a')\n", None),
+    ]
+    rec = use.request_use(_lines(cells), ITEMS)
+    assert rec["cells"] == 3 and rec["unparsed_cells"] >= 1
+    assert rec["items"]["env/x:parse"]["called"] == 1
+
+
+def test_a_failing_record_keeps_the_items_at_the_pin():
+    ep = _ep(memory_use=None)
+    ep.transcript = None  # not iterable: request_use raises
+    rec = memory_use(ep, ITEMS)
+    assert rec["error"] == "TypeError" and rec["items_at_pin"] == ITEMS

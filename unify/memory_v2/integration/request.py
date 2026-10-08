@@ -133,28 +133,55 @@ def pinned_items(checkout: Path) -> list[str]:
     )
 
 
-def memory_use(ep: Any, item_ids: list[str]) -> dict:
-    """The request's use record (:func:`..analysis.use.request_use` over its transcript, the items at its
-    pin and its actions). A failure is recorded as its exception type; it never stops the episode.
+def memory_use(
+    ep: Any,
+    item_ids: list[str],
+    *,
+    redactor: Any = None,
+    export_roots: list[str] | tuple[str, ...] = (),
+    surface: dict | None = None,
+) -> dict:
+    """The request's use record (:func:`..analysis.use.request_use`).
+
+    It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
+    so the offline analyser recomputes the same record from the written episode), against the items at
+    the pin, the export's roots and the library's import surface taken before the actor ran. A failure
+    is recorded as its exception type, with the items at the pin; it never stops the episode.
     """
     from ..analysis import use
 
+    def clean(value: Any) -> Any:
+        return redactor.obj(value) if redactor is not None else value
+
     try:
         return use.request_use(
-            ep.transcript,
+            clean(list(ep.transcript)),
             item_ids,
             [
-                {
-                    "cell": a.cell,
-                    "kind": getattr(a, "kind", "tool"),
-                    "channel": a.channel,
-                    "status": a.status,
-                }
+                clean(
+                    {
+                        "cell": a.cell,
+                        "kind": getattr(a, "kind", "tool"),
+                        "channel": a.channel,
+                        "status": a.status,
+                    },
+                )
                 for a in ep.actions
             ],
+            memory_diff=(
+                redactor.text(ep.memory_diff or "")
+                if redactor is not None
+                else ep.memory_diff or ""
+            ),
+            export_roots=export_roots,
+            surface=surface,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
-        return {"version": use.VERSION, "error": type(exc).__name__}
+        return {
+            "version": use.VERSION,
+            "error": type(exc).__name__,
+            "items_at_pin": list(item_ids)[: use.MAX_ITEMS_AT_PIN],
+        }
 
 
 def _plain(value: Any) -> Any:
@@ -177,6 +204,8 @@ class RequestRun:
         self.index = ""
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
         self.item_ids: list[str] = []
+        self.surface: dict | None = None
+        self.export_roots: list[str] = []
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -225,6 +254,7 @@ class RequestRun:
         return run
 
     def _open(self, sandbox: Any, transcripts: Any) -> None:
+        from ..analysis import use
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .prompt import render_index
@@ -238,6 +268,8 @@ class RequestRun:
         self.pin = self.stores.memory.head()
         export_checkout(paths.memory, self.pin, paths.checkout)
         self.item_ids = pinned_items(paths.checkout)
+        self.surface = use.library_surface(paths.checkout)
+        self.export_roots = use.roots_of(paths.checkout)
         self.index = render_index(paths.checkout, self.state.suspect)
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
@@ -378,7 +410,13 @@ class RequestRun:
             worktree_after=wt.after,
             worktree_diff=wt.diff,
         )
-        ep.memory_use = memory_use(ep, self.item_ids)
+        ep.memory_use = memory_use(
+            ep,
+            self.item_ids,
+            redactor=redactor,
+            export_roots=self.export_roots,
+            surface=self.surface,
+        )
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)
         consolidate.post_checker(

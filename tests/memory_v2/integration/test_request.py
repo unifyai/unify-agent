@@ -383,8 +383,8 @@ def test_abort_after_finish_changes_nothing(mv2):
     _left_nothing(mv2.paths)
 
 
-def _cell_lines(code: str, system: str) -> list[dict]:
-    meta = {"duration_ms": 1}
+def _cell_lines(code: str, system: str, error: str | None = None) -> list[dict]:
+    meta = {"duration_ms": 1, **({"error": error} if error else {})}
     return [
         {"seq": 0, "type": "system_prompt", "content": system},
         {
@@ -419,7 +419,8 @@ def _cell_lines(code: str, system: str) -> list[dict]:
 
 def test_finish_records_how_the_request_used_the_library(mv2):
     """The record is computed at finish from the transcript against the items at the pin, written as the
-    episode's ``memory_use.json`` and indexed per item."""
+    episode's ``memory_use.json`` and indexed per item. The cell edited ``hello`` in its scratch copy, so
+    the refusal it then raised is booked as the edit's, never the stored function's."""
     import hashlib
 
     from unify.memory_v2.episodes import episode_dir
@@ -430,23 +431,41 @@ def test_finish_records_how_the_request_used_the_library(mv2):
     assert run.item_ids == ["env/spotify:hello"]
     # a function the cell writes into its scratch copy is not a memory item
     (mv2.paths.checkout / "env/spotify/__init__.py").write_text(
-        "def hello(apis, name):\n    return name\n\ndef extra():\n    return 1\n",
+        "class MemoryInputError(ValueError):\n    pass\n\n"
+        "def hello(apis, name):\n    raise MemoryInputError(name)\n\n"
+        "def extra():\n    return 1\n",
     )
-    code = "from env.spotify import hello as hi, extra\nhi(None, 'ada')\nextra()\n"
-    _transcript(run, *_cell_lines(code, f"core\n\n{run.index}"))
+    code = "from env.spotify import hello as hi, extra\nextra()\nhi(None, 'ada')\n"
+    module = mv2.paths.checkout / "env/spotify/__init__.py"
+    error = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 3, in <module>\n'
+        f'  File "{module}", line 5, in hello\n'
+        "    raise MemoryInputError(name)\n"
+        "env.spotify.MemoryInputError: ada\n"
+    )
+    _transcript(run, *_cell_lines(code, f"core\n\n{run.index}", error))
     _finish(mv2, run)
     rel = episode_dir(run)
     raw = Repo(mv2.paths.episodes).show("main", f"{rel}/memory_use.json")
     rec = json.loads(raw)
     assert rec["items_at_pin"] == ["env/spotify:hello"]
     assert set(rec["items"]) == {"env/spotify:hello"}
+    assert rec["export_roots"][0] == str(mv2.paths.checkout)
+    assert rec["modified_channels"] == ["spotify"]
     hello = rec["items"]["env/spotify:hello"]
-    assert (hello["imported"], hello["called"], hello["refused"]) == (1, 1, 0)
+    assert (hello["imported"], hello["called"]) == (1, 1)
+    assert (hello["refused"], hello["refused_modified"]) == (0, 1)
+    assert hello["modified_in_request"] is True
     shown = rec["memory_section_shown"]
     assert shown["shown"]
     assert shown["sha256"] == hashlib.sha256(run.index.encode()).hexdigest()
+    assert rec["shown_items"] == ["env/spotify:hello"]
+    assert rec["shown_channels"] == ["spotify"]
     totals = EvidenceStore(mv2.paths.evidence).item_use()
-    assert totals["env/spotify:hello"]["called"] == 1
+    row = totals["env/spotify:hello"]
+    assert (row["called"], row["refused"], row["refused_modified"]) == (1, 0, 1)
+    assert (row["shown"], row["channel_shown"], row["modified"]) == (1, 1, 1)
     assert not mv2.paths.errors.exists()
     _left_nothing(mv2.paths)
 

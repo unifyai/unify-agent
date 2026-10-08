@@ -26,11 +26,11 @@ CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel T
   passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
-CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, imported INTEGER, called INTEGER, refused INTEGER,
-  errored INTEGER, refused_accepted INTEGER, referenced INTEGER, guarded INTEGER, unknown_calls INTEGER,
-  PRIMARY KEY(item, episode_id));
+CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, PRIMARY KEY(item, episode_id));
 """
 
+# The item_use counts, in column order. Each is added to a store that lacks it (a store opened before
+# the column existed), as ``INTEGER NOT NULL DEFAULT 0``.
 _USE_COUNTS = (
     "imported",
     "called",
@@ -40,16 +40,48 @@ _USE_COUNTS = (
     "referenced",
     "guarded",
     "unknown_calls",
+    "shown",
+    "channel_shown",
+    "modified",
+    "refused_modified",
+    "errored_modified",
 )
 _IN_CHUNK = 500
 
 
+def _migrate_item_use(db: sqlite3.Connection) -> None:
+    have = {r[1] for r in db.execute("PRAGMA table_info(item_use)")}
+    with db:
+        for col in _USE_COUNTS:
+            if col not in have:
+                db.execute(
+                    f"ALTER TABLE item_use ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0",
+                )
+
+
 def _use_rows(eid: str, use: dict) -> list[tuple]:
     """One ``item_use`` row per item at the episode's pin (an exposure, zeros included) and per item the
-    record counts; ``unknown_calls`` is the dynamic calls on the item's channel plus on ``env`` itself.
+    record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
+    channel plus on ``env`` itself; ``shown`` whether the item's own line was in the prompt's memory
+    section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
+    channel's files (its refusals and errors are then in the ``_modified`` columns only).
     """
+
+    def listed(key: str) -> set[str]:
+        value = use.get(key)
+        return (
+            {v for v in value if isinstance(v, str)}
+            if isinstance(value, list)
+            else set()
+        )
+
     rows = use.get("items") if isinstance(use.get("items"), dict) else {}
-    pinned = [i for i in use.get("items_at_pin") or [] if isinstance(i, str)]
+    pinned = listed("items_at_pin")
+    shown, channels, changed = (
+        listed("shown_items"),
+        listed("shown_channels"),
+        listed("modified_channels"),
+    )
     unknown = (
         use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
     )
@@ -58,7 +90,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     out = []
-    for item in sorted(set(pinned) | {k for k in rows if isinstance(k, str)}):
+    for item in sorted(pinned | {k for k in rows if isinstance(k, str)}):
         r = rows.get(item) if isinstance(rows.get(item), dict) else {}
         channel = item.split(":", 1)[0].removeprefix("env/")
         out.append(
@@ -73,6 +105,11 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 n(r.get("referenced")),
                 n(r.get("guarded")),
                 n(unknown.get(channel)) + n(unknown.get("*")),
+                int(item in shown),
+                int(channel in channels),
+                int(channel in changed),
+                n(r.get("refused_modified")),
+                n(r.get("errored_modified")),
             ),
         )
     return out
@@ -82,6 +119,7 @@ class EvidenceStore:
     def __init__(self, path: Path) -> None:
         self.db = sqlite3.connect(str(path))
         self.db.executescript(_SCHEMA)
+        _migrate_item_use(self.db)
 
     def index_episode(self, ep: Episode, commit_sha: str) -> int:
         with self.db:
@@ -110,19 +148,27 @@ class EvidenceStore:
             )
             use = getattr(ep, "memory_use", None)
             if isinstance(use, dict):
+                cols = ", ".join(("item", "episode_id", *_USE_COUNTS))
+                marks = ",".join("?" * (2 + len(_USE_COUNTS)))
                 self.db.executemany(
-                    "INSERT OR REPLACE INTO item_use VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    f"INSERT OR REPLACE INTO item_use({cols}) VALUES({marks})",
                     _use_rows(ep.episode_id, use),
                 )
             return int(cur.lastrowid)
 
     # -- item use (memory v2.1 telemetry) --------------------------------------------------------------
 
-    def item_use(self, eids: list[str] | None = None) -> dict[str, dict]:
-        """Per item, the summed ``item_use`` counts over *eids* (every indexed episode when None).
+    def item_use(
+        self,
+        eids: list[str] | None = None,
+        item: str | None = None,
+    ) -> dict[str, dict]:
+        """Per item (only *item* when given), the summed ``item_use`` counts over *eids* (every indexed
+        episode when None).
 
         Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
-        with a call site), and the sums of :data:`_USE_COUNTS`. Items are in id order.
+        with a call site), and the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
+        the requests whose memory section showed the item's line and its channel). Items are in id order.
         """
         cols = ", ".join(f"SUM({c})" for c in _USE_COUNTS)
         base = (
@@ -136,14 +182,16 @@ class EvidenceStore:
             uniq = sorted(set(eids))
             chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
         for chunk in chunks:
-            if chunk is None:
-                rows = self.db.execute(f"{base} GROUP BY item").fetchall()
-            else:
-                marks = ",".join("?" * len(chunk))
-                rows = self.db.execute(
-                    f"{base} WHERE episode_id IN ({marks}) GROUP BY item",
-                    chunk,
-                ).fetchall()
+            where: list[str] = []
+            params: list[str] = []
+            if item is not None:
+                where.append("item=?")
+                params.append(item)
+            if chunk is not None:
+                where.append(f"episode_id IN ({','.join('?' * len(chunk))})")
+                params.extend(chunk)
+            clause = f" WHERE {' AND '.join(where)}" if where else ""
+            rows = self.db.execute(f"{base}{clause} GROUP BY item", params).fetchall()
             for r in rows:
                 cur = out.setdefault(
                     r[0],
