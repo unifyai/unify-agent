@@ -32,6 +32,8 @@ CONFIGURATION = frozenset(
         "UNIFY_MAX_TOOL_LOOP_STEPS",
         "UNIFY_MODEL",
         "UNIFY_REASONING_EFFORT",
+        # Observability for a proxy: HTTP headers only, the request body as shipped.
+        "UNIFY_REQUEST_METADATA_HEADERS",
         "UNIFY_STORE_ADMISSION",
         "UNIFY_STORE_VERIFY",
         "UNIFY_TERMINAL_LOG",

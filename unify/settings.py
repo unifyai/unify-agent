@@ -393,6 +393,25 @@ class ProductionSettings(BaseSettings):
     # When set, logs are written to {UNIFY_LOG_DIR}/unify.log
     # Default: None (console only)
     UNIFY_LOG_DIR: str = ""
+    # ``on``: every model call carries four HTTP headers, so a proxy in front
+    # of the provider can attribute it (for example, measure the cache hits of
+    # each session's first call and of the calls after a compaction):
+    # ``X-Unify-Session``, a random id per model client (a fork gets its own,
+    # plus ``X-Unify-Parent``, its parent's); ``X-Unify-Request``, how many
+    # requester messages the loop answering a requester had received when
+    # the call was made (1 for the first request, 0 where no such loop drives
+    # the client; a fork starts from its parent's count); ``X-Unify-Call-Kind``,
+    # the client's ``origin`` label; and ``X-Unify-Msg-Count``, the number of
+    # messages in the request. Every value is random or counted by the
+    # harness, matches ``[A-Za-z0-9_.:-]{1,64}`` and is never request
+    # content. The request body is unchanged, so the provider's prompt cache
+    # is not affected; unillm's response cache (UNILLM_CACHE) keys on the
+    # headers, so a recorded response is not replayed for a call that
+    # carries them. With no proxy in front that strips them, the headers
+    # reach the model provider (harmless, but they do). Empty (or ``off``):
+    # no header is added and the call's arguments are as shipped
+    # (unify/common/llm_client.py).
+    UNIFY_REQUEST_METADATA_HEADERS: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Terminal Logging
@@ -502,6 +521,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_BIND_REQUEST must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REQUEST_METADATA_HEADERS", mode="before")
+    @classmethod
+    def parse_request_metadata_headers(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_REQUEST_METADATA_HEADERS must be empty, 'off' or 'on', "
+                f"not {v!r}",
             )
         return value
 

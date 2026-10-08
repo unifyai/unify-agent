@@ -31,6 +31,7 @@ from .messages import (
 )
 from .message_dispatcher import LoopMessageDispatcher
 from .tools_utils import create_tool_call_message
+from ..llm_client import count_requester_message
 from ..llm_helpers import (
     DEFAULT_TOOL_SCHEMA_STRICT,
     method_to_schema,
@@ -1918,6 +1919,10 @@ async def async_tool_loop_inner(
                     # UNIFY_BIND_REQUEST=on: the requester's message is now
                     # the current request.
                     _bound_request.record(_request_slot, _msg_text)
+                    # UNIFY_REQUEST_METADATA_HEADERS=on: one more requester
+                    # message, in a loop that answers a requester.
+                    if bind_request:
+                        count_requester_message(client)
                     _user_content = (
                         time_ctx.prefix_user_message(_msg_text)
                         if time_ctx is not None

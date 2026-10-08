@@ -15,7 +15,7 @@ from typing import (
 from ..logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
-from .llm_client import fork_llm_client
+from .llm_client import count_requester_message, fork_llm_client
 from ._async_tool import cache_discipline as _cache_discipline
 from ._async_tool import bound_request as _bound_request
 from unify import transcripts
@@ -777,6 +777,11 @@ def start_async_tool_loop(
     # UNIFY_BIND_REQUEST=on: the loop's current request, kept by the handle
     # so a loop restarted after compression keeps it.
     request_slot = _bound_request.new_slot(bind_request)
+    # UNIFY_REQUEST_METADATA_HEADERS=on: the request the loop starts with is
+    # the requester's first message (a restart after compression is not
+    # started here, so it counts nothing).
+    if bind_request:
+        count_requester_message(client)
 
     # Mutable container through which the inner loop reaches the outer handle
     # once it exists.
