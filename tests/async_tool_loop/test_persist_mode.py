@@ -181,6 +181,21 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
 
     await _wait_for_condition(_has_second_tool_call, poll=0.05, timeout=30.0)
 
+    # Wait for the reply to the second result before stopping. A stop sent
+    # while that model call is in flight cancels it on a live run, so it is
+    # never recorded, and a replay that reaches it first finds no response.
+    async def _has_second_result_response() -> bool:
+        msgs = client.messages or []
+        tool_idxs = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+        if len(tool_idxs) < 2:
+            return False
+        return any(
+            m.get("role") == "assistant" and m.get("content")
+            for m in msgs[tool_idxs[1] + 1 :]
+        )
+
+    await _wait_for_condition(_has_second_result_response, poll=0.05, timeout=30.0)
+
     # Stop and verify
     await handle.stop()
     await handle.result()
