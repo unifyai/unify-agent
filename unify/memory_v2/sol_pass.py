@@ -83,15 +83,16 @@ conforms: file format, delimiter, columns and types, key trees, sheets), memlab.
 output_shape, exit_codes, by_shape), memlab.analysis.transitions (transitions, table, conflicts, check, fixture),
 memlab.replay.RecordedEnv, memlab.episodes (Cell, Action, env_channel).
 Each episode file holds "episode_id", "request", "cells" (code and printed output; memlab.episodes.Cell(**cell))
-and "actions" ("index" is the action's action_index, "memory_channel" the channel its items live under, and
-memlab.episodes.Action(**{k: v for k, v in a.items() if k not in ("index", "memory_channel")}) rebuilds it).
+and "actions" ("index" is the action's action_index, and memlab.episodes.Action(**{k: v for k, v in a.items()
+if k != "index"}) rebuilds it), and "memory_channels" (memory_channels[i] is the channel items covering
+actions[i] live under).
 Every action has a "kind":
 - tool: a call through an environment namespace, with its response or error;
 - shell: a command (args) with response {"exit_code", "tail"} (the output's last part);
 - worktree: a file read or write (args[0] is the path) with response {"blob_before", "blob_after", "size", "shape"};
 - dialogue: the action an agent's reply carried (args[0]) with the next observation as its response.
-An action belongs to the memory channel in its "memory_channel" field: an item covering it lives in
-env/<memory_channel>/ exactly (never derive another name). An action whose "memory_channel" is null cannot be covered. The recordings say
+An item covering actions[i] lives in env/<memory_channels[i]>/ exactly (never derive another name); an action
+whose memory channel is null cannot be covered. The recordings say
 nothing about whether a request was solved; do not guess.
 Each execute_code call runs your code as a Python script in a fresh process, cwd /memory,
 PYTHONPATH=/inputs:/memory; only files persist between calls. /memory may hold at most {entries} files and
@@ -265,8 +266,9 @@ def export_for_sol(
 
     Ruling R10: no outcome, signal or checker data reaches Sol. The fields are an allowlist: cells carry
     their index, code and printed output; actions their index (the ``action_index`` covers cite), cell,
-    channel, method, args, kwargs, response, status, effect, error, kind and memory_channel (the gate's
-    :func:`.episodes.env_channel` of kind and channel). Anything else an episode carries
+    channel, method, args, kwargs, response, status, effect, error and kind; ``memory_channels`` lists, per
+    action, the gate's :func:`.episodes.env_channel` of its kind and channel (kept beside the actions so the
+    documented ``Action(**...)`` rebuild never meets an unknown key). Anything else an episode carries
     (transcript, regime, costs, diffs, fingerprints, cell errors, or attributes a later schema adds) is
     dropped.
     """
@@ -295,13 +297,12 @@ def export_for_sol(
                     "effect": a.effect,
                     "error": a.error,
                     "kind": getattr(a, "kind", "tool"),
-                    # the gate's own mapping (G2), so Sol never derives a channel name
-                    "memory_channel": env_channel(
-                        getattr(a, "kind", "tool"),
-                        a.channel,
-                    ),
                 }
                 for i, a in enumerate(ep.actions)
+            ],
+            # the gate's own mapping (G2), so Sol never derives a channel name
+            "memory_channels": [
+                env_channel(getattr(a, "kind", "tool"), a.channel) for a in ep.actions
             ],
         }
         (dest / f"{eid}.json").write_text(

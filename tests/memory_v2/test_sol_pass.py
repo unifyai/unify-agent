@@ -320,9 +320,9 @@ def test_export_for_sol_carries_no_outcome_signal_or_checker_data(tmp_path):
                 "effect": "write",
                 "error": None,
                 "kind": "tool",
-                "memory_channel": "venmo",
             },
         ],
+        "memory_channels": ["venmo"],
     }
 
 
@@ -361,10 +361,10 @@ def test_export_for_sol_names_each_actions_memory_channel_as_the_gate_maps_it(tm
         ),
     ]
     export_for_sol(lambda eid: ep, ["e1"], tmp_path)
-    acts = json.loads((tmp_path / "e1.json").read_text())["actions"]
-    assert [a["memory_channel"] for a in acts] == ["env", "dialogue_user", None]
-    for a in acts:  # the brief's rebuild recipe still works
-        Action(**{k: v for k, v in a.items() if k not in ("index", "memory_channel")})
+    row = json.loads((tmp_path / "e1.json").read_text())
+    assert row["memory_channels"] == ["env", "dialogue_user", None]
+    for a in row["actions"]:  # the brief's rebuild recipe still works on every action
+        Action(**{k: v for k, v in a.items() if k != "index"})
 
 
 def test_export_for_sol_refuses_unsafe_episode_ids(tmp_path):
