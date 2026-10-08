@@ -34,7 +34,9 @@ The last 17 research switches went (`tests/test_no_research_switches.py` passes)
 
 ### 3. The loop (a design task, not a strip)
 
-**What stays, and why:** the steerable-handle machinery (steer/wait/ask, check_status, pending placeholders, multi_handle, interjection channels). `conversation_manager` runs its brain through `start_async_tool_loop` and imports `SteerableToolHandle`, and an interjection into a running `execute_code` cell goes through the steering patcher.
+**Deleted (PR C, 8 Oct 2026):** the steering code nothing reaches after the loop trim: `multi_handle.py` (with `request_state.py`, `tagging.py`), `steering_patcher.py`, `transcript_ops.py`, the steering leftovers in `ToolCallMetadata`, `ToolsData`, `ToolLoopKind` and `LoopContextState`, and the steering branches of the prompt builders. `dynamic_tools_factory.py` and `get_handle_paused_state`, reached only from legacy, moved to `unify/legacy/`.
+
+**What stays, and why:** `SteerableToolHandle` (the simulated actors, `BaseActorHandle`, type hints), the loop's interjection queue (the agent record's posts) and `function_manager/steering.py`'s `SteeringSession`, whose checkpoint progress a failed cell reports. Nothing writes a patch any more (the patch writer went with `steering_patcher.py`); the instrumentation and replay in `steering.py` and `session.py` run but apply no correction.
 
 **The goal:** a minimal synchronous `execute_code` loop. It needs a separate actor entry point. Compression, the agent record's interjections and the WIP loop switches (LOOP_STOP, STEP_CAP_*, REPLY_CHANNEL) are wired into the async loop.
 
