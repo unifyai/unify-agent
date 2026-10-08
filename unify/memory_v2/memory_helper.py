@@ -19,9 +19,14 @@ header); ``[]``, ``{}``, scalars, lists of scalars and headerless tables find no
 says almost nothing about what they are. A recorded shape matches when no shared key path has another type
 (null and empty columns fit any type) and the shared named keys are at least half of both signatures' named
 keys. ``exact`` means the same signature, list length classes (0, 1, 2–9, 10–99, 100+) and file format;
-``structure`` means a match with some keys or types differing. Results are ranked by level, then by the
-share of named keys matched, then by how many recorded shapes match, then by name, at most
-:data:`MAX_RESULTS`, each with the keys or columns that matched.
+``structure`` means a match with some keys or types differing. A match on a single named key says little
+(``{"status": "error"}`` fits every status envelope), so it is labelled ``weak`` and ranked last, unless a
+typed structure sits under that key in both (``{"grid": [[0, 1]]}``: ``grid[][]`` holds ints). Results are
+ranked by level (exact, structure, weak), then by the share of named keys matched, then by how many recorded
+shapes match, then by name, at most :data:`MAX_RESULTS`, each with the keys or columns that matched. A
+value of more than :data:`MAX_NODES` nodes is shaped from its first part (its descriptor says
+``truncated``), so a huge nested value is matched in bounded time. A DataFrame, array or other object
+that is not a dict, list or JSON text has no shape here: pass its records or its file instead.
 
 The helper reads only the catalogue the harness wrote beside it (``.memory/catalog.json``, rendered from
 the library's commit) and the README; it makes no network call and no call to the harness, and it imports
@@ -30,6 +35,7 @@ only the standard library. Its file is generated with the library: edits are dis
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 from typing import Any, NamedTuple
@@ -45,6 +51,10 @@ MIN_SHARE = 0.5  # shared named keys over the union of both signatures' named ke
 _ANY = frozenset({"null", "empty"})  # leaf types that fit any other
 _MAX_DEPTH = 8
 _MAX_ELEMENTS = 50  # list elements walked for length classes
+# Nodes each shape walk of a value visits (its length classes, its key tree); past it the descriptor is
+# marked ``"truncated": true`` and shows the part walked, so a huge nested value is shaped in bounded time.
+MAX_NODES = 20_000
+_MAX_SIGNATURE_PATHS = 20_000
 
 
 def _load_shapes() -> Any:
@@ -106,17 +116,80 @@ def _length_class(n: int) -> str:
     )
 
 
-def _lengths(value: Any, path: str, out: dict[str, str], depth: int = 0) -> None:
+class _Budget:
+    """Nodes a walk may still visit."""
+
+    __slots__ = ("left",)
+
+    def __init__(self, n: int) -> None:
+        self.left = n
+
+    def take(self) -> bool:
+        self.left -= 1
+        return self.left >= 0
+
+
+def _lengths(
+    value: Any,
+    path: str,
+    out: dict[str, str],
+    depth: int = 0,
+    budget: _Budget | None = None,
+) -> None:
     """The length class of each list in *value*, by its key path (the first list seen at a path wins)."""
     if depth > _MAX_DEPTH:
         return
     if isinstance(value, dict):
         for k in sorted(value, key=str):
-            _lengths(value[k], f"{path}.{k}" if path else str(k), out, depth + 1)
+            if budget is not None and not budget.take():
+                return
+            _lengths(
+                value[k],
+                f"{path}.{k}" if path else str(k),
+                out,
+                depth + 1,
+                budget,
+            )
     elif isinstance(value, (list, tuple)):
         out.setdefault(path, _length_class(len(value)))
-        for v in list(value)[:_MAX_ELEMENTS]:
-            _lengths(v, path + "[]", out, depth + 1)
+        for v in itertools.islice(value, _MAX_ELEMENTS):
+            if budget is not None and not budget.take():
+                return
+            _lengths(v, path + "[]", out, depth + 1, budget)
+
+
+_CUT = object()  # a container the budget ran out in before any of its children was kept
+
+
+def _pruned(value: Any, budget: _Budget, depth: int = 0) -> Any:
+    """*value* as :func:`.analysis.shapes.tree` reads it, within *budget* nodes: a dict keeps the values of
+    its first ``MAX_KEYS`` keys (the others map to None, so its key count stays), a list its first
+    ``SAMPLE_ROWS`` elements, and a container at ``MAX_DEPTH`` is emptied (the tree reads none of it). Under
+    the budget the tree of the copy is the tree of the value; past it the rest is left out, and a container
+    cut before any child is dropped (:data:`_CUT`) rather than shown empty."""
+    if isinstance(value, dict):
+        if depth >= _shapes.MAX_DEPTH:
+            return {}
+        keys = sorted(value, key=str)
+        out: dict = {}
+        for k in keys[: _shapes.MAX_KEYS]:
+            child = _pruned(value[k], budget, depth + 1) if budget.take() else _CUT
+            if child is _CUT:
+                return out if out else _CUT
+            out[k] = child
+        out.update(dict.fromkeys(keys[_shapes.MAX_KEYS :]))
+        return out
+    if isinstance(value, (list, tuple)):
+        if depth >= _shapes.MAX_DEPTH:
+            return []
+        items: list = []
+        for v in itertools.islice(value, _shapes.SAMPLE_ROWS):
+            child = _pruned(v, budget, depth + 1) if budget.take() else _CUT
+            if child is _CUT:
+                return items if items else _CUT
+            items.append(child)
+        return items
+    return value
 
 
 def value_shape(value: Any) -> dict | None:
@@ -126,15 +199,25 @@ def value_shape(value: Any) -> dict | None:
         return None
     try:
         lengths: dict[str, str] = {}
-        _lengths(parsed, "", lengths)
-        tree = json.loads(_canon(_shapes.tree(parsed)))
+        walked, kept = _Budget(MAX_NODES), _Budget(MAX_NODES)
+        _lengths(parsed, "", lengths, budget=walked)
+        pruned = _pruned(parsed, kept)
+        if pruned is _CUT:
+            pruned = type(parsed)()
+        tree = json.loads(_canon(_shapes.tree(pruned)))
     except (TypeError, ValueError, RecursionError):
         return None
-    return {"kind": "value", "tree": tree, "lengths": lengths}
+    out = {"kind": "value", "tree": tree, "lengths": lengths}
+    if walked.left < 0 or kept.left < 0:
+        out["truncated"] = True  # only the first MAX_NODES nodes were shaped
+    return out
 
 
 def _walk(tree: Any, path: str, out: dict[str, str]) -> None:
-    """Flatten a key tree (:func:`.analysis.shapes.tree`) into key paths and leaf types."""
+    """Flatten a key tree (:func:`.analysis.shapes.tree`) into key paths and leaf types (at most
+    ``_MAX_SIGNATURE_PATHS`` of them)."""
+    if len(out) >= _MAX_SIGNATURE_PATHS:
+        return
     if isinstance(tree, dict):
         for k in sorted(tree):
             p = f"{path}.{k}" if path else str(k)
@@ -196,6 +279,36 @@ def _format(desc: dict) -> Any:
         return ["value", desc.get("lengths")]
     s = desc.get("shape") or {}
     return ["file", s.get("format"), s.get("delimiter"), s.get("encoding")]
+
+
+def _strong(matched: list[str], a: dict[str, str], b: dict[str, str]) -> bool:
+    """Whether a match says something: two or more shared named keys, or one with a typed structure nested
+    under it in both signatures (a list or grid of the same scalar type)."""
+    if len(matched) >= 2:
+        return True
+    if not matched:
+        return False
+    key = matched[0]
+    return any(
+        p.startswith(key + "[")
+        and a[p] == b[p]
+        and a[p] not in _ANY | {"list", "object"}
+        for p in a.keys() & b.keys()
+    )
+
+
+def match(mine: dict, recorded: dict) -> tuple[int, float, list[str]] | None:
+    """:func:`compare` with the single-key floor: (2 exact, 1 structure or 0 weak, share, matched keys)."""
+    found = compare(mine, recorded)
+    if found is None:
+        return None
+    level, share, matched = found
+    if not _strong(matched, signature(mine), signature(recorded)):
+        level = 0
+    return level, share, matched
+
+
+_LEVELS = {2: "exact", 1: "structure", 0: "weak"}
 
 
 def compare(mine: dict, recorded: dict) -> tuple[int, float, list[str]] | None:
@@ -280,7 +393,7 @@ class Found(NamedTuple):
     input: (
         str  # the form its first parameter takes (path, text, bytes, observation, env)
     )
-    match: str  # exact | structure
+    match: str  # exact | structure | weak (a single named key)
     summary: str
     reason: str  # the keys or columns that matched
 
@@ -320,7 +433,7 @@ def _value_candidates(value: Any, exts: list[str]) -> list[dict]:
 def find(value: Any) -> list[Found]:
     """The functions whose recorded inputs have the shape of *value*, best match first.
 
-    Ranked by match level (``exact`` before ``structure``), then by the share of named keys matched, then
+    Ranked by match level (``exact``, then ``structure``, then ``weak``: one named key), then by the share of named keys matched, then
     by how many recorded input shapes match, then by name; at most :data:`MAX_RESULTS`. An empty list
     means no stored function was built on data of this shape, or the value has too little structure.
     """
@@ -339,7 +452,7 @@ def find(value: Any) -> list[Found]:
         best: tuple[int, float, list[str]] | None = None
         count = 0
         for d in e.get("input_shapes", []):
-            hits = [m for m in (compare(v, d) for v in mine) if m is not None]
+            hits = [m for m in (match(v, d) for v in mine) if m is not None]
             if not hits:
                 continue
             top = max(hits, key=lambda m: (m[0], m[1]))
@@ -361,7 +474,7 @@ def find(value: Any) -> list[Found]:
             name,
             e.get("signature", ""),
             e.get("input", ""),
-            "exact" if level == 2 else "structure",
+            _LEVELS[level],
             e.get("summary", ""),
             reason,
         )

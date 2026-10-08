@@ -571,8 +571,9 @@ def test_find_still_finds_real_arc_and_office_shapes(library, tmp_path):
     assert [(f.name, f.match) for f in memory.find(big)] == [
         ("env.dialogue_user.parse_submit", "structure"),  # another length class
     ]
-    assert [f.name for f in memory.find({"status": "fine"})] == [
-        "env.dialogue_user.parse_status",
+    # one named key says little: still listed, labelled weak (re-review I3 floor)
+    assert [(f.name, f.match) for f in memory.find({"status": "fine"})] == [
+        ("env.dialogue_user.parse_status", "weak"),
     ]
     assert [f.name for f in memory.find(NEW_LEDGER)][
         0
@@ -671,3 +672,51 @@ def test_the_prompt_section_shows_channels_not_functions_and_is_byte_stable(
         "worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n"
         in flagged
     )
+
+
+def test_a_single_key_match_is_weak_unless_a_typed_structure_sits_under_it():
+    """Seeded: one shared named key is ``weak`` (level 0); two keys, or one key over a typed list or grid in
+    both, keep their level."""
+    import random
+
+    rng = random.Random(20261008)
+    leaf = {
+        "int": lambda: rng.randint(0, 9),
+        "str": lambda: "s" + str(rng.randint(0, 9)),
+    }
+    for _ in range(200):
+        key = rng.choice(["status", "error", "message", "result", "id"])
+        kind = rng.choice(sorted(leaf))
+        a = memory_helper.value_shape({key: leaf[kind]()})
+        b = memory_helper.value_shape({key: leaf[kind]()})
+        assert memory_helper.match(a, b)[0] == 0
+        other = rng.choice(["count", "page", "next"])
+        two_a = memory_helper.value_shape({key: leaf[kind](), other: 1})
+        two_b = memory_helper.value_shape({key: leaf[kind](), other: 2})
+        assert memory_helper.match(two_a, two_b)[0] == 2
+        grid = [[leaf[kind]() for _ in range(2)] for _ in range(rng.randint(1, 3))]
+        g_a = memory_helper.value_shape({key: grid})
+        g_b = memory_helper.value_shape({key: [[leaf[kind]()]]})
+        assert memory_helper.match(g_a, g_b)[0] >= 1  # a typed grid under the one key
+        assert memory_helper.match(memory_helper.value_shape({key: []}), g_b)[0] == 0
+
+
+def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
+    """Minor (re-review I3): a 20^5 nested list (3.2 million leaves) is shaped from its first
+    MAX_NODES nodes; values under the budget are shaped exactly as before (no ``truncated`` key).
+    """
+    import time
+
+    def nest(depth, width):
+        return 0 if depth == 0 else [nest(depth - 1, width) for _ in range(width)]
+
+    big = nest(5, 20)
+    started = time.perf_counter()
+    desc = memory_helper.value_shape(big)
+    memory_helper.signature(desc)
+    elapsed = time.perf_counter() - started
+    assert desc["truncated"] is True and desc["lengths"][""] == "10-99"
+    assert desc["tree"] == [[[[["int"]]]]]
+    assert elapsed < 0.25, elapsed  # about 12 ms on the laptop when measured
+    small = memory_helper.value_shape(nest(3, 4))
+    assert "truncated" not in small and small["tree"] == [[["int"]]]
