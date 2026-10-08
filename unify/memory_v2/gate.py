@@ -75,8 +75,11 @@ The checks:
 * **G5 description length.** If ``env/*/__init__.py`` grew, a cover G2 validated is new to the evidence
   and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
-  key-shaped string in a changed file or the manifest; every public function of a changed module declares
-  ``Effect:`` and is defined once; every module parses.
+  bytecode or native code, ``__pycache__`` path, ``sitecustomize``/``usercustomize`` under any suffix or root
+  directory named like a standard-library or pytest module; and no other root entry than ``env/``,
+  ``workflows/`` and the test kit (G1) (:func:`.manifest.unsafe_path`, all refused before anything is
+  extracted or run); no key-shaped string in a changed file or the manifest; every public function of a
+  changed module declares ``Effect:`` and is defined once; every module parses.
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
@@ -116,6 +119,7 @@ from .manifest import (
     item_path,
     layout_allowed,
     parse_manifest,
+    unsafe_path,
 )
 from .memory_repo import ItemsReport, items
 from .redact import KEY_SHAPED
@@ -632,6 +636,15 @@ class Gate:
             for p in sorted(run.c_files)
             if not layout_allowed(p)
         ]
+        # Compiled code, start-up hooks and root entries the layout above admits (review I4); one reason each.
+        unsafe = [
+            u
+            for p in sorted(run.c_files)
+            if not forbidden(p) and layout_allowed(p) and (u := unsafe_path(p))
+        ]
+        early += unsafe[:10]
+        if len(unsafe) > 10:
+            early.append(("G6", f"and {len(unsafe) - 10} more such paths"))
         run.changed = sorted(
             p
             for p in set(run.p_files) | set(run.c_files)
