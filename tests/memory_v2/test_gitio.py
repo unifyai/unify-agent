@@ -41,6 +41,17 @@ def test_notes_append_and_read(tmp_path):
     assert r.notes(r.head()) == ['{"x":1}', '{"x":2}']
 
 
+def test_note_lines_append_in_one_call_by_stdin(tmp_path):
+    r = Repo.init_bare(tmp_path / "e.git")
+    r.append_note_lines(r.head(), ['{"i":0}', '{"i":1}'], "t")
+    r.append_note_lines(r.head(), ['{"i":2}'], "t")
+    r.append_note_lines(r.head(), [], "t")
+    assert r.notes(r.head(), ref="t") == ['{"i":0}', '{"i":1}', '{"i":2}']
+    assert r.notes(r.head()) == []
+    with pytest.raises(GitError):
+        r.append_note_lines(r.head(), ["a\nb"], "t")
+
+
 def test_snapshot_mode_keeps_git_out_of_work_tree(tmp_path):
     wt = tmp_path / "work"
     wt.mkdir()
