@@ -51,6 +51,13 @@ At the code freeze of 7 October 2026 every other research switch was either made
 - **What it does:** When on, a task loop that can compress its context compacts it when it reaches its step limit, instead of stopping, and carries on with the same request. This happens at most twice per request. At the third limit, the request stops as it would without the switch.
 - **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
 
+## UNIFY_COMPACTION_KEEP_PREFIX
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, a context compaction keeps what the session already sent at the start of the conversation, byte for byte: the system prompt, the session's first user message and every requester message of the current request, unchanged and in their original order. The summary follows them as one loop-authored message, and the tools stay the same. As shipped, the conversation restarts from the system prompt and the summary alone, so the request's own words are replaced by the model's paraphrase of them, and only the tools and the system prompt stay cached. The current request is read from the session's own messages: it starts at the latest requester message.
+- **Evidence:** long-horizon WIP, unscreened; part of the cache-preserving compaction design of 8 October, to be tested on the long-horizon beds.
+
 ## UNIFY_LOOP_STOP and UNIFY_LOOP_STOP_K
 
 - **Values:** `UNIFY_LOOP_STOP` is empty (the same as `off`) or `on`. `UNIFY_LOOP_STOP_K` is a whole number of at least 1.

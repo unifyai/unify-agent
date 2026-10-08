@@ -154,6 +154,26 @@ class ProductionSettings(BaseSettings):
     # reply()) is given, not compacted for. A loop without compression is
     # unchanged. Empty (also ``off``): as shipped.
     UNIFY_STEP_CAP_COMPACT: str = ""
+    # ``on``: a context compaction (at the context threshold, on the model's
+    # own ``compress_context`` call, or at ``max_steps`` under
+    # UNIFY_STEP_CAP_COMPACT) rebuilds the conversation so that it starts
+    # with what the session already sent, byte for byte, instead of with the
+    # system prompt alone: the system prompt, the session's first user
+    # message, then every requester message of the current request (a user
+    # message the loop did not author), each unchanged and in its original
+    # order, and only then the summary, as one loop-authored user message
+    # (the compressed-context header, the summary, "Context was compressed.
+    # Continue from where you left off." and the transcript's path). The
+    # current request is read from the session's own messages: it starts at
+    # the latest requester message, together with the requester messages
+    # just before it that no model turn separates from it, as
+    # UNIFY_LOOP_STOP's tracker counts a request; earlier requests of a
+    # persistent session are in the summary. The summary is asked for as
+    # shipped (a fork of the last request). The tools and their order stay
+    # the same, the fallback compactor's rebuild included: it then neither
+    # rewrites the system prompt nor adds ``unpack_messages``, and its
+    # compressed entries are the summary. Empty (also ``off``): as shipped.
+    UNIFY_COMPACTION_KEEP_PREFIX: str = ""
     # ``on``: a request to the actor's task loop (the one that answers the
     # requester; never a sub-agent's, a review's or its fork's) whose tool
     # calls stop making progress ends early. A
@@ -441,6 +461,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_STEP_CAP_COMPACT must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
+    @classmethod
+    def parse_compaction_keep_prefix(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_COMPACTION_KEEP_PREFIX must be empty, 'off' or 'on', "
+                f"not {v!r}",
             )
         return value
 
