@@ -143,15 +143,8 @@ async def test_at_legacy_the_actors_first_request_is_the_default_one(monkeypatch
 
 # ── the prompt and the schema ───────────────────────────────────────────────
 
-#: (tool surface, prompt profile)
-CONFIGS = [
-    ("core", ""),
-    ("core", "lean"),
-]
 
-
-async def _first_request(monkeypatch, projection: str, config) -> dict:
-    surface, profile = config
+async def _first_request(monkeypatch, projection: str) -> dict:
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = new_actor(can_store=False)
     try:
@@ -172,39 +165,36 @@ async def test_the_projected_prompt_is_the_legacy_prompt_with_the_magics(
     core_world,
     monkeypatch,
 ):
-    legacy_prompts = []
-    for config in CONFIGS:
-        legacy = await _first_request(monkeypatch, "legacy", config)
-        notebook = await _first_request(monkeypatch, "notebook", config)
-        legacy_prompts.append(legacy["system"])
-        # Only the listed sentences change.
-        assert notebook["system"] == nb.rewrite_prompt(legacy["system"]), config
-        assert notebook["system"] != legacy["system"], config
-        for field in FIELDS:
-            assert field not in notebook["system"], (config, field)
-        # The other tools are as shipped, less the session tools.
-        others = [
-            t for t in legacy["tools"] if t["function"]["name"] not in nb.SESSION_TOOLS
-        ]
-        assert [
-            t for t in notebook["tools"] if t["function"]["name"] != "execute_code"
-        ] == [t for t in others if t["function"]["name"] != "execute_code"], config
-        assert tool_names(notebook).index("execute_code") == tool_names(
-            {"tools": others},
-        ).index("execute_code")
-        # execute_code asks for the cell alone.
-        tool = _execute_code(notebook)
-        assert list(tool["parameters"]["properties"]) == ["code"], config
-        assert tool["parameters"]["required"] == ["code"], config
-        for field in FIELDS + ("thought",):
-            assert field not in tool["description"], (config, field)
-        assert "%%bash" in tool["description"], config
-        assert "%sessions" in tool["description"]
-        assert "thought" in _execute_code(legacy)["parameters"]["properties"]
-    # Every rewrite applies to some shipped prompt: a reworded prompt fails
+    legacy = await _first_request(monkeypatch, "legacy")
+    notebook = await _first_request(monkeypatch, "notebook")
+    # Only the listed sentences change.
+    assert notebook["system"] == nb.rewrite_prompt(legacy["system"])
+    assert notebook["system"] != legacy["system"]
+    for field in FIELDS:
+        assert field not in notebook["system"], field
+    # The other tools are as shipped, less the session tools.
+    others = [
+        t for t in legacy["tools"] if t["function"]["name"] not in nb.SESSION_TOOLS
+    ]
+    assert [
+        t for t in notebook["tools"] if t["function"]["name"] != "execute_code"
+    ] == [t for t in others if t["function"]["name"] != "execute_code"]
+    assert tool_names(notebook).index("execute_code") == tool_names(
+        {"tools": others},
+    ).index("execute_code")
+    # execute_code asks for the cell alone.
+    tool = _execute_code(notebook)
+    assert list(tool["parameters"]["properties"]) == ["code"]
+    assert tool["parameters"]["required"] == ["code"]
+    for field in FIELDS + ("thought",):
+        assert field not in tool["description"], field
+    assert "%%bash" in tool["description"]
+    assert "%sessions" in tool["description"]
+    assert "thought" in _execute_code(legacy)["parameters"]["properties"]
+    # Every rewrite applies to the shipped prompt: a reworded prompt fails
     # here rather than leaving a field the model can no longer fill.
     for old, _new in nb.PROMPT_REWRITES:
-        assert any(old in prompt for prompt in legacy_prompts), old
+        assert old in legacy["system"], old
 
 
 # ── cells in the real worker: the same state as the legacy arguments ────────

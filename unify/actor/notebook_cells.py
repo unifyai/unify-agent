@@ -831,61 +831,22 @@ def project_tools(
 # The system prompt
 # ---------------------------------------------------------------------------
 
-#: Exact sentences of the shipped prompts that name the session fields or
+#: Exact sentences of the core lean prompt that name the session fields or
 #: tools, and what the projection says instead.
 PROMPT_REWRITES: Tuple[Tuple[str, str], ...] = (
-    # The execution rules (shipped profile, JSON surface).
-    (
-        "   `list_sessions()` / `inspect_state()` rediscover live sessions\n"
-        "   and names — variables survive context compression, since state\n"
-        "   lives in the sandbox, not the transcript. Isolate a cell with\n"
-        '   `state_mode="stateless"` or a named session; fan out in parallel\n',
-        "   `%sessions` lists the notebooks and their variables — variables\n"
-        "   survive context compression, since state lives in the sandbox,\n"
-        "   not the transcript. Isolate a cell with a `%%scratch` or\n"
-        "   `%%session NAME` first line; fan out in parallel\n",
-    ),
-    # The same rule on the core surface.
-    (
-        "   Variables survive context compression, since state lives in the\n"
-        "   sandbox, not the transcript. Isolate a cell with\n"
-        '   `state_mode="stateless"` or a named session; fan out in parallel\n',
-        "   Variables survive context compression, since state lives in the\n"
-        "   sandbox, not the transcript. Isolate a cell with a `%%scratch` or\n"
-        "   `%%session NAME` first line; fan out in parallel\n",
-    ),
-    # The lean profile's rule, JSON surface and core surface.
-    (
-        "`list_sessions()` and\n"
-        "   `inspect_state()` show live sessions and names;\n"
-        '   `state_mode="stateless"` or a named session isolates a cell.',
-        "`%sessions` lists the\n"
-        "   notebooks; a `%%scratch` or `%%session NAME` first line isolates a\n"
-        "   cell.",
-    ),
+    # The execution rules: isolating a cell.
     (
         '`state_mode="stateless"` or a\n   named session isolates a cell.',
         "A `%%scratch` or `%%session\n   NAME` first line isolates a cell.",
     ),
     # Verify before scaling: the what-if.
     (
-        '`state_mode="read_only"` to try alternatives without risk.',
-        "a `%%what_if` cell to try alternatives without risk.",
-    ),
-    (
         '`state_mode="read_only"` tries an alternative on the current\n'
         "state without changing it.",
         "A `%%what_if` cell tries an alternative on the current state\n"
         "without changing it.",
     ),
-    # Per-function modes are unchanged; only the session's field is gone.
-    (
-        "Functions support execution mode overrides independent of the session's\n"
-        "`state_mode`:",
-        "Functions support execution mode overrides independent of where the\n"
-        "cell runs:",
-    ),
-    # The core surface's tools line.
+    # The tools line.
     (
         '(or bash, with `language="bash"`)',
         "(or bash, with a `%%bash` first line)",
