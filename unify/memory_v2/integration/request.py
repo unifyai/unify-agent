@@ -1,13 +1,17 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
-``main`` into the scratch export the worker mounts, renders the index the system prompt ends with, takes
-the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
-episode id and model costs are recorded). ``finish`` records the request as
-one episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
-start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
-and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
+``main`` into the scratch export the worker mounts, renders the memory section the system prompt ends with
+(``index``: under ``UNIFY_MEMORY_V2_SURFACING=index``, the default, the v2 per-function index and export
+line; under ``catalogue``, the constant guide paragraph once the library has listed anything in this run,
+after writing the generated catalogue beside the export: README, ``.memory/catalog.json`` with the
+suspect flags, and the ``memory`` helper, :mod:`..catalogue`), takes the work tree's before snapshot, and
+opens the scope the actor runs in (its transcript continues the episode id and model costs are recorded).
+``finish`` records the request as one episode and runs the consolidation passes that are due, blocking; it
+never raises. The passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the
+consolidation driver appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way.
+``abort`` cleans up and records nothing. The harness hooks read the current run (``current()``) for
+``index`` and ``paths``.
 
 Only pass/fail of a posted outcome is kept (ruling R10): ``take_outcome`` keeps ``solved`` and drops
 everything else at once, so no checker text reaches an episode, the evidence, Sol or a cell.
@@ -22,6 +26,7 @@ import logging
 import os
 import secrets
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from decimal import Decimal
@@ -152,7 +157,12 @@ class RequestRun:
     def __init__(self, request: str, paths: Any) -> None:
         self.request = request
         self.paths = paths
-        self.index = ""
+        self.index = ""  # the memory section of the system prompt (prompt.render_index or render_memory_section)
+        # the export's generated files (relative path -> bytes), left out of memory.diff while unchanged
+        self.generated: dict[str, bytes] = {}
+        self.surfacing: Any = (
+            None  # the v2.1 switches read at open (switch.SurfacingOptions)
+        )
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -201,10 +211,12 @@ class RequestRun:
         return run
 
     def _open(self, sandbox: Any, transcripts: Any) -> None:
+        from unify.settings import SETTINGS
+
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
-        from .prompt import render_index
         from .state import State
+        from .switch import surfacing_options
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
@@ -213,7 +225,17 @@ class RequestRun:
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
         export_checkout(paths.memory, self.pin, paths.checkout)
-        self.index = render_index(paths.checkout, self.state.suspect)
+        self.surfacing = surfacing_options(SETTINGS)
+        if self.surfacing.catalogue:
+            self._surface_catalogue(consolidate)
+        else:  # the v2 index and export line, byte for byte; nothing generated in the export
+            from .prompt import render_index
+
+            self.index = render_index(
+                paths.checkout,
+                self.state.suspect,
+                sys.maxsize if self.surfacing.soft_budget else None,
+            )
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
@@ -229,6 +251,62 @@ class RequestRun:
         self.costs = cost.install()
         self.costs.activate()
         self._scope.callback(self.costs.deactivate)
+
+    def _surface_catalogue(self, consolidate: Any) -> None:
+        """``UNIFY_MEMORY_V2_SURFACING=catalogue``: the generated catalogue beside the export (the pinned
+        commit's input shapes frozen, the suspect channels flagged) and the constant guide as the prompt's
+        memory section, from the first request whose library lists anything (then kept: ``State.guide``).
+        """
+        from ..catalogue import GENERATED, write_generated
+        from ..shape_rows import lookup_from
+        from .prompt import render_memory_section
+
+        checkout = self.paths.checkout
+        try:
+            self.generated = write_generated(
+                checkout,
+                shapes=lookup_from(self._shape_rows(consolidate)),
+                suspect=self.state.suspect,
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - the library stays importable without its catalogue
+            logger.warning(
+                "memory v2: the export's catalogue was not written (%s)",
+                type(exc).__name__,
+            )
+            # a partial write must not reach memory.diff as the request's
+            for rel in GENERATED:
+                target = checkout / rel
+                if target.is_file() and not target.is_symlink():
+                    target.unlink()
+        self.index = render_memory_section(checkout, self.state.guide)
+        if self.index and not self.state.guide:
+            self.state.guide = True
+            try:  # also saved at finish; saved now so an aborted request still fixes the prefix
+                self.state.save()
+            except OSError as exc:
+                logger.warning(
+                    "memory v2: the guide flag was not saved (%s)",
+                    type(exc).__name__,
+                )
+
+    def _shape_rows(self, consolidate: Any) -> dict:
+        """The pinned commit's input-shape rows, frozen on first export (:func:`..shape_rows.shapes_at`);
+        functions without recorded shapes are backfilled from the evidence store's covers.
+        """
+        from ..shape_rows import shapes_at
+
+        episodes = getattr(consolidate, "EpisodeLookup", None)
+        return shapes_at(
+            self.stores.memory,
+            self.stores.evidence,
+            self.pin,
+            self.paths.checkout,
+            lookup=episodes(self.stores).action if episodes is not None else None,
+            blobs=self.stores.blobs,
+            freeze=True,
+        )
 
     def redactor(self) -> Any:
         """The run's redactor as far as it is known before the episode is assembled: the environment's
@@ -373,6 +451,7 @@ class RequestRun:
             self.pin,
             paths.checkout,
             stores.blobs,
+            generated=self.generated,
         )
         ended_at = _now()
         ep, redactor = trajectory.assemble(

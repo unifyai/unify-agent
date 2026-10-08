@@ -175,6 +175,19 @@ FORBIDDEN_NAMES = frozenset(
 # Names that would shadow the memory library or the test kit from inside a tests directory.
 _RESERVED_STEMS = frozenset({"env", "unify_memory_testkit"})
 
+# Import names a root entry of the export must never take: the library package and the generated helper
+# (``memory.py``), in any suffix (``memory.abi3.so``, ``env.py``) or as a directory (``memory/``). The gate
+# names these reserved (:func:`.catalogue.reserved`); compiled code and every other root entry are refused by
+# :func:`unsafe_path`.
+SHADOWED_IMPORTS = frozenset({"env", "memory"})
+
+
+def shadows_import(path: str) -> bool:
+    """Whether *path* is a root entry an ``import env`` or ``import memory`` in a cell could resolve to."""
+    if "/" in path:
+        return path.split("/", 1)[0] == "memory"
+    return path.split(".", 1)[0] in SHADOWED_IMPORTS
+
 
 class ManifestError(ValueError):
     pass
@@ -341,6 +354,8 @@ def layout_allowed(path: str) -> bool:
     """Whether the layout admits *path*: channel modules, notes, tests, helpers, workflows, the test kit.
 
     No submodules in v0; nothing under a tests directory takes a reserved name (``env``, the test kit).
+    Compiled code, start-up hooks and root entries outside ``env/``, ``workflows/`` and the test kit are
+    refused by :func:`unsafe_path`.
     """
     m = TESTS_DIR.match(path)
     if m is not None:

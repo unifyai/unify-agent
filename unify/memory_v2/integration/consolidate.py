@@ -98,6 +98,7 @@ from .switch import (
     settle_sol_route_env,
     sol_route,
     sol_token,
+    surfacing_options,
 )
 
 __all__ = [
@@ -644,6 +645,8 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         action_lookup=lookup.action,
+        # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
+        **surfacing_options(settings).gate_kwargs(),
     )
     config = PassConfig(
         model=cfg.model,

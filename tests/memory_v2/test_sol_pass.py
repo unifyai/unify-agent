@@ -410,6 +410,59 @@ def test_sol_system_asks_each_function_to_declare_its_input_from_the_one_constan
     assert "{input_kinds}" not in SOL_SYSTEM
 
 
+def test_sol_system_states_the_docstring_standard_from_the_constants():
+    """v2.1 (every switch on): the lean docstring standard is generated from its constants; the catalogue is
+    the harness's; growth is never refused for size."""
+    from unify.memory_v2 import docstrings
+    from unify.memory_v2.sol_pass import sol_system
+
+    brief = sol_system(docstrings=True, catalogue=True, soft_budget=True)
+    flat = " ".join(brief.split())
+    assert " ".join(docstrings.describe_standard().split()) in flat
+    for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
+        assert f"`{name}:`" in flat
+    assert "{" + "v21_docstrings}" not in brief and "{check_names}" not in brief
+    assert "README.md, memory.py and .memory/" in flat and "never write them" in flat
+    assert "an index budget" not in flat  # growth is never refused for size
+    assert (
+        "docstring, cover-channel, size and safety checks (not the tests or examples)"
+        in flat
+    )
+
+
+@pytest.mark.parametrize(
+    "docstrings_on,catalogue,soft",
+    [(d, c, s) for d in (False, True) for c in (False, True) for s in (False, True)],
+)
+def test_sol_system_states_each_switch_only_when_it_is_on(
+    docstrings_on,
+    catalogue,
+    soft,
+):
+    """Each v2.1 switch adds only its own text to Sol's brief and to the check tool's description."""
+    from unify.memory_v2 import docstrings
+    from unify.memory_v2.sol_pass import sol_system, sol_tools
+
+    flat = " ".join(
+        sol_system(
+            docstrings=docstrings_on,
+            catalogue=catalogue,
+            soft_budget=soft,
+        ).split(),
+    )
+    assert (" ".join(docstrings.describe_standard().split()) in flat) is docstrings_on
+    assert ("README.md, memory.py and .memory/" in flat) is catalogue
+    assert ("an index budget" in flat) is not soft
+    assert ("due for hygiene" in flat) is soft
+    check = next(
+        t["function"]["description"]
+        for t in sol_tools(docstrings=docstrings_on, soft_budget=soft)
+        if t["function"]["name"] == "check"
+    )
+    assert ("docstrings, " in check) is docstrings_on
+    assert ("index, safety" in check) is not soft and ("size, safety" in check) is soft
+
+
 def test_sol_system_lists_the_declared_semantic_types_from_the_one_constant():
     """D21: values are restricted only through the fixed type list, declared in the manifest."""
     flat = SOL_SYSTEM.replace("\n   ", " ")
@@ -1192,10 +1245,49 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
     assert out.checks == 1 and not out.passed
 
 
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
+    """index (default): v2's "Current index"; catalogue: the README (capped, M9) and never the index."""
+    from unify.memory_v2.catalogue import readme_for_sol
+    from unify.memory_v2.integration.checkout import export_checkout
+
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        (wt / "env/venmo").mkdir(parents=True)
+        (wt / "env/venmo/__init__.py").write_text(MOD)
+        sha = mem.commit_all(wt, "seed", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    seen: list = []
+
+    async def record(messages, tools):
+        seen.append([dict(m) for m in messages])
+        raise RuntimeError("recorded")
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), surfacing=surfacing)
+    sol = SolPass(mem, gate, ev, load=_never, model_turn=record, config=PassConfig())
+    asyncio.run(sol.run(PassRequest("incremental", "venmo", [], False), "p-s"))
+    first = seen[0][1]["content"]
+    export_checkout(mem.git_dir, sha, tmp_path / "co")
+    if surfacing == "catalogue":
+        assert first.endswith("\n\n" + readme_for_sol(tmp_path / "co"))
+        assert "Current index" not in first
+        assert "README.md, memory.py and .memory/" in seen[0][0]["content"]
+    else:
+        assert "\n\nCurrent index:\n" in first and "README" not in first
+        assert seen[0][0]["content"] == SOL_SYSTEM
+
+
 def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
     # the gate refuses a stray root entry, so a cache Sol's own test run left must never reach the commit
     box, wt = tmp_path / "box", tmp_path / "wt"
-    for d in (".hypothesis/examples", ".pytest_cache/v", "env/venmo/__pycache__", "env/venmo/.hypothesis"):
+    for d in (
+        ".hypothesis/examples",
+        ".pytest_cache/v",
+        "env/venmo/__pycache__",
+        "env/venmo/.hypothesis",
+    ):
         (box / d).mkdir(parents=True)
     (box / ".hypothesis/examples/a").write_text("x")
     (box / "env/venmo/.hypothesis/b").write_text("x")

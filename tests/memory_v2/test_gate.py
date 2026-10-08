@@ -494,6 +494,7 @@ def test_gate_g3_suite_must_stay_green(world):
 
 
 def test_gate_g4_index_budget(tmp_path, world):
+    """By default (UNIFY_MEMORY_V2_SOFT_BUDGET=off, as in v2) an index over the budget is refused."""
     mem, ev, _ = world
     gate = Gate(
         mem,
@@ -505,6 +506,32 @@ def test_gate_g4_index_budget(tmp_path, world):
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
     assert not res.checks["G4"]
+    assert not any(r.startswith("note: G4") for r in res.reasons), res.reasons
+
+
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_gate_g4_is_a_soft_budget(tmp_path, world, surfacing):
+    """v2.1 (UNIFY_MEMORY_V2_SOFT_BUDGET=on): past the budget G4 notes that hygiene is due, measured on
+    what the prompt carries; it never refuses growth."""
+    mem, ev, _ = world
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b2"),
+        action_lookup=_lookup,
+        budget_tokens=10,
+        surfacing=surfacing,
+        soft_budget=True,
+    )
+    parent = mem.head()
+    res = gate.check(parent, _candidate(mem, FILES), MAN)
+    assert res.passed and res.checks["G4"], res.reasons
+    what = (
+        "catalogue (README and channel lines)" if surfacing == "catalogue" else "index"
+    )
+    assert any(
+        r.startswith(f"note: G4 hygiene due: the {what} is ") for r in res.reasons
+    ), res.reasons
 
 
 def test_gate_g5_growth_must_cover_a_new_call(world):
@@ -836,6 +863,56 @@ def test_gate_support_allowlist(probe, support):
     cand = _candidate(mem, {**PROBE_BASE, support: "x = 1\n"})
     res = gate.check(parent, cand, {"items": [PROBE_ITEM], "support": [support]})
     assert not res.passed and not res.checks["G1"]
+
+
+@pytest.mark.parametrize(
+    "path, reason",
+    [
+        ("env/__init__.pyc", "G6: bytecode or native code file env/__init__.pyc"),
+        ("sitecustomize.pyc", "G6: bytecode or native code file sitecustomize.pyc"),
+        ("json.pyc", "G6: bytecode or native code file json.pyc"),
+        ("pytest.pyc", "G6: bytecode or native code file pytest.pyc"),
+        ("json/__init__.pyc", "G6: bytecode or native code file json/__init__.pyc"),
+        (
+            "env/venmo/__pycache__/__init__.cpython-312.pyc",
+            "G6: bytecode cache path env/venmo/__pycache__/__init__.cpython-312.pyc",
+        ),
+        (
+            "env/venmo/tests/fixture.pyc",
+            "G6: bytecode or native code file env/venmo/tests/fixture.pyc",
+        ),
+        (
+            "env/venmo/tests/fast.so",
+            "G6: bytecode or native code file env/venmo/tests/fast.so",
+        ),
+        (
+            "notes.txt",
+            "G1: root entry notes.txt is outside the layout (the root holds only env/, "
+            "workflows/ and unify_memory_testkit.py)",
+        ),
+    ],
+)
+def test_gate_refuses_bytecode_and_foreign_root_entries(probe, path, reason):
+    """v2.1 I4 (every mode), through the probe gate: manifest.unsafe_path's reason comes first, before
+    anything is extracted, declared or not. A declaration support_allowed refuses (any path outside
+    env/<channel>/tests/) stops earlier, as a malformed manifest. test_gate_layout.py covers the classes.
+    """
+    from unify.memory_v2.manifest import support_allowed
+
+    mem, ev, gate = probe
+    parent = mem.head()
+    cand = _candidate(mem, {**PROBE_BASE, path: "x = 1\n"})
+    res = gate.check(parent, cand, {"items": [PROBE_ITEM]})
+    assert not res.passed and res.reasons[0] == reason, res.reasons
+    assert all(f"{c}: not evaluated" in res.reasons for c in ("G2", "G3", "G4", "G5"))
+    res = gate.check(parent, cand, {"items": [PROBE_ITEM], "support": [path]})
+    assert not res.passed and not res.checks["G1"], res.reasons
+    if support_allowed(path):
+        assert res.reasons[0] == reason, res.reasons
+    else:
+        assert res.reasons[0].startswith(
+            f"G1: malformed manifest: support file {path} is not ",
+        ), res.reasons
 
 
 def test_gate_support_helper_under_tests_is_admitted(probe):

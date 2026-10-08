@@ -365,7 +365,17 @@ class ProductionSettings(BaseSettings):
     # leaves this process's environment once read (below). ``_SOL_TOKEN_FD``
     # (instead of ``_SOL_TOKEN``, never both) names an inherited descriptor
     # holding the token: read once when settings are settled (below), then
-    # closed; the token never enters the environment.
+    # closed; the token never enters the environment. ``_SOL_EFFORT`` is
+    # ``actor`` (Sol's effort is the actor's for the run) or a fixed
+    # ``low``/``medium``/``high`` for a declared mismatch ablation. The v2.1
+    # surfacing switches (same parser; each default is
+    # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
+    # per-function index in the prompt, nothing generated in the export) or
+    # ``catalogue`` (a constant guide in the prompt; generated
+    # README, catalogue and ``memory`` helper in the export; input shapes
+    # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
+    # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``
+    # turns G4's 4,000-token index refusal into a hygiene note.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
@@ -375,6 +385,9 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
     UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
     UNIFY_MEMORY_V2_SOL_EFFORT: str = "actor"
+    UNIFY_MEMORY_V2_SURFACING: str = "index"
+    UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
+    UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -579,6 +592,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_TOKEN",
         "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
         "UNIFY_MEMORY_V2_SOL_EFFORT",
+        "UNIFY_MEMORY_V2_SURFACING",
+        "UNIFY_MEMORY_V2_DOCSTRINGS",
+        "UNIFY_MEMORY_V2_SOFT_BUDGET",
         mode="before",
     )
     @classmethod

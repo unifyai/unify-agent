@@ -177,6 +177,11 @@ def test_state_roundtrip_and_default(tmp_path):
     assert back.generations.generation("venmo") == 1
     assert isinstance(back.generations, Generations)
     assert [p.name for p in path.parent.iterdir()] == ["state.json"]
+    # the catalogue guide flag: absent until set (the v2 file is unchanged), then kept
+    assert back.guide is False and "guide" not in path.read_text()
+    back.guide = True
+    back.save()
+    assert State.load(path).guide is True and '"guide": true' in path.read_text()
 
 
 def test_lock_is_exclusive_and_times_out(tmp_path):
@@ -188,3 +193,64 @@ def test_lock_is_exclusive_and_times_out(tmp_path):
     finally:
         release_lock(fd)
     release_lock(acquire_lock(lock, timeout_s=0.2))
+
+
+def test_untouched_generated_files_stay_out_of_the_diff(tmp_path):
+    from unify.memory_v2.catalogue import write_generated
+
+    mem, sha = _seed(tmp_path)
+    dest = tmp_path / "co"
+    export_checkout(mem.git_dir, sha, dest)
+    generated = write_generated(dest)
+    assert (dest / "README.md").is_file() and (dest / ".memory/catalog.json").is_file()
+    blobs = BlobStore(tmp_path / "b")
+    assert checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated) == ""
+    # without the list, the same files are new to the commit
+    assert "README.md" in checkout_diff(mem.git_dir, sha, dest, blobs)
+    # a generated file the request changed is recorded; the others stay out
+    (dest / "README.md").write_text("my notes on the library\n")
+    (dest / ".memory/proposal.txt").write_text("merge two readers\n")
+    d = checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated)
+    assert "+my notes on the library" in d and "proposal.txt" in d
+    assert "catalog.json" not in d and "memory.py" not in d
+    # a link put in place of a generated file is recorded, never followed
+    (dest / "memory.py").unlink()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("SENTINEL-generated-link\n")
+    os.symlink(secret, dest / "memory.py")
+    d = checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated)
+    assert "memory.py" in d and "SENTINEL-generated-link" not in d
+
+
+def test_an_older_commits_bytecode_is_never_exported(tmp_path):
+    """v2.1 I4: a commit from before the gate refused what manifest.unsafe_path names (bytecode, extensions,
+    root entries outside the layout) is exported without them, so a cell can never import a sourceless
+    ``.pyc`` from the library; the untouched export still diffs empty (what was left out is not something
+    the request deleted).
+    """
+    # not a dict literal: test_gate_layout's fixture sweep reads those as libraries the gate must admit
+    planted = dict.fromkeys(
+        [
+            "env/__init__.pyc",
+            "json.pyc",
+            "sitecustomize.pyc",
+            "env/spotify/__pycache__/__init__.cpython-312.pyc",
+            "env/spotify/fast.so",
+            "pytest_shadow.txt",
+        ],
+        "x",
+    )
+    mem = Repo.init_bare(tmp_path / "memory")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        (wt / "env/spotify/__pycache__").mkdir(parents=True)
+        (wt / "env/spotify/__init__.py").write_text(MOD)
+        for rel, text in planted.items():
+            (wt / rel).write_text(text)
+        sha = mem.commit_all(wt, "old", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    dest = tmp_path / "co"
+    export_checkout(mem.git_dir, sha, dest)
+    exported = sorted(str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file())
+    assert exported == ["env/spotify/__init__.py"]
+    assert checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b")) == ""

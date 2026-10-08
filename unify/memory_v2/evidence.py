@@ -13,6 +13,9 @@ from .experience import experience_tokens
 if TYPE_CHECKING:
     from .signals import Signal
 
+# Input-shape descriptors kept per function in a commit's snapshot (the catalogue's ``input_shapes``).
+MAX_INPUT_SHAPES = 16
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS episodes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT UNIQUE, commit_sha TEXT,
   started_at TEXT, regime TEXT, memory_main TEXT, request TEXT);
@@ -26,6 +29,13 @@ CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel T
   passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
+"""
+# The input-shape snapshots of ``UNIFY_MEMORY_V2_SURFACING=catalogue`` (:mod:`.shape_rows`), created by the
+# first write, so a store that never freezes a snapshot (``index``, the default) keeps the v2 schema.
+_SHAPE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS shape_commits(commit_sha TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, shapes TEXT, backfilled INTEGER,
+  PRIMARY KEY(commit_sha, item));
 """
 
 
@@ -205,6 +215,76 @@ class EvidenceStore:
             (r[0], int(r[1]))
             for r in self.db.execute("SELECT episode_id, action_index FROM covers")
         }
+
+    def write_commit_shapes(self, commit: str, rows: dict[str, dict]) -> bool:
+        """Freeze the input-shape snapshot of memory commit *commit* (:mod:`.shape_rows`): item ->
+        ``{"body": digest, "shapes": [...], "backfilled": bool}``. A commit's snapshot is written once and
+        never changed, so every export of that commit renders the same catalogue; False if it existed.
+        """
+        with self.db:
+            for ddl in _SHAPE_SCHEMA.split(";"):
+                if ddl.strip():
+                    self.db.execute(ddl)
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO shape_commits VALUES(?)",
+                (commit,),
+            )
+            if cur.rowcount == 0:
+                return False
+            self.db.executemany(
+                "INSERT INTO commit_shapes VALUES(?,?,?,?,?)",
+                [
+                    (
+                        commit,
+                        item,
+                        row["body"],
+                        json.dumps(row["shapes"], sort_keys=True, ensure_ascii=False),
+                        int(bool(row.get("backfilled"))),
+                    )
+                    for item, row in sorted(rows.items())
+                ],
+            )
+        return True
+
+    def commit_shapes(self, commit: str) -> dict[str, dict] | None:
+        """The frozen snapshot of *commit*, or None when it has none."""
+        if not self._has_shape_tables():
+            return None
+        if (
+            self.db.execute(
+                "SELECT 1 FROM shape_commits WHERE commit_sha=?",
+                (commit,),
+            ).fetchone()
+            is None
+        ):
+            return None
+        return {
+            r[0]: {"body": r[1], "shapes": json.loads(r[2]), "backfilled": bool(r[3])}
+            for r in self.db.execute(
+                "SELECT item, body, shapes, backfilled FROM commit_shapes WHERE commit_sha=? "
+                "ORDER BY item",
+                (commit,),
+            )
+        }
+
+    def _has_shape_tables(self) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shape_commits'",
+            ).fetchone()
+            is not None
+        )
+
+    def covers_of(self, item: str) -> list[tuple[str, int]]:
+        """The validated covers recorded for *item* by every landed merge, sorted."""
+        return [
+            (r[0], int(r[1]))
+            for r in self.db.execute(
+                "SELECT episode_id, action_index FROM covers WHERE item=? "
+                "ORDER BY episode_id, action_index",
+                (item,),
+            )
+        ]
 
     def record_pass(self, row: dict) -> None:
         with self.db:

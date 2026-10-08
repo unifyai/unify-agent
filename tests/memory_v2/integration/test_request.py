@@ -109,14 +109,40 @@ def _left_nothing(paths: Paths) -> None:
 # ── begin ────────────────────────────────────────────────────────────────────
 
 
-def test_begin_exports_memory_and_opens_the_scope(mv2):
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_begin_exports_memory_and_opens_the_scope(mv2, monkeypatch, surfacing):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SURFACING", surfacing)
     run = _begin(mv2, "Say hi to ada.")
     try:
         paths = mv2.paths
         assert request_mod.current() is run
         assert run.pin == mv2.sha and run.request == "Say hi to ada."
         assert (paths.checkout / "env/spotify/__init__.py").exists()
-        assert "`hello(apis, name)`" in run.index
+        if surfacing == "catalogue":
+            # the generated catalogue sits beside the commit's files; the prompt holds the constant guide
+            readme = (paths.checkout / "README.md").read_text()
+            assert "- `hello(apis, name)`: Say hi." in readme
+            assert (paths.checkout / ".memory/catalog.json").is_file()
+            assert (paths.checkout / "memory.py").is_file()
+            assert set(run.generated) == {
+                "README.md",
+                "memory.py",
+                ".memory/catalog.json",
+                ".memory/shapes.py",
+            }
+            from unify.memory_v2.integration.prompt import GUIDE
+            from unify.memory_v2.integration.state import State
+
+            assert run.index == GUIDE
+            # shown once, kept for the rest of the run (saved at once, so an abort keeps it too)
+            assert run.state.guide is True and State.load(paths.state).guide is True
+        else:  # v2: the index in the prompt, nothing generated beside the export
+            assert "`hello(apis, name)`" in run.index
+            assert run.state.guide is False and not paths.state.exists()
+            assert run.generated == {}
+            assert not (paths.checkout / "README.md").exists()
+            assert not (paths.checkout / "memory.py").exists()
+            assert not (paths.checkout / ".memory").exists()
         assert hooks.system_prompt("S").endswith(run.index)
         assert hooks.worker_mounts() == [paths.checkout]
         assert not _lock_is_free(paths)
@@ -270,6 +296,8 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     (a_run, lines, memory_diff, ended_at), kw = f.of("assemble")
     assert a_run is run and [x["seq"] for x in lines] == [0, 1, 2]
     assert "scratch.py" in memory_diff
+    # the untouched generated catalogue is not something the request wrote
+    assert "README.md" not in memory_diff and "catalog.json" not in memory_diff
     assert kw == {
         "extra_actions": [fake_tracks.WT_ACTION],
         "worktree_before": fake_tracks.WT_BEFORE,

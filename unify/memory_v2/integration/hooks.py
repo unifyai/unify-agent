@@ -8,6 +8,7 @@ objects are withdrawn.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, TypeVar
@@ -16,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 _LIBRARY_OBJECTS = ("functions", "guidance")
 _HELP_ONLY = "Read live docs in-sandbox with\n`help(...)`"
+# A traceback line naming a library function's refusal: ``env.<channel>[.<module>...].MemoryInputError``.
+_REFUSAL = re.compile(
+    r"^env\.([A-Za-z_][A-Za-z0-9_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*\.MemoryInputError\b",
+    re.MULTILINE,
+)
 
 T = TypeVar("T")
 
@@ -51,7 +57,8 @@ def can_store(value: T) -> T | bool:
 
 
 def system_prompt(text: str) -> str:
-    """*text* with the run's memory index appended, last in the cached prefix (spec §G6).
+    """*text* with the run's memory section appended, last in the cached prefix (spec §G6): the v2 index,
+    or under ``UNIFY_MEMORY_V2_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
     ``functions.search`` is dropped too; the change is the same for every request.
@@ -137,3 +144,33 @@ def worker_cell_done(events: Any) -> None:
             "memory v2: a cell's audit records were lost (%s)",
             type(exc).__name__,
         )
+
+
+def cell_error(text: str) -> str:
+    """A failed cell's error as the model reads it; under ``UNIFY_MEMORY_V2_SURFACING=catalogue``, when it
+    is a ``MemoryInputError`` raised by a channel the harness holds suspect (drift), with a line saying so.
+
+    The prompt carries no drift flag (its guide is constant); ``memory.catalog()`` and
+    ``memory.describe()`` show the flag, and so does the refusal itself here. Unchanged while off, under
+    ``index``, with no run or no suspect channel; never raises.
+    """
+    run = _run()
+    if run is None or not getattr(getattr(run, "surfacing", None), "catalogue", False):
+        return text
+    try:
+        suspect = set(getattr(getattr(run, "state", None), "suspect", ()) or ())
+        hit = sorted({m.group(1) for m in _REFUSAL.finditer(text)} & suspect)
+    except Exception as exc:  # noqa: BLE001 - the cell's error is shown either way
+        logger.warning(
+            "memory v2: refusal not checked for drift (%s)",
+            type(exc).__name__,
+        )
+        return text
+    if not hit:
+        return text
+    notes = "".join(
+        f"memory: env.{ch} is suspect: the environment changed since its functions were built, so this "
+        "refusal may come from that change; do the work directly.\n"
+        for ch in hit
+    )
+    return (text if text.endswith("\n") else text + "\n") + notes

@@ -14,8 +14,8 @@ nothing a cell prints or a subprocess writes can reach the channel.
 Harness -> worker::
 
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
-     "help": bool, "audit": {"roots": [...], "path": str}}
-                                              (audit: only under UNIFY_MEMORY_V2)
+     "help": bool, "audit": {"roots": [...], "path": str}, "no_bytecode": true}
+                                              (audit, no_bytecode: only under UNIFY_MEMORY_V2)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
@@ -1223,6 +1223,9 @@ class Worker:
 
     # -- namespace -------------------------------------------------------------
     def init(self, msg: dict) -> dict:
+        if msg.get("no_bytecode") is True:
+            # UNIFY_MEMORY_V2: importing the memory export writes no __pycache__ into it
+            sys.dont_write_bytecode = True
         sys.path[:] = [p for p in msg.get("sys_path", []) if isinstance(p, str) and p]
         names = msg.get("builtins") or []
         safe = {n: getattr(builtins, n) for n in names if hasattr(builtins, n)}

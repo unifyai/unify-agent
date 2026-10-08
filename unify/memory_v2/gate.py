@@ -31,7 +31,13 @@ The checks:
   ``items``; a notes file's preamble also changes only under ``skeleton``; a retired test file imports
   only deleted items; every item names source episodes that exist; every new or changed environment
   function declares its ``input`` form, and every declared form equals the function's docstring
-  ``Input:`` line.
+  ``Input:`` line. No commit writes a path the harness reserves for its generated catalogue
+  (``README.md``, ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`), in every mode. With
+  ``docstring_standard`` (v2.1; ``UNIFY_MEMORY_V2_DOCSTRINGS=on``), every new or changed environment
+  function's docstring meets the lean standard (:mod:`.docstrings`: summary, ``Args:`` naming each
+  parameter and the first one's input form, ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an
+  ``Example:`` with a ``>>>`` example), and each ``raise MemoryInputError(...)`` in it carries a message of
+  at least :data:`.docstrings.MIN_REFUSAL_CHARS` characters; each missing part is its own reason.
 * **G2 evidence.** An ``env_function`` covers recorded actions on its own channel, each a real recorded
   observation of its kind (:func:`.admission.cover_problem`): a tool call with status ``ok`` and a
   response, a shell command with an output tail, a file read or write with a blob in the blob store, or a
@@ -70,8 +76,16 @@ The checks:
   read-only at ``/memory`` with ``PYTHONPATH=/memory``, ``--import-mode=importlib`` and ``-c /dev/null`` (no
   configuration discovery). A report :class:`PytestOutcome` marks invalid never counts as green, and
   counts as red only for pytest's collection-error status (2) with the erroring module in the report, or
-  for a timed-out red run as above. Each run is bounded at 300 s.
-* **G4 index budget.** :func:`build_index` of the candidate fits the budget.
+  for a timed-out red run as above. Each run is bounded at 300 s. With ``docstring_standard``, every
+  ``>>>`` example of each new or changed environment function runs as a doctest in one more confined
+  pytest run of the same kind, on the candidate tree (the module's names in scope, ``/memory`` the
+  working directory, read-only); a failing or unrun example refuses that function.
+* **G4 size budget.** By default (``UNIFY_MEMORY_V2_SOFT_BUDGET=off``, as in v2) :func:`.index.build_index`
+  of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` the library's
+  surface is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
+  under ``surfacing="catalogue"``; the index otherwise); over ``budget_tokens`` a ``note: G4 hygiene due``
+  records that a hygiene pass is due and growth is never refused; only a surface that cannot be built
+  fails.
 * **G5 description length.** If ``env/*/__init__.py`` grew, a cover G2 validated is new to the evidence
   and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
@@ -83,20 +97,31 @@ The checks:
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
+
+Under ``surfacing="catalogue"`` (``UNIFY_MEMORY_V2_SURFACING``) a landed merge also freezes the candidate
+commit's input-shape snapshot (:mod:`.shape_rows`): per
+environment function, the parent's shapes for the same body plus the descriptors of the covers this merge
+validated (each covered file's blob, each covered observation), for the export's catalogue
+(:mod:`.catalogue`). Computing it never fails the gate. The examples run, like G3's runs, is a drift check
+under R16, not a security boundary: module code the runner imports can patch ``doctest`` (M13).
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import docstrings
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
+from .catalogue import body_digest, catalogue_tokens, reserved
 from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
@@ -108,7 +133,6 @@ from .held_out import (
     run_plan,
     seen_actions,
 )
-from .index import IndexOverBudget, build_index
 from .manifest import (
     MODULE_PATH,
     NOTES_PATH,
@@ -121,6 +145,9 @@ from .manifest import (
     parse_manifest,
     unsafe_path,
 )
+from .index import IndexOverBudget, build_index, estimate_tokens
+from .memory_helper import compare, file_shape, same_shape, value_shape
+from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
 from .redact import KEY_SHAPED
 from .sandbox_run import PYTHON, PytestOutcome, run_pytest
@@ -150,6 +177,11 @@ _PYTEST_ENV = {
 }
 _REDACTED = "<redacted:key-shaped>"
 
+
+# The generated doctest runner of G3's examples run (a path the layout admits for no candidate file).
+EXAMPLES_TEST = "_memory_examples/test_examples.py"
+# Input-shape descriptors computed per item at a merge (the evidence store keeps at most its own cap).
+MAX_SHAPE_COVERS = 32
 
 # A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
 PREVIEW_MAX_COVERS = 500
@@ -255,6 +287,55 @@ def _unfit_forms(
     return out
 
 
+_EXAMPLES_RUNNER = """\
+import doctest
+import functools
+import importlib
+import io
+
+
+def _run(module, name):
+    mod = importlib.import_module(module)
+    fn = getattr(mod, name)
+    calls = []
+
+    @functools.wraps(fn)
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return fn(*args, **kwargs)
+
+    setattr(mod, name, counted)  # an example that imports the function gets the counted one too
+    globs = dict(vars(mod))
+    tests = doctest.DocTestFinder(recurse=False).find(fn, name, module=False, globs=globs)
+    runner = doctest.DocTestRunner(optionflags=doctest.ELLIPSIS | doctest.NORMALIZE_WHITESPACE)
+    out = io.StringIO()
+    results = [runner.run(t, out=out.write) for t in tests]
+    assert sum(r.failed for r in results) == 0, out.getvalue()[-2000:]
+    assert sum(r.attempted for r in results) >= 1, f"no example of {module}.{name} ran"
+    assert calls, f"no example called {module}.{name}"
+"""
+
+
+def fixture_fits(mine: dict, recorded: dict) -> bool:
+    """Whether a fixture's descriptor fits a recorded input's: the same exact shape, or a structural match
+    of keyed shapes (see :meth:`Gate._fixture_shape`)."""
+    return same_shape(mine, recorded) or compare(mine, recorded) is not None
+
+
+def _examples_source(items: list[str]) -> str:
+    """A pytest module running each item's docstring examples as a doctest, one test per item, in order.
+
+    Each test fails unless no example fails, at least one example ran (a skipped one does not count) and
+    the function itself was called (it is wrapped by a counter in its module and the examples' globals).
+    """
+    out = [_EXAMPLES_RUNNER]
+    for n, item in enumerate(items):
+        channel, name = item.split(":", 1)
+        module = channel.replace("/", ".")
+        out.append(f"\n\ndef test_example_{n}():\n    _run({module!r}, {name!r})\n")
+    return "".join(out)
+
+
 class _WithSources:
     """The evidence store, with an item's manifest source episodes counted as its episodes.
 
@@ -307,6 +388,8 @@ class _Run:
     pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
         default_factory=dict,
     )
+    # item -> (body digest, input-shape descriptors of its validated covers), recorded on a landed merge
+    shapes: dict[str, tuple[str, list[dict]]] = field(default_factory=dict)
 
     def fail(self, check: str, reason: str) -> None:
         # reasons are stored in the evidence store; test output in them is model-controlled
@@ -341,8 +424,24 @@ class Gate:
         reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         pytest_runner: Callable[..., PytestOutcome] = run_pytest,
+        docstring_standard: bool = False,
+        surfacing: str = "index",
+        soft_budget: bool = False,
     ) -> None:
+        """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
+        *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
+        changed environment functions; *surfacing* ``"catalogue"`` records and freezes input shapes per
+        commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
+        never a refusal) instead of the index's hard cap. Sol's brief follows the gate's switches.
+        """
+        if surfacing not in ("index", "catalogue"):
+            raise ValueError(
+                f"surfacing must be 'index' or 'catalogue', not {surfacing!r}",
+            )
         self.mem, self.ev, self.blobs = memory, evidence, blobs
+        self.docstring_standard = bool(docstring_standard)
+        self.surfacing = surfacing
+        self.soft_budget = bool(soft_budget)
         self.python, self.budget, self.reader_promotes = (
             python,
             budget_tokens,
@@ -354,7 +453,7 @@ class Gate:
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(self, parent: str, candidate: str, manifest: dict) -> GateResult:
-        res, _, notes = self._check(parent, candidate, manifest)
+        res, _, notes, _ = self._check(parent, candidate, manifest)
         res.reasons.extend(notes)
         return res
 
@@ -487,7 +586,7 @@ class Gate:
             )
             return res
         try:
-            res, covers, notes = self._check(p_sha, c_sha, manifest)
+            res, covers, notes, shapes = self._check(p_sha, c_sha, manifest)
         except BaseException as exc:
             self._record(
                 p_sha,
@@ -512,6 +611,8 @@ class Gate:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
+            if self.surfacing == "catalogue":
+                self.ev.write_commit_shapes(c_sha, shapes)
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
         return res
 
@@ -530,7 +631,12 @@ class Gate:
             return None
         return sha if _SHA.match(sha) else None
 
-    def _pytest(self, tree: Path, target: str) -> PytestOutcome:
+    def _pytest(
+        self,
+        tree: Path,
+        target: str,
+        extra_env: dict[str, str] | None = None,
+    ) -> PytestOutcome:
         return self.pytest(
             target,
             python=self.python,
@@ -538,7 +644,7 @@ class Gate:
             rw={},
             cwd="/memory",
             timeout_s=_TIMEOUT_S,
-            env=dict(_PYTEST_ENV),
+            env={**_PYTEST_ENV, **(extra_env or {})},
         )
 
     def _record(
@@ -578,8 +684,14 @@ class Gate:
         parent: str,
         candidate: str,
         manifest: dict,
-    ) -> tuple[GateResult, set[tuple[str, str, int]], list[str]]:
-        """The result (failure reasons only), the validated covers if it passed, and the ``note:`` lines."""
+    ) -> tuple[
+        GateResult,
+        set[tuple[str, str, int]],
+        list[str],
+        dict[str, dict],
+    ]:
+        """The result (failure reasons only), the validated covers if it passed, the ``note:`` lines, and
+        the candidate's shape snapshot to freeze if it passed (:mod:`.shape_rows`)."""
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memv2-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
@@ -591,9 +703,15 @@ class Gate:
                 self._g4(run)
                 self._g5(run)
                 self._g6(run)
+            snapshot = (
+                self._snapshot(run)
+                if res.passed and self.surfacing == "catalogue"
+                else {}
+            )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        return res, (run.covers if res.passed else set()), run.notes
+        passed = res.passed
+        return res, (run.covers if passed else set()), run.notes, snapshot
 
     def _prepare(self, run: _Run) -> bool:
         """Parse, resolve and extract; refuse what must never be extracted or run. False stops the check."""
@@ -650,6 +768,15 @@ class Gate:
             for p in set(run.p_files) | set(run.c_files)
             if run.p_files.get(p) != run.c_files.get(p)
         )
+        early += [
+            (
+                "G1",
+                f"file {p} is reserved: the harness generates README.md, memory.py and .memory/ in "
+                "every export, and no root entry may shadow `import memory` or `import env`",
+            )
+            for p in run.changed
+            if p in run.c_files and reserved(p)
+        ]
         return early
 
     @staticmethod
@@ -696,6 +823,8 @@ class Gate:
                 )
                 run.fail("G1", f"undeclared item {iid} ({what})")
         self._inputs(run)
+        if self.docstring_standard:
+            self._standard(run)
         for it in man.items:
             if cb.get(it.item, ("",))[0] != it.kind:
                 run.fail("G1", f"{it.item} ({it.kind}) is not in the candidate")
@@ -744,6 +873,69 @@ class Gate:
                     f"{it.item} declares input {it.input} but its docstring's Input: line says "
                     f"{doc[it.item] or 'missing'}",
                 )
+
+    @staticmethod
+    def _edited(run: _Run) -> list[str]:
+        """The manifest's environment functions whose body (or kind) differs from the parent's, present now."""
+        return [
+            it.item
+            for it in run.man.items
+            if it.kind == "env_function"
+            and it.item in run.c_bodies
+            and run.p_bodies.get(it.item, ("", ""))[:2]
+            != run.c_bodies.get(it.item, ("", ""))[:2]
+        ]
+
+    @staticmethod
+    def _function_node(
+        run: _Run,
+        item: str,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The candidate's definition of environment function *item* (None: unreadable, reported by G6)."""
+        try:
+            module = ast.parse((run.c_tree / item_path(item)).read_bytes())
+        except (SyntaxError, ValueError, OSError):
+            return None
+        name = item.split(":", 1)[1]
+        for node in module.body:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == name
+            ):
+                return node
+        return None
+
+    def _standard(self, run: _Run) -> None:
+        """The lean docstring standard and self-explaining refusals (:mod:`.docstrings`), per new or
+        changed environment function; each missing part is its own reason."""
+        declared = {it.item: it.input for it in run.man.items}
+        doc_inputs = self._doc_inputs(run)
+        for item in self._edited(run):
+            node = self._function_node(run, item)
+            if node is None:
+                continue
+            doc = ast.get_docstring(node) or ""
+            form = declared.get(item) or doc_inputs.get(item) or None
+            name, channel = (
+                item.split(":", 1)[1],
+                item.split("/", 1)[1].split(":", 1)[0],
+            )
+            for problem in docstrings.problems(
+                doc,
+                docstrings.params(node),
+                form,
+                name=name,
+                channel=channel,
+            ):
+                run.fail("G1", f"{item} docstring {problem}")
+            for path in docstrings.fixture_paths(docstrings.parse(doc), channel):
+                if path not in run.c_files:
+                    run.fail(
+                        "G1",
+                        f"{item} docstring Example: reads {path}, which the commit does not hold",
+                    )
+            for problem in docstrings.refusal_problems(node):
+                run.fail("G1", f"{item} {problem}")
 
     def _unlisted_ok(self, run: _Run, eid: str) -> bool:
         """An unlisted item is present on both sides, unlisted now, and otherwise byte-for-byte the same."""
@@ -889,6 +1081,14 @@ class Gate:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
                     declared = self._doc_inputs(run).get(it.item, "")
+                    if self.surfacing == "catalogue" or self.docstring_standard:
+                        # the catalogue's shapes and the examples' fixture check
+                        self._record_shapes(
+                            run,
+                            it.item,
+                            valid,
+                            it.input or (declared if declared in INPUT_KINDS else None),
+                        )
                     self._held_out(
                         run,
                         it.item,
@@ -907,6 +1107,45 @@ class Gate:
                 )
                 if status != "promotable":
                     run.fail("G2", f"{it.item} is {status}")
+
+    def _record_shapes(
+        self,
+        run: _Run,
+        item: str,
+        covers: list[tuple[str, int, Action]],
+        input_kind: str | None,
+    ) -> None:
+        """The input-shape descriptors of *item*'s validated covers (:func:`.shape_rows.descriptor`), kept
+        for the candidate's shape snapshot on a landed merge; never fails."""
+        body = run.c_bodies.get(item)
+        if body is None:
+            return
+        found = descriptors(
+            [a for _, _, a in covers[:MAX_SHAPE_COVERS]],
+            input_kind,
+            self.blobs,
+        )
+        if found:
+            run.shapes[item] = (body_digest(body[1]), found)
+
+    def _snapshot(self, run: _Run) -> dict[str, dict]:
+        """The candidate's shape snapshot: the parent's rows (backfilled where it has none, not frozen) for
+        unchanged bodies plus this merge's shapes (:func:`.shape_rows.snapshot_rows`); never fails.
+        """
+        try:
+            prev = shapes_at(
+                self.mem,
+                self.ev,
+                run.parent,
+                run.p_tree,
+                lookup=self.lookup,
+                blobs=self.blobs,
+            )
+            return snapshot_rows(run.c_tree, prev, run.shapes)
+        except (
+            Exception
+        ):  # noqa: BLE001 - shapes are a catalogue aid, never a gate reason
+            return snapshot_rows(run.c_tree, {}, run.shapes)
 
     @staticmethod
     def _named_episodes(run: _Run) -> list[str]:
@@ -1028,6 +1267,84 @@ class Gate:
                     f"{it.item} is edited, but none of its tests is red on the parent's library",
                 )
         self._suites(run)
+        if self.docstring_standard:
+            self._examples(run)
+
+    def _examples(self, run: _Run) -> None:
+        """Every ``>>>`` example of each new or changed environment function, run as a doctest in one
+        confined pytest run on the candidate tree (G3's runner); a failing or unrun example refuses it.
+        """
+        targets: list[str] = []
+        for item in self._edited(run):
+            node = self._function_node(run, item)
+            if node is not None and docstrings.has_example(
+                docstrings.parse(ast.get_docstring(node) or ""),
+            ):
+                targets.append(item)
+        if not targets:
+            return
+        for item in targets:
+            self._fixture_shape(run, item)
+        tree = run.tmp / "examples"
+        shutil.copytree(run.c_tree, tree)
+        (tree / EXAMPLES_TEST).parent.mkdir(parents=True, exist_ok=True)
+        (tree / EXAMPLES_TEST).write_text(_examples_source(targets))
+        # set and dict orders in an example's output must not vary between runs
+        outcome = self._pytest(tree, EXAMPLES_TEST, {"PYTHONHASHSEED": "0"})
+        readable = outcome.valid and not outcome.timed_out
+
+        def ran(ids: set[str], n: int) -> bool:
+            return any(t.rsplit("::", 1)[-1] == f"test_example_{n}" for t in ids)
+
+        for n, item in enumerate(targets):
+            if not readable:
+                run.fail(
+                    "G3",
+                    f"the examples of {item} could not be run ({_describe(outcome)}) "
+                    f"{outcome.output[-300:]}",
+                )
+            elif ran(outcome.failed, n) or not ran(outcome.passed, n):
+                run.fail(
+                    "G3",
+                    f"an example in the docstring of {item} fails as a doctest "
+                    f"{outcome.output[-300:]}",
+                )
+
+    def _fixture_shape(self, run: _Run, item: str) -> None:
+        """An example's fixture must have the shape of an input *item* was admitted on (its validated
+        covers' shapes, :meth:`_record_shapes`); an item without recorded shapes (``env``) is not checked.
+
+        The shape is compared exactly (:func:`.memory_helper.same_shape`, no information floor, so a
+        headerless table, a raw grid or a list of scalars passes with an identical-shape fixture), or, for
+        keyed shapes, by ``find``'s structural match (:func:`.memory_helper.compare`), which admits a
+        fixture that is a partial copy of a recorded record.
+        """
+        recorded = run.shapes.get(item, ("", []))[1]
+        node = self._function_node(run, item)
+        if not recorded or node is None:
+            return
+        channel = item.split("/", 1)[1].split(":", 1)[0]
+        paths = [
+            p
+            for p in docstrings.fixture_paths(
+                docstrings.parse(ast.get_docstring(node) or ""),
+                channel,
+            )
+            if p in run.c_files
+        ]
+        for path in paths:
+            data = (run.c_tree / path).read_bytes()
+            mine = [
+                d for d in (file_shape(path, data), value_shape(data)) if d is not None
+            ]
+            if any(fixture_fits(d, r) for d in mine for r in recorded):
+                return
+        if paths:
+            run.fail(
+                "G3",
+                f"the examples of {item} read no fixture shaped like an input it covers "
+                f"({', '.join(paths[:5])})",
+            )
 
     def _test_only_repair(
         self,
@@ -1201,12 +1518,33 @@ class Gate:
                     )
 
     def _g4(self, run: _Run) -> None:
+        """The size budget: the v2 index's hard cap, or with ``soft_budget`` a note that hygiene is due past
+        it (never a refusal of growth)."""
+        if not self.soft_budget:
+            try:
+                build_index(run.c_tree, budget_tokens=self.budget)
+            except IndexOverBudget as exc:
+                run.fail("G4", str(exc))
+            except ValueError as exc:
+                run.fail("G4", f"index not built: {exc}")
+            return
+        catalogue = self.surfacing == "catalogue"
+        what = "catalogue (README and channel lines)" if catalogue else "index"
         try:
-            build_index(run.c_tree, budget_tokens=self.budget)
-        except IndexOverBudget as exc:
-            run.fail("G4", str(exc))
-        except ValueError as exc:
-            run.fail("G4", f"index not built: {exc}")
+            if catalogue:
+                size = catalogue_tokens(run.c_tree)
+            else:
+                size = estimate_tokens(
+                    build_index(run.c_tree, budget_tokens=sys.maxsize),
+                )
+        except ValueError as exc:  # an undecodable notes file, say
+            run.fail("G4", f"{'catalogue' if catalogue else 'index'} not built: {exc}")
+            return
+        if size > self.budget:
+            run.note(
+                f"G4 hygiene due: the {what} is {size} tokens, over its "
+                f"soft budget of {self.budget}; growth is not refused",
+            )
 
     def _g5(self, run: _Run) -> None:
         def size(files: dict, tree: Path) -> int:

@@ -1,4 +1,5 @@
-"""Harness-side state between requests (``<UNIFY_HOME>/memory-v2``): generations, drift, suspect, and the request lock."""
+"""Harness-side state between requests (``<UNIFY_HOME>/memory-v2``): generations, drift, suspect, whether the
+catalogue guide has been shown, and the request lock."""
 
 from __future__ import annotations
 
@@ -19,6 +20,9 @@ class State:
     generations: Generations = field(default_factory=Generations)
     drift: set[str] = field(default_factory=set)
     suspect: set[str] = field(default_factory=set)
+    # UNIFY_MEMORY_V2_SURFACING=catalogue: the prompt's guide was shown in this run, so every later request
+    # keeps it (the prompt never changes after it first appears). Saved only once true.
+    guide: bool = False
 
     @classmethod
     def load(cls, path: Path) -> "State":
@@ -32,6 +36,7 @@ class State:
             Generations.from_json(data.get("generations") or {}),
             set(data.get("drift") or []),
             set(data.get("suspect") or []),
+            data.get("guide") is True,
         )
 
     def save(self) -> None:
@@ -40,6 +45,9 @@ class State:
             "drift": sorted(self.drift),
             "suspect": sorted(self.suspect),
         }
+        # absent until set, so a run under ``index`` writes the v2 file byte for byte
+        if self.guide:
+            data["guide"] = True
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(prefix=".state-", dir=self.path.parent)
         try:

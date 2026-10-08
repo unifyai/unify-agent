@@ -1,5 +1,11 @@
 # unify/memory_v2/index.py
-"""The compact index Luna sees in its cached prefix (spec §6, D3).
+"""The v2 compact index: one line per function (spec §6, D3).
+
+It ends the actor's prompt under ``UNIFY_MEMORY_V2_SURFACING=index`` (the default) and is Sol's first message
+there; G4 caps it unless ``UNIFY_MEMORY_V2_SOFT_BUDGET`` is on. Under ``catalogue`` the prompt ends with a
+constant guide (:mod:`.integration.prompt`) and the catalogue is the export's generated README and
+``memory.catalog()`` (:mod:`.catalogue`); the index is then kept for the consolidation end event's
+``index_tokens`` measurement.
 
 A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
 that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:

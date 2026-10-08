@@ -242,7 +242,8 @@ class PythonWorker:
         from unify.memory_v2.integration import hooks as _mv2
 
         # UNIFY_MEMORY_V2=on: the request's memory export is imported first.
-        paths = [*_mv2.worker_paths(), *(p for p in sys.path if p)]
+        memory_paths = _mv2.worker_paths()
+        paths = [*memory_paths, *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
         packages = str(environment.site_packages())
         if packages not in paths:
@@ -254,6 +255,10 @@ class PythonWorker:
             "globals": specs,
         }
         msg["help"] = True
+        if memory_paths:
+            # UNIFY_MEMORY_V2=on: the child writes no bytecode (the child runs under -I, so
+            # PYTHONDONTWRITEBYTECODE would be ignored); otherwise no key at all.
+            msg["no_bytecode"] = True
         # UNIFY_MEMORY_V2=on, while the request's work tree is captured: the
         # child installs the audit hook (spec §3a); otherwise no key at all.
         audit = _mv2.worker_audit()
@@ -880,7 +885,8 @@ class PythonWorker:
                 and done.get("error_type") == "ControlledInterruption"
             ):
                 raise ControlledInterruption(str(done.get("message") or "steered"))
-            raise WorkerCellError(str(done["error"]))
+            # UNIFY_MEMORY_V2_SURFACING=catalogue: a suspect channel's refusal says so.
+            raise WorkerCellError(_mv2.cell_error(str(done["error"])))
         return self.decode(done.get("result"), shadow)
 
     @staticmethod
