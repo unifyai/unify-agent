@@ -20,6 +20,7 @@ from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.held_out import (
+    _read_results,
     MAX_COVERS_PER_ITEM,
     MAX_FIELDS_PER_COVER,
     Case,
@@ -2011,3 +2012,11 @@ def test_a_text_reader_is_called_with_the_files_text(
     ], res.reasons
     own = any("refuses 1 of its own covered inputs" in r for r in res.reasons)
     assert own is baseline_refused, res.reasons
+
+
+def test_a_result_line_nested_too_deep_to_parse_is_dropped_not_raised(tmp_path):
+    # 9deefbfd1 caught only ValueError here, so json.loads' RecursionError escaped the held-out check
+    deep = "[" * 100_000 + "]" * 100_000
+    f = tmp_path / "results.jsonl"
+    f.write_text(deep + "\n" + json.dumps({"id": 0, "outcome": "handled"}) + "\n")
+    assert _read_results(f) == [{"id": 0, "outcome": "handled"}]
