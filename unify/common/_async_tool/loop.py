@@ -109,6 +109,13 @@ class ToolLoopRuntimeState:
     step_cap_compactions_in_request: int = 0
     step_cap_compaction_failures: int = 0
     step_cap_compacted: Optional[tuple] = None
+    # Model calls cancelled after they were sent, by cause ("stop", "cancel":
+    # the requester's cancel of the request). The provider bills what it
+    # received; unillm keeps such a call running and reports its charge
+    # when the answer arrives (``_bill_abandoned_call``), so the run's meter
+    # counts it. This is the count of those calls.
+    cancelled_turns: int = 0
+    cancelled_turns_by_cause: Dict[str, int] = field(default_factory=dict)
     # UNIFY_LOOP_STOP: requests ended for making no progress.
     loop_stops: int = 0
 
@@ -2376,7 +2383,17 @@ async def async_tool_loop_inner(
                     if not llm_task.done():
                         # A stop, the requester's cancel of the request, or
                         # the loop's own cancellation. The unanswered
-                        # dispatch leaves the transcript as it was.
+                        # dispatch leaves the transcript as it was; its cost
+                        # still reaches the run's meter through unillm.
+                        _cause = (
+                            "stop"
+                            if cancel_event.is_set()
+                            else "cancel" if _request_cancel_queued() else "loop"
+                        )
+                        runtime_state.cancelled_turns += 1
+                        runtime_state.cancelled_turns_by_cause[_cause] = (
+                            runtime_state.cancelled_turns_by_cause.get(_cause, 0) + 1
+                        )
                         llm_task.cancel()
                         await asyncio.gather(llm_task, return_exceptions=True)
 

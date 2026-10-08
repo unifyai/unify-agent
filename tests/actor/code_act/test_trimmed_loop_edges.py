@@ -724,6 +724,51 @@ async def test_9_stop_during_a_model_call(worker_pids):
     await _assert_gone(worker_pids)
 
 
+async def test_9_a_stopped_model_calls_cost_still_reaches_the_run_meter(monkeypatch):
+    """The provider bills a call it received even when the loop stops
+    waiting for it: unillm lets it finish and reports the charge, which the
+    run's meter counts, and the loop notes the cancelled turn."""
+    import unillm.clients.uni_llm as uni_llm
+    from decimal import Decimal
+
+    monkeypatch.setattr(
+        uni_llm,
+        "compute_cost_from_response",
+        lambda *_a, **_k: 0.0125,
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def _slow(_messages):
+        entered.set()
+        await release.wait()
+        return _reply("An answer nobody waited for.")
+
+    model = _Model([_reply(calls=[_cell("print('ran')")]), _slow])
+    async with _actor() as actor:
+        with _scripted(model):
+            handle = await _act(actor, "Go.")
+            await asyncio.wait_for(entered.wait(), 30)
+            await handle.stop("budget spent")
+            assert await asyncio.wait_for(handle.result(), 30) == (
+                "processed stopped early, no result"
+            )
+            meter = handle.run_meter
+            # unillm reports the cancelled call at once, with no charge
+            # (an unknown cost, never a zero one).
+            assert meter.known_cost_usd("planning") == Decimal("0.0125")
+            assert meter.cost_usd("planning") is None
+            before = meter.calls["planning"]
+            release.set()
+            deadline = asyncio.get_running_loop().time() + 10
+            while meter.calls["planning"] < before + 1:
+                assert asyncio.get_running_loop().time() < deadline
+                await asyncio.sleep(0.02)
+    # The provider's answer arrives later and its charge is counted.
+    assert meter.known_cost_usd("planning") == Decimal("0.0250")
+    assert meter.cost_usd("planning") is None  # still never understated
+    assert handle._runtime_state.cancelled_turns_by_cause == {"stop": 1}
+
+
 async def test_9_stop_during_a_hung_cell_kills_its_worker(worker_pids):
     model = _Model([_reply(calls=[_cell("import time\ntime.sleep(60)")])])
     async with _actor() as actor:

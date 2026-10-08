@@ -245,12 +245,14 @@ async def test_a_cancel_ends_a_request_waiting_on_a_model_call(jsonl_session):
         run = asyncio.create_task(session.run(TASK))
         await asyncio.wait_for(model.in_flight.wait(), 20)
         elapsed = await _cancel(send, lines)
+        stats = session._handle._inner._runtime_state.cancelled_turns_by_cause
         # The late answer arrives while the next request runs.
         model.release.set()
         code = await _finish(run, send, lines)
 
     assert code == 0
     assert elapsed < CANCEL_BOUND_S
+    assert stats == {"cancel": 1}
     # The cancelled call's late answer reaches neither the host nor the model.
     assert LATE not in json.dumps(lines)
     assert not any(LATE in json.dumps(r, default=str) for r in model.requests)
