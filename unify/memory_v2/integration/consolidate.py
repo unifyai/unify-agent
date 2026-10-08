@@ -6,7 +6,10 @@ reached E tokens. A due pass covers every channel with new evidence (there is no
 gate's G2 dispatches covers per action kind, so tool, shell, work-tree and dialogue channels all take
 part). The pass runs Sol (:class:`..sol_pass.SolPass`) behind the gate, blocking the next request.
 
-Fixed bounds per pass: ``PassConfig(model, effort, max_calls=40, deadline_s=900, max_usd=E x a_tok)``.
+Bounds per pass: ``PassConfig(model, effort, max_calls=M[effort], deadline_s=900, max_usd=E x a_tok x S[effort])``,
+with S and M from ``UNIFY_MEMORY_V2_SOL_EFFORT_SCALE`` (``low:1,medium:2,high:5``) and
+``UNIFY_MEMORY_V2_SOL_MAX_CALLS`` (``low:40,medium:80,high:80``): one rule for every bed, by the pass's Sol effort
+(an effort with no entry starts no pass and is logged; the request stays due).
 Sol's reasoning effort is the actor's for the run unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (a declared
 mismatch ablation; the lead, 8 Oct), passed in by the caller.
 The run guard (``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``, empty for none) starts no further pass once the Sol
@@ -21,7 +24,7 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 ``events.jsonl`` (:func:`events_path`):
 
 * ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "sol_model",
-  "sol_effort", "cap_usd"}``;
+  "sol_effort", "cap_usd", "max_calls", "effort_scale"}`` (the ledger's reserve line also keeps the last two);
 * ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "checks",
   "seconds", "gate_passed", "items", "index_tokens", "reason_codes", "items_merged", "items_refused"}``
   (``calls`` counts model calls and Sol's ``check`` calls; ``checks`` is the latter alone;
@@ -70,7 +73,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,8 +106,12 @@ from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
     SOL_BASE_URL,
+    SOL_EFFORT_SCALE,
+    SOL_MAX_CALLS,
     SolRouteRefused,
     settle_sol_route_env,
+    sol_effort_scale_map,
+    sol_max_calls_map,
     sol_route,
     sol_token,
     surfacing_options,
@@ -127,7 +134,7 @@ __all__ = [
 ]
 
 SOL_MODEL = "openai/gpt-6-sol"
-MAX_CALLS = 40
+MAX_CALLS = 40  # the low-effort default of UNIFY_MEMORY_V2_SOL_MAX_CALLS
 DEADLINE_S = 900.0
 # A pass ends itself at its deadline; this outer bound only catches a pass that overruns it (a cell or a
 # model call in flight at the deadline), after which the pass is cancelled and recorded failed.
@@ -292,6 +299,11 @@ class SolSettings:
     show_usage: bool = (
         False  # UNIFY_MEMORY_V2_SOL_USAGE: the use table in each pass's first message
     )
+    # UNIFY_MEMORY_V2_SOL_EFFORT_SCALE / _SOL_MAX_CALLS, by Sol effort (low, medium, high)
+    effort_scale: dict[str, Decimal] = field(
+        default_factory=lambda: sol_effort_scale_map(""),
+    )
+    max_calls: dict[str, int] = field(default_factory=lambda: sol_max_calls_map(""))
 
     @property
     def cap_usd(self) -> Decimal:
@@ -368,7 +380,9 @@ def sol_settings(settings: Any) -> SolSettings:
     from .switch import parse_sol_usage
 
     usage = parse_sol_usage(getattr(settings, "UNIFY_MEMORY_V2_SOL_USAGE", "") or "")
-    return SolSettings(model, e, a_tok, guard, route, usage == "on")
+    scale = sol_effort_scale_map(getattr(settings, SOL_EFFORT_SCALE, "") or "")
+    calls = sol_max_calls_map(getattr(settings, SOL_MAX_CALLS, "") or "")
+    return SolSettings(model, e, a_tok, guard, route, usage == "on", scale, calls)
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -386,7 +400,14 @@ def _ledger(stores: Stores, row: dict) -> None:
         fh.flush()
 
 
-def _reserve(stores: Stores, pass_id: str, cap: Decimal, per_call: Decimal) -> None:
+def _reserve(
+    stores: Stores,
+    pass_id: str,
+    cap: Decimal,
+    per_call: Decimal,
+    max_calls: int,
+    scale: Decimal,
+) -> None:
     _ledger(
         stores,
         {
@@ -394,6 +415,8 @@ def _reserve(stores: Stores, pass_id: str, cap: Decimal, per_call: Decimal) -> N
             "phase": "reserve",
             "cap_usd": _usd(cap),
             "per_call_usd": _usd(per_call),
+            "max_calls": int(max_calls),
+            "effort_scale": _usd(scale),
         },
     )
 
@@ -569,6 +592,8 @@ def _start_event(
     model: str,
     effort: str,
     cap: Decimal,
+    max_calls: int,
+    scale: Decimal,
 ) -> dict:
     return {
         "type": "consolidation",
@@ -579,6 +604,8 @@ def _start_event(
         "sol_model": model,
         "sol_effort": effort,
         "cap_usd": _usd(cap),
+        "max_calls": int(max_calls),
+        "effort_scale": _usd(scale),
     }
 
 
@@ -633,7 +660,8 @@ async def run_due_passes(
     *state* is the harness state (:class:`.state.State`): its drift channels ride with the pass and are
     cleared once it is recorded; a passed pass clears them from ``suspect``. A pass recorded passed or
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
-    actor's effort unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (``request.sol_effort``).
+    actor's effort unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (``request.sol_effort``); it picks the
+    pass's scale of the allowance cap and its call limit.
     """
     try:
         cfg = sol_settings(settings)
@@ -655,6 +683,14 @@ async def run_due_passes(
     if not isinstance(effort, str) or not effort.strip():
         _error(stores, f"no pass for {eid}: Sol's effort is empty")
         return []  # nothing recorded; the request stays due
+    level = effort.strip().lower()
+    if level not in cfg.effort_scale or level not in cfg.max_calls:
+        _error(
+            stores,
+            f"no pass for {eid}: Sol's effort has no pass limits (low, medium or high)",
+        )
+        return []  # nothing recorded; the request stays due
+    scale, max_calls = cfg.effort_scale[level], cfg.max_calls[level]
     trig = Trigger(
         stores.evidence,
         mode="batched",
@@ -667,8 +703,8 @@ async def run_due_passes(
     due = trig.after_episode(eid)
     if not due:
         return []
-    cap = trig.pass_budget_usd()
-    reserve = cap / MAX_CALLS
+    cap = trig.pass_budget_usd() * scale
+    reserve = cap / max_calls
     lookup = EpisodeLookup(stores)
     gate = Gate(
         stores.memory,
@@ -682,7 +718,7 @@ async def run_due_passes(
     config = PassConfig(
         model=cfg.model,
         effort=effort,
-        max_calls=MAX_CALLS,
+        max_calls=max_calls,
         deadline_s=DEADLINE_S,
         max_usd=cap,
         show_usage=cfg.show_usage,
@@ -720,11 +756,15 @@ async def run_due_passes(
             redactor=Redactor.from_environ(os.environ),
         )
         try:
-            _reserve(stores, pass_id, cap, reserve)
+            _reserve(stores, pass_id, cap, reserve, max_calls, scale)
         except OSError as exc:  # an unrecorded commitment: start nothing
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
-        _deliver(stores, emit, _start_event(req, pass_id, cfg.model, effort, cap))
+        _deliver(
+            stores,
+            emit,
+            _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale),
+        )
         started = clock()
         outcome: PassOutcome | None = None
         failure: str | None = None

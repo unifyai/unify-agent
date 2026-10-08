@@ -47,7 +47,7 @@ MONEY = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
 CSV = b"vendor_id,invoice_no,amount,due_date,status\nV-17,INV-0042,1250.50,2026-10-14,open\n"
 
 
-def _settings(e=1, guard="", model="openai/gpt-6-sol", usage=""):
+def _settings(e=1, guard="", model="openai/gpt-6-sol", usage="", scale="", calls=""):
     return SimpleNamespace(
         UNIFY_MEMORY_V2="on",
         UNIFY_MEMORY_V2_E=e,
@@ -55,6 +55,8 @@ def _settings(e=1, guard="", model="openai/gpt-6-sol", usage=""):
         UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=A_TOK,
         UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD=guard,
         UNIFY_MEMORY_V2_SOL_USAGE=usage,
+        UNIFY_MEMORY_V2_SOL_EFFORT_SCALE=scale,
+        UNIFY_MEMORY_V2_SOL_MAX_CALLS=calls,
     )
 
 
@@ -122,7 +124,8 @@ def _record(stores, eid, actions=None, request="Pay my Venmo friends back", minu
     return sha, ep
 
 
-def _run(stores, eid, sha, state=None, *, effort="high", emit=None, **kw):
+def _run(stores, eid, sha, state=None, *, effort="low", emit=None, **kw):
+    # low: scale 1 and 40 calls (the per-effort defaults), so a pass's cap is E x a_tok
     state = state if state is not None else State(stores.paths.state)
     return asyncio.run(
         run_due_passes(
@@ -414,7 +417,9 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "episodes": ["e1"],
         "sol_model": "openai/gpt-6-sol",
         "sol_effort": "medium",
-        "cap_usd": "0.00000073",
+        "cap_usd": "0.00000146",  # E x a_tok x 2, the medium scale
+        "max_calls": 80,
+        "effort_scale": "2",
     }
     assert isinstance(start["trigger_tokens"], int) and start["trigger_tokens"] >= 1
     assert set(end) == {
@@ -476,6 +481,199 @@ def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
         sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_USAGE="yes"))
 
 
+# --- per-effort pass limits (UNIFY_MEMORY_V2_SOL_EFFORT_SCALE, UNIFY_MEMORY_V2_SOL_MAX_CALLS) ------------------
+
+
+def test_per_effort_limits_default_to_one_rule_for_every_bed():
+    cfg = sol_settings(SimpleNamespace())
+    assert cfg.effort_scale == {
+        "low": Decimal("1"),
+        "medium": Decimal("2"),
+        "high": Decimal("5"),
+    }
+    assert cfg.max_calls == {"low": 40, "medium": 80, "high": 80}
+    assert (
+        sol_settings(_settings()).effort_scale == cfg.effort_scale
+    )  # empty: the defaults
+    assert format(sol_settings(_settings(e=150000)).cap_usd * 5, "f") == "0.54750000"
+    custom = sol_settings(
+        _settings(scale="high:4, Low:1.5,medium:3", calls="low:10,medium:20,high:30"),
+    )
+    assert custom.effort_scale == {
+        "low": Decimal("1.5"),
+        "medium": Decimal("3"),
+        "high": Decimal("4"),
+    }
+    assert custom.max_calls == {"low": 10, "medium": 20, "high": 30}
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [
+        "low:1,medium:2",  # an effort missing
+        "low:1,medium:2,high:5,xhigh:9",  # an unknown effort
+        "low:1,low:1,medium:2,high:5",  # an effort twice
+        "low:0,medium:2,high:5",  # not positive
+        "low:1,medium:-2,high:5",
+        "low:1,medium:2,high:5e0",  # an exponent
+        "low:1,medium:2,high:.5",
+        "low=1,medium=2,high=5",
+        "low:1;medium:2;high:5",
+        "low:1,medium:2,high:",
+        "5",
+    ],
+)
+def test_a_bad_effort_scale_map_is_refused(scale):
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_SOL_EFFORT_SCALE"):
+        sol_settings(_settings(scale=scale))
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        "low:40,medium:80",
+        "low:40,medium:80,high:80,max:9",
+        "low:0,medium:80,high:80",
+        "low:40,medium:80,high:1.5",
+        "low:40,medium:80,high:-1",
+        "low:40,medium:80,high:1e2",
+        "low:40,medium:80,high:many",
+        "80",
+    ],
+)
+def test_a_bad_max_calls_map_is_refused(calls):
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_V2_SOL_MAX_CALLS"):
+        sol_settings(_settings(calls=calls))
+
+
+def _spy_configs(monkeypatch) -> list:
+    seen: list = []
+    real = consolidate.SolPass
+
+    def spy(*args, **kwargs):
+        seen.append(args[5])  # the PassConfig
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(consolidate, "SolPass", spy)
+    return seen
+
+
+def _ledger_rows(stores):
+    return [
+        json.loads(ln)
+        for ln in consolidate.ledger_path(stores.paths).read_text().splitlines()
+    ]
+
+
+@pytest.mark.parametrize(
+    "actor, scale, calls",
+    [("low", "1", 40), ("medium", "2", 80), ("high", "5", 80)],
+)
+def test_an_actor_effort_sets_the_pass_cap_and_calls(
+    tmp_path,
+    monkeypatch,
+    actor,
+    scale,
+    calls,
+):
+    from unify.memory_v2.integration import request as request_mod
+    from unify.settings import SETTINGS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", "actor")
+    effort = request_mod.sol_effort(
+        actor,
+    )  # Sol follows the actor's effort (the default)
+    assert effort == actor
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    configs = _spy_configs(monkeypatch)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    got: list[dict] = []
+    (out,) = _run(stores, "e1", sha, effort=effort, emit=got.append)
+    cap = Decimal(A_TOK) * Decimal(scale)  # E = 1
+    (cfg,) = configs
+    assert (cfg.effort, cfg.max_calls, cfg.max_usd) == (actor, calls, cap)
+    start = got[0]
+    assert start["phase"] == "start" and start["sol_effort"] == actor
+    assert (start["cap_usd"], start["max_calls"], start["effort_scale"]) == (
+        format(cap, "f"),
+        calls,
+        scale,
+    )
+    reserve, settle = _ledger_rows(stores)
+    assert reserve["phase"] == "reserve" and settle["phase"] == "settle"
+    assert (reserve["cap_usd"], reserve["max_calls"], reserve["effort_scale"]) == (
+        format(cap, "f"),
+        calls,
+        scale,
+    )
+    assert Decimal(reserve["per_call_usd"]) == cap / calls
+
+
+def test_a_high_pass_is_capped_at_five_allowances_and_80_calls_at_e_150k(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    configs = _spy_configs(monkeypatch)
+    monkeypatch.setattr(
+        consolidate.Trigger,
+        "pass_budget_usd",
+        lambda self: Decimal(150000) * Decimal(A_TOK),
+    )
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    got: list[dict] = []
+    _run(stores, "e1", sha, effort="high", emit=got.append)
+    (cfg,) = configs
+    assert format(cfg.max_usd, "f") == "0.54750000" and cfg.max_calls == 80
+    assert got[0]["cap_usd"] == "0.54750000" and got[0]["effort_scale"] == "5"
+
+
+def test_the_effort_maps_reach_the_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    configs = _spy_configs(monkeypatch)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    got: list[dict] = []
+    _run(
+        stores,
+        "e1",
+        sha,
+        effort="High",
+        emit=got.append,
+        scale="low:1,medium:2,high:3.5",
+        calls="low:40,medium:80,high:60",
+    )
+    (cfg,) = configs
+    assert cfg.max_calls == 60 and cfg.max_usd == Decimal(A_TOK) * Decimal("3.5")
+    assert (got[0]["max_calls"], got[0]["effort_scale"]) == (60, "3.5")
+
+
+def test_the_run_guard_compares_against_the_scaled_cap(tmp_path, monkeypatch):
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    guard = format(Decimal(A_TOK) * 3, "f")  # above one allowance, below five
+    assert _run(stores, "e1", sha, effort="high", guard=guard) == []
+    assert fake.calls == 0 and _events(stores)[0]["reason_codes"] == ["run_guard"]
+    (out,) = _run(stores, "e1", sha, effort="low", guard=guard)
+    assert fake.calls == 1
+
+
+def test_an_effort_without_limits_runs_nothing_and_is_logged(tmp_path, monkeypatch):
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    assert _run(stores, "e1", sha, effort="xhigh") == []
+    assert fake.calls == 0 and _events(stores) == []
+    assert "pass limits" in stores.paths.errors.read_text()
+    assert stores.evidence.cursor(BATCHED_CURSOR) == 0  # still due
+
+
 @pytest.mark.parametrize("usage, shown", [("", False), ("off", False), ("on", True)])
 def test_the_sol_usage_switch_reaches_the_passes_first_message(
     tmp_path,
@@ -523,7 +721,7 @@ def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
         ("sol", "unknown", "e1", "e1.p0"),
     ]
     assert {n["sol_effort"] for n in notes} == {
-        "high",
+        "low",
     }  # the inherited effort, on the pass's notes
     assert stores.episodes.notes(sha) == []  # nothing on the signals ref
     costs = episode_costs(stores, "e1")

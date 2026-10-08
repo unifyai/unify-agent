@@ -18,6 +18,8 @@ _NAMES = (
     "UNIFY_MEMORY_V2_SOL_MODEL",
     "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
     "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+    "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+    "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
     "UNIFY_MEMORY_V2_SURFACING",
     "UNIFY_MEMORY_V2_DOCSTRINGS",
     "UNIFY_MEMORY_V2_SOFT_BUDGET",
@@ -53,6 +55,9 @@ def test_defaults():
     assert s.UNIFY_MEMORY_V2_SOL_MODEL == "openai/gpt-6-sol"
     assert s.UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS == "0.00000073"
     assert s.UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD == ""
+    # per-effort pass limits: one rule for every bed
+    assert s.UNIFY_MEMORY_V2_SOL_EFFORT_SCALE == "low:1,medium:2,high:5"
+    assert s.UNIFY_MEMORY_V2_SOL_MAX_CALLS == "low:40,medium:80,high:80"
     # v2.1 surfacing: each default is the v2 screen build's behaviour (test_v21_switch_defaults.py)
     assert s.UNIFY_MEMORY_V2_SURFACING == "index"
     assert s.UNIFY_MEMORY_V2_DOCSTRINGS == "off"
@@ -149,8 +154,48 @@ def test_run_guard_values(raw, want, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "name,raw,want",
+    [
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "", "low:1,medium:2,high:5"),
+        (
+            "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+            " High:5, low:1,MEDIUM:2 ",
+            "low:1,medium:2,high:5",
+        ),
+        (
+            "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+            "low:0.5,medium:1.25,high:10",
+            "low:0.5,medium:1.25,high:10",
+        ),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "", "low:40,medium:80,high:80"),
+        (
+            "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
+            "high:100,medium:80,low:040",
+            "low:40,medium:80,high:100",
+        ),
+    ],
+)
+def test_per_effort_limit_values(name, raw, want, monkeypatch):
+    got = _load(monkeypatch, name, raw)
+    assert got == want and isinstance(got, str)
+
+
+@pytest.mark.parametrize(
     "name,raw",
     [
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:1,medium:2"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:1,medium:2,high:5,xhigh:8"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:1,medium:2,high:5,high:5"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:0,medium:2,high:5"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:1,medium:2,high:5e0"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "low:1,medium:-2,high:5"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "actor:1,low:1,medium:2,high:5"),
+        ("UNIFY_MEMORY_V2_SOL_EFFORT_SCALE", "5"),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "low:40,medium:80"),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "low:40,medium:80,high:0"),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "low:40,medium:80,high:80.0"),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "low:40,medium:80,high:+80"),
+        ("UNIFY_MEMORY_V2_SOL_MAX_CALLS", "low=40,medium=80,high=80"),
         ("UNIFY_MEMORY_V2", "yes"),
         ("UNIFY_MEMORY_V2", "true"),
         ("UNIFY_MEMORY_V2", "1"),

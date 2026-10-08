@@ -217,6 +217,9 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SOL_EFFORT",
+        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
     ):
         monkeypatch.setattr(SETTINGS, name, defaults[name].default)
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")

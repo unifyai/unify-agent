@@ -11,6 +11,9 @@ The contract (online build, spec §F1 and D23):
   plain decimal string; empty means ``0.00000073``.
 - ``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``: a non-negative plain decimal string, or empty for no guard. When
   set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
+- ``UNIFY_MEMORY_V2_SOL_EFFORT_SCALE`` and ``UNIFY_MEMORY_V2_SOL_MAX_CALLS``: per-pass limits by the pass's Sol
+  effort, maps ``low:1,medium:2,high:5`` (positive plain decimals multiplying the allowance cap) and
+  ``low:40,medium:80,high:80`` (positive whole numbers of calls); empty means those defaults.
 - ``UNIFY_MEMORY_V2_SOL_BASE_URL`` and ``UNIFY_MEMORY_V2_SOL_TOKEN``: Sol's own route, both or neither. Set,
   Sol's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of Sol's own,
   so the actor's route never carries Sol's model); empty, they go as shipped. The URL is http(s) with a
@@ -106,6 +109,8 @@ SOL_BASE_URL = "UNIFY_MEMORY_V2_SOL_BASE_URL"
 SOL_TOKEN = "UNIFY_MEMORY_V2_SOL_TOKEN"
 SOL_TOKEN_FD = "UNIFY_MEMORY_V2_SOL_TOKEN_FD"
 SOL_EFFORT = "UNIFY_MEMORY_V2_SOL_EFFORT"
+SOL_EFFORT_SCALE = "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE"
+SOL_MAX_CALLS = "UNIFY_MEMORY_V2_SOL_MAX_CALLS"
 SURFACING = "UNIFY_MEMORY_V2_SURFACING"
 DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
@@ -127,6 +132,12 @@ SOL_ALLOWANCE_DEFAULT = "0.00000073"
 #: ``high`` fixes it, for a declared mismatch ablation only (e.g. a HIGH actor with a LOW storer).
 SOL_EFFORT_DEFAULT = "actor"
 SOL_EFFORTS = ("actor", "low", "medium", "high")
+#: Per-pass limits by the pass's Sol effort (one rule for every bed; MAIN, 8 Oct): the allowance cap (E x a_tok)
+#: is multiplied by the effort's scale, and the pass makes at most the effort's calls. The offline diagnostic
+#: measured USD per pass 0.095 (ARC MEDIUM), 0.178 (ARC HIGH), 0.116 (office MEDIUM), 0.30 (office HIGH) and
+#: 10/14/13/23 calls per pass; at scale 1 and 40 calls a HIGH pass merged nothing.
+SOL_EFFORT_SCALE_DEFAULT = "low:1,medium:2,high:5"
+SOL_MAX_CALLS_DEFAULT = "low:40,medium:80,high:80"
 SURFACING_VALUES = ("index", "catalogue")
 SURFACING_DEFAULT = "index"
 ON_OFF = ("off", "on")
@@ -487,6 +498,56 @@ def parse_sol_effort(v: Any) -> str:
     return value
 
 
+def _effort_map(name: str, v: Any, default: str, value_ok: Any) -> dict[str, str]:
+    """``low:<v>,medium:<v>,high:<v>``: each fixed effort exactly once, in any order, each value checked."""
+    text = _stripped(v).lower() or default
+    refusal = f"{name} must map each of low, medium and high exactly once, as in {default!r}, not {v!r}"[
+        :300
+    ]
+    got: dict[str, str] = {}
+    for part in text.split(","):
+        key, sep, value = part.partition(":")
+        key, value = key.strip(), value.strip()
+        if not sep or key not in SOL_EFFORTS[1:] or key in got or not value_ok(value):
+            raise ValueError(refusal)
+        got[key] = value
+    if len(got) != len(SOL_EFFORTS) - 1:
+        raise ValueError(refusal)
+    return {k: got[k] for k in SOL_EFFORTS[1:]}
+
+
+def _positive_decimal(text: str) -> bool:
+    return bool(_PLAIN_DECIMAL.fullmatch(text)) and Decimal(text) > 0
+
+
+def _positive_int(text: str) -> bool:
+    return bool(_DIGITS.fullmatch(text)) and int(text) > 0
+
+
+def sol_effort_scale_map(v: Any) -> dict[str, Decimal]:
+    """The allowance-cap multiplier per Sol effort, from ``UNIFY_MEMORY_V2_SOL_EFFORT_SCALE``'s value."""
+    m = _effort_map(SOL_EFFORT_SCALE, v, SOL_EFFORT_SCALE_DEFAULT, _positive_decimal)
+    return {k: Decimal(x) for k, x in m.items()}
+
+
+def sol_max_calls_map(v: Any) -> dict[str, int]:
+    """The per-pass call limit per Sol effort, from ``UNIFY_MEMORY_V2_SOL_MAX_CALLS``'s value."""
+    m = _effort_map(SOL_MAX_CALLS, v, SOL_MAX_CALLS_DEFAULT, _positive_int)
+    return {k: int(x) for k, x in m.items()}
+
+
+def parse_sol_effort_scale(v: Any) -> str:
+    """Positive plain decimals per effort; normalised to ``low:..,medium:..,high:..``."""
+    m = _effort_map(SOL_EFFORT_SCALE, v, SOL_EFFORT_SCALE_DEFAULT, _positive_decimal)
+    return ",".join(f"{k}:{x}" for k, x in m.items())
+
+
+def parse_sol_max_calls(v: Any) -> str:
+    """Positive whole numbers per effort; normalised to ``low:..,medium:..,high:..``."""
+    m = _effort_map(SOL_MAX_CALLS, v, SOL_MAX_CALLS_DEFAULT, _positive_int)
+    return ",".join(f"{k}:{int(x)}" for k, x in m.items())
+
+
 def parse_surfacing(v: Any) -> str:
     """``index`` (also for empty) or ``catalogue``."""
     value = _stripped(v).lower() or SURFACING_DEFAULT
@@ -621,6 +682,8 @@ PARSERS = {
     SOL_TOKEN: sol_token_setting,
     SOL_TOKEN_FD: sol_token_fd_setting,
     SOL_EFFORT: parse_sol_effort,
+    SOL_EFFORT_SCALE: parse_sol_effort_scale,
+    SOL_MAX_CALLS: parse_sol_max_calls,
     SURFACING: parse_surfacing,
     DOCSTRINGS: parse_docstrings,
     SOFT_BUDGET: parse_soft_budget,

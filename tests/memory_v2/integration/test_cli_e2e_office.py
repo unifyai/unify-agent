@@ -217,6 +217,9 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SOL_EFFORT",
+        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
     ):
@@ -264,9 +267,9 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     eid = start["episodes"][0]
     assert start["episodes"] == [eid] and start["pass_id"] == f"{eid}.p0"
     assert start["sol_model"] == defaults["UNIFY_MEMORY_V2_SOL_MODEL"].default
-    assert (
-        start["cap_usd"] == "0.00000073"
-    )  # E x the default allowance, a plain decimal
+    # E x the default allowance x the medium scale (2), a plain decimal; medium's 80 calls
+    assert start["cap_usd"] == "0.00000146"
+    assert (start["max_calls"], start["effort_scale"]) == (80, "2")
     assert start["trigger_tokens"] >= 1
     assert "no_manifest" in end["reason_codes"], end
     assert end["gate_passed"] is False and end["calls"] == 1

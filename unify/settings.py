@@ -374,7 +374,10 @@ class ProductionSettings(BaseSettings):
     # holding the token: read once when settings are settled (below), then
     # closed; the token never enters the environment. ``_SOL_EFFORT`` is
     # ``actor`` (Sol's effort is the actor's for the run) or a fixed
-    # ``low``/``medium``/``high`` for a declared mismatch ablation. The v2.1
+    # ``low``/``medium``/``high`` for a declared mismatch ablation.
+    # ``_SOL_EFFORT_SCALE`` (``low:1,medium:2,high:5``) multiplies a pass's
+    # USD cap and ``_SOL_MAX_CALLS`` (``low:40,medium:80,high:80``) bounds its
+    # calls, each by the pass's Sol effort. The v2.1
     # surfacing switches (same parser; each default is
     # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
     # per-function index in the prompt, nothing generated in the export) or
@@ -394,6 +397,8 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
     UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
     UNIFY_MEMORY_V2_SOL_EFFORT: str = "actor"
+    UNIFY_MEMORY_V2_SOL_EFFORT_SCALE: str = "low:1,medium:2,high:5"
+    UNIFY_MEMORY_V2_SOL_MAX_CALLS: str = "low:40,medium:80,high:80"
     UNIFY_MEMORY_V2_SURFACING: str = "index"
     UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
     UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
@@ -616,6 +621,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_TOKEN",
         "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
         "UNIFY_MEMORY_V2_SOL_EFFORT",
+        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
         "UNIFY_MEMORY_V2_SURFACING",
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
