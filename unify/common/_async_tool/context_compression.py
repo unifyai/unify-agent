@@ -170,22 +170,37 @@ def _is_requester_message(msg: Any) -> bool:
     )
 
 
+#: Marks the requester message that started a persistent session's request:
+#: the first one appended after the loop waited for its next request. An
+#: underscore key, so unillm strips it before the cache key and the request
+#: are built: the bytes sent are the same. Set only with the switch on.
+REQUEST_START_KEY = "_request_start"
+
+
 def current_request_messages(messages: list[dict]) -> list[dict]:
     """The requester messages of the current request, oldest first.
 
     A requester message is a user message the loop did not author
     (``is_loop_authored_message``). The current request is read from the
-    session's own messages alone, as ``loop_stop.Tracker`` reads it: it
-    starts at the latest requester message. The requester messages just
-    before that one, with only user messages between them and it (no model
-    turn, tool result or system message), arrived together with it (a
-    seeded batch, or several messages queued for one turn boundary) and are
-    part of it too. Anything a model turn separates from it is an earlier
-    request, or the start of this one, which the summary covers; the
-    session's first user message is kept separately. Returns the message
-    dicts themselves, not copies; empty when there is no requester message.
+    session's own messages alone. When a requester message carries
+    :data:`REQUEST_START_KEY` (a persistent session marks the one that
+    arrived while it waited for its next request), the request starts at
+    the latest such message and holds every requester message after it,
+    the requester's additions while it ran included. Otherwise it starts at
+    the latest requester message, as ``loop_stop.Tracker`` reads it: the
+    requester messages just before that one, with only user messages
+    between them and it (no model turn, tool result or system message),
+    arrived together with it (a seeded batch, or several messages queued
+    for one turn boundary) and are part of it too. Anything a model turn
+    separates from it is an earlier request, or the start of this one,
+    which the summary covers; the session's first user message is kept
+    separately. Returns the message dicts themselves, not copies; empty
+    when there is no requester message.
     """
     history = list(messages or [])
+    for i in range(len(history) - 1, -1, -1):
+        if _is_requester_message(history[i]) and history[i].get(REQUEST_START_KEY):
+            return [m for m in history[i:] if _is_requester_message(m)]
     anchor = None
     for i in range(len(history) - 1, -1, -1):
         if _is_requester_message(history[i]):

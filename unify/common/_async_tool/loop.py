@@ -58,7 +58,9 @@ from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
     _COMPRESSION_SIGNAL,
+    REQUEST_START_KEY,
     context_over_threshold,
+    keep_prefix_enabled,
 )
 from .response_format import (
     NormalizedResponseFormat,
@@ -125,6 +127,10 @@ class ToolLoopRuntimeState:
     keep_prefix_unmeasured: bool = False
     keep_prefix_shipped_next: bool = False
     keep_prefix_fallbacks: int = 0
+    # UNIFY_COMPACTION_KEEP_PREFIX=on: a persistent loop waited for its next
+    # request, so the next requester message it appends starts one
+    # (``context_compression.REQUEST_START_KEY``).
+    request_starts_next: bool = False
     # UNIFY_STEP_CAP_COMPACT=continue: whether this loop runs in the mode
     # (the loop sets it; its handle reads it to mark the restart summary as
     # loop-authored), the step-limit compactions that did not make the
@@ -1627,6 +1633,8 @@ async def async_tool_loop_inner(
         # UNIFY_REPLY_CHANNEL=code+text: the next request starts with no reply.
         if _reply_slot is not None:
             _reply_slot.clear()
+        # The next requester message starts the next request.
+        runtime_state.request_starts_next = True
 
         # A cancel still queued was sent for the request that has just
         # ended (it came after that request's last call), so it has nothing
@@ -2141,15 +2149,18 @@ async def async_tool_loop_inner(
                         if time_ctx is not None
                         else _msg_text
                     )
-                    await _msg_dispatcher.append_msgs(
-                        [
-                            {
-                                "role": "user",
-                                "_interjection": True,
-                                "content": _user_content,
-                            },
-                        ],
-                    )
+                    _requester_msg = {
+                        "role": "user",
+                        "_interjection": True,
+                        "content": _user_content,
+                    }
+                    if runtime_state.request_starts_next:
+                        runtime_state.request_starts_next = False
+                        # UNIFY_COMPACTION_KEEP_PREFIX=on: a compaction keeps
+                        # this request from here, additions included.
+                        if keep_prefix_enabled():
+                            _requester_msg[REQUEST_START_KEY] = True
+                    await _msg_dispatcher.append_msgs([_requester_msg])
 
             # A stop ends the loop here: any further turn would be sent only
             # to be thrown away.
