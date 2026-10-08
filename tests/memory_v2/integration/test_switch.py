@@ -17,6 +17,9 @@ _NAMES = (
     "UNIFY_MEMORY_V2_SOL_MODEL",
     "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
     "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+    "UNIFY_MEMORY_V2_SURFACING",
+    "UNIFY_MEMORY_V2_DOCSTRINGS",
+    "UNIFY_MEMORY_V2_SOFT_BUDGET",
     # retired by the online contract; a stale one in the environment must change nothing
     "UNIFY_MEMORY_V2_TRIGGER",
     "UNIFY_MEMORY_V2_SOL_BUDGET_USD",
@@ -41,6 +44,10 @@ def test_defaults():
     assert s.UNIFY_MEMORY_V2_SOL_MODEL == "openai/gpt-6-sol"
     assert s.UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS == "0.00000073"
     assert s.UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD == ""
+    # v2.1 surfacing: each default is the v2 screen build's behaviour (test_v21_switch_defaults.py)
+    assert s.UNIFY_MEMORY_V2_SURFACING == "index"
+    assert s.UNIFY_MEMORY_V2_DOCSTRINGS == "off"
+    assert s.UNIFY_MEMORY_V2_SOFT_BUDGET == "off"
 
 
 def test_the_retired_switches_are_gone(monkeypatch):

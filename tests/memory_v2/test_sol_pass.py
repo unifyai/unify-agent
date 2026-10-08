@@ -405,16 +405,56 @@ def test_sol_system_asks_each_function_to_declare_its_input_from_the_one_constan
 
 
 def test_sol_system_states_the_docstring_standard_from_the_constants():
-    """v2.1: the lean docstring standard is generated from its constants; the catalogue is the harness's."""
+    """v2.1 (every switch on): the lean docstring standard is generated from its constants; the catalogue is
+    the harness's; growth is never refused for size."""
     from unify.memory_v2 import docstrings
+    from unify.memory_v2.sol_pass import sol_system
 
-    flat = " ".join(SOL_SYSTEM.split())
+    brief = sol_system(docstrings=True, catalogue=True, soft_budget=True)
+    flat = " ".join(brief.split())
     assert " ".join(docstrings.describe_standard().split()) in flat
     for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
         assert f"`{name}:`" in flat
-    assert "{docstring_standard}" not in SOL_SYSTEM
+    assert "{" + "v21_docstrings}" not in brief and "{check_names}" not in brief
     assert "README.md, memory.py and .memory/" in flat and "never write them" in flat
     assert "an index budget" not in flat  # growth is never refused for size
+    assert (
+        "docstring, cover-channel, size and safety checks (not the tests or examples)"
+        in flat
+    )
+
+
+@pytest.mark.parametrize(
+    "docstrings_on,catalogue,soft",
+    [(d, c, s) for d in (False, True) for c in (False, True) for s in (False, True)],
+)
+def test_sol_system_states_each_switch_only_when_it_is_on(
+    docstrings_on,
+    catalogue,
+    soft,
+):
+    """Each v2.1 switch adds only its own text to Sol's brief and to the check tool's description."""
+    from unify.memory_v2 import docstrings
+    from unify.memory_v2.sol_pass import sol_system, sol_tools
+
+    flat = " ".join(
+        sol_system(
+            docstrings=docstrings_on,
+            catalogue=catalogue,
+            soft_budget=soft,
+        ).split(),
+    )
+    assert (" ".join(docstrings.describe_standard().split()) in flat) is docstrings_on
+    assert ("README.md, memory.py and .memory/" in flat) is catalogue
+    assert ("an index budget" in flat) is not soft
+    assert ("due for hygiene" in flat) is soft
+    check = next(
+        t["function"]["description"]
+        for t in sol_tools(docstrings=docstrings_on, soft_budget=soft)
+        if t["function"]["name"] == "check"
+    )
+    assert ("docstrings, " in check) is docstrings_on
+    assert ("index, safety" in check) is not soft and ("size, safety" in check) is soft
 
 
 def test_sol_system_lists_the_declared_semantic_types_from_the_one_constant():

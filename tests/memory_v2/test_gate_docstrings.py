@@ -1,6 +1,10 @@
 """The gate under v2.1: the lean docstring standard (G1), its examples as doctests (G3), the soft size
 budget (G4), reserved generated paths, and the input shapes a merge records for the export's catalogue.
 
+``lab`` is the gate with every v2.1 switch on (``UNIFY_MEMORY_V2_DOCSTRINGS=on``,
+``UNIFY_MEMORY_V2_SURFACING=catalogue``, ``UNIFY_MEMORY_V2_SOFT_BUDGET=on``); the defaults are covered by
+``test_v21_switch_defaults.py``.
+
 Gates here run for real (confined pytest, held-out values), so bubblewrap is required.
 """
 
@@ -211,6 +215,8 @@ def lab(tmp_path):
         BlobStore(tmp_path / "b"),
         action_lookup=_lookup,
         docstring_standard=True,
+        surfacing="catalogue",
+        soft_budget=True,
     )
     return mem, ev, gate
 
@@ -544,5 +550,9 @@ def test_a_refused_merge_records_no_shapes(lab):
         "0.01",
     )
     assert not res.passed
-    assert ev.db.execute("SELECT COUNT(*) FROM shape_commits").fetchone() == (0,)
+    tables = {
+        r[0] for r in ev.db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    if "shape_commits" in tables:
+        assert ev.db.execute("SELECT COUNT(*) FROM shape_commits").fetchone() == (0,)
     assert ev.commit_shapes(cand) is None

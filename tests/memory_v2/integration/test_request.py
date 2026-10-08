@@ -109,26 +109,35 @@ def _left_nothing(paths: Paths) -> None:
 # ── begin ────────────────────────────────────────────────────────────────────
 
 
-def test_begin_exports_memory_and_opens_the_scope(mv2):
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_begin_exports_memory_and_opens_the_scope(mv2, monkeypatch, surfacing):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SURFACING", surfacing)
     run = _begin(mv2, "Say hi to ada.")
     try:
         paths = mv2.paths
         assert request_mod.current() is run
         assert run.pin == mv2.sha and run.request == "Say hi to ada."
         assert (paths.checkout / "env/spotify/__init__.py").exists()
-        # the generated catalogue sits beside the commit's files; the prompt shows channels only
-        readme = (paths.checkout / "README.md").read_text()
-        assert "- `hello(apis, name)`: Say hi." in readme
-        assert (paths.checkout / ".memory/catalog.json").is_file()
-        assert (paths.checkout / "memory.py").is_file()
-        assert set(run.generated) == {
-            "README.md",
-            "memory.py",
-            ".memory/catalog.json",
-            ".memory/shapes.py",
-        }
-        assert run.index.endswith("Channels:\n- `env.spotify`: 1 function\n")
-        assert "hello(apis, name)" not in run.index
+        if surfacing == "catalogue":
+            # the generated catalogue sits beside the commit's files; the prompt shows channels only
+            readme = (paths.checkout / "README.md").read_text()
+            assert "- `hello(apis, name)`: Say hi." in readme
+            assert (paths.checkout / ".memory/catalog.json").is_file()
+            assert (paths.checkout / "memory.py").is_file()
+            assert set(run.generated) == {
+                "README.md",
+                "memory.py",
+                ".memory/catalog.json",
+                ".memory/shapes.py",
+            }
+            assert run.index.endswith("Channels:\n- `env.spotify`: 1 function\n")
+            assert "hello(apis, name)" not in run.index
+        else:  # v2: the index in the prompt, nothing generated beside the export
+            assert "`hello(apis, name)`" in run.index
+            assert run.generated == {}
+            assert not (paths.checkout / "README.md").exists()
+            assert not (paths.checkout / "memory.py").exists()
+            assert not (paths.checkout / ".memory").exists()
         assert hooks.system_prompt("S").endswith(run.index)
         assert hooks.worker_mounts() == [paths.checkout]
         assert not _lock_is_free(paths)

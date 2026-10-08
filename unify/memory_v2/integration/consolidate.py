@@ -73,6 +73,7 @@ from ..sol_pass import PassConfig, PassOutcome, SolPass, unillm_turn
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
+from .switch import surfacing_options
 
 __all__ = [
     "DEADLINE_S",
@@ -575,7 +576,8 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         action_lookup=lookup.action,
-        docstring_standard=True,  # v2.1: the lean docstring standard and its examples run
+        # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
+        **surfacing_options(settings).gate_kwargs(),
     )
     config = PassConfig(
         model=cfg.model,

@@ -493,8 +493,8 @@ def test_gate_g3_suite_must_stay_green(world):
 # --- G4, G5, G6 ------------------------------------------------------------------------------------------
 
 
-def test_gate_g4_is_a_soft_budget(tmp_path, world):
-    """v2.1: past the budget G4 notes that hygiene is due; it never refuses growth."""
+def test_gate_g4_index_budget(tmp_path, world):
+    """By default (UNIFY_MEMORY_V2_SOFT_BUDGET=off, as in v2) an index over the budget is refused."""
     mem, ev, _ = world
     gate = Gate(
         mem,
@@ -505,8 +505,33 @@ def test_gate_g4_is_a_soft_budget(tmp_path, world):
     )
     parent = mem.head()
     res = gate.check(parent, _candidate(mem, FILES), MAN)
+    assert not res.checks["G4"]
+    assert not any(r.startswith("note: G4") for r in res.reasons), res.reasons
+
+
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
+def test_gate_g4_is_a_soft_budget(tmp_path, world, surfacing):
+    """v2.1 (UNIFY_MEMORY_V2_SOFT_BUDGET=on): past the budget G4 notes that hygiene is due, measured on
+    what the prompt carries; it never refuses growth."""
+    mem, ev, _ = world
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b2"),
+        action_lookup=_lookup,
+        budget_tokens=10,
+        surfacing=surfacing,
+        soft_budget=True,
+    )
+    parent = mem.head()
+    res = gate.check(parent, _candidate(mem, FILES), MAN)
     assert res.passed and res.checks["G4"], res.reasons
-    assert any(r.startswith("note: G4 hygiene due:") for r in res.reasons), res.reasons
+    what = (
+        "catalogue (README and channel lines)" if surfacing == "catalogue" else "index"
+    )
+    assert any(
+        r.startswith(f"note: G4 hygiene due: the {what} is ") for r in res.reasons
+    ), res.reasons
 
 
 def test_gate_g5_growth_must_cover_a_new_call(world):

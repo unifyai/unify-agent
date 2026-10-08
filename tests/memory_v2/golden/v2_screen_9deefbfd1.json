@@ -1,0 +1,67 @@
+{
+ "commit": "9deefbfd1",
+ "evidence_schema": "\nCREATE TABLE IF NOT EXISTS episodes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT UNIQUE, commit_sha TEXT,\n  started_at TEXT, regime TEXT, memory_main TEXT, request TEXT);\nCREATE TABLE IF NOT EXISTS env_touch(episode_id TEXT, channel TEXT, n_calls INTEGER, PRIMARY KEY(episode_id, channel));\nCREATE TABLE IF NOT EXISTS signals(signal_id TEXT PRIMARY KEY, episode_id TEXT, source TEXT, label TEXT, ts TEXT,\n  refers_to TEXT, regime TEXT, revealed INTEGER, reveal_p TEXT);\nCREATE TABLE IF NOT EXISTS item_evidence(item TEXT, episode_id TEXT, role TEXT, PRIMARY KEY(item, episode_id, role));\nCREATE TABLE IF NOT EXISTS covers(item TEXT, episode_id TEXT, action_index INTEGER,\n  PRIMARY KEY(item, episode_id, action_index));\nCREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel TEXT, parent TEXT, candidate TEXT,\n  passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);\nCREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);\nCREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);\n",
+ "export_line": "These files are a scratch copy of the library at `{checkout}`, first on the import path; anything written there is discarded when the request ends.\n",
+ "gate_budget_tokens_default": 4000,
+ "gate_g4": "    def _g4(self, run: _Run) -> None:\n        try:\n            build_index(run.c_tree, budget_tokens=self.budget)\n        except IndexOverBudget as exc:\n            run.fail(\"G4\", str(exc))\n        except ValueError as exc:\n            run.fail(\"G4\", f\"index not built: {exc}\")\n\n",
+ "index_budget_tokens": 4000,
+ "sol_first_message": "Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}",
+ "sol_prompt_template": "You consolidate an agent's recorded work into a shared library that a cheaper working model will import.\nYou work in a sandbox with no network. /memory is the library (a copy of its git checkout that you edit; the\nharness commits it when you finish); /inputs is read-only and holds request.json (this pass's request: kind,\nchannel, episodes), episodes/<episode_id>.json (the recorded episodes for this pass), blobs/ (the file contents\nthe episodes' worktree actions recorded, one file per blob id, with index.json naming any skipped) and `memlab`, a\ntoolkit: memlab.analysis.cells (call_sites), memlab.analysis.provenance (def_use_edges, value_edges),\nmemlab.analysis.slicing (backward_slice, generic_methods, prelude), memlab.analysis.antiunify (antiunify),\nmemlab.analysis.recorded (actions_of_kind, worktree_files, load_blob), memlab.analysis.shapes (shape, signature,\nconforms: file format, delimiter, columns and types, key trees, sheets), memlab.analysis.shellout (records,\noutput_shape, exit_codes, by_shape), memlab.analysis.transitions (transitions, table, conflicts, check, fixture),\nmemlab.replay.RecordedEnv, memlab.episodes (Cell, Action, env_channel).\nEach episode file holds \"episode_id\", \"request\", \"cells\" (code and printed output; memlab.episodes.Cell(**cell))\nand \"actions\" (\"index\" is the action's action_index, and memlab.episodes.Action(**{k: v for k, v in a.items()\nif k != \"index\"}) rebuilds it), and \"memory_channels\" (memory_channels[i] is the channel items covering\nactions[i] live under).\nEvery action has a \"kind\":\n- tool: a call through an environment namespace, with its response or error;\n- shell: a command (args) with response {\"exit_code\", \"tail\"} (the output's last part);\n- worktree: a file read or write (args[0] is the path) with response {\"blob_before\", \"blob_after\", \"size\", \"shape\"};\n- dialogue: the action an agent's reply carried (args[0]) with the next observation as its response.\nAn item covering actions[i] lives in env/<memory_channels[i]>/ exactly (never derive another name); an action\nwhose memory channel is null cannot be covered. The recordings say\nnothing about whether a request was solved; do not guess.\nEach execute_code call runs your code as a Python script in a fresh process, cwd /memory,\nPYTHONPATH=/inputs:/memory; only files persist between calls. /memory may hold at most {entries} files and\ndirectories, {file_mib} MiB per file and {total_mib} MiB in all, or the pass is refused. Run tests as the gate does:\nsubprocess.run([sys.executable, \"-m\", \"pytest\", \"env/<channel>/tests\", \"-q\", \"-p\", \"no:cacheprovider\",\n\"--rootdir\", \"/memory\", \"-c\", \"/dev/null\", \"--import-mode=importlib\"],\nenv={\"PYTHONPATH\": \"/memory\", \"PYTHONDONTWRITEBYTECODE\": \"1\"}).\n\nWhat to build, in priority order:\n1. env/<channel>/__init__.py: general, parametric Python functions for the environment work that recurs:\n   - tool channels: auth once, typed call wrappers, pagination, known pitfalls, taking the environment object as\n     the first argument `apis`;\n   - shell channels: functions that parse a command's output text into values, with an output-shape check (the\n     gate never runs commands; tests feed recorded outputs);\n   - worktree channels: readers and writers for recurring files (taking a path, text or bytes), with schema checks\n     (delimiter, columns, types, sign and date conventions) that raise on files of another shape;\n   - dialogue channels: observation parsers, an action grammar, transition facts and small predictors.\n   Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or\n   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as\n   \"input\" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.\n   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it\n   differs. Define MemoryInputError in the module (that is module skeleton: declare \"skeleton\": [\"env/<channel>\"]\n   when you add it, together with every public function of the module in items).\n   Scope is shape, not observed values. A check or refusal names only types, columns or fields, required keys, the\n   call (channel, method, parameter names) and formats; never the range or the list of values the recordings\n   happened to show. Bad: `if colour not in (\"red\", \"blue\"): raise MemoryInputError(...)` because only red and blue\n   were recorded. Good: `if not isinstance(colour, str) or not colour: raise MemoryInputError(\"colour must be a\n   non-empty string\")`. The one exception: a recording in which the environment itself rejected a value (an error\n   response or a nonzero exit) may justify refusing such values, and that rejection must then be one of the\n   function's covers. The gate reruns each function on its covered inputs with unseen values of the same types\n   (new strings, numbers beyond the recorded range, dates outside the recorded span) and refuses it if it raises\n   MemoryInputError on them. Restrict a field's values only through this fixed list of types, declared in the item's\n   manifest entry as \"field_types\": {\"<field>\": \"<type>\"}: {semantic_types}.\n2. env/<channel>/NOTES.md: `## ` sections for pitfalls observed in the recordings (a failed call followed by one that\n   worked) that code cannot express. Each section is an item env/<channel>/NOTES.md#<section-slug> (the slug rule is\n   below).\nNever store: results of calls with effects, credentials, session tokens (always re-acquire them), rules drawn from a\nsingle judgement, anything about whether a request was solved. Do not write workflow notes in this pass. Do not write\njob functions (end-to-end code for a whole request): v0 refuses them.\n\nTest first. For every function you add or change, first write env/<channel>/tests/test_<name>.py over the recorded\nobservations it covers: replayed calls (use the recorded responses; /memory/unify_memory_testkit.py, the only helper\nmodule allowed at the root, may build the fake environment), recorded shell outputs, recorded file blobs, or every\nrecorded (action, next observation) pair in its scope. The gate mounts only /memory, so copy the fixtures a test\nneeds into data files under env/<channel>/tests/ (never memlab) and list them in \"support\". Test agreement on every covered observation, and that\nshape checks reject recorded observations of another shape. Run the test and see it fail,\nthen write the code and see it pass. Revise existing\nmodules in place; do not add near-duplicates. Prefer nothing over a weak function: the library must earn its place.\n\nFinish by writing /memory/.pass/manifest.json (never committed):\n{\"items\":[{\"item\":\"env/<channel>:<function>\",\"kind\":\"env_function\",\"input\":\"<form>\",\"source_episodes\":[...],\n  \"tests\":[\"env/<channel>/tests/test_<function>.py\"],\"covers\":[[episode_id, action_index], ...]}],\n \"support\":[\"unify_memory_testkit.py\"],\"skeleton\":[],\"unlisted\":[],\"deleted\":[],\"deleted_tests\":[],\"summary\":\"...\"}\n`covers` lists the recorded actions on the function's own channel whose observations its tests check: tool calls\nwith status \"ok\" and a response, shell commands with an output tail, worktree reads or writes with a recorded blob,\ndialogue actions with status \"ok\" and an observation, and any recorded rejection (status \"error\" with its error, or a\nnonzero exit) that justifies a value check (never covers made only of rejections).\nBefore finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's\nmanifest, provenance, scope, cover-channel, index and safety checks (not the tests) on your current files, changes\nnothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels\nalready exist; put each item in the one its covers' memory_channels name. Then call finish(summary).\nA deterministic gate will check provenance, that each new test fails before your change and passes after, the full\ntest suite, an index budget, that the library only grows when it covers new recorded calls, and safety. Its rules\nfollow; a pass that breaks one is refused whole.\n",
+ "sol_tools": [
+  {
+   "function": {
+    "description": "Run Python code as a script in the sandbox, cwd /memory; returns stdout and stderr.",
+    "name": "execute_code",
+    "parameters": {
+     "properties": {
+      "code": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "code"
+     ],
+     "type": "object"
+    }
+   },
+   "type": "function"
+  },
+  {
+   "function": {
+    "description": "Check a manifest against your current /memory files with the gate's cheap checks (manifest, provenance and scope, covers and their channels, index, safety; not the tests). Returns 'ok' or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call.",
+    "name": "check",
+    "parameters": {
+     "properties": {
+      "manifest": {
+       "description": "The manifest JSON, as you will write it to /memory/.pass/manifest.json.",
+       "type": "string"
+      }
+     },
+     "required": [
+      "manifest"
+     ],
+     "type": "object"
+    }
+   },
+   "type": "function"
+  },
+  {
+   "function": {
+    "description": "End the pass after writing /memory/.pass/manifest.json.",
+    "name": "finish",
+    "parameters": {
+     "properties": {
+      "summary": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "summary"
+     ],
+     "type": "object"
+    }
+   },
+   "type": "function"
+  }
+ ]
+}

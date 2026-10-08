@@ -333,12 +333,22 @@ class ProductionSettings(BaseSettings):
     # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
     # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
     # stops further passes once the run's Sol USD plus the next cap would
-    # exceed it.
+    # exceed it. The v2.1 surfacing switches (same parser; each default is
+    # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
+    # per-function index in the prompt, nothing generated in the export) or
+    # ``catalogue`` (guide plus channel catalogue in the prompt; generated
+    # README, catalogue and ``memory`` helper in the export; input shapes
+    # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
+    # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``
+    # turns G4's 4,000-token index refusal into a hygiene note.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
     UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
+    UNIFY_MEMORY_V2_SURFACING: str = "index"
+    UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
+    UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -532,6 +542,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SURFACING",
+        "UNIFY_MEMORY_V2_DOCSTRINGS",
+        "UNIFY_MEMORY_V2_SOFT_BUDGET",
         mode="before",
     )
     @classmethod

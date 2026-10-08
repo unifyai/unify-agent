@@ -47,7 +47,7 @@ SHAPES = ".memory/shapes.py"
 GENERATED = (README, HELPER, CATALOG, SHAPES)
 CATALOG_VERSION = 1
 # The soft size of the catalogue (README plus the prompt's channel lines), in estimated tokens. Past it the
-# gate notes that hygiene is due; it never refuses growth.
+# gate notes that hygiene is due (UNIFY_MEMORY_V2_SOFT_BUDGET=on); it never refuses growth.
 SOFT_BUDGET_TOKENS = 4000
 _MODULE_SUMMARY_CHARS = 120
 _HERE = Path(__file__).resolve().parent

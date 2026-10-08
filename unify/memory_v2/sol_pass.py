@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -43,6 +44,7 @@ from .gate import Gate, ParentSnapshot
 from .catalogue import render_readme
 from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import Repo
+from .index import build_index
 from .redact import KEY_SHAPED
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .trigger import PassRequest
@@ -124,10 +126,7 @@ What to build, in priority order:
    Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
    `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as
    "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
-   Docstrings follow the lean standard, so that `help(fn)` alone tells the working model how to use a function:
-   {docstring_standard}. The harness renders README.md, memory.py and .memory/ at the library root from your
-   commit for the working model (a catalogue of the library); never write them: the gate refuses them.
-   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
+{v21_docstrings}   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
    differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
    when you add it, together with every public function of the module in items).
    Scope is shape, not observed values. A check or refusal names only types, columns or fields, required keys, the
@@ -165,27 +164,74 @@ with status "ok" and a response, shell commands with an output tail, worktree re
 dialogue actions with status "ok" and an observation, and any recorded rejection (status "error" with its error, or a
 nonzero exit) that justifies a value check (never covers made only of rejections).
 Before finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's
-manifest, provenance, scope, docstring, cover-channel, size and safety checks (not the tests or examples) on your
-current files, changes nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
+{check_names} on your current files, changes
+nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
 already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
 A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
-test suite, the docstring standard and its examples, that the library only grows when it covers new recorded calls,
-and safety; past a soft size it notes that the library is due for hygiene, and never refuses growth. Its rules
+test suite, {gate_checks}that the library only grows when it covers new recorded calls, and safety{soft_note}. Its rules
 follow; a pass that breaks one is refused whole.
 """
 
-SOL_SYSTEM = (
-    _PROMPT.replace("{entries}", str(QUOTA_ENTRIES))
-    .replace("{file_mib}", str(QUOTA_FILE_BYTES // 1024**2))
-    .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
-    .replace("{checks}", str(MAX_CHECKS))
-    .replace("{semantic_types}", _manifest.describe_semantic_types())
-    .replace("{input_kinds}", _manifest.describe_input_kinds())
-    .replace("{docstring_standard}", describe_docstring_standard())
-    + "\n"
-    + _manifest_rules()
-    + "\n"
-)
+
+def sol_system(
+    *,
+    docstrings: bool = False,
+    catalogue: bool = False,
+    soft_budget: bool = False,
+) -> str:
+    """Sol's brief under the v2.1 switches (:mod:`.integration.switch`); all off, it is v2's byte for byte.
+
+    *docstrings* states the lean docstring standard and adds the docstring and examples checks to the check
+    lists; *catalogue* says the harness generates README.md, memory.py and .memory/ and Sol must never
+    write them; *soft_budget* replaces the index budget with the soft size note.
+    """
+    v21 = ""
+    if docstrings:
+        v21 += (
+            "   Docstrings follow the lean standard, so that `help(fn)` alone tells the working model how to use a\n"
+            f"   function: {describe_docstring_standard()}.\n"
+        )
+    if catalogue:
+        v21 += (
+            "   The harness renders README.md, memory.py and .memory/ at the library root from your commit for the\n"
+            "   working model (a catalogue of the library); never write them: the gate refuses them.\n"
+        )
+    checks = ["manifest", "provenance", "scope"]
+    checks += ["docstring"] if docstrings else []
+    checks += ["cover-channel", "size" if soft_budget else "index"]
+    check_names = (
+        ", ".join(checks)
+        + " and safety checks (not the tests"
+        + (" or examples" if docstrings else "")
+        + ")"
+    )
+    gate_checks = (
+        "the docstring standard and its examples, " if docstrings else ""
+    ) + ("" if soft_budget else "an index budget, ")
+    soft_note = (
+        "; past a soft size it notes that the library is due for hygiene, and never refuses growth"
+        if soft_budget
+        else ""
+    )
+    return (
+        _PROMPT.replace("{v21_docstrings}", v21)
+        .replace("{check_names}", check_names)
+        .replace("{gate_checks}", gate_checks)
+        .replace("{soft_note}", soft_note)
+        .replace("{entries}", str(QUOTA_ENTRIES))
+        .replace("{file_mib}", str(QUOTA_FILE_BYTES // 1024**2))
+        .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
+        .replace("{checks}", str(MAX_CHECKS))
+        .replace("{semantic_types}", _manifest.describe_semantic_types())
+        .replace("{input_kinds}", _manifest.describe_input_kinds())
+        + "\n"
+        + _manifest_rules()
+        + "\n"
+    )
+
+
+#: The v2 brief (every v2.1 switch at its default).
+SOL_SYSTEM = sol_system()
 
 # The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner.
 _MEMLAB_FILES = (
@@ -208,7 +254,7 @@ class Repo:
     def __init__(self, *args, **kwargs):
         raise GitError("git is not available inside the consolidation sandbox")
 '''
-_TOOLS = [
+_TOOL_TEMPLATES = [
     {
         "type": "function",
         "function": {
@@ -225,12 +271,7 @@ _TOOLS = [
         "type": "function",
         "function": {
             "name": "check",
-            "description": (
-                "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
-                "provenance and scope, docstrings, covers and their channels, size, safety; not the tests or "
-                "examples). Returns 'ok' "
-                f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
-            ),
+            "description": "{check_description}",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -256,6 +297,30 @@ _TOOLS = [
         },
     },
 ]
+
+
+def sol_tools(*, docstrings: bool = False, soft_budget: bool = False) -> list[dict]:
+    """Sol's tools under the v2.1 switches; all off, v2's byte for byte (only ``check``'s text varies)."""
+    description = (
+        "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
+        "provenance and scope, "
+        + ("docstrings, " if docstrings else "")
+        + "covers and their channels, "
+        + ("size" if soft_budget else "index")
+        + ", safety; not the tests"
+        + (" or examples" if docstrings else "")
+        + "). Returns 'ok' "
+        f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
+    )
+    tools = copy.deepcopy(_TOOL_TEMPLATES)
+    for tool in tools:
+        if tool["function"]["name"] == "check":
+            tool["function"]["description"] = description
+    return tools
+
+
+#: The v2 tools (every v2.1 switch at its default).
+_TOOLS = sol_tools()
 _OUTPUT_CAP = 8000
 _MAX_CELLS_PER_TURN = 8
 _MANIFEST_MAX_BYTES = 1024**2
@@ -796,6 +861,36 @@ class SolPass:
         self.mem, self.gate, self.ev = memory, gate, evidence
         self.load, self.turn, self.cfg = load, model_turn, config
 
+    def _switches(self) -> dict[str, bool]:
+        """The v2.1 switches Sol's brief states: the gate's own (the driver builds the gate from them)."""
+        return {
+            "docstrings": bool(getattr(self.gate, "docstring_standard", False)),
+            "catalogue": getattr(self.gate, "surfacing", "index") == "catalogue",
+            "soft_budget": bool(getattr(self.gate, "soft_budget", False)),
+        }
+
+    @staticmethod
+    def _library_message(wt: Path, switches: dict[str, bool]) -> str:
+        """The library part of Sol's first message: v2's index, or the generated README (``catalogue``)."""
+        if switches["catalogue"]:
+            try:
+                readme = render_readme(wt)
+            except ValueError as exc:  # an unreadable notes file
+                readme = f"(catalogue not built: {exc})"
+            return (
+                "Current library (its README, which the harness generates; never write it):\n"
+                f"{readme}"
+            )
+        try:
+            index = (
+                build_index(wt, budget_tokens=sys.maxsize)
+                if switches["soft_budget"]
+                else build_index(wt)
+            )
+        except ValueError as exc:  # over budget, or an unreadable notes file
+            index = f"(index not built: {exc})"
+        return f"Current index:\n{index}"
+
     def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
         inputs.mkdir()
         export_for_sol(self.load, list(req.episodes), inputs / "episodes")
@@ -992,18 +1087,17 @@ class SolPass:
             _mirror(wt, box)
             self._stage_inputs(req, inputs)
             _channel_dirs(box, _exported_channels(inputs / "episodes"))
-            try:
-                readme = render_readme(wt)
-            except ValueError as exc:  # an unreadable notes file
-                readme = f"(catalogue not built: {exc})"
+            switches = self._switches()
+            tools = sol_tools(
+                docstrings=switches["docstrings"],
+                soft_budget=switches["soft_budget"],
+            )
             messages: list[dict] = [
-                {"role": "system", "content": SOL_SYSTEM},
+                {"role": "system", "content": sol_system(**switches)},
                 {
                     "role": "user",
-                    "content": (
-                        f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent library (its README, "
-                        f"which the harness generates; never write it):\n{readme}"
-                    ),
+                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
+                    + self._library_message(wt, switches),
                 },
             ]
             finished = False
@@ -1020,7 +1114,7 @@ class SolPass:
                 calls += 1
                 try:
                     msg, usd = await asyncio.wait_for(
-                        self.turn(messages, _TOOLS),
+                        self.turn(messages, tools),
                         timeout=remaining(),
                     )
                 except TimeoutError:

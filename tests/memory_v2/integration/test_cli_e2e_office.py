@@ -13,7 +13,8 @@ out as it is staged (``SolPass._stage_inputs``), so the sentinel check covers So
 
 Checked: the jsonl lines (the accepted outcome, a consolidation start and end with ``no_manifest``, decimal
 USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
-(the guide paragraph and the channel catalogue);
+(the v2 index under ``UNIFY_MEMORY_V2_SURFACING=index``, the default; the guide paragraph and the channel
+catalogue under ``catalogue``);
 no review call; one episode commit whose ``actions.jsonl`` has the work-tree rows (a ``read`` of
 ``claims.csv`` with a csv shape and a ``write`` of ``summary.json`` on ``worktree:workspace``), whose
 ``cells.jsonl`` has the cell and whose meta has both snapshots; one pass/fail checker note; one ``passes``
@@ -53,10 +54,11 @@ from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import episode_dir, load_episode
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.catalogue import README
+from unify.memory_v2.index import HEADER
 from unify.memory_v2.integration import consolidate
 from unify.memory_v2.integration import request as request_mod
 from unify.memory_v2.integration.paths import Paths
-from unify.memory_v2.integration.prompt import GUIDE
+from unify.memory_v2.integration.prompt import GUIDE, export_line
 from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
@@ -194,8 +196,9 @@ def _query(db: Path, sql: str) -> list[tuple]:
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(300)
+@pytest.mark.parametrize("surfacing", ["index", "catalogue"])
 @_handle_project
-async def test_one_office_visit_end_to_end(core_world, monkeypatch):
+async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     from unify.session_details import SESSION_DETAILS
 
     home = core_world["state"]
@@ -214,8 +217,11 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_DOCSTRINGS",
+        "UNIFY_MEMORY_V2_SOFT_BUDGET",
     ):
         monkeypatch.setattr(SETTINGS, name, defaults[name].default)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SURFACING", surfacing)
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", EFFORT)
     monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
@@ -280,11 +286,19 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
         for m in actor_calls[0].messages
         if m.get("role") == "system"
     )
-    guide = GUIDE.format(root=paths.checkout, readme=README)
-    assert guide in system
-    tail = system[system.rindex(guide) :]
-    assert tail.rstrip().endswith("Channels:\n- `env.spotify`: 1 function"), tail[-400:]
-    assert "hello(apis, name)" not in tail  # channels, not functions
+    if surfacing == "catalogue":
+        guide = GUIDE.format(root=paths.checkout, readme=README)
+        assert guide in system
+        tail = system[system.rindex(guide) :]
+        assert tail.rstrip().endswith("Channels:\n- `env.spotify`: 1 function"), tail[
+            -400:
+        ]
+        assert "hello(apis, name)" not in tail  # channels, not functions
+    else:  # the v2 index, as in the screen build
+        assert HEADER in system and GUIDE.split("{", 1)[0] not in system
+        tail = system[system.rindex(HEADER) :]
+        assert "hello(apis, name)" in tail
+        assert tail.rstrip().endswith(export_line(paths.checkout).rstrip()), tail[-400:]
 
     # 3. one episode commit with the work-tree rows, the cell and both snapshots
     episodes = Repo(paths.episodes)

@@ -111,7 +111,7 @@ def test_hooks_under_the_switch(monkeypatch, tmp_path):
     assert hooks.worker_mounts() == [paths.checkout]
 
 
-# ── the memory section ───────────────────────────────────────────────────────
+# ── the memory section (UNIFY_MEMORY_V2_SURFACING=catalogue) ────────────────
 
 
 def test_the_memory_section_is_a_pure_function_of_the_commit(tmp_path):
@@ -151,6 +151,43 @@ def test_a_large_library_is_never_cut_from_the_prompt(tmp_path):
     text = prompt.render_memory_section(tmp_path / "co")
     assert text.endswith("- `env.spotify`: 300 functions\n")
     assert len(text) < 2000
+
+
+# ── the v2 index (UNIFY_MEMORY_V2_SURFACING=index, the default) ─────────────
+
+
+def test_index_is_a_pure_function_of_the_commit(tmp_path):
+    mem, sha = _seed(tmp_path)
+    a, b = tmp_path / "a", tmp_path / "b"
+    export_checkout(mem.git_dir, sha, a)
+    first = prompt.render_index(a)
+    (a / "env/spotify/__init__.py").touch()  # mtimes never matter
+    export_checkout(mem.git_dir, sha, a)
+    assert prompt.render_index(a) == first
+    assert "## env.spotify" in first and "`hello(apis, name)` — Say hi." in first
+    assert first.endswith(prompt.export_line(a))
+    export_checkout(mem.git_dir, sha, b)
+    assert prompt.render_index(b) == first.replace(str(a), str(b))
+    assert "suspect" in prompt.render_index(a, {"spotify"})
+
+
+def test_an_index_over_budget_is_left_out(tmp_path, monkeypatch):
+    mem, sha = _seed(tmp_path)
+    export_checkout(mem.git_dir, sha, tmp_path / "co")
+    monkeypatch.setattr(prompt, "INDEX_BUDGET_TOKENS", 10)
+    warned: list[str] = []
+    monkeypatch.setattr(
+        prompt.logger,
+        "warning",
+        lambda msg, *a: warned.append(msg % a),
+    )
+    assert prompt.render_index(tmp_path / "co") == ""
+    assert warned and "index left out" in warned[0]
+    # with the soft budget the request passes no cut, so the whole index is kept
+    assert "`hello(apis, name)`" in prompt.render_index(
+        tmp_path / "co",
+        budget_tokens=10**9,
+    )
 
 
 # ── the actor ────────────────────────────────────────────────────────────────

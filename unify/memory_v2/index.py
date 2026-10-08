@@ -1,9 +1,10 @@
 # unify/memory_v2/index.py
 """The v2 compact index: one line per function (spec §6, D3).
 
-v2.1 no longer puts it in the prompt: the prompt ends with the channel catalogue
-(:mod:`.integration.prompt`) and the per-function catalogue is the export's generated README
-(:mod:`.catalogue`). It is kept for the consolidation end event's ``index_tokens`` measurement.
+It ends the actor's prompt under ``UNIFY_MEMORY_V2_SURFACING=index`` (the default) and is Sol's first message
+there; G4 caps it unless ``UNIFY_MEMORY_V2_SOFT_BUDGET`` is on. Under ``catalogue`` the prompt ends with the
+channel catalogue (:mod:`.integration.prompt`) and the per-function catalogue is the export's generated README
+(:mod:`.catalogue`); the index is then kept for the consolidation end event's ``index_tokens`` measurement.
 
 A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
 that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:

@@ -31,13 +31,13 @@ The checks:
   ``items``; a notes file's preamble also changes only under ``skeleton``; a retired test file imports
   only deleted items; every item names source episodes that exist; every new or changed environment
   function declares its ``input`` form, and every declared form equals the function's docstring
-  ``Input:`` line. No commit writes a path the harness generates in every export (``README.md``,
-  ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`). With ``docstring_standard`` (v2.1; the
-  online driver turns it on), every new or changed environment function's docstring meets the lean
-  standard (:mod:`.docstrings`: summary, ``Args:`` naming each parameter and the first one's input form,
-  ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an ``Example:`` with a ``>>>`` example), and each
-  ``raise MemoryInputError(...)`` in it carries a message of at least
-  :data:`.docstrings.MIN_REFUSAL_CHARS` characters; each missing part is its own reason.
+  ``Input:`` line. No commit writes a path the harness reserves for its generated catalogue
+  (``README.md``, ``memory.py``, ``.memory/``; :func:`.catalogue.reserved`), in every mode. With
+  ``docstring_standard`` (v2.1; ``UNIFY_MEMORY_V2_DOCSTRINGS=on``), every new or changed environment
+  function's docstring meets the lean standard (:mod:`.docstrings`: summary, ``Args:`` naming each
+  parameter and the first one's input form, ``Returns:``, ``Raises:`` naming ``MemoryInputError``, an
+  ``Example:`` with a ``>>>`` example), and each ``raise MemoryInputError(...)`` in it carries a message of
+  at least :data:`.docstrings.MIN_REFUSAL_CHARS` characters; each missing part is its own reason.
 * **G2 evidence.** An ``env_function`` covers recorded actions on its own channel, each a real recorded
   observation of its kind (:func:`.admission.cover_problem`): a tool call with status ``ok`` and a
   response, a shell command with an output tail, a file read or write with a blob in the blob store, or a
@@ -80,10 +80,12 @@ The checks:
   ``>>>`` example of each new or changed environment function runs as a doctest in one more confined
   pytest run of the same kind, on the candidate tree (the module's names in scope, ``/memory`` the
   working directory, read-only); a failing or unrun example refuses that function.
-* **G4 soft size budget.** The catalogue (:func:`.catalogue.catalogue_tokens`: the generated README and
-  the prompt's channel lines) is measured; over ``budget_tokens`` a ``note: G4 hygiene due`` records that
-  a hygiene pass is due. Growth is never refused (the v2 hard freeze at 4,000 index tokens is gone); only a
-  catalogue that cannot be built fails.
+* **G4 size budget.** By default (``UNIFY_MEMORY_V2_SOFT_BUDGET=off``, as in v2) :func:`.index.build_index`
+  of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` what the prompt
+  carries is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
+  under ``surfacing="catalogue"``; the index otherwise); over ``budget_tokens`` a ``note: G4 hygiene due``
+  records that a hygiene pass is due and growth is never refused; only a surface that cannot be built
+  fails.
 * **G5 description length.** If ``env/*/__init__.py`` grew, a cover G2 validated is new to the evidence
   and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
@@ -93,7 +95,8 @@ The checks:
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
 
-A landed merge also freezes the candidate commit's input-shape snapshot (:mod:`.shape_rows`): per
+Under ``surfacing="catalogue"`` (``UNIFY_MEMORY_V2_SURFACING``) a landed merge also freezes the candidate
+commit's input-shape snapshot (:mod:`.shape_rows`): per
 environment function, the parent's shapes for the same body plus the descriptors of the covers this merge
 validated (each covered file's blob, each covered observation), for the export's catalogue
 (:mod:`.catalogue`). Computing it never fails the gate. The examples run, like G3's runs, is a drift check
@@ -106,6 +109,7 @@ import ast
 import json
 import re
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,7 +118,7 @@ from typing import Callable
 from . import docstrings
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
-from .catalogue import SOFT_BUDGET_TOKENS, body_digest, catalogue_tokens, reserved
+from .catalogue import body_digest, catalogue_tokens, reserved
 from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
@@ -137,6 +141,7 @@ from .manifest import (
     layout_allowed,
     parse_manifest,
 )
+from .index import IndexOverBudget, build_index, estimate_tokens
 from .memory_helper import compare, file_shape, value_shape
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
@@ -405,17 +410,28 @@ class Gate:
         blobs: BlobStore,
         *,
         python: Path = PYTHON,
-        budget_tokens: int = SOFT_BUDGET_TOKENS,
+        budget_tokens: int = 4000,
         reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         pytest_runner: Callable[..., PytestOutcome] = run_pytest,
         docstring_standard: bool = False,
+        surfacing: str = "index",
+        soft_budget: bool = False,
     ) -> None:
-        """*budget_tokens* is G4's soft budget (a note, never a refusal); *docstring_standard* turns on the
-        lean docstring standard (G1) and its examples run (G3) for new or changed environment functions.
+        """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
+        *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
+        changed environment functions; *surfacing* ``"catalogue"`` records and freezes input shapes per
+        commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
+        never a refusal) instead of the index's hard cap. Sol's brief follows the gate's switches.
         """
+        if surfacing not in ("index", "catalogue"):
+            raise ValueError(
+                f"surfacing must be 'index' or 'catalogue', not {surfacing!r}",
+            )
         self.mem, self.ev, self.blobs = memory, evidence, blobs
-        self.docstring_standard = docstring_standard
+        self.docstring_standard = bool(docstring_standard)
+        self.surfacing = surfacing
+        self.soft_budget = bool(soft_budget)
         self.python, self.budget, self.reader_promotes = (
             python,
             budget_tokens,
@@ -585,7 +601,8 @@ class Gate:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
-            self.ev.write_commit_shapes(c_sha, shapes)
+            if self.surfacing == "catalogue":
+                self.ev.write_commit_shapes(c_sha, shapes)
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
         return res
 
@@ -676,7 +693,11 @@ class Gate:
                 self._g4(run)
                 self._g5(run)
                 self._g6(run)
-            snapshot = self._snapshot(run) if res.passed else {}
+            snapshot = (
+                self._snapshot(run)
+                if res.passed and self.surfacing == "catalogue"
+                else {}
+            )
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         passed = res.passed
@@ -1042,12 +1063,14 @@ class Gate:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
                     declared = self._doc_inputs(run).get(it.item, "")
-                    self._record_shapes(
-                        run,
-                        it.item,
-                        valid,
-                        it.input or (declared if declared in INPUT_KINDS else None),
-                    )
+                    if self.surfacing == "catalogue" or self.docstring_standard:
+                        # the catalogue's shapes and the examples' fixture check
+                        self._record_shapes(
+                            run,
+                            it.item,
+                            valid,
+                            it.input or (declared if declared in INPUT_KINDS else None),
+                        )
                     self._held_out(
                         run,
                         it.item,
@@ -1472,15 +1495,31 @@ class Gate:
                     )
 
     def _g4(self, run: _Run) -> None:
-        """The soft size budget: a note that hygiene is due past it, never a refusal of growth."""
+        """The size budget: the v2 index's hard cap, or with ``soft_budget`` a note that hygiene is due past
+        it (never a refusal of growth)."""
+        if not self.soft_budget:
+            try:
+                build_index(run.c_tree, budget_tokens=self.budget)
+            except IndexOverBudget as exc:
+                run.fail("G4", str(exc))
+            except ValueError as exc:
+                run.fail("G4", f"index not built: {exc}")
+            return
+        catalogue = self.surfacing == "catalogue"
+        what = "catalogue (README and channel lines)" if catalogue else "index"
         try:
-            size = catalogue_tokens(run.c_tree)
+            if catalogue:
+                size = catalogue_tokens(run.c_tree)
+            else:
+                size = estimate_tokens(
+                    build_index(run.c_tree, budget_tokens=sys.maxsize),
+                )
         except ValueError as exc:  # an undecodable notes file, say
-            run.fail("G4", f"catalogue not built: {exc}")
+            run.fail("G4", f"{'catalogue' if catalogue else 'index'} not built: {exc}")
             return
         if size > self.budget:
             run.note(
-                f"G4 hygiene due: the catalogue (README and channel lines) is {size} tokens, over its "
+                f"G4 hygiene due: the {what} is {size} tokens, over its "
                 f"soft budget of {self.budget}; growth is not refused",
             )
 
