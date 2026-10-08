@@ -22,6 +22,7 @@ actions, and the file blobs worktree actions recorded. Nothing about outcomes, s
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import copy
 import json
 import os
@@ -29,11 +30,14 @@ import re
 import shutil
 import stat
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
+
+from pydantic import SecretStr
 
 from . import manifest as _manifest
 from .blobs import BLOB_ID, BlobStore
@@ -1215,7 +1219,66 @@ class SolPass:
 # --- the real model ----------------------------------------------------------------------------------------
 
 
-def unillm_turn(model: str, effort: str, *, origin: str = "memory_v2.sol") -> ModelTurn:
+@dataclass(frozen=True)
+class SolRoute:
+    """Sol's own route (``UNIFY_MEMORY_V2_SOL_BASE_URL`` / ``UNIFY_MEMORY_V2_SOL_TOKEN``): an OpenAI-compatible
+    base URL and its token. The token is a ``SecretStr``: its repr and str are masked.
+    """
+
+    base_url: str
+    token: SecretStr
+
+
+#: The route of the Sol call running in this context, read by unillm's per-call gateway lookup
+#: (:func:`_install_sol_gateway`). Context-local: a call in any other task or thread never sees it.
+_SOL_GATEWAY: contextvars.ContextVar[SolRoute | None] = contextvars.ContextVar(
+    "memory_v2_sol_gateway",
+    default=None,
+)
+_GATEWAY_LOCK = threading.Lock()
+
+
+def _install_sol_gateway() -> None:
+    """Make unillm's per-call gateway lookup return Sol's route inside a Sol call; idempotent.
+
+    unillm sends an OpenRouter call to ``_llm_gateway()`` (read on every call, before the provider credential
+    is filled in, which never overwrites a chosen ``api_key``), but its clients take no per-call
+    ``api_base``/``api_key``: ``generate`` drops extra keyword arguments. Wrapping that lookup with a
+    context variable gives the per-call route without touching the process environment, which subprocesses
+    inherit. Outside a Sol call the wrapper returns what unillm's own lookup returns. Refuses (no call made)
+    when the installed unillm has no such lookup.
+    """
+    from unillm.clients import uni_llm
+
+    with _GATEWAY_LOCK:
+        lookup = getattr(uni_llm, "_llm_gateway", None)
+        if getattr(lookup, "_memory_v2_sol", False):
+            return
+        if not callable(lookup) or not callable(
+            getattr(uni_llm, "_prepare_provider_request_kw", None),
+        ):
+            raise RuntimeError(
+                "Sol's route is set, but the installed unillm has no per-call gateway lookup to apply it",
+            )
+
+        def gateway() -> tuple[str, str] | None:
+            route = _SOL_GATEWAY.get()
+            if route is not None:
+                return route.base_url, route.token.get_secret_value()
+            return lookup()
+
+        gateway._memory_v2_sol = True  # type: ignore[attr-defined]
+        gateway.__wrapped__ = lookup  # type: ignore[attr-defined]
+        uni_llm._llm_gateway = gateway
+
+
+def unillm_turn(
+    model: str,
+    effort: str,
+    *,
+    origin: str = "memory_v2.sol",
+    route: SolRoute | None = None,
+) -> ModelTurn:
     """The real model call: one ``generate`` per turn on a unillm client, priced from unillm's LLM events.
 
     * The model is passed explicitly, so ``UNIFY_REASONING_EFFORT`` and the assistant default do not
@@ -1238,33 +1301,65 @@ def unillm_turn(model: str, effort: str, *, origin: str = "memory_v2.sol") -> Mo
     holds a decimal USD string and no ``note: N unpriced calls`` reason, that it matches the provider's billed amount for origin
     ``memory_v2.sol``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this
     call.
+
+    Sol's route (*route*, from ``UNIFY_MEMORY_V2_SOL_BASE_URL`` and ``UNIFY_MEMORY_V2_SOL_TOKEN``): ``None``
+    sends the call exactly as above. Set, each call goes to ``route.base_url`` with ``route.token`` (through
+    :func:`_install_sol_gateway`, for this call's context only) and carries ``X-Unify-Call-Kind: <origin>``;
+    the endpoint must be an ``@openrouter`` one (the route replaces OpenRouter's transport). The scoped
+    hook, which unillm calls before any process-wide listener, drops ``api_key`` from each event's request,
+    so the token never reaches the event bus, and a call whose event shows another ``api_base`` fails the
+    turn (its cost then counts as unknown). The pricing is unchanged: the request still asks OpenRouter's
+    API for its charged cost, and a call the route does not price is ``unknown``.
     """
     import unillm
 
-    from unify.common.llm_client import new_llm_client
+    from unify.common.llm_client import CALL_KIND_HEADER, new_llm_client
 
     endpoint = model if "@" in model else f"{model}@openrouter"
+    if route is not None:
+        if not endpoint.endswith("@openrouter"):
+            raise ValueError(
+                "Sol's route replaces the OpenRouter transport; the Sol model must be an @openrouter endpoint",
+            )
+        _install_sol_gateway()
     client = new_llm_client(
         endpoint,
         origin=origin,
         reasoning_effort=effort,
         stateful=True,
     )
+    # only on the declared route, so the shipped call is unchanged
+    routed: dict[str, Any] = (
+        {} if route is None else {"extra_headers": {CALL_KIND_HEADER: origin}}
+    )
 
     async def turn(messages: list[dict], tools: list[dict]) -> tuple[dict, str]:
         costs: list[float | None] = []
+        misrouted: list[bool] = []
 
         def hook(event) -> None:
+            if route is not None and isinstance(event.request, dict):
+                event.request.pop("api_key", None)
+                base = str(event.request.get("api_base") or "").rstrip("/")
+                misrouted.append(base != route.base_url)
             if event.origin == origin:
                 costs.append(event.provider_cost)
 
         async with unillm.allm_event_hook_scope(hook):
-            await client.generate(
-                messages=copy.deepcopy(messages),
-                tools=tools,
-                tool_choice="auto",
-                stateful=True,
-            )
+            scope = _SOL_GATEWAY.set(route) if route is not None else None
+            try:
+                await client.generate(
+                    messages=copy.deepcopy(messages),
+                    tools=tools,
+                    tool_choice="auto",
+                    stateful=True,
+                    **routed,
+                )
+            finally:
+                if scope is not None:
+                    _SOL_GATEWAY.reset(scope)
+        if any(misrouted):
+            raise RuntimeError("a Sol call did not take Sol's declared route")
         msg = client.messages[-1]
         msg = msg if isinstance(msg, dict) else dict(msg)
         if not costs or any(c is None for c in costs):
