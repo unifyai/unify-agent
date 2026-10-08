@@ -7,16 +7,15 @@ things differ from the JSON surface, which made 0.38-0.71 stored-function
 calls per task: a listed function is not callable until something reads it
 and the list does not say how to call it; the prompt's ``functions`` line has
 no example call; and a guidance read shows the functions it links only as
-bare ``function_ids``. Three off-by-default switches inform, and force
-nothing:
+bare ``function_ids``. Three changes, switches until the code freeze baked
+them in, inform and force nothing:
 
-* ``UNIFY_CORE_BIND_LISTED``: the shortlist's functions are bound at task
-  start exactly as ``functions.get`` binds one (no search hit counted), and
-  either shortlist header says how to call one.
-* ``UNIFY_CORE_CALL_EXAMPLE``: the ``functions`` index line shows one call.
-* ``UNIFY_GUIDANCE_LINKED_NAMES``: guidance reads (both surfaces) show each
-  linked function's name and signature as ``linked_functions``; under the
-  core surface the read also binds them.
+* the shortlist's functions are bound at task start exactly as
+  ``functions.get`` binds one (no search hit counted), and either shortlist
+  header says how to call one;
+* the ``functions`` index line shows one call;
+* guidance reads show each linked function's name and signature as
+  ``linked_functions``, and under the core surface the read also binds them.
 
 The model is a scripted transport (tests/cache_discipline_helpers.py);
 cells run in the real sandboxed worker, skipped where bubblewrap is missing.
@@ -41,7 +40,6 @@ from unify import db
 from unify.actor import core_surface
 from unify.actor import library_shortlist as ls
 from unify.guidance_manager.types.guidance import Guidance
-from unify.settings import ProductionSettings, SETTINGS
 
 DOUBLE = 'def double(x: int) -> int:\n    """Double a number."""\n    return x * 2\n'
 TWICE = (
@@ -101,21 +99,6 @@ def _usage(name: str) -> dict:
         "SELECT usage_calls, usage_search_hits FROM functions WHERE name = ?",
         (name,),
     )
-
-
-# ── the settings ─────────────────────────────────────────────────────────────
-
-
-def test_the_switches_are_on_by_default():
-    # Baked on at the code freeze (Python tool mode).
-    defaults = ProductionSettings()
-    for name in (
-        "UNIFY_CORE_BIND_LISTED",
-        "UNIFY_CORE_CALL_EXAMPLE",
-        "UNIFY_GUIDANCE_LINKED_NAMES",
-    ):
-        assert getattr(defaults, name) is True, name
-        assert getattr(ProductionSettings(**{name: "0"}), name) is False, name
 
 
 # ── the shortlist's text, with and without a binder ─────────────────────────
@@ -218,13 +201,10 @@ def test_without_anything_bound_the_list_is_as_shipped():
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 @_handle_project
-@pytest.mark.parametrize("bind", [False, True])
-async def test_a_listed_function_is_callable_in_the_first_cell_only_when_bound(
+async def test_a_listed_function_is_callable_in_the_first_cell(
     core_world,
     monkeypatch,
-    bind,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CORE_BIND_LISTED", bind)
     _pin_ranking(monkeypatch)
     actor = _actor(can_store=False)
     actor.function_manager.add_functions(implementations=[DOUBLE])
@@ -237,85 +217,40 @@ async def test_a_listed_function_is_callable_in_the_first_cell_only_when_bound(
     first = _first_user(requests[0])
     assert "- function `double(x: int) -> int`: Double a number." in first
     (reply,) = _tool_replies(requests[-1])
-    if bind:
-        assert ls._HEADER_CALL in first
-        assert "10" in reply and "NameError" not in reply, reply
-        # Bound as a read binds, and the call is recorded; no search hit.
-        assert _usage("double") == {"usage_calls": 1, "usage_search_hits": 0}
-    else:
-        assert ls._HEADER in first and ls.CALL_FORM not in first
-        assert "NameError" in reply, reply
-        assert _usage("double")["usage_search_hits"] == 0
+    assert ls._HEADER_CALL in first
+    assert "10" in reply and "NameError" not in reply, reply
+    # Bound as a read binds, and the call is recorded; no search hit.
+    assert _usage("double") == {"usage_calls": 1, "usage_search_hits": 0}
     # Nothing is forced: the first request's tools and choice are as shipped.
     assert requests[0]["tool_choice"] == "auto"
-
-
-@needs_bwrap
-@pytest.mark.asyncio
-@pytest.mark.timeout(180)
-@_handle_project
-async def test_binding_changes_only_the_list_in_the_first_request(
-    core_world,
-    monkeypatch,
-):
-    _pin_ranking(monkeypatch)
-    firsts = {}
-    for bind in (False, True):
-        monkeypatch.setattr(SETTINGS, "UNIFY_CORE_BIND_LISTED", bind)
-        db.clear()
-        actor = _actor(can_store=False)
-        actor.function_manager.add_functions(implementations=[DOUBLE])
-        try:
-            _r, requests = await _act(actor, (lambda: h.completion(content="done"),))
-        finally:
-            await actor.close()
-        firsts[bind] = requests[0]
-    off, on = firsts[False], firsts[True]
-    assert on["tools"] == off["tools"]
-    assert on["messages"][0] == off["messages"][0]
-    assert ls._HEADER in _first_user(off) and ls._HEADER_CALL in _first_user(on)
-    assert _first_user(on) == _first_user(off).replace(ls._HEADER, ls._HEADER_CALL)
 
 
 # ── the index line's example ────────────────────────────────────────────────
 
 
-def test_the_functions_index_line_shows_a_call_only_with_the_switch():
-    shipped = core_surface.PromptSurface().index()
-    on = core_surface.PromptSurface(call_example=True).index()
-    assert EXAMPLE not in shipped
-    flat = " ".join(on.split())
-    assert EXAMPLE in flat and "`sum_invoice_lines(invoice_id=7)`" in flat
+def test_the_functions_index_line_shows_a_call():
+    flat = " ".join(core_surface.PromptSurface().index().split())
     anchor = "callable by name in later cells."
-    assert flat == " ".join(shipped.split()).replace(
-        anchor,
+    assert (
         anchor
         + " "
         + EXAMPLE
         + ", or once found, `sum_invoice_lines(invoice_id=7)`; a stored "
-        "function that does a step saves rewriting it.",
-    )
+        "function that does a step saves rewriting it."
+    ) in flat
 
 
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 @_handle_project
-async def test_the_core_prompt_carries_the_example_with_the_switch(
-    core_world,
-    monkeypatch,
-):
-    systems = {}
-    for on in (False, True):
-        monkeypatch.setattr(SETTINGS, "UNIFY_CORE_CALL_EXAMPLE", on)
-        actor = _actor(can_store=False)
-        try:
-            _r, requests = await _act(actor, (lambda: h.completion(content="done"),))
-        finally:
-            await actor.close()
-        systems[on] = requests[0]["messages"][0]["content"]
-    assert EXAMPLE not in " ".join(systems[False].split())
-    assert EXAMPLE in " ".join(systems[True].split())
+async def test_the_core_prompt_carries_the_example(core_world):
+    actor = _actor(can_store=False)
+    try:
+        _r, requests = await _act(actor, (lambda: h.completion(content="done"),))
+    finally:
+        await actor.close()
+    assert EXAMPLE in " ".join(requests[0]["messages"][0]["content"].split())
 
 
 # ── guidance reads name the functions they link ─────────────────────────────
@@ -343,19 +278,7 @@ def _seed_linked():
 
 
 @_handle_project
-def test_guidance_reads_are_as_shipped_with_the_switch_off(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", False)
-    _fm, gm, gid = _seed_linked()
-    read = gm.get_guidance(guidance_id=gid)
-    assert type(read) is Guidance
-    assert "linked_functions" not in read.model_dump()
-    for rows in (gm.search(), gm.filter()):
-        assert [type(r) for r in rows] == [Guidance]
-
-
-@_handle_project
-def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", True)
+def test_guidance_reads_name_each_linked_function_with_its_signature():
     _fm, gm, gid = _seed_linked()
     expected = ["double_twice(x: int) -> int (async)", "double(x: int) -> int"]
     read = gm.get_guidance(guidance_id=gid)
@@ -374,13 +297,7 @@ def test_guidance_reads_name_each_linked_function_with_its_signature(monkeypatch
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
 @_handle_project
-@pytest.mark.parametrize("linked", [False, True])
-async def test_a_core_guidance_read_binds_the_functions_it_names(
-    core_world,
-    monkeypatch,
-    linked,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", linked)
+async def test_a_core_guidance_read_binds_the_functions_it_names(core_world):
     fm, gm, gid = _seed_linked()
     actor = _actor(function_manager=fm, guidance_manager=gm, can_store=False)
     # As after any read, a name it binds is callable from the next cell.
@@ -394,10 +311,6 @@ async def test_a_core_guidance_read_binds_the_functions_it_names(
     finally:
         await actor.close()
     read, called = _tool_replies(requests[-1])
-    if linked:
-        assert "linked_functions=" in read and "double(x: int) -> int" in read, read
-        assert "8" in called and "NameError" not in called, called
-        assert _usage("double") == {"usage_calls": 1, "usage_search_hits": 0}
-    else:
-        assert "linked_functions" not in read, read
-        assert "NameError" in called, called
+    assert "linked_functions=" in read and "double(x: int) -> int" in read, read
+    assert "8" in called and "NameError" not in called, called
+    assert _usage("double") == {"usage_calls": 1, "usage_search_hits": 0}

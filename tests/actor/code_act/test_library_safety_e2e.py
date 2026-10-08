@@ -654,7 +654,7 @@ async def test_the_shortlist_lists_the_entry_point_and_its_guidance(
         ],
     )
     first = _first_user(requests[0])
-    # UNIFY_CORE_BIND_LISTED (baked on): the listed functions are bound, and
+    # The listed functions are bound, and
     # the header says how to call them.
     assert ls._HEADER_CALL in first, first
     block = first[first.index(ls._HEADER_CALL) :].split("\n\n", 1)[0]

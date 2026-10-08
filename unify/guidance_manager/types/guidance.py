@@ -86,7 +86,7 @@ class Guidance(BaseModel):
         return self.model_dump(mode="json", exclude=exclude)
 
 
-# UNIFY_GUIDANCE_LINKED_NAMES: a read of an entry, also naming the functions
+# A read of an entry, also naming the functions
 # it links. Still named ``Guidance`` (its repr, and the type a sandboxed
 # worker reports); built only by the guidance manager's reads.
 GuidanceWithLinks = create_model(

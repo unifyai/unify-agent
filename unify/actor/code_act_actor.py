@@ -3467,8 +3467,8 @@ class CodeActActor(BaseCodeActActor):
                         if _language == "python" and inventory_enabled():
                             _lang_kw["inventory"] = True
                         try:
-                            # UNIFY_FUNCTION_HELPERS: the worker's calls of
-                            # stored functions are recorded; nothing while off.
+                            # The worker's calls of stored functions are
+                            # recorded off the core surface.
                             from unify.actor import function_helpers
 
                             with function_helpers.recording(self):
@@ -4476,8 +4476,8 @@ class CodeActActor(BaseCodeActActor):
                 or (core_session is not None and core_session.prompt.functions),
                 guidance=any(str(k).startswith("GuidanceManager_") for k in base_tools)
                 or (core_session is not None and core_session.prompt.guidance),
-                # UNIFY_CORE_BIND_LISTED: the listed functions are bound
-                # as a read binds them, and the header says how to call.
+                # The listed functions are bound as a read binds them, and
+                # the header says how to call.
                 bind=(
                     core_session.listed_binder(sandbox)
                     if core_session is not None

@@ -19,7 +19,7 @@ Primitives are left out (they are platform surface, documented elsewhere), as
 are entries with nothing to compare and functions the activation ranking
 drops as lapsed. A ranking that fails (no embeddings) gives no list.
 
-``UNIFY_CORE_BIND_LISTED`` (core tool surface): the caller passes *bind*,
+With a function library the caller passes *bind*,
 which binds the listed functions in the sandbox as a read would and says
 which are ``async def``; either header then says how to call a listed
 function (:data:`CALL_FORM`), and an async one's line says ``(async)``.
@@ -40,7 +40,7 @@ _HEADER = (
     "Library entries closest to this request, ranked by similarity "
     "(read or call any of them if useful):"
 )
-# UNIFY_CORE_BIND_LISTED: how to call a listed function, which is bound.
+# How to call a listed function, which is bound.
 CALL_FORM = (
     "listed functions are loaded, so call one directly: `name(...)`, or "
     '`await functions.run("name", arg=...)`'
@@ -142,7 +142,7 @@ def shortlist_block(
 ) -> Optional[str]:
     """The shortlist as first-message text, or ``None`` (nothing to list, or no ranking).
 
-    With *bind* (``UNIFY_CORE_BIND_LISTED``) the listed functions are bound
+    With *bind* the listed functions are bound
     by it before the text is written, and the header says how to call one.
     """
     try:
@@ -172,7 +172,7 @@ def shortlist_block(
 
 
 def _bind(bind: Optional[Binder], rows: Sequence[Dict[str, Any]]) -> Dict[str, bool]:
-    """``UNIFY_CORE_BIND_LISTED``: ``{name: is_async}`` for the listed functions *bind* bound."""
+    """``{name: is_async}`` for the listed functions *bind* bound."""
     names = [str(row.get("name")) for row in rows if row.get("name")]
     if bind is None or not names:
         return {}

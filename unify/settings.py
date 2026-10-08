@@ -461,43 +461,6 @@ class ProductionSettings(BaseSettings):
     # (its check has no sandbox method). Off: the core surface's review is
     # standalone, as shipped.
     UNIFY_REVIEW_FORK_CORE: bool = True
-    # With UNIFY_TOOL_SURFACE=core and UNIFY_LIBRARY_SHORTLIST (gated or
-    # not): the stored functions the shortlist lists are bound in the
-    # sandbox when the task starts, exactly as a ``functions.get`` would bind
-    # them (no search hit is counted), and the list's header says how to
-    # call one: ``call directly: `name(...)`, or `await functions.run("name",
-    # arg=...)` ``. A listed function that is ``async def`` is marked
-    # ``(async)`` after its signature. Nothing is called and no turn is
-    # forced. As shipped, a listed function raises NameError until something
-    # reads it, and the list does not say how to call it. No effect on the
-    # JSON surface. Off: as shipped.
-    UNIFY_CORE_BIND_LISTED: bool = True
-    # With UNIFY_TOOL_SURFACE=core: the prompt's index line for
-    # ``functions`` ends with one example of calling a found function, by
-    # ``functions.run`` and by name (the core counterpart of the JSON
-    # prompt's ``execute_function`` sentence). No effect on the JSON
-    # surface. Off: as shipped.
-    UNIFY_CORE_CALL_EXAMPLE: bool = True
-    # A guidance read (search, filter, get: ``guidance.*`` under the core
-    # surface, ``GuidanceManager_*`` otherwise) also shows the functions an
-    # entry links, as ``linked_functions``: each one's name and signature
-    # (``(async)`` for an ``async def``), beside the bare ``function_ids``.
-    # Under UNIFY_TOOL_SURFACE=core the read also binds those functions in
-    # the sandbox, as a ``functions.get`` would, so a name it shows is
-    # callable from the next cell. A linked id with no stored function is left out (its
-    # ``stale_reasons`` already say so). Off: as shipped.
-    UNIFY_GUIDANCE_LINKED_NAMES: bool = True
-    # On: ``execute_function`` of a stored function defines the stored
-    # functions it calls, transitively and each once, in the namespace the
-    # call runs in (in process and under worker Python), and installs their
-    # declared dependencies with its own, as ``functions.run`` does under
-    # ``UNIFY_TOOL_SURFACE=core``; a helper the library no longer holds is
-    # named in the error. Under worker Python a stored function called by
-    # name (a helper, or one a read bound) is recorded as the in-process
-    # boundary wrapper records it: usage, trust, a case
-    # (unify/actor/function_helpers.py). Off: only the entry point is
-    # defined, so its helpers are a NameError until a read loads them.
-    UNIFY_FUNCTION_HELPERS: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -544,9 +507,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
-        "UNIFY_CORE_BIND_LISTED",
-        "UNIFY_CORE_CALL_EXAMPLE",
-        "UNIFY_GUIDANCE_LINKED_NAMES",
         "UNIFY_CELL_SCOPE_FIX",
         mode="before",
     )

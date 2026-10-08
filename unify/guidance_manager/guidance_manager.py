@@ -39,12 +39,6 @@ _UPDATE_REASON: ContextVar[Optional[str]] = ContextVar(
 DEFAULT_UPDATE_REASON = "updated with update_guidance"
 
 
-def _linked_names_enabled() -> bool:
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_GUIDANCE_LINKED_NAMES", False))
-
-
 def _call_signature(row: Dict[str, Any]) -> str:
     """``name(signature)``, with `` (async)`` for an ``async def``."""
     name = str(row.get("name") or "")
@@ -57,14 +51,12 @@ def _call_signature(row: Dict[str, Any]) -> str:
 
 
 def _with_linked_functions(entries: List[Guidance]) -> List[Guidance]:
-    """``UNIFY_GUIDANCE_LINKED_NAMES``: *entries* naming the functions they link.
+    """*entries* naming the functions they link.
 
     Each becomes a ``Guidance`` read with ``linked_functions``: the name and
     signature of each id in ``function_ids`` that a stored function has, in
-    that order. Off: *entries* as they are.
+    that order.
     """
-    if not _linked_names_enabled():
-        return entries
     ids = sorted(
         {int(i) for entry in entries for i in (entry.function_ids or [])},
     )

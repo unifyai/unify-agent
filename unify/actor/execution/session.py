@@ -1111,7 +1111,7 @@ class SessionExecutor:
     ) -> Dict[str, Any]:
         """Run ``code`` in the session ``state_mode`` and ``session_id`` name.
 
-        ``prepare`` (``UNIFY_FUNCTION_HELPERS``), when given, is called with
+        ``prepare``, when given, is called with
         the namespace the cell runs in before it runs, to define names there:
         they stay where the state mode keeps what a cell defines.
 

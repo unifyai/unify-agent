@@ -1,4 +1,4 @@
-"""Symbolic: the shortlist under ``UNIFY_CORE_BIND_LISTED`` binds what it lists.
+"""Symbolic: the shortlist binds what it lists.
 
 The listed functions are bound in the first cell's session and the
 shortlist's header says how to call them. (The notes this module tested
@@ -25,7 +25,7 @@ from unify.actor import library_shortlist as ls
 
 
 def test_the_bound_core_list(computed):
-    """``UNIFY_CORE_BIND_LISTED``: the listed functions are bound and the header says how to call."""
+    """The listed functions are bound and the header says how to call."""
     from unify.function_manager.function_manager import FunctionManager
     from unify.guidance_manager.guidance_manager import GuidanceManager
 

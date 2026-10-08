@@ -664,7 +664,7 @@ class PythonWorker:
     def _library(self, shadow: Dict[str, Any]) -> Any:
         library = _function_library(shadow.get("functions"))
         if library is None or not self._exposed_remote("functions"):
-            # UNIFY_FUNCTION_HELPERS: calls by name, recorded off the core
+            # Calls by name, recorded off the core
             # surface too, while the actor's call that runs this cell lasts.
             library = _helper_recorder()
         if library is None:
@@ -987,7 +987,7 @@ def _function_library(value: Any) -> Any:
 
 
 def _helper_recorder() -> Any:
-    """The recorder of stored-function calls ``UNIFY_FUNCTION_HELPERS`` sets
+    """The recorder of stored-function calls ``function_helpers.recording`` sets
     for the call that runs this cell, else None."""
     from unify.actor import function_helpers
 
