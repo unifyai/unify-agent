@@ -922,6 +922,143 @@ def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_pa
     assert codes[0] == "route_not_in_effect" and "sol_error" not in codes
 
 
+# --- unillm's own copies of a failed call's text --------------------------------------------------------------
+
+
+def test_unillms_retry_warnings_are_redacted_once_the_route_is_installed(
+    monkeypatch,
+    restore_unillm,
+    caplog,
+):
+    """``unillm.retry`` logs the first 200 characters of a failed call's text as a WARNING, which reaches the
+    controller's stderr. Building a routed turn puts a redacting filter on that exact logger, once.
+    """
+    from unify.process_secrets import register_secret
+
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    _fake_client(monkeypatch, lambda kw: None)
+    for _ in range(2):  # idempotent
+        unillm_turn(
+            "openai/gpt-6-sol",
+            "low",
+            route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+        )
+    retry = logging.getLogger(sol_pass.RETRY_LOGGER)
+    ours = [f for f in retry.filters if getattr(f, "_memory_v2_sol", False)]
+    other = "unregistered-bearer-placeholder-4567"  # pragma: allowlist secret
+    with caplog.at_level(logging.DEBUG, logger=sol_pass.RETRY_LOGGER):
+        retry.warning(
+            f"not retried, treated as permanent: AuthenticationError: {_echo()}",
+        )
+        retry.warning("retries exhausted after %d attempts: %s", 3, _echo())
+        retry.warning("echo {'Authorization': 'Bearer %s'}", other)
+        try:
+            raise RuntimeError(f"echo {SOL_TOKEN}")
+        except RuntimeError:
+            retry.warning("with a traceback", exc_info=True)
+    texts = [caplog.text] + [r.getMessage() for r in caplog.records]
+    leaked = [i for i, t in enumerate(texts) if SOL_TOKEN in t or other in t]
+    assert len(ours) == 1
+    assert len(caplog.records) == 4 and leaked == []
+    assert (
+        "<secret:UNIFY_MEMORY_V2_SOL_TOKEN>" in caplog.text
+        and "<redacted>" in caplog.text
+    )
+
+
+def test_sols_per_call_log_file_is_rewritten_redacted(
+    monkeypatch,
+    tmp_path,
+    restore_unillm,
+):
+    """Sol's client (only) gets unillm's ``on_log_file`` callback, which rewrites the finalised per-call log
+    (``UNILLM_LOG_DIR``; it holds ``str(error)`` as is) with the token and credential structures removed.
+    """
+    import unify.common.llm_client as llm_client
+    from unify.process_secrets import register_secret
+
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    callbacks: list = []
+
+    class LoggingClient:
+        def set_on_log_file(self, cb):
+            callbacks.append(cb)
+            return self
+
+    monkeypatch.setattr(
+        llm_client,
+        "new_llm_client",
+        lambda model, **kw: LoggingClient(),
+    )
+    unillm_turn("openai/gpt-6-sol", "low")  # unset: the shipped client, no callback
+    assert callbacks == []
+    unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    assert callbacks == [sol_pass._redact_log_file]
+
+    other = "unregistered-bearer-placeholder-8901"  # pragma: allowlist secret
+    log = tmp_path / "0001.cache_miss.txt"
+    log.write_text(
+        json.dumps(
+            {
+                "request": {"model": "openai/gpt-6-sol", "api_base": SOL_BASE},
+                "error": {"type": "AuthenticationError", "message": _echo()},
+                "echo": f"Authorization: Bearer {other}",
+            },
+        ),
+    )
+    clean = tmp_path / "clean.txt"
+    clean.write_text("nothing to redact\n")
+    before = clean.stat().st_mtime_ns
+    callbacks[0](log)
+    callbacks[0](clean)
+    text = log.read_text()
+    leaked = SOL_TOKEN in text or other in text
+    assert not leaked and "AuthenticationError" in text and SOL_BASE in text
+    assert (
+        clean.read_text() == "nothing to redact\n"
+        and clean.stat().st_mtime_ns == before
+    )
+    left = sorted(
+        p.name for p in tmp_path.iterdir()
+    )  # no temporary file left beside them
+    assert left == sorted([log.name, clean.name])
+
+
+def test_sols_route_refuses_to_start_while_unillm_records_spans(
+    monkeypatch,
+    restore_unillm,
+):
+    """unillm's OTel spans keep a failed call's text as is (``error.message``), so with ``UNILLM_OTEL`` on the
+    route fails closed: the settings refuse (no pass starts) and a routed turn cannot be built.
+    """
+    unillm_logger = importlib.import_module("unillm.logger")
+    monkeypatch.setattr(unillm_logger, "_OTEL_ENABLED", True)
+    made: list = []
+    _fake_client(monkeypatch, lambda kw: made.append(1))
+    routed = SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=SOL_BASE,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(SOL_TOKEN),
+    )
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(routed)
+    with pytest.raises(sol_pass.SolRouteError) as built:
+        unillm_turn(
+            "openai/gpt-6-sol",
+            "low",
+            route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+        )
+    texts = (str(info.value), str(built.value))
+    leaked = any(SOL_TOKEN in t for t in texts)
+    assert not leaked and all("UNILLM_OTEL" in t for t in texts)
+    assert made == []
+    # the shipped route is unaffected by OTel
+    assert consolidate.sol_settings(SimpleNamespace()).route is None
+
+
 def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
     """A refused route starts no pass, ever: each request appends one value-free ``refused`` event to the run's
     ``events.jsonl`` (and the --jsonl stream), so the cell is flagged, not read as a null result. With the route

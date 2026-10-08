@@ -25,6 +25,7 @@ import asyncio
 import contextvars
 import copy
 import json
+import logging
 import os
 import re
 import shutil
@@ -1304,6 +1305,95 @@ def _check_route_in_effect(route: SolRoute) -> None:
         )
 
 
+#: Why Sol's route does not start while unillm records OTel spans: a span keeps a failed call's text as is.
+OTEL_REFUSAL = (
+    "UNILLM_OTEL is on (or its state cannot be read): unillm's spans record a failed call's error text, "
+    "which Sol's route keeps out of every record, so Sol's route does not start and no consolidation pass "
+    "runs; turn UNILLM_OTEL off for a run with Sol's route"
+)
+
+
+def otel_on() -> bool:
+    """Whether unillm records OTel spans (``UNILLM_OTEL``); ``True`` when that cannot be read (fail closed)."""
+    try:
+        import importlib
+
+        return bool(importlib.import_module("unillm.logger").is_otel_enabled())
+    except Exception:  # noqa: BLE001
+        return True
+
+
+class _RedactRecords(logging.Filter):
+    """Redacts a log record before any handler sees it: its message with :func:`redact_error` applied, no
+    arguments left to format, and any traceback text redacted the same way.
+
+    Installed on ``unillm.retry`` itself (a filter on a parent logger does not run for a child's records),
+    whose warnings carry the first 200 characters of a failed call's text and reach the controller's stderr.
+    It only removes registered credentials and credential structures, so it applies to every record there.
+    """
+
+    _memory_v2_sol = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            text = record.getMessage()
+        except Exception:  # noqa: BLE001
+            # a record that cannot format keeps its template only
+            text = str(record.msg)
+        record.msg = redact_error(text)
+        record.args = ()
+        if record.exc_info:
+            record.exc_text = redact_error(
+                logging.Formatter().formatException(record.exc_info),
+            )
+            record.exc_info = None
+        elif record.exc_text:
+            record.exc_text = redact_error(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact_error(record.stack_info)
+        return True
+
+
+#: The unillm logger whose records carry a failed call's text (``unillm/helpers.py``).
+RETRY_LOGGER = "unillm.retry"
+
+
+def _install_log_redaction() -> None:
+    """Put :class:`_RedactRecords` on ``unillm.retry``; idempotent (the caller holds the lock)."""
+    log = logging.getLogger(RETRY_LOGGER)
+    if not any(getattr(f, "_memory_v2_sol", False) for f in log.filters):
+        log.addFilter(_RedactRecords())
+
+
+def _redact_log_file(path: Any) -> None:
+    """unillm's per-call log file of a Sol call (written only when ``UNILLM_LOG_DIR`` is set), which holds a
+    failed call's error text as is, rewritten with :func:`redact_error` applied (a temporary file beside it
+    replaces it). If it cannot be rewritten it is removed. Never raises.
+    """
+    target = Path(path)
+    try:
+        text = target.read_bytes().decode("utf-8", "surrogateescape")
+        clean = redact_error(text)
+        if clean == text:
+            return
+        fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(clean.encode("utf-8", "surrogateescape"))
+            os.replace(tmp, target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except Exception:  # noqa: BLE001 - unredacted, it may hold the token: it goes
+        try:
+            target.unlink()
+        except OSError:
+            pass
+
+
 def _install_sol_gateway() -> None:
     """Make unillm's per-call gateway lookup return Sol's route inside a Sol call; idempotent.
 
@@ -1312,11 +1402,15 @@ def _install_sol_gateway() -> None:
     ``api_base``/``api_key``: ``generate`` drops extra keyword arguments. Wrapping that lookup with a
     context variable gives the per-call route without touching the process environment, which subprocesses
     inherit. Outside a Sol call the wrapper returns what unillm's own lookup returns. Refuses (no call made)
-    when the installed unillm has no such lookup.
+    when the installed unillm has no such lookup, or records OTel spans (:data:`OTEL_REFUSAL`). Also puts a
+    redacting filter on the ``unillm.retry`` logger (:class:`_RedactRecords`).
     """
     from unillm.clients import uni_llm
 
+    if otel_on():
+        raise SolRouteError(OTEL_REFUSAL)
     with _GATEWAY_LOCK:
+        _install_log_redaction()
         lookup = getattr(uni_llm, "_llm_gateway", None)
         if getattr(lookup, "_memory_v2_sol", False):
             return
@@ -1378,7 +1472,10 @@ def unillm_turn(
     in this context refuses (no call made) unless it sends to the route; the same preparation serves every
     retry. A failed call on the route raises :class:`SolCallError` naming only the exception's class and a
     fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``), so
-    no error text (an echoed header, say) reaches pass notes, error rows or logs. The pricing is unchanged:
+    no error text (an echoed header, say) reaches pass notes, error rows or logs. unillm's own copies of that
+    text are redacted too: its ``unillm.retry`` warnings by a filter on that logger, and Sol's per-call log
+    file (``UNILLM_LOG_DIR``) by a rewrite once unillm finalises it; the route refuses to start while unillm
+    records OTel spans (``UNILLM_OTEL``), which would keep the text as is. The pricing is unchanged:
     the request still asks OpenRouter's API for its charged cost, and a call the route does not price is
     ``unknown``.
     """
@@ -1399,6 +1496,9 @@ def unillm_turn(
         reasoning_effort=effort,
         stateful=True,
     )
+    if route is not None and callable(getattr(client, "set_on_log_file", None)):
+        # Sol's client only; unify sets no callback of its own
+        client.set_on_log_file(_redact_log_file)
     # only on the declared route, so the shipped call is unchanged
     routed: dict[str, Any] = (
         {} if route is None else {"extra_headers": {CALL_KIND_HEADER: origin}}

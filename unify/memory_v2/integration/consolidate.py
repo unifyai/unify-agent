@@ -35,8 +35,8 @@ merge) is ``sol_error``. A pass the run guard holds back sends one end event (``
 ``reason_codes`` ``["run_guard"]``) and no start event, since no pass started. The full reasons stay
 harness-side in the evidence store's ``passes`` row.
 
-When Sol's route is set but refused (:class:`.switch.SolRouteRefused`: malformed, half set, or not what
-the settings hold), no pass ever starts, so each request instead sends one value-free
+When Sol's route is set but refused (:class:`.switch.SolRouteRefused`: malformed, half set, not what the
+settings hold, or ``UNILLM_OTEL`` on), no pass ever starts, so each request instead sends one value-free
 event, ``{"type": "consolidation", "phase": "refused", "episode_id", "consolidation_refused":
 "route_not_in_effect", "reason_codes": ["route_not_in_effect"]}``, before the refusal is raised (and recorded
 in ``errors.jsonl``): a run with any such event consolidated nothing because of its route, which is not a
@@ -80,10 +80,12 @@ from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
 from ..sol_pass import (
     CODE_ROUTE_NOT_IN_EFFECT,
+    OTEL_REFUSAL,
     PassConfig,
     PassOutcome,
     SolPass,
     SolRoute,
+    otel_on,
     unillm_turn,
 )
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
@@ -342,6 +344,8 @@ def sol_settings(settings: Any) -> SolSettings:
     )
     route = SolRoute(*pair) if pair is not None else None
     model = model or SOL_MODEL
+    if route is not None and otel_on():
+        raise SolRouteRefused(OTEL_REFUSAL)
     if route is not None and not (
         model if "@" in model else f"{model}@openrouter"
     ).endswith("@openrouter"):
