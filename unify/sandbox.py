@@ -2568,6 +2568,10 @@ _PROXY_HEAD_LIMIT = 8192
 _PROXY_HANDSHAKE_S = 30.0
 _PROXY_CONNECT_S = 10.0
 _TUNNEL_IDLE_S = 300.0
+# The client's first TLS bytes in a tunnel: the whole ClientHello must
+# arrive within this many bytes (record headers included) and seconds.
+_CLIENT_HELLO_LIMIT = 16384
+_CLIENT_HELLO_S = 10.0
 # The well-known NAT64 prefix (RFC 6052): the last 32 bits are the IPv4
 # address a translator reaches, link-local and private ones included. The
 # local-use prefix (64:ff9b:1::/48, RFC 8215) embeds it at a position its
@@ -2627,6 +2631,151 @@ def _authority(text: str) -> Optional[tuple[str, int]]:
     return _host_key(host), int(port)
 
 
+class _HelloRefused(ValueError):
+    """The tunnel's first bytes are not a ClientHello the proxy accepts."""
+
+
+class _Reader:
+    """Bounds-checked reads over a TLS structure."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+
+    def done(self) -> bool:
+        return self.pos == len(self.data)
+
+    def take(self, n: int) -> bytes:
+        if n < 0 or self.pos + n > len(self.data):
+            raise _HelloRefused("the ClientHello is malformed (truncated field)")
+        out = self.data[self.pos : self.pos + n]
+        self.pos += n
+        return out
+
+    def number(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "big")
+
+    def vector(self, width: int) -> bytes:
+        """A length-prefixed field whose length takes *width* bytes."""
+        return self.take(self.number(width))
+
+
+def _read_client_hello(
+    conn: socket.socket,
+    buffered: bytes,
+    deadline: float,
+) -> tuple[bytes, str]:
+    """``(bytes read, server name)``: the client's ClientHello, read from
+    *conn* after the *buffered* bytes the request head was followed by.
+
+    Reads TLS handshake records (``content type 22``, version ``3.x``,
+    length 1..16384), reassembling a ClientHello fragmented over several of
+    them, until the whole handshake message is in; never more than
+    :data:`_CLIENT_HELLO_LIMIT` bytes or past *deadline*. Raises
+    :class:`_HelloRefused` on anything else: other first bytes (plain HTTP,
+    say), a record or message over the limit, a first handshake message
+    that is not a ClientHello, a malformed one, the stream ending or the
+    time running out first, and a ClientHello without exactly one
+    ``host_name`` in its ``server_name`` extension.
+    """
+    data = bytearray(buffered)
+
+    def need(n: int) -> None:
+        if n > _CLIENT_HELLO_LIMIT:
+            raise _HelloRefused(
+                f"the ClientHello is larger than {_CLIENT_HELLO_LIMIT} bytes",
+            )
+        while len(data) < n:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _HelloRefused(
+                    f"no complete ClientHello within {_CLIENT_HELLO_S:g} s",
+                )
+            conn.settimeout(left)
+            try:
+                chunk = conn.recv(min(4096, n - len(data)))
+            except (socket.timeout, TimeoutError):
+                raise _HelloRefused(
+                    f"no complete ClientHello within {_CLIENT_HELLO_S:g} s",
+                ) from None
+            if not chunk:
+                raise _HelloRefused("the tunnel closed before a complete ClientHello")
+            data.extend(chunk)
+
+    handshake = bytearray()
+    pos = 0
+    while True:
+        need(pos + 5)
+        kind, major, length = (
+            data[pos],
+            data[pos + 1],
+            data[pos + 3] << 8 | data[pos + 4],
+        )
+        if kind != 22 or major != 3:
+            raise _HelloRefused("the tunnel's first bytes are not a TLS handshake")
+        if not 0 < length <= 16384:
+            raise _HelloRefused(f"a TLS record of {length} bytes is out of bounds")
+        need(pos + 5 + length)
+        handshake += data[pos + 5 : pos + 5 + length]
+        pos += 5 + length
+        if len(handshake) < 4:
+            continue
+        if handshake[0] != 1:
+            raise _HelloRefused("the first handshake message is not a ClientHello")
+        size = 4 + int.from_bytes(handshake[1:4], "big")
+        if size > _CLIENT_HELLO_LIMIT:
+            raise _HelloRefused(
+                f"the ClientHello is larger than {_CLIENT_HELLO_LIMIT} bytes",
+            )
+        if len(handshake) >= size:
+            return bytes(data), _client_hello_sni(bytes(handshake[4:size]))
+
+
+def _client_hello_sni(body: bytes) -> str:
+    """The one ``host_name`` a ClientHello's *body* names (RFC 8446 4.1.2,
+    RFC 6066 3), lower-cased without a trailing dot."""
+    r = _Reader(body)
+    r.take(2 + 32)  # legacy_version, random
+    if len(r.vector(1)) > 32:  # legacy_session_id
+        raise _HelloRefused("the ClientHello is malformed (session id)")
+    suites = r.vector(2)
+    if not suites or len(suites) % 2:
+        raise _HelloRefused("the ClientHello is malformed (cipher suites)")
+    if not r.vector(1):  # legacy_compression_methods
+        raise _HelloRefused("the ClientHello is malformed (compression methods)")
+    if r.done():
+        raise _HelloRefused("the ClientHello names no TLS server (no SNI)")
+    extensions = _Reader(r.vector(2))
+    if not r.done():
+        raise _HelloRefused("the ClientHello is malformed (trailing bytes)")
+    seen: set[int] = set()
+    name: Optional[bytes] = None
+    while not extensions.done():
+        kind = extensions.number(2)
+        data = extensions.vector(2)
+        if kind in seen:
+            raise _HelloRefused(f"the ClientHello repeats extension {kind}")
+        seen.add(kind)
+        if kind != 0:  # server_name
+            continue
+        entries = _Reader(data)
+        names = _Reader(entries.vector(2))
+        if not entries.done() or names.done():
+            raise _HelloRefused("the ClientHello is malformed (server_name)")
+        while not names.done():
+            if names.number(1) != 0 or name is not None:
+                raise _HelloRefused(
+                    "the ClientHello's server_name holds more than one host_name",
+                )
+            name = names.vector(2)
+    if name is None:
+        raise _HelloRefused("the ClientHello names no TLS server (no SNI)")
+    text = name.decode("ascii", "replace")
+    if not text or not all(c.isascii() and (c.isalnum() or c in "-._") for c in text):
+        raise _HelloRefused("the ClientHello's server name is not a host name")
+    return _host_key(text)
+
+
 class EgressProxy:
     """An HTTP CONNECT proxy, on a private unix socket, for the installer.
 
@@ -2636,8 +2785,20 @@ class EgressProxy:
     link-local (the cloud metadata server), private or other non-public
     addresses is refused, and the address connected to is the one checked,
     so a second lookup cannot change it. Anything that is not a CONNECT (a
-    plain ``http://`` request) is refused. Every refusal is logged and kept
-    in :attr:`refused` as ``(target, reason)``.
+    plain ``http://`` request) is refused.
+
+    An address can serve many sites (``pypi.org`` and
+    ``files.pythonhosted.org`` share a CDN's addresses with other
+    customers), so the tunnel's first bytes must be a TLS ClientHello whose
+    server name (SNI) is the CONNECT's host (case-insensitive, without a
+    trailing dot); only then are they forwarded and the tunnel relayed
+    (:func:`_read_client_hello`). Without SNI, with another name, with other
+    first bytes or a ClientHello over 16 KB the tunnel is closed. What the
+    proxy cannot see is the request inside TLS: a ``Host`` header naming
+    another site on the same CDN is the CDN's to refuse (domain fronting).
+
+    Every refusal is logged and kept in :attr:`refused` as
+    ``(target, reason)``.
 
     The allow-list is fixed when the proxy starts, by the harness; nothing
     the sandboxed command sends can add to it. :func:`wrap_argv` mounts the
@@ -2689,7 +2850,7 @@ class EgressProxy:
                 return
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
-    def _refuse(self, conn: socket.socket, target: str, status: str, reason: str):
+    def _note_refusal(self, target: str, reason: str) -> None:
         import logging
 
         self.refused.append((target, reason))
@@ -2698,6 +2859,9 @@ class EgressProxy:
             target,
             reason,
         )
+
+    def _refuse(self, conn: socket.socket, target: str, status: str, reason: str):
+        self._note_refusal(target, reason)
         body = f"Refused by the Unify installer proxy: {reason}\n".encode()
         try:
             conn.sendall(
@@ -2750,8 +2914,26 @@ class EgressProxy:
                 self._refuse(conn, name, "403 Forbidden", reason)
                 return
             conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            if early:
-                up.sendall(early)
+            # Nothing the client sends reaches the index host before its
+            # ClientHello names that host; otherwise the tunnel is closed (no
+            # HTTP status can follow the 200) and the refusal noted.
+            try:
+                first, sni = _read_client_hello(
+                    conn,
+                    early,
+                    time.monotonic() + _CLIENT_HELLO_S,
+                )
+            except _HelloRefused as exc:
+                self._note_refusal(name, f"tunnel to {name}: {exc}")
+                return
+            if sni != target[0]:
+                self._note_refusal(
+                    name,
+                    f"tunnel to {name}: the ClientHello names {sni!r}, "
+                    f"not {target[0]!r} (SNI must be the CONNECT host)",
+                )
+                return
+            up.sendall(first)
             for s in (conn, up):
                 s.settimeout(_TUNNEL_IDLE_S)
             back = threading.Thread(target=_relay, args=(up, conn), daemon=True)
