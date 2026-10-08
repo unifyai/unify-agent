@@ -141,6 +141,51 @@ What is left is the tool-surface tangle below. `tests/test_no_research_switches.
 - The storage review's own cells (core fork, `ReviewSandbox`) run in a worker whose workspace is writable, and the review has read the outcome; a review model that writes the verdict into the workspace or into a library entry puts it where later cells read it. Bounding that is a review-policy decision (a read-only workspace for the review's worker), not done here.
 - A log directory inside a mounted path (the workspace) that itself holds another mounted path cannot be hidden by a mount without hiding that path; the harness's file tools still refuse it, but a cell's own `open` can read it. Keep log directories outside the workspace, or under `UNIFY_HOME` (hidden as the state directory).
 
+## Security: an allowlisted root and a socket-family filter (8 Oct 2026)
+
+**Found** by the memory-redesign session, confirmed by reading `unify/sandbox.py`:
+- `wrap_argv` started with `--ro-bind / /` and hid a deny-list (credential paths under the home, `.env` files a scan found). A deny-list over arbitrary host files cannot be complete: `/workspaces/envs/.env.*`, `/root`, `/var/log`, `/mnt/c` and every other user file stayed readable.
+- There was no seccomp filter, so AF_VSOCK was open. On WSL2 it reaches host services whatever the network namespace.
+
+**Fixed (PR "SECURITY: give the sandbox an allowlisted root and limit its socket families"):**
+- **The root is an allowlist** (`_ROOT_ALLOWLIST`, a reason per entry), read-only on an empty tmpfs that is remounted read-only:
+  - the system directories `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`, `/libx32` (links stay links);
+  - a curated `/etc`, file by file, never whole. `passwd` and `group` are generated: root, this account and nobody.
+- **Derived at policy time, never hard-coded** (`_derived_roots`):
+  - the interpreter: `sys.prefix`, `sys.base_prefix`, the `sys.executable` link chain and `pyvenv.cfg`'s home, each by its own name and its resolved one;
+  - the Unify package directory (the worker runs `worker_child.py` from it by path);
+  - the editable installs the venv's `.pth` files put on `sys.path` (unillm's checkout);
+  - the harness's own `PYTHONPATH` entries (the benchmark relay clients);
+  - the files the harness's own `LD_PRELOAD` names (the fake clock).
+- **Never `/` or a whole home.** A derived root that would show either is left out with a warning, and a policy mount that would (a workspace set to a home directory) is refused under the new rule `root-allowlist`.
+- **The harness's file tools follow the root:** `read_file` and `grep` refuse a path the sandbox does not show.
+- **The installer:** it gets its `uv` binary bound read-only (`wrap_argv(readonly=...)`), since `~/.local/bin` is outside the root.
+- **The workspace, state views, transcripts (PR F), internal-transcript and log masks, and the proxy mount are unchanged**, mounted on top as before.
+- **The credential-directory masks stay.** A masked `.env` file outside everything mounted is no longer bound at all: it does not exist, and a notice there would only reveal its directory's name.
+- **The fake clock's variables** (`LD_PRELOAD`, `FAKETIME`, `FAKETIME_SHARED`, `TZ`) reach a sandboxed command only as the harness has them. A cell's own subprocess `env=` cannot set or extend them.
+- **Socket-family filter** (`seccomp_program`, classic BPF for x86_64 and aarch64, passed as `bwrap --seccomp 9`; pattern from the memory-v2 runner at 6ec1e9821). It applies to every sandboxed process: cells, the worker, the installer and grep.
+  - `socket`/`socketpair` get EAFNOSUPPORT unless the family is AF_UNIX, AF_INET or AF_INET6.
+  - `clone`/`unshare` with CLONE_NEWUSER get EPERM. `clone3` gets ENOSYS, and glibc falls back to `clone`.
+  - io_uring gets ENOSYS.
+  - A foreign audit arch kills the process. On x86_64, x32 numbers get ENOSYS. Any other machine refuses to run (`sandbox-required`).
+  - The command line now starts `/bin/sh -c 'exec "$@" 9<"$0"' <notices>/seccomp.bpf`. The shell opens the program for bwrap and execs it, so it is the same process and process group.
+- **The network policy is unchanged.** INET follows `--unshare-net`/`--share-net` and the proxy mode as before.
+- **Tests:** `tests/actor/code_act/test_sandbox_root_allowlist.py`. 12 of its 13 tests fail on the old sandbox; the 13th checks that the interpreter is visible, which was true before too. The tests check access and socket creation only: the secret-like files are ones the test creates, and nothing connects to a host service. `test_workspace_sandbox`, `test_workspace_tools`, `test_install_confinement` and `test_library_safety_e2e` now assert the allowlist semantics: a home's plain files and `.env`s are absent, not masked; the offline wheel lives in the workspace; bwrap is `argv[4]`.
+
+**Benchmark paths the root mounts (all derived, none hard-coded):**
+- the staged build's `.venv` (`runtime-<bench>/unify-agent-<label>/.venv`) and the uv CPython it links to (`~/.local/share/uv/python/cpython-3.12-…` and `cpython-3.12.11-…`);
+- `unify-agent-<label>/unify` (the package, not the checkout);
+- the unillm copy that `_editable_impl_unillm.pth` names;
+- `<attempt>/system/<bench>-client` (AppWorld, Crafter, ScienceWorld, TravelPlanner: the `PYTHONPATH` the hooks set);
+- `runtime-appworld/libfaketime/usr/lib/x86_64-linux-gnu/faketime/libfaketimeMT.so.1`, the file only, when `LD_PRELOAD` names it (AppWorld, office-v2 `--clock stream`).
+- No relay socket directory: cells reach the relays only through the worker's harness proxy (the relay lives in the runner's `/tmp`, which no cell sees, before or after).
+
+**Open:**
+- **The vsock exposure on the Vast workers is unknown.** It depends on the hypervisor. OPS should assess it in the morning. The filter closes it inside cells either way; the harness process itself is not filtered.
+- **`$HOME` exists in cells as an empty read-only directory.** Tools that read `~/.config` or write `~/.cache` find nothing there; writes failed before too.
+- **`FAKETIME_SHARED`** names shared memory in `/dev/shm`. The sandbox's `/dev` was private before this change and still is: unchanged, not verified with the clock on.
+- **Python cells run in-process (`UNIFY_WORKSPACE_PYTHON` empty) are not confined by any of this.** Tests only.
+
 ## Known defects and test status
 - **`library_shortlist.shortlist_block` (lines ~435–437) and `_gated_block` swallow any exception at DEBUG level.** A missing embedding key silently drops the shortlist. Log a warning at least.
 - **`test_can_store_true_merges_redundant_functions`** passes 3/5 live under the old defaults. The review sometimes searches only by the new function's exact name, so it never sees the narrower variants.
