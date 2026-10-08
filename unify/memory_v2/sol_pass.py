@@ -271,6 +271,8 @@ CODE_OVER_QUOTA = "over_quota"
 CODE_DEADLINE = "deadline"
 CODE_PASS_CAP = "pass_cap"
 CODE_SOL_ERROR = "sol_error"
+# a Sol call found Sol's declared route not in effect
+CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
 
 
 class ModelTurn(Protocol):
@@ -1025,7 +1027,12 @@ class SolPass:
                 except Exception as exc:  # the call may still have cost money
                     spend.unknown += 1
                     errored = True
-                    cause(CODE_SOL_ERROR)
+                    failed_as = (
+                        CODE_ROUTE_NOT_IN_EFFECT
+                        if isinstance(exc, SolRouteError)
+                        else CODE_SOL_ERROR
+                    )
+                    cause(failed_as)
                     notes.append(
                         _redact(f"model call failed: {type(exc).__name__}: {exc}")[
                             :300

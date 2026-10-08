@@ -904,6 +904,80 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
     assert named and leaked == []
 
 
+def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_path):
+    """A Sol call that finds the route not in effect ends the pass with ``route_not_in_effect``, which the end
+    event carries (not the generic ``sol_error``).
+    """
+    from tests.memory_v2.test_sol_pass import _run as run_pass
+    from tests.memory_v2.test_sol_pass import _sol
+
+    async def misrouted(messages, tools):
+        raise sol_pass.SolRouteError("a Sol call did not take Sol's declared route")
+
+    _mem, _ev, sol = _sol(tmp_path, misrouted)
+    out = run_pass(sol, "p0")
+    codes = consolidate.reason_codes(out, None)
+    assert not out.passed
+    assert sol_pass.CODE_ROUTE_NOT_IN_EFFECT in out.codes
+    assert codes[0] == "route_not_in_effect" and "sol_error" not in codes
+
+
+def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
+    """A refused route starts no pass, ever: each request appends one value-free ``refused`` event to the run's
+    ``events.jsonl`` (and the --jsonl stream), so the cell is flagged, not read as a null result. With the route
+    unset, no such event is sent.
+    """
+    events = tmp_path / "events.jsonl"
+    errors = tmp_path / "errors.jsonl"
+    stores = SimpleNamespace(paths=SimpleNamespace(events=events, errors=errors))
+    emitted: list[dict] = []
+    refused = SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=SOL_BASE,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(""),
+    )
+    for eid in ("e1", "e2"):
+        with pytest.raises(switch.SolRouteRefused):
+            asyncio.run(
+                consolidate.run_due_passes(
+                    stores,
+                    eid,
+                    "0" * 40,
+                    SimpleNamespace(),
+                    effort="low",
+                    settings=refused,
+                    emit=emitted.append,
+                ),
+            )
+    lines = [json.loads(line) for line in events.read_text().splitlines()]
+    want = [
+        {
+            "type": "consolidation",
+            "phase": "refused",
+            "episode_id": eid,
+            "consolidation_refused": "route_not_in_effect",
+            "reason_codes": ["route_not_in_effect"],
+        }
+        for eid in ("e1", "e2")
+    ]
+    assert lines == want and emitted == want
+    leaked = SOL_BASE in events.read_text()
+    assert not leaked
+
+    events.unlink()
+    out = asyncio.run(
+        consolidate.run_due_passes(
+            stores,
+            "e3",
+            "0" * 40,
+            SimpleNamespace(),
+            effort="",  # stops right after the settings, before any store is touched
+            settings=SimpleNamespace(),
+            emit=emitted.append,
+        ),
+    )
+    assert out == [] and not events.exists() and len(emitted) == 2
+
+
 def test_error_rows_transcripts_and_redactors_drop_the_registered_token(tmp_path):
     from unify import transcripts
     from unify.memory_v2.integration.request import RequestRun
@@ -982,7 +1056,7 @@ def test_sol_settings_settles_again_so_a_late_value_is_refused_off_the_cli(monke
     settings = SimpleNamespace()  # as read before the late values arrived: neither set
     monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_BASE_URL", SOL_BASE)
     monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
-    with pytest.raises(ValueError) as info:
+    with pytest.raises(switch.SolRouteRefused) as info:
         consolidate.sol_settings(settings)
     text = str(info.value)
     token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)

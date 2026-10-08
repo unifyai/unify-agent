@@ -22,7 +22,7 @@ The contract (online build, spec §F1 and D23):
   print its input), and :func:`sol_route` checks them when a pass is about to start; its errors never quote
   either value. Both are read from the controller's process environment only: a value that reaches
   ``os.environ`` after settings were built (from ``.env``, say) refuses every pass
-  (:func:`settle_sol_route_env`).
+  (:func:`settle_sol_route_env`). Every refusal of the route is a :class:`SolRouteRefused`.
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -134,6 +134,12 @@ def sol_token_setting(v: Any) -> SecretStr:
     return SecretStr(_stripped(getter() if callable(getter) else v))
 
 
+class SolRouteRefused(ValueError):
+    """Sol's route is set but not in effect (malformed, half set, or not what the settings hold): no
+    consolidation pass starts. Its text names settings and rules, never a value.
+    """
+
+
 def parse_sol_base_url(v: Any) -> str:
     """An http(s) base URL with a host and no user, password, query or fragment; ``""`` when empty.
 
@@ -203,16 +209,19 @@ def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
     wrong form. No error quotes a value.
     """
     if _ENV_REFUSAL is not None:
-        raise ValueError(_ENV_REFUSAL)
+        raise SolRouteRefused(_ENV_REFUSAL)
     raw = token.get_secret_value() if isinstance(token, SecretStr) else token
     register_secret(SOL_TOKEN, raw)  # kept redacted by value even if refused below
-    base = parse_sol_base_url(base_url)
-    secret = parse_sol_token(token)
+    try:
+        base = parse_sol_base_url(base_url)
+        secret = parse_sol_token(token)
+    except ValueError as exc:  # the parsers' text names the rule, never the value
+        raise SolRouteRefused(str(exc)) from None
     if not base and not secret.get_secret_value():
         return None
     if not base or not secret.get_secret_value():
         missing = SOL_BASE_URL if not base else SOL_TOKEN
-        raise ValueError(
+        raise SolRouteRefused(
             f"{SOL_BASE_URL} and {SOL_TOKEN} are set together or not at all; "
             f"{missing} is empty, so no consolidation pass starts",
         )
