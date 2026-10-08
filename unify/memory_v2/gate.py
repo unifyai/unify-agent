@@ -133,6 +133,20 @@ _PYTEST_ENV = {
 _REDACTED = "<redacted:key-shaped>"
 
 
+# A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
+PREVIEW_MAX_COVERS = 500
+PREVIEW_MAX_EPISODES = 32
+
+
+@dataclass
+class ParentSnapshot:
+    """A parent revision taken once for repeated previews: its sha, its files and their extracted tree."""
+
+    sha: str
+    files: dict[str, tuple[str, str]]
+    tree: Path
+
+
 @dataclass
 class GateResult:
     passed: bool
@@ -296,45 +310,65 @@ class Gate:
         res.reasons.extend(notes)
         return res
 
-    def preview(self, parent: str, tree: Path, manifest: object) -> list[str]:
+    def parent_snapshot(self, parent: str, dest: Path) -> ParentSnapshot | None:
+        """Resolve *parent* and extract its committed tree into *dest* once, for repeated :meth:`preview` calls.
+
+        None when *parent* does not resolve. The snapshot is read only by previews; its owner removes *dest*.
+        """
+        sha = self._resolve(parent)
+        if sha is None:
+            return None
+        files, _ = listing(self.mem, sha)
+        return ParentSnapshot(sha, files, materialise(self.mem, files, Path(dest)))
+
+    def preview(
+        self,
+        parent: ParentSnapshot | str,
+        tree: Path,
+        manifest: object,
+    ) -> list[str]:
         """The cheap, read-only checks of :meth:`check` on an uncommitted *tree*: failure reasons, [] if none.
 
         For a consolidator's ``check`` tool before it finishes. *tree* holds the files the pass would commit
-        (:func:`.snapshot.tree_listing` lists it as ``git add -A`` would; empty directories are no entries).
+        (:func:`.snapshot.tree_listing` lists it without git; empty directories are no entries). *parent* is
+        a :meth:`parent_snapshot` (then the preview runs no git at all) or a revision to snapshot now.
         Runs the manifest parse, the early layout and safety refusals, G1, G2's cover checks (each cover's
-        kind, record and channel), G4, G5 and G6. Never G3 (no test runs), G2's held-out runs or a workflow's
-        signals (nothing about outcomes, ruling R10), and never writes: no commit, git object, evidence or
-        pass row. A clean preview does not mean the gate will pass.
+        kind, record and channel; at most :data:`PREVIEW_MAX_COVERS` covers over
+        :data:`PREVIEW_MAX_EPISODES` episodes, each looked up once), G4, G5 and G6. Never G3 (no test runs),
+        G2's held-out runs or a workflow's signals (nothing about outcomes, ruling R10), and never writes:
+        no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memv2-preview-"))
-        run = _Run(res, Manifest(), manifest, parent, "", tmp)
+        run = _Run(res, Manifest(), manifest, "", "", tmp)
         try:
             try:
                 run.man = parse_manifest(manifest)
             except ManifestError as exc:
                 run.fail("G1", f"malformed manifest: {exc}")
                 return list(res.reasons)
-            p_sha = self._resolve(parent)
-            if p_sha is None:
+            base = (
+                parent
+                if isinstance(parent, ParentSnapshot)
+                else self.parent_snapshot(parent, tmp / "parent")
+            )
+            if base is None:
                 run.fail("G1", "unresolvable parent revision")
                 return list(res.reasons)
-            run.parent = p_sha
-            run.p_files, _ = listing(self.mem, p_sha)
-            run.c_files, refused = tree_listing(self.mem, Path(tree))
+            run.parent, run.p_files, run.p_tree = base.sha, base.files, base.tree
+            run.c_files, refused = tree_listing(
+                Path(tree),
+                "sha256" if len(base.sha) == 64 else "sha1",
+            )
             early = self._early(run, refused)
             if early:
                 for check, reason in early:
                     run.fail(check, reason)
                 return list(res.reasons)
-            run.p_tree = materialise(self.mem, run.p_files, tmp / "parent")
             run.c_tree = tmp / "cand"
             run.c_tree.mkdir()
-            for (
-                rel
-            ) in (
-                run.c_files
-            ):  # exactly the listed files: no empty directory, nothing skipped
+            # exactly the listed files: no empty directory, nothing skipped
+            for rel in run.c_files:
                 (run.c_tree / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(
                     Path(tree) / rel,
@@ -343,9 +377,30 @@ class Gate:
                 )
             self._read_trees(run)
             self._g1(run)
-            self._g2(run, preview=True)
+            covers = [
+                c
+                for it in run.man.items
+                if it.kind == "env_function"
+                for c in it.covers
+            ]
+            episodes = {eid for eid, _ in covers}
+            if len(covers) > PREVIEW_MAX_COVERS or len(episodes) > PREVIEW_MAX_EPISODES:
+                run.fail(
+                    "G2",
+                    f"the manifest names {len(covers)} covers over {len(episodes)} episodes; a check "
+                    f"examines at most {PREVIEW_MAX_COVERS} covers over {PREVIEW_MAX_EPISODES} episodes",
+                )
+            else:
+                memo: dict[tuple[str, int], Action | None] = {}
+
+                def lookup(eid: str, idx: int) -> Action | None:
+                    if (eid, idx) not in memo:
+                        memo[(eid, idx)] = self.lookup(eid, idx)
+                    return memo[(eid, idx)]
+
+                self._g2(run, preview=True, lookup=lookup)
+                self._g5(run)  # needs G2's validated covers
             self._g4(run)
-            self._g5(run)
             self._g6(run)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -686,8 +741,18 @@ class Gate:
                     f"the preamble of {path} changed without a skeleton declaration of {channel}",
                 )
 
-    def _g2(self, run: _Run, *, preview: bool = False) -> None:
-        """*preview* (:meth:`preview`) checks the covers only: no held-out runs, no workflow signals."""
+    def _g2(
+        self,
+        run: _Run,
+        *,
+        preview: bool = False,
+        lookup: Callable[[str, int], Action | None] | None = None,
+    ) -> None:
+        """*preview* (:meth:`preview`) checks the covers only: no held-out runs, no workflow signals.
+
+        *lookup* replaces the gate's action lookup (the preview's memoised one).
+        """
+        lookup = lookup or self.lookup
         seen: list[Action] | None = (
             None  # the recorded actions of every episode the manifest names
         )
@@ -697,7 +762,7 @@ class Gate:
                     run.fail("G2", f"{it.item} covers no recorded action")
                 valid: list[tuple[str, int, Action]] = []
                 for eid, idx in it.covers:
-                    action = self.lookup(eid, idx)
+                    action = lookup(eid, idx)
                     problem = cover_problem(action, it.channel, self.blobs.has)
                     if problem is not None:
                         run.fail("G2", f"{it.item} covers ({eid},{idx}), {problem}")

@@ -10,6 +10,7 @@ test file imports.
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import stat
 import subprocess
@@ -69,19 +70,28 @@ def listing(repo: Repo, sha: str) -> tuple[dict[str, tuple[str, str]], list[str]
     return files, refused
 
 
+def blob_id(data: bytes, object_format: str = "sha1") -> str:
+    """The git blob id of *data* (what ``git hash-object --no-filters`` prints), computed without git."""
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError(f"unknown object format {object_format!r}")
+    return hashlib.new(object_format, b"blob %d\0" % len(data) + data).hexdigest()
+
+
 def tree_listing(
-    repo: Repo,
     tree: Path,
+    object_format: str = "sha1",
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
-    """:func:`listing` for an uncommitted directory: what ``git add -A`` of *tree* would commit.
+    """:func:`listing` for an uncommitted directory: what committing *tree* would hold, without git.
 
     Walks with ``lstat`` and never follows a link. Directories are not entries (git tracks no empty
-    directory); a regular file with the owner's execute bit is an executable file (mode 100755), as git
-    records it, and is refused like links and special files. Blob ids come from ``git hash-object
-    --no-filters`` in *repo*, which writes no object. ``.gitignore`` files are not applied: the gate judges
-    the commit itself.
+    directory); ``.git`` entries are skipped at any depth (the pass never mirrors them); a name that is
+    not UTF-8 or not a safe path is refused, as :func:`listing` refuses it. A regular file with the
+    owner's execute bit is an executable file (mode 100755), as git records it, and is refused like links
+    and special files. Blob ids are computed in Python (:func:`blob_id`) in the repo's *object_format*.
+    The commit adds ignored files too (``add --force``) and the gate refuses ``.gitignore``, so no ignore
+    rule can make the two differ.
     """
-    regular: list[str] = []
+    files: dict[str, tuple[str, str]] = {}
     refused: list[str] = []
     stack = [(Path(tree), "")]
     while stack:
@@ -89,10 +99,13 @@ def tree_listing(
         with os.scandir(d) as it:
             entries = sorted(it, key=lambda e: e.name)
         for e in entries:
+            if e.name == ".git":
+                continue
             r = rel + e.name
             try:
+                r.encode("utf-8")
                 path = safe_rel(r)
-            except ManifestError:
+            except (UnicodeEncodeError, ManifestError):
                 refused.append(f"unsafe path {r[:80]!r}")
                 continue
             st = os.lstat(e.path)
@@ -105,19 +118,9 @@ def tree_listing(
             elif st.st_mode & stat.S_IXUSR:
                 refused.append(f"executable file {path}")
             else:
-                regular.append(path)
-    files: dict[str, tuple[str, str]] = {}
-    if regular:
-        root = Path(tree).absolute()
-        out = _git_bytes(
-            repo,
-            ["hash-object", "--no-filters", "--stdin-paths"],
-            ("\n".join(str(root / p) for p in regular) + "\n").encode(),
-        )
-        ids = out.decode("ascii").split()
-        if len(ids) != len(regular):
-            raise GitError("hash-object returned an unexpected number of ids")
-        files = {p: ("100644", obj) for p, obj in zip(regular, ids)}
+                fd = os.open(e.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                with os.fdopen(fd, "rb") as f:
+                    files[path] = ("100644", blob_id(f.read(), object_format))
     return files, refused
 
 
