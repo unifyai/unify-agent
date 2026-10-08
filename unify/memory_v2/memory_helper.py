@@ -217,6 +217,39 @@ def compare(mine: dict, recorded: dict) -> tuple[int, float, list[str]] | None:
     return (2 if exact else 1), share, matched
 
 
+def shape_key(desc: dict) -> tuple:
+    """A descriptor's exact shape, with no information floor: its kind, its whole :func:`signature` (every
+    key path, named or not, with its leaf type, so ``[]`` -> ``int`` for a list of ints and ``[][]`` for a
+    grid) and, for a file, its format, delimiter, header flag, columns and column types. Lengths, counts and
+    encodings are left out: a fixture may be a shorter copy of a recorded input.
+    """
+    sig = tuple(sorted(signature(desc).items()))
+    if desc.get("kind") == "value":
+        return ("value", sig)
+    s = desc.get("shape") or {}
+    return (
+        "file",
+        s.get("format"),
+        s.get("delimiter"),
+        bool(s.get("header")),
+        tuple(s.get("columns") or ()),
+        tuple(s.get("types") or ()),
+        tuple(
+            (sheet.get("name"), tuple(sheet.get("header") or ()))
+            for sheet in s.get("sheets") or []
+        ),
+        sig,
+    )
+
+
+def same_shape(mine: dict, recorded: dict) -> bool:
+    """Whether two descriptors have exactly the same shape (:func:`shape_key`). Unlike :func:`compare`,
+    which serves :func:`find` and needs a named key to say anything, this has no floor: headerless tables,
+    raw grids and scalar lists match an identical shape. The gate uses it for an example's fixture.
+    """
+    return shape_key(mine) == shape_key(recorded)
+
+
 # --- the catalogue -----------------------------------------------------------------------------------------
 
 

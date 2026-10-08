@@ -146,7 +146,7 @@ from .manifest import (
     parse_manifest,
 )
 from .index import IndexOverBudget, build_index, estimate_tokens
-from .memory_helper import compare, file_shape, value_shape
+from .memory_helper import compare, file_shape, same_shape, value_shape
 from .shape_rows import descriptors, shapes_at, snapshot_rows
 from .memory_repo import ItemsReport, items
 from .redact import KEY_SHAPED
@@ -314,6 +314,12 @@ def _run(module, name):
     assert sum(r.attempted for r in results) >= 1, f"no example of {module}.{name} ran"
     assert calls, f"no example called {module}.{name}"
 """
+
+
+def fixture_fits(mine: dict, recorded: dict) -> bool:
+    """Whether a fixture's descriptor fits a recorded input's: the same exact shape, or a structural match
+    of keyed shapes (see :meth:`Gate._fixture_shape`)."""
+    return same_shape(mine, recorded) or compare(mine, recorded) is not None
 
 
 def _examples_source(items: list[str]) -> str:
@@ -1299,6 +1305,11 @@ class Gate:
     def _fixture_shape(self, run: _Run, item: str) -> None:
         """An example's fixture must have the shape of an input *item* was admitted on (its validated
         covers' shapes, :meth:`_record_shapes`); an item without recorded shapes (``env``) is not checked.
+
+        The shape is compared exactly (:func:`.memory_helper.same_shape`, no information floor, so a
+        headerless table, a raw grid or a list of scalars passes with an identical-shape fixture), or, for
+        keyed shapes, by ``find``'s structural match (:func:`.memory_helper.compare`), which admits a
+        fixture that is a partial copy of a recorded record.
         """
         recorded = run.shapes.get(item, ("", []))[1]
         node = self._function_node(run, item)
@@ -1318,7 +1329,7 @@ class Gate:
             mine = [
                 d for d in (file_shape(path, data), value_shape(data)) if d is not None
             ]
-            if any(compare(d, r) is not None for d in mine for r in recorded):
+            if any(fixture_fits(d, r) for d in mine for r in recorded):
                 return
         if paths:
             run.fail(
