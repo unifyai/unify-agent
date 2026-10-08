@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 
@@ -25,11 +24,10 @@ from unify.agents.binding import PROMPT_SECTION
 
 TASK = "List the files in the workspace."
 HEADER = ls._HEADER
-# What act() writes opens with this: the core surface binds the listed
-# functions, and when the bind loads one the header goes on to say how to call
-# it (ls._HEADER_CALL, pinned in test_core_reuse); when it loads none the
-# header is ls._HEADER. Either is the shortlist.
-ACT_HEADER = os.path.commonprefix([ls._HEADER, ls._HEADER_CALL])
+# What act() writes: the core surface binds the listed functions, so its
+# header also says how to call one (ls.CALL_FORM; the bind is pinned in
+# test_core_reuse).
+ACT_HEADER = ls._HEADER_CALL
 # The shared agent record's section, which the first message carries.
 RECORD = PROMPT_SECTION
 
