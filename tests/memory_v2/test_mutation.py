@@ -1,4 +1,4 @@
-"""The gate's mutation operators (memory v2.1 stage 5): sites, application, seeded choice.
+"""The gate's mutation operators (memory v2.1 stage 5): sites, application, seeded choice, structural negatives.
 
 Pure: every mutant is compiled and executed here in the test process (no model code, no sandbox).
 """
@@ -8,7 +8,15 @@ import hashlib
 
 import pytest
 
-from unify.memory_v2.mutation import OPERATORS, Site, apply, choose, reprint, sites
+from unify.memory_v2.mutation import (
+    OPERATORS,
+    Site,
+    apply,
+    choose,
+    negatives,
+    reprint,
+    sites,
+)
 
 # Abridged from the offline sweep's merged ARC feedback reader (docs/design/memory-v2-end-to-end-example.md).
 MODULE = '''"""ARC submission feedback."""
@@ -172,3 +180,68 @@ def test_choose_is_bounded_seeded_and_spread_over_kinds():
     )
     assert len(choose(all_sites, seed, "x", 100)) == len(all_sites)
     assert choose([], seed, "x", 8) == []
+
+
+# --- structural negatives (the equivalence probe's broken inputs) ------------------------------------------
+
+
+def test_negatives_break_the_covers_shape_once_each_seeded_and_bounded():
+    covers = [_obs(1), _obs(2, correct=True)]
+    seed = hashlib.sha256(b"candidate").digest()
+    got = negatives(covers, seed, "env/dialogue_user:feedback_state")
+    labels = {label for _, label, _ in got}
+    fields = {f"{kind}:{f}" for kind in ("drop", "retype") for f in covers[0]}
+    assert labels == {"retype", "empty", "extra", "empty:type"} | fields
+    assert len(got) == 14 and all(i == 0 for i, _, _ in got)  # once each, first cover
+    by = {label: v for _, label, v in got}
+    assert "type" not in by["drop:type"] and len(by["drop:type"]) == 4
+    assert by["retype:attempts_used"]["attempts_used"] == "1"
+    assert by["retype:correct"]["correct"] == "false" and by["empty:type"]["type"] == ""
+    assert by["retype"] == [] and by["empty"] == {}
+    assert by["extra"] == {**covers[0], "unrecorded_field": 0}
+    assert covers == [_obs(1), _obs(2, correct=True)]  # the recordings are untouched
+    assert got == negatives(covers, seed, "env/dialogue_user:feedback_state")
+    few = negatives(covers, seed, "i", limit=3)
+    assert len(few) == 3 and {lb for _, lb, _ in few} <= labels
+    picks = {
+        tuple(lb for _, lb, _ in negatives(covers, bytes([i]) * 32, "i", limit=3))
+        for i in range(12)
+    }
+    assert len(picks) > 1  # the seed picks which, under the bound
+
+
+def test_negatives_of_records_lists_and_text():
+    rows = [{"id": 1, "tags": ["a"]}, {"id": 2, "tags": []}]
+    got = {lb: v for _, lb, v in negatives([rows], b"\0" * 32, "i", limit=99)}
+    assert got["empty"] == [] and got["retype"] == {}
+    assert got["drop[0]:id"] == [{"tags": ["a"]}, rows[1]]
+    assert got["empty[0]:tags"] == [{"id": 1, "tags": []}, rows[1]]
+    assert got["extra[0]"][0] == {"id": 1, "tags": ["a"], "unrecorded_field": 0}
+    text = {lb: v for _, lb, v in negatives(["You see: tree"], b"\0" * 32, "i")}
+    assert text == {"retype": 13, "empty": ""}
+    taken = {"unrecorded_field": 1}
+    (extra,) = [v for _, lb, v in negatives([taken], b"\0" * 32, "i") if lb == "extra"]
+    assert extra == {"unrecorded_field": 1, "unrecorded_field_": 0}
+
+
+def test_negatives_tell_guard_dropping_mutants_apart_from_the_original():
+    """On recorded inputs the environment accepted, a dropped or weakened shape guard looks equivalent (the
+    other guard masks it); the covers' structural negatives tell each such mutant apart.
+    """
+    covers = [_obs(1), _obs(2, correct=True)]
+    demo = {"type": "DemoReply", "demo_requests_used": 1, "pairs": [], "refused": False}
+    accepted = covers + [_obs(3, failed=True), demo, _obs(0)]
+    broken = [v for _, _, v in negatives(covers, b"\0" * 32, "i")]
+    base = _load(reprint(MODULE))
+
+    def same(ns, values):
+        return all(_outcome(ns, v) == _outcome(base, v) for v in values)
+
+    guards = [
+        s for s in sites(MODULE, "feedback_state") if s.op in ("drop_raise", "boolop")
+    ]
+    assert len(guards) == 4
+    for site in guards:
+        ns = _load(apply(MODULE, "feedback_state", site))
+        assert same(ns, accepted), site  # likely equivalent on accepted inputs alone
+        assert not same(ns, accepted + broken), site

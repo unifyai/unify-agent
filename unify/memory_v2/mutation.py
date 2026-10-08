@@ -18,6 +18,16 @@ The operators:
 
 Only the body of the named top-level function is mutated (its decorators, defaults and annotations are not).
 A gate reason names an operator kind and a line of the committed module, never a value (ruling R10).
+
+**Structural negatives** (:func:`negatives`). A surviving mutant is left out of the kill share as likely
+equivalent when the function's outputs do not change. Judged only on recorded inputs the environment
+accepted, which are almost always well-shaped, every mutant that drops or weakens a *shape guard* would look
+equivalent, and a suite that never tests a refusal would pass. So the equivalence probe also feeds inputs
+derived from the recorded covers that are broken on purpose: a field dropped, a field's type changed, an extra
+field, an empty container (or string) where a non-empty one was recorded, and the whole value's type changed or
+emptied. Each kind of break is made once per item (the first cover that has the field), at most
+:data:`MAX_NEGATIVES` chosen by a seeded hash. They are used only to tell mutants apart, never to judge the
+function itself.
 """
 
 from __future__ import annotations
@@ -25,8 +35,11 @@ from __future__ import annotations
 import ast
 import hashlib
 from dataclasses import dataclass
+from typing import Any
 
 OPERATORS = ("cmp", "negate", "drop_raise", "const", "boolop", "return_none")
+MAX_NEGATIVES = 16  # structural negatives per item in the equivalence probe
+EXTRA_FIELD = "unrecorded_field"
 
 _FLIP: dict[type, type] = {
     ast.Eq: ast.NotEq,
@@ -213,3 +226,81 @@ def apply(source: str, function: str, site: Site) -> str | None:
     else:
         return None
     return _unparse(module)
+
+
+# --- structural negatives for the equivalence probe ------------------------------------------------------
+
+
+def _retyped(value: Any) -> Any:
+    """*value* as another JSON type (deterministic): what a careless reader would mistake for it."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return len(value)
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return {}
+    if isinstance(value, dict):
+        return []
+    return str(value)
+
+
+_NA = object()  # "this break does not apply"
+
+
+def _emptied(value: Any) -> Any:
+    """*value* emptied when it is a non-empty container or string, else a sentinel meaning "not applicable"."""
+    if isinstance(value, (list, dict, str)) and value:
+        return type(value)()
+    return _NA
+
+
+def _breaks(value: Any) -> list[tuple[str, Any]]:
+    """Every structural break of one recorded value: ``(label, broken value)``; labels name the break only."""
+    out: list[tuple[str, Any]] = [("retype", _retyped(value))]
+    empty = _emptied(value)
+    if empty is not _NA:
+        out.append(("empty", empty))
+    record, path = value, ""
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        record, path = value[0], "[0]"  # a list of records: break its first record
+
+    def put(broken: dict) -> Any:
+        return [broken, *value[1:]] if path else broken
+
+    if isinstance(record, dict):
+        for key in sorted(record, key=str):
+            dropped = {k: v for k, v in record.items() if k != key}
+            out.append((f"drop{path}:{key}", put(dropped)))
+            out.append(
+                (f"retype{path}:{key}", put({**record, key: _retyped(record[key])})),
+            )
+            empty = _emptied(record[key])
+            if empty is not _NA:
+                out.append((f"empty{path}:{key}", put({**record, key: empty})))
+        extra = EXTRA_FIELD
+        while extra in record:
+            extra += "_"
+        out.append((f"extra{path}", put({**record, extra: 0})))
+    return out
+
+
+def negatives(
+    values: list[Any],
+    seed: bytes,
+    item: str,
+    limit: int = MAX_NEGATIVES,
+) -> list[tuple[int, str, Any]]:
+    """Structurally broken variants of the recorded *values* (an item's covers): ``(value index, label,
+    broken value)``, each break once (from the first value it applies to), at most *limit* by a seeded rank.
+    """
+    found: dict[str, tuple[int, Any]] = {}
+    for i, value in enumerate(values):
+        for label, broken in _breaks(value):
+            if label not in found and broken != value:
+                found[label] = (i, broken)
+    ranked = sorted(found, key=lambda label: _rank(seed, item, "negative", label))
+    return [(found[label][0], label, found[label][1]) for label in ranked[:limit]]

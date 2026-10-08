@@ -20,7 +20,10 @@ consolidator cannot know it before the harness commits. Then:
   calls on its channels, the drawn call first). On an input the environment accepted, the function must
   return, or raise its ``MemoryInputError`` when the input's fields differ from every cover's (a precondition).
   Raising anything else, or refusing an input shaped like its covers, refuses the pass. A replay miss (the
-  function made a call that episode did not record) is inconclusive and noted;
+  function made a call that episode did not record) is inconclusive and noted. Arguments beyond the first
+  come only from the recordings (the input's own recorded keyword arguments, else a cover's); a required one
+  no recording names leaves the row unbound (inconclusive), and when the function returns on none of its
+  covers under this convention the drawn inputs are not judged at all;
 * the **sample run**: each of the function's new or changed test files that imports ``memlab.inputs`` runs
   again with ``/qa/samples.json`` mounted, so a test parametrised over :func:`.inputs.inputs` also runs its own
   assertions on every drawn input, and must stay green. :mod:`.inputs` records which drawn input each test case
@@ -29,9 +32,14 @@ consolidator cannot know it before the harness commits. Then:
 **Mutation testing** (``UNIFY_MEMORY_V2_QA_MUTATION``; ``UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL``, default 0.5).
 Up to :data:`MAX_MUTANTS` mutants per function (:mod:`.mutation`, chosen by the seed) each run the function's
 new or changed tests, confined, at most :data:`MUTANT_S` each. A mutant is killed when a test is not green. A
-surviving mutant whose probe outputs equal the original's on every drawn input and cover is likely equivalent
-and leaves the count. A kill share below the threshold refuses the pass, naming operator kinds and lines.
-First the tests run on the module re-printed unchanged (the control): if that is not green, nothing is judged.
+surviving mutant whose probe outputs equal the original's on every informative row (the function returned,
+refused or raised) of the covers, the drawn inputs and the covers' structural negatives
+(:func:`.mutation.negatives`: a field dropped, retyped, emptied or added) is likely equivalent and leaves the
+count; the negatives keep a mutant that drops a shape guard from looking equivalent. A kill share below the
+threshold refuses the pass, naming operator kinds and lines. When survivors remain but the probe got no
+informative row (every input missed the replay or was unbound), the check is "not judged": a refusal under
+``strict``, else a note. First the tests run on the module re-printed unchanged (the control): if that is not
+green, nothing is judged.
 
 **Determinism** (``UNIFY_MEMORY_V2_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
 ``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memv2_pin``: a stepping clock from a fixed epoch, ``random`` seeded
@@ -81,6 +89,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import dataclasses
 import hashlib
 import json
 import shutil
@@ -127,6 +136,8 @@ MAX_SAMPLES_BYTES = 16 * 1024**2
 MAX_INPUT_FILE_BYTES = testkit.MAX_INPUT_FILE_BYTES
 PIN_MODULE = testkit.PIN_MODULE
 PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
+# probe outcomes that say something about the function (equivalence is judged on these only)
+INFORMATIVE = frozenset({"handled", "refused", "error"})
 _NAMED = 5
 
 
@@ -166,6 +177,11 @@ class QAConfig:
     def draws(self) -> bool:
         """Whether inputs are drawn and probed (the fixture check, or the mutants' equivalence)."""
         return bool(self.fixtures or self.mutation)
+
+    @property
+    def strict(self) -> bool:
+        """``UNIFY_MEMORY_V2_QA_FIXTURES=strict``: what the checks could not judge refuses the pass."""
+        return self.fixtures == "strict"
 
     @classmethod
     def from_settings(cls, settings: Any) -> "QAConfig":
@@ -236,13 +252,17 @@ def stage_inputs(
 class Row:
     """One input the probe (and the sample run) feeds a function."""
 
-    role: str  # "cover" or "sample"
+    role: str  # "cover", "sample" or "negative" (a structurally broken cover; mutant equivalence only)
     action: Action
     context: list[Action]
     covered_shape: bool
     form: str
     file: tuple[str, bytes] | None = None
     text: str | None = None
+    value: Any = (
+        None  # the input itself, when it is not built from the action (a negative)
+    )
+    has_value: bool = False
 
 
 def _content(a: Action, form: str | None) -> str:
@@ -297,12 +317,23 @@ def draw(
         )
         return [], notes
 
-    def shape(a: Action) -> frozenset | None:
+    def shape(a: Action) -> tuple | None:
         try:
             d = _doc(a, blob, form)
         except (OSError, ValueError, KeyError):
             return None
-        return None if d is None else frozenset(d.fields())
+        if d is None:
+            return None
+        if _form(a, form) == "env":
+            # a call's fields are its keyword names; the function also reads the response, so its field
+            # names are part of the shape (a refused response of another shape is a precondition, not a
+            # false refusal)
+            r = a.response
+            return (
+                frozenset(d.fields()),
+                frozenset(map(str, r)) if isinstance(r, dict) else type(r).__name__,
+            )
+        return (frozenset(d.fields()),)
 
     families = {_doc_family(a, form) for _, _, a in usable}
     shapes = {shape(a) for _, _, a in usable} - {None}
@@ -354,6 +385,7 @@ def draw(
         r = row("cover", eid, a, len(rows))
         if r is not None:
             rows.append(r)
+    covers_rows = list(rows)
     drawn = 0
     for key in ranked:
         if drawn >= k:
@@ -363,11 +395,49 @@ def draw(
         if r is not None:
             rows.append(r)
             drawn += 1
+    rows += negative_rows(item, covers_rows, seed)
     if cut:
         notes.append(f"{cut} truncated recording(s) of its family left out of the draw")
     if not drawn:
         notes.append("no recorded input of its family beyond its covers to draw")
     return rows, notes
+
+
+def negative_rows(item: str, covers: list[Row], seed: bytes) -> list[Row]:
+    """Structurally broken copies of *item*'s cover rows (:func:`.mutation.negatives`), for the mutants'
+    equivalence only: an ``env`` cover's recorded response broken (the replay answers the broken response), an
+    observation or text input broken itself, a file input emptied."""
+    if not covers:
+        return []
+    if covers[0].form in ("path", "bytes"):
+        c = covers[0]
+        name = c.file[0] if c.file is not None else "file"
+        return [Row("negative", c.action, [], False, c.form, file=(name, b""))]
+
+    def recorded(c: Row) -> Any:
+        if c.form == "text":
+            return c.text if c.text is not None else c.action.response
+        return c.action.response
+
+    out: list[Row] = []
+    for i, _, broken in mutation.negatives([recorded(c) for c in covers], seed, item):
+        c = covers[i]
+        if c.form == "env":
+            a = dataclasses.replace(c.action, response=broken)
+            out.append(Row("negative", a, [a, *c.context[1:]], False, "env"))
+        else:
+            out.append(
+                Row(
+                    "negative",
+                    c.action,
+                    [],
+                    False,
+                    c.form,
+                    value=broken,
+                    has_value=True,
+                ),
+            )
+    return out
 
 
 def _action_dict(a: Action) -> dict:
@@ -408,6 +478,8 @@ def write_samples(
                 row["context"] = [_action_dict(c) for c in r.context]
             if r.text is not None:
                 row["text"] = r.text
+            if r.has_value:
+                row["value"] = r.value
             size = len(json.dumps(row, default=str))
             if size > MAX_ROW_BYTES or total + size > MAX_SAMPLES_BYTES:
                 dropped += 1
@@ -456,22 +528,35 @@ try:
     params = list(inspect.signature(fn).parameters.values())
 except BaseException as exc:
     out.write(json.dumps({"fatal": type(exc).__name__}) + "\n"); sys.exit(0)
+# Arguments beyond the first come from recordings only: the input's own recorded keyword arguments, else the
+# first cover's that recorded the name. A required parameter no recording names is never filled in: the row is
+# "unbound" (inconclusive), never called with a made-up value.
+def _recorded(row):
+    a = row["action"]
+    return (a.get("kwargs") or {}) if a.get("kind", "tool") == "tool" else {}
+from_covers = {}
+for row in rows:
+    if row.get("role") == "cover":
+        for k, v in _recorded(row).items(): from_covers.setdefault(k, v)
 for row in rows:
     res = {"id": row["id"]}
     pin.reset()
     try:
-        first = RecordedInput(row).value(row.get("form"))
+        first = row["value"] if "value" in row else RecordedInput(row).value(row.get("form"))
     except BaseException:
         res["outcome"] = "unbuilt"
         out.write(json.dumps(res) + "\n"); out.flush(); continue
-    action = row["action"]
-    recorded = (action.get("kwargs") or {}) if action.get("kind", "tool") == "tool" else {}
-    kwargs = {}
+    recorded = _recorded(row)
+    kwargs, unbound = {}, False
     for p in params[1:]:
         if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD): continue
-        if p.name in recorded: kwargs[p.name] = recorded[p.name]
+        if p.name in recorded and p.kind != p.POSITIONAL_ONLY: kwargs[p.name] = recorded[p.name]
         elif p.default is not p.empty: continue
-        else: kwargs[p.name] = ""
+        elif p.name in from_covers and p.kind != p.POSITIONAL_ONLY: kwargs[p.name] = from_covers[p.name]
+        else: unbound = True
+    if unbound:
+        res["outcome"] = "unbound"
+        out.write(json.dumps(res) + "\n"); out.flush(); continue
     state["timed_out"] = False
     signal.alarm(per_case)
     try:
@@ -502,7 +587,16 @@ for row in rows:
 """
 
 _OUTCOMES = frozenset(
-    {"handled", "refused", "miss", "recorded_error", "error", "timeout", "unbuilt"},
+    {
+        "handled",
+        "refused",
+        "miss",
+        "recorded_error",
+        "error",
+        "timeout",
+        "unbuilt",
+        "unbound",
+    },
 )
 
 
@@ -555,13 +649,20 @@ def _signature(r: dict) -> tuple:
     )
 
 
+def informative(base: dict[int, dict] | None) -> list[int]:
+    """The probe rows that say something about the function: it returned, refused or raised.
+
+    A replay miss, a recorded error, an unbuilt or unbound input and a timeout say nothing about it (the
+    probe's convention or the recording failed, not the function), so equivalence is never judged on them.
+    """
+    return [i for i, r in (base or {}).items() if r.get("outcome") in INFORMATIVE]
+
+
 def same_outputs(base: dict[int, dict] | None, other: dict[int, dict] | None) -> bool:
-    """Whether a mutant's probe rows equal the original's on every input both ran (and on at least one)."""
+    """Whether a mutant's probe rows equal the original's on every informative input (at least one)."""
     if not base or other is None:
         return False
-    judged = [
-        i for i, r in base.items() if r.get("outcome") not in ("timeout", "unbuilt")
-    ]
+    judged = informative(base)
     if not judged:
         return False
     return all(
@@ -952,10 +1053,19 @@ class QAChecks:
         if not drawn:
             return
         item = it.item
+        covers = [r["id"] for r in rows if r["role"] == "cover"]
         if base is None:
             self._note(
                 "fixtures",
                 f"{item} could not be loaded for the probe; drawn inputs not judged",
+            )
+        elif not any((base.get(i) or {}).get("outcome") == "handled" for i in covers):
+            # the probe's call convention (the arguments it can take from the recordings) does not reach
+            # the function on its own covers, so its verdicts on the drawn inputs would be about the probe
+            self._note(
+                "fixtures",
+                f"{item} returns on none of its covers under the probe's call (arguments from the "
+                "recordings only); drawn inputs not judged",
             )
         else:
             refused = crashed = inconclusive = allowed = timeouts = 0
@@ -1000,7 +1110,8 @@ class QAChecks:
                 self._note(
                     "fixtures",
                     f"{item}: {inconclusive} drawn input(s) inconclusive (a call the replay did not record, "
-                    f"or no input in its form) and {timeouts} past the {PROBE_CASE_S} s limit",
+                    "an argument no recording names, or no input in its form) and "
+                    f"{timeouts} past the {PROBE_CASE_S} s limit",
                 )
         # the function's own tests on the drawn inputs
         kit = self._kit()
@@ -1056,9 +1167,13 @@ class QAChecks:
 
         run, cfg, item = self.run, self.cfg, it.item
         tests = self._tests(it)
-        if not tests or not all(
-            t in run.qa_first and _green(run.qa_first[t]) for t in tests
-        ):
+        if not tests:
+            return  # G3 refuses a new or changed function without a new or changed test
+        if not all(t in run.qa_first and _green(run.qa_first[t]) for t in tests):
+            self._note(
+                "mutation",
+                f"{item}'s new or changed tests are not all green in G3; mutants not judged",
+            )
             return
         rel = item_path(item)
         function = item.split(":", 1)[1]
@@ -1107,6 +1222,19 @@ class QAChecks:
                     killed.append(site)
             equivalent: list[mutation.Site] = []
             if survived and samples is not None and base:
+                if not informative(base):
+                    # every probe row missed the replay, or could not be built or bound: equivalence cannot
+                    # be judged, so neither can the kill share (never a pass on the survivors' behalf)
+                    why = (
+                        f"{item}: mutation not judged: {len(survived)} of {len(killed) + len(survived)} "
+                        "mutants survive and the probe got no output of the function on any recorded or "
+                        "structurally broken input (replay misses, unbound arguments)"
+                    )
+                    if cfg.strict:
+                        self._fail("mutation", why)
+                    else:
+                        self._note("mutation", why)
+                    return
                 for site, text in survived:
                     target.write_text(text, encoding="utf-8")
                     other = self._probe(item, tree, samples)
@@ -1221,7 +1349,8 @@ def brief(cfg: QAConfig) -> str:
         lines.append(
             "- Mutants: the gate makes small changes to each new or changed function (a comparison flipped, a "
             "condition negated, a raise dropped, a constant off by one, and/or swapped, a return replaced by "
-            f"None); its tests must fail on at least {cfg.min_kill} of the changes that alter its outputs. Test "
+            f"None); its tests must fail on at least {cfg.min_kill} of the changes that alter its outputs on "
+            "recorded inputs or on copies of its covers with a field dropped, retyped, emptied or added. Test "
             "the values it returns and that it refuses inputs of another shape.",
         )
     if cfg.determinism:

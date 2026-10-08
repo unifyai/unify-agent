@@ -322,6 +322,16 @@ CLOCK_MOD_KIT = CLOCK_MOD.replace(
     "from datetime import datetime\n",
     "from datetime import datetime\n\nimport memlab.replay\n",
 )
+# a Crafter reader with a second parameter no recording names (the probe must not invent its value)
+SCALED = HEALTH.replace("def health(text):", "def health(text, scale):").replace(
+    'return int(text.rsplit("health: ", 1)[1].split()[0])',
+    'return int(text.rsplit("health: ", 1)[1].split()[0]) * int(scale)',
+)
+SCALED_TEST = (
+    "from env.dialogue_crafter import health\n\n\n"
+    "def test_health_reads_the_status_line():\n"
+    '    assert health("You see: tree\\n\\nYour status:\\nhealth: 9", 2) == 18\n'
+)
 
 
 def _item(item, tests, covers, form, eid):
@@ -371,8 +381,8 @@ def _fb(test=WEAK_TEST, module=FEEDBACK, **extra):
     return files, _manifest(FB_ITEM, FB_TEST, ARC_COVERS, "observation", "e1", **extra)
 
 
-def _hp(test=HEALTH_TEST):
-    files = {"env/dialogue_crafter/__init__.py": HEALTH, HP_TEST: test}
+def _hp(test=HEALTH_TEST, module=HEALTH):
+    files = {"env/dialogue_crafter/__init__.py": module, HP_TEST: test}
     return files, _manifest(HP_ITEM, HP_TEST, [["c1", 0], ["c1", 1]], "text", "c1")
 
 
@@ -474,7 +484,8 @@ class Ticking:
 
 
 def _fake_probe(outcomes):
-    """A probe runner writing *outcomes* (row role -> result row fields) for every drawn input."""
+    """A probe runner writing *outcomes* (row role -> result row fields; a structural negative answers as
+    a cover unless named) for every drawn input."""
     calls = []
 
     def run(argv, *, ro, rw, cwd, timeout_s, env=None):
@@ -486,7 +497,8 @@ def _fake_probe(outcomes):
         ]
         with open(out / "results.jsonl", "w") as fh:
             for r in rows:
-                fh.write(json.dumps({"id": r["id"], **outcomes[r["role"]]}) + "\n")
+                got = outcomes.get(r["role"], outcomes["cover"])
+                fh.write(json.dumps({"id": r["id"], **got}) + "\n")
         return SimpleNamespace(returncode=0, stdout="", stderr="", timed_out=False)
 
     run.calls = calls
@@ -635,7 +647,7 @@ def test_the_draw_is_seeded_by_the_candidate_bounded_and_of_the_family():
         )
 
     rows, notes = run("a" * 40)
-    assert [r.role for r in rows] == [
+    assert [r.role for r in rows if r.role != "negative"] == [
         "cover",
         "cover",
         "sample",
@@ -643,12 +655,17 @@ def test_the_draw_is_seeded_by_the_candidate_bounded_and_of_the_family():
         "sample",
         "sample",
     ]
-    texts = [r.action.response for r in rows[2:]]
+    assert {r.role for r in rows[6:]} == {
+        "negative",
+    }  # the covers' structural negatives
+    texts = [r.action.response for r in rows[2:6]]
     assert len(set(texts)) == 4 and not set(texts) & {
         acts[0].response,
         acts[1].response,
     }
-    assert all(r.action.status == "ok" and r.action.method == "reply" for r in rows[2:])
+    assert all(
+        r.action.status == "ok" and r.action.method == "reply" for r in rows[2:6]
+    )
     assert all("middle elided" not in t for t in texts)
     assert any("1 truncated recording" in n for n in notes)
     again, _ = run("a" * 40)
@@ -656,7 +673,7 @@ def test_the_draw_is_seeded_by_the_candidate_bounded_and_of_the_family():
         r.action.response for r in rows
     ]  # reproducible
     others = {
-        tuple(r.action.response for r in run(f"{i:040x}")[0][2:]) for i in range(12)
+        tuple(r.action.response for r in run(f"{i:040x}")[0][2:6]) for i in range(12)
     }
     assert len(others) > 1  # another candidate commit draws another sample
     big, _ = run("a" * 40, k=100)
@@ -891,6 +908,17 @@ def test_same_outputs_and_builtin_errors():
             {0: {"outcome": "timeout"}},
         )
     )
+    # replay misses, recorded errors, unbuilt or unbound rows say nothing about the function
+    missed = {
+        i: {"outcome": o}
+        for i, o in enumerate(["miss", "recorded_error", "unbuilt", "unbound"])
+    }
+    assert not same_outputs(missed, dict(missed))
+    mixed = {0: {"outcome": "handled", "digest": "a"}, 1: {"outcome": "miss"}}
+    assert same_outputs(
+        mixed,
+        {0: {"outcome": "handled", "digest": "a"}, 1: {"outcome": "handled"}},
+    )
     assert (
         builtin_error("KeyError") == "KeyError"
         and builtin_error("JSONDecodeError") is None
@@ -1080,9 +1108,14 @@ def test_mutation_refuses_a_weak_suite_naming_kinds_and_lines(tmp_path):
     res = _check(tmp_path, ARC, files, man, qa=QAConfig(mutation=True, max_mutants=64))
     assert not res.passed and res.refused == ["G3"], res.reasons
     (reason,) = [r for r in res.reasons if r.startswith("G3: [qa:mutation]")]
+    # 12 sites. Killed (4): both negations, != to ==, < to >= (each makes OBS refused). Surviving (8): 0 to 1,
+    # return None, both "is True" flips, and the two and/or swaps and two dropped raises, which equal the
+    # original on every accepted recording (the other guard masks them) but not on the covers' structural
+    # negatives (14 here: each field dropped or retyped, "type" emptied, an extra field, the object retyped
+    # or emptied), so none is left out as equivalent. Re-derived from mutation.py and the probe's signature.
     assert (
-        "kill 4 of 10 mutants that change its outputs" in reason
-        and "2 likely equivalent" in reason
+        "kill 4 of 12 mutants that change its outputs" in reason
+        and "0 likely equivalent" in reason
     )
     assert "surviving: " in reason and " at line " in reason
     _no_values(res)
@@ -1198,6 +1231,21 @@ def test_the_recorded_replay_runs_in_the_gate_and_a_stand_in_is_refused(tmp_path
     assert off.passed, off.reasons  # switch off: the stand-in passes as before
 
 
+@needs_bwrap
+def test_the_probe_never_invents_an_argument_no_recording_names(tmp_path):
+    """A required parameter beyond the input with no recorded value leaves the probe unbound: no
+    "raises on" refusal caused by the probe's own argument (it used to pass "")."""
+    files, man = _hp(SCALED_TEST, module=SCALED)
+    res = _check(tmp_path, CRAFTER, files, man, qa=QAConfig(fixtures="on"))
+    assert res.passed, res.reasons
+    assert not any("raises on" in r for r in res.reasons)
+    assert any(
+        "[qa:fixtures]" in r
+        and "returns on none of its covers under the probe's call" in r
+        for r in res.reasons
+    )
+
+
 # --- the test kit: a property of the library, not of the switches (B2) ---------------------------------------
 
 
@@ -1270,3 +1318,100 @@ def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path)
     assert reason.startswith(
         f"G3: [qa:kit] {CL_TEST} line {line} names a path under /inputs",
     )
+
+
+# --- equivalence that cannot be judged, and the probe's arguments (I1, I2) -----------------------------------
+
+
+def test_mutation_is_not_judged_when_the_probe_gets_no_output(tmp_path):
+    """Every probe row a replay miss: no survivor can be judged equivalent, so the kill share is not
+    judged either; a note under "on", a refusal under strict, never a silent pass."""
+    files, man = _hp()
+    missing = _fake_probe({"cover": {"outcome": "miss"}, "sample": {"outcome": "miss"}})
+    on = _check(
+        tmp_path / "on",
+        CRAFTER,
+        files,
+        man,
+        pytest_runner=FakePytest(),
+        qa=QAConfig(mutation=True, runner=missing),
+    )
+    assert on.passed, on.reasons
+    (note,) = [r for r in on.reasons if "[qa:mutation]" in r]
+    assert note.startswith("note: [qa:mutation] ") and "mutation not judged" in note
+    strict = _check(
+        tmp_path / "strict",
+        CRAFTER,
+        files,
+        man,
+        pytest_runner=FakePytest(),
+        qa=QAConfig(mutation=True, fixtures="strict", runner=missing),
+    )
+    assert not strict.passed and strict.refused == ["G3"]
+    assert any(
+        r.startswith("G3: [qa:mutation] ") and "mutation not judged" in r
+        for r in strict.reasons
+    )
+    _no_values(strict)
+
+
+def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_probe(
+    tmp_path,
+):
+    files, man = _hp()
+    probe = _fake_probe(
+        {
+            "cover": {"outcome": "unbound"},
+            "sample": {"outcome": "error", "raised": "TypeError"},
+        },
+    )
+    res = _check(
+        tmp_path,
+        CRAFTER,
+        files,
+        man,
+        pytest_runner=FakePytest(),
+        qa=QAConfig(fixtures="on", runner=probe),
+    )
+    assert res.passed, res.reasons
+    assert not any("raises on" in r for r in res.reasons)
+    assert any("returns on none of its covers" in r for r in res.reasons)
+
+
+def test_the_probe_rows_hold_structural_negatives_of_the_covers(tmp_path):
+    """The samples file gives the probe the covers, the draws and the covers' negatives (role
+    "negative", the broken value itself); only the draws are appended to the tests' inputs.
+    """
+    acts = _screens(6)
+    rows, _ = draw(
+        HP_ITEM,
+        [("c0", 0, acts[0])],
+        [("c0", a) for a in acts],
+        form="text",
+        blob=lambda s: b"",
+        seed=seed_of("c" * 40),
+    )
+    negatives = [r for r in rows if r.role == "negative"]
+    assert [r.role for r in rows[:6]] == ["cover"] + ["sample"] * 5
+    assert sorted(r.value for r in negatives if isinstance(r.value, str)) == [""]
+    assert [r.value for r in negatives if isinstance(r.value, int)] == [
+        len(acts[0].response),
+    ]
+    assert all(r.has_value and not r.covered_shape for r in negatives)
+    me = Action(0, "venmo", "me", [], {}, {"user_id": "u-1", "name": "A"}, "ok")
+    env_rows, _ = draw(
+        "env/venmo:me",
+        [("v1", 0, me)],
+        [("v1", me)],
+        form="env",
+        blob=lambda s: b"",
+        seed=seed_of("d" * 40),
+    )
+    broken = [r for r in env_rows if r.role == "negative"]
+    assert broken and all(
+        r.form == "env"
+        and r.context[0] is r.action
+        and r.action.response != me.response
+        for r in broken
+    )
+    assert me.response == {"user_id": "u-1", "name": "A"}  # the recording is untouched
