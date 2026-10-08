@@ -43,13 +43,21 @@ Where values are replaced, structure (keys, columns, list lengths, the header) i
 * **tool**: the recorded call's keyword values; the item gets a replay that answers only the recorded
   call, so a perturbed call misses. A miss is fine (the item tried the call); only a refusal raised before
   any environment call is a violation;
+  declared as taking an ``observation``, the leaves of the recorded response instead (a field family of
+  its own: a rejected call exempts none of them);
 * **worktree**: cells of a CSV/TSV table (one per column, the header kept), leaves of a JSON document or
   JSON lines, scalar ``key: value`` lines of YAML; other formats are not perturbed;
 * **dialogue**: leaves of a JSON observation (a dict or list, or a string holding one);
 * **shell**: skipped, with a note (not supported yet).
 
-Calling convention (as ``memory_v2_offline/later_use.py``): the first parameter gets the observation
-(tool, the replay; worktree, a path to the file; dialogue, the observation); a later parameter takes the
+Calling convention: the first parameter gets the covered input in the item's declared ``input`` form
+(:data:`.manifest.INPUT_KINDS`): ``env``, a replay answering the recorded tool call (its keywords are
+perturbed); ``observation``, a tool call's recorded response or a dialogue observation (its leaves are
+perturbed); ``path``, a path to the (perturbed) file; ``text``, the file's decoded text, or a dialogue
+observation that is a string; ``bytes``, the file's raw bytes. A cover whose kind cannot give the declared
+form (a file as ``env``, say) checks nothing and is noted. Without a declaration (an unchanged item
+from before declarations), each kind's convention, as ``memory_v2_offline/later_use.py``: tool ``env``,
+worktree ``path``, dialogue ``observation``. A later parameter takes the
 recorded call's keyword of the same name (tool), else its default, else ``""``. A field case whose keyword
 the function does not take is not run, and is noted. Each covered input is also run unperturbed, through
 the same serialisation (the baseline); a cover whose baseline is refused checks nothing and is noted. A
@@ -74,9 +82,9 @@ that field); every allowed refusal is noted. Every refusal an exemption allows i
 
 **Known limits.**
 
-* Tool items: response values and positional arguments are never perturbed; only keywords whose name is
-  a parameter of the function are; a check placed after the environment call is invisible behind the
-  replay miss.
+* Tool items taking the environment: response values and positional arguments are never perturbed; only
+  keywords whose name is a parameter of the function are; a check placed after the environment call is
+  invisible behind the replay miss.
 * A field with one recorded value is never perturbed, so a guard on it (an id equal to the one recorded)
   is not seen; with few covers, more fields hold one value.
 * Numbers change one at a time, so a row-sum or cross-row total check can be flagged; dates move together
@@ -132,6 +140,15 @@ _ATTEMPTS = 32
 MAX_CONSTANCY_COVERS = (
     256  # covers read to tell a constant field (identity or format) from a varying one
 )
+
+# The input forms each kind of cover can give (:data:`.manifest.INPUT_KINDS`), and each kind's convention
+# for an item that declares none. Shell covers are not checked at all.
+_FORMS = {
+    "tool": ("env", "observation"),
+    "worktree": ("path", "text", "bytes"),
+    "dialogue": ("observation", "text"),
+}
+_DEFAULT_FORM = {"tool": "env", "worktree": "path", "dialogue": "observation"}
 
 _INT_TEXT = re.compile(r"^[+-]?(?:0|[1-9]\d*)\Z")
 _DECIMAL_TEXT = re.compile(r"^[+-]?\d+\.\d+\Z")
@@ -800,21 +817,49 @@ def _blob_of(a: Action, blob: Callable[[str], bytes]) -> bytes | None:
         return None
 
 
-def _doc(a: Action, blob: Callable[[str], bytes]) -> _Json | _Table | _Yaml | None:
-    kind = getattr(a, "kind", "tool")
-    if kind == "tool":
-        return _Json(dict(a.kwargs or {}), lambda o: o)
-    if kind == "dialogue":
-        obs = a.response
-        if isinstance(obs, str):
-            try:
-                parsed = json.loads(obs)
-            except ValueError:
-                return None
-            if isinstance(parsed, (dict, list)):
-                return _Json(parsed, lambda o: json.dumps(o, ensure_ascii=False))
+def _form(a: Action, input_kind: str | None) -> str | None:
+    """The form *a*'s covered input reaches the item in: the declared one, else the kind's convention."""
+    return input_kind or _DEFAULT_FORM.get(getattr(a, "kind", "tool"))
+
+
+def _observation_doc(obs: Any) -> _Json | None:
+    """A JSON observation (a dict or list, or a string holding one); a string stays a string when rendered."""
+    if isinstance(obs, str):
+        try:
+            parsed = json.loads(obs)
+        except ValueError:
             return None
-        return _Json(obs, lambda o: o) if isinstance(obs, (dict, list)) else None
+        if isinstance(parsed, (dict, list)):
+            return _Json(parsed, lambda o: json.dumps(o, ensure_ascii=False))
+        return None
+    return _Json(obs, lambda o: o) if isinstance(obs, (dict, list)) else None
+
+
+def _doc_family(a: Action, input_kind: str | None) -> tuple[str, str, str]:
+    """A cover's field family: :func:`family`, except a tool response (its fields are not the call's)."""
+    if getattr(a, "kind", "tool") == "tool" and _form(a, input_kind) == "observation":
+        return ("tool_response", a.channel, a.method)
+    return family(a)
+
+
+def _doc(
+    a: Action,
+    blob: Callable[[str], bytes],
+    input_kind: str | None = None,
+) -> _Json | _Table | _Yaml | None:
+    """What is perturbed for *a*'s covered input in its form; None if nothing (or the form does not fit)."""
+    kind = getattr(a, "kind", "tool")
+    form = _form(a, input_kind)
+    if form not in _FORMS.get(kind, ()):
+        return None
+    if kind == "tool":
+        if form == "env":
+            return _Json(dict(a.kwargs or {}), lambda o: o)
+        return _observation_doc(a.response)
+    if kind == "dialogue":
+        if form == "text" and not isinstance(a.response, str):
+            return None
+        return _observation_doc(a.response)
     if kind == "worktree":
         data = _blob_of(a, blob)
         path = a.args[0] if a.args and isinstance(a.args[0], str) else ""
@@ -939,11 +984,13 @@ def plan(
     seen: list[Action],
     blob: Callable[[str], bytes],
     field_types: dict[str, str] | None = None,
+    input_kind: str | None = None,
 ) -> Plan:
     """The cases that check *item* on its covered observations (see the module docstring).
 
     *covers* are the item's validated covers; *seen* every recorded action of the episodes the gate sees;
-    *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21).
+    *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21);
+    *input_kind* its declared input form (None: each kind's convention).
     """
     out = Plan()
     field_types = dict(field_types or {})
@@ -961,13 +1008,26 @@ def plan(
         kind = getattr(a, "kind", "tool")
         if kind != "shell" and a.status == "ok" and not is_rejection(a):
             chosen.setdefault((eid, idx), a)
+    fit: list[tuple[str, int]] = []
+    unfit: dict[str, int] = {}  # covers of a kind that cannot give the declared form
+    for c, a in chosen.items():
+        kind = getattr(a, "kind", "tool")
+        if _form(a, input_kind) in _FORMS.get(kind, ()):
+            fit.append(c)
+        else:
+            unfit[kind] = unfit.get(kind, 0) + 1
+    for kind, n in sorted(unfit.items()):
+        out.notes.append(
+            f"{n} {kind} cover(s) cannot be given the declared input {input_kind}; not checked",
+        )
     ranked = sorted(
-        chosen,
+        fit,
         key=lambda c: hashlib.sha256(f"{item}\0{c[0]}\0{c[1]}".encode()).digest(),
     )
     order = ranked[:MAX_COVERS_PER_ITEM]
-    docs = {c: _doc(chosen[c], blob) for c in order}
+    docs = {c: _doc(chosen[c], blob, input_kind) for c in order}
     docs = {c: d for c, d in docs.items() if d is not None}
+    dfam = {c: _doc_family(chosen[c], input_kind) for c in docs}
     _exemptions(out, covers, chosen, seen, blob)
 
     strings: set[str] = set()
@@ -985,21 +1045,31 @@ def plan(
             distinct.setdefault((fam, name), set()).update(_key(v) for v in values)
 
     for c, d in docs.items():
-        observe(family(chosen[c]), d, True)
+        observe(dfam[c], d, True)
         for _, (_, _, values) in d.fields().items():
             _strings(values, strings)
     for c in ranked[
         :MAX_CONSTANCY_COVERS
     ]:  # covers beyond the checked ones still show a field varying
         if c not in docs:
-            d = _doc(chosen[c], blob)
+            d = _doc(chosen[c], blob, input_kind)
             if d is not None:
-                observe(family(chosen[c]), d, False)
-    families = {family(chosen[c]) for c in docs}
-    for a in seen:  # a tool field's range is every recorded call of the same method
-        if getattr(a, "kind", "tool") == "tool" and isinstance(a.kwargs, dict):
-            if family(a) in families:
-                observe(family(a), _Json(a.kwargs, lambda o: o), True)
+                observe(_doc_family(chosen[c], input_kind), d, False)
+    families = set(dfam.values())
+    for (
+        a
+    ) in (
+        seen
+    ):  # a tool field's range is every recorded call (or response) of the same method
+        if getattr(a, "kind", "tool") != "tool":
+            continue
+        if isinstance(a.kwargs, dict) and family(a) in families:
+            observe(family(a), _Json(a.kwargs, lambda o: o), True)
+        rfam = ("tool_response", a.channel, a.method)
+        if rfam in families and a.status == "ok":
+            d = _observation_doc(a.response)
+            if d is not None:
+                observe(rfam, d, True)
     constant = {k for k, v in distinct.items() if len(v) == 1}
     kept: list[str] = []  # fields kept as identity or format, for the note
     if any(isinstance(d, _Yaml) for d in docs.values()):
@@ -1007,7 +1077,7 @@ def plan(
 
     for c, d in docs.items():  # in the hashed cover order
         a = chosen[c]
-        kind, fam = getattr(a, "kind", "tool"), family(a)
+        kind, fam, form = getattr(a, "kind", "tool"), dfam[c], _form(a, input_kind)
         perturbed: list[tuple] = []
         fields = list(d.fields().items())
         typed: set[str] = set()
@@ -1059,9 +1129,10 @@ def plan(
             n = len(out.cases)
             case = Case(c, name, fam, kind, {}, side=side, semantic=sem)
             rendered = d.render(changes)
-            if kind == "tool":
+            if kind == "tool" and form == "env":
                 case.payload = {
                     "kind": kind,
+                    "form": form,
                     "action": {
                         "channel": a.channel,
                         "method": a.method,
@@ -1072,12 +1143,31 @@ def plan(
                     "kwargs": rendered,
                 }
                 case.param = None if loc is None else str(loc[0])
+            elif (
+                kind == "tool"
+            ):  # the recorded response; later parameters take the call's keywords
+                case.payload = {
+                    "kind": kind,
+                    "form": form,
+                    "kwargs": dict(a.kwargs or {}),
+                    "observation": rendered,
+                }
+            elif kind == "worktree" and form == "text":
+                case.payload = {
+                    "kind": kind,
+                    "form": form,
+                    "observation": _shapes.decode(rendered)[1],
+                }
             elif kind == "worktree":
                 case.name = _file_name(a, n)
                 case.file = rendered
-                case.payload = {"kind": kind, "path": f"/cases/files/{n}/{case.name}"}
+                case.payload = {
+                    "kind": kind,
+                    "form": form,
+                    "path": f"/cases/files/{n}/{case.name}",
+                }
             else:
-                case.payload = {"kind": kind, "observation": rendered}
+                case.payload = {"kind": kind, "form": form, "observation": rendered}
             out.cases.append(case)
     if kept:
         out.notes.append(
@@ -1154,9 +1244,12 @@ except BaseException as exc:
     out.write(json.dumps({"fatal": type(exc).__name__}) + "\n"); sys.exit(0)
 for case in spec["cases"]:
     kind, replay = case["kind"], None
-    if kind == "tool": first = replay = Replay(case["action"])
-    elif kind == "worktree": first = case["path"]
-    else: first = case["observation"]
+    form = case.get("form") or {"tool": "env", "worktree": "path"}.get(kind, "observation")
+    if form == "env": first = replay = Replay(case["action"])
+    elif form == "path": first = case["path"]
+    elif form == "bytes":
+        with open(case["path"], "rb") as fh: first = fh.read()
+    else: first = case["observation"]  # an observation, or a text the host decoded
     recorded = (case.get("kwargs") or {}) if kind == "tool" else {}
     kwargs, names = {}, set()
     for p in params[1:]:

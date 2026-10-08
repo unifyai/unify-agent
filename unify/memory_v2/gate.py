@@ -29,13 +29,18 @@ The checks:
   unchanged; a channel module's code outside its public functions (docstring, imports, helpers,
   statements) changes only under ``skeleton``, which then lists every public function of that module in
   ``items``; a notes file's preamble also changes only under ``skeleton``; a retired test file imports
-  only deleted items; every item names source episodes that exist.
+  only deleted items; every item names source episodes that exist; every new or changed environment
+  function declares its ``input`` form, and every declared form equals the function's docstring
+  ``Input:`` line.
 * **G2 evidence.** An ``env_function`` covers recorded actions on its own channel, each a real recorded
   observation of its kind (:func:`.admission.cover_problem`): a tool call with status ``ok`` and a
   response, a shell command with an output tail, a file read or write with a blob in the blob store, or a
   dialogue action with an observation; or a recorded environment rejection (status ``error`` with its
   error), never alone. Scope is shape, not observed values (spec F3a): run confined on each covered
-  input with one value at a time replaced by an unseen value of its type (:mod:`.held_out`), the item
+  input, passed in its declared ``input`` form (the docstring's ``Input:`` line for an unchanged function
+  without one; else the kind's convention), with one value at a time replaced by an unseen value of its
+  type (a field with one value across every covered input is identity or format and is kept, with a
+  note) (:mod:`.held_out`), the item
   must not raise its ``MemoryInputError`` before any environment call unless one of its covers is a
   recorded rejection of the same family that varied that field (each such allowance is noted); the reason
   names the field only. A field declared with a semantic type (``field_types``, D21) is checked two-sided:
@@ -96,6 +101,7 @@ from .manifest import (
     Manifest,
     ManifestError,
     forbidden,
+    INPUT_KINDS,
     item_path,
     layout_allowed,
     parse_manifest,
@@ -513,6 +519,7 @@ class Gate:
                     else "removed" if iid not in cb else "changed"
                 )
                 run.fail("G1", f"undeclared item {iid} ({what})")
+        self._inputs(run)
         for it in man.items:
             if cb.get(it.item, ("",))[0] != it.kind:
                 run.fail("G1", f"{it.item} ({it.kind}) is not in the candidate")
@@ -521,6 +528,38 @@ class Gate:
             for eid in it.source_episodes:
                 if not self.ev.episode_exists(eid):
                     run.fail("G1", f"{it.item} cites unknown episode {eid}")
+
+    @staticmethod
+    def _doc_inputs(run: _Run) -> dict[str, str]:
+        """Each candidate environment function's docstring ``Input:`` form ("" without one)."""
+        if run.c_report is None:
+            return {}
+        return {
+            i.item_id: i.input for i in run.c_report.items if i.kind == "env_function"
+        }
+
+    def _inputs(self, run: _Run) -> None:
+        """A new or changed environment function declares its input; a declared input equals ``Input:``."""
+        doc = self._doc_inputs(run)
+        for it in run.man.items:
+            if it.kind != "env_function" or it.item not in doc:
+                continue  # an absent item (or an unreadable module) is refused elsewhere
+            if it.input is None:
+                changed = (
+                    run.p_bodies.get(it.item, ("", ""))[:2]
+                    != run.c_bodies.get(it.item, ("", ""))[:2]
+                )
+                if changed:
+                    run.fail(
+                        "G1",
+                        f"{it.item} declares no input (one of {', '.join(INPUT_KINDS)})",
+                    )
+            elif doc[it.item] != it.input:
+                run.fail(
+                    "G1",
+                    f"{it.item} declares input {it.input} but its docstring's Input: line says "
+                    f"{doc[it.item] or 'missing'}",
+                )
 
     def _unlisted_ok(self, run: _Run, eid: str) -> bool:
         """An unlisted item is present on both sides, unlisted now, and otherwise byte-for-byte the same."""
@@ -647,6 +686,7 @@ class Gate:
                 elif valid:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
+                    declared = self._doc_inputs(run).get(it.item, "")
                     self._held_out(
                         run,
                         it.item,
@@ -654,6 +694,7 @@ class Gate:
                         seen,
                         run.tmp / f"held-out-{n}",
                         it.field_types,
+                        it.input or (declared if declared in INPUT_KINDS else None),
                     )
             elif it.kind == "workflow":
                 status = job_item_status(
@@ -678,8 +719,11 @@ class Gate:
         seen: list[Action],
         work: Path,
         field_types: dict[str, str],
+        input_kind: str | None = None,
     ) -> None:
         """Scope is shape (spec F3a): the item must not refuse unseen values of its covered inputs' types.
+
+        Each covered input reaches the item in its declared *input_kind* (None: the kind's convention).
 
         A field declared with a semantic type (D21) is checked two-sided instead: unseen in-domain values
         accepted, an out-of-domain value refused before any environment call.
@@ -690,7 +734,14 @@ class Gate:
                 raise KeyError(sha)
             return self.blobs.get(sha)
 
-        p = plan(item, covers, seen=seen, blob=blob, field_types=field_types)
+        p = plan(
+            item,
+            covers,
+            seen=seen,
+            blob=blob,
+            field_types=field_types,
+            input_kind=input_kind,
+        )
         verdict = run_plan(item, p, tree=run.c_tree, python=self.python, work=work)
         for f in verdict.refused[:5]:
             run.fail("G2", f"{item} held-out value refused: {f[:80]}")

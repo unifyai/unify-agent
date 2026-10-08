@@ -442,6 +442,34 @@ def test_the_manifest_takes_declared_types_from_the_fixed_list_only():
         parse_manifest({"items": [note]})
 
 
+def test_the_manifest_takes_an_input_form_from_the_fixed_list_only():
+    from unify.memory_v2.manifest import (
+        INPUT_KINDS,
+        ManifestError,
+        describe_input_kinds,
+        parse_manifest,
+    )
+
+    assert set(INPUT_KINDS) == {"path", "text", "bytes", "observation", "env"}
+    for name in INPUT_KINDS:
+        assert f"{name} (" in describe_input_kinds()
+    item = {
+        "item": "env/worktree_workspace:parse_load_log",
+        "kind": "env_function",
+        "covers": [["h1", 4]],
+    }
+    for kind in INPUT_KINDS:
+        (parsed,) = parse_manifest({"items": [{**item, "input": kind}]}).items
+        assert parsed.input == kind
+    assert parse_manifest({"items": [item]}).items[0].input is None
+    for bad in ("file", "Text", "", 3, ["text"], {"text": 1}):
+        with pytest.raises(ManifestError):
+            parse_manifest({"items": [{**item, "input": bad}]})
+    note = {"item": "env/x/NOTES.md#a", "kind": "env_note", "input": "text"}
+    with pytest.raises(ManifestError):
+        parse_manifest({"items": [note]})
+
+
 def test_a_declared_field_gets_unseen_in_domain_values_and_one_out_of_domain(recorded):
     store, acts = recorded
     p = plan(
@@ -865,6 +893,83 @@ def test_a_field_constant_across_every_covered_input_is_identity_not_perturbed(
     assert any("limit" in n and "not perturbed" in n for n in k.notes)
 
 
+def test_the_declared_input_decides_the_first_argument_form(recorded):
+    """path: a mounted file; text: the decoded text; bytes: the mounted file, read as bytes."""
+    store, acts = recorded
+    item = "env/worktree_workspace:read_stock"
+    by = {
+        kind: plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind=kind)
+        for kind in (None, "path", "text", "bytes")
+    }
+    legacy = [c for c in by[None].cases if c.field is None][0]
+    assert legacy.payload["form"] == "path" and legacy.file == STOCK
+    assert [c.payload for c in by["path"].cases] == [c.payload for c in by[None].cases]
+    text = [c for c in by["text"].cases if c.field is None][0]
+    assert text.payload["form"] == "text" and text.file is None
+    assert text.payload["observation"] == STOCK.decode()
+    assert all(isinstance(c.payload["observation"], str) for c in by["text"].cases)
+    raw = [c for c in by["bytes"].cases if c.field is None][0]
+    assert raw.payload["form"] == "bytes" and raw.file == STOCK
+    assert raw.payload["path"].startswith("/cases/files/")
+    # the same fields are perturbed whatever the form
+    assert {c.field for c in by["text"].cases} == {c.field for c in by["path"].cases}
+    # a form a cover's kind cannot give is noted, and that cover checks nothing
+    env = plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind="env")
+    assert env.cases == []
+    assert any("cannot be given the declared input env" in n for n in env.notes)
+    # a dialogue observation declared as an observation is passed as before
+    d = plan(
+        "env/dialogue_user:p",
+        _covers(acts, 24, 25),
+        seen=acts,
+        blob=store.get,
+        input_kind="observation",
+    )
+    legacy_d = plan(
+        "env/dialogue_user:p",
+        _covers(acts, 24, 25),
+        seen=acts,
+        blob=store.get,
+    )
+    assert d.cases and all(c.payload["form"] == "observation" for c in d.cases)
+    assert [c.payload for c in d.cases] == [c.payload for c in legacy_d.cases]
+
+
+def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(recorded):
+    store, _ = recorded
+    calls = [
+        _search(
+            "red",
+            5,
+            response={"items": [{"sku": "A-1", "qty": 4}], "kind": "page"},
+        ),
+        _search(
+            "blue",
+            10,
+            response={"items": [{"sku": "B-2", "qty": 9}], "kind": "page"},
+        ),
+    ]
+    p = plan(
+        "env/shop:parse_page",
+        [("h1", i, a) for i, a in enumerate(calls)],
+        seen=calls,
+        blob=store.get,
+        input_kind="observation",
+    )
+    assert {c.field for c in p.cases if c.field} == {"items[].sku", "items[].qty"}
+    for c in p.cases:
+        assert c.payload["form"] == "observation" and c.param is None
+        assert c.payload["kwargs"] in (
+            {"colour": "red", "limit": 5},
+            {"colour": "blue", "limit": 10},
+        )
+    sku = next(c for c in p.cases if c.field == "items[].sku" and c.cover == ("h1", 0))
+    assert sku.payload["observation"]["items"][0]["sku"] not in ("A-1", "B-2")
+    assert sku.payload["observation"]["kind"] == "page"  # the constant tag is kept
+    # a rejection of the call exempts keywords, never response fields
+    assert all(c.family[0] == "tool_response" for c in p.cases)
+
+
 def test_shell_covers_are_skipped_with_a_note(recorded):
     store, acts = recorded
     p = plan("env/shell_make:parse", _covers(acts, 3), seen=acts, blob=store.get)
@@ -1008,7 +1113,26 @@ def shop(tmp_path, recorded):
     return mem, gate
 
 
-def _check(mem, gate, channel, module, covers, fn, field_types=None):
+def _default_input(channel):
+    for prefix, kind in (
+        ("worktree_", "path"),
+        ("dialogue_", "observation"),
+        ("shell_", "text"),
+    ):
+        if channel.startswith(prefix):
+            return kind
+    return "env"
+
+
+def _check(mem, gate, channel, module, covers, fn, field_types=None, input_kind=None):
+    """Commit *module* and gate it; the item declares *input_kind* in its manifest and docstring."""
+    input_kind = input_kind or _default_input(channel)
+    if "    Input: " not in module:
+        module = module.replace(
+            "    Effect: read\n",
+            f"    Effect: read\n    Input: {input_kind}\n",
+            1,
+        )
     parent = mem.head()
     test = f"env/{channel}/tests/test_{fn}.py"
     with mem.temp_checkout("main") as wt:
@@ -1027,6 +1151,7 @@ def _check(mem, gate, channel, module, covers, fn, field_types=None):
                 "source_episodes": ["h1"],
                 "tests": [test],
                 "covers": [["h1", i] for i in covers],
+                "input": input_kind,
                 **({"field_types": field_types} if field_types else {}),
             },
         ],
@@ -1530,7 +1655,7 @@ def test_a_declaration_contradicted_by_a_later_recorded_value_fails_g2(shop):
     ], res.reasons
 
 
-# --- a field with one recorded value is identity or format --------------------------------------------------
+# --- fix 13: constant fields are identity; items declare their input --------------------------------------
 
 TAG_CHECK = """    if not isinstance(obs, dict) or obs.get("type") != "SubmitFeedback":
         raise MemoryInputError("not a submit feedback observation")
@@ -1564,3 +1689,57 @@ def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
         r.startswith("note:") and "not perturbed: type, version" in r
         for r in res.reasons
     ), res.reasons
+
+
+STOCK_TEXT_HEAD = """    if not isinstance(data, str):
+        raise MemoryInputError("data must be the file's text")
+    lines = data.splitlines()
+    if not lines or lines[0] != "sku,colour,qty,price,restocked":
+        raise MemoryInputError("unexpected columns")
+    rows = [ln.split(",") for ln in lines[1:] if ln]
+"""
+STOCK_TEXT_SHAPE = STOCK_TEXT_HEAD + "    return rows"
+STOCK_TEXT_WHITELIST = STOCK_TEXT_HEAD + """    for r in rows:
+        if r[1] not in ("red", "blue"):
+            raise MemoryInputError("unknown colour")
+    return rows"""
+
+
+@needs_bwrap
+@pytest.mark.parametrize(
+    "body, input_kind, refused, baseline_refused",
+    [
+        (STOCK_TEXT_SHAPE, "text", [], False),
+        (STOCK_TEXT_WHITELIST, "text", ["colour"], False),
+        # declared as a path, the same text reader refuses its own covered input: nothing is checked
+        (STOCK_TEXT_SHAPE, "path", [], True),
+    ],
+    ids=["text-shape-only", "text-whitelist", "declared-path"],
+)
+def test_a_text_reader_is_called_with_the_files_text(
+    shop,
+    body,
+    input_kind,
+    refused,
+    baseline_refused,
+):
+    """A parse_load_log(data)-style reader gets the decoded text when it declares input text."""
+    mem, gate = shop
+    mod = _module("read_stock_text", "data", body, doc="Parse a stock CSV's text.")
+    res = _check(
+        mem,
+        gate,
+        "worktree_workspace",
+        mod,
+        [4],
+        "read_stock_text",
+        input_kind=input_kind,
+    )
+    assert res.checks["G1"], res.reasons
+    got = [r for r in res.reasons if "held-out value refused" in r]
+    assert got == [
+        f"G2: env/worktree_workspace:read_stock_text held-out value refused: {f}"
+        for f in refused
+    ], res.reasons
+    own = any("refuses 1 of its own covered inputs" in r for r in res.reasons)
+    assert own is baseline_refused, res.reasons

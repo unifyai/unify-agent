@@ -389,6 +389,17 @@ def test_sol_system_states_that_scope_is_shape_not_observed_values():
     assert "rejection must then be one of the" in SOL_SYSTEM
 
 
+def test_sol_system_asks_each_function_to_declare_its_input_from_the_one_constant():
+    """Items declare the form of their first argument, in the manifest and as an Input: docstring line."""
+    flat = SOL_SYSTEM.replace("\n   ", " ")
+    assert manifest_module.describe_input_kinds() in flat
+    for name in manifest_module.INPUT_KINDS:
+        assert f"{name} (" in flat
+    assert "`Input: <form>`" in flat
+    assert '"input":"<form>"' in SOL_SYSTEM
+    assert "{input_kinds}" not in SOL_SYSTEM
+
+
 def test_sol_system_lists_the_declared_semantic_types_from_the_one_constant():
     """D21: values are restricted only through the fixed type list, declared in the manifest."""
     flat = SOL_SYSTEM.replace("\n   ", " ")

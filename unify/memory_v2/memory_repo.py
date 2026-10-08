@@ -15,6 +15,9 @@ from pathlib import Path
 from .gitio import Repo
 
 _EFFECT = re.compile(r"^\s*Effect:\s*(read|write|unknown)\s*$", re.M)
+# The declared input form (a manifest ``input``, :data:`.manifest.INPUT_KINDS`): any word is read here; the
+# gate checks it against the manifest and the index shows only a known form.
+_INPUT = re.compile(r"^\s*Input:\s*([A-Za-z_]{1,40})\s*$", re.M)
 
 
 @dataclass
@@ -27,6 +30,7 @@ class Item:
     doc: str
     effect: str
     listed: bool
+    input: str = ""  # the docstring's ``Input:`` form, or "" without one
 
 
 @dataclass
@@ -92,6 +96,7 @@ def items(checkout: Path) -> ItemsReport:
             ) and not node.name.startswith("_"):
                 doc = ast.get_docstring(node) or ""
                 m = _EFFECT.search(doc)
+                form = _INPUT.search(doc)
                 rep.items.append(
                     Item(
                         f"env/{channel}:{node.name}",
@@ -102,6 +107,7 @@ def items(checkout: Path) -> ItemsReport:
                         doc.strip().splitlines()[0] if doc.strip() else "",
                         m.group(1) if m else "",
                         listed is None or node.name in listed,
+                        form.group(1) if form else "",
                     ),
                 )
     for notes in sorted(checkout.glob("env/*/NOTES.md")):
