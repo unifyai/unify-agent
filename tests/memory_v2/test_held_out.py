@@ -886,8 +886,8 @@ def test_a_tag_constant_within_its_message_shape_across_the_store_is_identity():
 
 
 def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
-    def room(i, r):
-        return _dl(i, {"room": r, "steps": 3})
+    def room(i, r):  # each observation distinct in content (turn), so each counts
+        return _dl(i, {"room": r, "steps": 3, "turn": i})
 
     covers = [("b1", 0, room(0, "kitchen")), ("b2", 1, room(1, "kitchen"))]
     # the covers agree, but a same-shape observation elsewhere in the store differs: room varies
@@ -912,14 +912,43 @@ def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
         blob=lambda sha: b"",
         pool=one_ep,
     )
-    assert {c.field for c in q.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in q.cases if c.field} == {"room", "steps", "turn"}
     # two observations from two episodes: below the minimum, every field varies
     two = [(e, a) for e, _, a in covers]
     r = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"", pool=two)
-    assert {c.field for c in r.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in r.cases if c.field} == {"room", "steps", "turn"}
     # the default pool is the covers (and seen actions, here none)
     default = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"")
-    assert {c.field for c in default.cases if c.field} == {"room", "steps"}
+    assert {c.field for c in default.cases if c.field} == {"room", "steps", "turn"}
+    # the same observation in three episodes is one observation: no support
+    same = [(e, room(0, "kitchen")) for e in ("b1", "b2", "b3")]
+    t = plan(
+        "env/dialogue_user:r",
+        covers[:1],
+        seen=[],
+        blob=lambda sha: b"",
+        pool=same,
+    )
+    assert {c.field for c in t.cases if c.field} == {"room", "steps", "turn"}
+
+
+def test_the_same_file_read_in_two_episodes_is_one_observation(recorded):
+    """N2: a shared expenses file read three times in two episodes does not make currency constant."""
+    store, _ = recorded
+    sha = store.put(_expenses([5, 7]))
+    reads = [
+        (eid, _wt_read(i, f"exp/2026/e{i}.csv", sha, 1))
+        for i, eid in enumerate(["d1", "d2", "d2"])
+    ]
+    covers = [(reads[0][0], 0, reads[0][1])]
+    p = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" in {c.field for c in p.cases}
+    assert not any("not perturbed" in n for n in p.notes)
+    # one more, different file: two distinct observations, still below the minimum of three
+    other = store.put(_expenses([9, 11]))
+    two = reads + [("d2", _wt_read(3, "exp/2026/e3.csv", other, 1))]
+    q = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=two)
+    assert "currency" in {c.field for c in q.cases}
 
 
 def _expenses(rows):
