@@ -1036,8 +1036,10 @@ Parameters
 ----------
 packages : list[str]
     pip/uv specifiers, e.g. ``"pandas"``, ``"pandas==2.1.0"``,
-    ``"pandas>=2.0,<3.0"``, ``"pandas[sql]"``,
-    ``"git+https://github.com/user/repo.git"``, ``"./path/to/wheel.whl"``.
+    ``"pandas>=2.0,<3.0"``, ``"pandas[sql]"``, ``"./path/to/wheel.whl"``.
+    Only wheels are installed, from the package index: a package with no
+    wheel for this platform, a git URL or a local source directory fails,
+    as does any other host.
 
 Returns
 -------

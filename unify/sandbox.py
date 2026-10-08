@@ -62,8 +62,13 @@ rule behind it (:func:`annotate_refusals`).
 
 The harness's package installer (unify/environment.py) runs under the same
 policy with two additions it asks for itself: the workspace environment and
-the installer's cache are writable, and it keeps the host's network to reach
-the package index.
+the installer's cache are writable, and its network namespace, private like
+every other, has one route out: a loopback port forwarded to an
+allow-listing CONNECT proxy the harness runs (:class:`EgressProxy`), which
+opens tunnels only to the package index hosts and never to a loopback,
+link-local or private address, whatever a name resolves to (rule
+``installer-index-only``). The host's loopback services and the cloud
+metadata server (``169.254.169.254``) are unreachable from it.
 
 Without bubblewrap nothing runs: the harness refuses rather than run the
 command unconfined. What this does not confine is Python cells themselves:
@@ -96,12 +101,14 @@ from unify.common.tool_errors import ToolInputError
 
 __all__ = [
     "RULES",
+    "EgressProxy",
     "SandboxPolicy",
     "SandboxRefusal",
     "annotate_refusals",
     "build_policy",
     "check_readable",
     "confined_subprocesses",
+    "egress_proxy",
     "scrubbed_env",
     "unconfined",
     "wrap_argv",
@@ -148,6 +155,11 @@ RULES: dict[str, str] = {
     "network-off": "the sandbox has no network, only a loopback of its own",
     "network-proxy-only": (
         "the only network is one loopback port forwarded to the configured proxy"
+    ),
+    "installer-index-only": (
+        "the package installer has no network of its own; its one route out is "
+        "the harness's proxy, which opens tunnels only to the package index "
+        "hosts and never to a loopback, link-local or private address"
     ),
 }
 
@@ -1958,8 +1970,9 @@ def seccomp_program(arch: Optional[str] = None) -> bytes:
     * io_uring, which can open sockets without the ``socket`` call, gets
       ENOSYS.
 
-    Network reach is unchanged: AF_INET follows the network namespace
-    (``--unshare-net`` or ``--share-net``) and the proxy mode as before.
+    Network reach is unchanged: AF_INET follows the network namespace (never
+    the host's), and the proxy mode and the installer's egress reach out only
+    through their forwarders' unix sockets, as before.
     """
     import struct
 
@@ -2034,15 +2047,17 @@ def wrap_argv(
     cwd: Optional[str] = None,
     writable: Sequence[Path] = (),
     readonly: Sequence[Path] = (),
-    share_network: bool = False,
+    egress: Optional["EgressProxy"] = None,
 ) -> list[str]:
     """*argv* as a bubblewrap command line under *policy*.
 
     *writable* paths are bound read-write after everything else, *readonly*
     ones (a program the harness runs from outside the allowlisted root: the
-    installer's ``uv``) read-only on the root, and *share_network* keeps the
-    host's network instead of the policy's; only the harness's package
-    installer asks for these (unify/environment.py).
+    installer's ``uv``) read-only on the root, and *egress* replaces the
+    policy's network with one loopback port (:data:`INSTALLER_PROXY_PORT`)
+    forwarded to that allow-listing proxy; only the harness's package
+    installer asks for these (unify/environment.py). No command ever gets the
+    host's network.
 
     The command line starts ``/bin/sh -c 'exec "$@" 9<"$0"' <seccomp.bpf>``:
     the shell opens the seccomp program on descriptor 9 for bubblewrap
@@ -2155,8 +2170,20 @@ def wrap_argv(
         if _inside_shown(path) and not any(_within(p, path) for p in shown):
             args += _hide(path, rule)
     command = list(argv)
-    if share_network:
-        args.append("--share-net")
+    if egress is not None:
+        # The installer: the same forwarder as the proxy mode, relaying to the
+        # harness's allow-listing proxy instead of the operator's.
+        args += ["--ro-bind", str(egress.directory), _PROXY_MOUNT]
+        command = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _FORWARDER_SRC,
+            str(INSTALLER_PROXY_PORT),
+            f"{_PROXY_MOUNT}/{egress.path.name}",
+            *command,
+        ]
     elif policy.network == "proxy":
         bridge = _proxy_bridge(policy.proxy_port)
         args += ["--ro-bind", str(bridge.directory), _PROXY_MOUNT]
@@ -2491,6 +2518,256 @@ def _proxy_bridge(port: int) -> _ProxyBridge:
         if bridge is None or not bridge.path.exists():
             bridge = _BRIDGES[port] = _ProxyBridge(port)
         return bridge
+
+
+# ---------------------------------------------------------------------------
+# The installer's egress: an allow-listing CONNECT proxy, harness-side
+# ---------------------------------------------------------------------------
+
+# The port the forwarder listens on inside the installer's sandbox, on its
+# own loopback (the namespace is private, so any port would do).
+INSTALLER_PROXY_PORT = 3128
+_PROXY_HEAD_LIMIT = 8192
+_PROXY_HANDSHAKE_S = 30.0
+_PROXY_CONNECT_S = 10.0
+_TUNNEL_IDLE_S = 300.0
+# NAT64 prefixes (RFC 6052, RFC 8215): the last 32 bits are an IPv4 address
+# a translator reaches, link-local and private ones included.
+_NAT64 = ("64:ff9b::/96", "64:ff9b:1::/48")
+
+
+def _resolve(host: str, port: int) -> list[tuple]:
+    """The addresses *host* resolves to, as :func:`socket.getaddrinfo` gives them."""
+    return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+
+def public_address(address: str) -> bool:
+    """Whether *address* is a globally routable unicast address.
+
+    False for loopback, link-local (the cloud metadata server,
+    ``169.254.169.254``), private, shared (CGNAT), reserved, unspecified and
+    multicast addresses, and for an IPv6 address that embeds one of those
+    (IPv4-mapped, 6to4, NAT64).
+    """
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    if ip.version == 6:
+        embedded = ip.ipv4_mapped or ip.sixtofour
+        if embedded is None and any(ip in ipaddress.ip_network(net) for net in _NAT64):
+            embedded = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        if embedded is not None and not public_address(str(embedded)):
+            return False
+    return ip.is_global and not ip.is_multicast
+
+
+def _host_key(host: str) -> str:
+    return host.strip().strip("[]").lower().rstrip(".")
+
+
+def _authority(text: str) -> Optional[tuple[str, int]]:
+    """``(host, port)`` of a CONNECT request's ``host:port``, or ``None``."""
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, _, port = text.rpartition(":")
+    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        return None
+    return _host_key(host), int(port)
+
+
+class EgressProxy:
+    """An HTTP CONNECT proxy, on a private unix socket, for the installer.
+
+    It opens a tunnel only to an *allowed* ``(host, port)`` pair (the
+    package index hosts, unify/environment.py), and only to the public
+    addresses that host resolves to: a name that resolves to loopback,
+    link-local (the cloud metadata server), private or other non-public
+    addresses is refused, and the address connected to is the one checked,
+    so a second lookup cannot change it. Anything that is not a CONNECT (a
+    plain ``http://`` request) is refused. Every refusal is logged and kept
+    in :attr:`refused` as ``(target, reason)``.
+
+    The allow-list is fixed when the proxy starts, by the harness; nothing
+    the sandboxed command sends can add to it. :func:`wrap_argv` mounts the
+    socket's directory into the sandbox, where the forwarder relays the
+    command's loopback port (:data:`INSTALLER_PROXY_PORT`) to it; :meth:`env`
+    gives the proxy variables that point the command there.
+    """
+
+    def __init__(self, allowed: Sequence[tuple[str, int]]) -> None:
+        self.allowed = frozenset((_host_key(h), int(p)) for h, p in allowed)
+        self.refused: list[tuple[str, str]] = []
+        self.directory = Path(tempfile.mkdtemp(prefix="unify-installer-proxy-"))
+        self.path = self.directory / "proxy.sock"
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(str(self.path))
+        self._server.listen(64)
+        threading.Thread(
+            target=self._serve,
+            daemon=True,
+            name="unify-installer-proxy",
+        ).start()
+
+    @property
+    def url(self) -> str:
+        """The proxy's address as the sandboxed command sees it."""
+        return f"http://127.0.0.1:{INSTALLER_PROXY_PORT}"
+
+    def env(self) -> dict[str, str]:
+        """The proxy variables for a command behind this proxy."""
+        out = {}
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            out[name] = out[name.lower()] = self.url
+        return out
+
+    def close(self) -> None:
+        try:
+            # Wakes the accept() blocked in the serving thread.
+            self._server.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._server.close()
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self._server.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _refuse(self, conn: socket.socket, target: str, status: str, reason: str):
+        import logging
+
+        self.refused.append((target, reason))
+        logging.getLogger(__name__).warning(
+            "installer proxy: refused %s: %s",
+            target,
+            reason,
+        )
+        body = f"Refused by the Unify installer proxy: {reason}\n".encode()
+        try:
+            conn.sendall(
+                f"HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n"
+                f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body,
+            )
+        except OSError:
+            pass
+
+    def _handle(self, conn: socket.socket) -> None:
+        up: Optional[socket.socket] = None
+        try:
+            conn.settimeout(_PROXY_HANDSHAKE_S)
+            head = b""
+            while b"\r\n\r\n" not in head:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                head += data
+                if len(head) > _PROXY_HEAD_LIMIT:
+                    self._refuse(conn, "?", "431 Too Large", "request head too large")
+                    return
+            head, _, early = head.partition(b"\r\n\r\n")
+            line = head.split(b"\r\n", 1)[0].decode("latin-1")
+            parts = line.split(" ")
+            if len(parts) != 3 or parts[0] != "CONNECT":
+                self._refuse(
+                    conn,
+                    line[:200],
+                    "405 Method Not Allowed",
+                    "only CONNECT tunnels to the package index are proxied",
+                )
+                return
+            target = _authority(parts[1])
+            if target is None:
+                self._refuse(conn, parts[1][:200], "400 Bad Request", "bad target")
+                return
+            name = f"{target[0]}:{target[1]}"
+            if target not in self.allowed:
+                self._refuse(
+                    conn,
+                    name,
+                    "403 Forbidden",
+                    f"{name} is not a package index host",
+                )
+                return
+            up, reason = self._connect(*target)
+            if up is None:
+                self._refuse(conn, name, "403 Forbidden", reason)
+                return
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            if early:
+                up.sendall(early)
+            for s in (conn, up):
+                s.settimeout(_TUNNEL_IDLE_S)
+            back = threading.Thread(target=_relay, args=(up, conn), daemon=True)
+            back.start()
+            _relay(conn, up)
+            back.join(_TUNNEL_IDLE_S)
+        except OSError:
+            pass
+        finally:
+            for s in (conn, up):
+                if s is not None:
+                    s.close()
+
+    def _connect(self, host: str, port: int) -> tuple[Optional[socket.socket], str]:
+        try:
+            infos = _resolve(host, port)
+        except OSError as exc:
+            return None, f"{host} does not resolve ({exc})"
+        public = [i for i in infos if public_address(str(i[4][0]))]
+        if not public:
+            return None, (
+                f"{host} resolves only to non-public addresses "
+                f"({', '.join(sorted({str(i[4][0]) for i in infos}))}); "
+                "loopback, link-local and private addresses are never reached"
+            )
+        last = ""
+        for family, _type, proto, _canon, sockaddr in public:
+            s = socket.socket(family, socket.SOCK_STREAM, proto)
+            s.settimeout(_PROXY_CONNECT_S)
+            try:
+                s.connect(sockaddr)
+                return s, ""
+            except OSError as exc:
+                s.close()
+                last = str(exc)
+        return None, f"could not connect to {host}:{port} ({last})"
+
+
+def _relay(a: socket.socket, b: socket.socket) -> None:
+    """Copy *a* to *b*; at *a*'s end of stream, end *b*'s (half-close)."""
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                b.shutdown(socket.SHUT_WR)
+                return
+            b.sendall(data)
+    except OSError:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+@contextmanager
+def egress_proxy(allowed: Sequence[tuple[str, int]]) -> Iterator[EgressProxy]:
+    """An :class:`EgressProxy` for *allowed*, closed on exit."""
+    proxy = EgressProxy(allowed)
+    try:
+        yield proxy
+    finally:
+        proxy.close()
 
 
 # ---------------------------------------------------------------------------

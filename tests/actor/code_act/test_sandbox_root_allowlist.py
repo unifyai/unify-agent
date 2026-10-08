@@ -78,16 +78,17 @@ def test_no_command_line_ever_binds_root_or_a_whole_home(world, monkeypatch):
     policy = sandbox.build_policy(fresh=True)
     _assert_no_broad_bind(sandbox.wrap_argv(["true"], policy))
     # The installer's command line: writable venv and cache, uv read-only,
-    # the host's network.
-    _assert_no_broad_bind(
-        sandbox.wrap_argv(
-            ["uv", "--version"],
-            policy,
-            writable=[environment.environment_dir(), environment.installer_cache()],
-            readonly=[Path("/usr/bin/env")],
-            share_network=True,
-        ),
-    )
+    # the proxy's socket.
+    with sandbox.egress_proxy(environment.index_hosts()) as egress:
+        _assert_no_broad_bind(
+            sandbox.wrap_argv(
+                ["uv", "--version"],
+                policy,
+                writable=[environment.environment_dir(), environment.installer_cache()],
+                readonly=[Path("/usr/bin/env")],
+                egress=egress,
+            ),
+        )
     # A derived root that would show a whole home is left out, not mounted:
     # here PYTHONPATH names the account's home itself.
     import sys

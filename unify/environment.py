@@ -18,15 +18,31 @@ A stored function records the packages it imports as PEP 508 requirement
 strings (its ``dependencies``); :func:`ensure` installs whichever of them
 are missing right before the function runs.
 
-The packages are the model's choice, and installing one can run its build
-steps (an sdist's ``setup.py`` or build backend). So ``uv`` never gets the
-harness's environment, which holds the provider credentials: it gets the
-few variables an install needs (:func:`installer_env`). The install also
-runs inside bubblewrap under
-the workspace policy (unify/sandbox.py): ``/`` read-only, credential
-locations and ``.env`` files hidden, and only this environment and the
-installer's own cache writable. It keeps the host's network, as it had
-before, since it has to reach the package index.
+The packages are the model's choice. So:
+
+* Installs are binary-only (``--only-binary :all:``): no build step (an
+  sdist's ``setup.py`` or build backend) ever runs. A package without a
+  wheel for this platform, ``pkg @ git+...`` and local source paths fail
+  with uv's own error, which the model reads. Installer options among the
+  specifiers are refused before anything runs, and ``--no-config`` keeps a
+  ``uv.toml`` or ``pyproject.toml`` (one a package dropped into the
+  environment, say) from changing any of this.
+* ``uv`` never gets the harness's environment, which holds the provider
+  credentials: it gets the few variables an install needs
+  (:func:`installer_env`).
+* It runs inside bubblewrap under the workspace policy (unify/sandbox.py):
+  ``/`` read-only, credential locations and ``.env`` files hidden, and only
+  this environment and the installer's own cache writable.
+* It has no network of its own. Its one route out is the harness's
+  allow-listing proxy (:class:`unify.sandbox.EgressProxy`), which opens
+  tunnels only to the package index hosts (:func:`index_hosts`: PyPI, or a
+  mirror the operator configured with ``UV_INDEX*``) and never to a
+  loopback, link-local or private address. The host's loopback services
+  and the cloud metadata server (``169.254.169.254``, which hands out the
+  attached service account's token) are unreachable from it.
+
+Without bubblewrap nothing is installed: the install raises
+:class:`unify.sandbox.SandboxRefusal` (rule ``sandbox-required``).
 """
 
 from __future__ import annotations
@@ -38,7 +54,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+from urllib.parse import urlsplit
 
 from packaging.requirements import Requirement
 
@@ -76,6 +93,23 @@ _INSTALLER_ENV = (
     "UV_HTTP_RETRIES",
     "UV_CACHE_DIR",
     "XDG_CACHE_HOME",
+)
+
+
+# The package index hosts the installer's proxy opens tunnels to: PyPI's
+# index and the host its files are served from. A mirror the operator
+# configured (below) is added to them.
+DEFAULT_INDEX_HOSTS: Tuple[Tuple[str, int], ...] = (
+    ("pypi.org", 443),
+    ("files.pythonhosted.org", 443),
+)
+# The variables naming an index, each a whitespace-separated list of URLs
+# (``UV_INDEX`` entries may be ``name=url``).
+_INDEX_URL_VARIABLES = (
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_INDEX",
 )
 
 
@@ -149,12 +183,46 @@ def installer_env() -> Dict[str, str]:
     )
 
 
-def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str]]:
+def index_hosts(
+    env: Optional[Mapping[str, str]] = None,
+) -> Tuple[Tuple[str, int], ...]:
+    """The ``(host, port)`` pairs the installer may reach.
+
+    :data:`DEFAULT_INDEX_HOSTS`, plus the host of every ``https`` index
+    URL in the ``UV_INDEX*`` variables of *env*, by default the harness's
+    own environment as :func:`installer_env` passes it on. Never anything a
+    cell chose: :func:`install` takes package specifiers only, and a cell's
+    environment variables live in the worker, not here. An ``http://`` index
+    is not added (the proxy only opens CONNECT tunnels).
+    """
+    env = installer_env() if env is None else env
+    hosts = list(DEFAULT_INDEX_HOSTS)
+    for name in _INDEX_URL_VARIABLES:
+        for item in env.get(name, "").split():
+            if "=" in item.split("://", 1)[0]:
+                item = item.split("=", 1)[1]
+            try:
+                parts = urlsplit(item)
+                port = parts.port or 443
+            except ValueError:
+                continue
+            if parts.scheme != "https" or not parts.hostname:
+                continue
+            pair = (parts.hostname.lower().rstrip("."), port)
+            if pair not in hosts:
+                hosts.append(pair)
+    return tuple(hosts)
+
+
+def _installer(
+    argv: List[str],
+    egress: sandbox.EgressProxy,
+) -> Tuple[List[str], Dict[str, str], Optional[str]]:
     """``(argv, env, cwd)`` for running the installer command *argv*.
 
     *argv* runs inside bubblewrap under the workspace policy, with this
-    environment and the installer's cache bound writable and the host's
-    network kept.
+    environment and the installer's cache bound writable, and no network
+    but one loopback port forwarded to *egress*.
     """
     env = installer_env()
     venv = environment_dir()
@@ -172,8 +240,12 @@ def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str
             # hardlinks between them would fail; copy without the warning.
             "UV_LINK_MODE": "copy",
             "TMPDIR": "/tmp",
+            # The proxy, whatever the harness's own proxy variables say.
+            **egress.env(),
         },
     )
+    env.pop("NO_PROXY", None)
+    env.pop("no_proxy", None)
     # The environment as the working directory: no project configuration
     # (pyproject.toml, uv.toml) a cell wrote in the workspace applies.
     wrapped = sandbox.wrap_argv(
@@ -184,7 +256,7 @@ def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str
         # uv itself, wherever PATH finds it (~/.local/bin is outside the
         # sandbox's root).
         readonly=[Path(p) for p in (shutil.which(argv[0]),) if p],
-        share_network=True,
+        egress=egress,
     )
     return wrapped, env, str(venv)
 
@@ -214,46 +286,66 @@ def _check_specifiers(specifiers: List[str]) -> None:
             raise ValueError(
                 f"{specifier!r} is not an installer option the environment "
                 "accepts: name packages only, as requirement specifiers "
-                "(e.g. 'pandas>=2', 'pkg @ git+https://github.com/user/repo.git').",
+                "(e.g. 'pandas>=2', 'pandas[sql]==2.1.0').",
             )
+
+
+def _refusal_note(refused: List[Tuple[str, str]]) -> str:
+    reasons = list(dict.fromkeys(reason for _, reason in refused))
+    return (
+        f"Refused by workspace sandbox rule `installer-index-only` "
+        f"({sandbox.RULES['installer-index-only']}): " + "; ".join(reasons) + "\n"
+    )
 
 
 def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
     """Install *specifiers* into the environment and make them importable.
 
-    Returns ``success``, the installer's ``stdout`` / ``stderr`` and the
-    requested ``packages``. Raises ``ValueError`` for an installer option
-    among *specifiers* before anything runs.
+    Wheels only: no build step runs (see the module docstring). Returns
+    ``success``, the installer's ``stdout`` / ``stderr`` and the requested
+    ``packages``. Raises ``ValueError`` for an installer option among
+    *specifiers* before anything runs, and
+    :class:`unify.sandbox.SandboxRefusal` without bubblewrap.
     """
     specifiers = list(specifiers)
     _check_specifiers(specifiers)
     _create()
-    argv, env, cwd = _installer(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(environment_python()),
-            *specifiers,
-        ],
-    )
-    # Never wrapped by a cell's subprocess confinement (the workspace sandbox): the
-    # command is the harness's, and already wrapped when the sandbox is on.
-    with unconfined():
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-            cwd=cwd,
+    with sandbox.egress_proxy(index_hosts()) as egress:
+        argv, env, cwd = _installer(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--no-config",
+                "--only-binary",
+                ":all:",
+                "--python",
+                str(environment_python()),
+                *specifiers,
+            ],
+            egress,
         )
+        # Never wrapped by a cell's subprocess confinement: the command is the
+        # harness's, and already wrapped.
+        with unconfined():
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=cwd,
+            )
+        refused = list(egress.refused)
     importlib.invalidate_caches()
+    stderr = result.stderr
+    if refused:
+        # uv reports only "tunnel error: unsuccessful"; say what was refused.
+        stderr = (stderr or "").rstrip("\n") + "\n" + _refusal_note(refused)
     return {
         "success": result.returncode == 0,
         "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stderr": stderr,
         "packages": list(specifiers),
     }
 
