@@ -2637,13 +2637,17 @@ def _host_key(host: str) -> str:
 
 
 def _authority(text: str) -> Optional[tuple[str, int]]:
-    """``(host, port)`` of a CONNECT request's ``host:port``, or ``None``."""
+    """``(host, port)`` of a CONNECT request's ``host:port``, or ``None``.
+
+    The port is ASCII digits only: ``str.isdigit`` also holds for ``"²"``,
+    which ``int`` refuses, and for other scripts' digits, which it reads.
+    """
     if text.startswith("["):
         host, _, rest = text[1:].partition("]")
         port = rest[1:] if rest.startswith(":") else ""
     else:
         host, _, port = text.rpartition(":")
-    if not host or not port.isdigit() or not 0 < int(port) < 65536:
+    if not host or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
         return None
     return _host_key(host), int(port)
 
@@ -3059,6 +3063,15 @@ class EgressProxy:
             back.join(_TUNNEL_IDLE_S)
         except OSError:
             pass
+        except Exception as exc:
+            # Whatever the client sent, the handler ends here, so the finally
+            # below always closes its sockets and frees its slot. Only the
+            # exception's type is recorded: its message may quote client bytes.
+            self._note_refusal(
+                "?",
+                f"the proxy failed on a request ({type(exc).__name__})",
+                "a request the proxy could not handle",
+            )
         finally:
             for s in (conn, up):
                 if s is not None:

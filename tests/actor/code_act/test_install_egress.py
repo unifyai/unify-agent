@@ -424,6 +424,111 @@ def test_tunnels_are_capped_and_closed_with_the_proxy(monkeypatch):
     held.close()
 
 
+@contextmanager
+def _thread_exceptions():
+    """The exceptions that escaped a thread inside the block."""
+    escaped: list[type] = []
+    before = threading.excepthook
+    threading.excepthook = lambda args: escaped.append(args.exc_type)
+    try:
+        yield escaped
+    finally:
+        threading.excepthook = before
+
+
+def _slot_freed(proxy: sandbox.EgressProxy) -> bool:
+    """Whether the proxy's one tunnel slot (``_MAX_TUNNELS`` patched to 1)
+    is free again, waiting for its handler to finish."""
+    if not proxy._slots.acquire(timeout=5):
+        return False
+    proxy._slots.release()
+    return True
+
+
+def test_a_connect_port_is_ascii_digits_only():
+    # "²" passes str.isdigit but not int(); Arabic-Indic digits pass both.
+    assert sandbox._authority("pypi.org:44\xb3") is None
+    assert sandbox._authority("pypi.org:\u0664\u0664\u0663") is None
+    assert sandbox._authority("pypi.org:443") == ("pypi.org", 443)
+    assert sandbox._authority("[2a04:4e42::223]:443") == ("2a04:4e42::223", 443)
+
+
+@pytest.mark.parametrize(
+    ("request_bytes", "status"),
+    [
+        # A latin-1 superscript digit in the port: crashed the handler.
+        (b"CONNECT pypi.org:44\xb3 HTTP/1.1\r\n\r\n", "400"),
+        (_connect("pypi.org:443@evil.example"), "400"),
+        (_connect("evil@pypi.org:443"), "403"),
+        (_connect("pypi.org"), "400"),
+        (_connect("pypi.org:0"), "400"),
+        (_connect("pypi.org:65536"), "400"),
+        (b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", "405"),
+        (b"connect pypi.org:443 HTTP/1.1\r\n\r\n", "405"),
+        (b"CONNECT pypi.org:443 HTTP/1.1 extra\r\n\r\n", "405"),
+    ],
+    ids=[
+        "superscript-port",
+        "port-then-userinfo",
+        "userinfo-then-host",
+        "no-port",
+        "port-0",
+        "port-65536",
+        "http2-preface",
+        "lowercase-connect",
+        "four-fields",
+    ],
+)
+@pytest.mark.timeout(60)
+def test_the_connect_parser_refuses_what_is_not_an_allowed_authority(
+    monkeypatch,
+    request_bytes,
+    status,
+):
+    """Each malformed or disguised request gets an HTTP refusal, nothing is
+    resolved, no exception escapes the handler and its slot is freed."""
+    resolved: list[str] = []
+
+    def watched(host, port):
+        resolved.append(host)
+        raise OSError("no lookups in this test")
+
+    monkeypatch.setattr(sandbox, "_resolve", watched)
+    monkeypatch.setattr(sandbox, "_MAX_TUNNELS", 1)
+    with _thread_exceptions() as escaped:
+        with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as proxy:
+            got, _ = _ask(proxy, request_bytes)
+            assert got.startswith(f"HTTP/1.1 {status}"), got
+            assert _slot_freed(proxy)
+    assert escaped == []
+    assert resolved == []
+
+
+@pytest.mark.timeout(60)
+def test_an_exception_in_the_handler_frees_its_slot_and_sockets(monkeypatch):
+    """Whatever fails while a request is handled, the handler ends cleanly:
+    the client's connection is closed, its slot freed, nothing left tracked
+    and nothing escapes the thread; the model reads only a fixed note."""
+
+    def broken(text):
+        raise RuntimeError(f"client text {text}")
+
+    monkeypatch.setattr(sandbox, "_authority", broken)
+    monkeypatch.setattr(sandbox, "_MAX_TUNNELS", 1)
+    with _thread_exceptions() as escaped:
+        with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as proxy:
+            got, _ = _ask(proxy, _connect("pypi.org:443"))
+            assert got == "", got
+            assert _slot_freed(proxy)
+            assert proxy._open == set()
+            note = environment._refusal_note(proxy)
+            reasons = [r for _, r in proxy.refused]
+    assert escaped == []
+    assert reasons == ["the proxy failed on a request (RuntimeError)"], reasons
+    assert "a request the proxy could not handle" in note
+    assert "client text" not in note and "pypi.org" not in note
+
+
 def _held_until_closed(
     proxy: sandbox.EgressProxy,
     first: bytes,
