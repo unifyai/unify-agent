@@ -936,9 +936,10 @@ environment. When a stored function needs a package, record the specifier as
 one of its ``dependencies`` so the install repeats wherever it runs.
 
 ``packages`` is a pip/uv specifier or a list of them (``"pandas"``,
-``"pandas==2.1.0"``, ``"pandas[sql]"``). Only published wheels are installed,
-from the package index: a package with no wheel for this platform, a git URL
-or a local source directory fails, as does any other host. Returns ``success``, the
+``"pandas==2.1.0"``, ``"pandas[sql]"``). It installs wheels only (from the
+package index, or an absolute path to a .whl file in the workspace): a
+package with no wheel for this platform, a git URL or a local source
+directory fails, as does any other host. Returns ``success``, the
 installer's ``stdout``/``stderr`` (on failure, read ``stderr`` and adjust the
 specifiers) and the requested ``packages``. A package that conflicts with the
 runtime's own dependencies keeps the runtime's version.

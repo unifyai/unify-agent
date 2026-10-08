@@ -1036,10 +1036,11 @@ Parameters
 ----------
 packages : list[str]
     pip/uv specifiers, e.g. ``"pandas"``, ``"pandas==2.1.0"``,
-    ``"pandas>=2.0,<3.0"``, ``"pandas[sql]"``, ``"./path/to/wheel.whl"``.
-    Only wheels are installed, from the package index: a package with no
-    wheel for this platform, a git URL or a local source directory fails,
-    as does any other host.
+    ``"pandas>=2.0,<3.0"``, ``"pandas[sql]"``,
+    ``"/abs/path/in/workspace/pkg-1.0-py3-none-any.whl"``. It installs
+    wheels only (from the package index, or an absolute path to a .whl file
+    in the workspace): a package with no wheel for this platform, a git URL
+    or a local source directory fails, as does any other host.
 
 Returns
 -------

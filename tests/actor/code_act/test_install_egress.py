@@ -684,6 +684,25 @@ def test_the_allow_list_is_the_index_and_the_operators_mirrors():
     ]
 
 
+def test_the_install_docs_say_what_installs():
+    """The install tools' descriptions match what the installer does: a
+    local wheel installs too, by an absolute path (the installer's working
+    directory is the environment, not the workspace, so a relative one would
+    not be found where the model put it)."""
+    from unify.actor import code_act_actor, core_surface
+
+    for doc in (
+        core_surface._INSTALL_DOC,
+        code_act_actor._INSTALL_PYTHON_PACKAGES_DOC,
+    ):
+        flat = " ".join(doc.split())
+        assert (
+            "wheels only (from the package index, or an absolute path to a "
+            ".whl file in the workspace)"
+        ) in flat, flat
+        assert "./" not in doc and "published wheels" not in flat
+
+
 # ── inside the installer's sandbox ──────────────────────────────────────────
 
 _STUB_UV = """#!{python} -I
