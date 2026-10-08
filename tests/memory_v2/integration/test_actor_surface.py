@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -439,7 +440,10 @@ async def test_switch_on_offers_no_library_and_no_review(
     assert model.kinds() == ["actor"]  # no review, no gate
     assert first["system"].endswith("\n\n" + run.index)
     assert run.index == prompt.GUIDE  # constant: no channel, function or path
-    assert "functions." not in first["system"] and "guidance." not in first["system"]
+    # no use of the library objects (``functions.search``, ``guidance.get``); the guide's own prose may end a
+    # sentence on "functions."
+    assert not re.search(r"\b(?:functions|guidance)\.\w", first["system"])
+    assert "### Function & Guidance Library" not in first["system"]
     assert "Library at task start" not in first["user"]
     assert [t["function"]["name"] for t in first["tools"]] == ["execute_code"]
 
