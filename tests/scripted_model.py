@@ -34,8 +34,10 @@ Kinds, how each is recognised, and where the request is built
 * ``gate``: the review gate; no tools, system ``review_gate.GATE_SYSTEM_PROMPT``.
 * ``compression_fork``: the summary turn of a compression; the last message
   is ``cache_discipline.COMPRESSION_FORK_INSTRUCTION``.
-* ``compress_turn``: the forced turn at the context threshold; the only
-  tools are ``compress_context`` (and ``store_skills``).
+* ``compress_turn``: the forced turn at the context threshold; the loop's
+  notice "Context window is nearly full." is the last message and the only
+  tools are ``compress_context`` (and ``store_skills``). A request that only
+  offers ``compress_context`` (a loop with no tools of its own) is not one.
 * ``compactor``: ``context_compression.compress_messages``; system
   ``COMPRESSION_PROMPT``.
 * ``standalone_review`` / ``proactive_storage``: the JSON-tool storage
@@ -72,6 +74,10 @@ _IDS = itertools.count()
 # a reworded prompt fails that check instead of misrouting silently.
 HELPER_FRAGMENT = ", a helper in a team. "
 LAST_WORD_FRAGMENT = "The step limit for this request is reached"
+# The notice the loop appends before its forced compress turn. Offering
+# compress_context alone does not make a request one: a loop with no tools of
+# its own offers it on demand.
+COMPRESS_TURN_FRAGMENT = "Context window is nearly full."
 STANDALONE_REVIEW_PREFIX = "You are the agent that just completed the task below."
 PROACTIVE_STORAGE_PREFIX = "You are the agent executing the task below, and you asked"
 COMPRESS_TOOLS = frozenset({"compress_context", "store_skills"})
@@ -210,7 +216,7 @@ def kind_of(request: dict) -> str:
         return "gate"
     if marks["compression_fork"] in last:
         return "compression_fork"
-    if names and "compress_context" in names and names <= COMPRESS_TOOLS:
+    if COMPRESS_TURN_FRAGMENT in last and names and names <= COMPRESS_TOOLS:
         return "compress_turn"
     if marks["compactor"] in system:
         return "compactor"
@@ -238,6 +244,7 @@ _RECORDED = (
     "response_format",
     "reasoning_effort",
     "temperature",
+    "parallel_tool_calls",
 )
 
 
