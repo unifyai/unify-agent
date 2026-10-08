@@ -403,6 +403,97 @@ def test_a_tunnel_carries_nothing_unless_its_tls_server_is_the_connect_host(
     assert any(reason in r for r in reasons), reasons
 
 
+class _Recorder:
+    """A host TCP service on loopback that keeps the first *size* bytes each
+    connection sends (or what came within 5 s), then answers and closes."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+        self.received: list[bytes] = []
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(8)
+        self.port = self._srv.getsockname()[1]
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                return
+            conn.settimeout(5)
+            data = b""
+            try:
+                while len(data) < self.size:
+                    chunk = conn.recv(self.size - len(data))
+                    if not chunk:
+                        break
+                    data += chunk
+                self.received.append(data)
+                conn.sendall(b"from host\n")
+            except OSError:
+                self.received.append(data)
+            finally:
+                conn.close()
+
+    def close(self) -> None:
+        self._srv.close()
+
+
+def _records(hello: bytes, size: int) -> bytes:
+    """*hello*'s handshake message re-split into TLS records of *size*
+    bytes of payload each."""
+    message = hello[5:]
+    out = b""
+    for i in range(0, len(message), size):
+        part = message[i : i + size]
+        out += b"\x16\x03\x01" + len(part).to_bytes(2, "big") + part
+    return out
+
+
+@pytest.mark.parametrize("shape", ["one-record", "with-head", "fragmented"])
+@pytest.mark.timeout(60)
+def test_the_index_host_gets_the_client_hello_byte_for_byte(loopback_index, shape):
+    """What the proxy read to check the server name is what the index host
+    gets, unchanged: one record, the same bytes sent with
+    the CONNECT head (read past the head), or a ClientHello fragmented over
+    several records and sends."""
+    hello = _client_hello("index.test")
+    if shape == "fragmented":
+        hello = _records(hello, 7)
+    upstream = _Recorder(len(hello))
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(15)
+    try:
+        with sandbox.egress_proxy([("index.test", upstream.port)]) as proxy:
+            s.connect(str(proxy.path))
+            head = _connect(f"index.test:{upstream.port}")
+            if shape == "with-head":
+                s.sendall(head + hello)
+            else:
+                s.sendall(head)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                data += s.recv(4096)
+            assert data.startswith(b"HTTP/1.1 200"), data
+            if shape == "one-record":
+                s.sendall(hello)
+            elif shape == "fragmented":
+                for i in range(0, len(hello), 12):
+                    s.sendall(hello[i : i + 12])
+                    time.sleep(0.01)
+            rest = data.partition(b"\r\n\r\n")[2]
+            while chunk := s.recv(4096):
+                rest += chunk
+            assert rest == b"from host\n", rest
+            assert proxy.refused == []
+    finally:
+        s.close()
+        upstream.close()
+    assert upstream.received == [hello]
+
+
 @pytest.mark.timeout(60)
 def test_tunnels_are_capped_and_closed_with_the_proxy(monkeypatch):
     monkeypatch.setattr(sandbox, "_MAX_TUNNELS", 1)
