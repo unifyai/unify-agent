@@ -705,7 +705,7 @@ def test_an_env_input_replays_its_episodes_calls_with_the_drawn_call_first():
 # --- budget, flakiness and the probe's verdicts (injected runners) --------------------------------------
 
 
-def test_an_exhausted_budget_is_a_note_never_a_pass_or_a_crash(tmp_path):
+def test_an_exhausted_budget_refuses_the_pass_as_unjudged_never_a_crash(tmp_path):
     files, man = _hp()
     res = _check(
         tmp_path,
@@ -715,16 +715,16 @@ def test_an_exhausted_budget_is_a_note_never_a_pass_or_a_crash(tmp_path):
         pytest_runner=FakePytest(),
         qa=QAConfig(determinism=True, clock=Ticking(1000.0)),
     )
-    assert res.passed, res.reasons
-    (note,) = [r for r in res.reasons if "[qa:budget]" in r]
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    (reason,) = [r for r in res.reasons if "[qa:budget]" in r]
     assert (
-        note.startswith("note: ")
-        and "determinism rerun" in note
-        and "not judged" in note
+        reason.startswith("G3: [qa:budget] ")
+        and "determinism rerun" in reason
+        and "unjudged" in reason
     )
 
 
-def test_the_budget_stops_mutants_midway_with_a_note(tmp_path):
+def test_the_budget_stops_mutants_midway_and_refuses_the_pass(tmp_path):
     files, man = _hp()
     probe = _fake_probe(
         {
@@ -748,9 +748,10 @@ def test_the_budget_stops_mutants_midway_with_a_note(tmp_path):
             budget_s=300.0,
         ),
     )
-    assert res.passed, res.reasons
+    assert not res.passed and res.refused == ["G3"], res.reasons
     assert any(
-        "[qa:budget]" in r and "the mutants of " + HP_ITEM in r for r in res.reasons
+        r.startswith("G3: [qa:budget]") and "the mutants of " + HP_ITEM in r
+        for r in res.reasons
     )
     assert not any(r.startswith("G3: [qa:mutation]") for r in res.reasons)
 

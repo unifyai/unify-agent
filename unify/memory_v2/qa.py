@@ -70,10 +70,10 @@ Every stage-5 run is confined (:func:`.sandbox_run.run_confined`, bubblewrap wit
 the tree read-only at ``/memory``, the library test kit read-only at ``/inputs`` (:mod:`.testkit`: ``memlab``
 with no git and no evidence store, the pin plugin, the referenced blobs), the drawn inputs read-only at
 ``/qa``, and only a fresh output directory writable. No credential is in any argument, environment entry or
-file. All dynamic checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the check with a
-note naming what was not judged, never a silent pass and never an exception. Reasons and notes carry item ids,
-test paths, counts, operator kinds, line numbers, byte sizes and builtin exception names, never a recorded
-value (R10). All reasons are filed under G3 with a ``[qa:<check>]`` tag.
+file. All dynamic checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the checks and
+refuses the pass as unjudged (``[qa:budget]``), never a pass and never an exception. Reasons and notes carry
+item ids, test paths, counts, operator kinds, line numbers, byte sizes and builtin exception names, never a
+recorded value (R10). All reasons are filed under G3 with a ``[qa:<check>]`` tag.
 
 Rejected alternatives: rewriting the consolidator's fixtures to the drawn inputs (expected values would no
 longer match, so only property tests survive); a pytest plugin wrapping library functions to watch their
@@ -738,15 +738,18 @@ class QAChecks:
         self.run.note(f"[qa:{tag}] {reason}")
 
     def _timeout(self, cap: float, what: str) -> float:
-        """The timeout for the next run (at most *cap*); :class:`_BudgetSpent` once the budget is spent."""
+        """The timeout for the next run (at most *cap*); :class:`_BudgetSpent` once the budget is spent.
+
+        Fail closed: a pass the budget left unjudged is refused (``[qa:budget]``), never merged unjudged.
+        """
         if self.started is None:
             self.started = self.cfg.clock()
         left = self.cfg.budget_s - (self.cfg.clock() - self.started)
         if left < FLOOR_S:
-            self._note(
+            self._fail(
                 "budget",
                 f"the {self.cfg.budget_s:.0f} s stage-5 budget ran out at {what}: it and the stage-5 "
-                "checks after it were not judged",
+                "checks after it are unjudged, and an unjudged pass is not merged",
             )
             raise _BudgetSpent(what)
         return min(cap, left)
