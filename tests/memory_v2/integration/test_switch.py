@@ -17,6 +17,7 @@ _NAMES = (
     "UNIFY_MEMORY_V2_SOL_MODEL",
     "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
     "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+    "UNIFY_MEMORY_V2_SOL_USAGE",
     # retired by the online contract; a stale one in the environment must change nothing
     "UNIFY_MEMORY_V2_TRIGGER",
     "UNIFY_MEMORY_V2_SOL_BUDGET_USD",
@@ -41,6 +42,7 @@ def test_defaults():
     assert s.UNIFY_MEMORY_V2_SOL_MODEL == "openai/gpt-6-sol"
     assert s.UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS == "0.00000073"
     assert s.UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD == ""
+    assert s.UNIFY_MEMORY_V2_SOL_USAGE == ""
 
 
 def test_the_retired_switches_are_gone(monkeypatch):
@@ -60,6 +62,14 @@ def test_the_retired_switches_are_gone(monkeypatch):
 )
 def test_switch_values(raw, want, monkeypatch):
     assert _load(monkeypatch, "UNIFY_MEMORY_V2", raw) == want
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [("", ""), ("off", ""), ("OFF", ""), (" Off ", ""), ("on", "on"), (" On ", "on")],
+)
+def test_sol_usage_values(raw, want, monkeypatch):
+    assert _load(monkeypatch, "UNIFY_MEMORY_V2_SOL_USAGE", raw) == want
 
 
 @pytest.mark.parametrize(
@@ -144,6 +154,9 @@ def test_run_guard_values(raw, want, monkeypatch):
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "Infinity"),
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "two"),
         ("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "$5"),
+        ("UNIFY_MEMORY_V2_SOL_USAGE", "yes"),
+        ("UNIFY_MEMORY_V2_SOL_USAGE", "1"),
+        ("UNIFY_MEMORY_V2_SOL_USAGE", "true"),
     ],
 )
 def test_refuses_other_values(name, raw, monkeypatch):

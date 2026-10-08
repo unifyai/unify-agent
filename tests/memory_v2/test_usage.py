@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from tests.memory_v2.test_episodes import _ep
 from tests.memory_v2.test_use_telemetry import MODULE, _index, _record
@@ -11,6 +12,7 @@ from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
+from unify.memory_v2.index import build_index
 from unify.memory_v2.signals import Signal
 from unify.memory_v2.sol_pass import PassConfig, SolPass
 from unify.memory_v2.trigger import PassRequest
@@ -61,7 +63,7 @@ class _First:
         return {"role": "assistant", "content": "thinking"}, "0.001"
 
 
-def _first_message(tmp_path, mem, ev, eids, pass_id) -> str:
+def _first_message(tmp_path, mem, ev, eids, pass_id, show_usage=True) -> str:
     model = _First()
     sol = SolPass(
         mem,
@@ -69,19 +71,53 @@ def _first_message(tmp_path, mem, ev, eids, pass_id) -> str:
         ev,
         load=lambda eid: _ep(episode_id=eid),
         model_turn=model,
-        config=PassConfig(max_calls=1),
+        config=PassConfig(max_calls=1, show_usage=show_usage),
     )
     asyncio.run(sol.run(PassRequest("batched", None, list(eids), False), pass_id))
     return model.first[1]["content"]
 
 
-def test_sols_first_message_carries_the_usage_table_and_no_checker_text(tmp_path):
+def _library(tmp_path) -> Repo:
     mem = Repo.init_bare(tmp_path / "mem.git")
     base = mem.head()
     with mem.temp_checkout() as wt:
         (wt / "env/x").mkdir(parents=True)
         (wt / "env/x/__init__.py").write_text(MODULE)
         mem.fast_forward("main", mem.commit_all(wt, "seed", {}), expected_old=base)
+    return mem
+
+
+def test_with_the_switch_off_sols_first_message_is_the_screen_builds(tmp_path):
+    """``UNIFY_MEMORY_V2_SOL_USAGE`` off (the default): the first message is byte for byte what the screen
+    build (9deefbfd1) sent, even with use rows recorded for the pass's requests."""
+    mem = _library(tmp_path)
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
+    assert PassConfig().show_usage is False
+    got = _first_message(tmp_path, mem, ev, ["e1"], "p1", show_usage=False)
+    req = PassRequest("batched", None, ["e1"], False)
+    with mem.temp_checkout() as wt:
+        index = build_index(wt)
+    assert got == f"Pass p1: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
+    assert usage.USAGE_HEADING not in got
+
+
+def test_with_the_switch_on_the_table_is_added_after_the_index(tmp_path):
+    mem = _library(tmp_path)
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _index(ev, "e1", _record({"env/x:parse": {"called": 2}}), "2026-10-08T01:00:00Z")
+    off = _first_message(tmp_path, mem, ev, ["e1"], "p1", show_usage=False)
+    on = _first_message(tmp_path, mem, ev, ["e1"], "p1b", show_usage=True)
+    table = usage.usage_table(
+        ev,
+        ["e1"],
+        ["env/x:lookup", "env/x:parse", "env/x:strict"],
+    )
+    assert on == off.replace("Pass p1:", "Pass p1b:", 1) + "\n\n" + table
+
+
+def test_sols_first_message_carries_the_usage_table_and_no_checker_text(tmp_path):
+    mem = _library(tmp_path)
     ev = EvidenceStore(tmp_path / "e.sqlite")
     _index(ev, "e0", _record({"env/x:parse": {"called": 1}}), "2026-10-08T00:00:00Z")
     _index(

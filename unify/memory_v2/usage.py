@@ -5,7 +5,8 @@ code and tracebacks, never a checker's verdict or text (ruling R10). Two readers
 
 * :func:`item_signals`: the flags the hygiene and promotion stages will read (this module only reports
   them; nothing here promotes, retires or hides an item);
-* :func:`usage_table`: the compact, deterministic table each consolidation pass's first message carries.
+* :func:`usage_table`: the compact, deterministic table a consolidation pass's first message carries when
+  ``UNIFY_MEMORY_V2_SOL_USAGE=on`` (off by default).
 """
 
 from __future__ import annotations

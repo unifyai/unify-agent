@@ -88,6 +88,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. The trigger is size-based and batched (the spec's F1): one pass becomes due once the experience recorded since the last pass reaches E tokens, and it covers every channel with new evidence. E times the allowance is one pass's USD cap. The passes run on the Sol model at the actor's reasoning effort for the run (there is no effort switch). With a run guard set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
 - **Evidence:** E and the allowance follow the offline cadence replay and the memory-v2 preregistrations (continual-harness-research); the guard is a runaway stop, not the expected cutoff.
 
+## UNIFY_MEMORY_V2_SOL_USAGE
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** It applies only with `UNIFY_MEMORY_V2=on`. When on, each consolidation pass's first message ends with a table of how the pass's requests used each library function: requests that saw it, requests that called it, call sites, refusals (`MemoryInputError` raised out of the function), refusals followed by a successful action on its channel, other errors, dynamic calls in its channel and requests since its last call. The numbers come from the harness's use record (`memory_use.json` per episode, the evidence store's `item_use` table), never from a checker. When off, the first message is byte for byte as before. The use record is kept either way.
+- **Evidence:** none yet (memory v2.1 stage 1); offline comparison and a paired screen pending (`docs/design/memory-v2.1-plan.md`, continual-harness-research).
+
 ## UNIFY_CLOCK_PLACEMENT
 
 - **Values:** empty (the same as `system`) or `first_message`.

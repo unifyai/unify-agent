@@ -11,6 +11,9 @@ The contract (online build, spec §F1 and D23):
   plain decimal string; empty means ``0.00000073``.
 - ``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``: a non-negative plain decimal string, or empty for no guard. When
   set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
+- ``UNIFY_MEMORY_V2_SOL_USAGE``: ``on``, ``off`` or empty (empty and ``off`` mean off). When on, each pass's
+  first message ends with the table of how requests used each library function (``usage.usage_table``);
+  off, that message is as before. The use record itself is kept either way.
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -27,6 +30,7 @@ EXPERIENCE_BUDGET = "UNIFY_MEMORY_V2_E"
 SOL_MODEL = "UNIFY_MEMORY_V2_SOL_MODEL"
 SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS"
 SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
+SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -104,6 +108,16 @@ def parse_sol_run_guard(v: Any) -> str:
     return _plain_decimal(SOL_RUN_GUARD, text, v, positive=False)
 
 
+def parse_sol_usage(v: Any) -> str:
+    """``on``, or ``""`` for off (empty or ``off``)."""
+    value = _stripped(v).lower()
+    if value in ("", "off"):
+        return ""
+    if value != "on":
+        raise ValueError(f"{SOL_USAGE} must be empty, 'off' or 'on', not {v!r}")
+    return value
+
+
 #: The validator for each setting (unify/settings.py ``parse_memory_v2``).
 PARSERS = {
     SWITCH: parse_switch,
@@ -111,4 +125,5 @@ PARSERS = {
     SOL_MODEL: parse_sol_model,
     SOL_ALLOWANCE: parse_sol_allowance,
     SOL_RUN_GUARD: parse_sol_run_guard,
+    SOL_USAGE: parse_sol_usage,
 }

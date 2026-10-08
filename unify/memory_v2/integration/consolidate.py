@@ -250,6 +250,9 @@ class SolSettings:
     experience_budget: int
     usd_per_token: Decimal
     run_guard_usd: Decimal | None
+    show_usage: bool = (
+        False  # UNIFY_MEMORY_V2_SOL_USAGE: the use table in each pass's first message
+    )
 
     @property
     def cap_usd(self) -> Decimal:
@@ -271,7 +274,8 @@ def _decimal(name: str, value: Any) -> Decimal:
 
 
 def sol_settings(settings: Any) -> SolSettings:
-    """The Sol model, E, the USD allowance per token and the run guard from *settings* (defaults if unset)."""
+    """The Sol model, E, the USD allowance per token, the run guard and whether Sol is shown the use table
+    from *settings* (defaults if unset)."""
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
     raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
     if isinstance(raw_e, bool):
@@ -301,7 +305,10 @@ def sol_settings(settings: Any) -> SolSettings:
         if str(guard_raw).strip()
         else None
     )
-    return SolSettings(model or SOL_MODEL, e, a_tok, guard)
+    from .switch import parse_sol_usage
+
+    usage = parse_sol_usage(getattr(settings, "UNIFY_MEMORY_V2_SOL_USAGE", "") or "")
+    return SolSettings(model or SOL_MODEL, e, a_tok, guard, usage == "on")
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -582,6 +589,7 @@ async def run_due_passes(
         max_calls=MAX_CALLS,
         deadline_s=DEADLINE_S,
         max_usd=cap,
+        show_usage=cfg.show_usage,
     )
     outcomes: list[PassOutcome] = []
     for i, req in enumerate(due):

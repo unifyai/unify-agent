@@ -16,9 +16,9 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 Sol sees only what :func:`export_for_sol` and :func:`export_blobs` write (ruling R10): request, cells,
-actions, and the file blobs worktree actions recorded; its first message adds the index and a table of
-how requests used each function (:func:`.usage.usage_table`, harness counts). Nothing about outcomes,
-signals or checkers reaches it.
+actions, and the file blobs worktree actions recorded; its first message adds the index and, with
+``PassConfig.show_usage`` (``UNIFY_MEMORY_V2_SOL_USAGE=on``), a table of how requests used each function
+(:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it.
 """
 
 from __future__ import annotations
@@ -289,6 +289,8 @@ class PassConfig:
     max_usd: Decimal = Decimal("1.00")
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
+    # UNIFY_MEMORY_V2_SOL_USAGE: end the first message with the library-use table (off: as before)
+    show_usage: bool = False
 
 
 @dataclass
@@ -1008,14 +1010,14 @@ class SolPass:
                 index = build_index(wt)
             except ValueError as exc:  # over budget, or an unreadable notes file
                 index = f"(index not built: {exc})"
-            usage = self._usage(req, wt)
+            first = (
+                f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
+            )
+            if self.cfg.show_usage:
+                first += f"\n\n{self._usage(req, wt)}"
             messages: list[dict] = [
                 {"role": "system", "content": SOL_SYSTEM},
-                {
-                    "role": "user",
-                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
-                    f"\n\n{usage}",
-                },
+                {"role": "user", "content": first},
             ]
             finished = False
             while (

@@ -333,12 +333,14 @@ class ProductionSettings(BaseSettings):
     # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
     # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
     # stops further passes once the run's Sol USD plus the next cap would
-    # exceed it.
+    # exceed it. ``_SOL_USAGE`` (empty/off or on) ends each pass's first
+    # message with the table of how requests used each library function.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
     UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
+    UNIFY_MEMORY_V2_SOL_USAGE: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -532,6 +534,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SOL_USAGE",
         mode="before",
     )
     @classmethod
