@@ -14,6 +14,7 @@ reason is forwarded to the skill librarian so it can weigh user intent.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -269,7 +270,27 @@ async def test_persist_stop_with_memoize_intent_stores_function():
         # stores code that ran successfully, so stopping a still-empty
         # trajectory tests nothing. The discovery-first searches complete
         # first, so wait for a completed ``execute_code`` round-trip
-        # specifically, not for the first tool result of any kind.
+        # specifically, not for the first tool result of any kind, and one
+        # that succeeded: a cell that raised (the 09184dc6d re-record's only
+        # cell, before the sandbox put ``python`` on PATH) leaves nothing
+        # that ran, so the review rightly stores nothing.
+        def _succeeded(message: dict) -> bool:
+            content = message.get("content")
+            if isinstance(content, list):
+                content = next(
+                    (
+                        part.get("text")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    ),
+                    "",
+                )
+            try:
+                head = json.loads(content or "")
+            except (TypeError, ValueError):
+                return False
+            return isinstance(head, dict) and not head.get("error")
+
         def _execute_code_round_trip_happened() -> bool:
             client = getattr(handle._inner, "_client", None)
             msgs = [
@@ -289,6 +310,7 @@ async def test_persist_stop_with_memoize_intent_stores_function():
                     str(m.get("tool_call_id", "")).startswith(call_id)
                     for call_id in exec_call_ids
                 )
+                and _succeeded(m)
                 for m in msgs
             )
 
@@ -296,7 +318,8 @@ async def test_persist_stop_with_memoize_intent_stores_function():
         while not _execute_code_round_trip_happened():
             if asyncio.get_event_loop().time() > exec_deadline:
                 pytest.skip(
-                    "Actor did not complete an execute_code call within 120s — "
+                    "Actor did not complete a successful execute_code call "
+                    "within 120s — "
                     "this is an eval-sensitive path",
                 )
             await asyncio.sleep(1.0)

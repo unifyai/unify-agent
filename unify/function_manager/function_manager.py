@@ -1157,7 +1157,7 @@ class FunctionManager(BaseFunctionManager):
                 raise ValueError(
                     f"Dependency {specifier!r} is not a valid requirement "
                     f"string ({e}). Use PEP 508 form, e.g. 'pandas>=2.0' or "
-                    f"'pkg @ git+https://github.com/user/repo.git'.",
+                    f"'pandas[sql]==2.1.0'.",
                 )
         if isinstance(implementations, str):
             implementations = [implementations]

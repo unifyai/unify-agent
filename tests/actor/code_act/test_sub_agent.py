@@ -7,6 +7,7 @@ Eval tests verify end-to-end actor execution with a real LLM.
 
 from __future__ import annotations
 
+from unify.actor import core_surface
 from unify.actor.core_surface import PromptSurface
 import asyncio
 import inspect
@@ -442,6 +443,12 @@ _DELEGATING_FUNCTION = (
     '    """Hand the request to a sub-actor."""\n'
     "    return await primitives.actor.act(request=request)\n"
 )
+# A stored function the child can keep, which a search for sub-actors finds.
+_HANDOFF_FUNCTION = (
+    "async def delegate(request: str):\n"
+    '    """Hand the request to a sub-actor."""\n'
+    "    return request\n"
+)
 
 
 def _build_child(*, can_spawn_sub_agents: bool, prompt_functions=None):
@@ -488,24 +495,31 @@ def _record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 @pytest.mark.timeout(60)
 @_handle_project
 async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
-    """With can_spawn_sub_agents=False the child's search, filter and list
-    never return primitives.actor.act, and its prompt never offers it."""
+    """With can_spawn_sub_agents=False the child cannot store a call to
+    primitives.actor.act, its search, filter and list never return it, and its
+    prompt never offers it."""
     child = _build_child(can_spawn_sub_agents=False)
-    child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
-    tools = child.get_tools("act")
+    # The store check finds no primitives.actor where the function would run.
+    with pytest.raises(ValueError, match=r"`primitives\.actor` does not exist"):
+        child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
+    child.function_manager.add_functions(implementations=_HANDOFF_FUNCTION)
+    # The child's library as its cells reach it (the core surface's
+    # ``functions`` object; the JSON FunctionManager_* tools are gone).
+    functions = core_surface.sandbox_objects(
+        child,
+        policy=core_surface.WritePolicy(can_store=False),
+    )[core_surface.FUNCTIONS]
 
     sandbox = PythonExecutionSession(environments=child.environments)
     token = _CURRENT_SANDBOX.set(sandbox)
     try:
-        searched = await tools["FunctionManager_search_functions"](
+        searched = await functions.search(
             query="spawn a sub-actor for a focused sub-task",
             n=10,
         )
-        filtered = await tools["FunctionManager_filter_functions"]()
-        by_name = await tools["FunctionManager_filter_functions"](
-            filter=f"name = '{_ACTOR_ACT}'",
-        )
-        listed = await tools["FunctionManager_list_functions"]()
+        filtered = await functions.filter()
+        by_name = await functions.filter(filter=f"name = '{_ACTOR_ACT}'")
+        listed = await functions.list()
     finally:
         _CURRENT_SANDBOX.reset(token)
 
@@ -631,79 +645,3 @@ async def test_actor_completes_simple_task():
             await actor.close()
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# Eval test — stored function with primitives.actor.act dependency re-execution
-# ---------------------------------------------------------------------------
-
-
-# as_shipped: deleted in step 5 (primitives.actor delegation)
-@pytest.mark.usefixtures("as_shipped")
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_stored_actor_function_reexecutes_successfully():
-    """A stored compositional function that calls primitives.actor.act() works when re-executed.
-
-    This is the end-to-end test for the "store then re-execute" pipeline:
-
-    1. Programmatically store a function that calls primitives.actor.act(...)
-    2. Retrieve it and prepare it via _inject_callables_for_functions
-       (which calls _inject_dependencies -> construct_sandbox_root("primitives"))
-    3. Call the resulting callable with a trivially simple request
-    4. Verify the inner actor (freshly constructed _ActorRunner) runs an
-       LLM loop to completion and returns a meaningful result
-
-    This exercises the chain:
-    stored function -> _inject_dependencies -> construct_sandbox_root("primitives")
-    -> Primitives() -> .actor -> _ActorRunner.act() -> inner CodeActActor -> result
-    """
-    from unify.function_manager.function_manager import FunctionManager
-    from unify.function_manager.execution_env import create_base_globals
-
-    @_handle_project
-    async def _inner():
-        fm = FunctionManager(include_primitives=False)
-
-        source = (
-            "async def quick_compute(request: str):\n"
-            '    """Delegate a computation to a sub-agent."""\n'
-            "    handle = await primitives.actor.act(\n"
-            "        request=request,\n"
-            "        timeout=60,\n"
-            "    )\n"
-            "    return await handle.result()\n"
-        )
-
-        result = fm.add_functions(implementations=source)
-        assert result == {"quick_compute": "added"}
-
-        func_data = fm._get_function_data_by_name(name="quick_compute")
-        assert func_data is not None
-        assert "primitives.actor.act" in func_data.get("depends_on", [])
-
-        namespace = create_base_globals()
-        callables = fm._inject_callables_for_functions(
-            [func_data],
-            namespace=namespace,
-        )
-
-        assert len(callables) == 1
-        assert "primitives" in namespace
-        assert hasattr(namespace["primitives"], "actor")
-        assert isinstance(namespace["primitives"].actor, _ActorRunner)
-        assert "quick_compute" in namespace
-
-        fn = namespace["quick_compute"]
-        result = await asyncio.wait_for(
-            fn("What is 2 + 2? Reply with just the number."),
-            timeout=120,
-        )
-        result_str = str(result)
-        assert (
-            "4" in result_str
-        ), f"Expected '4' in inner actor result, got: {result_str}"
-
-    await _inner()

@@ -2,24 +2,22 @@
 
 A stored function's ``dependencies``, ``install(...)`` from a cell and
 ``%pip install`` all name packages the model chose, and the harness installs
-them with ``uv`` into the workspace environment. An install can run the
-package's build steps (an sdist's ``setup.py`` or build backend), so a
-model-chosen package runs code wherever ``uv`` runs. The
-installer therefore runs inside bubblewrap
-like a shell cell: credentials hidden, ``/`` read-only, and only the
-environment and the installer's own cache writable. It keeps the network the
-harness gives it today (it has to reach the package index). Wherever it runs,
-it gets an explicit, minimal environment, never the harness's.
+them with ``uv`` into the workspace environment. Installs are binary-only,
+so a package's build steps (an sdist's ``setup.py`` or build backend) never
+run. The installer runs inside bubblewrap like a shell cell: credentials
+hidden, ``/`` read-only, and only the environment and the installer's own
+cache writable. Its only network is the harness's allow-listing proxy
+(test_install_egress.py). It gets an explicit, minimal environment, never
+the harness's.
 
 No model is called and nothing is fetched: the first tests stub the
 subprocess launcher and read the command line and environment the installer
-gets; the last builds a local package offline, whose build backend records
-what it can see and touch.
+gets; the last installs a local source package offline, whose build backend
+would record what it can see and touch, and finds it never ran.
 """
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import textwrap
@@ -108,10 +106,15 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
     # /bin/sh opens the seccomp program for bwrap, then execs it.
     assert argv[0] == "/bin/sh" and Path(argv[4]).name == "bwrap", argv[:5]
     command = argv[argv.index("--") + 1 :]
-    assert command == [
+    # The forwarder to the installer's proxy runs uv as its child.
+    assert command[:4] == [sys.executable, "-I", "-S", "-c"], command[:4]
+    assert command[7:] == [
         "uv",
         "pip",
         "install",
+        "--no-config",
+        "--only-binary",
+        ":all:",
         "--python",
         str(environment.environment_python()),
         "humanize",
@@ -133,8 +136,10 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
         assert ["--tmpfs", str(path)] in [
             options[i : i + 2] for i, a in enumerate(options) if a == "--tmpfs"
         ]
-    # The index has to be reachable; nothing else about the network changes.
-    assert "--share-net" in options
+    # No network of its own: only the proxy, through its forwarder.
+    assert "--share-net" not in options
+    assert env["HTTPS_PROXY"] == f"http://127.0.0.1:{sandbox.INSTALLER_PROXY_PORT}"
+    assert "NO_PROXY" not in env and "no_proxy" not in env
     assert env["TMPDIR"] == "/tmp"
 
 
@@ -150,6 +155,104 @@ def test_an_install_takes_packages_never_installer_options(
         with pytest.raises(ValueError, match="not an installer option"):
             environment.install(specs)
     assert launched == []
+
+
+def _uv_venv_watched(monkeypatch, seen: list[dict]) -> None:
+    """Stub the environment module's commands: ``uv venv`` records what its
+    target held when it ran (and makes the interpreter); ``uv pip install``
+    records whether the environment lock was free."""
+    import fcntl
+    import os
+
+    def fake_run(argv, **kwargs):
+        lock_path = environment.environment_dir().parent / "venv.lock"
+        with open(lock_path, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = False
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            except BlockingIOError:
+                locked = True
+        if "venv" in argv and "pip" not in argv:
+            target = Path(argv[-1])
+            seen.append(
+                {
+                    "argv": list(argv),
+                    "cwd": kwargs.get("cwd"),
+                    "existed": os.path.lexists(target),
+                    "inode": target.stat().st_ino if target.is_dir() else None,
+                    "locked": locked,
+                },
+            )
+            python = environment.environment_python()
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+        else:
+            seen.append({"argv": list(argv), "locked": locked})
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(environment.subprocess, "run", fake_run)
+    # The command line only: bubblewrap is not needed to see what runs.
+    monkeypatch.setattr(
+        environment,
+        "_installer",
+        lambda argv, egress, env=None: (list(argv), dict(env or {}), None),
+    )
+
+
+def test_uv_venv_never_runs_over_what_the_installers_sandbox_wrote(
+    unify_home,
+    tmp_path,
+    monkeypatch,
+):
+    """The installer's sandbox can write the environment, so code a package
+    runs there can remove ``bin/python`` and leave a link out of it. The
+    unconfined ``uv venv`` that follows must not write through it: it runs
+    on a new directory, without uv's configuration, from the store home,
+    while no install runs."""
+    seen: list[dict] = []
+    _uv_venv_watched(monkeypatch, seen)
+    venv = environment.environment_dir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (venv / "lib").mkdir(parents=True)
+    (venv / "bin").symlink_to(outside, target_is_directory=True)
+    (venv / "pyvenv.cfg").write_text("home = /planted\n")
+    (venv / "uv.toml").write_text('index-url = "https://evil.example/simple"\n')
+
+    environment.install(["humanize"])
+
+    venv_call, pip_call = seen
+    assert "--no-config" in venv_call["argv"], venv_call["argv"]
+    # The store home: never the environment, and never the workspace (which
+    # may not be the store home itself).
+    assert venv_call["cwd"] == str(environment.store_home())
+    # A fresh directory: what the sandbox left there is gone, not reused.
+    assert venv_call["existed"] is False
+    assert list(outside.iterdir()) == []
+    assert not (venv / "uv.toml").exists()
+    assert not list(venv.parent.glob("venv.discarded-*"))
+    # Neither runs while another install could be writing the environment.
+    assert venv_call["locked"] and pip_call["locked"]
+
+
+def test_an_empty_environment_directory_is_created_in_place(
+    unify_home,
+    monkeypatch,
+):
+    """The worker makes the environment's directory, empty, before it
+    starts, so it can mount it; the first install fills that directory in
+    place (a new one would never be seen by the running worker)."""
+    seen: list[dict] = []
+    _uv_venv_watched(monkeypatch, seen)
+    venv = environment.environment_dir()
+    venv.mkdir(parents=True)
+    inode = venv.stat().st_ino
+
+    environment.install(["humanize"])
+
+    assert seen[0]["existed"] is True and seen[0]["inode"] == inode
+    assert venv.stat().st_ino == inode
 
 
 _BACKEND = """
@@ -185,6 +288,16 @@ def _line(name, data):
     return f"{{name}},sha256={{digest.decode()}},{{len(data)}}"
 
 
+def get_requires_for_build_wheel(config_settings=None):
+    _probe()
+    return []
+
+
+def prepare_metadata_for_build_wheel(metadata_directory, config_settings=None):
+    _probe()
+    raise RuntimeError("probe: metadata hook ran")
+
+
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     _probe()
     name = "probe_pkg-0.1-py3-none-any.whl"
@@ -210,8 +323,18 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
 
 @needs_bwrap
 @pytest.mark.timeout(180)
-def test_a_package_build_step_runs_confined(world, credentials, monkeypatch):
-    """A real install of a local package whose build backend probes its world."""
+def test_a_source_package_is_refused_before_any_build_step_runs(
+    world,
+    credentials,
+    monkeypatch,
+):
+    """A real offline install of a local source package whose build backend
+    probes its world (its version is dynamic, so its metadata needs a hook).
+
+    Installs are wheels only: uv refuses with its own message, and none of
+    the backend's hooks runs. What does run at install time, uv itself, is
+    confined (test_install_egress.py probes it from inside).
+    """
     import shutil
 
     if shutil.which("uv") is None:
@@ -236,7 +359,7 @@ def test_a_package_build_step_runs_confined(world, credentials, monkeypatch):
 
             [project]
             name = "probe-pkg"
-            version = "0.1"
+            dynamic = ["version"]
             """,
         ),
     )
@@ -244,14 +367,12 @@ def test_a_package_build_step_runs_confined(world, credentials, monkeypatch):
         _BACKEND.format(report=str(report), outside=str(outside), secrets=secrets),
     )
 
-    outcome = environment.install([str(source)])
-    assert outcome["success"], outcome["stderr"]
-    seen = json.loads(report.read_text())
-    assert _secret_named(dict.fromkeys(seen["env"])) == [], seen["env"]
-    assert "UNIFY_SANDBOX_PROBE" not in seen["env"]
-    assert seen["wrote_outside"] is False and not outside.exists()
-    # A hidden file reads as the notice naming its rule, never its content.
-    read = "\n".join(seen["read_secrets"])
-    assert not any(s in read for s in (SSH_SECRET, ENV_SECRET, STATE_SECRET)), read
-    # The package landed in the environment, as an unconfined install's does.
-    assert environment.missing(["probe-pkg==0.1"]) == []
+    for spec in (str(source), f"probe-pkg @ file://{source}"):
+        outcome = environment.install([spec])
+        assert not outcome["success"], outcome
+        # uv's own message, which the model reads.
+        assert "Building source distributions" in outcome["stderr"], outcome
+        assert "disabled" in outcome["stderr"], outcome
+    assert not report.exists(), report.read_text()
+    assert not outside.exists()
+    assert environment.missing(["probe-pkg"]) == ["probe-pkg"]

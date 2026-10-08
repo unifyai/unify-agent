@@ -15,7 +15,7 @@ from typing import (
 from ..logger import LOGGER
 from unify.common.hierarchical_logger import ICONS
 from .llm_helpers import short_id
-from .llm_client import fork_llm_client
+from .llm_client import count_requester_message, fork_llm_client
 from ._async_tool import cache_discipline as _cache_discipline
 from ._async_tool import bound_request as _bound_request
 from unify import transcripts
@@ -28,7 +28,11 @@ from ._async_tool.context_compression import (
     FORK_SUMMARY,
     CompressionState,
     compress_and_rebuild,
+    keep_prefix_enabled,
+    kept_prefix,
+    restart_text,
 )
+from ._async_tool.messages import loop_user_notice
 
 if TYPE_CHECKING:
     from unillm.types import PromptCacheParam
@@ -377,8 +381,15 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         self._runtime_state.step_cap_compacted = None
         compacted = at_step_limit or await self._compact_context(cfg)
         n_archived, restart_messages, restart_tools, restart_message, forked = compacted
+        # UNIFY_COMPACTION_KEEP_PREFIX=on: the restart starts with a list of
+        # messages (the kept user messages, then the summary), which already
+        # hold the session's first message as it was sent. A shipped
+        # compaction always restarts from one string.
+        keep_prefix = isinstance(restart_message, list)
+        # Its first measured call says whether what it kept fits.
+        self._runtime_state.keep_prefix_unmeasured = keep_prefix
         self._client._messages = restart_messages
-        if not forked:
+        if not forked and not keep_prefix:
             self._client._system_message = None
 
         # A compression rebuild is a deliberate full-cache sacrifice: the
@@ -407,6 +418,10 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         # every restart could immediately re-trigger compression.
         inner_kwargs["parent_chat_context"] = None
         cfg["parent_chat_context"] = None
+        if keep_prefix:
+            # The kept first user message already opens with the session
+            # context; prefixing it again would change its bytes.
+            inner_kwargs["first_message_context"] = None
 
         async def _loop_wrapper():
             return await async_tool_loop_inner(
@@ -441,6 +456,11 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         restart message, forked)``; ``forked`` is ``True`` when the summary
         came from a fork (``FORK_SUMMARY``), which keeps the client's system
         message. Raises when compression fails.
+
+        ``UNIFY_COMPACTION_KEEP_PREFIX=on``: the restart message is a list,
+        the kept user messages and the summary (``kept_prefix``), for the
+        fork and the compactor alike; the restart messages are the leading
+        system message and the tools are the session's, unchanged.
         """
         cfg = cfg if cfg is not None else self._loop_config
         if cfg is None:
@@ -448,10 +468,20 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
         n_archived = len(self._client.messages)
-        forked = await self._summarise_as_fork(cfg) if FORK_SUMMARY else None
+        keep = self._keep_prefix_this_pass()
+        forked = await self._summarise_as_fork(cfg, keep) if FORK_SUMMARY else None
         if forked is not None:
             restart_messages, restart_tools, restart_message = forked
             return n_archived, restart_messages, restart_tools, restart_message, True
+        if keep:
+            result = await compress_and_rebuild(
+                self._compression,
+                self._client.messages,
+                self._client.endpoint,
+                dict(cfg["tools"]),
+                keep_prefix=True,
+            )
+            return n_archived, result.system_msgs, result.tools, result.messages, False
         result = await compress_and_rebuild(
             self._compression,
             self._client.messages,
@@ -466,9 +496,30 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             False,
         )
 
+    def _keep_prefix_this_pass(self) -> bool:
+        """Whether this compaction keeps the sent prefix
+        (``UNIFY_COMPACTION_KEEP_PREFIX=on``): not when the first call after
+        the session's last keep-prefix compaction was still over the
+        threshold. That pass rebuilds as shipped, and the next one may keep
+        the prefix again."""
+        if not keep_prefix_enabled():
+            return False
+        state = self._runtime_state
+        if state.keep_prefix_shipped_next:
+            state.keep_prefix_shipped_next = False
+            state.keep_prefix_fallbacks += 1
+            LOGGER.info(
+                f"[{getattr(self, '_log_label', None) or self._loop_id}] "
+                "the kept prefix did not fit under the threshold; this "
+                "compaction rebuilds as shipped",
+            )
+            return False
+        return True
+
     async def _summarise_as_fork(
         self,
         cfg: dict,
+        keep_prefix: bool = False,
     ) -> Optional[tuple[list[dict], dict, str]]:
         """Compress by forking the conversation (``FORK_SUMMARY``).
 
@@ -482,6 +533,13 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         Returns ``(messages, tools, first_message)`` for the restart, or
         ``None`` -- and logs why -- when there is no recorded request or the
         fork yields no summary; the caller then compresses as shipped.
+
+        *keep_prefix* (``UNIFY_COMPACTION_KEEP_PREFIX=on``, unless
+        :meth:`_keep_prefix_this_pass` declined it): *first_message* is a list
+        instead: the session's first user message and the requester
+        messages of the current request (``kept_prefix``), unchanged, then
+        the summary as one loop-authored message, so the restarted session
+        starts with what it already sent.
         """
         label = getattr(self, "_log_label", None) or self._loop_id
         last = _cache_discipline.last_sent_request(self._client)
@@ -530,6 +588,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
             return None
         self._compression.count += 1
         history = self._client.messages or []
+        if keep_prefix:
+            return self._keep_prefix_restart(cfg, history, summary)
         system = [
             m for m in history[:1] if isinstance(m, dict) and m.get("role") == "system"
         ]
@@ -551,6 +611,34 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 context=[*system, {"role": "user", "content": restart_message}],
             )
         return system, dict(cfg["tools"]), restart_message
+
+    def _keep_prefix_restart(
+        self,
+        cfg: dict,
+        history: list[dict],
+        summary: str,
+    ) -> tuple[list[dict], dict, list[dict]]:
+        """``_summarise_as_fork``'s restart under UNIFY_COMPACTION_KEEP_PREFIX:
+        the leading system message, then the kept user messages unchanged,
+        then the summary. The history goes to the transcript first, as
+        shipped, and the summary names the file."""
+        system, kept = kept_prefix(history)
+        session = transcripts.session_for_messages(self._client.messages)
+        if session is not None:
+            session.sync()
+        summary_message = loop_user_notice(
+            restart_text(
+                summary,
+                session.pointer_line() if session is not None else None,
+            ),
+        )
+        transcripts.record_compaction(
+            session,
+            archived=len(history),
+            pass_number=self._compression.count,
+            context=[*system, *kept, summary_message],
+        )
+        return system, dict(cfg["tools"]), [*kept, summary_message]
 
     def get_history(self) -> list[dict]:
         """The full LLM conversation history including assistant reasoning,
@@ -689,6 +777,11 @@ def start_async_tool_loop(
     # UNIFY_BIND_REQUEST=on: the loop's current request, kept by the handle
     # so a loop restarted after compression keeps it.
     request_slot = _bound_request.new_slot(bind_request)
+    # UNIFY_REQUEST_METADATA_HEADERS=on: the request the loop starts with is
+    # the requester's first message (a restart after compression is not
+    # started here, so it counts nothing).
+    if bind_request:
+        count_requester_message(client)
 
     # Mutable container through which the inner loop reaches the outer handle
     # once it exists.

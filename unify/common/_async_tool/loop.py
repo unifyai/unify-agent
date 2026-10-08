@@ -31,6 +31,7 @@ from .messages import (
 )
 from .message_dispatcher import LoopMessageDispatcher
 from .tools_utils import create_tool_call_message
+from ..llm_client import count_requester_message
 from ..llm_helpers import (
     DEFAULT_TOOL_SCHEMA_STRICT,
     method_to_schema,
@@ -115,6 +116,15 @@ class ToolLoopRuntimeState:
     cancelled_turns_by_cause: Dict[str, int] = field(default_factory=dict)
     # UNIFY_LOOP_STOP: requests ended for making no progress.
     loop_stops: int = 0
+    # UNIFY_COMPACTION_KEEP_PREFIX=on: a keep-prefix restart waits for its
+    # first measured call (``keep_prefix_unmeasured``). If that call is still
+    # over the compression threshold, what the restart kept is itself too
+    # large, and the session's next compaction rebuilds as shipped, from the
+    # summary alone (``keep_prefix_shipped_next``), so it cannot compact the
+    # same prefix again and again. Both read the session's own usage only.
+    keep_prefix_unmeasured: bool = False
+    keep_prefix_shipped_next: bool = False
+    keep_prefix_fallbacks: int = 0
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -1909,6 +1919,10 @@ async def async_tool_loop_inner(
                     # UNIFY_BIND_REQUEST=on: the requester's message is now
                     # the current request.
                     _bound_request.record(_request_slot, _msg_text)
+                    # UNIFY_REQUEST_METADATA_HEADERS=on: one more requester
+                    # message, in a loop that answers a requester.
+                    if bind_request:
+                        count_requester_message(client)
                     _user_content = (
                         time_ctx.prefix_user_message(_msg_text)
                         if time_ctx is not None
@@ -2429,6 +2443,16 @@ async def async_tool_loop_inner(
                             0.7,
                             _max_input_tokens,
                         )
+                        if runtime_state.keep_prefix_unmeasured:
+                            runtime_state.keep_prefix_unmeasured = False
+                            if _over_threshold:
+                                runtime_state.keep_prefix_shipped_next = True
+                                logger.info(
+                                    "the first call after a keep-prefix "
+                                    "compaction is still over the threshold "
+                                    f"({_usage.prompt_tokens} prompt tokens); "
+                                    "the next compaction rebuilds as shipped",
+                                )
 
             with suppress(Exception):
                 _cache_discipline.log_cache_use(

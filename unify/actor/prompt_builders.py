@@ -222,6 +222,39 @@ def _build_clock_context() -> str:
     """).strip()
 
 
+def _clock_in_first_message() -> bool:
+    """``UNIFY_CLOCK_PLACEMENT=first_message``."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_CLOCK_PLACEMENT == "first_message"
+
+
+def first_message_clock_line() -> str:
+    """``UNIFY_CLOCK_PLACEMENT=first_message``: the line that opens the
+    session's first user message, sampled now; empty otherwise.
+
+    The host's reading, not an authority: what the work itself says about
+    dates comes first.
+    """
+    if not _clock_in_first_message():
+        return ""
+    from unify.common import prompt_helpers
+
+    return (
+        f"The host clock reads {prompt_helpers.now()}. Dates stated in the "
+        "request or in the files and records you work with take precedence."
+    )
+
+
+def _session_sections() -> list[str]:
+    """The per-session sections of the system prompt, sampled now: the
+    clock (unless ``UNIFY_CLOCK_PLACEMENT`` moves it to the first user
+    message) and the filesystem context."""
+    if _clock_in_first_message():
+        return [_build_filesystem_context()]
+    return [_build_clock_context(), _build_filesystem_context()]
+
+
 def _build_filesystem_context() -> str:
     from unify.workspace import get_local_root
 
@@ -654,8 +687,7 @@ def _build_core_prompt(
         parts.append(core.storage_notice(persist=persist))
     parts = _rewrite_sections(parts, _section_rewrites(environments, None))
     if session_sections:
-        parts.append(_build_clock_context())
-        parts.append(_build_filesystem_context())
+        parts.extend(_session_sections())
     rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
     if rules_and_examples:
         parts.append(rules_and_examples)

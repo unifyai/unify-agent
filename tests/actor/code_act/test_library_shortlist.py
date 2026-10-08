@@ -24,6 +24,10 @@ from unify.agents.binding import PROMPT_SECTION
 
 TASK = "List the files in the workspace."
 HEADER = ls._HEADER
+# What act() writes: the core surface binds the listed functions, so its
+# header also says how to call one (ls.CALL_FORM; the bind is pinned in
+# test_core_reuse).
+ACT_HEADER = ls._HEADER_CALL
 # The shared agent record's section, which the first message carries.
 RECORD = PROMPT_SECTION
 
@@ -71,9 +75,9 @@ def _seed(actor):
 
 
 def _shortlist(text: str) -> str | None:
-    if HEADER not in text:
+    if ACT_HEADER not in text:
         return None
-    block = text[text.index(HEADER) :]
+    block = text[text.index(ACT_HEADER) :]
     return block.split("\n\n", 1)[0]
 
 
@@ -96,7 +100,7 @@ async def test_on_the_first_message_lists_the_closest_function_and_guidance():
     assert any(l.startswith("- guidance ") and "`Listing files`" in l for l in lines)
     # After the snapshot line, before the request; nothing else changes.
     assert first.startswith(
-        "Library at task start: 1 stored function, 1 guidance entry.\n\n" + HEADER,
+        "Library at task start: 1 stored function, 1 guidance entry.\n\n" + ACT_HEADER,
     )
     assert first.endswith(f"\n\n---\n\n{TASK}")
     assert on[0]["tool_choice"] == "auto"
@@ -118,7 +122,8 @@ async def test_on_the_list_is_written_once_and_never_repeated():
         holders = [
             m
             for m in request["messages"]
-            if HEADER in json.dumps(m.get("content"), default=str)
+            # json.dumps escapes the header's quotes as it does the content's.
+            if json.dumps(ACT_HEADER)[1:-1] in json.dumps(m.get("content"), default=str)
         ]
         assert [m["role"] for m in holders] == ["user"]
         assert holders[0]["content"] == _first_user(on[0])

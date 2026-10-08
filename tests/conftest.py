@@ -177,6 +177,21 @@ def stub_external_deps(monkeypatch):
     # case records of stored functions and guidance.
     monkeypatch.setattr(db, "utc_now", lambda: _FIXED_DATETIME)
 
+    # A transcript session's id is the wall-clock second and random hex
+    # (unify/transcripts.py), and a compression summary names the session's
+    # file in the request after it. Ids numbered in the order the test opens
+    # its sessions keep that request the same on every run; the test's home
+    # starts empty, so they never meet a file of an earlier run.
+    from unify import transcripts
+
+    _session_numbers = itertools.count(1)
+    _session_stamp = _FIXED_DATETIME.strftime("%Y%m%dT%H%M%S")
+    monkeypatch.setattr(
+        transcripts,
+        "_new_session_id",
+        lambda: f"{_session_stamp}-{next(_session_numbers):08x}",
+    )
+
 
 def _patch_every_copy(monkeypatch, original, replacement) -> None:
     """Point ``original``'s defining attribute and every by-name copy of it

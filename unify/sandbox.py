@@ -62,13 +62,19 @@ rule behind it (:func:`annotate_refusals`).
 
 The harness's package installer (unify/environment.py) runs under the same
 policy with two additions it asks for itself: the workspace environment and
-the installer's cache are writable, and it keeps the host's network to reach
-the package index.
+the installer's cache are writable, and its network namespace, private like
+every other, has one route out: a loopback port forwarded to an
+allow-listing CONNECT proxy the harness runs (:class:`EgressProxy`), which
+opens tunnels only to the package index hosts and never to a loopback,
+link-local or private address, whatever a name resolves to (rule
+``installer-index-only``). The host's loopback services and the cloud
+metadata server (``169.254.169.254``) are unreachable from it.
 
 Without bubblewrap nothing runs: the harness refuses rather than run the
-command unconfined. What this does not confine is Python cells themselves:
-they run in the harness's own process (``exec``), so only the subprocesses they
-start go through the sandbox.
+command unconfined. Python cells run in the sandboxed worker
+(unify/actor/execution/worker.py), a persistent ``python -I -S`` started under
+this policy, never in the harness's own process: a cell's code and every
+subprocess it starts are confined alike.
 """
 
 from __future__ import annotations
@@ -96,12 +102,14 @@ from unify.common.tool_errors import ToolInputError
 
 __all__ = [
     "RULES",
+    "EgressProxy",
     "SandboxPolicy",
     "SandboxRefusal",
     "annotate_refusals",
     "build_policy",
     "check_readable",
     "confined_subprocesses",
+    "egress_proxy",
     "scrubbed_env",
     "unconfined",
     "wrap_argv",
@@ -148,6 +156,11 @@ RULES: dict[str, str] = {
     "network-off": "the sandbox has no network, only a loopback of its own",
     "network-proxy-only": (
         "the only network is one loopback port forwarded to the configured proxy"
+    ),
+    "installer-index-only": (
+        "the package installer has no network of its own; its one route out is "
+        "the harness's proxy, which opens tunnels only to the package index "
+        "hosts and never to a loopback, link-local or private address"
     ),
 }
 
@@ -376,6 +389,10 @@ class SandboxPolicy:
                 rule = _secret_rule(part)
                 if rule is not None and (i == len(parts) - 1 or not _is_env_file(part)):
                     return rule, f"{resolved} has a credential's name"
+            # A private key under any name, read again on every request (the
+            # scan's finds can be older than the file's content).
+            if _holds_private_key(resolved):
+                return "mask-credentials", f"{resolved} holds a private key"
             # A state directory inside the workspace is hidden again over the
             # workspace's mount, but for the views put back.
             if (
@@ -444,18 +461,89 @@ _PUBLIC_PEM = {"cacert.pem", "roots.pem", "ca-bundle.pem", "ca-certificates.pem"
 _CREDENTIAL_NAMES = {Path(p).name for p in CREDENTIAL_PATHS}
 
 
+# Private keys and secret stores by their own name: OpenSSH's default key
+# files (and any ``id_*`` that starts with one of these stems but for ``.pub``
+# public halves), and the suffixes of key, keystore and password-database
+# files. ``.netrc``'s Windows name. Public halves (``*.pub``), ``known_hosts``
+# and ``authorized_keys`` never match.
+_SSH_KEY_STEMS = (
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_ecdsa_sk",
+    "id_ed25519_sk",
+)
+_SECRET_SUFFIXES = (".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk", ".kdbx")
+_SECRET_FILE_NAMES = {"_netrc"}
+
+
 def _secret_rule(name: str) -> Optional[str]:
     """The mask rule for a file or directory named *name* in a mounted root."""
     if _is_env_file(name):
         return "mask-env-file"
     lower = name.lower()
-    if name in _CREDENTIAL_NAMES:
+    if name in _CREDENTIAL_NAMES or lower in _SECRET_FILE_NAMES:
         return "mask-credentials"
     if lower.endswith(".pem") and lower not in _PUBLIC_PEM:
         return "mask-credentials"
     if lower.endswith(".json") and "key" in lower:
         return "mask-credentials"
+    if lower.endswith(".pub"):
+        return None
+    if lower.startswith(_SSH_KEY_STEMS) or lower.endswith(_SECRET_SUFFIXES):
+        return "mask-credentials"
     return None
+
+
+# A workspace file is also masked by its content: a regular file of at most
+# _ARMOUR_MAX_SIZE bytes whose first _ARMOUR_READ bytes hold a private key's
+# PEM or PGP armour (PKCS#1/#8, OpenSSH, SEC1, DSA, encrypted PKCS#8, a PGP
+# secret key block; a JSON service-account key holds it too). Public-key and
+# certificate armour never matches.
+_ARMOUR_MAX_SIZE = 64 * 1024
+_ARMOUR_READ = 4096
+# The shortest armour line: a smaller file cannot hold one and is never read.
+_ARMOUR_MIN_SIZE = len(b"-----BEGIN PRIVATE KEY-----")  # pragma: allowlist secret
+_PRIVATE_ARMOUR = re.compile(
+    rb"-----BEGIN (?:(?:OPENSSH|RSA|EC|DSA|ENCRYPTED) )?PRIVATE KEY-----"  # pragma: allowlist secret
+    rb"|-----BEGIN PGP PRIVATE KEY BLOCK-----",  # pragma: allowlist secret
+)
+
+
+def _holds_private_key(path: str | os.PathLike) -> bool:
+    """Whether *path* is a regular file of at most :data:`_ARMOUR_MAX_SIZE`
+    bytes whose first :data:`_ARMOUR_READ` bytes hold private-key armour.
+
+    Opened with ``O_NOFOLLOW`` (a link is never followed: its target is
+    checked by its own path) and ``O_NONBLOCK`` (a FIFO swapped in never
+    blocks), only when it is a regular file by ``lstat`` of a size that can
+    hold armour, then checked again on the open descriptor. A file that
+    cannot be opened or read is not masked by content.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0)
+    try:
+        st = os.lstat(path)
+        # Never opened unless it is a small regular file now (a device is
+        # never opened); checked again on the descriptor.
+        if not (
+            stat.S_ISREG(st.st_mode)
+            and _ARMOUR_MIN_SIZE <= st.st_size <= _ARMOUR_MAX_SIZE
+        ):
+            return False
+        fd = os.open(path, flags)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _ARMOUR_MAX_SIZE:
+            return False
+        head = os.read(fd, _ARMOUR_READ)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return _PRIVATE_ARMOUR.search(head) is not None
 
 
 # The interpreter roots' scan (_find_secret_files with ``cached``): about 60k
@@ -466,8 +554,9 @@ _SECRET_SCAN_CACHE: dict[Path, tuple[str, list, list]] = {}
 # Bump when the scan's matching or walking rules change (_secret_rule,
 # _secret_entries): every cache entry written under another version is stale.
 # The rule tables themselves (_CREDENTIAL_NAMES, _PUBLIC_PEM,
-# _ENV_FILE_ALLOWED) are part of the key as they are.
-_ROOT_SCAN_RULES_VERSION = 1
+# _ENV_FILE_ALLOWED, _SSH_KEY_STEMS, _SECRET_SUFFIXES, _SECRET_FILE_NAMES)
+# are part of the key as they are. Version 2: private keys by name.
+_ROOT_SCAN_RULES_VERSION = 2
 _ROOT_SCAN_SCHEMA = 2
 # How deep below the root and below each of its site-packages the fingerprint
 # lists directories: a new entry at depth 1 to 3 below either changes it.
@@ -488,6 +577,9 @@ def _rules_digest() -> str:
         sorted(_CREDENTIAL_NAMES),
         sorted(_PUBLIC_PEM),
         sorted(_ENV_FILE_ALLOWED),
+        sorted(_SSH_KEY_STEMS),
+        sorted(_SECRET_SUFFIXES),
+        sorted(_SECRET_FILE_NAMES),
     ]
     return hashlib.sha256(json.dumps(data).encode()).hexdigest()
 
@@ -681,6 +773,8 @@ def _scan_cache_store(
 def _secret_entries(
     directory: Path,
     skip_names: frozenset[str] = frozenset(),
+    *,
+    content: bool = False,
 ) -> Optional[tuple[list, list, list, int]]:
     """One directory's ``(files, dirs, subdirectories, entries)`` for the scan.
 
@@ -688,6 +782,12 @@ def _secret_entries(
     secret name masks its target; a directory of a :data:`CREDENTIAL_PATHS`
     name is masked whole and not entered); ``subdirectories`` are the ones to
     enter (not those named in *skip_names*). ``None`` if it cannot be read.
+
+    With *content* (the workspace scan only, never the interpreter roots',
+    whose packages carry test keys), a regular file of another name that
+    :func:`_holds_private_key` is masked too (``mask-credentials``); each
+    file read (one of a size that can hold armour) counts once more in
+    ``entries``, so the scan's cap bounds the reads as well.
     """
     try:
         entries = list(os.scandir(directory))
@@ -696,6 +796,7 @@ def _secret_entries(
     files: list[tuple[Path, str]] = []
     dirs: list[tuple[Path, str]] = []
     subdirs: list[Path] = []
+    reads = 0
     for entry in entries:
         rule = _secret_rule(entry.name)
         try:
@@ -713,9 +814,19 @@ def _secret_entries(
                     subdirs.append(Path(entry.path))
             elif rule is not None and entry.is_file():
                 files.append((Path(entry.path), rule))
+            elif (
+                content
+                and entry.is_file(follow_symlinks=False)
+                and _ARMOUR_MIN_SIZE
+                <= entry.stat(follow_symlinks=False).st_size
+                <= _ARMOUR_MAX_SIZE
+            ):
+                reads += 1
+                if _holds_private_key(entry.path):
+                    files.append((Path(entry.path), "mask-credentials"))
         except OSError:
             continue
-    return files, dirs, subdirs, len(entries)
+    return files, dirs, subdirs, len(entries) + reads
 
 
 def _walk_secret_files(
@@ -749,9 +860,12 @@ def _find_secret_files(
     """``(files, dirs)`` to mask, with rules, anywhere under each mounted root.
 
     Every depth, hidden directories included: ``.env*`` files, ``*.pem``
-    other than public CA bundles, ``*key*.json`` and the names of
+    other than public CA bundles, ``*key*.json``, the names of
     :data:`CREDENTIAL_PATHS` (a directory of those names is masked whole and
-    not entered). A link of such a name masks its target.
+    not entered), OpenSSH private keys (``id_rsa``, ``id_ed25519``, ... but
+    ``*.pub``), ``_netrc`` and the key and keystore suffixes
+    (:data:`_SECRET_SUFFIXES`). A link of such a name masks its target. No
+    file is read here (the workspace scan alone checks content).
 
     The scan of a root in *cached* (the interpreter's, about 60k entries) is
     reused while its fingerprint (:func:`_root_fingerprint`) is unchanged: in
@@ -850,6 +964,15 @@ def _scan_workspace(
     Past *limit*, unchanged directories are still reused but changed ones are
     not read (``capped``): their secrets are not masked in cells, and the
     harness's file tools refuse them by name.
+
+    Files are also masked by content (private-key armour in a small regular
+    file, :func:`_holds_private_key`), read when their directory is read.
+    Residual: a directory's mtime moves when an entry is made, removed or
+    renamed, not when a file's content is rewritten in place, so armour
+    written into an existing file of an unchanged directory is not masked in
+    cells until that directory changes (or the harness process restarts);
+    the harness's file tools read the file again on every request and refuse
+    it.
     """
     if limit is None:
         limit = _WORKSPACE_SCAN_LIMIT
@@ -875,7 +998,7 @@ def _scan_workspace(
             out.capped = True
             continue
         else:
-            found = _secret_entries(directory, _WORKSPACE_SCAN_SKIP)
+            found = _secret_entries(directory, _WORKSPACE_SCAN_SKIP, content=True)
             if found is None:
                 continue
             out.rescanned += 1
@@ -1958,8 +2081,9 @@ def seccomp_program(arch: Optional[str] = None) -> bytes:
     * io_uring, which can open sockets without the ``socket`` call, gets
       ENOSYS.
 
-    Network reach is unchanged: AF_INET follows the network namespace
-    (``--unshare-net`` or ``--share-net``) and the proxy mode as before.
+    Network reach is unchanged: AF_INET follows the network namespace (never
+    the host's), and the proxy mode and the installer's egress reach out only
+    through their forwarders' unix sockets, as before.
     """
     import struct
 
@@ -2034,15 +2158,17 @@ def wrap_argv(
     cwd: Optional[str] = None,
     writable: Sequence[Path] = (),
     readonly: Sequence[Path] = (),
-    share_network: bool = False,
+    egress: Optional["EgressProxy"] = None,
 ) -> list[str]:
     """*argv* as a bubblewrap command line under *policy*.
 
     *writable* paths are bound read-write after everything else, *readonly*
     ones (a program the harness runs from outside the allowlisted root: the
-    installer's ``uv``) read-only on the root, and *share_network* keeps the
-    host's network instead of the policy's; only the harness's package
-    installer asks for these (unify/environment.py).
+    installer's ``uv``) read-only on the root, and *egress* replaces the
+    policy's network with one loopback port (:data:`INSTALLER_PROXY_PORT`)
+    forwarded to that allow-listing proxy; only the harness's package
+    installer asks for these (unify/environment.py). No command ever gets the
+    host's network.
 
     The command line starts ``/bin/sh -c 'exec "$@" 9<"$0"' <seccomp.bpf>``:
     the shell opens the seccomp program on descriptor 9 for bubblewrap
@@ -2155,10 +2281,34 @@ def wrap_argv(
         if _inside_shown(path) and not any(_within(p, path) for p in shown):
             args += _hide(path, rule)
     command = list(argv)
-    if share_network:
-        args.append("--share-net")
+    if egress is not None:
+        # The installer: the same forwarder as the proxy mode, relaying to the
+        # harness's allow-listing proxy instead of the operator's.
+        _refuse_shown_socket(
+            egress.directory,
+            policy,
+            (*extra, *readonly),
+            "installer-index-only",
+        )
+        args += ["--ro-bind", str(egress.directory), _PROXY_MOUNT]
+        command = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _FORWARDER_SRC,
+            str(INSTALLER_PROXY_PORT),
+            f"{_PROXY_MOUNT}/{egress.path.name}",
+            *command,
+        ]
     elif policy.network == "proxy":
         bridge = _proxy_bridge(policy.proxy_port)
+        _refuse_shown_socket(
+            bridge.directory,
+            policy,
+            (*extra, *readonly),
+            "network-proxy-only",
+        )
         args += ["--ro-bind", str(bridge.directory), _PROXY_MOUNT]
         command = [
             sys.executable,
@@ -2196,6 +2346,31 @@ def wrap_argv(
 
 
 _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
+
+
+def _refuse_shown_socket(
+    directory: Path,
+    policy: SandboxPolicy,
+    bound: Sequence[Path],
+    rule: str,
+) -> None:
+    """Refuse when a proxy socket's *directory* is visible in the sandbox
+    anywhere but :data:`_PROXY_MOUNT`: under the workspace, a mounted view
+    or one of the command's own binds (*bound*), a cell could connect to the
+    socket directly or replace it. It lives in the harness's temporary
+    directory, which the sandbox replaces with its own (rule
+    ``private-tmp``), unless ``TMPDIR`` points somewhere the sandbox shows.
+    """
+    real = Path(os.path.realpath(directory))
+    if policy.readable_violation(real) is None or any(
+        _within(real, Path(os.path.realpath(p))) for p in bound
+    ):
+        raise SandboxRefusal(
+            rule,
+            f"the proxy's socket directory {real} would be visible inside the "
+            "sandbox; point TMPDIR at a directory the sandbox does not show "
+            "(the default, /tmp, is private to it)",
+        )
 
 
 def _refuse_broad_binds(
@@ -2245,12 +2420,61 @@ def _notice(directory: Path) -> str:
     return str(directory / MASK_NOTICE_NAME)
 
 
+_PYTHON_NAMES = ("python", "python3")
+
+
+def interpreter_bin_dirs() -> list[str]:
+    """The directories that give a sandboxed command ``python`` and ``python3``.
+
+    Cells run with this interpreter (the worker starts ``sys.executable``),
+    which the root already mounts by every name it is reached through
+    (:func:`_interpreter_candidates`). Its own directory comes first (a venv's
+    ``bin``, which usually has both names); the resolved install's directory
+    follows only when the first lacks one of them. Nothing is created: a name
+    neither directory has stays unresolved.
+    """
+    dirs: list[str] = []
+    missing = set(_PYTHON_NAMES)
+    for candidate in (
+        os.path.dirname(os.path.abspath(sys.executable)),
+        os.path.dirname(os.path.realpath(sys.executable)),
+    ):
+        if not missing or candidate in dirs:
+            continue
+        found = {
+            name
+            for name in missing
+            if os.access(os.path.join(candidate, name), os.X_OK)
+        }
+        if found:
+            dirs.append(candidate)
+            missing -= found
+    return dirs
+
+
+def _interpreter_first_on_path(path: Optional[str]) -> str:
+    """*path* with :func:`interpreter_bin_dirs` first, each entry once."""
+    entries = (path if path is not None else os.defpath).split(os.pathsep)
+    return os.pathsep.join(
+        dict.fromkeys(entry for entry in (*interpreter_bin_dirs(), *entries) if entry),
+    )
+
+
 def sandbox_env(
     policy: SandboxPolicy,
     env: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
-    """The environment a sandboxed command gets."""
+    """The environment a sandboxed command gets.
+
+    Without an explicit *env*, ``PATH`` starts with the cell interpreter's
+    directories (:func:`interpreter_bin_dirs`), so ``python`` and ``python3``
+    in a cell's subprocess or a bash cell are the interpreter cells run with,
+    whether or not the host's ``PATH`` has them. They are already mounted; no
+    mount changes. An explicit *env* (a cell's ``env=``) is kept as given.
+    """
     out = scrubbed_env(env)
+    if env is None:
+        out["PATH"] = _interpreter_first_on_path(out.get("PATH"))
     # The fake clock's variables come from the harness only, as it has them.
     for name in TRUSTED_ENV:
         out.pop(name, None)
@@ -2491,6 +2715,580 @@ def _proxy_bridge(port: int) -> _ProxyBridge:
         if bridge is None or not bridge.path.exists():
             bridge = _BRIDGES[port] = _ProxyBridge(port)
         return bridge
+
+
+# ---------------------------------------------------------------------------
+# The installer's egress: an allow-listing CONNECT proxy, harness-side
+# ---------------------------------------------------------------------------
+
+# The port the forwarder listens on inside the installer's sandbox, on its
+# own loopback (the namespace is private, so any port would do).
+INSTALLER_PROXY_PORT = 3128
+# A CONNECT request head: at most this many bytes, all within this many
+# seconds of the connection (one deadline, not one per read).
+_PROXY_HEAD_LIMIT = 8192
+_PROXY_HANDSHAKE_S = 30.0
+_PROXY_CONNECT_S = 10.0
+_TUNNEL_IDLE_S = 300.0
+# The client's first TLS bytes in a tunnel: the whole ClientHello must
+# arrive within this many bytes (record headers included) and seconds.
+_CLIENT_HELLO_LIMIT = 16384
+_CLIENT_HELLO_S = 10.0
+# The encrypted_client_hello extension (TLS ECH): it hides the real server
+# name, so a hello carrying it is refused.
+_ECH_EXTENSION = 0xFE0D
+# At most this many tunnels are open at once; more are refused.
+_MAX_TUNNELS = 32
+# Of one proxy's refusals, the first this many are kept, logged and shown
+# to the model (as fixed notes); the rest are only counted. Each kept target
+# and reason is cut to _REFUSAL_TEXT characters.
+_REFUSALS_KEPT = 20
+_REFUSAL_TEXT = 200
+# The well-known NAT64 prefix (RFC 6052): the last 32 bits are the IPv4
+# address a translator reaches, link-local and private ones included. The
+# local-use prefix (64:ff9b:1::/48, RFC 8215) embeds it at a position its
+# length decides, so it is refused with the rest outside 2000::/3.
+_NAT64_WELL_KNOWN = "64:ff9b::/96"
+
+
+def _resolve(host: str, port: int) -> list[tuple]:
+    """The addresses *host* resolves to, as :func:`socket.getaddrinfo` gives them."""
+    return socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+
+
+def public_address(address: str) -> bool:
+    """Whether *address* is a globally routable unicast address.
+
+    False for loopback, link-local (the cloud metadata server,
+    ``169.254.169.254``), private, shared (CGNAT), reserved, unspecified and
+    multicast addresses. An IPv6 address must be global unicast, inside
+    ``2000::/3``, and outside every special range: so IPv4-compatible
+    (``::a9fe:a9fe``), IPv4-mapped, SIIT (``::ffff:0:a9fe:a9fe``),
+    site-local (``fec0::/10``) and unique-local addresses are refused, and
+    so is 6to4 (``2002::/16``: not globally reachable for
+    :mod:`ipaddress`, and never around a non-public IPv4 address whatever
+    its version says). The one exception is the
+    well-known NAT64 prefix (``64:ff9b::/96``), whose last 32 bits are the
+    IPv4 address a translator reaches: public only if that address is.
+    """
+    import ipaddress
+
+    try:
+        ip = ipaddress.ip_address(address.split("%", 1)[0])
+    except ValueError:
+        return False
+    if ip.version == 6:
+        if ip in ipaddress.ip_network(_NAT64_WELL_KNOWN):
+            return public_address(str(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)))
+        if ip not in ipaddress.ip_network("2000::/3"):
+            return False
+        if ip.sixtofour is not None and not public_address(str(ip.sixtofour)):
+            return False
+    return ip.is_global and not ip.is_multicast
+
+
+def _clip(text: str) -> str:
+    """*text* cut to :data:`_REFUSAL_TEXT` characters."""
+    return text if len(text) <= _REFUSAL_TEXT else text[:_REFUSAL_TEXT] + "..."
+
+
+def _host_key(host: str) -> str:
+    return host.strip().strip("[]").lower().rstrip(".")
+
+
+def _authority(text: str) -> Optional[tuple[str, int]]:
+    """``(host, port)`` of a CONNECT request's ``host:port``, or ``None``.
+
+    The port is ASCII digits only: ``str.isdigit`` also holds for ``"²"``,
+    which ``int`` refuses, and for other scripts' digits, which it reads.
+    """
+    if text.startswith("["):
+        host, _, rest = text[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    else:
+        host, _, port = text.rpartition(":")
+    if not host or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
+        return None
+    return _host_key(host), int(port)
+
+
+class _HelloRefused(ValueError):
+    """The tunnel's first bytes are not a ClientHello the proxy accepts."""
+
+
+class _Reader:
+    """Bounds-checked reads over a TLS structure."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+
+    def done(self) -> bool:
+        return self.pos == len(self.data)
+
+    def take(self, n: int) -> bytes:
+        if n < 0 or self.pos + n > len(self.data):
+            raise _HelloRefused("the ClientHello is malformed (truncated field)")
+        out = self.data[self.pos : self.pos + n]
+        self.pos += n
+        return out
+
+    def number(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "big")
+
+    def vector(self, width: int) -> bytes:
+        """A length-prefixed field whose length takes *width* bytes."""
+        return self.take(self.number(width))
+
+
+def _read_client_hello(
+    conn: socket.socket,
+    buffered: bytes,
+    deadline: float,
+) -> tuple[bytes, str]:
+    """``(bytes read, server name)``: the client's ClientHello, read from
+    *conn* after the *buffered* bytes the request head was followed by.
+
+    Reads TLS handshake records (``content type 22``, version ``3.x``,
+    length 1..16384), reassembling a ClientHello fragmented over several of
+    them, until the whole handshake message is in; never more than
+    :data:`_CLIENT_HELLO_LIMIT` bytes or past *deadline*. Raises
+    :class:`_HelloRefused` on anything else: other first bytes (plain HTTP,
+    say), a record or message over the limit, a first handshake message
+    that is not a ClientHello, a malformed one, the stream ending or the
+    time running out first, and a ClientHello without exactly one
+    ``host_name`` in its ``server_name`` extension.
+    """
+    data = bytearray(buffered)
+
+    def need(n: int) -> None:
+        if n > _CLIENT_HELLO_LIMIT:
+            raise _HelloRefused(
+                f"the ClientHello is larger than {_CLIENT_HELLO_LIMIT} bytes",
+            )
+        while len(data) < n:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _HelloRefused(
+                    f"no complete ClientHello within {_CLIENT_HELLO_S:g} s",
+                )
+            conn.settimeout(left)
+            try:
+                chunk = conn.recv(min(4096, n - len(data)))
+            except (socket.timeout, TimeoutError):
+                raise _HelloRefused(
+                    f"no complete ClientHello within {_CLIENT_HELLO_S:g} s",
+                ) from None
+            if not chunk:
+                raise _HelloRefused("the tunnel closed before a complete ClientHello")
+            data.extend(chunk)
+
+    handshake = bytearray()
+    pos = 0
+    while True:
+        need(pos + 5)
+        kind, major, length = (
+            data[pos],
+            data[pos + 1],
+            data[pos + 3] << 8 | data[pos + 4],
+        )
+        if kind != 22 or major != 3:
+            raise _HelloRefused("the tunnel's first bytes are not a TLS handshake")
+        if not 0 < length <= 16384:
+            raise _HelloRefused(f"a TLS record of {length} bytes is out of bounds")
+        need(pos + 5 + length)
+        handshake += data[pos + 5 : pos + 5 + length]
+        pos += 5 + length
+        if len(handshake) < 4:
+            continue
+        if handshake[0] != 1:
+            raise _HelloRefused("the first handshake message is not a ClientHello")
+        size = 4 + int.from_bytes(handshake[1:4], "big")
+        if size > _CLIENT_HELLO_LIMIT:
+            raise _HelloRefused(
+                f"the ClientHello is larger than {_CLIENT_HELLO_LIMIT} bytes",
+            )
+        if len(handshake) >= size:
+            return bytes(data), _client_hello_sni(bytes(handshake[4:size]))
+
+
+def _client_hello_sni(body: bytes) -> str:
+    """The one ``host_name`` a ClientHello's *body* names (RFC 8446 4.1.2,
+    RFC 6066 3), lower-cased without a trailing dot."""
+    r = _Reader(body)
+    r.take(2 + 32)  # legacy_version, random
+    if len(r.vector(1)) > 32:  # legacy_session_id
+        raise _HelloRefused("the ClientHello is malformed (session id)")
+    suites = r.vector(2)
+    if not suites or len(suites) % 2:
+        raise _HelloRefused("the ClientHello is malformed (cipher suites)")
+    if not r.vector(1):  # legacy_compression_methods
+        raise _HelloRefused("the ClientHello is malformed (compression methods)")
+    if r.done():
+        raise _HelloRefused("the ClientHello names no TLS server (no SNI)")
+    extensions = _Reader(r.vector(2))
+    if not r.done():
+        raise _HelloRefused("the ClientHello is malformed (trailing bytes)")
+    seen: set[int] = set()
+    name: Optional[bytes] = None
+    while not extensions.done():
+        kind = extensions.number(2)
+        data = extensions.vector(2)
+        if kind in seen:
+            raise _HelloRefused(f"the ClientHello repeats extension {kind}")
+        seen.add(kind)
+        if kind == _ECH_EXTENSION:
+            # Encrypted Client Hello hides the real server name behind an
+            # outer (public) one, so the SNI checked here could be a decoy.
+            raise _HelloRefused("the ClientHello uses encrypted_client_hello")
+        if kind != 0:  # server_name
+            continue
+        entries = _Reader(data)
+        names = _Reader(entries.vector(2))
+        if not entries.done() or names.done():
+            raise _HelloRefused("the ClientHello is malformed (server_name)")
+        while not names.done():
+            if names.number(1) != 0 or name is not None:
+                raise _HelloRefused(
+                    "the ClientHello's server_name holds more than one host_name",
+                )
+            name = names.vector(2)
+    if name is None:
+        raise _HelloRefused("the ClientHello names no TLS server (no SNI)")
+    text = name.decode("ascii", "replace")
+    if not text or not all(c.isascii() and (c.isalnum() or c in "-._") for c in text):
+        raise _HelloRefused("the ClientHello's server name is not a host name")
+    return _host_key(text)
+
+
+class EgressProxy:
+    """An HTTP CONNECT proxy, on a private unix socket, for the installer.
+
+    It opens a tunnel only to an *allowed* ``(host, port)`` pair (the
+    package index hosts, unify/environment.py), and only to the public
+    addresses that host resolves to: a name that resolves to loopback,
+    link-local (the cloud metadata server), private or other non-public
+    addresses is refused, and the address connected to is the one checked,
+    so a second lookup cannot change it. Anything that is not a CONNECT (a
+    plain ``http://`` request) is refused.
+
+    An address can serve many sites (``pypi.org`` and
+    ``files.pythonhosted.org`` share a CDN's addresses with other
+    customers), so the tunnel's first bytes must be a TLS ClientHello whose
+    server name (SNI) is the CONNECT's host (case-insensitive, without a
+    trailing dot); only then are they forwarded and the tunnel relayed
+    (:func:`_read_client_hello`). Without SNI, with another name, with other
+    first bytes or a ClientHello over 16 KB the tunnel is closed. What the
+    proxy cannot see is the request inside TLS: a ``Host`` header naming
+    another site on the same CDN is the CDN's to refuse (domain fronting).
+
+    The first :data:`_REFUSALS_KEPT` refusals are logged and kept in
+    :attr:`refused` as ``(target, reason)`` (each cut to
+    :data:`_REFUSAL_TEXT` characters), with a fixed note per refusal in
+    :attr:`notes` for the model to read: a note never quotes the CONNECT
+    target or TLS server name the client sent. Later refusals are only
+    counted (:attr:`unlisted`), so a client opening thousands of refused
+    tunnels cannot flood the log or the install's output.
+
+    The allow-list is fixed when the proxy starts, by the harness; nothing
+    the sandboxed command sends can add to it. :func:`wrap_argv` mounts the
+    socket's directory into the sandbox, where the forwarder relays the
+    command's loopback port (:data:`INSTALLER_PROXY_PORT`) to it; :meth:`env`
+    gives the proxy variables that point the command there.
+    """
+
+    def __init__(self, allowed: Sequence[tuple[str, int]]) -> None:
+        self.allowed = frozenset((_host_key(h), int(p)) for h, p in allowed)
+        self.refused: list[tuple[str, str]] = []
+        self.notes: list[str] = []
+        self.unlisted = 0
+        self._refused_lock = threading.Lock()
+        self.directory = Path(tempfile.mkdtemp(prefix="unify-installer-proxy-"))
+        self.path = self.directory / "proxy.sock"
+        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._server.bind(str(self.path))
+        self._server.listen(64)
+        # At most _MAX_TUNNELS connections are handled at once, and close()
+        # shuts every open one, so no tunnel outlives the install.
+        self._slots = threading.BoundedSemaphore(_MAX_TUNNELS)
+        self._open: set[socket.socket] = set()
+        self._open_lock = threading.Lock()
+        threading.Thread(
+            target=self._serve,
+            daemon=True,
+            name="unify-installer-proxy",
+        ).start()
+
+    @property
+    def url(self) -> str:
+        """The proxy's address as the sandboxed command sees it."""
+        return f"http://127.0.0.1:{INSTALLER_PROXY_PORT}"
+
+    def env(self) -> dict[str, str]:
+        """The proxy variables for a command behind this proxy."""
+        out = {}
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            out[name] = out[name.lower()] = self.url
+        return out
+
+    def close(self) -> None:
+        try:
+            # Wakes the accept() blocked in the serving thread.
+            self._server.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._server.close()
+        with self._open_lock:
+            still_open = list(self._open)
+        for s in still_open:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        shutil.rmtree(self.directory, ignore_errors=True)
+        if self.unlisted:
+            logging.getLogger(__name__).warning(
+                "installer proxy: %d more refusals, not logged",
+                self.unlisted,
+            )
+
+    def _track(self, s: socket.socket) -> socket.socket:
+        with self._open_lock:
+            self._open.add(s)
+        return s
+
+    def _untrack(self, s: socket.socket) -> None:
+        with self._open_lock:
+            self._open.discard(s)
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _ = self._server.accept()
+            except OSError:
+                return
+            if not self._slots.acquire(blocking=False):
+                reason = f"more than {_MAX_TUNNELS} tunnels at once"
+                self._refuse(conn, "?", "503 Service Unavailable", reason, reason)
+                conn.close()
+                continue
+            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+
+    def _note_refusal(self, target: str, reason: str, note: str) -> None:
+        """Keep and log a refusal, or count it past the first few.
+
+        *target* and *reason* may quote what the client sent (they are for
+        the harness's log); *note* is fixed text the model may read.
+        """
+        target, reason = _clip(target), _clip(reason)
+        with self._refused_lock:
+            kept = len(self.refused) < _REFUSALS_KEPT
+            if kept:
+                self.refused.append((target, reason))
+                self.notes.append(note)
+            else:
+                self.unlisted += 1
+            first_unlisted = not kept and self.unlisted == 1
+        if kept:
+            # repr(): a target or reason quoting client bytes cannot forge
+            # log lines.
+            logging.getLogger(__name__).warning(
+                "installer proxy: refused %r: %r",
+                target,
+                reason,
+            )
+        elif first_unlisted:
+            logging.getLogger(__name__).warning(
+                "installer proxy: more than %d refusals; the rest are counted",
+                _REFUSALS_KEPT,
+            )
+
+    def _refuse(
+        self,
+        conn: socket.socket,
+        target: str,
+        status: str,
+        reason: str,
+        note: str,
+    ) -> None:
+        self._note_refusal(target, reason, note)
+        body = f"Refused by the Unify installer proxy: {reason}\n".encode()
+        try:
+            conn.sendall(
+                f"HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n"
+                f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                + body,
+            )
+        except OSError:
+            pass
+
+    def _handle(self, conn: socket.socket) -> None:
+        up: Optional[socket.socket] = None
+        self._track(conn)
+        try:
+            # One deadline for the whole head: a client trickling a byte at a
+            # time cannot hold a tunnel slot past it.
+            deadline = time.monotonic() + _PROXY_HANDSHAKE_S
+            head = b""
+            while b"\r\n\r\n" not in head:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    reason = f"no complete request head within {_PROXY_HANDSHAKE_S:g} s"
+                    self._refuse(conn, "?", "408 Request Timeout", reason, reason)
+                    return
+                conn.settimeout(left)
+                try:
+                    data = conn.recv(4096)
+                except (socket.timeout, TimeoutError):
+                    continue
+                if not data:
+                    return
+                head += data
+                if len(head) > _PROXY_HEAD_LIMIT:
+                    reason = "request head too large"
+                    self._refuse(conn, "?", "431 Too Large", reason, reason)
+                    return
+            head, _, early = head.partition(b"\r\n\r\n")
+            line = head.split(b"\r\n", 1)[0].decode("latin-1")
+            parts = line.split(" ")
+            if len(parts) != 3 or parts[0] != "CONNECT":
+                reason = "only CONNECT tunnels to the package index are proxied"
+                self._refuse(conn, line, "405 Method Not Allowed", reason, reason)
+                return
+            target = _authority(parts[1])
+            if target is None:
+                self._refuse(
+                    conn,
+                    parts[1],
+                    "400 Bad Request",
+                    "bad target",
+                    "a malformed CONNECT target",
+                )
+                return
+            name = f"{target[0]}:{target[1]}"
+            if target not in self.allowed:
+                self._refuse(
+                    conn,
+                    name,
+                    "403 Forbidden",
+                    f"{name} is not a package index host",
+                    "a host off the allow-list (only the package index hosts "
+                    "are reached)",
+                )
+                return
+            up, reason = self._connect(*target)
+            if up is None:
+                self._refuse(
+                    conn,
+                    name,
+                    "403 Forbidden",
+                    reason,
+                    "a package index host with no reachable public address",
+                )
+                return
+            self._track(up)
+            conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            # Nothing the client sends reaches the index host before its
+            # ClientHello names that host; otherwise the tunnel is closed (no
+            # HTTP status can follow the 200) and the refusal noted.
+            try:
+                first, sni = _read_client_hello(
+                    conn,
+                    early,
+                    time.monotonic() + _CLIENT_HELLO_S,
+                )
+            except _HelloRefused as exc:
+                # Its text is fixed, with numbers at most: no client bytes.
+                self._note_refusal(
+                    name,
+                    f"tunnel to {name}: {exc}",
+                    f"a tunnel whose TLS ClientHello was refused: {exc}",
+                )
+                return
+            if sni != target[0]:
+                self._note_refusal(
+                    name,
+                    f"tunnel to {name}: the ClientHello names {sni!r}, "
+                    f"not {target[0]!r} (SNI must be the CONNECT host)",
+                    "a tunnel whose TLS server name was not its CONNECT host "
+                    "(SNI must be the CONNECT host)",
+                )
+                return
+            up.sendall(first)
+            for s in (conn, up):
+                s.settimeout(_TUNNEL_IDLE_S)
+            back = threading.Thread(target=_relay, args=(up, conn), daemon=True)
+            back.start()
+            _relay(conn, up)
+            back.join(_TUNNEL_IDLE_S)
+        except OSError:
+            pass
+        except Exception as exc:
+            # Whatever the client sent, the handler ends here, so the finally
+            # below always closes its sockets and frees its slot. Only the
+            # exception's type is recorded: its message may quote client bytes.
+            self._note_refusal(
+                "?",
+                f"the proxy failed on a request ({type(exc).__name__})",
+                "a request the proxy could not handle",
+            )
+        finally:
+            for s in (conn, up):
+                if s is not None:
+                    self._untrack(s)
+                    s.close()
+            self._slots.release()
+
+    def _connect(self, host: str, port: int) -> tuple[Optional[socket.socket], str]:
+        try:
+            infos = _resolve(host, port)
+        except OSError as exc:
+            return None, f"{host} does not resolve ({exc})"
+        public = [i for i in infos if public_address(str(i[4][0]))]
+        if not public:
+            return None, (
+                f"{host} resolves only to non-public addresses "
+                f"({', '.join(sorted({str(i[4][0]) for i in infos}))}); "
+                "loopback, link-local and private addresses are never reached"
+            )
+        last = ""
+        for family, _type, proto, _canon, sockaddr in public:
+            s = socket.socket(family, socket.SOCK_STREAM, proto)
+            s.settimeout(_PROXY_CONNECT_S)
+            try:
+                s.connect(sockaddr)
+                return s, ""
+            except OSError as exc:
+                s.close()
+                last = str(exc)
+        return None, f"could not connect to {host}:{port} ({last})"
+
+
+def _relay(a: socket.socket, b: socket.socket) -> None:
+    """Copy *a* to *b*; at *a*'s end of stream, end *b*'s (half-close)."""
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                b.shutdown(socket.SHUT_WR)
+                return
+            b.sendall(data)
+    except OSError:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+@contextmanager
+def egress_proxy(allowed: Sequence[tuple[str, int]]) -> Iterator[EgressProxy]:
+    """An :class:`EgressProxy` for *allowed*, closed on exit."""
+    proxy = EgressProxy(allowed)
+    try:
+        yield proxy
+    finally:
+        proxy.close()
 
 
 # ---------------------------------------------------------------------------

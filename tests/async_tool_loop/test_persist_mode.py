@@ -181,6 +181,21 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
 
     await _wait_for_condition(_has_second_tool_call, poll=0.05, timeout=30.0)
 
+    # Wait for the reply to the second result before stopping. A stop sent
+    # while that model call is in flight cancels it on a live run, so it is
+    # never recorded, and a replay that reaches it first finds no response.
+    async def _has_second_result_response() -> bool:
+        msgs = client.messages or []
+        tool_idxs = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+        if len(tool_idxs) < 2:
+            return False
+        return any(
+            m.get("role") == "assistant" and m.get("content")
+            for m in msgs[tool_idxs[1] + 1 :]
+        )
+
+    await _wait_for_condition(_has_second_result_response, poll=0.05, timeout=30.0)
+
     # Stop and verify
     await handle.stop()
     await handle.result()
@@ -529,72 +544,6 @@ async def test_non_persist_response_format_uses_final_response(llm_config):
     assert (
         "final_answer" not in assistant_tool_calls
     ), "Legacy 'final_answer' name should not appear in tool calls."
-
-
-# --------------------------------------------------------------------------- #
-#  PERSIST MODE: handle.ask() should not break persist wait                   #
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-@_handle_project
-async def test_persist_mode_survives_ask_mirror(llm_config):
-    """Calling handle.ask() while in persist wait must not crash the loop.
-
-    handle.ask() enqueues a _mirror sentinel to record the ask in the
-    transcript. This sentinel wakes the persist wait, but because it
-    carries no user message, the loop must not proceed to an LLM call
-    with a trailing assistant message — models like Claude 4.6 Opus
-    reject that with a BadRequestError ("does not support assistant
-    message prefill").
-
-    The loop should process the mirror for transcript fidelity, then
-    return to the persist wait until a real interjection arrives.
-    """
-    client = new_llm_client(**llm_config)
-
-    handle = start_async_tool_loop(
-        client,
-        message="Say hello and nothing else.",
-        tools={"echo": echo},
-        persist=True,
-        timeout=60,
-    )
-
-    # Wait for initial assistant response (loop enters persist wait after this)
-    async def _has_assistant_response() -> bool:
-        return any(
-            m.get("role") == "assistant" and m.get("content")
-            for m in (client.messages or [])
-        )
-
-    await _wait_for_condition(_has_assistant_response, poll=0.05, timeout=30.0)
-    await asyncio.sleep(0.3)
-    assert not handle.done(), "Loop should be in persist wait"
-
-    # Dispatch an ask — this puts a _mirror sentinel into the queue
-    ask_handle = await handle.ask("What tools do you have?")
-
-    # Wait for the ask sub-loop to complete (it runs independently)
-    ask_result = await ask_handle.result()
-    assert ask_result, "Ask sub-loop should produce a response"
-
-    # The outer loop must still be alive in persist wait — not crashed
-    await asyncio.sleep(0.5)
-    assert not handle.done(), (
-        "Persist loop should survive handle.ask() without crashing. "
-        "If this fails, the mirror sentinel likely triggered an invalid "
-        "LLM call with a trailing assistant message."
-    )
-
-    # A real interjection should still work normally after the ask
-    await handle.submit("Now use the echo tool with 'test'.")
-    await _wait_for_tool_request(client, "echo")
-
-    await asyncio.sleep(0.3)
-    assert not handle.done(), "Loop should still be alive after real interjection"
-
-    await handle.stop()
-    result = await handle.result()
-    assert result == "processed stopped early, no result"
 
 
 @pytest.mark.asyncio

@@ -5,10 +5,7 @@ import time
 import re
 import pytest
 
-from unify.common.async_tool_loop import (
-    start_async_tool_loop,
-    AsyncToolLoopHandle,
-)
+from unify.common.async_tool_loop import start_async_tool_loop
 from unify.events.event_bus import EVENT_BUS
 from unify.common.llm_client import new_llm_client, PendingThinkingLog
 
@@ -31,8 +28,10 @@ async def test_nested_logging_hierarchy_labels(llm_config):
         time.sleep(0.1)
         return "inner-ok"
 
-    # ── outer tool: launches a nested loop and returns its handle ──────────
-    async def outer_tool() -> AsyncToolLoopHandle:
+    # ── outer tool: runs a nested loop to completion and returns its reply ──
+    # The loop no longer adopts a handle a tool returns (it stops it and
+    # sends the handle's repr, a memory address), so the tool awaits it.
+    async def outer_tool() -> str:
         inner_client = new_llm_client(**llm_config)
         inner_client.set_system_message(
             "You are running inside an automated test.\n"
@@ -41,7 +40,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
             "3️⃣  Reply with exactly 'done'.",
         )
 
-        return start_async_tool_loop(
+        inner = start_async_tool_loop(
             client=inner_client,
             message="start",
             tools={"inner_tool": inner_tool},
@@ -49,6 +48,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
             max_steps=10,
             timeout=120,
         )
+        return await inner.result()
 
     outer_tool.__name__ = "outer_tool"
     outer_tool.__qualname__ = "outer_tool"
@@ -58,8 +58,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
     client.set_system_message(
         "You are running inside an automated test. Perform the steps exactly:\n"
         "1️⃣  Call `outer_tool` with no arguments.\n"
-        "2️⃣  Continue running this tool call, when given the option.\n"
-        "3️⃣  Once it is completed, respond with exactly 'outer done'.",
+        "2️⃣  Once it is completed, respond with exactly 'outer done'.",
     )
 
     handle = start_async_tool_loop(

@@ -51,6 +51,13 @@ At the code freeze of 7 October 2026 every other research switch was either made
 - **What it does:** When on, a task loop that can compress its context compacts it when it reaches its step limit, instead of stopping, and carries on with the same request. This happens at most twice per request. At the third limit, the request stops as it would without the switch.
 - **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
 
+## UNIFY_COMPACTION_KEEP_PREFIX
+
+- **Values:** empty (the same as `off`) or `on`.
+- **Default:** empty.
+- **What it does:** When on, a context compaction keeps what the session already sent at the start of the conversation, byte for byte: the system prompt, the session's first user message and every requester message of the current request, unchanged and in their original order. The summary follows them as one loop-authored message, and the tools stay the same. As shipped, the conversation restarts from the system prompt and the summary alone, so the request's own words are replaced by the model's paraphrase of them, and only the tools and the system prompt stay cached. The current request is read from the session's own messages: it starts at the latest requester message. If the first call after such a compaction is still over the compression threshold, what was kept is too large on its own, and the next compaction rebuilds as shipped from the summary alone. That way a request is never compacted around the same prefix again and again. "Byte for byte" covers the system prompt and the kept user messages. The loop's runtime-context system messages are rebuilt at the restart: they are the same for the actor, but not for a nested loop given a parent chat context.
+- **Evidence:** long-horizon WIP, unscreened; part of the cache-preserving compaction design of 8 October, to be tested on the long-horizon beds.
+
 ## UNIFY_LOOP_STOP and UNIFY_LOOP_STOP_K
 
 - **Values:** `UNIFY_LOOP_STOP` is empty (the same as `off`) or `on`. `UNIFY_LOOP_STOP_K` is a whole number of at least 1.
@@ -80,3 +87,10 @@ The three long-horizon switches share the step-limit reply path.
 - **Defaults:** `150000`, `openai/gpt-6-sol`, `0.00000073` and empty (no guard).
 - **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. The trigger is size-based and batched (the spec's F1): one pass becomes due once the experience recorded since the last pass reaches E tokens, and it covers every channel with new evidence. E times the allowance is one pass's USD cap. The passes run on the Sol model at the actor's reasoning effort for the run (there is no effort switch). With a run guard set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
 - **Evidence:** E and the allowance follow the offline cadence replay and the memory-v2 preregistrations (continual-harness-research); the guard is a runaway stop, not the expected cutoff.
+
+## UNIFY_CLOCK_PLACEMENT
+
+- **Values:** empty (the same as `system`) or `first_message`.
+- **Default:** empty.
+- **What it does:** As shipped, the system prompt carries a "Current Time" section that tells the model to resolve "today" against it and to prefer it over any clock read in code. With `first_message`, the system prompt has no clock section, and the session's first user message opens with one line: "The host clock reads <time>. Dates stated in the request or in the files and records you work with take precedence." The time is sampled once, when the session starts. Later requests in a persistent session do not repeat the line. The system prompt, and the cache affinity key derived from it, are then the same for every session of one configuration, whenever it starts.
+- **Evidence:** office-v2 defect note P2c (the clock read as an authority over dates in the work, and a per-minute timestamp that breaks the cross-session prompt cache); unscreened. To be compared with the shipped placement under the per-instance fake clock, reporting the cache-hit rate and clock-attributable losses from traces.

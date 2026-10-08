@@ -154,6 +154,50 @@ class ProductionSettings(BaseSettings):
     # reply()) is given, not compacted for. A loop without compression is
     # unchanged. Empty (also ``off``): as shipped.
     UNIFY_STEP_CAP_COMPACT: str = ""
+    # ``on``: a context compaction (at the context threshold, on the model's
+    # own ``compress_context`` call, or at ``max_steps`` under
+    # UNIFY_STEP_CAP_COMPACT) rebuilds the conversation so that it starts
+    # with what the session already sent, byte for byte, instead of with the
+    # system prompt alone: the system prompt, the session's first user
+    # message, then every requester message of the current request (a user
+    # message the loop did not author), each unchanged and in its original
+    # order, and only then the summary, as one loop-authored user message
+    # (the compressed-context header, the summary, "Context was compressed.
+    # Continue from where you left off." and the transcript's path). The
+    # current request is read from the session's own messages: it starts at
+    # the latest requester message, together with the requester messages
+    # just before it that no model turn separates from it, as
+    # UNIFY_LOOP_STOP's tracker counts a request; earlier requests of a
+    # persistent session are in the summary. The summary is asked for as
+    # shipped (a fork of the last request). The tools and their order stay
+    # the same, the fallback compactor's rebuild included: it then neither
+    # rewrites the system prompt nor adds ``unpack_messages``, and its
+    # compressed entries are the summary. "Byte for byte" covers the system
+    # prompt, the first message and the kept requester messages; the loop's
+    # own runtime-context system messages are rebuilt at the restart (the
+    # same bytes for the actor, not for a nested loop given a
+    # ``parent_chat_context``, which a restart drops). When the first call
+    # after such a compaction is still over the threshold, what was kept is
+    # too large on its own, and the next compaction rebuilds as shipped, so a
+    # request is never compacted around the same prefix twice in a row.
+    # Empty (also ``off``): as shipped.
+    UNIFY_COMPACTION_KEEP_PREFIX: str = ""
+    # Where the actor's session states the host clock. Empty (also
+    # ``system``): as shipped, a "Current Time" section near the end of the
+    # system prompt, which tells the model to resolve "today" against it and
+    # to prefer it over a clock read in ``execute_code``. ``first_message``:
+    # the system prompt has no clock section, and the session's first user
+    # message opens with one line, "The host clock reads <time>. Dates stated
+    # in the request or in the files and records you work with take
+    # precedence.", the time sampled once when the session starts (the
+    # moment the system prompt would have sampled it), before the library's
+    # size and the rest of the first message's context. The line is in the
+    # first user message only: a persistent session's later requests do not
+    # repeat it, and a session restarted after context compression opens its
+    # new first message with the same line. The system prompt, and so the
+    # cache affinity key derived from it, is then the same for every session
+    # of one configuration whenever it starts.
+    UNIFY_CLOCK_PLACEMENT: str = ""
     # ``on``: a request to the actor's task loop (the one that answers the
     # requester; never a sub-agent's, a review's or its fork's) whose tool
     # calls stop making progress ends early. A
@@ -384,6 +428,25 @@ class ProductionSettings(BaseSettings):
     # When set, logs are written to {UNIFY_LOG_DIR}/unify.log
     # Default: None (console only)
     UNIFY_LOG_DIR: str = ""
+    # ``on``: every model call carries four HTTP headers, so a proxy in front
+    # of the provider can attribute it (for example, measure the cache hits of
+    # each session's first call and of the calls after a compaction):
+    # ``X-Unify-Session``, a random id per model client (a fork gets its own,
+    # plus ``X-Unify-Parent``, its parent's); ``X-Unify-Request``, how many
+    # requester messages the loop answering a requester had received when
+    # the call was made (1 for the first request, 0 where no such loop drives
+    # the client; a fork starts from its parent's count); ``X-Unify-Call-Kind``,
+    # the client's ``origin`` label; and ``X-Unify-Msg-Count``, the number of
+    # messages in the request. Every value is random or counted by the
+    # harness, matches ``[A-Za-z0-9_.:-]{1,64}`` and is never request
+    # content. The request body is unchanged, so the provider's prompt cache
+    # is not affected; unillm's response cache (UNILLM_CACHE) keys on the
+    # headers, so a recorded response is not replayed for a call that
+    # carries them. With no proxy in front that strips them, the headers
+    # reach the model provider (harmless, but they do). Empty (or ``off``):
+    # no header is added and the call's arguments are as shipped
+    # (unify/common/llm_client.py).
+    UNIFY_REQUEST_METADATA_HEADERS: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Terminal Logging
@@ -477,6 +540,18 @@ class ProductionSettings(BaseSettings):
 
         return switch.PARSERS[info.field_name](v)
 
+    @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
+    @classmethod
+    def parse_compaction_keep_prefix(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_COMPACTION_KEEP_PREFIX must be empty, 'off' or 'on', "
+                f"not {v!r}",
+            )
+        return value
+
     @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
     @classmethod
     def parse_guidance_empty_query(cls, v: Any) -> str:
@@ -495,6 +570,18 @@ class ProductionSettings(BaseSettings):
         if value not in ("", "on"):
             raise ValueError(
                 f"UNIFY_BIND_REQUEST must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REQUEST_METADATA_HEADERS", mode="before")
+    @classmethod
+    def parse_request_metadata_headers(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_REQUEST_METADATA_HEADERS must be empty, 'off' or 'on', "
+                f"not {v!r}",
             )
         return value
 
@@ -540,6 +627,18 @@ class ProductionSettings(BaseSettings):
             raise ValueError(
                 "UNIFY_CODE_PROJECTION must be empty, 'legacy' or 'notebook', "
                 f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CLOCK_PLACEMENT", mode="before")
+    @classmethod
+    def parse_clock_placement(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "system" else value
+        if value not in ("", "first_message"):
+            raise ValueError(
+                "UNIFY_CLOCK_PLACEMENT must be empty, 'system' or "
+                f"'first_message', not {v!r}",
             )
         return value
 

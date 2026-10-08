@@ -328,18 +328,19 @@ async def test_llm_events_searchable_in_eventbus():
 @pytest.mark.llm_call
 @_handle_project
 async def test_llm_event_includes_cost_fields():
-    """LLM events should include the call's cost for cache misses."""
+    """An LLM event carries the call's cost when the provider answered it.
+
+    The prompt is fixed, like the other tests' here, so the run that records
+    it sends it to the provider and checks a cost, and a replay serves the
+    recording (no cost, as for any cached response). A unique prompt forced
+    a provider call on every run, which a keyless replay cannot make.
+    """
     install_llm_event_hook()
-
-    # Use a unique prompt to force a cache miss
-    import uuid
-
-    unique_id = str(uuid.uuid4())[:8]
 
     async with capture_events("LLM") as captured:
         client = unillm.AsyncUnify("openai/gpt-4.1-nano@openrouter", cache=True)
         await client.generate(
-            messages=[{"role": "user", "content": f"Say 'cost test' [{unique_id}]"}],
+            messages=[{"role": "user", "content": "Say 'cost test' [cost_test]"}],
         )
 
         await asyncio.sleep(0.1)
@@ -351,7 +352,7 @@ async def test_llm_event_includes_cost_fields():
     # Verify event structure
     assert evt.type == "LLM"
 
-    # For cache misses, the cost should be present and positive
+    # A call the provider answered has a positive cost; a cached one has none.
     if evt.payload["provider_cost"] is not None:
         assert evt.payload["provider_cost"] > 0
 
