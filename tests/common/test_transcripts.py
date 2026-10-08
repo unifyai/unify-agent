@@ -30,7 +30,6 @@ from unify.common._async_tool.loop_config import LoopConfig
 from unify.common._async_tool.message_dispatcher import LoopMessageDispatcher
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
-from unify.settings import SETTINGS
 
 MODEL = "openai/gpt-5.6-sol@openrouter"
 ROOT_PROMPT = "You are the root agent."
@@ -379,10 +378,9 @@ async def test_a_compression_fork_is_recorded_and_its_summary_points_at_the_file
     monkeypatch,
     provider,
 ):
-    """Under ``UNIFY_CACHE_DISCIPLINE`` the summary comes from a fork of the
-    conversation instead of the compactor, and the transcript still gets the
-    history before it, a compaction line and the pointer."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
+    """The summary comes from a fork of the conversation instead of the
+    compactor, and the transcript still gets the history before it, a
+    compaction line and the pointer."""
     p = provider(
         {
             # The root conversation; the fork asking for the summary carries

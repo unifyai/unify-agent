@@ -1,4 +1,4 @@
-"""Symbolic: under ``UNIFY_CACHE_DISCIPLINE`` a session keeps one cache and measures it.
+"""Symbolic: a session keeps one cache and measures it (the cache discipline).
 
 A provider prefix is only reused when the next request reaches the replica
 holding it, so a session asks for one with a cache affinity key -- where the
@@ -18,7 +18,6 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.common._async_tool import cache_discipline as cd
-from unify.settings import SETTINGS
 
 
 @pytest.fixture
@@ -52,7 +51,6 @@ async def test_on_sessions_with_the_same_prefix_share_one_key(
     monkeypatch,
     affinity_client_class,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     first, second = h.new_client(), h.new_client()
     _, first_requests = await _session(first)
     _, second_requests = await _session(second)
@@ -79,7 +77,6 @@ async def test_on_a_different_system_prompt_or_tool_list_gets_another_key(
     monkeypatch,
     affinity_client_class,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     base, other_prompt, other_tools = (
         h.new_client(),
         h.new_client("You are another scripted agent."),
@@ -125,7 +122,6 @@ async def test_on_a_key_already_set_is_kept_and_a_fork_shares_it(
 ):
     from unify.common.llm_client import fork_llm_client
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     client = h.new_client()
     client.set_cache_affinity("parent-key")
     await _session(client)
@@ -136,20 +132,7 @@ async def test_on_a_key_already_set_is_kept_and_a_fork_shares_it(
 
 
 @pytest.mark.asyncio
-async def test_off_no_key_is_set_even_where_unillm_takes_one(
-    monkeypatch,
-    affinity_client_class,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", False)
-    client = h.new_client()
-    await _session(client)
-    assert client.cache_affinity is None
-    assert affinity_client_class == []
-
-
-@pytest.mark.asyncio
 async def test_on_a_unillm_without_the_key_is_left_alone(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     h.hide_affinity_api(monkeypatch)  # as on unillm main, whichever is installed
     client = h.new_client()
     assert not hasattr(client, "set_cache_affinity")
@@ -164,7 +147,6 @@ async def test_on_a_unillm_without_the_key_is_left_alone(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_each_call_logs_its_cache_share_and_the_sessions(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     lines: list[str] = []
     monkeypatch.setattr(cd.LOGGER, "info", lambda msg, *a, **k: lines.append(msg))
     replies = (
@@ -192,7 +174,6 @@ async def test_on_each_call_logs_its_cache_share_and_the_sessions(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_an_unreported_cache_count_stays_unknown(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     lines: list[str] = []
     monkeypatch.setattr(cd.LOGGER, "info", lambda msg, *a, **k: lines.append(msg))
     replies = (
@@ -215,14 +196,6 @@ async def test_on_an_unreported_cache_count_stays_unknown(monkeypatch):
     last = [line for line in lines if "cache:" in line][-1]
     assert "cached tokens not reported" in last
     assert "over 1 call(s), 1 unreported" in last
-
-
-@pytest.mark.asyncio
-async def test_off_nothing_is_measured(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", False)
-    client = h.new_client()
-    await _session(client)
-    assert cd.cache_stats(client) is None
 
 
 def test_cache_usage_reads_objects_and_dicts():

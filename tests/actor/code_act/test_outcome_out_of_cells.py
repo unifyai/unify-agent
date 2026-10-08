@@ -121,9 +121,16 @@ def outcome_world(world, monkeypatch):  # noqa: F811
 
 
 def _switch(monkeypatch, review: str) -> None:
-    fork = review == "fork"
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", fork)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
+    """The review forks the session when it can; ``standalone`` refuses the
+    fork, as a compressed session or unanswered calls do."""
+    from unify.actor import code_act_actor as caa
+
+    if review == "standalone":
+        monkeypatch.setattr(
+            caa,
+            "_review_fork_source",
+            lambda inner, actor: (None, "the test refuses the fork"),
+        )
     monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", "")
 
 

@@ -284,13 +284,3 @@ async def test_request_clarification_in_a_cell_is_the_json_tool_in_python():
     # Outside a core session nothing is touched.
     assert core_surface.bind_clarification(namespace, up, down) is None
     assert namespace == {"request_clarification": "shipped"}
-
-
-def test_a_forked_review_falls_back_to_the_standalone_one(monkeypatch):
-    from unify.actor.code_act_actor import _review_fork_source
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
-    source, reason = _review_fork_source(object(), object())
-    assert source is None and "no library tools" in reason

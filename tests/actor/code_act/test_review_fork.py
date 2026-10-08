@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_REVIEW_FORK`` runs the storage review as a fork of the session.
+"""Symbolic: the storage review runs as a fork of the session.
 
 The storage review was 72.5% of AppWorld cost, about 40% of TravelPlanner
 and 12% of ScienceWorld on the pre-rebase build, and its first call got 0%
@@ -9,8 +9,7 @@ plus one user message with the rulebook, so the prefix the session cached
 serves it.
 
 Requests are captured at unillm's transport (``tests/cache_discipline_helpers.py``);
-with the switch off, or when the fork falls back, the review's requests are
-the upstream bytes.
+when the fork falls back, the review's requests are the upstream bytes.
 """
 
 from __future__ import annotations
@@ -23,16 +22,6 @@ import pytest
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.common._async_tool import cache_discipline as cd
-from unify.settings import SETTINGS
-
-
-@pytest.fixture
-def switches(monkeypatch):
-    def set_(*, discipline: bool, fork: bool) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
-
-    return set_
 
 
 @pytest.fixture
@@ -100,9 +89,7 @@ async def _forked_review(monkeypatch):
 @pytest.mark.asyncio
 async def test_the_review_request_continues_the_sessions_conversation(
     monkeypatch,
-    switches,
 ):
-    switches(discipline=True, fork=True)
     summary, requests, _forks, _counter = await _forked_review(monkeypatch)
     assert summary == "Nothing worth storing."
     assert len(requests) == 4
@@ -136,9 +123,7 @@ async def test_the_review_request_continues_the_sessions_conversation(
 @pytest.mark.asyncio
 async def test_the_fork_keeps_the_sessions_effort_under_the_review_origin(
     monkeypatch,
-    switches,
 ):
-    switches(discipline=True, fork=True)
     _summary, requests, forks, _counter = await _forked_review(monkeypatch)
     assert len(forks) == 1
     fork = forks[0]
@@ -154,9 +139,7 @@ async def test_the_fork_keeps_the_sessions_effort_under_the_review_origin(
 @pytest.mark.asyncio
 async def test_the_fork_is_sent_to_its_sessions_cache_under_the_prefix_key(
     monkeypatch,
-    switches,
 ):
-    switches(discipline=True, fork=True)
     sets = h.install_affinity_api(monkeypatch)
     _summary, requests, forks, _counter = await _forked_review(monkeypatch)
     parent, fork = forks[0]["parent"], forks[0]["client"]
@@ -175,12 +158,10 @@ async def test_the_fork_is_sent_to_its_sessions_cache_under_the_prefix_key(
 @pytest.mark.asyncio
 async def test_the_fork_carries_the_update_first_note(
     monkeypatch,
-    switches,
 ):
     """The note the standalone review gets, in the names the forked review's sandbox has."""
     from unify.actor import core_surface
 
-    switches(discipline=True, fork=True)
     _summary, requests, _forks, _counter = await _forked_review(monkeypatch)
     appended = requests[2]["messages"][-1]["content"]
     update_first = core_surface.python_names(caa._storage_update_first_note())
@@ -217,16 +198,13 @@ def _recorded_session(extra_messages=()):
 @pytest.mark.parametrize(
     ("case", "reason"),
     [
-        ("off", None),
-        ("no discipline", "needs UNIFY_CACHE_DISCIPLINE"),
         ("compressed", "history was compressed"),
         ("unrecorded", "recorded no request"),
         ("rewritten", "history changed after its last request"),
         ("unanswered", "unanswered tool calls"),
     ],
 )
-def test_the_review_falls_back_and_says_why(switches, case, reason):
-    switches(discipline=case != "no discipline", fork=case != "off")
+def test_the_review_falls_back_and_says_why(case, reason):
     extra = ()
     if case == "unanswered":
         extra = (
@@ -251,10 +229,7 @@ def test_the_review_falls_back_and_says_why(switches, case, reason):
         client._messages[1]["content"] = "task, edited after it was sent"
     source, why = caa._review_fork_source(inner, actor)
     assert source is None
-    if reason is None:
-        assert why is None
-    else:
-        assert reason in why
+    assert reason in why
 
 
 def test_the_outcome_hook_adds_nothing_without_an_outcome():

@@ -15,7 +15,7 @@ compaction fails, runs past the loop's timeout or is cancelled, the shipped
 behaviour applies too, or the cancel does. The transport is scripted, so
 nothing leaves the process.
 
-Under the baked defaults (``UNIFY_CACHE_DISCIPLINE`` on) the compression is
+Under the baked defaults (the cache discipline) the compression is
 the fork summary: the session's last request plus one instruction, answered
 by the session's own model. The compactor runs only when the fork yields no
 summary.

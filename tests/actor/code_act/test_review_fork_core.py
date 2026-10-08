@@ -1,11 +1,11 @@
-"""Symbolic: ``UNIFY_REVIEW_FORK_CORE`` forks the storage review of a core-surface session.
+"""Symbolic: the storage review of a core-surface session is a fork of it.
 
 Under ``UNIFY_TOOL_SURFACE=core`` the session's only JSON tool is
-``execute_code``, so the forked review (``UNIFY_REVIEW_FORK``), which stores
+``execute_code``, so the forked review, which stores
 through the library tools of the list it reuses, fell back to the standalone
 librarian: a new conversation whose first call read 0% from the provider's
 cache (12k-65k tokens, mean 26k on ARC LOW; 8.6% of the core arm's ARC LOW
-USD, 16% on ScienceWorld). With the switch on the review is a fork again --
+USD, 16% on ScienceWorld). Now the review is a fork again --
 the session's last request, unchanged, plus one user message -- and stores
 through the list's own ``execute_code``: its cells run in a sandbox of their
 own, in the confined worker, holding only ``functions`` and ``guidance``.
@@ -34,7 +34,7 @@ from tests.helpers import _handle_project
 from unify.actor import code_act_actor as caa
 from unify.actor import core_surface
 from unify.common._async_tool import cache_discipline as cd
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 _REVIEW_OPENING = "## Curating The Library\n\n"
@@ -67,9 +67,6 @@ def _tool_texts(request: dict) -> list[str]:
 
 @pytest.fixture
 def fork_core(core_world, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", True)
     return core_world
 
 
@@ -235,12 +232,9 @@ def _recorded_session(tool: str = "execute_code"):
 
 @pytest.fixture
 def core_switches(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-    monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", True)
 
 
 def test_the_fork_source_is_marked_core(core_switches):
@@ -252,11 +246,9 @@ def test_the_fork_source_is_marked_core(core_switches):
 @pytest.mark.parametrize(
     "case, reason",
     [
-        ("switch off", "no library tools"),
         ("no worker", "needs UNIFY_WORKSPACE=sandboxed and UNIFY_WORKSPACE_PYTHON"),
         ("store verify", "UNIFY_STORE_VERIFY"),
         ("no execute_code", "no execute_code"),
-        ("no discipline", "needs UNIFY_CACHE_DISCIPLINE"),
     ],
 )
 def test_the_core_review_falls_back_and_says_why(
@@ -265,27 +257,12 @@ def test_the_core_review_falls_back_and_says_why(
     case,
     reason,
 ):
-    if case == "switch off":
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", False)
     if case == "no worker":
         monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     if case == "store verify":
         from unify.function_manager import store_verify
 
         monkeypatch.setattr(store_verify, "enabled", lambda: True)
-    if case == "no discipline":
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", False)
     tool = "final_response" if case == "no execute_code" else "execute_code"
     source, why = caa._review_fork_source(*_recorded_session(tool))
     assert source is None and reason in why
-
-
-@pytest.mark.parametrize("value, expected", [("1", True), ("0", False), ("", False)])
-def test_the_setting_parses_booleans(value, expected):
-    settings = ProductionSettings(UNIFY_REVIEW_FORK_CORE=value)
-    assert settings.UNIFY_REVIEW_FORK_CORE is expected
-
-
-def test_the_default_is_on():
-    # Baked on at the code freeze.
-    assert ProductionSettings.model_fields["UNIFY_REVIEW_FORK_CORE"].default is True

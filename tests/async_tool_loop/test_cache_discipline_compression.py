@@ -1,13 +1,12 @@
-"""Symbolic: under ``UNIFY_CACHE_DISCIPLINE`` compression is a fork of the conversation.
+"""Symbolic: compression is a fork of the conversation (``FORK_SUMMARY``).
 
 As shipped, compression hands the transcript to a separate compactor loop
 with its own system prompt, which edits entries over several calls, and the
 session restarts with a rewritten system prompt and an extra tool. None of
 it is cached: one ScienceWorld compression cost 0.172 USD over 8 calls, and
-the call after it had 0 cached tokens. With the switch on, the summary is
-asked for with the last request sent plus one appended instruction, and the
-session continues from its own system prompt, the same tool list and the
-summary.
+the call after it had 0 cached tokens. Now the summary is asked for with the
+last request sent plus one appended instruction, and the session continues
+from its own system prompt, the same tool list and the summary.
 """
 
 from __future__ import annotations
@@ -19,12 +18,6 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.common._async_tool import cache_discipline as cd
-from unify.settings import SETTINGS
-
-
-@pytest.fixture
-def on(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
 
 
 def _dumps(messages: list[dict]) -> list[str]:
@@ -32,7 +25,7 @@ def _dumps(messages: list[dict]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_the_summary_request_is_the_last_request_plus_one_message(on):
+async def test_the_summary_request_is_the_last_request_plus_one_message():
     result, counter, requests = await h.scenario_compress()
     assert result == "done"
     assert counter == {"execute_code": 1}
@@ -56,7 +49,7 @@ async def test_the_summary_request_is_the_last_request_plus_one_message(on):
 
 
 @pytest.mark.asyncio
-async def test_the_session_continues_from_the_summary_with_the_same_prefix(on):
+async def test_the_session_continues_from_the_summary_with_the_same_prefix():
     _result, _counter, requests = await h.scenario_compress()
     first, restarted = requests[0], requests[3]
     # The system prompt and the tool list survive the restart byte for byte.
@@ -81,7 +74,7 @@ async def test_the_session_continues_from_the_summary_with_the_same_prefix(on):
 
 
 @pytest.mark.asyncio
-async def test_a_fork_that_returns_no_text_falls_back_to_the_compactor(on):
+async def test_a_fork_that_returns_no_text_falls_back_to_the_compactor():
     replies = (
         h.COMPRESS_REPLIES[0],
         h.COMPRESS_REPLIES[1],
@@ -101,7 +94,7 @@ async def test_a_fork_that_returns_no_text_falls_back_to_the_compactor(on):
 
 
 @pytest.mark.asyncio
-async def test_without_a_recorded_request_the_fork_is_skipped(on):
+async def test_without_a_recorded_request_the_fork_is_skipped():
     from unify.common.async_tool_loop import AsyncToolLoopHandle
 
     handle = SimpleNamespace(
@@ -119,7 +112,7 @@ async def test_without_a_recorded_request_the_fork_is_skipped(on):
 
 
 @pytest.mark.asyncio
-async def test_a_dispatch_records_only_messages_tools_and_tool_choice(on):
+async def test_a_dispatch_records_only_messages_tools_and_tool_choice():
     client = h.new_client()
     previous = cd.record_sent_request(
         client,
@@ -140,40 +133,36 @@ async def test_a_dispatch_records_only_messages_tools_and_tool_choice(on):
 
 
 @pytest.mark.asyncio
-async def test_the_record_matches_what_was_sent(monkeypatch):
-    """Compression's fork summary reads the record, so it is kept whatever
-    UNIFY_CACHE_DISCIPLINE says (on by default since the code freeze)."""
+async def test_the_record_matches_what_was_sent():
+    """Compression's fork summary reads the record."""
     from unify.common._async_tool.messages import generate_with_preprocess
 
-    assert SETTINGS.UNIFY_CACHE_DISCIPLINE is True
-    for switch in (False, True):
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", switch)
-        client = h.new_client()
-        client._messages.append({"role": "user", "content": "hello"})
-        tools = [
-            {
-                "type": "function",
-                "function": {"name": "t", "parameters": {"type": "object"}},
-            },
-        ]
-        with h.scripted([lambda: h.completion(content="hi")]) as provider:
-            await generate_with_preprocess(
-                client,
-                None,
-                tools=tools,
-                tool_choice="auto",
-                return_full_completion=True,
-                stateful=True,
-            )
-        record = cd.last_sent_request(client)
-        sent = provider.requests[0]
-        assert _dumps(record["messages"]) == _dumps(sent["messages"])
-        assert record["tools"] == sent["tools"]
-        assert record["tool_choice"] == sent["tool_choice"]
+    client = h.new_client()
+    client._messages.append({"role": "user", "content": "hello"})
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "t", "parameters": {"type": "object"}},
+        },
+    ]
+    with h.scripted([lambda: h.completion(content="hi")]) as provider:
+        await generate_with_preprocess(
+            client,
+            None,
+            tools=tools,
+            tool_choice="auto",
+            return_full_completion=True,
+            stateful=True,
+        )
+    record = cd.last_sent_request(client)
+    sent = provider.requests[0]
+    assert _dumps(record["messages"]) == _dumps(sent["messages"])
+    assert record["tools"] == sent["tools"]
+    assert record["tool_choice"] == sent["tool_choice"]
 
 
 @pytest.mark.asyncio
-async def test_a_dispatch_that_fails_puts_the_previous_record_back(on):
+async def test_a_dispatch_that_fails_puts_the_previous_record_back():
     from unify.common._async_tool.messages import generate_with_preprocess
 
     client = h.new_client()

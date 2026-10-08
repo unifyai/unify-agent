@@ -222,7 +222,7 @@ class WritePolicy:
 
     can_store: bool = True
     admission_gated: bool = False
-    #: ``UNIFY_REVIEW_FORK_CORE``: the policy of a forked storage review's
+    #: The policy of a forked storage review's
     #: sandbox, which stores and edits the libraries but runs no stored
     #: function and binds none in its namespace (the task is over).
     review: bool = False
@@ -1072,15 +1072,8 @@ def _is_async_function(value: Any) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# UNIFY_REVIEW_FORK_CORE: the forked storage review's sandbox
+# The forked storage review's sandbox
 # ---------------------------------------------------------------------------
-
-
-def review_fork_enabled() -> bool:
-    """Whether ``UNIFY_REVIEW_FORK_CORE`` lets a core session's review fork."""
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_REVIEW_FORK_CORE", False))
 
 
 def review_fork_refusal(tool_names: List[str]) -> Optional[str]:
@@ -1096,7 +1089,7 @@ def review_fork_refusal(tool_names: List[str]) -> Optional[str]:
         return "the session's tool list has no execute_code for the review's cells"
     if not worker_mod.enabled():
         return (
-            "UNIFY_REVIEW_FORK_CORE runs the review's cells in the sandboxed "
+            "the forked review runs its cells in the sandboxed "
             "worker, which needs UNIFY_WORKSPACE=sandboxed and "
             "UNIFY_WORKSPACE_PYTHON=worker"
         )

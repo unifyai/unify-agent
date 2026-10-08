@@ -46,14 +46,7 @@ FAILED = {
 
 @pytest.fixture
 def switches(monkeypatch):
-    def set_(
-        *,
-        discipline: bool = False,
-        fork: bool = False,
-        admission: str = "",
-    ) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
+    def set_(*, admission: str = "") -> None:
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", admission)
 
     set_()
@@ -221,13 +214,21 @@ async def _persistent_review(
 def _review_text(request: dict) -> str:
     """The review's rulebook: its system prompt, or the fork's appended message."""
     first, last = request["messages"][0], request["messages"][-1]
-    if "## Storage Review" in str(last.get("content")):
+    content = str(last.get("content"))
+    if "## Storage Review" in content or "## Final Result" in content:
         return last["content"]
     return first["content"]
 
 
 @pytest.mark.asyncio
-async def test_the_outcome_reaches_the_standalone_review(switches):
+async def test_the_outcome_reaches_the_standalone_review(switches, monkeypatch):
+    # The review forks the session when it can; the standalone review runs
+    # when the fork is refused (a compressed session, unanswered calls, ...).
+    monkeypatch.setattr(
+        caa,
+        "_review_fork_source",
+        lambda inner, actor: (None, "the test refuses the fork"),
+    )
     note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
     assert note["message"] == REVIEW_SUMMARY
     text = _review_text(requests[3])
@@ -243,7 +244,6 @@ async def test_the_outcome_reaches_the_standalone_review(switches):
 
 @pytest.mark.asyncio
 async def test_the_outcome_reaches_the_forked_review(switches):
-    switches(discipline=True, fork=True)
     note, requests, _handle, _ = await _persistent_review(outcome=FAILED)
     assert note["message"] == REVIEW_SUMMARY
     review = requests[3]
@@ -268,7 +268,9 @@ async def test_without_an_outcome_there_is_no_section_but_the_reply_is_final(swi
     _note, requests, _handle, _ = await _persistent_review(closing=False)
     text = _review_text(requests[2])
     assert outcome_mod.OUTCOME_HEADER not in text
-    assert text.endswith(f"## Final Result\n\n{SESSION_REPLY}")
+    # The fork's message closes with what to do now, after the final result.
+    assert f"## Final Result\n\n{SESSION_REPLY}" in text
+    assert CLOSING_REPLY not in text
 
 
 @pytest.mark.asyncio

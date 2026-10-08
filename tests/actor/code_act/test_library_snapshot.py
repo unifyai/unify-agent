@@ -16,18 +16,9 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
-from unify.settings import SETTINGS
 
 SNAPSHOT = "Library at task start:"
 TASK = "List the files in the workspace."
-
-
-@pytest.fixture
-def switches(monkeypatch):
-    def set_(*, discipline: bool = False):
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
-
-    return set_
 
 
 async def _act(*, seed=None) -> tuple[list[dict], "caa.CodeActActor"]:
@@ -63,8 +54,7 @@ def test_builtin_guidance_is_not_counted():
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_snapshot_is_in_the_first_user_message_only(switches):
-    switches(discipline=True)
+async def test_on_the_snapshot_is_in_the_first_user_message_only():
     on, _ = await _act()
     line = f"{SNAPSHOT} 0 stored functions, 0 guidance entries."
     first = _first_user(on[0])

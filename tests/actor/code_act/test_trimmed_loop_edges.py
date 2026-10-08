@@ -403,7 +403,7 @@ async def test_3_malformed_and_unknown_calls_are_answered_and_the_loop_goes_on(
     bad, good = turns
     malformed, unknown = _results_of(messages, bad)
     assert "were not valid JSON" in _text(malformed["content"])
-    # UNIFY_CACHE_DISCIPLINE (on for the actor) refuses it by the session's
+    # The cache discipline refuses it by the session's
     # fixed tool list; without it the loop says the tool is not available.
     assert "no_such_tool" in _text(unknown["content"])
     assert any(
@@ -702,8 +702,7 @@ async def test_7_compression_keeps_every_tool_result(full_on_turn):
         model.requests[at + 2 :],
     )
     assert _append_only(before)
-    if SETTINGS.UNIFY_CACHE_DISCIPLINE:
-        assert _append_only([compress_request, summarising])
+    assert _append_only([compress_request, summarising])
     assert _append_only(after)
     assert any(summary in _text(m.get("content")) for m in after[0])
     assert all(_every_call_answered(r) for r in before + after)

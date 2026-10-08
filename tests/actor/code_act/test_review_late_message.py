@@ -1,7 +1,7 @@
 """Symbolic: a message sent after a persistent session ended never reaches its review.
 
 A persistent session's task loop can end on its own: in the ScienceWorld
-training cell of 30 September (``UNIFY_REVIEW_FORK`` on) it ended four times
+training cell of 30 September (the review forked) it ended four times
 at the step limit (``max_steps (300) exceeded``, the limit counting every
 message). Its host took the stop notice as the agent's turn and sent the next
 observation, ending in the benchmark's reply protocol ("Reply with one
@@ -12,9 +12,8 @@ reviews that got one answered with a game command
 (``{"action":"command","command":"look at green light bulb"}``) instead of a
 summary. None of the forked reviews that got no such message did so.
 
-With ``UNIFY_REVIEW_FORK`` on, the message is refused and the review, forked
-or standalone, sees only its own conversation; off, it is forwarded as
-shipped. A live persistent session still takes its messages, and a handle
+The message is refused and the review, forked or standalone, sees only its
+own conversation. A live persistent session still takes its messages, and a handle
 that was not persistent keeps the shipped routing, where an interjection
 steers the review. Requests are captured at unillm's transport
 (``tests/cache_discipline_helpers.py``).
@@ -29,7 +28,6 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
-from unify.settings import SETTINGS
 
 # A ScienceWorld-style text route: the actor's reply protocol, and the host's
 # message after the stop notice (as recorded on 30 September, the step count
@@ -85,15 +83,6 @@ REVIEW_REPLIES = (
     # answers the message, as the recorded review did.
     lambda: h.completion(content=GAME_COMMAND),
 )
-
-
-@pytest.fixture
-def switches(monkeypatch):
-    def set_(*, discipline: bool, fork: bool) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
-
-    return set_
 
 
 @pytest.fixture
@@ -209,27 +198,14 @@ def _summary(notifications: list[dict]) -> str | None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "discipline, tool, forked",
-    [
-        (True, None, True),
-        # The recorded case had the fork on but skipped, because the step
-        # limit cancelled a call still pending and left it unanswered. The
-        # trimmed loop runs each call to completion and answers every call
-        # at the limit, so the limit no longer skips the fork; the
-        # standalone review is the case below.
-        (False, None, False),
-    ],
-    ids=["forked", "no-cache-discipline"],
-)
 async def test_a_message_after_the_session_ended_is_refused_not_answered(
-    switches,
     info_lines,
-    discipline,
-    tool,
-    forked,
 ):
-    switches(discipline=discipline, fork=True)
+    # The recorded case had the fork skipped, because the step limit
+    # cancelled a call still pending and left it unanswered. The trimmed loop
+    # runs each call to completion and answers every call at the limit, so
+    # the limit no longer skips the fork.
+    tool, forked = None, True
     result, notifications, requests = await _late_message(
         persist=True,
         tool=tool,
@@ -272,20 +248,7 @@ async def test_a_message_after_the_session_ended_is_refused_not_answered(
 
 
 @pytest.mark.asyncio
-async def test_off_the_message_reaches_the_review_as_shipped(switches):
-    """The recorded failure: the review answers the host's message."""
-    switches(discipline=False, fork=False)
-    _result, notifications, requests = await _late_message(persist=True, max_steps=5)
-
-    reviews = [r for r in requests if _is_review(r["messages"])]
-    assert reviews and _mentions_feedback(reviews[-1])
-    assert not any(n.get("type") == "interjection_refused" for n in notifications)
-    assert _summary(notifications) == GAME_COMMAND
-
-
-@pytest.mark.asyncio
-async def test_a_handle_that_was_not_persistent_still_steers_its_review(switches):
-    switches(discipline=True, fork=True)
+async def test_a_handle_that_was_not_persistent_still_steers_its_review():
     result, notifications, requests = await _late_message(persist=False)
     assert result == FIRST_COMMAND
 
@@ -295,12 +258,11 @@ async def test_a_handle_that_was_not_persistent_still_steers_its_review(switches
 
 
 @pytest.mark.asyncio
-async def test_a_live_persistent_session_still_takes_its_messages(switches):
+async def test_a_live_persistent_session_still_takes_its_messages():
     """Before its task loop ends, the session gets every message."""
     from unify.actor.code_act_actor import CodeActActor, _StorageCheckHandle
     from unify.common.async_tool_loop import start_async_tool_loop
 
-    switches(discipline=True, fork=True)
     actor = CodeActActor()
     replies = (
         lambda: h.completion(content=GAME_COMMAND),

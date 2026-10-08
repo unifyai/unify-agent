@@ -734,7 +734,7 @@ async def test_consecutive_failures_survive_compression_restart(
 async def test_compression_failure_returns_gracefully(monkeypatch):
     """When compression fails, result() returns gracefully.
 
-    Under UNIFY_CACHE_DISCIPLINE (the baked default) compression first
+    Compression first
     forks the conversation for a summary and uses ``compress_and_rebuild``
     only when the fork yields none, so both are made to fail. The model is
     scripted: the first turn fills the context, the next must compress.

@@ -6,8 +6,8 @@
 ``[steerable ...]``; by default it adds ``compress_context`` to every request.
 With ``compression_tools_on_demand=True`` it offers ``compress_context`` and
 the caller's extra compression tools only on the turn it asks for
-compression, and leaves them out of every other request,
-``UNIFY_CACHE_DISCIPLINE``'s fixed list included. The model is a scripted
+compression, and leaves them out of every other request, the session's
+fixed list included. The model is a scripted
 transport; nothing leaves the process.
 """
 
@@ -16,7 +16,6 @@ from __future__ import annotations
 import pytest
 
 from tests import cache_discipline_helpers as h
-from unify.settings import SETTINGS
 
 
 def _tool_names(request: dict) -> list[str]:
@@ -38,12 +37,7 @@ COMPRESS_THEN_ANSWER = (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("discipline", [False, True])
-async def test_compression_tools_are_offered_only_on_the_turn_that_compresses(
-    monkeypatch,
-    discipline,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
+async def test_compression_tools_are_offered_only_on_the_turn_that_compresses():
     counter: dict = {}
     tools = h.make_tools(counter)
 

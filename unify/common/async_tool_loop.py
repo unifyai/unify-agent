@@ -25,6 +25,7 @@ from ._async_tool.propagation_mode import ChatContextPropagation
 from ._async_tool.context_compression import (
     _COMPRESSED_HEADER,
     _COMPRESSION_SIGNAL,
+    FORK_SUMMARY,
     CompressionState,
     compress_and_rebuild,
 )
@@ -438,8 +439,8 @@ class AsyncToolLoopHandle(ToolLoopHandle):
 
         Returns ``(messages archived, restart messages, restart tools,
         restart message, forked)``; ``forked`` is ``True`` when the summary
-        came from a fork (``UNIFY_CACHE_DISCIPLINE``), which keeps the
-        client's system message. Raises when compression fails.
+        came from a fork (``FORK_SUMMARY``), which keeps the client's system
+        message. Raises when compression fails.
         """
         cfg = cfg if cfg is not None else self._loop_config
         if cfg is None:
@@ -447,9 +448,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 "Cannot compress: loop config was not stored on the handle.",
             )
         n_archived = len(self._client.messages)
-        forked = (
-            await self._summarise_as_fork(cfg) if _cache_discipline.enabled() else None
-        )
+        forked = await self._summarise_as_fork(cfg) if FORK_SUMMARY else None
         if forked is not None:
             restart_messages, restart_tools, restart_message = forked
             return n_archived, restart_messages, restart_tools, restart_message, True
@@ -471,7 +470,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         self,
         cfg: dict,
     ) -> Optional[tuple[list[dict], dict, str]]:
-        """Under UNIFY_CACHE_DISCIPLINE, compress by forking the conversation.
+        """Compress by forking the conversation (``FORK_SUMMARY``).
 
         The summary request is the last request this loop sent, unchanged,
         plus one appended instruction, so the provider serves everything but

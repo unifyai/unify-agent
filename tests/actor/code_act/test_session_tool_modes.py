@@ -1,4 +1,4 @@
-"""Symbolic: under ``UNIFY_CACHE_DISCIPLINE`` a session lists the tools its mode can ever call.
+"""Symbolic: a session's fixed tool list holds the tools its mode can ever call.
 
 The fixed tool list used to hold every library write an admission-gated
 session withholds, refused by rule on every call. On AppWorld frozen dev
@@ -41,25 +41,10 @@ LESSON = {"title": "A lesson", "content": "What the task taught."}
 
 @pytest.fixture
 def modes(monkeypatch):
-    def set_(*, admission: str, fork: bool, discipline: bool = True) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", discipline)
-        monkeypatch.setattr(SETTINGS, "UNIFY_REVIEW_FORK", fork)
+    def set_(*, admission: str) -> None:
         monkeypatch.setattr(SETTINGS, "UNIFY_STORE_ADMISSION", admission)
 
     return set_
-
-
-@pytest.fixture
-def info_lines(monkeypatch):
-    lines: list[str] = []
-    original = caa.logger.info
-
-    def capture(msg, *args, **kwargs):
-        lines.append(str(msg))
-        return original(msg, *args, **kwargs)
-
-    monkeypatch.setattr(caa.logger, "info", capture)
-    return lines
 
 
 def _is_review(request: dict) -> bool:
@@ -183,26 +168,13 @@ async def test_a_gated_session_whose_review_does_not_fork_never_lists_them(
 ):
     verdict = tmp_path / "verdict.json"
     verdict.write_text(json.dumps({"admit": False, "reason": "not now"}))
-    modes(admission=str(verdict), fork=False)
+    modes(admission=str(verdict))
     session, _review = await _act()
     _assert_one_list(session)
     assert not WRITES & _names(session[0])
 
 
 # ── a fork will reuse the list: listed from the start, refused until then ──
-
-
-# ── with the switch off nothing changes ─────────────────────────────────
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_off_a_frozen_session_sends_the_shipped_lists(modes, info_lines):
-    modes(admission="never", fork=False, discipline=False)
-    session, review = await _act()
-    assert not any(WRITES & _names(r) for r in session)
-    assert review == []
-    assert any(caa._STORE_ADMISSION_NEVER_REASON in line for line in info_lines)
 
 
 @pytest.mark.parametrize(

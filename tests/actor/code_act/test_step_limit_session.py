@@ -226,7 +226,7 @@ RESTART = "Context was compressed. Continue from where you left off."
 
 def _is_compaction(messages: list) -> bool:
     """The compactor's request, or the fork summary's
-    (UNIFY_CACHE_DISCIPLINE, the default since the code freeze)."""
+    (the cache discipline, baked in at the code freeze)."""
     from unify.common._async_tool import cache_discipline
 
     return any(

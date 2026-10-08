@@ -155,11 +155,6 @@ def _rebaseline_watermark_hash(client) -> None:
         client._sent_watermark_hash = _hash_msgs_slice(client.messages[:watermark])
 
 
-_REVIEW_COMPACTION_MARKER = "[compacted after skill review:"
-_REVIEW_COMPACTION_MIN_CHARS = 800
-_REVIEW_COMPACTION_HEAD_CHARS = 300
-
-
 _REASONING_PAYLOAD_KEYS = ("provider_specific_fields", "reasoning_details", "reasoning")
 
 
@@ -180,72 +175,6 @@ def strip_reasoning_payloads(msg: dict) -> int:
             except (TypeError, ValueError):
                 saved += 0
             msg.pop(key, None)
-    return saved
-
-
-def compact_reviewed_messages(client, reviewed_message_count: int) -> int:
-    """Shed the bulk of an already-reviewed transcript span, in place.
-
-    Once a storage review has consolidated a stretch of the transcript into
-    stored functions, guidance and claims, that stretch's raw machinery is
-    dead weight that every later dispatch and review re-pays. Within the
-    first ``reviewed_message_count`` messages this pass:
-
-    * replaces bulky *tool* result contents with a head slice plus an
-      omission marker, and
-    * strips provider reasoning payloads from assistant messages — a
-      completed turn's chain of thought is not needed to continue.
-
-    Message identity, ordering and tool_call pairing are untouched, so
-    nothing holding a reference to a message dict ever sees it disappear.
-    User-facing words — requests, requirements, the assistant's visible
-    replies — stay verbatim. Placeholder/progress replies, small contents,
-    image-bearing parts and already-compacted messages are left alone.
-
-    Mutating below the sent watermark is sanctioned here like an
-    escape-hatch splice: the watermark hash is re-baselined afterwards,
-    trading provider prefix cache for a permanently smaller transcript.
-
-    Returns the number of characters removed.
-    """
-    saved = 0
-    messages = list(getattr(client, "messages", None) or [])
-    span = messages[: max(0, min(reviewed_message_count, len(messages)))]
-    for msg in span:
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") == "assistant":
-            saved += strip_reasoning_payloads(msg)
-            continue
-        if msg.get("role") != "tool":
-            continue
-        if is_non_final_tool_reply(msg):
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            if any(
-                not (isinstance(part, dict) and part.get("type") == "text")
-                for part in content
-            ):
-                continue
-            text = "\n".join(str(part.get("text") or "") for part in content)
-        else:
-            continue
-        if len(text) < _REVIEW_COMPACTION_MIN_CHARS:
-            continue
-        if _REVIEW_COMPACTION_MARKER in text or "[img:" in text:
-            continue
-        stub = (
-            f"{text[:_REVIEW_COMPACTION_HEAD_CHARS]}\n… "
-            f"{_REVIEW_COMPACTION_MARKER} "
-            f"{len(text) - _REVIEW_COMPACTION_HEAD_CHARS} chars omitted]"
-        )
-        msg["content"] = stub
-        saved += len(text) - len(stub)
-    if saved:
-        _rebaseline_watermark_hash(client)
     return saved
 
 
@@ -415,25 +344,20 @@ async def generate_with_preprocess(
         client._llm_inflight_since = None
 
 
-_NOT_RECORDED = object()
-
-
 def _record_sent_request(
     client: Any,
     patched: Optional[list[dict]],
     gen_kwargs: dict,
 ) -> Any:
-    """Under UNIFY_CACHE_DISCIPLINE, keep what this dispatch sends.
+    """Keep what this dispatch sends (for a later fork).
 
     *patched* is the preprocessed list about to be sent; ``None`` means the
     client's own transcript, to which ``generate`` prepends the system
     prompt when no system message is present. Returns what to restore if
-    the dispatch ends without a response (``_NOT_RECORDED`` when off).
+    the dispatch ends without a response.
     """
     from . import cache_discipline
 
-    if not cache_discipline.records_requests():
-        return _NOT_RECORDED
     if patched is None:
         patched = list(getattr(client, "messages", None) or [])
         system = getattr(client, "system_message", None)
@@ -445,8 +369,6 @@ def _record_sent_request(
 
 
 def _restore_sent_request(client: Any, previous: Any) -> None:
-    if previous is _NOT_RECORDED:
-        return
     from . import cache_discipline
 
     cache_discipline.restore_sent_request(client, previous)

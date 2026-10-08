@@ -23,6 +23,12 @@ def context_over_threshold(
 
 _COMPRESSED_HEADER = "## Compressed Prior Context\n"
 
+#: A compression asks for its summary as a fork of the conversation first
+#: (``AsyncToolLoopHandle._summarise_as_fork``), and rebuilds with
+#: :func:`compress_and_rebuild` only when the fork returns nothing. Fixed at
+#: the code freeze, where it was ``UNIFY_CACHE_DISCIPLINE``'s choice.
+FORK_SUMMARY = True
+
 
 @dataclass
 class CompressionState:

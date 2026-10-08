@@ -289,28 +289,6 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
-    # Keep every tool loop's requests a growing, byte-stable prefix, so the
-    # provider's prompt cache is reused call after call: the tool list is
-    # computed once per session and a tool the phase does not allow is
-    # refused by rule instead of removed; messages already sent are never
-    # edited; compression asks for its summary as a fork of the conversation;
-    # a cache affinity key (UNIFY_CACHE_AFFINITY_SCOPE) is passed when the
-    # LLM client takes one; and each call logs how much of its input came
-    # from the cache (unify/common/_async_tool/cache_discipline.py). Off: as
-    # shipped.
-    UNIFY_CACHE_DISCIPLINE: bool = True
-    # Run the storage review that follows a session as a fork of the session's
-    # own conversation: its request is the actor's system prompt, messages,
-    # last tools and tool choice, plus one user message with the review
-    # rulebook, so it is served from the cache the actor built. Tools outside
-    # the library are refused. Needs UNIFY_CACHE_DISCIPLINE (for the fixed
-    # tool list); without it, or when the session was compressed or its
-    # history changed since its last request, the review runs as shipped and
-    # the log says why. With it, a message sent to a persistent session after
-    # its task loop ended on its own (a step limit, say) is refused rather than
-    # read by the review, forked or not, as an interjection to answer.
-    # Off: as shipped.
-    UNIFY_REVIEW_FORK: bool = True
     # Delegation for the actor `unify act` and the conversation manager
     # build: ``on`` installs the sub-actor primitive (``primitives.actor``)
     # and its 2.3k-token docs in the prompt, as shipped. ``off`` installs
@@ -448,19 +426,6 @@ class ProductionSettings(BaseSettings):
     # not offered and the prompt names the magics where it named the fields
     # (unify/actor/notebook_cells.py). On both tool surfaces.
     UNIFY_CODE_PROJECTION: str = ""
-    # With UNIFY_TOOL_SURFACE=core and UNIFY_REVIEW_FORK, run the storage
-    # review as a fork of the session too, instead of falling back to the
-    # standalone librarian: the session's last request (its execute_code-only
-    # tool list included) plus one user message with the rulebook, naming the
-    # libraries as the sandbox does (``functions.add``, ``guidance.add``).
-    # The review's execute_code runs its cells in a new sandboxed worker that
-    # holds only ``functions`` and ``guidance``, with the review's writes --
-    # no task environment, files or variables, and no stored function is run.
-    # Any other tool in the list is refused. Falls back to the standalone
-    # review, saying why, without worker Python or with UNIFY_STORE_VERIFY
-    # (its check has no sandbox method). Off: the core surface's review is
-    # standalone, as shipped.
-    UNIFY_REVIEW_FORK_CORE: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -504,9 +469,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
         "UNIFY_TOOL_CHOICE_FALLBACK",
-        "UNIFY_CACHE_DISCIPLINE",
-        "UNIFY_REVIEW_FORK",
-        "UNIFY_REVIEW_FORK_CORE",
         "UNIFY_CELL_SCOPE_FIX",
         mode="before",
     )

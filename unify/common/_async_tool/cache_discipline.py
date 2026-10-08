@@ -1,24 +1,24 @@
-"""Keep a tool loop's requests a growing, byte-stable prefix (``UNIFY_CACHE_DISCIPLINE``).
+"""Keep a tool loop's requests a growing, byte-stable prefix.
 
 Providers cache a prompt by its exact leading bytes: tools, system prompt,
 then messages in order. A request reuses the cache only as far as it matches
 the previous one byte for byte, so anything that changes early in the
 request -- the tool list, an old message -- makes every later token cold.
-With the switch on, the loop keeps what it advertises and what it has sent
-fixed:
+The loop keeps what it advertises and what it has sent fixed (the
+``UNIFY_CACHE_DISCIPLINE`` switch until the code freeze baked it in):
 
 * **One tool list per session.** The advertised tools are computed once, in
   a deterministic order, and sent unchanged on every call. What a phase does
-  not allow (a discovery gate, a context-full turn, a read-only library) is
+  not allow (a policy's gated turn, a context-full turn, a read-only library) is
   refused at call time with the rule that masks it, instead of being removed
   from the list ("mask, don't remove").
 * **Sent messages are never edited.** Reasoning payloads are not shed when a
   persistent session parks, and a storage review's compaction note no
   longer shortens the turns it covered.
-* **Compression is a fork.** The summary is asked for with the last request
-  sent, unchanged, plus one appended instruction, so it is served from the
-  cache; the session then continues from the summary under the same system
-  prompt and tool list.
+* **Compression is a fork** (``context_compression.FORK_SUMMARY``). The
+  summary is asked for with the last request sent, unchanged, plus one
+  appended instruction, so it is served from the cache; the session then
+  continues from the summary under the same system prompt and tool list.
 * **One cache per prefix.** A client whose unillm takes a cache affinity
   key gets one derived from its model, system prompt and fixed tool list
   so a new session reaches the replica an earlier session with the same prefix
@@ -29,47 +29,17 @@ fixed:
   that does not report cached tokens is counted as unknown, not as zero.
 
 The helpers here hold that policy so the loop itself only asks two questions
-per turn: what to advertise, and whether a call is allowed. With the switch
-off none of them is consulted.
+per turn: what to advertise, and whether a call is allowed.
 """
 
 from __future__ import annotations
 
 import copy
-import contextvars
 import hashlib
 import json
 from typing import Any, Iterable, Optional
 
 from ...logger import LOGGER
-
-# The tool names a turn allows, set by the loop around each dispatch while the
-# switch is on. A completion mutator that reads the request's tool list to
-# decide what phase the turn is in (the actor's discovery mutator) reads this
-# instead: under the switch the request always carries the whole list.
-_TURN_AVAILABLE_TOOLS: contextvars.ContextVar[Optional[frozenset[str]]] = (
-    contextvars.ContextVar("unify_turn_available_tools", default=None)
-)
-
-
-def enabled() -> bool:
-    """Whether ``UNIFY_CACHE_DISCIPLINE`` is on."""
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", False))
-
-
-def turn_available_tools() -> Optional[frozenset[str]]:
-    """The tool names the current turn allows, or ``None`` outside the switch."""
-    return _TURN_AVAILABLE_TOOLS.get()
-
-
-def set_turn_available_tools(names: Iterable[str]) -> contextvars.Token:
-    return _TURN_AVAILABLE_TOOLS.set(frozenset(names))
-
-
-def reset_turn_available_tools(token: contextvars.Token) -> None:
-    _TURN_AVAILABLE_TOOLS.reset(token)
 
 
 def schema_name(schema: Any) -> Optional[str]:
@@ -121,8 +91,7 @@ def policy_mask_rules(policy_result: Any) -> tuple[dict[str, str], Optional[str]
     A policy may return ``(mode, tools, opts)`` with ``opts["mask_rules"]``
     (tool name -> why it is withheld) and ``opts["mask_rule"]`` (why every
     other withheld tool is). Both are optional; the loop reads nothing else
-    from them, so a policy that sets them behaves as before with the switch
-    off.
+    from them.
     """
     if not isinstance(policy_result, (tuple, list)) or len(policy_result) < 3:
         return {}, None
@@ -170,18 +139,6 @@ def masked_tool_refusal(
 # ── the last request a client sent ─────────────────────────────────────────
 
 _LAST_SENT = "_unify_last_sent_request"
-
-
-def review_fork_enabled() -> bool:
-    """Whether ``UNIFY_REVIEW_FORK`` is on."""
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_REVIEW_FORK", False))
-
-
-def records_requests() -> bool:
-    """Whether dispatches keep a copy of what they send (for a later fork)."""
-    return enabled() or review_fork_enabled()
 
 
 def record_sent_request(client: Any, messages: list, gen_kwargs: dict) -> Any:

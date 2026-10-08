@@ -284,7 +284,7 @@ def _cell(code: str):
 
 def _act_replies(provider: h.Provider, store: str):
     # The core surface (baked in): the actor and its forked review
-    # (UNIFY_REVIEW_FORK_CORE) write the library from execute_code cells.
+    # (baked in) write the library from execute_code cells.
     add = _cell(f"await functions.add(implementations=[{NAMED!r}])")
 
     def later():

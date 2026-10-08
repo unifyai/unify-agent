@@ -177,7 +177,7 @@ def _gate_requests(requests):
 
 
 def _review_requests(requests):
-    # The review forks the session (UNIFY_REVIEW_FORK), so it is the request
+    # The review forks the session (baked in), so it is the request
     # that carries the curation step rather than its own system prompt.
     return [
         r

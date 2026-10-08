@@ -243,7 +243,7 @@ def test_a_patch_that_doubles_an_escape_is_refused(drift, monkeypatch):
 
 # ── through the actor's storage review ───────────────────────────────────
 
-# The forked review (UNIFY_REVIEW_FORK_CORE, baked in) continues the session's
+# The forked review (baked in) continues the session's
 # conversation with this message and stores from its own execute_code cells.
 _REVIEW_OPENING = "## Curating The Library"
 

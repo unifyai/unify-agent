@@ -1,10 +1,10 @@
-"""Symbolic: ``UNIFY_CACHE_DISCIPLINE`` keeps one tool list per session.
+"""Symbolic: a session keeps one tool list (the cache discipline).
 
 A provider reuses its prompt cache only as far as a request matches the last
 one byte for byte, and the tool list comes first. Every actor conversation
 used to change it on its second call (5 tools while the discovery gate was
-open, 18 after, on AppWorld), so the cached prefix was lost there. With the
-switch on the list is computed once and sent unchanged; what a turn does not
+open, 18 after, on AppWorld), so the cached prefix was lost there. Now it is
+fixed: the list is computed once and sent unchanged; what a turn does not
 allow is refused at call time with the rule that masks it.
 
 The requests are captured at unillm's transport (see
@@ -17,15 +17,6 @@ from __future__ import annotations
 import pytest
 
 from tests import cache_discipline_helpers as h
-from unify.settings import SETTINGS
-
-
-@pytest.fixture
-def discipline(monkeypatch):
-    def set_(on: bool) -> None:
-        monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", on)
-
-    return set_
 
 
 def _names(request: dict) -> list[str]:
@@ -45,8 +36,7 @@ def _tool_reply(requests: list[dict], call_id: str) -> str:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario", h.ONE_SESSION)
-async def test_on_the_tool_list_is_identical_on_every_call(discipline, scenario):
-    discipline(True)
+async def test_on_the_tool_list_is_identical_on_every_call(scenario):
     _result, _counter, requests = await h.SCENARIOS[scenario]()
     assert len(requests) >= 2
     tool_bytes = {h.request_bytes(r)["tools"] for r in requests}
@@ -54,8 +44,7 @@ async def test_on_the_tool_list_is_identical_on_every_call(discipline, scenario)
 
 
 @pytest.mark.asyncio
-async def test_on_the_list_holds_every_tool_in_a_fixed_order(discipline):
-    discipline(True)
+async def test_on_the_list_holds_every_tool_in_a_fixed_order():
     _result, _counter, requests = await h.scenario_gate()
     assert _names(requests[0]) == [
         # the caller's tools, by name, whatever the turn's policy shows
@@ -68,8 +57,7 @@ async def test_on_the_list_holds_every_tool_in_a_fixed_order(discipline):
 
 
 @pytest.mark.asyncio
-async def test_on_a_masked_call_is_refused_with_the_rule_and_not_run(discipline):
-    discipline(True)
+async def test_on_a_masked_call_is_refused_with_the_rule_and_not_run():
     result, counter, requests = await h.scenario_gate()
     assert result == "done"
     # The early call was refused; only the call after the gate ran.
@@ -91,8 +79,7 @@ async def test_on_a_masked_call_is_refused_with_the_rule_and_not_run(discipline)
 
 
 @pytest.mark.asyncio
-async def test_on_a_context_full_turn_allows_only_compress_context(discipline):
-    discipline(True)
+async def test_on_a_context_full_turn_allows_only_compress_context():
     result, counter, requests = await h.scenario_threshold()
     assert result == "stopping"
     assert counter == {"execute_code": 1}
@@ -103,9 +90,8 @@ async def test_on_a_context_full_turn_allows_only_compress_context(discipline):
 
 
 @pytest.mark.asyncio
-async def test_on_a_refused_call_does_not_satisfy_a_gate(discipline):
+async def test_on_a_refused_call_does_not_satisfy_a_gate():
     """A call to a masked library tool is not a library search: the gate stays."""
-    discipline(True)
     counter: dict = {}
     tools = h.make_tools(counter)
 
@@ -149,9 +135,8 @@ async def test_on_a_refused_call_does_not_satisfy_a_gate(discipline):
 
 
 @pytest.mark.asyncio
-async def test_on_the_list_survives_a_later_turn_that_shows_fewer_tools(discipline):
+async def test_on_the_list_survives_a_later_turn_that_shows_fewer_tools():
     """A policy that narrows the tools on a later turn narrows only what runs."""
-    discipline(True)
     counter: dict = {}
     tools = h.make_tools(counter)
 
@@ -192,18 +177,6 @@ def test_policy_mask_rules_reads_only_the_optional_keys():
     assert policy_mask_rules(
         ("required", {}, {"eager": True, "mask_rule": "r", "mask_rules": {"a": "x"}}),
     ) == ({"a": "x"}, "r")
-
-
-def test_turn_available_tools_is_unset_outside_a_dispatch():
-    from unify.common._async_tool import cache_discipline as cd
-
-    assert cd.turn_available_tools() is None
-    token = cd.set_turn_available_tools(["a", "b"])
-    try:
-        assert cd.turn_available_tools() == frozenset({"a", "b"})
-    finally:
-        cd.reset_turn_available_tools(token)
-    assert cd.turn_available_tools() is None
 
 
 def test_admission_rules_wrap_two_and_three_argument_policies():

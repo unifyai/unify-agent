@@ -47,9 +47,6 @@ from .messages import (
     is_loop_authored_message,
     loop_user_notice,
     extract_substantive_text,
-    compact_reviewed_messages,
-    strip_reasoning_payloads,
-    _rebaseline_watermark_hash,
 )
 from .tools_data import ToolsData
 from . import cache_discipline as _cache_discipline
@@ -87,7 +84,7 @@ class ToolLoopRuntimeState:
     refusals_by_call: Dict[str, int] = field(default_factory=dict)
     refusals_by_complaint: Dict[str, int] = field(default_factory=dict)
     pending_stop_reason: Optional[str] = None
-    # UNIFY_CACHE_DISCIPLINE: the tool list this session advertises, fixed at
+    # The tool list this session advertises, fixed at
     # its first call and kept across compression restarts.
     session_tools_schema: Optional[list] = None
     # UNIFY_STEP_CAP_REPLY=last_word: the tool-less turns given at the step
@@ -586,11 +583,10 @@ async def async_tool_loop_inner(
         the conversation and tool results carry their timing.
 
     fixed_tools_schema : ``list[dict] | None``
-        Under ``UNIFY_CACHE_DISCIPLINE``, the exact tool list to send on every
-        call instead of one built from ``tools`` -- a fork sends its parent's
-        list so its requests extend the parent's. A listed tool this loop
-        does not implement is refused when called. Ignored with the switch
-        off.
+        The exact tool list to send on every call instead of one built from
+        ``tools`` -- a fork sends its parent's list so its requests extend
+        the parent's. A listed tool this loop does not implement is refused
+        when called.
 
     first_message_context : ``str | None``
         Text that opens the first user message of this loop (the request, or
@@ -602,7 +598,7 @@ async def async_tool_loop_inner(
         ``True`` (``UNIFY_TOOL_SURFACE=core``): ``compress_context`` and the
         ``extra_compression_tools`` are offered only on the turn that must
         compress, and are otherwise left out of the tool list
-        (``UNIFY_CACHE_DISCIPLINE``'s fixed list included), so the list holds
+        (the session's fixed list included), so the list holds
         only the caller's tools.
 
     reply_channel : ``bool``, default ``False``
@@ -702,7 +698,6 @@ async def async_tool_loop_inner(
     # read as ``request``; ``None`` for a loop that answers no requester.
     _request_token = _bound_request.bind(bind_request)
     _request_slot = _bound_request.current() if _request_token is not None else None
-    _discipline = _cache_discipline.enabled()
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -1149,8 +1144,7 @@ async def async_tool_loop_inner(
         finally:
             stopped.cancel()
             await asyncio.gather(stopped, return_exceptions=True)
-            if _cache_discipline.records_requests():
-                _cache_discipline.restore_sent_request(client, _recorded)
+            _cache_discipline.restore_sent_request(client, _recorded)
         if text is None:
             runtime_state.step_cap_last_word_fallbacks += 1
         logger.info(
@@ -1422,25 +1416,9 @@ async def async_tool_loop_inner(
                 prefix=ICONS["pause"],
             )
 
-        # A parked turn's chain of thought is never consulted again:
-        # the next dispatch starts from a fresh user interjection, so
-        # provider reasoning payloads (encrypted blobs, reasoning
-        # summaries) on every completed assistant message are pure
-        # re-billed bulk from here on. Shed them now rather than
-        # waiting for a storage review to cover the span — reviews
-        # lag turns, and the lag is paid on every call in between.
-        # UNIFY_CACHE_DISCIPLINE keeps them: shedding rewrites every
-        # sent assistant message, so the next call starts cold.
-        try:
-            _shed = 0
-            _shed_from = [] if _discipline else client.messages or []
-            for _m in _shed_from:
-                if isinstance(_m, dict) and _m.get("role") == "assistant":
-                    _shed += strip_reasoning_payloads(_m)
-            if _shed:
-                _rebaseline_watermark_hash(client)
-        except Exception:
-            pass
+        # A parked turn keeps the reasoning payloads of its assistant
+        # messages: shedding them would rewrite every sent message, so the
+        # next call would start cold.
 
         logger.info(
             "Persist mode: waiting for next interjection...",
@@ -1512,20 +1490,10 @@ async def async_tool_loop_inner(
                 continue
 
             # Transcript-compaction sentinels: the covered turns were
-            # consolidated by a storage review; shed their raw tool
-            # payloads and stay in persist wait.
+            # consolidated by a storage review. Sent messages are never
+            # edited, so the reviewed span keeps its bytes; stay in persist
+            # wait.
             if isinstance(interjection, dict) and "_compact_transcript" in interjection:
-                try:
-                    _n = int(
-                        (interjection.get("_compact_transcript") or {}).get(
-                            "reviewed_messages",
-                        )
-                        or 0,
-                    )
-                    if _n > 0 and not _discipline:
-                        compact_reviewed_messages(client, _n)
-                except Exception:
-                    pass
                 continue
 
             # The next request goes back to the head of the queue, ahead of
@@ -1919,22 +1887,9 @@ async def async_tool_loop_inner(
                         pass
                     continue
                 # Transcript-compaction sentinel: a completed storage review
-                # has consolidated the covered turns, so their raw tool
-                # payloads shed their bulk. Processed only at boundaries.
+                # has consolidated the covered turns. Sent messages are never
+                # edited, so the reviewed span keeps its bytes.
                 if isinstance(extra, dict) and "_compact_transcript" in extra:
-                    try:
-                        _n = int(
-                            (extra.get("_compact_transcript") or {}).get(
-                                "reviewed_messages",
-                            )
-                            or 0,
-                        )
-                        # UNIFY_CACHE_DISCIPLINE: sent messages are never
-                        # edited, so the reviewed span keeps its bytes.
-                        if _n > 0 and not _discipline:
-                            compact_reviewed_messages(client, _n)
-                    except Exception:
-                        pass
                     continue
 
                 if isinstance(extra, dict):
@@ -2017,10 +1972,9 @@ async def async_tool_loop_inner(
                         _policy_result,
                     )
                     _policy_gated = _policy_gates_turn(_policy_result)
-                    if _discipline:
-                        _policy_mask_rules, _policy_mask_default = (
-                            _cache_discipline.policy_mask_rules(_policy_result)
-                        )
+                    _policy_mask_rules, _policy_mask_default = (
+                        _cache_discipline.policy_mask_rules(_policy_result)
+                    )
                 except Exception as _e:  # never abort the loop on mis-behaving policies
                     logger.error(
                         f"tool_policy raised on turn {runtime_state.step_index}: {_e!r}",
@@ -2167,89 +2121,84 @@ async def async_tool_loop_inner(
 
             tmp_tools = list(visible_base_tools_schema)
 
-            # UNIFY_CACHE_DISCIPLINE: what this turn assembled is what it
-            # allows; what it advertises is the session's fixed list. A call
+            # What this turn assembled is what it allows; what it advertises
+            # is the session's fixed list. A call
             # to anything outside the allowed set is refused below, with the
             # rule that masks it, so the list never changes mid-session.
-            if _discipline:
-                _turn_available = frozenset(
-                    _cache_discipline.schema_names(tmp_tools),
+            _turn_available = frozenset(
+                _cache_discipline.schema_names(tmp_tools),
+            )
+            if (
+                runtime_state.session_tools_schema is None
+                and fixed_tools_schema is not None
+            ):
+                runtime_state.session_tools_schema = copy.deepcopy(
+                    list(fixed_tools_schema),
                 )
-                if (
-                    runtime_state.session_tools_schema is None
-                    and fixed_tools_schema is not None
-                ):
-                    runtime_state.session_tools_schema = copy.deepcopy(
-                        list(fixed_tools_schema),
+            if runtime_state.session_tools_schema is None:
+                runtime_state.session_tools_schema = (
+                    _cache_discipline.build_session_schema(
+                        base_schemas={
+                            name: method_to_schema(
+                                spec.fn,
+                                name,
+                                expose_context_control=(
+                                    propagate_chat_context
+                                    == ChatContextPropagation.LLM_DECIDES
+                                ),
+                                has_parent_context=bool(parent_chat_context),
+                            )
+                            for name, spec in tools_data.normalized.items()
+                            if not (
+                                compression_tools_on_demand
+                                and name in (extra_compression_tools or ())
+                            )
+                        },
+                        compress_schema=(
+                            None if compression_tools_on_demand else _compress_schema
+                        ),
+                        turn_schemas=[
+                            schema
+                            for schema in tmp_tools
+                            if not compression_tools_on_demand
+                            or _cache_discipline.schema_name(schema)
+                            not in {
+                                "compress_context",
+                                *(extra_compression_tools or ()),
+                            }
+                        ],
                     )
-                if runtime_state.session_tools_schema is None:
-                    runtime_state.session_tools_schema = (
-                        _cache_discipline.build_session_schema(
-                            base_schemas={
-                                name: method_to_schema(
-                                    spec.fn,
-                                    name,
-                                    expose_context_control=(
-                                        propagate_chat_context
-                                        == ChatContextPropagation.LLM_DECIDES
-                                    ),
-                                    has_parent_context=bool(parent_chat_context),
-                                )
-                                for name, spec in tools_data.normalized.items()
-                                if not (
-                                    compression_tools_on_demand
-                                    and name in (extra_compression_tools or ())
-                                )
-                            },
-                            compress_schema=(
-                                None
-                                if compression_tools_on_demand
-                                else _compress_schema
-                            ),
-                            turn_schemas=[
-                                schema
-                                for schema in tmp_tools
-                                if not compression_tools_on_demand
-                                or _cache_discipline.schema_name(schema)
-                                not in {
-                                    "compress_context",
-                                    *(extra_compression_tools or ()),
-                                }
-                            ],
-                        )
-                    )
-                # compression_tools_on_demand: the turn that must compress
-                # sends its own list (the session's list has no compression
-                # tools); compression starts a new prefix anyway.
-                _on_demand_turn = (
-                    compression_tools_on_demand
-                    and _over_threshold
-                    and enable_compression
                 )
-                if not _on_demand_turn:
-                    tmp_tools = runtime_state.session_tools_schema
-                # Set once, before the first request: the key names the
-                # prefix (model, system prompt, this fixed list) unless a
-                # key is already set, as a fork's is.
-                _cache_discipline.ensure_cache_affinity(client, tmp_tools)
-                _session_tool_names = frozenset(
-                    _cache_discipline.schema_names(tmp_tools),
+            # compression_tools_on_demand: the turn that must compress
+            # sends its own list (the session's list has no compression
+            # tools); compression starts a new prefix anyway.
+            _on_demand_turn = (
+                compression_tools_on_demand and _over_threshold and enable_compression
+            )
+            if not _on_demand_turn:
+                tmp_tools = runtime_state.session_tools_schema
+            # Set once, before the first request: the key names the
+            # prefix (model, system prompt, this fixed list) unless a
+            # key is already set, as a fork's is.
+            _cache_discipline.ensure_cache_affinity(client, tmp_tools)
+            _session_tool_names = frozenset(
+                _cache_discipline.schema_names(tmp_tools),
+            )
+            _turn_available = _turn_available & _session_tool_names
+            _turn_mask_rules = dict(_policy_mask_rules)
+            _turn_mask_default = _policy_mask_default
+            if _over_threshold and enable_compression:
+                _turn_mask_rules = {}
+                _turn_mask_default = (
+                    "the context window is nearly full, so "
+                    "`compress_context` has to be called now"
                 )
-                _turn_available = _turn_available & _session_tool_names
-                _turn_mask_rules = dict(_policy_mask_rules)
-                _turn_mask_default = _policy_mask_default
-                if _over_threshold and enable_compression:
-                    _turn_mask_rules = {}
-                    _turn_mask_default = (
-                        "the context window is nearly full, so "
-                        "`compress_context` has to be called now"
-                    )
-                elif _policy_gated:
-                    _turn_mask_rules.setdefault(
-                        "compress_context",
-                        "compression waits until this turn's required calls "
-                        "have been made",
-                    )
+            elif _policy_gated:
+                _turn_mask_rules.setdefault(
+                    "compress_context",
+                    "compression waits until this turn's required calls "
+                    "have been made",
+                )
 
             # ── D. Ask the LLM what to do next ───────────────────────────
             # A stop that landed while this turn was being built ends the
@@ -2350,11 +2299,6 @@ async def async_tool_loop_inner(
                     # required tools that must be callable in one assistant turn.
                     _gen_kwargs["parallel_tool_calls"] = True
 
-                _available_token = (
-                    _cache_discipline.set_turn_available_tools(_turn_available)
-                    if _discipline
-                    else None
-                )
                 llm_task = asyncio.create_task(
                     generate_with_preprocess(
                         client,
@@ -2366,9 +2310,6 @@ async def async_tool_loop_inner(
                     ),
                     name="LLMGenerate",
                 )
-                # The task took its copy of the context when it was created.
-                if _available_token is not None:
-                    _cache_discipline.reset_turn_available_tools(_available_token)
                 cancel_waiter = asyncio.create_task(
                     cancel_event.wait(),
                     name="CancelEventWait",
@@ -2490,13 +2431,12 @@ async def async_tool_loop_inner(
                             _max_input_tokens,
                         )
 
-            if _discipline:
-                with suppress(Exception):
-                    _cache_discipline.log_cache_use(
-                        client,
-                        _full_completion,
-                        label=cfg.label,
-                    )
+            with suppress(Exception):
+                _cache_discipline.log_cache_use(
+                    client,
+                    _full_completion,
+                    label=cfg.label,
+                )
 
             # The activity timeout catches hung tools, not slow inference
             # (providers have their own timeouts), so an LLM response resets it.
@@ -2599,12 +2539,12 @@ async def async_tool_loop_inner(
                                 )
                         break
 
-                    # UNIFY_CACHE_DISCIPLINE: the session's tool list is fixed,
-                    # so a tool this turn does not allow is refused here, by
-                    # rule, instead of having been left out of the request. A
-                    # refused call is not recorded as called: it must not
-                    # satisfy a policy gate.
-                    if _discipline and name not in _turn_available:
+                    # The session's tool list is fixed, so a tool this turn
+                    # does not allow is refused here, by rule, instead of
+                    # having been left out of the request. A refused call is
+                    # not recorded as called: it must not satisfy a policy
+                    # gate.
+                    if name not in _turn_available:
                         await _answer_call(
                             msg,
                             call,

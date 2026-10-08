@@ -167,4 +167,4 @@ async def test_on_the_actor_offers_bash_read_file_and_grep(world):
         await actor.close()
 
 
-# ── under UNIFY_CACHE_DISCIPLINE ─────────────────────────────────────────────
+# ── under the cache discipline ─────────────────────────────────────────────

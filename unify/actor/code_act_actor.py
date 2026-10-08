@@ -174,8 +174,8 @@ def _with_mask_rules(
 ) -> ToolPolicyFn:
     """Wrap *policy* so its result names *rules* for the tools it withholds.
 
-    Used only under UNIFY_CACHE_DISCIPLINE, where a withheld tool stays in the
-    request and the loop refuses a call to it with its rule.
+    A withheld tool stays in the request (the fixed tool list), and the loop
+    refuses a call to it with its rule.
     """
     try:
         _positional = sum(
@@ -1393,15 +1393,12 @@ def _store_admission_never(path: Optional[str] = None) -> bool:
 def _admitted_review_can_write_in_session_list() -> bool:
     """Whether an admitted review may call writes from the session's tool list.
 
-    Only a forked review (``UNIFY_REVIEW_FORK``) continues the session's
-    request, tool list included; the standalone review brings its own tools.
-    Under ``UNIFY_STORE_ADMISSION=never`` no review runs at all. Otherwise
-    the writes admission withholds from the session are ones nothing sending
-    the session's list can ever call.
+    A forked review continues the session's request, tool list included.
+    Under ``UNIFY_STORE_ADMISSION=never`` no review runs at all, and the
+    writes admission withholds from the session are ones nothing sending the
+    session's list can ever call.
     """
-    from unify.common._async_tool import cache_discipline
-
-    return cache_discipline.review_fork_enabled() and not _store_admission_never()
+    return not _store_admission_never()
 
 
 def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
@@ -1479,7 +1476,7 @@ _REVIEW_CLOSING_UNIFIED = (
 )
 
 
-# UNIFY_REVIEW_FORK_CORE: what the fork's tools do, for a core session.
+# What the fork's tools do, for a core session.
 _REVIEW_FORK_TOOLS = (
     "Your tool list is the one the task used, but only the function and "
     "guidance library tools work now; any other tool is refused. Library "
@@ -1532,28 +1529,19 @@ def _review_fork_source(
 ) -> tuple[Optional[dict], Optional[str]]:
     """What a forked storage review continues from, or why it cannot fork.
 
-    Returns ``(source, None)`` for a fork, ``(None, reason)`` when
-    ``UNIFY_REVIEW_FORK`` is on but the review has to run as shipped, and
-    ``(None, None)`` when the switch is off. The fork needs the fixed tool
-    list of ``UNIFY_CACHE_DISCIPLINE`` and the session's last request as
-    recorded; it is refused when the session was compressed, when its
+    Returns ``(source, None)`` for a fork, and ``(None, reason)`` when the
+    review has to run standalone. The fork reuses the session's fixed tool
+    list and needs its last request as recorded; it is refused when the session was compressed, when its
     history no longer starts with that request (something rewrote it), or
     when it ends with unanswered tool calls, which the review loop would try
     to run with its own tools.
     """
     from unify.common._async_tool import cache_discipline
 
-    if not cache_discipline.review_fork_enabled():
-        return None, None
     if core_surface.enabled():
-        if not core_surface.review_fork_enabled():
-            return None, (
-                "UNIFY_TOOL_SURFACE=core: the session's tool list holds no "
-                "library tools for a forked review to call"
-            )
-        # UNIFY_REVIEW_FORK_CORE: the review stores through the list's
-        # execute_code, in a sandbox holding only the libraries.
-        source, why = _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
+        # The review stores through the list's execute_code, in a sandbox
+        # holding only the libraries.
+        source, why = _session_fork_source(inner, actor)
         if source is None:
             return None, why
         why = core_surface.review_fork_refusal(
@@ -1562,14 +1550,12 @@ def _review_fork_source(
         if why is not None:
             return None, why
         return {**source, "core": True}, None
-    return _session_fork_source(inner, actor, switch="UNIFY_REVIEW_FORK")
+    return _session_fork_source(inner, actor)
 
 
 def _session_fork_source(
     inner: Any,
     actor: "CodeActActor",
-    *,
-    switch: str,
 ) -> tuple[Optional[dict], Optional[str]]:
     """The session's conversation for a fork, or why it cannot be continued.
 
@@ -1582,11 +1568,6 @@ def _session_fork_source(
     from unify.common._async_tool import cache_discipline
     from unify.common._async_tool.messages import find_unreplied_assistant_entries
 
-    if not cache_discipline.enabled():
-        return None, (
-            f"{switch} needs UNIFY_CACHE_DISCIPLINE, whose fixed tool "
-            "list the fork reuses"
-        )
     client = getattr(inner, "_client", None)
     if client is None:
         return None, "the session has no LLM client"
@@ -1884,7 +1865,7 @@ def _start_storage_check_loop(
     )
 
     if fork_source is not None and fork_source.get("core"):
-        # UNIFY_REVIEW_FORK_CORE: the same message, naming the libraries as
+        # A core session: the same message, naming the libraries as
         # the sandbox does; the review stores through execute_code, whose
         # cells run in a sandbox of their own. The final result is the
         # session's, unchanged.
@@ -2634,8 +2615,8 @@ class _StorageCheckHandle(ToolLoopHandle):
                 except Exception:
                     pass
 
-                # UNIFY_REVIEW_FORK: continue the session's own conversation
-                # when it can be continued exactly; otherwise say why not.
+                # Continue the session's own conversation when it can be
+                # continued exactly; otherwise say why not.
                 fork_source, fork_skipped = _review_fork_source(
                     self._inner,
                     self._actor,
@@ -2745,18 +2726,11 @@ class _StorageCheckHandle(ToolLoopHandle):
         A persistent session takes each follow-up as its next request. Once
         its task loop has ended (at a step or time limit, or by a stop), a
         follow-up has no session to go to, and forwarded to the storage
-        review it is read there as a user message the review must answer.
-        With ``UNIFY_REVIEW_FORK`` it is refused instead; off, it is
-        forwarded as shipped. A handle that was not persistent forwards it to
+        review it is read there as a user message the review must answer, so
+        it is refused instead. A handle that was not persistent forwards it to
         the review, which reads it at its next boundary.
         """
-        from unify.common._async_tool import cache_discipline
-
-        return (
-            self._persist
-            and self._task_done_event.is_set()
-            and cache_discipline.review_fork_enabled()
-        )
+        return self._persist and self._task_done_event.is_set()
 
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
@@ -4285,7 +4259,6 @@ class CodeActActor(BaseCodeActActor):
             "\n\n".join(filter(None, [self._base_guidelines, guidelines])) or None
         )
 
-        from unify.common._async_tool import cache_discipline
         from unify.settings import SETTINGS
 
         # The default policy leaves the library searches to the model (no
@@ -4367,7 +4340,7 @@ class CodeActActor(BaseCodeActActor):
 
         tools = dict(base_tools)
 
-        # UNIFY_CACHE_DISCIPLINE: the tool list is fixed per session and holds
+        # The tool list is fixed per session and holds
         # the tools the session's requests can ever call. When the review that
         # forks this session after an admitted outcome reuses the list, the
         # library writes admission withholds stay in it, masked: a call to one
@@ -4378,7 +4351,6 @@ class CodeActActor(BaseCodeActActor):
         if (
             admission_gated
             and not core
-            and cache_discipline.enabled()
             and _admitted_review_can_write_in_session_list()
         ):
             for name, tool in _filter_tools(
