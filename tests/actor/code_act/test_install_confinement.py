@@ -157,6 +157,104 @@ def test_an_install_takes_packages_never_installer_options(
     assert launched == []
 
 
+def _uv_venv_watched(monkeypatch, seen: list[dict]) -> None:
+    """Stub the environment module's commands: ``uv venv`` records what its
+    target held when it ran (and makes the interpreter); ``uv pip install``
+    records whether the environment lock was free."""
+    import fcntl
+    import os
+
+    def fake_run(argv, **kwargs):
+        lock_path = environment.environment_dir().parent / "venv.lock"
+        with open(lock_path, "a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = False
+                fcntl.flock(lock, fcntl.LOCK_UN)
+            except BlockingIOError:
+                locked = True
+        if "venv" in argv and "pip" not in argv:
+            target = Path(argv[-1])
+            seen.append(
+                {
+                    "argv": list(argv),
+                    "cwd": kwargs.get("cwd"),
+                    "existed": os.path.lexists(target),
+                    "inode": target.stat().st_ino if target.is_dir() else None,
+                    "locked": locked,
+                },
+            )
+            python = environment.environment_python()
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.touch()
+        else:
+            seen.append({"argv": list(argv), "locked": locked})
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(environment.subprocess, "run", fake_run)
+    # The command line only: bubblewrap is not needed to see what runs.
+    monkeypatch.setattr(
+        environment,
+        "_installer",
+        lambda argv, egress, env=None: (list(argv), dict(env or {}), None),
+    )
+
+
+def test_uv_venv_never_runs_over_what_the_installers_sandbox_wrote(
+    unify_home,
+    tmp_path,
+    monkeypatch,
+):
+    """The installer's sandbox can write the environment, so code a package
+    runs there can remove ``bin/python`` and leave a link out of it. The
+    unconfined ``uv venv`` that follows must not write through it: it runs
+    on a new directory, without uv's configuration, from the store home,
+    while no install runs."""
+    seen: list[dict] = []
+    _uv_venv_watched(monkeypatch, seen)
+    venv = environment.environment_dir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (venv / "lib").mkdir(parents=True)
+    (venv / "bin").symlink_to(outside, target_is_directory=True)
+    (venv / "pyvenv.cfg").write_text("home = /planted\n")
+    (venv / "uv.toml").write_text('index-url = "https://evil.example/simple"\n')
+
+    environment.install(["humanize"])
+
+    venv_call, pip_call = seen
+    assert "--no-config" in venv_call["argv"], venv_call["argv"]
+    # The store home: never the environment, and never the workspace (which
+    # may not be the store home itself).
+    assert venv_call["cwd"] == str(environment.store_home())
+    # A fresh directory: what the sandbox left there is gone, not reused.
+    assert venv_call["existed"] is False
+    assert list(outside.iterdir()) == []
+    assert not (venv / "uv.toml").exists()
+    assert not list(venv.parent.glob("venv.discarded-*"))
+    # Neither runs while another install could be writing the environment.
+    assert venv_call["locked"] and pip_call["locked"]
+
+
+def test_an_empty_environment_directory_is_created_in_place(
+    unify_home,
+    monkeypatch,
+):
+    """The worker makes the environment's directory, empty, before it
+    starts, so it can mount it; the first install fills that directory in
+    place (a new one would never be seen by the running worker)."""
+    seen: list[dict] = []
+    _uv_venv_watched(monkeypatch, seen)
+    venv = environment.environment_dir()
+    venv.mkdir(parents=True)
+    inode = venv.stat().st_ino
+
+    environment.install(["humanize"])
+
+    assert seen[0]["existed"] is True and seen[0]["inode"] == inode
+    assert venv.stat().st_ino == inode
+
+
 _BACKEND = """
 import base64, hashlib, json, os, zipfile
 

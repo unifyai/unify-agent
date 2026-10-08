@@ -49,12 +49,15 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 from packaging.requirements import Requirement
@@ -327,21 +330,80 @@ def _installer(
     return wrapped, env, str(venv)
 
 
+@contextmanager
+def _environment_lock() -> Iterator[None]:
+    """Held while the environment is created and an install runs, so no
+    installer sandbox (which can write the environment) runs while
+    :func:`_create` checks and creates it unconfined. A file lock beside the
+    environment, never inside it, so it holds across harness processes
+    sharing the store home too."""
+    import fcntl
+
+    home = environment_dir().parent
+    home.mkdir(parents=True, exist_ok=True)
+    with open(home / "venv.lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _discard_unless_empty(venv: Path) -> None:
+    """Move *venv* aside and remove it, unless it is absent or an empty
+    directory (the one the worker makes before it starts, to mount it)."""
+    if not os.path.lexists(venv):
+        return
+    if venv.is_dir() and not venv.is_symlink():
+        with os.scandir(venv) as entries:
+            if next(entries, None) is None:
+                return
+    aside = venv.with_name(f"{venv.name}.discarded-{os.getpid()}-{time.time_ns()}")
+    os.rename(venv, aside)
+    logging.getLogger(__name__).warning(
+        "the workspace environment had no interpreter but held files; "
+        "creating it afresh (the old one is removed)",
+    )
+    if aside.is_dir() and not aside.is_symlink():
+        # Never follows the links inside (shutil.rmtree.avoids_symlink_attacks).
+        shutil.rmtree(aside, ignore_errors=True)
+    else:
+        aside.unlink(missing_ok=True)
+
+
 def _create() -> Path:
-    """Create the environment with the running interpreter and activate it."""
+    """Create the environment with the running interpreter and activate it.
+
+    ``uv venv`` is the harness's own command (no package is named) and
+    runs unconfined, so it must never run over what a sandbox wrote. The
+    installer's sandbox can write the environment, so code a package runs
+    there could remove ``bin/python`` and leave links or files for an
+    unconfined ``uv venv`` to write through, or configuration for it to
+    read. An environment without its interpreter is therefore created in a
+    directory nothing sandboxed has touched: an empty one in place (the
+    worker's, which it has mounted), anything else moved aside and removed
+    first (a worker already running then sees the new one after it
+    restarts). ``--no-config``, and the store home as the working directory
+    (never the environment or the workspace), keep any ``uv.toml`` or
+    ``pyproject.toml`` from applying. The caller holds
+    :func:`_environment_lock`.
+    """
+    venv = environment_dir()
     if not environment_python().exists():
-        environment_dir().parent.mkdir(parents=True, exist_ok=True)
-        # The harness's own command (no package is named), so not confined;
-        # the worker may already have created the directory, empty.
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        _discard_unless_empty(venv)
         with unconfined():
             subprocess.run(
-                ["uv", "venv", "--python", sys.executable, str(environment_dir())],
+                ["uv", "venv", "--no-config", "--python", sys.executable, str(venv)],
                 capture_output=True,
                 text=True,
                 check=True,
                 env=installer_env(),
+                cwd=str(venv.parent),
             )
-    site_packages().mkdir(parents=True, exist_ok=True)
+        # Only in what uv just made: never through the paths of an
+        # environment the installer's sandbox has written.
+        site_packages().mkdir(parents=True, exist_ok=True)
     return activate() if imports_in_process() else site_packages()
 
 
@@ -385,6 +447,11 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
     """
     specifiers = list(specifiers)
     _check_specifiers(specifiers)
+    with _environment_lock():
+        return _install(specifiers, timeout)
+
+
+def _install(specifiers: List[str], timeout: float) -> Dict[str, Any]:
     _create()
     # One environment per install: the hosts and the command read the same.
     base_env = installer_env()
