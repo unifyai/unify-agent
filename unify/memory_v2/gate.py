@@ -61,7 +61,11 @@ The checks:
   already had red (the parent's own version fails on the parent, and a test it failed now passes; a
   collection error counts for the whole file) while importing library functions of which the pass edits
   none. Every edited environment function has at least one test of the first kind, so its change is
-  observed by a red run. Then, per channel, against the parent's suite (the baseline, ruling R19):
+  observed by a red run. A *clean-up pass* (D26: it adds no item and the library shrinks: of its
+  channel modules, their non-blank lines and its public functions none grows and one falls) may instead
+  hold an edited function by an old test: a parent test file that passed on the parent, exercises it and
+  still passes in both runs below; its new tests need only be green. Then, per channel, against the
+  parent's suite (the baseline, ruling R19):
 
   - a readable baseline protects every test it passed (except in retired files). Each must still pass
     twice: in the candidate's own suite and in an isolated regression run of the parent's own tests and
@@ -88,7 +92,10 @@ The checks:
   records that a hygiene pass is due and growth is never refused; only a surface that cannot be built
   fails.
 * **G5 description length.** If ``env/*/__init__.py`` grew, a cover G2 validated is new to the evidence
-  and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
+  and is a successful observation (a recorded rejection cover, status ``error``, is not new coverage), or
+  the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
+  recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
+  cover of an item the candidate keeps.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   bytecode or native code, ``__pycache__`` path, ``sitecustomize``/``usercustomize`` under any suffix or root
   directory named like a standard-library or pytest module; and no other root entry than ``env/``,
@@ -272,6 +279,19 @@ def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
         for i in functions
         if everything or i.split(":", 1)[0].split("/", 1)[1] in channels
     }
+
+
+def _library_size(
+    files: dict,
+    tree: Path,
+    bodies: dict[str, tuple[str, str, bool]],
+) -> tuple[int, int, int]:
+    """(channel module files, their non-blank lines, public environment functions)."""
+    mods = [p for p in files if MODULE_PATH.match(p)]
+    lines = sum(
+        1 for p in mods for line in (tree / p).read_bytes().splitlines() if line.strip()
+    )
+    return len(mods), lines, sum(1 for b in bodies.values() if b[0] == "env_function")
 
 
 def _unfit_forms(
@@ -1280,9 +1300,15 @@ class Gate:
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
+        # a clean-up pass may edit a function without a red test when an old test holds it (D26)
+        cleanup = self._cleanup(run)
+        unseen: set[str] = set()
         for it in man.items:
             if it.item in edited and not any(t in changed for t in it.tests):
-                run.fail("G3", f"{it.item} has no new or changed test")
+                if cleanup:
+                    unseen.add(it.item)
+                else:
+                    run.fail("G3", f"{it.item} has no new or changed test")
         missing = [t for t in new_tests if t not in run.c_files]
         for t in missing:
             run.fail("G3", f"listed test {t} is not in the candidate")
@@ -1304,7 +1330,7 @@ class Gate:
                 # a parent library that hangs on the test is red once the candidate's run is green
                 if _red(on_parent) or (on_parent.timed_out and _green(on_cand)):
                     classic.add(t)
-                else:
+                elif not cleanup:
                     self._test_only_repair(run, t, edited, on_cand, on_parent)
                 if not _green(on_cand):
                     run.fail(
@@ -1316,11 +1342,21 @@ class Gate:
         for it in man.items:
             tests = {t for t in it.tests if t in changed and t in run.c_files}
             if it.item in edited and tests and not tests & classic:
+                if cleanup:
+                    unseen.add(it.item)
+                else:
+                    run.fail(
+                        "G3",
+                        f"{it.item} is edited, but none of its tests is red on the parent's library",
+                    )
+        protected = self._suites(run)
+        for item in sorted(unseen):
+            if not self._held(run, item, protected):
                 run.fail(
                     "G3",
-                    f"{it.item} is edited, but none of its tests is red on the parent's library",
+                    f"{item} is edited in a clean-up pass without a red test, and no parent test that "
+                    "passed on the parent exercises it",
                 )
-        self._suites(run)
         if self.docstring_standard:
             self._examples(run)
 
@@ -1472,7 +1508,7 @@ class Gate:
                 (tree / rel).unlink()
         return tree
 
-    def _suites(self, run: _Run) -> None:
+    def _suites(self, run: _Run) -> set[str]:
         """Per channel, compare against the parent's suite (the baseline; ruling R19).
 
         A readable baseline protects every test it passed outside retired files. Each must pass in two
@@ -1487,9 +1523,13 @@ class Gate:
         pass touches, the candidate's suite must then be readable and free of failures (the repair path);
         in an untouched channel, a suite that stays broken is noted as pre-existing. Failures the
         baseline already had and the candidate keeps are noted, not failed. Each run is bounded separately.
+
+        Returns the parent test files with a protected test (a file whose protected tests are lost fails
+        here, so on a passing gate each still passes in both runs).
         """
+        protected: set[str] = set()
         if not run.changed:
-            return
+            return protected
         retired = set(run.man.deleted_tests)
         regression = self._regression_tree(run)
         touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
@@ -1519,6 +1559,7 @@ class Gate:
                     )
                 else:
                     before, known_red = kept(base.passed), kept(base.failed)
+                    protected |= {t.split("::", 1)[0] for t in before}
             after: set[str] = set()
             if (run.c_tree / rel).is_dir():
                 suite = self._pytest(run.c_tree, rel, qa_env=run.qa_env)
@@ -1570,6 +1611,29 @@ class Gate:
                         "the parent's tests no longer pass against the candidate's library: "
                         f"{lost[:5]}",
                     )
+        return protected
+
+    @staticmethod
+    def _shrinks(run: _Run) -> bool:
+        """No measure of :func:`_library_size` grows and at least one falls."""
+        before = _library_size(run.p_files, run.p_tree, run.p_bodies)
+        after = _library_size(run.c_files, run.c_tree, run.c_bodies)
+        return after != before and all(a <= b for a, b in zip(after, before))
+
+    def _cleanup(self, run: _Run) -> bool:
+        """A clean-up pass (D26): it adds no item and the library shrinks."""
+        added = any(it.item not in run.p_bodies for it in run.man.items)
+        return not added and self._shrinks(run)
+
+    @staticmethod
+    def _held(run: _Run, item: str, protected: set[str]) -> bool:
+        """A parent test file that passed on the parent, and still passes, exercises *item*."""
+        for rel in sorted(protected):
+            if rel in run.p_files:
+                uses = _exercised((run.p_tree / rel).read_bytes(), run.p_bodies)
+                if uses and item in uses:
+                    return True
+        return False
 
     def _g4(self, run: _Run) -> None:
         """The size budget: the v2 index's hard cap, or with ``soft_budget`` a note that hygiene is due past
@@ -1606,11 +1670,34 @@ class Gate:
 
         if size(run.c_files, run.c_tree) > size(run.p_files, run.p_tree):
             validated = {(eid, idx) for _, eid, idx in run.covers} - run.rejections
-            if not validated - self.ev.covered():
+            if not validated - self.ev.covered() and not self._shrinks(run):
                 run.fail(
                     "G5",
                     "the library grew without covering any new recorded call",
                 )
+        # a deleted function's recorded covers must stay covered by a remaining item (D26)
+        deleted = set(run.man.deleted)
+        recorded = self.ev.covers()
+        held = {(e, i) for _, e, i in run.covers}
+        held |= {
+            (e, i) for it, e, i in recorded if it not in deleted and it in run.c_bodies
+        }
+        lost: dict[str, list[tuple[str, int]]] = {}
+        for it, e, i in sorted(recorded):
+            if it not in deleted or (e, i) in held:
+                continue
+            action = self.lookup(e, i)
+            if action is None:
+                run.note(f"G5: {it} covered ({e},{i}), which can no longer be read")
+            elif not is_rejection(action) or getattr(action, "kind", "tool") == "shell":
+                # a recorded rejection need not be taken over (a shell output is no rejection)
+                lost.setdefault(it, []).append((e, i))
+        for it, gone in lost.items():
+            run.fail(
+                "G5",
+                f"deleted item {it} covered {len(gone)} recorded inputs that no remaining item covers "
+                f"(list them in a remaining item's covers): {[list(c) for c in gone[:5]]}",
+            )
 
     def _g6(self, run: _Run) -> None:
         if run.report_error is not None:

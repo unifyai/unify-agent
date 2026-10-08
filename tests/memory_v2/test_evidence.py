@@ -16,6 +16,7 @@ def test_covers(tmp_path):
     ev.index_episode(_ep(episode_id="a"), "1" * 40)
     ev.add_cover("env/venmo:login", "a", 0)
     assert ev.covered() == {("a", 0)}
+    assert ev.covers() == {("env/venmo:login", "a", 0)}
 
 
 def test_add_pass_notes_appends_to_the_recorded_reasons(tmp_path):

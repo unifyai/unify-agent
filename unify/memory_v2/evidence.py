@@ -575,6 +575,15 @@ class EvidenceStore:
             )
         ]
 
+    def covers(self) -> set[tuple[str, str, int]]:
+        """Every recorded cover as ``(item, episode_id, action_index)``."""
+        return {
+            (r[0], r[1], int(r[2]))
+            for r in self.db.execute(
+                "SELECT item, episode_id, action_index FROM covers",
+            )
+        }
+
     def record_pass(self, row: dict) -> None:
         with self.db:
             self.db.execute(

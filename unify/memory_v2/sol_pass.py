@@ -16,7 +16,9 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 Sol sees only what :func:`export_for_sol` and :func:`export_blobs` write (ruling R10): request, cells,
-actions, and the file blobs worktree actions recorded; its first message adds the index and, with
+actions, and the file blobs worktree actions recorded; and, so it can tend the library (D26), the recorded
+covers of the library's functions on the pass's channels (:func:`library_covers`: item and action ids). Its
+first message adds the index (or the README under ``catalogue``), those functions' cover counts and, with
 ``PassConfig.show_usage`` (``UNIFY_MEMORY_V2_SOL_USAGE=on``), a table of how requests used each function
 (:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it.
 """
@@ -57,6 +59,7 @@ from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import redact_error
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
+from .snapshot import item_bodies
 from .trigger import PassRequest
 
 # Write bounds on /memory, checked after every cell and before the commit; a breach refuses the pass.
@@ -165,6 +168,15 @@ shape checks reject recorded observations of another shape. Run the test and see
 then write the code and see it pass. Revise existing
 modules in place; do not add near-duplicates. Prefer nothing over a weak function: the library must earn its place.
 
+Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each
+function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where
+it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside
+the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or
+unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused
+an input the environment accepted. Test first here as well: every old test keeps passing against the result, or
+is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A pass that
+adds nothing and shrinks the library needs no red test for an edited function an old passing test exercises.
+
 Finish by writing /memory/.pass/manifest.json (never committed):
 {"items":[{"item":"env/<channel>:<function>","kind":"env_function","input":"<form>","source_episodes":[...],
   "tests":["env/<channel>/tests/test_<function>.py"],"covers":[[episode_id, action_index], ...]}],
@@ -178,8 +190,9 @@ Before finish, call check(manifest) with the manifest JSON and fix every reason 
 nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
 already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
 A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
-test suite, {gate_checks}that the library only grows when it covers new recorded calls, and safety{soft_note}. Its rules
-follow; a pass that breaks one is refused whole.
+test suite, {gate_checks}that the library only grows when it covers new recorded calls or shrinks, that what
+deleted functions covered stays covered, and safety{soft_note}. Its rules follow; a pass that breaks one is refused
+whole.
 """
 
 
@@ -669,6 +682,27 @@ def _exported_channels(episodes: Path) -> list[str]:
         row = json.loads(f.read_text())
         out.update(c for c in row.get("memory_channels", []) if isinstance(c, str))
     return sorted(out)
+
+
+def library_covers(
+    tree: Path,
+    channels: Iterable[str],
+    recorded: set[tuple[str, str, int]],
+) -> dict[str, list[list]]:
+    """Each environment function of the library at *tree* on *channels*, with its recorded covers (D26).
+
+    ``{item: [[episode_id, action_index], ...]}``, sorted; a function nothing recorded covers maps to [].
+    """
+    scope = tuple(f"env/{ch}:" for ch in channels)
+    out: dict[str, list[list]] = {
+        i: []
+        for i, b in sorted(item_bodies(tree).items())
+        if b[0] == "env_function" and i.startswith(scope)
+    }
+    for item, eid, idx in sorted(recorded):
+        if item in out:
+            out[item].append([eid, idx])
+    return out
 
 
 def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
@@ -1182,7 +1216,15 @@ class SolPass:
             cells.mkdir()
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
-            _channel_dirs(box, _exported_channels(inputs / "episodes"))
+            channels = _exported_channels(inputs / "episodes")
+            _channel_dirs(box, channels)
+            # D26: Sol tends the library on its channels, so it sees each function's recorded covers (ids only)
+            covers = library_covers(wt, channels, self.ev.covers())
+            (inputs / "library_covers.json").write_text(json.dumps(covers))
+            tended = "\n".join(
+                f"- {i}: {len(c)} recorded cover{'' if len(c) == 1 else 's'}"
+                for i, c in covers.items()
+            )
             switches = self._switches()
             tools = sol_tools(
                 docstrings=switches["docstrings"],
@@ -1194,6 +1236,8 @@ class SolPass:
                     wt,
                     switches,
                 )
+                + "\n\nFunctions on this pass's channels:\n"
+                + (tended or "(none yet)")
             )
             if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
