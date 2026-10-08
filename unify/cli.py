@@ -53,9 +53,11 @@ further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines), {"cancel": true} or {"quit": true}
-(with UNIFY_MEMORY_V2=on, {"quit": true, "consolidate": false} records the
-episode but starts no due consolidation pass: a driver ending its stream
-uses it, since no pass may be tied to the stream's end); each
+(with UNIFY_MEMORY_V2=on, "consolidate": false on any line, e.g. with the
+stream's last request or with quit, makes the session record its episode but
+start no due consolidation pass whenever it ends, also at a step or time
+limit: a driver ending its stream uses it, since no pass may be tied to the
+stream's end); each
 stdout line is {"type": "result" | "response" | "record" | "storage" |
 "ended", ...}. With --persist every turn ends in one "response" line as the
 actor starts waiting, its content empty when the turn produced no text.
@@ -323,7 +325,7 @@ class Act:
         self._main_thread = threading.main_thread().ident
         # UNIFY_MEMORY_V2: this request's memory run (None while the switch is off).
         self._mv2 = None
-        # {"quit": true, "consolidate": false}: record the episode, start no due pass.
+        # "consolidate": false on any stdin line: when the session ends, record the episode, start no pass.
         self._mv2_consolidate = True
 
     # ── lifecycle ────────────────────────────────────────────────────────
@@ -463,12 +465,14 @@ class Act:
                         continue
                     if not isinstance(item, dict):
                         continue
+                    if item.get("consolidate") is False:
+                        # UNIFY_MEMORY_V2: on any line (with the stream's last request, or with
+                        # quit): whenever this session ends, record the episode, start no pass.
+                        self._mv2_consolidate = False
                     if "outcome" in item:
                         self._post_outcome(item.get("outcome"))
                         continue
                     if item.get("quit"):
-                        if item.get("consolidate") is False:
-                            self._mv2_consolidate = False
                         line = "/quit"
                     elif item.get("cancel"):
                         if self._bridge is not None:
