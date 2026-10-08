@@ -6,6 +6,7 @@ The fixture is written in the line format of ``unify/transcripts.py`` at this ba
 
 import datetime as dt
 import json
+import time
 from types import SimpleNamespace
 
 from unify.memory_v2.analysis.cells import cells_from_transcript
@@ -160,6 +161,35 @@ def test_two_cells_the_second_in_bash_with_their_spans():
     assert cells[1].cell.output == "notes.txt\n" and cells[1].cell.error == "warn: x"
     assert cells[0].start == T0.timestamp() + 2 and cells[0].end == T0.timestamp() + 4
     assert cells[1].start == T0.timestamp() + 5 and cells[1].end == T0.timestamp() + 7
+
+
+def test_cell_times_are_epoch_seconds_on_the_harness_clock():
+    """The work-tree records are stamped with time.time(); a cell's span must be on that clock."""
+    now = round(time.time(), 3)  # the ts keeps microseconds
+    stamp = dt.datetime.fromtimestamp(
+        now,
+        dt.UTC,
+    ).isoformat()  # as unify.transcripts writes ts
+    lines = [
+        {
+            **_msg(
+                0,
+                0,
+                {"role": "assistant", "tool_calls": [_call("c9", {"code": "1"})]},
+            ),
+            "ts": stamp,
+        },
+        {
+            **_msg(1, 0, {"role": "tool", "tool_call_id": "c9", "content": "1"}),
+            "ts": stamp,
+        },
+    ]
+    (cell,) = timed_cells(fold(lines))
+    assert abs(cell.start - now) < 1e-3 and abs(cell.end - now) < 1e-3
+    assert cell_at(now, [cell]) == 0
+    naive = {**lines[0], "ts": "2026-10-08T12:00:02"}  # no offset: read as UTC
+    (c2,) = timed_cells(fold([naive, lines[1]]))
+    assert c2.start == T0.timestamp() + 2
 
 
 def test_timed_cells_agree_with_the_analysis_reader():
