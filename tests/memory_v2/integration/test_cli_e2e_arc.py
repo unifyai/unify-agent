@@ -7,8 +7,9 @@ process as the office end-to-end test runs it, with ``UNIFY_MEMORY_V2=on`` and
 and ends the session with ``{"quit": true}`` after the agent's ``finish``, as the baselines' runner does.
 The scripted actor replies with the action JSON on its reply's last line (one turn runs a cell first).
 
-1. Visit 1 (E high): its episode holds the dialogue actions on ``env`` (request_demos, submit, submit,
-   finish), each answered by the runner message that followed, and E counts each observation once. No pass.
+1. Visit 1 (E high): its episode holds the dialogue actions on ``env`` (request_demos, submit, submit),
+   each answered by the runner message that followed (the closing ``finish``, which nothing answers, is
+   not recorded online), and E counts each observation once. No pass.
 2. E is set just above visit 1's experience, so visit 2's episode makes a batched pass due over both. Sol is
    a scripted model turn (``consolidate.unillm_turn``) whose one cell writes ``env/env:observation_lines``
    covering every recorded observation, then finishes. The pass passes the gate and merges on ``env/env``.
@@ -83,7 +84,7 @@ def _visit_messages(task: str, seed: int, *, solve_first: bool) -> dict:
             reply(_act("The rule is clear.", {"action": "submit", "grid": right})),
             reply(json.dumps({"action": "finish"})),
         ]
-        methods = ["request_demos", "submit", "finish"]
+        methods = ["request_demos", "submit"]  # the unanswered finish is not recorded
     else:
         messages = [
             demos,
@@ -109,7 +110,11 @@ def _visit_messages(task: str, seed: int, *, solve_first: bool) -> dict:
             reply(_act("Second try.", {"action": "submit", "grid": right})),
             reply(json.dumps({"action": "finish"})),
         ]
-        methods = ["request_demos", "submit", "submit", "finish"]
+        methods = [
+            "request_demos",
+            "submit",
+            "submit",
+        ]  # the unanswered finish is not recorded
     return {"first": first, "messages": messages, "actor": actor, "methods": methods}
 
 
@@ -254,8 +259,8 @@ async def test_arc_visits_capture_dialogue_and_merge_an_env_item(
     acts1 = [a for a in ep1.actions if a.kind == "dialogue"]
     assert [a.method for a in acts1] == v1["methods"]
     assert {(a.channel, a.cell) for a in acts1} == {("env", -1)}
-    assert [a.status for a in acts1[:3]] == ["ok"] * 3
-    assert acts1[0].args == [] and acts1[3].args == []
+    assert [a.status for a in acts1] == ["ok"] * 3
+    assert acts1[0].args == []
     assert acts1[1].args == [grid(3, 3, seed=3)] and acts1[2].args == [
         grid(3, 3, seed=4),
     ]

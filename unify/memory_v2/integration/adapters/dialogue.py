@@ -33,7 +33,10 @@ observation. Only ``type == "message"`` lines are read, so ``message_update``, `
 ``session_start``, ``compaction`` and outcome lines never become actions or observations.
 
 Wired into the actor by ``UNIFY_MEMORY_V2_DIALOGUE`` (:mod:`..switch`): ``RequestRun`` appends these
-actions to the request's episode when it is set (``env``: the channel ``env``, memory channel ``env``).
+actions to the request's episode when it is set (``env``: the channel ``env``, memory channel ``env``),
+answered replies only (``answered_only``): a reply the counterpart never answered (a single-turn
+request's final reply, a session's closing ``finish``) adds no action, so such a request's episode is
+byte for byte the one recorded with the setting off.
 """
 
 from __future__ import annotations
@@ -239,13 +242,15 @@ def dialogue_actions(
     redactor: Redactor | None = None,
     max_observation_chars: int = DEFAULT_OBSERVATION_CAP,
     max_payload_chars: int = DEFAULT_PAYLOAD_CAP,
+    answered_only: bool = False,
 ) -> list[Action]:
     """One ``kind="dialogue"`` action per turn-ending reply, in transcript order.
 
     ``counterpart`` is the source the harness serves (it becomes the channel key verbatim) and must
     match ``COUNTERPART_RE``. The method and arguments come from the reply's payload
     (:func:`split_action`). The observation is the next non-loop-authored user message before the next
-    assistant message; a reply with none is ``unrecorded`` with no response. Payload and observation
+    assistant message; a reply with none is ``unrecorded`` with no response, or, with ``answered_only``
+    (the online recorder), gives no action at all. Payload and observation
     are redacted before anything else (one pass over each text, so a secret is never cut in two), then
     bounded: the observation by :func:`observation_value` at ``max_observation_chars``, the arguments
     at ``max_payload_chars`` (arguments whose JSON is longer become their capped JSON text, as
@@ -270,7 +275,7 @@ def dialogue_actions(
             following = j
     actions: list[Action] = []
     for i, msg in enumerate(msgs):
-        if not _is_reply(msg):
+        if not _is_reply(msg) or (answered_only and answer[i] is None):
             continue
         payload = red.obj(action_payload(_text(msg.get("content"))))
         method, args, kwargs = split_action(payload)

@@ -140,6 +140,21 @@ def dialogue_counterpart() -> str:
     return getattr(SETTINGS, "UNIFY_MEMORY_V2_DIALOGUE", "") or ""
 
 
+def recorded_dialogue(lines: list[dict], counterpart: str, redactor: Any) -> list:
+    """The dialogue actions a request's episode records under ``UNIFY_MEMORY_V2_DIALOGUE``: answered replies
+    only, so a reply nothing followed (a single-turn request's final reply) adds no action and leaves the
+    episode as it is with the setting off.
+    """
+    from .adapters import dialogue
+
+    return dialogue.dialogue_actions(
+        lines,
+        counterpart,
+        redactor=redactor,
+        answered_only=True,
+    )
+
+
 def check_hidden(paths: Any, policy: Any) -> None:
     """Refuse to run while a cell could read any harness-side memory path."""
     readable = [
@@ -595,11 +610,9 @@ class RequestRun:
         counterpart = dialogue_counterpart()
         if counterpart:
             # UNIFY_MEMORY_V2_DIALOGUE: the transcript's dialogue actions follow the work-tree rows
-            from .adapters.dialogue import dialogue_actions
-
             extra_actions = [
                 *wt.actions,
-                *dialogue_actions(lines, counterpart, redactor=self.redactor()),
+                *recorded_dialogue(lines, counterpart, self.redactor()),
             ]
         ep, redactor = trajectory.assemble(
             self,
