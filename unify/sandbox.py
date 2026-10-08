@@ -81,6 +81,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -467,9 +468,9 @@ _SECRET_SCAN_CACHE: dict[Path, tuple[str, list, list]] = {}
 # The rule tables themselves (_CREDENTIAL_NAMES, _PUBLIC_PEM,
 # _ENV_FILE_ALLOWED) are part of the key as they are.
 _ROOT_SCAN_RULES_VERSION = 1
-_ROOT_SCAN_SCHEMA = 1
+_ROOT_SCAN_SCHEMA = 2
 # How deep below the root and below each of its site-packages the fingerprint
-# stats directories: a new entry at depth 1 to 3 below either moves it.
+# lists directories: a new entry at depth 1 to 3 below either changes it.
 _ROOT_SCAN_FINGERPRINT_DEPTH = 2
 # A disk entry is rescanned after a day whatever its fingerprint, which bounds
 # the residual (an entry made deeper than the fingerprint) to a day.
@@ -496,14 +497,14 @@ def _root_fingerprint(root: Path, skip: Sequence[Path]) -> tuple[str, int]:
 
     The digest covers the scan's rules (:func:`_rules_digest`), the root's
     name, the *skip* paths that meet it (they change what the walk enters),
-    and the device, inode, mtime and ctime of the root and of every directory
-    down to :data:`_ROOT_SCAN_FINGERPRINT_DEPTH` below it and below each of
-    its ``lib/python3*/site-packages`` (a few hundred stats: no file is read,
-    and links are not followed). A directory's mtime and ctime move when an
-    entry is made, removed or renamed in it (the ctime cannot be set back),
-    and its inode when it is replaced, so a file made at depth 1 to 3 below
-    either base moves the digest; an installer always makes or replaces a
-    ``.dist-info`` at site-packages' top level.
+    and, for the root and every directory down to
+    :data:`_ROOT_SCAN_FINGERPRINT_DEPTH` below it and below each of its
+    ``lib/python3*/site-packages``, the directory's device, inode, mtime and
+    ctime and the sorted names of all its entries with each entry's inode,
+    kind and size (links are not followed; no file is read). An entry made,
+    removed or renamed at depth 1 to 3 below either base changes a listed
+    name whatever the clock: a directory's mtime alone does not move when the
+    entry is made within the file system's timestamp tick (seen on ext4).
     """
     h = hashlib.sha256()
     meeting = sorted(str(s) for s in skip if _within(s, root) or _within(root, s))
@@ -525,8 +526,6 @@ def _root_fingerprint(root: Path, skip: Sequence[Path]) -> tuple[str, int]:
                     f"\0{st.st_ctime_ns}\n".encode(),
                 )
                 newest = max(newest, st.st_mtime_ns, st.st_ctime_ns)
-                if depth == _ROOT_SCAN_FINGERPRINT_DEPTH:
-                    continue
                 try:
                     entries = sorted(os.scandir(directory), key=lambda e: e.name)
                 except OSError:
@@ -534,12 +533,21 @@ def _root_fingerprint(root: Path, skip: Sequence[Path]) -> tuple[str, int]:
                     continue
                 for entry in entries:
                     try:
-                        if entry.is_dir(follow_symlinks=False):
-                            below.append(
-                                (Path(entry.path), entry.stat(follow_symlinks=False)),
-                            )
+                        est = entry.stat(follow_symlinks=False)
                     except OSError:
                         h.update(f"{entry.path}\0unreadable\n".encode())
+                        continue
+                    kind = stat.S_IFMT(est.st_mode)
+                    h.update(
+                        f"\1{entry.name}\0{est.st_ino}\0{kind}\0{est.st_size}\n".encode(
+                            "utf-8",
+                            "surrogateescape",
+                        ),
+                    )
+                    if depth < _ROOT_SCAN_FINGERPRINT_DEPTH and stat.S_ISDIR(
+                        est.st_mode,
+                    ):
+                        below.append((Path(entry.path), est))
             level = below
     return h.hexdigest(), newest
 
