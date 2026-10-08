@@ -161,12 +161,15 @@ it makes the library smaller or clearer: merge near-duplicates into one function
 the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or
 unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused
 an input the environment accepted. Test first here as well: every old test keeps passing against the result, or
-is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A repair
-changes behaviour, so like any change it needs a test that fails on the parent's library and passes after. Only a
-merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks the library (fewer
-functions or less code in them; comments and docstrings do not count), an edited function needs no failing test
-when an old passing test calls it and it returns exactly what its old version returned on every recorded cover of
-it (the gate runs both versions on them).
+is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. Any change
+in what a stored function returns on recorded inputs needs a failing-then-passing test, also when only a helper,
+constant or alias changed: the gate runs every function of a channel you change, old and new, on its recorded
+covers and on the channel's actions in this pass's episodes, and a function whose results differ must be listed in
+"items" with a test that fails on the parent's library and passes after. A repair changes behaviour, so it always
+needs one. Only a merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks
+the library (fewer functions or less code in them; comments and docstrings do not count), an edited function needs
+no failing test when an old passing test calls it and it returns exactly what its old version returned on all
+those inputs.
 
 Finish by writing /memory/.pass/manifest.json (never committed):
 {"items":[{"item":"env/<channel>:<function>","kind":"env_function","input":"<form>","source_episodes":[...],
