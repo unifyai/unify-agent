@@ -255,10 +255,21 @@ def install(monkeypatch) -> Fakes:
             raise f.passes_raise
         return []
 
-    cons.open_stores, cons.post_checker, cons.run_due_passes = (
+    # as the real one: the events file always, the emitter if any
+    def _deliver(stores, emit, row):
+        f.calls.append(("_deliver", (stores, row), {}))
+        path = stores.paths.events
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as fh:
+            fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+        if emit is not None:
+            emit(dict(row))
+
+    cons.open_stores, cons.post_checker, cons.run_due_passes, cons._deliver = (
         open_stores,
         post_checker,
         run_due_passes,
+        _deliver,
     )
 
     for name, mod in (

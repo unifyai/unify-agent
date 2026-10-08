@@ -604,8 +604,9 @@ class _Run:
         self.log.append(("take_outcome", raw))
         return {"type": "outcome", "accepted": True, "solved": True, "checks": 0}
 
-    async def finish(self, handle, *, progress, emit=None):
+    async def finish(self, handle, *, progress, emit=None, consolidate=True):
         self.log.append(("finish", handle, emit is not None))
+        self.consolidate = consolidate
         if emit is not None:
             emit({"type": "consolidation", "phase": "start", "cap_usd": "0.1"})
 
