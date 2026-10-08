@@ -27,10 +27,15 @@ EXPERIENCE_BUDGET = "UNIFY_MEMORY_V2_E"
 SOL_MODEL = "UNIFY_MEMORY_V2_SOL_MODEL"
 SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS"
 SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
+SOL_EFFORT = "UNIFY_MEMORY_V2_SOL_EFFORT"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
 SOL_ALLOWANCE_DEFAULT = "0.00000073"
+#: Sol's reasoning effort: a declared constant of the memory system, the same in every actor row (the lead, 8 Oct,
+#: D23 revised: "low it is for now, but could bump to medium if need be").
+SOL_EFFORT_DEFAULT = "low"
+SOL_EFFORTS = ("low", "medium", "high")
 
 #: A plain decimal: digits, optionally a point and more digits. No sign, exponent, separator or name.
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
@@ -104,6 +109,14 @@ def parse_sol_run_guard(v: Any) -> str:
     return _plain_decimal(SOL_RUN_GUARD, text, v, positive=False)
 
 
+def parse_sol_effort(v: Any) -> str:
+    """Sol's reasoning effort: ``low`` (the default), ``medium`` or ``high``; never the actor's."""
+    value = _stripped(v).lower() or SOL_EFFORT_DEFAULT
+    if value not in SOL_EFFORTS:
+        raise ValueError(f"{SOL_EFFORT} must be one of {', '.join(SOL_EFFORTS)}, not {v!r}")
+    return value
+
+
 #: The validator for each setting (unify/settings.py ``parse_memory_v2``).
 PARSERS = {
     SWITCH: parse_switch,
@@ -111,4 +124,5 @@ PARSERS = {
     SOL_MODEL: parse_sol_model,
     SOL_ALLOWANCE: parse_sol_allowance,
     SOL_RUN_GUARD: parse_sol_run_guard,
+    SOL_EFFORT: parse_sol_effort,
 }

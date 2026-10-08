@@ -7,7 +7,8 @@ gate's G2 dispatches covers per action kind, so tool, shell, work-tree and dialo
 part). The pass runs Sol (:class:`..sol_pass.SolPass`) behind the gate, blocking the next request.
 
 Fixed bounds per pass: ``PassConfig(model, effort, max_calls=40, deadline_s=900, max_usd=E x a_tok)``.
-Sol's reasoning effort is the actor's effort for the run, passed in by the caller (there is no switch).
+Sol's reasoning effort is ``UNIFY_MEMORY_V2_SOL_EFFORT`` (default ``low``, the same in every actor row; D23 as revised
+8 Oct), passed in by the caller.
 The run guard (``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``, empty for none) starts no further pass once the Sol
 USD this home has committed plus the next pass's cap would exceed it; the request then stays due. The
 commitment is kept in a ledger in the state dir (:func:`committed_sol_usd`): a pass reserves its whole cap
@@ -549,11 +550,11 @@ async def run_due_passes(
     *state* is the harness state (:class:`.state.State`): its drift channels ride with the pass and are
     cleared once it is recorded; a passed pass clears them from ``suspect``. A pass recorded passed or
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
-    actor's reasoning effort for the run (Sol inherits it).
+    memory system's declared Sol effort (``UNIFY_MEMORY_V2_SOL_EFFORT``), never the actor's.
     """
     cfg = sol_settings(settings)
     if not isinstance(effort, str) or not effort.strip():
-        _error(stores, f"no pass for {eid}: Sol's effort (the actor's) is empty")
+        _error(stores, f"no pass for {eid}: Sol's effort is empty")
         return []  # nothing recorded; the request stays due
     trig = Trigger(
         stores.evidence,

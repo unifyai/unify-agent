@@ -61,7 +61,7 @@ def actor_model() -> str:
 def actor_effort() -> str:
     """The actor's reasoning effort for this run, read from the setting the actor's client reads.
 
-    Sol's passes run at this effort (D23): effort is a fixed condition of a run, never a lever.
+    It is recorded with the run; Sol's passes run at the declared ``UNIFY_MEMORY_V2_SOL_EFFORT`` instead (D23 as revised 8 Oct).
     """
     from unify.common.llm_client import resolve_default_model
 
@@ -372,7 +372,8 @@ class RequestRun:
                 eid,
                 sha,
                 self.state,
-                effort=self.effort,
+                # Sol's effort is the memory system's declared constant, never the actor's (D23, revised 8 Oct)
+                effort=str(getattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", "") or "low"),
                 settings=SETTINGS,
                 emit=self._emitter(emit),
                 clock=time.monotonic,
