@@ -26,8 +26,9 @@ equivalent, and a suite that never tests a refusal would pass. So the equivalenc
 derived from the recorded covers that are broken on purpose: a field dropped, a field's type changed, an extra
 field, an empty container (or string) where a non-empty one was recorded, and the whole value's type changed or
 emptied. Each kind of break is made once per item (the first cover that has the field), at most
-:data:`MAX_NEGATIVES` chosen by a seeded hash. They are used only to tell mutants apart, never to judge the
-function itself.
+:data:`MAX_NEGATIVES` chosen by a seeded hash and at most :data:`MAX_NEGATIVE_BYTES` together; only the
+chosen breaks are built, so their cost is linear in the covers' size. They are used only to tell mutants
+apart, never to judge the function itself.
 """
 
 from __future__ import annotations
@@ -35,10 +36,13 @@ from __future__ import annotations
 import ast
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 OPERATORS = ("cmp", "negate", "drop_raise", "const", "boolop", "return_none")
 MAX_NEGATIVES = 16  # structural negatives per item in the equivalence probe
+MAX_NEGATIVE_BYTES = (
+    2 * 1024**2
+)  # every structural negative of one item together (approximate, serialised)
 EXTRA_FIELD = "unrecorded_field"
 
 _FLIP: dict[type, type] = {
@@ -258,12 +262,14 @@ def _emptied(value: Any) -> Any:
     return _NA
 
 
-def _breaks(value: Any) -> list[tuple[str, Any]]:
-    """Every structural break of one recorded value: ``(label, broken value)``; labels name the break only."""
-    out: list[tuple[str, Any]] = [("retype", _retyped(value))]
+def _breaks(value: Any) -> list[tuple[str, Callable[[], Any]]]:
+    """Every structural break of one recorded value: ``(label, build)``; labels name the break only and
+    ``build()`` makes the broken value, so only the chosen breaks are ever copied (linear in the value).
+    """
+    out: list[tuple[str, Callable[[], Any]]] = [("retype", lambda: _retyped(value))]
     empty = _emptied(value)
     if empty is not _NA:
-        out.append(("empty", empty))
+        out.append(("empty", lambda: empty))
     record, path = value, ""
     if isinstance(value, list) and value and isinstance(value[0], dict):
         record, path = value[0], "[0]"  # a list of records: break its first record
@@ -273,19 +279,48 @@ def _breaks(value: Any) -> list[tuple[str, Any]]:
 
     if isinstance(record, dict):
         for key in sorted(record, key=str):
-            dropped = {k: v for k, v in record.items() if k != key}
-            out.append((f"drop{path}:{key}", put(dropped)))
             out.append(
-                (f"retype{path}:{key}", put({**record, key: _retyped(record[key])})),
+                (
+                    f"drop{path}:{key}",
+                    lambda key=key: put({k: v for k, v in record.items() if k != key}),
+                ),
             )
-            empty = _emptied(record[key])
-            if empty is not _NA:
-                out.append((f"empty{path}:{key}", put({**record, key: empty})))
+            out.append(
+                (
+                    f"retype{path}:{key}",
+                    lambda key=key: put({**record, key: _retyped(record[key])}),
+                ),
+            )
+            if _emptied(record[key]) is not _NA:
+                out.append(
+                    (
+                        f"empty{path}:{key}",
+                        lambda key=key: put({**record, key: _emptied(record[key])}),
+                    ),
+                )
         extra = EXTRA_FIELD
         while extra in record:
             extra += "_"
-        out.append((f"extra{path}", put({**record, extra: 0})))
+        out.append((f"extra{path}", lambda: put({**record, extra: 0})))
     return out
+
+
+def _weight(value: Any, cap: int) -> int:
+    """The approximate serialised size of a JSON-like *value* in bytes, counted only up to past *cap*."""
+    total, stack = 0, [value]
+    while stack and total <= cap:
+        v = stack.pop()
+        if isinstance(v, dict):
+            total += 2 + sum(4 + len(str(k)) for k in v)
+            stack.extend(v.values())
+        elif isinstance(v, (list, tuple)):
+            total += 2 + 2 * len(v)
+            stack.extend(v)
+        elif isinstance(v, (str, bytes)):
+            total += 2 + len(v)
+        else:
+            total += 8
+    return total
 
 
 def negatives(
@@ -293,14 +328,35 @@ def negatives(
     seed: bytes,
     item: str,
     limit: int = MAX_NEGATIVES,
+    budget: int = MAX_NEGATIVE_BYTES,
+    notes: list[str] | None = None,
 ) -> list[tuple[int, str, Any]]:
     """Structurally broken variants of the recorded *values* (an item's covers): ``(value index, label,
-    broken value)``, each break once (from the first value it applies to), at most *limit* by a seeded rank.
+    broken value)``, each break once (from the first value it applies to), at most *limit* by a seeded rank
+    and at most *budget* bytes together (approximately, as serialised). Only the chosen breaks are built, so
+    time and memory are linear in the values; when the budget stops the list, a note goes to *notes*.
     """
-    found: dict[str, tuple[int, Any]] = {}
+    found: dict[str, tuple[int, Callable[[], Any]]] = {}
     for i, value in enumerate(values):
-        for label, broken in _breaks(value):
-            if label not in found and broken != value:
-                found[label] = (i, broken)
+        for label, build in _breaks(value):
+            found.setdefault(label, (i, build))
     ranked = sorted(found, key=lambda label: _rank(seed, item, "negative", label))
-    return [(found[label][0], label, found[label][1]) for label in ranked[:limit]]
+    out: list[tuple[int, str, Any]] = []
+    used = 0
+    for label in ranked:
+        if len(out) >= limit:
+            break
+        i, build = found[label]
+        broken = build()
+        size = _weight(broken, budget - used)
+        if used + size > budget:
+            if notes is not None:
+                notes.append(
+                    f"structural negatives stopped at {len(out)} of up to {min(limit, len(ranked))} by "
+                    f"the {budget}-byte bound",
+                )
+            break
+        if broken != values[i]:
+            out.append((i, label, broken))
+            used += size
+    return out

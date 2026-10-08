@@ -9,6 +9,7 @@ import hashlib
 import pytest
 
 from unify.memory_v2.mutation import (
+    MAX_NEGATIVES,
     OPERATORS,
     Site,
     apply,
@@ -222,6 +223,26 @@ def test_negatives_of_records_lists_and_text():
     taken = {"unrecorded_field": 1}
     (extra,) = [v for _, lb, v in negatives([taken], b"\0" * 32, "i") if lb == "extra"]
     assert extra == {"unrecorded_field": 1, "unrecorded_field_": 0}
+
+
+def test_negatives_are_built_only_when_chosen_and_bounded_in_bytes():
+    """A wide record (3000 fields of 100 bytes, about 330 KB) is broken in linear time and memory: only the
+    chosen breaks are copied, and the copies stop at the byte bound with a note naming counts only.
+    """
+    wide = {f"field{i:05d}": "v" * 100 for i in range(3000)}
+    got = negatives([wide], b"\0" * 32, "i", limit=99)
+    assert 0 < len(got) < 99  # the default 2 MiB bound stops it, not the limit
+    notes: list[str] = []
+    small = negatives([wide], b"\0" * 32, "i", budget=400_000, notes=notes)
+    assert len(small) <= 1 + sum(lb in ("retype", "empty") for _, lb, _ in small)
+    (note,) = notes
+    assert (
+        note.startswith("structural negatives stopped at ")
+        and "400000-byte bound" in note
+    )
+    assert "field" not in note and "v" * 3 not in note
+    assert len(negatives([wide], b"\0" * 32, "i")) <= MAX_NEGATIVES
+    assert wide == {f"field{i:05d}": "v" * 100 for i in range(3000)}  # untouched
 
 
 def test_negatives_tell_guard_dropping_mutants_apart_from_the_original():

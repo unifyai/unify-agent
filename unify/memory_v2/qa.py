@@ -416,7 +416,7 @@ def draw(
         if r is not None:
             rows.append(r)
             drawn += 1
-    rows += negative_rows(item, covers_rows, seed)
+    rows += negative_rows(item, covers_rows, seed, notes)
     if cut:
         notes.append(f"{cut} truncated recording(s) of its family left out of the draw")
     if not drawn:
@@ -424,10 +424,16 @@ def draw(
     return rows, notes
 
 
-def negative_rows(item: str, covers: list[Row], seed: bytes) -> list[Row]:
+def negative_rows(
+    item: str,
+    covers: list[Row],
+    seed: bytes,
+    notes: list[str] | None = None,
+) -> list[Row]:
     """Structurally broken copies of *item*'s cover rows (:func:`.mutation.negatives`), for the mutants'
     equivalence only: an ``env`` cover's recorded response broken (the replay answers the broken response), an
-    observation or text input broken itself, a file input emptied."""
+    observation or text input broken itself, a file input emptied (bounded in bytes; a cut goes to *notes*).
+    """
     if not covers:
         return []
     if covers[0].form in ("path", "bytes"):
@@ -441,7 +447,8 @@ def negative_rows(item: str, covers: list[Row], seed: bytes) -> list[Row]:
         return c.action.response
 
     out: list[Row] = []
-    for i, _, broken in mutation.negatives([recorded(c) for c in covers], seed, item):
+    values = [recorded(c) for c in covers]
+    for i, _, broken in mutation.negatives(values, seed, item, notes=notes):
         c = covers[i]
         if c.form == "env":
             a = dataclasses.replace(c.action, response=broken)
