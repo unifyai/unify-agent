@@ -491,9 +491,12 @@ async def test_parent_chat_context_reaches_a_sub_agent_as_before(
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project
-async def test_the_heartbeat_and_active_work_see_the_cell_with_its_caption(
+async def test_active_work_sees_the_cell_with_its_caption_and_nothing_reaches_the_model(
     monkeypatch,
 ):
+    """Under the agent record (baked) nothing reaches the model while its cell
+    runs (no heartbeat or in-cell progress is wired; 29b3a3d12), but the cell is
+    still registered as active work, with its caption, while it runs."""
     from unify.events.active_work import ACTIVE_WORK
 
     ACTIVE_WORK.clear()
@@ -528,8 +531,7 @@ async def test_the_heartbeat_and_active_work_see_the_cell_with_its_caption(
         assert work["metadata"]["thought"] == "Waiting on the slow step"
         assert work["metadata"]["state_mode"] == "stateless"
         await task
-        fallback = await asyncio.wait_for(notification_q.get(), timeout=1.0)
-        assert fallback["source"] == "active_work"
+        assert notification_q.empty(), "a notification reached the model mid-cell"
         assert ACTIVE_WORK.snapshot().active_count == 0
     finally:
         ACTIVE_WORK.clear()
