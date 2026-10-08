@@ -30,6 +30,17 @@ def _run() -> Any:
     return current()
 
 
+def begin_request(request: str) -> Any:
+    """This request's memory run (``request.RequestRun``), opened before the actor starts; ``None``
+    while the switch is off, when nothing of memory v2 is opened, exported or recorded.
+    """
+    if not enabled():
+        return None
+    from .request import RequestRun
+
+    return RequestRun.begin(request)
+
+
 def can_store(value: T) -> T | bool:
     """No storage review and no library writes under memory v2: memory changes only through Sol's gate."""
     return False if enabled() else value
