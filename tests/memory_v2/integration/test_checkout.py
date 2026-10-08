@@ -1,6 +1,7 @@
 """The per-request export of memory main, its diff, the state file and the request lock (integration Task 18)."""
 
 import os
+import subprocess
 
 import pytest
 
@@ -149,10 +150,17 @@ def test_hardgit_ignores_global_config_and_inherited_git_env(tmp_path, monkeypat
         hardgit.git(mem.git_dir, "foo")
 
 
-def test_hardgit_timeout_is_a_git_error(tmp_path):
-    mem, _ = _seed(tmp_path)
+def test_hardgit_timeout_is_a_git_error(tmp_path, monkeypatch):
+    seen = {}
+
+    def slow(argv, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(hardgit.subprocess, "run", slow)
     with pytest.raises(GitError, match="timed out"):
-        hardgit.git(mem.git_dir, "cat-file", "--batch", timeout=0.2)  # waits on stdin
+        hardgit.git(tmp_path, "status", timeout=0.2)
+    assert seen["timeout"] == 0.2
 
 
 def test_state_roundtrip_and_default(tmp_path):

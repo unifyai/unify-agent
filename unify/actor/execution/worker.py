@@ -239,7 +239,10 @@ class PythonWorker:
             if spec is not None:
                 specs[name] = spec
                 self._base[name] = value
-        paths = [p for p in sys.path if p]
+        from unify.memory_v2.integration import hooks as _mv2
+
+        # UNIFY_MEMORY_V2=on: the request's memory export is imported first.
+        paths = [*_mv2.worker_paths(), *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
         packages = str(environment.site_packages())
         if packages not in paths:
@@ -268,7 +271,11 @@ class PythonWorker:
         argv = [sys.executable, "-I", "-S", "-c", _BOOTSTRAP, str(Path(child.__file__))]
         env = sandbox.sandbox_env(policy)
         workspace = str(policy.workspace)
-        wrapped = sandbox.wrap_argv(argv, policy, cwd=workspace)
+        from unify.memory_v2.integration import hooks as _mv2
+
+        # UNIFY_MEMORY_V2=on: the request's memory export, read-write.
+        mounts = _mv2.worker_mounts()
+        wrapped = sandbox.wrap_argv(argv, policy, cwd=workspace, writable=mounts)
         with sandbox.unconfined():  # already wrapped; never wrap twice
             self._proc = await asyncio.create_subprocess_exec(
                 *wrapped,
