@@ -69,11 +69,17 @@ The checks:
   already had red (the parent's own version fails on the parent, and a test it failed now passes; a
   collection error counts for the whole file) while importing library functions of which the pass edits
   none. Every edited environment function has at least one test of the first kind, so its change is
-  observed by a red run. A *clean-up pass* (D26: it adds no item and the library shrinks: of its
-  channel modules, their non-blank lines and its public functions none grows and one falls) may instead
-  hold an edited function by an old test: a parent test file that passed on the parent, exercises it and
-  still passes in both runs below; its new tests need only be green. Then, per channel, against the
-  parent's suite (the baseline, ruling R19):
+  observed by a red run. A *clean-up pass* (D26: it adds no item and the library shrinks: the channel
+  modules' function definitions or the AST nodes of those definitions fall, and neither they nor the
+  nodes of other module code grow; comments and docstrings never count) may exempt an edited function
+  from the red run only when the change keeps its behaviour: a parent test file that passed on the
+  parent, calls it (an import alone does not count) and still passes in both runs below; and on every
+  recorded cover of the function (the evidence store's and this manifest's), run confined on the
+  parent's and the candidate's version through G2's runner and replay, both return the same value
+  (canonical JSON), refuse alike, raise the same exception class and issue the same environment calls.
+  A cover that cannot be read, given or compared voids the exemption. Without it the function needs a
+  red test as in any pass (a repair changes behaviour, so it always does); new tests of a clean-up pass
+  need only be green. Then, per channel, against the parent's suite (the baseline, ruling R19):
 
   - a readable baseline protects every test it passed (except in retired files). Each must still pass
     twice: in the candidate's own suite and in an isolated regression run of the parent's own tests and
@@ -103,7 +109,8 @@ The checks:
   and is a successful observation (a recorded rejection cover, status ``error``, is not new coverage), or
   the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
   recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
-  cover of an item the candidate keeps.
+  cover of an item the candidate keeps unchanged or whose change G3 vetted (a red test, or the same
+  results on its recorded covers).
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   bytecode or native code, ``__pycache__`` path, ``sitecustomize``/``usercustomize`` under any suffix or root
   directory named like a standard-library or pytest module; and no other root entry than ``env/``,
@@ -165,10 +172,14 @@ from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
 from .held_out import (
+    MAX_OUTPUT_COVERS,
     MAX_POOL_EPISODES,
+    _form,
     _unfit_reason,
+    output_cases,
     plan,
     pool_actions,
+    run_outputs,
     run_plan,
     seen_actions,
 )
@@ -194,6 +205,8 @@ from .redact import KEY_SHAPED
 from .sandbox_run import PYTHON, PytestOutcome, run_pytest
 from .signals import job_item_status
 from .snapshot import (
+    calls_item,
+    code_size,
     duplicate_public_defs,
     env_references,
     item_bodies,
@@ -325,17 +338,19 @@ def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
     }
 
 
-def _library_size(
-    files: dict,
-    tree: Path,
-    bodies: dict[str, tuple[str, str, bool]],
-) -> tuple[int, int, int]:
-    """(channel module files, their non-blank lines, public environment functions)."""
-    mods = [p for p in files if MODULE_PATH.match(p)]
-    lines = sum(
-        1 for p in mods for line in (tree / p).read_bytes().splitlines() if line.strip()
-    )
-    return len(mods), lines, sum(1 for b in bodies.values() if b[0] == "env_function")
+def _library_size(files: dict, tree: Path) -> tuple[int, int, int] | None:
+    """The channel modules' code (:func:`.snapshot.code_size`, summed): function definitions, AST nodes of
+    function definitions, AST nodes of other module code; comments and docstrings never count. None when a
+    module does not parse.
+    """
+    total = [0, 0, 0]
+    for p in files:
+        if MODULE_PATH.match(p):
+            size = code_size((tree / p).read_bytes())
+            if size is None:
+                return None
+            total = [a + b for a, b in zip(total, size)]
+    return total[0], total[1], total[2]
 
 
 def _owners(man: Manifest, test: str) -> list[str]:
@@ -508,6 +523,9 @@ class _Run:
     # per-item admission: item -> the checks that refused it, and whether any failure is pass-wide
     item_fail: dict[str, list[str]] = field(default_factory=dict)
     pass_wide: bool = False
+    # edited functions whose change G3 vetted: a red test observed it, or the function does the same as its
+    # parent version on every recorded cover (D26). None: not judged (a preview runs no G3).
+    vetted: set[str] | None = None
 
     def fail(
         self,
@@ -1549,16 +1567,11 @@ class Gate:
         accepted, an out-of-domain value refused before any environment call.
         """
 
-        def blob(sha: str) -> bytes:
-            if not self.blobs.has(sha):
-                raise KeyError(sha)
-            return self.blobs.get(sha)
-
         p = plan(
             item,
             covers,
             seen=seen,
-            blob=blob,
+            blob=self._blob,
             field_types=field_types,
             input_kind=input_kind,
             pool=None if pool is None else pool[0],
@@ -1623,9 +1636,12 @@ class Gate:
                         _owners(man, t),
                     )
         # each edited function is seen changing behaviour by at least one classically red test
+        observed: set[str] = set()
         for it in man.items:
             tests = {t for t in it.tests if t in changed and t in run.c_files}
-            if it.item in edited and tests and not tests & classic:
+            if it.item in edited and tests & classic:
+                observed.add(it.item)
+            elif it.item in edited and tests:
                 if cleanup:
                     unseen.add(it.item)
                 else:
@@ -1635,14 +1651,24 @@ class Gate:
                         it.item,
                     )
         protected = self._suites(run)
-        for item in sorted(unseen):
+        # the clean-up exemption holds only for a change that keeps behaviour: an old passing test calls the
+        # function, and it does what the parent's version did on every recorded cover (D26)
+        preserved: set[str] = set()
+        for k, item in enumerate(sorted(unseen)):
             if not self._held(run, item, protected):
+                why: str | None = "no parent test that passed on the parent calls it"
+            else:
+                why = self._same_results(run, item, run.tmp / f"same-{k}")
+            if why is None:
+                preserved.add(item)
+            else:
                 run.fail(
                     "G3",
-                    f"{item} is edited in a clean-up pass without a red test, and no parent test that "
-                    "passed on the parent exercises it",
+                    f"{item} is edited in a clean-up pass without a red test, and {why}; a change of "
+                    "behaviour needs a test that is red on the parent's library",
                     item,
                 )
+        run.vetted = observed | preserved
         if self.docstring_standard:
             self._examples(run)
 
@@ -1911,10 +1937,12 @@ class Gate:
 
     @staticmethod
     def _shrinks(run: _Run) -> bool:
-        """No measure of :func:`_library_size` grows and at least one falls."""
-        before = _library_size(run.p_files, run.p_tree, run.p_bodies)
-        after = _library_size(run.c_files, run.c_tree, run.c_bodies)
-        return after != before and all(a <= b for a, b in zip(after, before))
+        """No measure of :func:`_library_size` grows, and function definitions or their AST nodes fall."""
+        before = _library_size(run.p_files, run.p_tree)
+        after = _library_size(run.c_files, run.c_tree)
+        if before is None or after is None:
+            return False
+        return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
 
     def _cleanup(self, run: _Run) -> bool:
         """A clean-up pass (D26): it adds no item and the library shrinks."""
@@ -1923,13 +1951,111 @@ class Gate:
 
     @staticmethod
     def _held(run: _Run, item: str, protected: set[str]) -> bool:
-        """A parent test file that passed on the parent, and still passes, exercises *item*."""
-        for rel in sorted(protected):
-            if rel in run.p_files:
-                uses = _exercised((run.p_tree / rel).read_bytes(), run.p_bodies)
-                if uses and item in uses:
-                    return True
-        return False
+        """A parent test file that passed on the parent, and still passes, calls *item*.
+
+        A call, not an import: :func:`.snapshot.calls_item`.
+        """
+        return any(
+            rel in run.p_files and calls_item((run.p_tree / rel).read_bytes(), item)
+            for rel in sorted(protected)
+        )
+
+    def _blob(self, sha: str) -> bytes:
+        if not self.blobs.has(sha):
+            raise KeyError(sha)
+        return self.blobs.get(sha)
+
+    def _same_results(self, run: _Run, item: str, work: Path) -> str | None:
+        """None when *item* does what its parent version did on every recorded cover; else why not.
+
+        The covers are every recorded cover of *item* in the evidence store plus its covers in this
+        manifest (not only those the pass lists). Each recorded input runs confined on both versions, in
+        the parent's declared input form, through G2's runner and replay (:func:`.held_out.output_cases`,
+        :func:`.held_out.run_outputs`); the return values (canonical JSON), refusals, raised exception
+        classes and issued environment calls must be equal. A recorded rejection that gives no input is
+        skipped; any other cover that cannot be read, given or compared means the results are not shown
+        to be the same. The reason names cover ids only, never a value.
+        """
+        covers = {(e, i) for it, e, i in self.ev.covers() if it == item}
+        covers |= {
+            (e, i) for it in run.man.items if it.item == item for e, i in it.covers
+        }
+        if not covers:
+            return "it has no recorded cover to compare its results on"
+        if len(covers) > MAX_OUTPUT_COVERS:
+            return f"its {len(covers)} recorded covers exceed the {MAX_OUTPUT_COVERS} compared"
+        try:
+            p_report = items(run.p_tree)
+        except ValueError:
+            return "the parent's library cannot be read"
+
+        def form(report: ItemsReport | None) -> str | None:
+            docs = {
+                i.item_id: i.input
+                for i in (report.items if report is not None else [])
+                if i.kind == "env_function"
+            }
+            declared = docs.get(item, "")
+            return declared if declared in INPUT_KINDS else None
+
+        p_form, c_form = form(p_report), form(run.c_report)
+        acts: list[tuple[str, int, Action]] = []
+        unread: list[list] = []
+        for e, i in sorted(covers):
+            a = self.lookup(e, i)
+            if a is None:
+                unread.append([e, i])
+            else:
+                acts.append((e, i, a))
+        if unread:
+            return f"{len(unread)} of its recorded covers cannot be read: {unread[:5]}"
+        if any(_form(a, p_form) != _form(a, c_form) for _, _, a in acts):
+            return "its input form changed"
+        cases, unfit = output_cases(acts, self._blob, p_form)
+        rejected = {
+            (e, i)
+            for e, i, a in acts
+            if is_rejection(a) and getattr(a, "kind", "tool") != "shell"
+        }
+        unfit = [list(c) for c in unfit if c not in rejected]
+        if unfit:
+            return (
+                f"{len(unfit)} of its recorded covers cannot be given to it (a shell cover, another "
+                f"input form or an unreadable file): {unfit[:5]}"
+            )
+        if not cases:
+            return "none of its recorded covers gives it an input to compare its results on"
+        before = run_outputs(
+            item,
+            cases,
+            tree=run.p_tree,
+            python=self.python,
+            work=work / "parent",
+        )
+        after = run_outputs(
+            item,
+            cases,
+            tree=run.c_tree,
+            python=self.python,
+            work=work / "candidate",
+        )
+        unjudged = sorted(
+            c for c in before if before[c] is None or after.get(c) is None
+        )
+        differ = sorted(
+            c for c in before if c not in unjudged and before[c] != after[c]
+        )
+        if differ:
+            return (
+                f"its results differ from the parent's on {len(differ)} recorded covers: "
+                f"{[list(c) for c in differ[:5]]}"
+            )
+        if unjudged:
+            return (
+                f"its results on {len(unjudged)} recorded covers cannot be compared (not run in "
+                f"time, timed out or not JSON): {[list(c) for c in unjudged[:5]]}"
+            )
+        return None
 
     def _g4(self, run: _Run) -> None:
         """The size budget: the v2 index's hard cap, or with ``soft_budget`` a note that hygiene is due past
@@ -1975,9 +2101,15 @@ class Gate:
         deleted = set(run.man.deleted)
         recorded = self.ev.covers()
         held = {(e, i) for _, e, i in run.covers}
-        held |= {
-            (e, i) for it, e, i in recorded if it not in deleted and it in run.c_bodies
-        }
+
+        def keeps(it: str) -> bool:
+            """A kept item still handles its recorded covers: unchanged, or its change vetted by G3."""
+            if it in deleted or it not in run.c_bodies:
+                return False
+            same = run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
+            return same or run.vetted is None or it in run.vetted
+
+        held |= {(e, i) for it, e, i in recorded if keeps(it)}
         lost: dict[str, list[tuple[str, int]]] = {}
         for it, e, i in sorted(recorded):
             if it not in deleted or (e, i) in held:

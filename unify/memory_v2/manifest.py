@@ -46,10 +46,13 @@ Manifest rules for consolidators
   the parent's library (or hangs there). Repairing a parent test file that was already red also counts,
   but only as a test-only repair: its parent version fails on the parent, a test it failed passes in
   your version (a file that did not even import counts as a whole), and it imports no function your pass
-  changes. A changed function always needs a test that fails on the parent's library, except in a
-  clean-up pass (no item added; fewer channel modules, non-blank module lines or public functions, and
-  none of them more): there a parent test that passed on the parent and imports the function is enough,
-  and new tests need only pass.
+  changes. A changed function always needs a test that fails on the parent's library. The one exception
+  is a change that keeps behaviour in a clean-up pass (no item added; fewer function definitions or less
+  code in them, and no more code anywhere in the channel modules; comments and docstrings do not count):
+  a merge, an alias or a shortening needs no failing test when a parent test that passed on the parent
+  calls the function (importing it is not enough) and the function returns, refuses and calls exactly
+  what its parent version did on every recorded cover of it (the gate runs both versions on them). A
+  repair changes behaviour, so it always needs a failing test. New tests of a clean-up pass need only pass.
 * **Skeleton.** A channel's *skeleton* is its module minus its public functions and a literal
   ``__all__ = [...]``: the docstring, imports, private helpers and any other module-level statement, plus
   the preamble of its ``NOTES.md`` (the text before the first ``## `` heading). Changing it, including

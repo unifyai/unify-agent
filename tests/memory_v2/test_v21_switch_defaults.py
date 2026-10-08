@@ -158,8 +158,12 @@ D26_PARAGRAPH = (
     "the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or\n"
     "unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused\n"
     "an input the environment accepted. Test first here as well: every old test keeps passing against the result, or\n"
-    'is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A pass that\n'
-    "adds nothing and shrinks the library needs no red test for an edited function an old passing test exercises.\n\n"
+    'is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A repair\n'
+    "changes behaviour, so like any change it needs a test that fails on the parent's library and passes after. Only a\n"
+    "merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks the library (fewer\n"
+    "functions or less code in them; comments and docstrings do not count), an edited function needs no failing test\n"
+    "when an old passing test calls it and it returns exactly what its old version returned on every recorded cover of\n"
+    "it (the gate runs both versions on them).\n\n"
 )
 D26_AFTER = "the library must earn its place.\n\n"
 D26_SUMMARY = (

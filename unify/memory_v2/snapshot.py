@@ -4,7 +4,8 @@
 blobs and checks nothing else appeared; :func:`item_bodies` keys every memory item by id with the text that
 defines it; :func:`module_skeleton`, :func:`notes_preamble` and :func:`without_listed` give the parts of a
 file that belong to no item, so the gate can pin them; :func:`env_references` reads which library names a
-test file imports.
+test file imports and :func:`calls_item` whether it calls one; :func:`code_size` measures a channel
+module's code.
 """
 
 from __future__ import annotations
@@ -309,3 +310,119 @@ def env_references(source: bytes) -> tuple[set[str], set[str], bool] | None:
                     else:
                         channels.add(parts[1])
     return names, channels, everything
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """``a.b.c`` for a chain of names and attributes, else None."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def calls_item(source: bytes, item: str) -> bool:
+    """Whether a test file calls the environment function *item* (``env/<channel>:<name>``).
+
+    A call counts only when its callee resolves to the function imported from its module: a name bound by
+    ``from env.<channel> import <name>`` (under its alias, if any) or by ``from env.<channel> import *``, or
+    the attribute ``<name>`` of the module bound by ``import env.<channel>`` (``env.<channel>.<name>``),
+    ``import env.<channel> as m`` or ``from env import <channel> [as m]`` (``m.<name>``). Importing the
+    function, or its channel, without calling it does not count; nor does an unparsable file. Rebinding a
+    name after import is not tracked (ruling R16: a careless consolidator, not a malicious one).
+    """
+    channel, _, name = item.partition(":")
+    channel = channel.split("/", 1)[1] if "/" in channel else channel
+    if not channel or not name:
+        return False
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    module = f"env.{channel}"
+    names: set[str] = set()  # local names bound to the function
+    modules: set[str] = set()  # dotted local names bound to its module
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == module:
+                for a in node.names:
+                    if a.name == "*":
+                        names.add(name)
+                    elif a.name == name:
+                        names.add(a.asname or a.name)
+            elif node.module == "env":
+                modules.update(
+                    a.asname or a.name for a in node.names if a.name == channel
+                )
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == module:
+                    modules.add(a.asname or module)
+                elif a.name == "env" and a.asname is None:
+                    modules.add(module)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in names:
+            return True
+        if (
+            isinstance(f, ast.Attribute)
+            and f.attr == name
+            and _dotted(f.value) in modules
+        ):
+            return True
+    return False
+
+
+def code_size(source: bytes) -> tuple[int, int, int] | None:
+    """A channel module's code size: (function definitions, AST nodes in its top-level function definitions,
+    AST nodes of the rest of the module), None when it does not parse.
+
+    Comments, blank lines and formatting are not in the AST; docstrings (of the module, its classes and its
+    functions) are left out, so neither changes the size.
+    """
+    try:
+        module = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    docs: set[int] = set()
+    for node in ast.walk(module):
+        body = getattr(node, "body", None)
+        if (
+            isinstance(
+                node,
+                (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+            )
+            and body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            docs.add(id(body[0]))
+
+    def nodes(root: ast.AST) -> int:
+        n, stack = 0, [root]
+        while stack:
+            node = stack.pop()
+            if id(node) in docs:
+                continue
+            n += 1
+            stack.extend(ast.iter_child_nodes(node))
+        return n
+
+    defs = sum(
+        1
+        for n in ast.walk(module)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    functions = other = 0
+    for node in module.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions += nodes(node)
+        else:
+            other += nodes(node)
+    return defs, functions, other
