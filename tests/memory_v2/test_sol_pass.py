@@ -987,12 +987,13 @@ def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_pat
     model = Turns([_checks("c", ["{}"] * 4)])
     mem, ev, sol = _sol(tmp_path / "capped", model, max_calls=3)
     out = _run(sol, "py")
-    assert [model.outputs[f"c{n}"] for n in (1, 2)] == ["ok", "ok"]
-    assert (
-        model.outputs["c3"]
-        == model.outputs["c4"]
-        == ("not run: the pass's call cap is reached")
-    )
+    # the cap ends the pass with no further model turn, so the replies are read from the message list
+    # the model was given (the pass appends to it), not from what a next turn would have recorded
+    replies = {
+        m["tool_call_id"]: m["content"] for m in model.seen if m.get("role") == "tool"
+    }
+    assert [replies[f"c{n}"] for n in (1, 2)] == ["ok", "ok"]
+    assert replies["c3"] == replies["c4"] == ("not run: the pass's call cap is reached")
     assert out.calls == 3 and not out.passed
 
 
