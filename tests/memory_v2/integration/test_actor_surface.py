@@ -94,6 +94,7 @@ def test_hooks_under_the_switch(monkeypatch, tmp_path):
     assert "functions" not in hooks.system_prompt(pointer)
     assert hooks.worker_paths() == [] and hooks.worker_mounts() == []
     paths = Paths.under(tmp_path)
+    paths.checkout.mkdir(parents=True)  # the export is mounted only once it exists
     monkeypatch.setattr(
         request_mod,
         "_CURRENT",

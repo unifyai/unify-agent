@@ -421,8 +421,16 @@ def test_default_hidden_paths_follow_the_sandbox_policy(
 
 def test_sandbox_secret_rule_hides_paths_fail_closed(tmp_path, monkeypatch):
     """Remote run: every path component the sandbox's secret rule masks hides the path; an error hides it too."""
+    from types import SimpleNamespace
+
     from unify import sandbox
 
+    # the policy's own view is tested elsewhere; here it shows everything, so only the secret rule hides
+    monkeypatch.setattr(
+        sandbox,
+        "build_policy",
+        lambda *a, **k: SimpleNamespace(readable_violation=lambda p: None),
+    )
     hidden = capture_mod.sandbox_hidden(tmp_path)
     for rel in (
         ".env",
