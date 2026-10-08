@@ -152,7 +152,22 @@ class ProductionSettings(BaseSettings):
     # without this switch (with UNIFY_STEP_CAP_REPLY's reply when that is on).
     # A reply the request has already given (a text reply, or a cell's
     # reply()) is given, not compacted for. A loop without compression is
-    # unchanged. Empty (also ``off``): as shipped.
+    # unchanged. ``continue``: one long-horizon mode for the actor's task
+    # loop (the one that answers the requester; any other loop runs as
+    # shipped). The step budget (``max_steps``, a count of messages) is
+    # counted per request, from the request's own message, and afresh after
+    # each compaction. At the limit the conversation is compacted as under
+    # ``on``, with no bound on compactions per request, and the request goes
+    # on; the compaction's summary is a loop-authored message, so it starts
+    # no request (UNIFY_LOOP_STOP's count carries across it). A compaction
+    # whose rebuilt context is not smaller than the one it replaced
+    # (serialised message characters) is ineffective, and a second
+    # ineffective one in a row in a request ends it. That end, a failed
+    # compaction, a loop stop and the loop's timeout all end the request
+    # through UNIFY_STEP_CAP_REPLY's reply path, in its ``draft`` mode when
+    # that switch is empty: the requester always gets an answer and a
+    # persistent session waits for its next request. Empty (also ``off``):
+    # as shipped.
     UNIFY_STEP_CAP_COMPACT: str = ""
     # ``on``: a context compaction (at the context threshold, on the model's
     # own ``compress_context`` call, or at ``max_steps`` under
@@ -501,9 +516,10 @@ class ProductionSettings(BaseSettings):
     def parse_step_cap_compact(cls, v: Any) -> str:
         value = str(v or "").strip().lower()
         value = "" if value == "off" else value
-        if value not in ("", "on"):
+        if value not in ("", "on", "continue"):
             raise ValueError(
-                f"UNIFY_STEP_CAP_COMPACT must be empty, 'off' or 'on', not {v!r}",
+                "UNIFY_STEP_CAP_COMPACT must be empty, 'off', 'on' or 'continue', "
+                f"not {v!r}",
             )
         return value
 

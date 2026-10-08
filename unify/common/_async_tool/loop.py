@@ -125,6 +125,15 @@ class ToolLoopRuntimeState:
     keep_prefix_unmeasured: bool = False
     keep_prefix_shipped_next: bool = False
     keep_prefix_fallbacks: int = 0
+    # UNIFY_STEP_CAP_COMPACT=continue: whether this loop runs in the mode
+    # (the loop sets it; its handle reads it to mark the restart summary as
+    # loop-authored), the step-limit compactions that did not make the
+    # context smaller, in all and in a row in the current request, and the
+    # loop stop's tracker a compacting loop hands to its restart.
+    step_cap_continue: bool = False
+    step_cap_ineffective_compactions: int = 0
+    step_cap_ineffective_in_a_row: int = 0
+    loop_stop_carry: Optional[Any] = None
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -135,6 +144,73 @@ _CANCEL_GRACE_S = 2.0
 # UNIFY_STEP_CAP_COMPACT: how many times one request may be compacted at the
 # step limit; at its next limit the limit stops it as without the switch.
 STEP_CAP_COMPACTIONS = 2
+
+# UNIFY_STEP_CAP_COMPACT=continue: ineffective step-limit compactions in a
+# row that end a request (a compaction is ineffective when the context it
+# rebuilds is not smaller than the one it replaces).
+STEP_CAP_INEFFECTIVE_LIMIT = 2
+
+
+def continue_mode_active(runtime_state: Optional[ToolLoopRuntimeState] = None) -> bool:
+    """Whether ``UNIFY_STEP_CAP_COMPACT=continue`` is set.
+
+    With *runtime_state*, whether the loop that owns it runs in the mode:
+    only the actor's task loop, the one that answers a requester, does.
+    This is the one test the mode's parts share (a compaction rebuild that
+    is on in this mode keys on it).
+    """
+    from unify.settings import SETTINGS
+
+    if getattr(SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") != "continue":
+        return False
+    return runtime_state is None or bool(
+        getattr(runtime_state, "step_cap_continue", False),
+    )
+
+
+def _context_size(messages: list) -> int:
+    """The size a step-limit compaction is judged by: the characters of the
+    messages serialised (the tools and the system prompt sent with them are
+    the same before and after a compaction)."""
+    return len(json.dumps(messages, default=str))
+
+
+@dataclass(frozen=True)
+class _TimeoutStop:
+    """UNIFY_STEP_CAP_COMPACT=continue: the loop's timeout ends the request
+    through the step limit's reply path, with these texts (the attributes
+    ``_end_request_at_step_limit`` reads from a loop stop)."""
+
+    timeout: Any
+    last_word: bool
+    label: str = "Timeout"
+
+    @property
+    def reason(self) -> str:
+        return f"timeout ({self.timeout}s) exceeded"
+
+    @property
+    def cancelled(self) -> str:
+        return (
+            f"Cancelled: the request was stopped ({self.reason}) before this "
+            "call finished."
+        )
+
+    @property
+    def notice(self) -> str:
+        return (
+            f"This request was stopped ({self.reason}): no more tools can be "
+            "called for it. Reply now with your best answer to the request."
+        )
+
+    @property
+    def headline(self) -> str:
+        return (
+            f"🔚 Stopped: {self.reason}, so this request ended before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+
 
 # A reply whose choice carries a provider error is sent again this many
 # times, after 1 s then 2 s (UniLLM's transient retry already ran inside
@@ -727,13 +803,31 @@ async def async_tool_loop_inner(
     from unify.settings import SETTINGS as _CAP_SETTINGS
 
     _step_cap_mode = _CAP_SETTINGS.step_cap_reply()
+    # A task loop that answers a requester with text and that no other loop
+    # started (as UNIFY_PROMPT_ACCURACY's test for a parent): never a
+    # sub-agent's, a review's or its fork's.
+    _requester_loop = (
+        bool(reply_channel)
+        and _rf_norm is None
+        and parent_chat_context is None
+        and len(cfg.lineage) < 2
+    )
+    # UNIFY_STEP_CAP_COMPACT=continue, in the requester's task loop only: the
+    # step budget is counted per request (the request's own messages), the
+    # limit compacts with no bound per request, and every stop that ends a
+    # request goes through UNIFY_STEP_CAP_REPLY's reply path, ``draft``
+    # when that switch is empty.
+    _continue = _requester_loop and continue_mode_active()
+    runtime_state.step_cap_continue = _continue
+    if _continue and not _step_cap_mode:
+        _step_cap_mode = "draft"
     _step_cap_reply = bool(_step_cap_mode)
     _step_cap_last_word = _step_cap_mode == "last_word"
     # UNIFY_STEP_CAP_COMPACT=on: at max_steps a loop that can compress its
     # context compacts it, and the request goes on from the compacted
     # context (at most STEP_CAP_COMPACTIONS times a request). Off: as shipped.
     _step_cap_compact = (
-        getattr(_CAP_SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") == "on"
+        (getattr(_CAP_SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") == "on" or _continue)
         and bool(enable_compression)
         and bool(max_steps)
         and not raise_on_limit
@@ -741,18 +835,16 @@ async def async_tool_loop_inner(
     # UNIFY_LOOP_STOP: the no-progress calls in a row of the current request.
     # A stop ends the request as the step limit does; with
     # UNIFY_STEP_CAP_REPLY off it takes the last word, so it always replies.
-    # Only in a task loop that answers a requester with text and that no
-    # other loop started (as UNIFY_PROMPT_ACCURACY's
-    # test for a parent): never in a sub-agent, a review or its fork.
+    # Only in the requester's task loop.
     _loop_stop = (
         _loop_stop_mod.Tracker(_loop_stop_mod.threshold())
-        if _loop_stop_mod.enabled()
-        and reply_channel
-        and _rf_norm is None
-        and parent_chat_context is None
-        and len(cfg.lineage) < 2
+        if _loop_stop_mod.enabled() and _requester_loop
         else None
     )
+    # UNIFY_STEP_CAP_COMPACT=continue: the tracker of the loop this one
+    # restarts after a compaction, whose count carries over.
+    _loop_stop_carried = runtime_state.loop_stop_carry
+    runtime_state.loop_stop_carry = None
 
     timer: TimeoutTimer = TimeoutTimer(
         timeout=timeout,
@@ -761,6 +853,10 @@ async def async_tool_loop_inner(
         client=client,
         message_count_offset=runtime_state.message_count_offset,
     )
+    # UNIFY_STEP_CAP_COMPACT=continue: the budget counts from here, the
+    # request's own message (or, after a compaction, its restart message).
+    if _continue:
+        timer.start_request()
     _msg_dispatcher = LoopMessageDispatcher(client, cfg, timer)
     parent_chat_context_safe = make_messages_safe_for_context_dump(parent_chat_context)
 
@@ -1015,6 +1111,16 @@ async def async_tool_loop_inner(
             )
         await _msg_dispatcher.append_msgs([initial_user_msg])
 
+    # UNIFY_STEP_CAP_COMPACT=continue: a loop restarted after a compaction
+    # goes on counting its request's no-progress calls where the compacted
+    # loop left off, anchored on the compacted context (whose summary is
+    # loop-authored, so it starts no request): a stuck request cannot escape
+    # the loop stop by compacting.
+    if _loop_stop is not None and _loop_stop_carried is not None:
+        _loop_stop.observe(client.messages or [])
+        _loop_stop.count = _loop_stop_carried.count
+        _loop_stop._turns = list(_loop_stop_carried._turns)
+
     async def _handle_limit_reached(
         reason: str,
         draft: Optional[str] = None,
@@ -1046,19 +1152,7 @@ async def async_tool_loop_inner(
             )
             draft = await _last_word(reason, stop) or draft
         await tools_data.cancel_pending_tasks(grace=_CANCEL_GRACE_S)
-        # A call the limit came before (one a seeded or resumed transcript
-        # carried) is answered too, so the transcript the loop ends with
-        # leaves no call unanswered.
-        for entry in find_unreplied_assistant_entries(client):
-            for call in entry["assistant_msg"].get("tool_calls") or []:
-                if call.get("id") in entry["missing"] and not _call_answered(
-                    call.get("id"),
-                ):
-                    await _answer_call(
-                        entry["assistant_msg"],
-                        call,
-                        f"Not run: {reason} before this call started.",
-                    )
+        await _answer_calls_not_run(reason)
 
         notice = {
             "role": "assistant",
@@ -1069,6 +1163,21 @@ async def async_tool_loop_inner(
         if log_steps:
             logger.info(f"Early exit – {reason}", prefix=ICONS["early_exit"])
         return notice["content"]
+
+    async def _answer_calls_not_run(reason: str) -> None:
+        """Answer each call the limit came before (one a seeded or resumed
+        transcript carried, or one a model call that ran into the timeout
+        made), so the transcript leaves no call unanswered."""
+        for entry in find_unreplied_assistant_entries(client):
+            for call in entry["assistant_msg"].get("tool_calls") or []:
+                if call.get("id") in entry["missing"] and not _call_answered(
+                    call.get("id"),
+                ):
+                    await _answer_call(
+                        entry["assistant_msg"],
+                        call,
+                        f"Not run: {reason} before this call started.",
+                    )
 
     def _request_draft() -> Optional[str]:
         """The latest reply text drafted for the current request, if any.
@@ -1225,11 +1334,50 @@ async def async_tool_loop_inner(
             await _outer._notification_q.put({"type": "response", "content": content})
         await _park_until_next_request()
         runtime_state.step_cap_compactions_in_request = 0
+        runtime_state.step_cap_ineffective_in_a_row = 0
         timer.reset()
         # Counting per request is UNIFY_STEP_CAP_REPLY's; a loop stop with
         # it off keeps counting the whole loop, as shipped.
         if _step_cap_reply:
             timer.start_request()
+
+    async def _timeout_ends_request() -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: the loop's timeout ends a
+        persistent loop's request, not the loop, through the step limit's
+        reply path; ``True`` when it did (the caller goes on to the next
+        request). Every call is answered first: one still running as
+        cancelled, one that never started as not run."""
+        if not (_continue and persist):
+            return False
+        stop = _TimeoutStop(timeout, last_word=_step_cap_last_word)
+        logger.info(
+            f"{stop.label} – {stop.reason}; ending the request with "
+            + ("the model's last word" if stop.last_word else "its draft"),
+            prefix=ICONS["early_exit"],
+        )
+        await tools_data.cancel_pending_tasks_with_reply(
+            stop.cancelled,
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+            grace=_CANCEL_GRACE_S,
+        )
+        await _answer_calls_not_run(stop.reason)
+        await _end_request_at_step_limit(stop)
+        return True
+
+    async def _timeout_limit() -> str:
+        """The loop's timeout ends the loop: as shipped, or, under
+        UNIFY_STEP_CAP_COMPACT=continue, through the reply path (the draft,
+        or the last word)."""
+        if not _continue:
+            return await _handle_limit_reached(f"timeout ({timeout}s) exceeded")
+        stop = _TimeoutStop(timeout, last_word=_step_cap_last_word)
+        return await _handle_limit_reached(
+            stop.reason,
+            _request_draft(),
+            last_word=stop.last_word,
+            stop=stop,
+        )
 
     def _can_compact_at_step_limit() -> bool:
         """UNIFY_STEP_CAP_COMPACT: whether this loop's handle can compact it.
@@ -1287,6 +1435,14 @@ async def async_tool_loop_inner(
         STEP_CAP_COMPACTIONS times, or the compaction failed or ran past the
         loop's timeout. A stop of the loop during the compaction cancels it
         and stops the loop.
+
+        UNIFY_STEP_CAP_COMPACT=continue: a request is compacted any number
+        of times, but a compaction whose rebuilt context is not smaller than
+        the context it replaces (``_context_size``) is ineffective, and the
+        second ineffective one in a row of a request is not used:
+        ``"limit"``, so the request ends through the reply path. A loop stop
+        that is due at the limit is ``"defer"`` too: it ends the request at
+        the step instead.
         """
         if not _can_compact_at_step_limit():
             return "limit"
@@ -1294,8 +1450,24 @@ async def async_tool_loop_inner(
             persist and _request_cancel_queued()
         ):
             return "defer"
-        if runtime_state.step_cap_compactions_in_request >= STEP_CAP_COMPACTIONS:
+        if (
+            not _continue
+            and runtime_state.step_cap_compactions_in_request >= STEP_CAP_COMPACTIONS
+        ):
             return "limit"
+        # UNIFY_STEP_CAP_COMPACT=continue: the loop stop counts the turns
+        # made since it last looked first, so the count it hands to the
+        # restarted loop is whole; a stop that is due ends the request at
+        # this step instead of a compaction.
+        if (
+            _continue
+            and _loop_stop is not None
+            and _loop_stop.observe(
+                client.messages or [],
+                in_flight=bool(tools_data.pending),
+            )
+        ):
+            return "defer"
         runtime_state.step_cap_compactions_in_request += 1
         reason = f"max_steps ({max_steps}) exceeded"
         await tools_data.cancel_pending_tasks_with_reply(
@@ -1306,10 +1478,15 @@ async def async_tool_loop_inner(
         )
         logger.info(
             f"Step limit – {reason}; compacting the conversation "
-            f"({runtime_state.step_cap_compactions_in_request} of "
-            f"{STEP_CAP_COMPACTIONS} for this request)",
+            + (
+                f"({runtime_state.step_cap_compactions_in_request} for this " "request)"
+                if _continue
+                else f"({runtime_state.step_cap_compactions_in_request} of "
+                f"{STEP_CAP_COMPACTIONS} for this request)"
+            ),
             prefix=ICONS["early_exit"],
         )
+        _size_before = _context_size(client.messages or []) if _continue else 0
         _outer = outer_handle_container[0]
         compaction = asyncio.create_task(
             _outer._compact_context(),
@@ -1338,6 +1515,11 @@ async def async_tool_loop_inner(
         if stopped in done:
             raise asyncio.CancelledError
         if compaction in done and not compaction.cancelled():
+            if compaction.exception() is None and _continue:
+                if _ineffective_compaction(compaction.result(), _size_before):
+                    return "limit"
+                # The loop stop's count goes on in the restarted loop.
+                runtime_state.loop_stop_carry = _loop_stop
             if compaction.exception() is None:
                 runtime_state.step_cap_compacted = compaction.result()
                 runtime_state.step_cap_compactions += 1
@@ -1362,6 +1544,36 @@ async def async_tool_loop_inner(
             prefix=ICONS["early_exit"],
         )
         return "limit"
+
+    def _ineffective_compaction(compacted: tuple, size_before: int) -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: count a compaction that did not
+        make the context smaller; whether it is the second in a row of the
+        request, which is then not used (the request ends instead)."""
+        _, messages, _, restart, _ = compacted
+        restart_msg = (
+            restart if isinstance(restart, dict) else loop_user_notice(restart)
+        )
+        if first_message_context:
+            restart_msg = with_first_message_context(restart_msg, first_message_context)
+        size_after = _context_size([*(messages or []), restart_msg])
+        if size_after < size_before:
+            runtime_state.step_cap_ineffective_in_a_row = 0
+            return False
+        runtime_state.step_cap_ineffective_compactions += 1
+        runtime_state.step_cap_ineffective_in_a_row += 1
+        last = runtime_state.step_cap_ineffective_in_a_row >= STEP_CAP_INEFFECTIVE_LIMIT
+        logger.info(
+            f"Step limit – the compaction did not make the context smaller "
+            f"({size_after} characters, from {size_before}); "
+            + (
+                f"{runtime_state.step_cap_ineffective_in_a_row} in a row, so the "
+                "request ends"
+                if last
+                else "the request goes on"
+            ),
+            prefix=ICONS["early_exit"],
+        )
+        return last
 
     async def _end_request_on_cancel(reason: Optional[str]) -> None:
         """A persistent loop's requester cancelled the running request.
@@ -1399,6 +1611,7 @@ async def async_tool_loop_inner(
             )
         await _park_until_next_request()
         runtime_state.step_cap_compactions_in_request = 0
+        runtime_state.step_cap_ineffective_in_a_row = 0
         timer.reset()
         if _step_cap_reply:
             timer.start_request()
@@ -1832,9 +2045,9 @@ async def async_tool_loop_inner(
     try:
         while True:
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
             if timer.has_exceeded_msgs():
                 # UNIFY_STEP_CAP_COMPACT: compact and go on, or take the
@@ -1863,9 +2076,9 @@ async def async_tool_loop_inner(
                 find_unreplied_assistant_entries(client),
             )
             if _repair_status == "timeout":
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
             # ── Turn boundary: drain the queue ──────────────────────────
             # Nothing runs here, so every message the requester sent since
@@ -2231,9 +2444,13 @@ async def async_tool_loop_inner(
             if (
                 _loop_stop is not None
                 and _cell_reply_msg is None
-                and _loop_stop.observe(
-                    client.messages or [],
-                    in_flight=bool(tools_data.pending),
+                and (
+                    _loop_stop.observe(
+                        client.messages or [],
+                        in_flight=bool(tools_data.pending),
+                    )
+                    # UNIFY_STEP_CAP_COMPACT=continue: due at the step limit.
+                    or (_continue and _loop_stop.count >= _loop_stop.k)
                 )
             ):
                 _stop = _loop_stop_mod.Stop(
@@ -2475,9 +2692,9 @@ async def async_tool_loop_inner(
                     )
 
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
             runtime_state.step_index += 1
 
@@ -2690,6 +2907,8 @@ async def async_tool_loop_inner(
                             "Compression initiated. Ending current loop "
                             "to restart with compressed context.",
                         )
+                        if _continue:
+                            runtime_state.loop_stop_carry = _loop_stop
                         return _COMPRESSION_SIGNAL
 
                     # Over-quota calls were already pruned above; this guards
@@ -2738,9 +2957,9 @@ async def async_tool_loop_inner(
                                 "call started.",
                             )
                 elif _interrupted == "timeout":
-                    return await _handle_limit_reached(
-                        f"timeout ({timeout}s) exceeded",
-                    )
+                    if await _timeout_ends_request():
+                        continue
+                    return await _timeout_limit()
                 else:
                     # Every call has its result (a cancelled request is ended
                     # at the next boundary): back to the very top.
@@ -2757,9 +2976,9 @@ async def async_tool_loop_inner(
                 continue
 
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
             # UNIFY_STEP_CAP_COMPACT: a reply given at the limit is the
             # request's answer; a loop that can compact goes on to give it.
@@ -2872,6 +3091,7 @@ async def async_tool_loop_inner(
 
                 await _park_until_next_request()
                 runtime_state.step_cap_compactions_in_request = 0
+                runtime_state.step_cap_ineffective_in_a_row = 0
 
                 timer.reset()
                 if _step_cap_reply:

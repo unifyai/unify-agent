@@ -20,7 +20,12 @@ from ._async_tool import cache_discipline as _cache_discipline
 from ._async_tool import bound_request as _bound_request
 from unify import transcripts
 from ._async_tool.loop_config import TOOL_LOOP_LINEAGE
-from ._async_tool.loop import ToolLoopRuntimeState, async_tool_loop_inner
+from ._async_tool.loop import (
+    ToolLoopRuntimeState,
+    async_tool_loop_inner,
+    continue_mode_active,
+)
+from ._async_tool.messages import loop_user_notice
 from ._async_tool.propagation_mode import ChatContextPropagation
 from ._async_tool.context_compression import (
     _COMPRESSED_HEADER,
@@ -388,6 +393,16 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         keep_prefix = isinstance(restart_message, list)
         # Its first measured call says whether what it kept fits.
         self._runtime_state.keep_prefix_unmeasured = keep_prefix
+        # UNIFY_STEP_CAP_COMPACT=continue: the summary the loop restarts from
+        # is loop-authored, so it starts no request (the loop stop's count
+        # goes on across it). The marker is an underscore key, which unillm
+        # strips before the request: the bytes sent are the same. A
+        # keep-prefix summary is built loop-authored already.
+        if continue_mode_active(self._runtime_state) and isinstance(
+            restart_message,
+            str,
+        ):
+            restart_message = loop_user_notice(restart_message)
         self._client._messages = restart_messages
         if not forked and not keep_prefix:
             self._client._system_message = None

@@ -46,9 +46,14 @@ At the code freeze of 7 October 2026 every other research switch was either made
 
 ## UNIFY_STEP_CAP_COMPACT
 
-- **Values:** empty (the same as `off`) or `on`.
+- **Values:** empty (the same as `off`), `on` or `continue`.
 - **Default:** empty.
 - **What it does:** When on, a task loop that can compress its context compacts it when it reaches its step limit, instead of stopping, and carries on with the same request. This happens at most twice per request. At the third limit, the request stops as it would without the switch.
+- **`continue`:** one long-horizon mode for the actor's task loop, the one that answers the requester (every other loop runs as shipped). Each part keys only on the request and the session, never on a task stream:
+  - The step budget (`UNIFY_MAX_TOOL_LOOP_STEPS`, a count of messages) is counted per request, from the requester's message, and afresh after each compaction.
+  - At the limit, the conversation is compacted as under `on`, with no bound on compactions per request, and the request goes on. The summary is a loop-authored message, so it starts no request and `UNIFY_LOOP_STOP`'s count carries across it.
+  - A compaction whose rebuilt context is not smaller than the one it replaced (serialised message characters) is ineffective. A second ineffective compaction in a row in one request ends that request.
+  - That end, a compaction that fails, a loop stop and the loop's timeout all end the request through `UNIFY_STEP_CAP_REPLY`'s reply path, in its `draft` mode when that switch is empty. The requester always gets an answer, and a persistent session waits for its next request.
 - **Evidence:** long-horizon WIP, unscreened; to be tested on the long-horizon beds.
 
 ## UNIFY_COMPACTION_KEEP_PREFIX
