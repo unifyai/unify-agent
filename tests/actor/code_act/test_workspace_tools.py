@@ -20,6 +20,7 @@ import pytest
 from tests.actor.code_act.sandbox_world import (  # noqa: F401 (fixture)
     ENV_SECRET,
     SSH_SECRET,
+    STATE_SECRET,
     needs_bwrap,
     world,
 )
@@ -57,7 +58,15 @@ def test_read_file_reads_numbered_ranges_and_refuses_hidden_paths(world):
     out = file_tools.read_file(str(state / "transcripts" / "s.jsonl"), policy=policy)
     assert '"seq": 0' in out["content"]
     (world["workspace"] / "link").symlink_to(home / ".ssh" / "id_rsa")
+    # The raw store is not mounted into cells (they use the functions/guidance
+    # API), so the harness's file tools refuse it too, with its -wal and -shm.
+    store = state / "store.sqlite"
+    for suffix in ("-wal", "-shm"):
+        store.with_name(store.name + suffix).write_text(STATE_SECRET)
     refusals = {
+        str(store): "mask-unify-state",
+        str(store) + "-wal": "mask-unify-state",
+        str(store) + "-shm": "mask-unify-state",
         str(home / ".ssh" / "id_rsa"): "mask-credentials",
         "link": "mask-credentials",
         str(home / ".env"): "mask-env-file",
@@ -111,6 +120,10 @@ async def test_grep_never_searches_hidden_paths(world, monkeypatch, engine):
     with pytest.raises(sandbox.SandboxRefusal) as refused:
         await file_tools.grep("x", str(home / ".ssh"), policy=policy)
     assert refused.value.rule == "mask-credentials"
+    # The raw store is not mounted into cells, so grep refuses it as well.
+    with pytest.raises(sandbox.SandboxRefusal) as refused:
+        await file_tools.grep("f", str(world["state"] / "store.sqlite"), policy=policy)
+    assert refused.value.rule == "mask-unify-state"
 
 
 def _without_ripgrep(monkeypatch):
