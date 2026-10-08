@@ -15,6 +15,7 @@ fully hermetic.  Nothing outside this file is required.
 from __future__ import annotations
 
 import pytest
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 from unify.function_manager.function_manager import FunctionManager
 
@@ -489,10 +490,10 @@ def test_filter_functions_include_implementations():
     assert "name" in hits[0]  # Other fields still present
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
-def test_search_functions_include_implementations():
+def test_search_functions_include_implementations(monkeypatch):
     """search_functions respects include_implementations parameter."""
+    install_fake_embed(monkeypatch.setattr)
     fm = _FM()
     fm.add_functions(implementations="def double_value(x):\n    return x * 2\n")
 

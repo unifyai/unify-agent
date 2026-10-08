@@ -8,8 +8,7 @@ onto every read query (``list_functions``, ``filter_functions``,
 
 from __future__ import annotations
 
-import pytest
-
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 from unify.function_manager.function_manager import FunctionManager
 
@@ -116,10 +115,10 @@ def test_filter_scope_composes_with_caller_filter():
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
-def test_filter_scope_filters_search_functions():
+def test_filter_scope_filters_search_functions(monkeypatch):
     """Search on a scoped instance never returns out-of-scope rows."""
+    install_fake_embed(monkeypatch.setattr)
     fm = _FM()
     fm.add_functions(implementations=[_PY_ALPHA, _PY_BETA])
     fm.add_functions(implementations=_PY_HELLO)
@@ -130,6 +129,9 @@ def test_filter_scope_filters_search_functions():
         assert (
             h["name"] != "hello_world"
         ), f"search_functions returned out-of-scope row: {h['name']}"
+    # n spans every row, so the in-scope rows all come back: the scope
+    # filtered the search rather than the search returning nothing.
+    assert {h["name"] for h in hits} == {"alpha", "beta"}
 
 
 # --------------------------------------------------------------------------- #

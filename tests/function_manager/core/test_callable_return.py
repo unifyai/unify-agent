@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.actor.code_act.library_world import install_fake_embed
 from tests.helpers import _handle_project
 from unify.function_manager.execution_env import create_base_globals
 from unify.function_manager.function_manager import FunctionManager
@@ -211,10 +212,10 @@ async def test_filter_return_callable_with_dependencies_executes():
     assert result == "1.2.0"
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
 @pytest.mark.asyncio
-async def test_search_return_callable_with_metadata():
+async def test_search_return_callable_with_metadata(monkeypatch):
+    install_fake_embed(monkeypatch.setattr)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(
         implementations=(
@@ -310,10 +311,9 @@ async def test_dependency_injection_supports_user_defined_forward_ref_string_ann
     assert return_name == "MetricResult"
 
 
-@pytest.mark.requires_provider_key
 @_handle_project
 @pytest.mark.asyncio
-async def test_search_return_callable_forward_ref_annotations_just_work():
+async def test_search_return_callable_forward_ref_annotations_just_work(monkeypatch):
     """
     Validate the CodeActActor-style flow:
       fm.search_functions(..., return_callable=True)
@@ -322,6 +322,7 @@ async def test_search_return_callable_forward_ref_annotations_just_work():
     GroupBy/TimePeriod/MetricResult), and the returned callable should still
     be able to resolve forward-ref annotations without NameError.
     """
+    install_fake_embed(monkeypatch.setattr)
     fm = FunctionManager(include_primitives=False)
     fm.add_functions(
         implementations=(
