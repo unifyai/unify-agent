@@ -29,6 +29,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -421,6 +422,69 @@ def test_tunnels_are_capped_and_closed_with_the_proxy(monkeypatch):
     # close() ended the held connection rather than leaving it to time out.
     assert held.recv(4096) == b""
     held.close()
+
+
+def _held_until_closed(
+    proxy: sandbox.EgressProxy,
+    first: bytes,
+    trickle: bytes,
+) -> float:
+    """Connect, send *first*, then *trickle* every 0.1 s, reading whatever
+    comes back: the seconds until the proxy closed the connection (at most 4)."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(0.1)
+    start = time.monotonic()
+    try:
+        s.connect(str(proxy.path))
+        s.sendall(first)
+        while time.monotonic() - start < 4:
+            try:
+                s.sendall(trickle)
+                chunk = s.recv(4096)
+            except TimeoutError:
+                continue
+            except OSError:
+                break  # reset or broken pipe: closed
+            if not chunk:
+                break
+        return time.monotonic() - start
+    finally:
+        s.close()
+
+
+@pytest.mark.timeout(60)
+def test_a_request_head_has_one_deadline(monkeypatch):
+    """A client sending its CONNECT head a byte at a time, each well within
+    the per-read timeout, is still cut off when the head's deadline passes:
+    otherwise 32 such clients would hold every tunnel slot for hours."""
+    monkeypatch.setattr(sandbox, "_PROXY_HANDSHAKE_S", 0.5)
+    with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as proxy:
+        held = _held_until_closed(proxy, b"C", b"O")
+        reasons = [r for _, r in proxy.refused]
+    assert held < 2.5, held
+    assert any("no complete request head within 0.5 s" in r for r in reasons), reasons
+
+
+@pytest.mark.timeout(60)
+def test_a_tunnel_without_a_client_hello_in_time_is_closed(
+    listener,
+    loopback_index,
+    monkeypatch,
+):
+    """After the 200 the client's ClientHello must arrive whole within the
+    peek's deadline (10 s, shortened here), however it trickles in."""
+    monkeypatch.setattr(sandbox, "_CLIENT_HELLO_S", 0.5)
+    hello = _client_hello("index.test")
+    with sandbox.egress_proxy([("index.test", listener.port)]) as proxy:
+        # The CONNECT and the hello's first bytes, then one byte a tick.
+        held = _held_until_closed(
+            proxy,
+            _connect(f"index.test:{listener.port}") + hello[:6],
+            hello[6:7],
+        )
+        reasons = [r for _, r in proxy.refused]
+    assert held < 2.5, held
+    assert any("no complete ClientHello within 0.5 s" in r for r in reasons), reasons
 
 
 @pytest.mark.timeout(60)

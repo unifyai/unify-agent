@@ -2564,6 +2564,8 @@ def _proxy_bridge(port: int) -> _ProxyBridge:
 # The port the forwarder listens on inside the installer's sandbox, on its
 # own loopback (the namespace is private, so any port would do).
 INSTALLER_PROXY_PORT = 3128
+# A CONNECT request head: at most this many bytes, all within this many
+# seconds of the connection (one deadline, not one per read).
 _PROXY_HEAD_LIMIT = 8192
 _PROXY_HANDSHAKE_S = 30.0
 _PROXY_CONNECT_S = 10.0
@@ -2960,10 +2962,21 @@ class EgressProxy:
         up: Optional[socket.socket] = None
         self._track(conn)
         try:
-            conn.settimeout(_PROXY_HANDSHAKE_S)
+            # One deadline for the whole head: a client trickling a byte at a
+            # time cannot hold a tunnel slot past it.
+            deadline = time.monotonic() + _PROXY_HANDSHAKE_S
             head = b""
             while b"\r\n\r\n" not in head:
-                data = conn.recv(4096)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    reason = f"no complete request head within {_PROXY_HANDSHAKE_S:g} s"
+                    self._refuse(conn, "?", "408 Request Timeout", reason, reason)
+                    return
+                conn.settimeout(left)
+                try:
+                    data = conn.recv(4096)
+                except (socket.timeout, TimeoutError):
+                    continue
                 if not data:
                     return
                 head += data
