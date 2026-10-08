@@ -182,6 +182,14 @@ _ENV_SCAN_SKIP = {
     ".rustup",
 }
 _ENV_SCAN_DEPTH = 2
+# The workspace's secret scan (:func:`_find_secret_files`): the directories it
+# does not enter (a repository's objects, installed packages, bytecode: large,
+# and the harness's file tools still refuse a secret name in them) and the most
+# entries it reads, so a huge workspace costs a bounded walk per policy build.
+_WORKSPACE_SCAN_SKIP = frozenset(
+    {".git", "node_modules", ".venv", "venv", "__pycache__"},
+)
+_WORKSPACE_SCAN_LIMIT = 100_000
 _POLICY_TTL_S = 300.0
 
 MASK_NOTICE_NAME = "UNIFY_SANDBOX_MASKED"
@@ -308,6 +316,10 @@ class SandboxPolicy:
     # Harness-only directories, each with the rule that hides it: hidden after
     # every mount, so no mount that contains them shows them.
     hidden: list[tuple[Path, str]] = field(default_factory=list)
+    # Inside the workspace, masked after its bind (a file with a notice, a
+    # directory with an empty tmpfs): the secret scan's finds there and the
+    # store's files (store.sqlite, -wal, -shm) when the workspace holds them.
+    workspace_masked: list[tuple[Path, str]] = field(default_factory=list)
     network: str = ""  # "" (off) or "proxy"
     proxy_port: int = 0
     notices_dir: Optional[Path] = None
@@ -330,6 +342,29 @@ class SandboxPolicy:
                 for v in seen
             ):
                 return rule, f"{resolved} is inside the harness's {hidden}"
+        if _within(resolved, self.workspace):
+            for masked, rule in self.workspace_masked:
+                if _within(resolved, masked):
+                    return rule, f"{resolved} is hidden"
+            # A secret-named file made since the policy was built, or in a
+            # directory the scan does not enter, is refused by name.
+            parts = resolved.relative_to(self.workspace).parts
+            for i, part in enumerate(parts):
+                rule = _secret_rule(part)
+                if rule is not None and (i == len(parts) - 1 or not _is_env_file(part)):
+                    return rule, f"{resolved} has a credential's name"
+            # A state directory inside the workspace is hidden again over the
+            # workspace's mount, but for the views put back.
+            if (
+                self.state_dir != self.workspace
+                and _within(self.state_dir, self.workspace)
+                and _within(resolved, self.state_dir)
+                and not any(_within(resolved, v) for v in self.readonly_state)
+            ):
+                return (
+                    "mask-unify-state",
+                    f"{resolved} is inside the Unify state directory {self.state_dir}",
+                )
         # Mounted last, so visible whatever contains them.
         if any(_within(resolved, v) for v in (self.workspace, *self.readonly_state)):
             return None
@@ -407,6 +442,8 @@ def _find_secret_files(
     skip: Sequence[Path],
     *,
     cached: Sequence[Path] = (),
+    skip_names: frozenset[str] = frozenset(),
+    limit: Optional[int] = None,
 ) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
     """``(files, dirs)`` to mask, with rules, anywhere under each mounted root.
 
@@ -415,7 +452,9 @@ def _find_secret_files(
     :data:`CREDENTIAL_PATHS` (a directory of those names is masked whole and
     not entered). A link of such a name masks its target. The scan of a root
     in *cached* (the interpreter's, about 60k entries) is reused until the
-    root or its site-packages changes.
+    root or its site-packages changes. Directories named in *skip_names* are
+    not entered; after *limit* entries of one root its scan stops, with a
+    warning (what it found so far is masked).
     """
     files: list[tuple[Path, str]] = []
     dirs: list[tuple[Path, str]] = []
@@ -429,6 +468,7 @@ def _find_secret_files(
         f_out: list[tuple[Path, str]] = []
         d_out: list[tuple[Path, str]] = []
         stack = [root]
+        seen = 0
         while stack:
             directory = stack.pop()
             if any(_within(directory, s) for s in skip):
@@ -437,6 +477,18 @@ def _find_secret_files(
                 entries = list(os.scandir(directory))
             except OSError:
                 continue
+            seen += len(entries)
+            if limit is not None and seen > limit:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "workspace sandbox: the secret scan of %s stopped after %d "
+                    "entries; secret-named files beyond them are not masked in "
+                    "cells (the harness's file tools still refuse them by name)",
+                    root,
+                    limit,
+                )
+                stack.clear()
             for entry in entries:
                 rule = _secret_rule(entry.name)
                 try:
@@ -450,7 +502,9 @@ def _find_secret_files(
                     elif entry.is_dir():
                         if rule is not None and not _is_env_file(entry.name):
                             d_out.append((Path(entry.path), rule))
-                        else:
+                        elif entry.name not in skip_names and (
+                            limit is None or seen <= limit
+                        ):
                             stack.append(Path(entry.path))
                     elif rule is not None and entry.is_file():
                         f_out.append((Path(entry.path), rule))
@@ -720,6 +774,89 @@ def _root_refusal(path: Path, guarded: Sequence[Path] = ()) -> Optional[str]:
         for g in guarded:
             if _within(g, p):
                 return f"it would show the harness's {g}"
+    return None
+
+
+# The system's own directories: never the workspace. The first group may not
+# hold it either (the host's configuration, the kernel's and devices' views).
+_WORKSPACE_SYSTEM_DIRS = (
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/boot",
+    "/usr",
+    "/var",
+    "/root",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+)
+_WORKSPACE_SYSTEM_ANCESTORS = ("/etc", "/proc", "/sys", "/dev", "/boot")
+# Under each home: what a workspace may not be or contain, beside the
+# CREDENTIAL_PATHS (.ssh, .config, .aws, ...): caches and the keyrings.
+_WORKSPACE_HOME_GUARDED = (".cache", ".local/share/keyrings", ".config/gcloud")
+
+
+def _workspace_guarded(homes: Sequence[Path]) -> list[Path]:
+    """What the workspace may not be or contain: the log directories, and each
+    home's configuration, cache and credential directories (by their own and
+    their resolved names; they need not exist)."""
+    out: list[Path] = []
+    for raw in _log_dir_settings():
+        if raw:
+            out.append(Path(os.path.abspath(Path(raw).expanduser())))
+    for home in homes:
+        for rel in (*CREDENTIAL_PATHS, *_WORKSPACE_HOME_GUARDED):
+            out.append(home / rel)
+    return list(
+        dict.fromkeys(q for p in out for q in (p, Path(os.path.realpath(p)))),
+    )
+
+
+def _workspace_refusal(
+    path: Path,
+    *,
+    homes: Optional[Sequence[Path]] = None,
+    guarded: Optional[Sequence[Path]] = None,
+) -> Optional[str]:
+    """Why the read-write workspace bind of *path* is refused, ``None`` if not.
+
+    The workspace is its own kind: the user's choice of where the work is, so
+    a top-level directory (``/data``, ``/srv/project``) or one that holds
+    ``UNIFY_HOME`` is allowed (the state directory's files are hidden inside
+    it, :func:`wrap_argv`). Refused only: ``/``; a home itself (the account's
+    and ``$HOME``); a system directory (:data:`_WORKSPACE_SYSTEM_DIRS`), or a
+    path inside the first group of them; and a path that is or contains a log
+    directory or a home's configuration, cache or credential directory
+    (:func:`_workspace_guarded`).
+    """
+    if homes is None:
+        homes = list(
+            dict.fromkeys(
+                Path(os.path.realpath(h)) for h in (_pwd_home(), Path.home())
+            ),
+        )
+    if guarded is None:
+        guarded = _workspace_guarded(homes)
+    for p in dict.fromkeys((Path(os.path.abspath(path)), Path(os.path.realpath(path)))):
+        if p == Path("/"):
+            return "it is /"
+        for home in homes:
+            if p == home:
+                return f"it is the home directory {home}"
+        for d in _WORKSPACE_SYSTEM_DIRS:
+            for s in dict.fromkeys((Path(d), Path(os.path.realpath(d)))):
+                if p == s:
+                    return f"it is the system directory {d}"
+                if d in _WORKSPACE_SYSTEM_ANCESTORS and _within(p, s):
+                    return f"it is inside the system directory {d}"
+        for g in guarded:
+            if _within(g, p):
+                return f"it would show {g}"
     return None
 
 
@@ -1101,7 +1238,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     ``read_file`` and ``grep``, but a shell cell sees it until the rebuild.
     """
     global _POLICY_CACHE
-    from unify.db import store_home
+    from unify.db import store_home, store_path
     from unify.settings import SETTINGS
     from unify.workspace import get_local_root
 
@@ -1120,6 +1257,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             tuple(sys.path),
             os.environ.get("LD_PRELOAD", ""),
             os.environ.get("PYTHONPATH", ""),
+            store_path(),
         )
         if (
             not fresh
@@ -1202,11 +1340,53 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         for path, rule in found_files:
             if all(path != f for f, _ in masked_files):
                 masked_files.append((path, rule))
+        # The workspace, scanned the same way but bounded: it can be any size
+        # (a checkout, a data directory), and it is rescanned with the policy.
+        # What inside it is masked or hidden anyway, its views put back
+        # read-only, the installer's cache and a state directory inside it
+        # (hidden whole, wrap_argv) are not entered.
+        from unify.environment import installer_cache
+        from unify.transcripts import INTERNAL_DIRNAME
+
+        state_inside = state_dir != workspace and _within(state_dir, workspace)
+        ws_skip = [
+            d
+            for d in (
+                *(m for m, _ in masked_dirs),
+                *log_dirs,
+                *readonly,
+                state_dir,
+                state_dir / INTERNAL_DIRNAME,
+                Path(os.path.realpath(installer_cache())),
+            )
+            if d != workspace and _within(d, workspace)
+        ]
+        ws_files, ws_dirs = _find_secret_files(
+            [workspace],
+            ws_skip,
+            skip_names=_WORKSPACE_SCAN_SKIP,
+            limit=_WORKSPACE_SCAN_LIMIT,
+        )
+        # A find outside the workspace (a link's target) joins the other masks.
+        workspace_masked: list[tuple[Path, str]] = []
+        for found, out in ((ws_dirs, masked_dirs), (ws_files, masked_files)):
+            for path, rule in found:
+                target = workspace_masked if _within(path, workspace) else out
+                if all(path != m for m, _ in target):
+                    target.append((path, rule))
+        # The store's files, wherever the workspace bind would show them (a
+        # workspace that is UNIFY_HOME itself, or a UNIFY_STORE_PATH inside
+        # it); inside a state directory hidden whole they are hidden already.
+        store = Path(os.path.realpath(store_path()))
+        for name in (store.name, f"{store.name}-wal", f"{store.name}-shm"):
+            path = store.parent / name
+            if _within(path, workspace) and not (
+                state_inside and _within(path, state_dir)
+            ):
+                workspace_masked.append((path, "mask-unify-state"))
 
         network = str(getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "") or "")
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
-        from unify.transcripts import INTERNAL_DIRNAME
-
         notices = _notices_dir()
         root_args, root_visible = _root_mounts(notices, derived)
         policy = SandboxPolicy(
@@ -1219,6 +1399,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 (state_dir / INTERNAL_DIRNAME, "mask-unify-state"),
                 *((d, "mask-harness-logs") for d in log_dirs),
             ],
+            workspace_masked=workspace_masked,
             network=network,
             proxy_port=port,
             notices_dir=notices,
@@ -1515,6 +1696,28 @@ def wrap_argv(
     for path in policy.readonly_state:
         args += ["--ro-bind", str(path), str(path)]
     args += ["--bind", str(policy.workspace), str(policy.workspace)]
+    # What the workspace bind covers of the harness's: a state directory
+    # inside it is hidden again, whole, and the views inside the workspace
+    # are put back read-only (transcripts stay readable, never writable).
+    workspace = policy.workspace
+    state = policy.state_dir
+    if state != workspace and _within(state, workspace):
+        args += ["--tmpfs", str(state)]
+        args += ["--ro-bind", str(notices / "mask-unify-state"), _notice(state)]
+    for path in policy.readonly_state:
+        if _within(path, workspace):
+            args += ["--ro-bind", str(path), str(path)]
+    # Then the masks inside it: the secret scan's finds and the store's files.
+    # Only what exists now: a mount point made on this read-write mount
+    # would be made on the host.
+    for path, rule in policy.workspace_masked:
+        if os.path.islink(path):
+            continue
+        if os.path.isdir(path):
+            args += ["--tmpfs", str(path)]
+            args += ["--ro-bind", str(notices / rule), _notice(path)]
+        elif os.path.exists(path):
+            args += ["--ro-bind", str(notices / rule), str(path)]
     for path in extra:
         args += ["--bind", str(path), str(path)]
     # A harness-only directory inside a mount above is hidden last of all,
@@ -1550,7 +1753,7 @@ def wrap_argv(
     # Every mount point on the root's tmpfs exists now; nothing more is
     # written there.
     args += ["--remount-ro", "/", "--chdir", workdir, "--"]
-    _refuse_broad_binds(args, homes)
+    _refuse_broad_binds(args, homes, workspace=policy.workspace)
     return [
         "/bin/sh",
         "-c",
@@ -1564,19 +1767,30 @@ def wrap_argv(
 _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
 
 
-def _refuse_broad_binds(args: Sequence[str], homes: Sequence[Path]) -> None:
+def _refuse_broad_binds(
+    args: Sequence[str],
+    homes: Sequence[Path],
+    *,
+    workspace: Optional[Path] = None,
+) -> None:
     """Refuse a command line that would mount ``/`` or a whole home directory.
 
     Raised for the policy's own mounts (a workspace configured as the home
-    directory); derived roots that would are already left out.
+    directory); derived roots that would are already left out. The workspace's
+    read-write bind is its own kind (:func:`_workspace_refusal`); every other
+    mount outside the allowlist gets the derived roots' rule.
     """
     end = args.index("--") if "--" in args else len(args)
     allowlisted = {p for p, _ in _ROOT_ALLOWLIST}
+    ws = str(workspace) if workspace is not None else None
     for i in range(end - 2):
         if args[i] in _BIND_OPTIONS:
+            is_workspace = args[i] == "--bind" and args[i + 1] == args[i + 2] == ws
             for p in (args[i + 1], args[i + 2]):
                 why = None
-                if _too_broad(Path(p), homes):
+                if is_workspace:
+                    why = _workspace_refusal(Path(p))
+                elif _too_broad(Path(p), homes):
                     why = "it would show / or a whole home directory"
                 elif args[i + 2] not in allowlisted:
                     # The allowlist's own entries (/usr, ...) are top-level

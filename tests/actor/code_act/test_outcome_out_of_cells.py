@@ -459,6 +459,13 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
         assert policy.readable_violation(home / "transcripts" / "s.jsonl") is None
         if not sys.platform.startswith("linux") or sandbox.bwrap_path() is None:
             continue
+        if log_dir == "inside the workspace":
+            # A workspace that holds a log directory is refused as a whole
+            # (the workspace kind, _workspace_refusal), before anything runs.
+            with pytest.raises(sandbox.SandboxRefusal) as raised:
+                sandbox.wrap_argv(["true"], policy)
+            assert raised.value.rule == "root-allowlist"
+            continue
         argv = sandbox.wrap_argv(
             ["true"],
             policy,
