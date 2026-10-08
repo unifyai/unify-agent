@@ -16,6 +16,7 @@ transport (``tests/cache_discipline_helpers.py``).
 from __future__ import annotations
 
 
+from unify.actor.core_surface import PromptSurface
 import pytest
 
 from tests import cache_discipline_helpers as h
@@ -88,9 +89,9 @@ def _prompt(persist: bool) -> str:
     actor = CodeActActor()
     return pb.build_code_act_prompt(
         environments={},
-        tools=dict(actor.get_tools("act")),
         can_store=True,
         persist=persist,
+        core=PromptSurface(),
     )
 
 

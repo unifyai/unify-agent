@@ -12,7 +12,6 @@ import pytest
 
 from tests.actor.code_act.sandbox_world import world  # noqa: F401 (fixture)
 from unify import db
-from unify.settings import SETTINGS
 
 
 @pytest.fixture
@@ -24,7 +23,6 @@ def core_world(world, monkeypatch):  # noqa: F811
     """
     (world["state"] / "store.sqlite").unlink()
     db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     yield world
     db.reset_store()
 

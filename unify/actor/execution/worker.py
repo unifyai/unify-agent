@@ -250,8 +250,7 @@ class PythonWorker:
             "builtins": builtins_names,
             "globals": specs,
         }
-        if _core_surface():
-            msg["help"] = True
+        msg["help"] = True
         return msg
 
     async def _start(self) -> None:
@@ -494,7 +493,7 @@ class PythonWorker:
                 "filename": code.co_filename,
             }
             if record:
-                # UNIFY_TOOL_SURFACE=core: its calls are recorded here.
+                # The core tool surface: its calls are recorded here.
                 desc["record"] = True
             return desc
         if _model_written(value):
@@ -529,7 +528,7 @@ class PythonWorker:
             "runtime": name == RUNTIME_GLOBAL and isinstance(value, SteeringRuntime),
         }
         if _function_library(value) is not None:
-            # UNIFY_TOOL_SURFACE=core: ``functions.run`` runs in the worker.
+            # The core tool surface: ``functions.run`` runs in the worker.
             desc["library"] = "functions"
         return desc
 
@@ -650,7 +649,7 @@ class PythonWorker:
 
     @staticmethod
     def _recording(cases: Any, shadow: Dict[str, Any]) -> Any:
-        """UNIFY_TOOL_SURFACE=core: the environment calls served inside add
+        """the core tool surface: the environment calls served inside add
         to the cases of the stored-function calls the request came from."""
         import contextlib
 
@@ -667,13 +666,9 @@ class PythonWorker:
     def _library(self, shadow: Dict[str, Any]) -> Any:
         library = _function_library(shadow.get("functions"))
         if library is None or not self._exposed_remote("functions"):
-            # Calls by name, recorded off the core
-            # surface too, while the actor's call that runs this cell lasts.
-            library = _helper_recorder()
-        if library is None:
             raise BoundaryRefusal(
                 "stored functions are recorded only where the session's "
-                "`functions` library is exposed (UNIFY_TOOL_SURFACE=core)",
+                "`functions` library is exposed",
             )
         return library
 
@@ -704,7 +699,7 @@ class PythonWorker:
                 ),
             )
             return
-        if op == "doc" and _core_surface():
+        if op == "doc":
             from unify.actor import core_surface
 
             target = msg.get("target")
@@ -974,27 +969,13 @@ def _environment_global(name: str, value: Any) -> bool:
     return name in bound and bound[name] is proxy_target(value)
 
 
-def _core_surface() -> bool:
-    from unify.actor import core_surface
-
-    return core_surface.enabled()
-
-
 def _function_library(value: Any) -> Any:
     """*value* when it is a core-surface ``functions`` library, else None."""
-    if value is None or not _core_surface():
+    if value is None:
         return None
     from unify.actor.core_surface import FunctionLibrary
 
     return value if isinstance(value, FunctionLibrary) else None
-
-
-def _helper_recorder() -> Any:
-    """The recorder of stored-function calls ``function_helpers.recording`` sets
-    for the call that runs this cell, else None."""
-    from unify.actor import function_helpers
-
-    return function_helpers.recorder()
 
 
 def _no_refs(value: Any, where: str) -> Any:

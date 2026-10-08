@@ -16,6 +16,7 @@ real sandboxed worker.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import json
 
@@ -47,17 +48,14 @@ def _schema(tools, name):
 def _prompt(tools, environments=None):
     return pb.build_code_act_prompt(
         environments=environments or {},
-        tools=tools,
         can_store=True,
         persist=True,
-        turn_reviews=False,
-        can_clarify=False,
+        core=PromptSurface(clarification=False),
     )
 
 
 @pytest.fixture(params=["", "lean"])
 def profile(request, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", request.param)
     return request.param
 
 
@@ -224,8 +222,6 @@ async def test_a_cell_keeps_what_the_last_one_computed_in_the_sandboxed_worker(
     if surface == "core":
         (world["state"] / "store.sqlite").unlink()
         db.reset_store()
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)
     actor = _actor(
         function_manager=FunctionManager(include_primitives=False),

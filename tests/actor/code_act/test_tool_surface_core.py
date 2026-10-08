@@ -41,7 +41,6 @@ from tests.actor.code_act.core_world import (  # noqa: F401 (fixtures)
 from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from unify.actor import core_surface
-from unify.settings import ProductionSettings, SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 
@@ -64,14 +63,6 @@ async def _act(actor, replies, request="Do the task.", **act_kwargs):
 
 
 # ── the setting ──────────────────────────────────────────────────────────────
-
-
-def test_the_switch_is_core_by_default_and_takes_only_core():
-    # The core surface is the default since the code freeze.
-    assert ProductionSettings().UNIFY_TOOL_SURFACE == "core"
-    assert ProductionSettings(UNIFY_TOOL_SURFACE="Core").UNIFY_TOOL_SURFACE == "core"
-    with pytest.raises(ValueError):
-        ProductionSettings(UNIFY_TOOL_SURFACE="python")
 
 
 # ── end to end ───────────────────────────────────────────────────────────────
@@ -122,7 +113,6 @@ async def test_the_only_json_tool_is_execute_code(
     structured,
     profile,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
     from pydantic import BaseModel
 
     class Answer(BaseModel):
@@ -167,28 +157,6 @@ async def test_the_only_json_tool_is_execute_code(
     assert "stop_execute_code" not in code_tool
 
 
-@pytest.mark.asyncio
-@_handle_project
-async def test_with_the_switch_off_the_session_keeps_every_json_tool(monkeypatch):
-    actor = _actor(can_store=False)
-    try:
-        _result, requests = await _act(actor, (lambda: h.completion(content="done"),))
-    finally:
-        await actor.close()
-    names = _tool_names(requests[0])
-    for name in (
-        "execute_code",
-        "execute_function",
-        "FunctionManager_search_functions",
-        "GuidanceManager_search",
-        "install_python_packages",
-        "compress_context",
-    ):
-        assert name in names, name
-    assert not {"wait", "steer", "ask_about_completed_tool"} & set(names)
-    assert "### Sandbox Objects" not in requests[0]["messages"][0]["content"]
-
-
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
@@ -219,7 +187,6 @@ async def test_the_actor_refuses_to_start_without_confinement(
     world,  # noqa: F811
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     actor = _actor(can_store=False)
     try:
         # Cells in this process (a test of the function manager's

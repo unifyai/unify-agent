@@ -152,8 +152,6 @@ CONFIGS = [
 
 async def _first_request(monkeypatch, projection: str, config) -> dict:
     surface, profile = config
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = new_actor(can_store=False)
     try:

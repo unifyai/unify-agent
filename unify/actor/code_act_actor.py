@@ -161,57 +161,6 @@ def _library_snapshot_line(
     return f"Library at task start: {', '.join(parts)}."
 
 
-_ADMISSION_MASK_RULE = (
-    "the function and guidance libraries are read-only during this task; "
-    "what is worth keeping is stored after the task, once its outcome has "
-    "been checked"
-)
-
-
-def _with_mask_rules(
-    policy: ToolPolicyFn,
-    rules: Dict[str, str],
-) -> ToolPolicyFn:
-    """Wrap *policy* so its result names *rules* for the tools it withholds.
-
-    A withheld tool stays in the request (the fixed tool list), and the loop
-    refuses a call to it with its rule.
-    """
-    try:
-        _positional = sum(
-            1
-            for p in inspect.signature(policy).parameters.values()
-            if p.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        )
-    except (TypeError, ValueError):
-        _positional = 2
-
-    def _masked(step: int, tools: Dict[str, Any], called_tools: list[str]):
-        result = (
-            policy(step, tools, called_tools)
-            if _positional >= 3
-            else policy(step, tools)
-        )
-        opts: dict = {}
-        if len(result) >= 3:
-            opts = (
-                dict(result[2])
-                if isinstance(result[2], dict)
-                else {"eager": bool(result[2])}
-            )
-        merged = dict(opts.get("mask_rules") or {})
-        for name, rule in rules.items():
-            merged.setdefault(name, rule)
-        opts["mask_rules"] = merged
-        return result[0], result[1], opts
-
-    return _masked
-
-
 # ---------------------------------------------------------------------------
 # Agent context for tracking execution depth and providing handle access
 # ---------------------------------------------------------------------------
@@ -915,7 +864,7 @@ _SUB_ACTOR_EXAMPLES_DOC = (
 )
 
 
-# UNIFY_PROMPT_PROFILE=lean: the code tools describe what they do, without
+# The lean profile: the code tools describe what they do, without
 # preferring one over the other, and the install tool says why installs go
 # through it instead of ordering it.
 _LEAN_TOOL_DOCS = (
@@ -1388,17 +1337,6 @@ def _store_admission_never(path: Optional[str] = None) -> bool:
     return value.strip().lower() == _STORE_ADMISSION_NEVER
 
 
-def _admitted_review_can_write_in_session_list() -> bool:
-    """Whether an admitted review may call writes from the session's tool list.
-
-    A forked review continues the session's request, tool list included.
-    Under ``UNIFY_STORE_ADMISSION=never`` no review runs at all, and the
-    writes admission withholds from the session are ones nothing sending the
-    session's list can ever call.
-    """
-    return not _store_admission_never()
-
-
 def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
     """The admission verdict object at *path*, or ``None`` and why there is none."""
     try:
@@ -1529,26 +1467,24 @@ def _review_fork_source(
 
     Returns ``(source, None)`` for a fork, and ``(None, reason)`` when the
     review has to run standalone. The fork reuses the session's fixed tool
-    list and needs its last request as recorded; it is refused when the session was compressed, when its
-    history no longer starts with that request (something rewrote it), or
+    list and needs its last request as recorded; it is refused when the
+    session was compressed, when its history no longer starts with that request (something rewrote it), or
     when it ends with unanswered tool calls, which the review loop would try
     to run with its own tools.
     """
     from unify.common._async_tool import cache_discipline
 
-    if core_surface.enabled():
-        # The review stores through the list's execute_code, in a sandbox
-        # holding only the libraries.
-        source, why = _session_fork_source(inner, actor)
-        if source is None:
-            return None, why
-        why = core_surface.review_fork_refusal(
-            cache_discipline.schema_names(source["tools"]),
-        )
-        if why is not None:
-            return None, why
-        return {**source, "core": True}, None
-    return _session_fork_source(inner, actor)
+    # The review stores through the list's execute_code, in a sandbox holding
+    # only the libraries (the core surface).
+    source, why = _session_fork_source(inner, actor)
+    if source is None:
+        return None, why
+    why = core_surface.review_fork_refusal(
+        cache_discipline.schema_names(source["tools"]),
+    )
+    if why is not None:
+        return None, why
+    return {**source, "core": True}, None
 
 
 def _session_fork_source(
@@ -2951,8 +2887,9 @@ class CodeActActor(BaseCodeActActor):
                 appended after these, so the constructor value acts as a baseline
                 and ``act()`` adds task-specific refinements on top.
             tool_policy: Controls per-turn dynamic tool filtering and tool-choice mode.
-                - ``_USE_DEFAULT`` (default): no dynamic policy, as ``None``; the
-                  library searches are the model's choice.
+                - ``_USE_DEFAULT`` (default): the static filters only, as
+                  ``None``, and the prompt leaves the library searches to the
+                  model.
                 - A custom ``ToolPolicyFn`` callable: receives ``(step, tools)`` and
                   returns ``(mode, filtered_tools)``.  Static filters (``can_compose``,
                   ``can_store``, etc.) are always applied before the custom policy sees
@@ -3247,7 +3184,7 @@ class CodeActActor(BaseCodeActActor):
                     clarification_up_q,
                     clarification_down_q,
                 )
-            # UNIFY_TOOL_SURFACE=core: the cell's request_clarification is the
+            # The core tool surface: the cell's request_clarification is the
             # session's (or absent where it cannot ask); None otherwise.
             core_clarification = core_surface.bind_clarification(
                 sb.global_state,
@@ -3431,17 +3368,12 @@ class CodeActActor(BaseCodeActActor):
                         if _language == "python" and inventory_enabled():
                             _lang_kw["inventory"] = True
                         try:
-                            # The worker's calls of stored functions are
-                            # recorded off the core surface.
-                            from unify.actor import function_helpers
-
-                            with function_helpers.recording(self):
-                                out = await self._session_executor.execute(
-                                    code=code,
-                                    state_mode=state_mode,  # type: ignore[arg-type]
-                                    session_id=session_id,
-                                    **_lang_kw,
-                                )
+                            out = await self._session_executor.execute(
+                                code=code,
+                                state_mode=state_mode,  # type: ignore[arg-type]
+                                session_id=session_id,
+                                **_lang_kw,
+                            )
                         except Exception as e:
                             exec_exc = e
                             tb = traceback.format_exc()
@@ -3945,10 +3877,8 @@ class CodeActActor(BaseCodeActActor):
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
         # and the discovery tools available. Without it there are no usable tools.
-        # UNIFY_TOOL_SURFACE=core: refuse what cannot run confined.
-        core = core_surface.enabled()
-        if core:
-            core_surface.require_prerequisites(can_compose=effective_can_compose)
+        # The core tool surface: refuse what cannot run confined.
+        core_surface.require_prerequisites(can_compose=effective_can_compose)
 
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(
@@ -4158,45 +4088,43 @@ class CodeActActor(BaseCodeActActor):
         _act_tools = self.get_tools("act")
         base_tools = _filter_tools(_act_tools)
 
-        # UNIFY_TOOL_SURFACE=core: execute_code is the only JSON tool; the
+        # The core tool surface: execute_code is the only JSON tool; the
         # libraries, install, read_file and grep are objects in the sandbox,
         # whose writes refuse at call time what this session may not do.
-        core_session: Optional[core_surface.Session] = None
-        if core:
-            from unify.settings import SETTINGS as _CORE_SETTINGS
+        from unify.settings import SETTINGS as _CORE_SETTINGS
 
-            _core_reviews = effective_can_store and not admission_gated
-            core_session = core_surface.start_session(
-                self,
-                sandbox=sandbox,
-                environments=sandbox_envs,
-                tools=base_tools,
-                policy=core_surface.WritePolicy(
-                    can_store=effective_can_store,
-                    admission_gated=admission_gated,
-                ),
-                store_skills=_core_reviews,
-                clarification_enabled=clarification_enabled,
-                caller_queues=(
-                    (env_clarification_up_q, env_clarification_down_q)
-                    if caller_supplied_clarification_queues
-                    else None
-                ),
-                # Defined below, before the loop can call them.
-                on_clarification_request=lambda q: (
-                    _on_clar_req(q) if _on_clar_req is not None else None
-                ),
-                on_clarification_answer=lambda a: (
-                    _on_clar_ans(a) if _on_clar_ans is not None else None
-                ),
-                structured=response_format is not None,
-                turn_reviews=(
-                    _core_reviews
-                    and bool(persist)
-                    and bool(_CORE_SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
-                ),
-            )
-            base_tools = dict(core_session.tools)
+        _core_reviews = effective_can_store and not admission_gated
+        core_session = core_surface.start_session(
+            self,
+            sandbox=sandbox,
+            environments=sandbox_envs,
+            tools=base_tools,
+            policy=core_surface.WritePolicy(
+                can_store=effective_can_store,
+                admission_gated=admission_gated,
+            ),
+            store_skills=_core_reviews,
+            clarification_enabled=clarification_enabled,
+            caller_queues=(
+                (env_clarification_up_q, env_clarification_down_q)
+                if caller_supplied_clarification_queues
+                else None
+            ),
+            # Defined below, before the loop can call them.
+            on_clarification_request=lambda q: (
+                _on_clar_req(q) if _on_clar_req is not None else None
+            ),
+            on_clarification_answer=lambda a: (
+                _on_clar_ans(a) if _on_clar_ans is not None else None
+            ),
+            structured=response_format is not None,
+            turn_reviews=(
+                _core_reviews
+                and bool(persist)
+                and bool(_CORE_SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
+            ),
+        )
+        base_tools = dict(core_session.tools)
 
         # UNIFY_CODE_PROJECTION=notebook: execute_code takes one field, the
         # cell, whose first-line magics map onto the same function's
@@ -4210,9 +4138,7 @@ class CodeActActor(BaseCodeActActor):
             base_tools = notebook_cells.project_tools(
                 base_tools,
                 caps=notebook_cells.Capabilities(bash=True),
-                steering=(
-                    core_session.prompt.steering if core_session is not None else True
-                ),
+                steering=core_session.prompt.steering,
                 structured=response_format is not None,
                 parent_context=_injects_actor_primitives(sandbox_envs),
                 resolve_session_name=self._resolve_session_name,
@@ -4230,23 +4156,16 @@ class CodeActActor(BaseCodeActActor):
         # gated or forced turn).
         default_policy = self.tool_policy is _USE_DEFAULT
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
-        prompt_kwargs: Dict[str, Any] = dict(
+        system_prompt = build_code_act_prompt(
             environments=sandbox_envs,
-            tools=base_tools,
+            core=core_session.prompt,
             # An admission-gated session has no in-session storage tools to
             # describe; it is told the libraries are read-only instead.
             can_store=effective_can_store and not admission_gated,
             guidelines=effective_guidelines,
             persist=bool(persist),
-            **({"search_when_useful": True} if default_policy else {}),
-            # The schedule the storage handle below is given.
-            turn_reviews=bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS),
-            can_clarify=bool(clarification_enabled),
-            **({"library_read_only": True} if admission_gated else {}),
+            library_read_only=admission_gated,
         )
-        if core_session is not None:
-            prompt_kwargs["core"] = core_session.prompt
-        system_prompt = build_code_act_prompt(**prompt_kwargs)
         if notebook_cells.enabled() and "execute_code" in base_tools:
             # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
             # named the session fields and tools.
@@ -4295,52 +4214,19 @@ class CodeActActor(BaseCodeActActor):
         # libraries are at task start.
         snapshot = _library_snapshot_line(
             _library_counts(self.function_manager, self.guidance_manager),
-            has_fm_tools=any(str(k).startswith("FunctionManager_") for k in base_tools)
-            or (core_session is not None and core_session.prompt.functions),
-            has_gm_tools=any(str(k).startswith("GuidanceManager_") for k in base_tools)
-            or (core_session is not None and core_session.prompt.guidance),
+            has_fm_tools=core_session.prompt.functions,
+            has_gm_tools=core_session.prompt.guidance,
         )
         if snapshot:
             first_message_parts.append(snapshot)
 
         tools = dict(base_tools)
 
-        # The tool list is fixed per session and holds
-        # the tools the session's requests can ever call. When the review that
-        # forks this session after an admitted outcome reuses the list, the
-        # library writes admission withholds stay in it, masked: a call to one
-        # is refused with the rule until the fork. Otherwise -- a frozen
-        # library, or a standalone review with its own tools -- nothing sending
-        # this list can call them, and they are left out (about 2.4k tokens a
-        # call on AppWorld) rather than listed and refused.
-        if (
-            admission_gated
-            and not core
-            and _admitted_review_can_write_in_session_list()
-        ):
-            for name, tool in _filter_tools(
-                _act_tools,
-                withhold_admission=False,
-            ).items():
-                tools.setdefault(name, tool)
-            tool_policy = _with_mask_rules(
-                tool_policy,
-                {name: _ADMISSION_MASK_RULE for name in _admission_withheld_tools},
-            )
-
         # Build event bus callbacks for clarification and notification tools
         # (the loop creates the tools; we just provide the event hooks).
-        _clar_queues = None
         _on_clar_req = None
         _on_clar_ans = None
         if clarification_enabled:
-            # (None, None) still injects request_clarification; the tool then
-            # uses per-call hidden queues so CM sees handle._clar_q events.
-            _clar_queues = (
-                (env_clarification_up_q, env_clarification_down_q)
-                if caller_supplied_clarification_queues
-                else (None, None)
-            )
 
             async def _on_clar_req(q: str):
                 try:
@@ -4383,7 +4269,7 @@ class CodeActActor(BaseCodeActActor):
         # review inherit the identifiers of this request (set until the handle
         # is built); a sub-agent keeps those of the task it works for.
         instance_token = _instance_lint.enter(request)
-        core_token = core_session.enter() if core_session is not None else None
+        core_token = core_session.enter()
         try:
             # The library entries closest to the request, after the snapshot line.
             from unify.actor.library_shortlist import shortlist_block
@@ -4392,17 +4278,11 @@ class CodeActActor(BaseCodeActActor):
                 self.function_manager,
                 self.guidance_manager,
                 request,
-                functions=any(str(k).startswith("FunctionManager_") for k in base_tools)
-                or (core_session is not None and core_session.prompt.functions),
-                guidance=any(str(k).startswith("GuidanceManager_") for k in base_tools)
-                or (core_session is not None and core_session.prompt.guidance),
+                functions=core_session.prompt.functions,
+                guidance=core_session.prompt.guidance,
                 # The listed functions are bound as a read binds them, and
                 # the header says how to call.
-                bind=(
-                    core_session.listed_binder(sandbox)
-                    if core_session is not None
-                    else None
-                ),
+                bind=core_session.listed_binder(sandbox),
             )
             if shortlist:
                 first_message_parts.append(shortlist)
@@ -4433,19 +4313,15 @@ class CodeActActor(BaseCodeActActor):
                     if effective_can_store and not admission_gated
                     else None
                 ),
-                # UNIFY_TOOL_SURFACE=core: request_clarification is the
-                # sandbox's, and there is no send_notification tool.
-                clarification_queues=_clar_queues if core_session is None else None,
+                # request_clarification is the sandbox's (the core surface),
+                # and there is no send_notification tool.
+                clarification_queues=None,
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
                 # No notification channel: nothing reads progress
                 # notifications under the agent record.
                 on_notify=None,
-                **(
-                    {"compression_tools_on_demand": True}
-                    if core_session is not None
-                    else {}
-                ),
+                compression_tools_on_demand=True,
                 on_turn_boundary=_agents.on_turn_boundary,
                 **(
                     {

@@ -34,7 +34,6 @@ from tests.helpers import _handle_project
 from unify.actor import code_act_actor as caa
 from unify.actor import core_surface
 from unify.common._async_tool import cache_discipline as cd
-from unify.settings import SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 _REVIEW_OPENING = "## Curating The Library\n\n"
@@ -230,12 +229,7 @@ def _recorded_session(tool: str = "execute_code"):
     return inner, SimpleNamespace(_preprocess_msgs=None)
 
 
-@pytest.fixture
-def core_switches(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
-
-
-def test_the_fork_source_is_marked_core(core_switches):
+def test_the_fork_source_is_marked_core():
     source, why = caa._review_fork_source(*_recorded_session())
     assert why is None and source["core"] is True
     assert cd.schema_names(source["tools"]) == ["execute_code"]
@@ -250,7 +244,6 @@ def test_the_fork_source_is_marked_core(core_switches):
 )
 def test_the_core_review_falls_back_and_says_why(
     monkeypatch,
-    core_switches,
     case,
     reason,
 ):

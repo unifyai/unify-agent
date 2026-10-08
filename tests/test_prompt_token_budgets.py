@@ -9,6 +9,7 @@ every landed cut is banked by tightening the constant to the new size.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import json
 
 import pytest
@@ -48,8 +49,8 @@ def _actor_system_prompt() -> str:
 
     return build_code_act_prompt(
         environments={"primitives": ActorEnvironment()},
-        tools=dict(_simulated_actor().get_tools("act")),
         can_store=True,
+        core=PromptSurface(),
     )
 
 

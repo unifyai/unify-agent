@@ -825,10 +825,8 @@ class ActorEnvironment(BaseEnvironment):
 
         # With environment namespaces registered it is no longer the only one.
         lead = "" if environment_aliases() else "The one `primitives.*` surface. "
-        from unify.actor import core_surface
-
-        # UNIFY_TOOL_SURFACE=core has no execute_function.
-        via = "" if core_surface.enabled() else " (or call it via `execute_function`)"
+        # The core surface has no execute_function.
+        via = ""
         lines = [
             f"### `{fq_prefix}` — Actor Delegation\n",
             f"{lead}Awaiting a call returns a "

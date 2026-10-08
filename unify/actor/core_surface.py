@@ -1,10 +1,11 @@
-"""``UNIFY_TOOL_SURFACE=core``: ``execute_code`` is the actor's only JSON tool.
+"""The core tool surface: ``execute_code`` is the actor's only JSON tool.
 
-As shipped the actor sends 31 JSON tool schemas, about 11.7k tokens, with every
-request: the function and guidance libraries alone are 16 of them, though the
-harness's own design is that everything is code. With the switch on the model
-sees ``execute_code`` (and ``final_response`` when the caller set a response
-format); everything else is a Python object in the sandbox:
+As shipped the actor sent 31 JSON tool schemas, about 11.7k tokens, with
+every request: the function and guidance libraries alone were 16 of them,
+though the harness's own design is that everything is code. The model sees
+``execute_code`` (and ``final_response`` when the caller set a response
+format); everything else is a Python object in the sandbox (the
+``UNIFY_TOOL_SURFACE=core`` switch until the code freeze baked it in):
 
 * ``functions`` -- search, filter, list, get, run, add, patch, delete, retire and
   reconcile_dependencies over the function library;
@@ -14,23 +15,21 @@ format); everything else is a Python object in the sandbox:
 * ``request_clarification`` -- where the session can ask.
 
 These are harness objects. A cell reaches them only through the proxy of the
-sandboxed Python worker (``UNIFY_WORKSPACE_PYTHON=worker``,
-unify/actor/execution/worker.py): a library write or an install runs here, in
-the harness, never in model-written code, and a cell never holds the store or
-the harness's environment. An actor therefore refuses to start with the switch
-on unless worker Python is configured, rather than fall back to in-process
-cells, which would hold the real objects; and with the discovery gate on,
-which can only force JSON tools.
+sandboxed Python worker (unify/actor/execution/worker.py): a library write or
+an install runs here, in the harness, never in model-written code, and a cell
+never holds the store or the harness's environment. An actor therefore
+refuses to start unless Python runs in the worker, rather than fall back to
+in-process cells, which would hold the real objects.
 
-Writes this session may not make (``can_store``, ``UNIFY_STORE_ADMISSION``,
-switches that are off) are refused at call time with the reason, instead of
-being left out of a tool list, so the list and the system prompt are fixed for
-the session. A short index in the prompt names the objects, and ``help(obj)``
-prints their full documentation as cell output.
+Writes this session may not make (``can_store``, ``UNIFY_STORE_ADMISSION``)
+are refused at call time with the reason, instead of being left out of a tool
+list, so the list and the system prompt are fixed for the session. A short
+index in the prompt names the objects, and ``help(obj)`` prints their full
+documentation as cell output.
 
 ``functions.run`` and direct calls of stored functions run in the worker,
 confined; this module records them (usage, ``UNIFY_FUNCTION_CASES`` cases with
-the environment calls they make, the declared dependencies installed first) exactly as the ``execute_function`` tool does.
+the environment calls they make, the declared dependencies installed first).
 
 Compression is unchanged: the loop asks for it at the same threshold and
 offers ``compress_context`` (and ``store_skills``) on that turn as shipped;
@@ -52,7 +51,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 logger = logging.getLogger(__name__)
 
-CORE = "core"
 
 FUNCTIONS = "functions"
 GUIDANCE = "guidance"
@@ -62,15 +60,8 @@ INSTALL = "install"
 RUN_STATES = ("stateless", "stateful", "read_only")
 
 
-def enabled() -> bool:
-    """Whether ``UNIFY_TOOL_SURFACE=core`` is set."""
-    from unify.settings import SETTINGS
-
-    return getattr(SETTINGS, "UNIFY_TOOL_SURFACE", "") == CORE
-
-
 class ToolSurfaceError(RuntimeError):
-    """A configuration ``UNIFY_TOOL_SURFACE=core`` cannot run under."""
+    """A configuration the core tool surface cannot run under."""
 
 
 def require_prerequisites(*, can_compose: bool) -> None:
@@ -94,12 +85,12 @@ def require_prerequisites(*, can_compose: bool) -> None:
         sandbox.require_bwrap()
     except Exception as exc:
         raise ToolSurfaceError(
-            "UNIFY_TOOL_SURFACE=core needs the sandboxed worker, and bubblewrap "
+            "the core tool surface needs the sandboxed worker, and bubblewrap "
             f"is not available: {exc}",
         ) from None
     if not can_compose:
         raise ToolSurfaceError(
-            "UNIFY_TOOL_SURFACE=core needs execute_code (can_compose=True): it "
+            "the core tool surface needs execute_code (can_compose=True): it "
             "is the surface's only tool.",
         )
 
@@ -1609,21 +1600,6 @@ _RULE_NOTIFICATIONS = re.compile(
     r"\n4\. \*\*Notifications\*\*:.*?(?=\n5\. )",
     re.DOTALL,
 )
-
-
-def execution_rules(text: str) -> str:
-    """The shipped Execution Rules without the tools this surface does not have."""
-    text = text.replace(_RULE_SESSIONS, _RULE_SESSIONS_CORE, 1)
-    if _RULE_NOTIFICATIONS.search(text):
-        text = _RULE_NOTIFICATIONS.sub("", text, count=1)
-        head, sep, tail = text.partition("\n5. **")
-        tail = re.sub(
-            r"\n(\d+)\. \*\*",
-            lambda m: f"\n{int(m.group(1)) - 1}. **",
-            sep + tail,
-        )
-        text = head + tail
-    return text
 
 
 # ---------------------------------------------------------------------------

@@ -150,16 +150,9 @@ def imported_modules(node: ast.AST) -> list[str]:
 def _methods_text(namespace: str, methods: Sequence[str]) -> str:
     if len(methods) <= 12:
         return f"its methods are {', '.join(f'`{m}`' for m in methods)}"
-    from unify.actor import core_surface
-
-    search = (
-        "functions.search"
-        if core_surface.enabled()
-        else "FunctionManager_search_functions"
-    )
     return (
         f"it has {len(methods)} methods; find the right one with "
-        f"{search} or help(primitives.{namespace})"
+        f"functions.search or help(primitives.{namespace})"
     )
 
 

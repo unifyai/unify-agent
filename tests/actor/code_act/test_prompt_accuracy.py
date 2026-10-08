@@ -11,6 +11,7 @@ prompt the builder renders and on the request a scripted ``act()`` sends.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import json
 
@@ -36,10 +37,9 @@ def _prompt(*, persist: bool, turn_reviews: bool) -> str:
     actor = CodeActActor()
     return pb.build_code_act_prompt(
         environments={},
-        tools=dict(actor.get_tools("act")),
         can_store=True,
         persist=persist,
-        turn_reviews=turn_reviews,
+        core=PromptSurface(),
     )
 
 
@@ -76,21 +76,6 @@ def _system_text(request: dict) -> str:
 
 
 # ── the storage schedule (D14) ──────────────────────────────────────────
-
-
-def test_on_a_persistent_session_without_turn_reviews_is_told_the_session_end():
-    prompt = _flat(_prompt(persist=True, turn_reviews=False))
-    assert _SESSION_END in prompt
-    assert _PER_TURN not in prompt
-    assert _NOTES not in prompt
-    assert "result is added to this conversation" in prompt
-    # The rest of the notice is kept.
-    assert "**Before compression**" in prompt
-    assert "**Direct writes vs trajectory storage**" in prompt
-
-
-def test_on_a_session_with_turn_reviews_keeps_the_per_turn_notice():
-    assert _PER_TURN in _flat(_prompt(persist=True, turn_reviews=True))
 
 
 @pytest.mark.asyncio
@@ -185,9 +170,8 @@ def _clarify_prompt(*, can_clarify: bool) -> str:
     actor = CodeActActor()
     return pb.build_code_act_prompt(
         environments={},
-        tools=dict(actor.get_tools("act")),
         can_store=True,
-        can_clarify=can_clarify,
+        core=PromptSurface(clarification=can_clarify),
     )
 
 
@@ -287,14 +271,3 @@ async def test_act_tells_its_sandbox_whether_it_can_ask(monkeypatch, clarify):
     finally:
         await actor.close()
     assert seen is False
-
-
-def test_no_fixed_text_names_a_benchmark():
-    import re
-
-    text = json.dumps(
-        [pb._STORAGE_SESSION_END_NOTICE_UNIFIED],
-    ).lower()
-    words = set(re.findall(r"[a-z]+", text))
-    for word in ("arc", "appworld", "scienceworld", "crafter", "grid", "benchmark"):
-        assert word not in words

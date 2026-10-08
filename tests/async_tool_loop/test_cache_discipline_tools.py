@@ -177,23 +177,3 @@ def test_policy_mask_rules_reads_only_the_optional_keys():
     assert policy_mask_rules(
         ("required", {}, {"eager": True, "mask_rule": "r", "mask_rules": {"a": "x"}}),
     ) == ({"a": "x"}, "r")
-
-
-def test_admission_rules_wrap_two_and_three_argument_policies():
-    from unify.actor.code_act_actor import _ADMISSION_MASK_RULE, _with_mask_rules
-
-    rules = {"FunctionManager_add_functions": _ADMISSION_MASK_RULE}
-
-    def two(step, tools):
-        return "auto", tools
-
-    def three(step, tools, called):
-        return "required", {}, {"eager": True, "mask_rules": {"x": "own rule"}}
-
-    mode, visible, opts = _with_mask_rules(two, rules)(0, {"a": 1}, [])
-    assert (mode, visible) == ("auto", {"a": 1})
-    assert opts == {"mask_rules": rules}
-    mode, visible, opts = _with_mask_rules(three, rules)(0, {"a": 1}, ["y"])
-    assert mode == "required" and opts["eager"] is True
-    assert opts["mask_rules"] == {"x": "own rule", **rules}
-    assert "read-only during this task" in _ADMISSION_MASK_RULE

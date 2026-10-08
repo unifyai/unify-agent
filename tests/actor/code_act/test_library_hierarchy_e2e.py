@@ -49,7 +49,6 @@ from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from unify import db
 from unify.actor import core_surface
-from unify.settings import SETTINGS
 
 NAMES = sorted([*HELPERS, "summarize_pairs"])
 
@@ -461,7 +460,6 @@ async def _calls_both_ways(monkeypatch, *, core: bool) -> dict:
     from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
 
     db.clear()
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core" if core else "")
     _store_hierarchy()
     actor = new_actor(can_store=False)
     tools = actor.get_tools("act")

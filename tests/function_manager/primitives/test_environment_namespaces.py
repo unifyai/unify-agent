@@ -10,6 +10,7 @@ No model is called.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import pytest
 
 from tests.helpers import _handle_project
@@ -315,7 +316,10 @@ async def test_child_without_sub_agents_keeps_the_namespaces(weather):
     )
     assert child.function_manager._primitive_scope.scoped_managers == {"weather"}
     tools = child.get_tools("act")
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=child.environments,
+        core=PromptSurface(),
+    )
     assert "`primitives.weather`" in prompt
     assert "primitives.actor" not in prompt
 

@@ -32,7 +32,7 @@ Worker -> harness::
     {"op": "note", "event": str, ...}           (no reply)
 
 ``fn_begin``/``fn_end``/``doc`` and the ``help`` flag exist only under
-``UNIFY_TOOL_SURFACE=core`` (unify/actor/core_surface.py): a stored function
+the core tool surface (unify/actor/core_surface.py): a stored function
 run by ``functions.run``, or called by name, runs here and the harness records
 the call between its begin and its end. While one runs, every request carries
 ``"cases": [token, ...]``, the recordings it belongs to, so the harness adds
@@ -83,7 +83,7 @@ MAX_FD_OUTPUT = 256 * 1024
 #: The states ``functions.run`` takes (as ``execute_function`` did).
 RUN_STATES = ("stateless", "stateful", "read_only")
 
-# UNIFY_TOOL_SURFACE=core: the recordings (harness tokens) of the stored-
+# The core tool surface: the recordings (harness tokens) of the stored-
 # function calls running in this context, outermost first.
 _CASES: contextvars.ContextVar[tuple] = contextvars.ContextVar(
     "unify_worker_cases",
@@ -796,7 +796,7 @@ class _Refused:
 class _StoredFunction:
     """A stored function defined in the worker; tells the harness it ran.
 
-    With ``record`` (``UNIFY_TOOL_SURFACE=core``) each call is recorded by the
+    With ``record`` (the core tool surface) each call is recorded by the
     harness as the in-process boundary wrapper records it -- usage, trust
     evidence, a case with the environment calls it makes -- instead of only
     being noted as used.
@@ -855,7 +855,7 @@ class _RuntimeProxy(RemoteNamespace):
 
 
 class _FunctionsProxy(RemoteNamespace):
-    """``functions`` (``UNIFY_TOOL_SURFACE=core``): the harness's function
+    """``functions`` (the core tool surface): the harness's function
     library, except ``run``, which runs the stored code here, in the worker."""
 
     def __getattr__(self, name: str) -> Any:
@@ -1381,7 +1381,7 @@ class Worker:
             out[name] = short_repr(value)
         return out
 
-    # -- stored functions (UNIFY_TOOL_SURFACE=core) ----------------------------
+    # -- stored functions (the core tool surface) ----------------------------
     def _record_value(self, value: Any) -> Any:
         """*value* for the harness's recording: data as data, anything else
         as its repr, so recording never refuses a call."""

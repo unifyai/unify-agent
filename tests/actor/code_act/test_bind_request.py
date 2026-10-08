@@ -19,6 +19,7 @@ leaves the process. Each test that drives a session bounds every wait.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import base64
 import json
@@ -83,8 +84,6 @@ def _flat(text: str) -> str:
 @pytest.fixture
 def bound(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "")
 
 
 # ── the switch ───────────────────────────────────────────────────────────
@@ -251,14 +250,13 @@ def _prompt(actor_tools, surface: str) -> str:
     if surface == "core":
         return pb.build_code_act_prompt(
             environments=actor.environments,
-            tools={"execute_code": tools["execute_code"]},
             can_store=True,
             core=core_surface.PromptSurface(),
         )
     return pb.build_code_act_prompt(
         environments=actor.environments,
-        tools=tools,
         can_store=True,
+        core=PromptSurface(),
     )
 
 
@@ -272,7 +270,6 @@ def test_the_prompt_says_it_once_where_the_sandbox_is_described(
     surface,
     projection,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
 
     def render() -> str:
         text = _prompt(actor_tools, surface)

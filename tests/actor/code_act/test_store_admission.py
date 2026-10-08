@@ -14,6 +14,7 @@ called: the inner handle and the review loop are mocked.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -296,15 +297,15 @@ def test_prompt_default_has_no_read_only_notice():
         for persist in (True, False):
             prompt = build_code_act_prompt(
                 environments={},
-                tools=tools,
                 can_store=can_store,
                 persist=persist,
+                core=PromptSurface(),
             )
             assert "### Library Writes" not in prompt
             assert prompt == build_code_act_prompt(
                 environments={},
-                tools=tools,
                 can_store=can_store,
                 persist=persist,
                 library_read_only=False,
+                core=PromptSurface(),
             )

@@ -17,6 +17,7 @@ leaves the process. Each test that drives a session bounds every wait.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import json
 import os
@@ -65,7 +66,6 @@ def _flat(text: str) -> str:
 @pytest.fixture
 def channel(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
 
 
 # ── the switch and the prompt ────────────────────────────────────────────
@@ -97,14 +97,13 @@ def _prompt(actor_tools, surface: str) -> str:
     if surface == "core":
         return pb.build_code_act_prompt(
             environments=actor.environments,
-            tools={"execute_code": tools["execute_code"]},
             can_store=True,
             core=core_surface.PromptSurface(),
         )
     return pb.build_code_act_prompt(
         environments=actor.environments,
-        tools=tools,
         can_store=True,
+        core=PromptSurface(),
     )
 
 
@@ -116,7 +115,6 @@ def test_the_prompt_says_it_once_where_the_reply_rule_is(
     profile,
     surface,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", profile)
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "")
     off = _flat(_prompt(actor_tools, surface))
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")

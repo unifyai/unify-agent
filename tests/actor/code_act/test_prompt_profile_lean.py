@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_PROMPT_PROFILE=lean``: a requester-first prompt for a non-interactive session.
+"""Symbolic: the lean profile (baked in): a requester-first prompt for a non-interactive session.
 
 The shipped actor prompt was written for a chat colleague: a user who only
 hears ``send_notification``, clarification norms for labelling a user's
@@ -27,16 +27,13 @@ def _flat(text: str) -> str:
 
 
 def _prompt(*, can_clarify: bool = False, persist: bool = True) -> str:
-    from unify.actor.code_act_actor import CodeActActor
+    from unify.actor.core_surface import PromptSurface
 
-    actor = CodeActActor()
     return pb.build_code_act_prompt(
         environments={},
-        tools=dict(actor.get_tools("act")),
+        core=PromptSurface(clarification=can_clarify),
         can_store=True,
         persist=persist,
-        turn_reviews=False,
-        can_clarify=can_clarify,
     )
 
 
@@ -75,8 +72,7 @@ def test_lean_keeps_the_mechanisms():
         "### Tools",
         "| `query_llm` / `list_llms` |",  # the globals table
         "async def query_llm(",
-        "### Code And Function Calls",
-        "### Responding to a steering checkpoint",  # steering: its own switch
+        "### Sandbox Objects",
         "### Python First",
         "### Execution",
         "### Verify Before Scaling",
@@ -99,7 +95,6 @@ def test_lean_text_states_no_absolutes_and_names_no_benchmark():
             pb._LEAN_ROLE,
             pb._LEAN_QUERY_LLM,
             pb._LEAN_SUB_ACTOR_DIAL,
-            pb._LEAN_TOOL_SELECTION,
             pb._LEAN_EXECUTION_RULES,
             pb._LEAN_CLARIFICATION_RULE,
             pb._LEAN_INCREMENTAL_EXECUTION,
@@ -113,7 +108,7 @@ def test_lean_text_states_no_absolutes_and_names_no_benchmark():
 
 
 def test_lean_workspace_line_with_the_clock_in_the_first_message():
-    context = pb.build_session_context({"execute_code": object()})
+    context = pb._build_filesystem_context()
     assert "### Workspace" in context and "Attachments" not in context
 
 

@@ -85,13 +85,13 @@ class ConversationSettings(BaseSettings):
 class ProductionSettings(BaseSettings):
     """Runtime settings; test settings (TestingSettings) inherit from this class.
 
-    The research switches default to the configuration chosen at the code
-    freeze (7 Oct 2026): the lean-all recipe, Python tool mode
-    (``UNIFY_TOOL_SURFACE=core`` with worker Python in the sandboxed
-    workspace) and the shared agent record. In the comments below, "as
-    shipped" names upstream's behaviour, which a switch's off value still
-    selects until the switch is removed. The switches still in progress are
-    listed in WIP_SWITCHES.md at the repository root.
+    The code freeze (7 Oct 2026) made the chosen configuration the only code
+    path: the lean-all recipe, Python tool mode (the core tool surface, with
+    Python in the sandboxed worker) and the shared agent record. What remains
+    here is configuration and the switches still in progress (listed in
+    WIP_SWITCHES.md at the repository root); in the comments below, "as
+    shipped" names upstream's behaviour, which a WIP switch's off value
+    selects.
     """
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -289,21 +289,6 @@ class ProductionSettings(BaseSettings):
     # hash-derived ids otherwise sort ahead of every stored entry). Empty
     # searches as shipped.
     UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
-    # ``lean``: an actor prompt for a non-interactive session (one requester,
-    # no reader of progress notifications), which describes the session's
-    # mechanisms and states few rules. It opens with the role and the
-    # requester's reply format (followed at once by the reply-protocol note
-    # when UNIFY_REPLY_PROTOCOL_NOTE is on); has no notification rule and no
-    # send_notification tool, no Uncertainties ending (the reply follows the
-    # requester's format), no clarification norms, a one-line workspace
-    # instead of the attachments table, "verify before scaling" instead of
-    # the pacing rules for browser and UI work, a short query_llm doctrine,
-    # and no preference for execute_function over execute_code in the
-    # prompt or the two tools' descriptions; and includes every
-    # UNIFY_PROMPT_ACCURACY fix. The library, discovery, storage and steering
-    # sections are unchanged (their own switches govern them). Empty: as
-    # shipped.
-    UNIFY_PROMPT_PROFILE: str = "lean"
     # execute_code takes state_mode (an untyped optional string), session_id
     # and session_name, and four tools manage sessions. An omitted mode runs
     # the cell in session 0, the task's persistent session, but a model that
@@ -347,31 +332,6 @@ class ProductionSettings(BaseSettings):
     # Empty: no network at all.
     UNIFY_WORKSPACE_NETWORK: str = ""
     UNIFY_WORKSPACE_PROXY_PORT: int = 0
-    # ``core``: the actor's only JSON tool is ``execute_code`` (Python, and
-    # bash); its answer is a reply without tool calls, or ``final_response``
-    # when the caller set a response format. Everything else is Python in
-    # the sandbox, reached through the sandboxed worker's harness proxy:
-    # ``functions`` (search, filter, list, get, run, add, patch, delete,
-    # retire, reconcile_dependencies) and ``guidance`` (search, filter, get,
-    # add, update, patch, delete, reconcile_dependencies), whose writes
-    # refuse at call time, with the reason, whatever this session may not
-    # write; ``install``, ``read_file`` and ``grep``; and
-    # ``request_clarification`` where the session can ask. ``functions.run``
-    # (replacing ``execute_function``) runs a stored function in the worker
-    # and records usage, cases and trust as ``execute_function`` does; so is
-    # a stored function called by name. The prompt names these objects in a
-    # short index and ``help(obj)`` prints their docs as cell output, so the
-    # tool list and the system prompt never change during a session.
-    # ``wait``, ``steer`` and ``ask_about_completed_tool`` (and the call
-    # announcements that name them) are offered only to an actor that can
-    # start sub-actors. Compression is as shipped, except that
-    # ``compress_context`` (and ``store_skills``) are offered only on the
-    # turn the loop asks for it, not on every turn. The session tools,
-    # ``send_notification`` and ``install_python_packages`` are not offered.
-    # Needs bubblewrap: an actor refuses
-    # to start otherwise, and never runs model code unconfined
-    # (unify/actor/core_surface.py). Empty: the JSON tools as shipped.
-    UNIFY_TOOL_SURFACE: str = "core"
     # What the model is asked to fill in to run a cell. Empty (or "legacy"):
     # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
     # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
@@ -484,16 +444,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_PROMPT_PROFILE", mode="before")
-    @classmethod
-    def parse_prompt_profile(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "lean"):
-            raise ValueError(
-                f"UNIFY_PROMPT_PROFILE must be empty or 'lean', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
     @classmethod
     def parse_guidance_empty_query(cls, v: Any) -> str:
@@ -548,16 +498,6 @@ class ProductionSettings(BaseSettings):
             )
         return value
 
-    @field_validator("UNIFY_TOOL_SURFACE", mode="before")
-    @classmethod
-    def parse_tool_surface(cls, v: Any) -> str:
-        value = str(v or "").strip().lower()
-        if value not in ("", "core"):
-            raise ValueError(
-                f"UNIFY_TOOL_SURFACE must be empty or 'core', not {v!r}",
-            )
-        return value
-
     @field_validator("UNIFY_CODE_PROJECTION", mode="before")
     @classmethod
     def parse_code_projection(cls, v: Any) -> str:
@@ -573,16 +513,6 @@ class ProductionSettings(BaseSettings):
     def step_cap_reply(self) -> str:
         """The ``UNIFY_STEP_CAP_REPLY`` mode: ``""``, ``"draft"`` or ``"last_word"``."""
         return _step_cap_reply_mode(self.UNIFY_STEP_CAP_REPLY) or ""
-
-    def lean_prompt(self) -> bool:
-        """``UNIFY_PROMPT_PROFILE=lean``."""
-        return self.UNIFY_PROMPT_PROFILE == "lean"
-
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=True,
-        extra="ignore",
-    )
 
     def validate_llm_providers(self) -> None:
         """Validate that unillm holds a key it can reach an LLM provider with.

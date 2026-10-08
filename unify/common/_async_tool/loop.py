@@ -595,7 +595,7 @@ async def async_tool_loop_inner(
         message is then a new one. ``None`` sends the message as given.
 
     compression_tools_on_demand : ``bool``, default ``False``
-        ``True`` (``UNIFY_TOOL_SURFACE=core``): ``compress_context`` and the
+        ``True`` (the core tool surface): ``compress_context`` and the
         ``extra_compression_tools`` are offered only on the turn that must
         compress, and are otherwise left out of the tool list
         (the session's fixed list included), so the list holds

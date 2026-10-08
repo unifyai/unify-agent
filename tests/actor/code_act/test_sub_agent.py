@@ -7,6 +7,7 @@ Eval tests verify end-to-end actor execution with a real LLM.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import inspect
 
@@ -65,7 +66,10 @@ def test_prompt_includes_actor_guidance_when_env_present():
         timeout=30,
     )
     tools = dict(actor.get_tools("act"))
-    prompt = build_code_act_prompt(environments=actor.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=actor.environments,
+        core=PromptSurface(),
+    )
 
     assert "Actor Delegation" in prompt
     assert "primitives.actor.act" in prompt
@@ -81,7 +85,10 @@ def test_prompt_excludes_actor_guidance_when_env_absent():
         timeout=30,
     )
     tools = dict(actor.get_tools("act"))
-    prompt = build_code_act_prompt(environments=actor.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=actor.environments,
+        core=PromptSurface(),
+    )
 
     assert "Actor Delegation" not in prompt
 
@@ -509,7 +516,10 @@ async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
     assert _ACTOR_ACT not in child.function_manager.list_function_name_to_ids()
 
     assert "primitives" not in child.environments
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=child.environments,
+        core=PromptSurface(),
+    )
     assert "primitives.actor" not in prompt
 
 

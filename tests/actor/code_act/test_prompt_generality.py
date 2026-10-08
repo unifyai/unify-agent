@@ -26,6 +26,7 @@ by their exact wording in ``UPSTREAM_EXAMPLE_CHECKS``.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import inspect
 import json
 import re
@@ -109,7 +110,6 @@ SWITCH_OFF = {
 }
 
 PROMPT_MODES = {
-    "search when useful": {"can_store": True, "search_when_useful": True},
     "persist": {"can_store": True, "persist": True},
     "read only": {"can_store": True, "library_read_only": True},
     "no store": {},
@@ -399,8 +399,8 @@ def test_the_actors_prompt_names_no_benchmark(switches, actor_tools, mode):
     actor, tools = actor_tools
     prompt = pb.build_code_act_prompt(
         environments=actor.environments,
-        tools=tools,
         **PROMPT_MODES[mode],
+        core=PromptSurface(),
     )
     assert "### Execution" in prompt
     assert _findings({f"prompt ({switches}, {mode})": prompt}) == []
@@ -431,8 +431,8 @@ def test_the_switched_texts_are_in_the_prompt_they_lint(monkeypatch, actor_tools
     actor, tools = actor_tools
     prompt = pb.build_code_act_prompt(
         environments=actor.environments,
-        tools=tools,
         can_store=True,
+        core=PromptSurface(),
     )
     assert pb._BIND_REQUEST_LINE in prompt
 

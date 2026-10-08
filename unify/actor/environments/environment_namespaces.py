@@ -77,15 +77,9 @@ class EnvironmentNamespacesEnvironment(BaseEnvironment):
         return tools
 
     def get_prompt_context(self) -> str:
-        from unify.actor import core_surface
-
         namespaces = environment_namespaces()
-        # UNIFY_TOOL_SURFACE=core: the library search is the sandbox's.
-        search = (
-            "`await functions.search(...)`"
-            if core_surface.enabled()
-            else "`FunctionManager_search_functions`"
-        )
+        # The library search is the sandbox's (the core surface).
+        search = "`await functions.search(...)`"
         lines = [
             "### `primitives.*` — This Environment's Namespaces\n",
             "The environment you work in registered the namespaces below. "

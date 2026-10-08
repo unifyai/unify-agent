@@ -18,6 +18,7 @@ import pytest
 
 from unify.actor import prompt_builders as pb
 from unify.common.llm_helpers import method_to_schema
+from unify.actor.core_surface import PromptSurface
 from unify.settings import SETTINGS
 
 
@@ -31,12 +32,9 @@ def _render(actor):
     tools = dict(actor.get_tools("act"))
     prompt = pb.build_code_act_prompt(
         environments=actor.environments,
-        tools=tools,
         can_store=True,
         persist=True,
-        turn_reviews=False,
-        can_clarify=False,
-        search_when_useful=True,
+        core=PromptSurface(clarification=False),
     )
     schemas = {
         name: method_to_schema(
@@ -57,7 +55,6 @@ def _with_primitives():
 
 @pytest.fixture(params=["", "lean"])
 def profile(request, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", request.param)
     return request.param
 
 
@@ -86,7 +83,6 @@ def test_without_primitives_no_text_names_them(profile, trim, monkeypatch):
         )
     # What the session does have is still described.
     for kept in (
-        "### Responding to a steering checkpoint",
         "`query_llm`",
         "### Skill Storage",
     ):
@@ -104,31 +100,8 @@ def test_with_primitives_the_text_is_as_shipped(profile, monkeypatch):
     )
 
 
-def test_session_text_follows_the_session_tools(trim, monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    actor = _actor()
-    tools = dict(actor.get_tools("act"))
-    kwargs = dict(environments={}, can_store=True, persist=True, can_clarify=False)
-    with_tools = pb.build_code_act_prompt(tools=tools, **kwargs)
-    assert "`list_sessions()` and" in with_tools
-    for name in (
-        "list_sessions",
-        "inspect_state",
-        "close_session",
-        "close_all_sessions",
-    ):
-        tools.pop(name)
-    without = pb.build_code_act_prompt(tools=tools, **kwargs)
-    assert "list_sessions" not in without and "inspect_state" not in without
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    shipped = pb.build_code_act_prompt(tools=tools, **kwargs)
-    assert "list_sessions" not in shipped
-    assert "Variables survive context compression" in shipped
-
-
 @pytest.mark.parametrize("cells", [False, True])
 def test_composes_with_stateful_cells(trim, monkeypatch, cells):
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", cells)
     prompt, schemas = _render(_actor())
     assert "primitives" not in prompt
@@ -139,12 +112,12 @@ def test_composes_with_stateful_cells(trim, monkeypatch, cells):
 
 
 def test_a_core_session_prompt_names_no_primitive(trim, monkeypatch):
-    """UNIFY_TOOL_SURFACE=core, lean, no primitives: the shared sections are
-    trimmed as in the JSON-tool prompt."""
-    from unify.actor.core_surface import PromptSurface
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
-    core = PromptSurface(steering=True)
-    kwargs = dict(environments={}, can_store=True, persist=True, core=core)
-    on = pb.build_code_act_prompt(**kwargs)
+    """The core surface, lean, no primitives: the shared sections are
+    trimmed."""
+    on = pb.build_code_act_prompt(
+        environments={},
+        can_store=True,
+        persist=True,
+        core=PromptSurface(),
+    )
     assert "primitives" not in on and "SteerableToolHandle" not in on

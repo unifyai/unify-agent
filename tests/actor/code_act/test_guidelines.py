@@ -5,6 +5,7 @@ The ``guidelines`` parameter provides meta-guidance on *how* to approach a task,
 as opposed to the ``request`` which specifies *what* to do.
 """
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 
 import pytest
@@ -19,7 +20,11 @@ from unify.actor.prompt_builders import build_code_act_prompt
 
 def test_build_code_act_prompt_without_guidelines():
     """When guidelines is None, the prompt should not contain a Guidelines section."""
-    prompt = build_code_act_prompt(environments={}, tools=None, guidelines=None)
+    prompt = build_code_act_prompt(
+        environments={},
+        guidelines=None,
+        core=PromptSurface(),
+    )
     assert "### Guidelines" not in prompt
 
 
@@ -27,8 +32,8 @@ def test_build_code_act_prompt_with_guidelines():
     """When guidelines is provided, the prompt should contain the Guidelines section."""
     prompt = build_code_act_prompt(
         environments={},
-        tools=None,
         guidelines="Always use sub-agents for parallel tasks.",
+        core=PromptSurface(),
     )
     assert "### Guidelines" in prompt
     assert "Always use sub-agents for parallel tasks." in prompt
@@ -39,8 +44,8 @@ def test_build_code_act_prompt_guidelines_placed_before_rules():
     """Guidelines should appear before the execution rules / tool signatures."""
     prompt = build_code_act_prompt(
         environments={},
-        tools=None,
         guidelines="Prefer simple solutions.",
+        core=PromptSurface(),
     )
     guidelines_pos = prompt.index("### Guidelines")
     # The role line always appears; guidelines should come after the role but

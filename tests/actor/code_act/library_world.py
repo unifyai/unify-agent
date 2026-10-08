@@ -175,7 +175,6 @@ def _jsonable(value: Any) -> Any:
 
 #: The switches a separate session runs under, as environment variables.
 CORE_ENV = {
-    "UNIFY_TOOL_SURFACE": "core",
     "UNIFY_VALIDATE_LLM_PROVIDERS": "false",
     "UNIFY_FUNCTION_CASES": "true",
 }

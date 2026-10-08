@@ -35,7 +35,7 @@ character, ``unknown``, or a bare credential noun (``token``, ``password``,
 credential may be ``None``. The detector the store's trust records use is
 not widened, so those records stay as they are.
 
-The core tool surface (``UNIFY_TOOL_SURFACE=core``) is not covered:
+The core tool surface (the core tool surface) is not covered:
 ``functions.run`` takes Python keyword arguments in a cell, where a session
 variable is passed by naming it, so the confusion this note answers does not
 arise there.

@@ -34,7 +34,6 @@ from tests.actor.code_act.sandbox_world import needs_bwrap
 from tests.helpers import _handle_project
 from unify import db
 from unify.actor import core_surface
-from unify.settings import SETTINGS
 
 DOUBLE = "def double(x: int) -> int:\n    return x * 2\n"
 
@@ -521,7 +520,6 @@ def test_environment_texts_name_the_search_the_session_has(music, monkeypatch, s
     )
     from unify.function_manager.store_check import _methods_text
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
     namespaces = EnvironmentNamespacesEnvironment().get_prompt_context()
     delegation = ActorEnvironment().get_prompt_context()
     hint = _methods_text("music", [f"m{i}" for i in range(13)])

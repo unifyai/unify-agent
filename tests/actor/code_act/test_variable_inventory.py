@@ -19,6 +19,7 @@ leaves the process. Each test that drives a session bounds every wait.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import importlib.util
 import json
@@ -541,8 +542,8 @@ def test_the_tools_and_prompt_are_unchanged_by_the_switch(monkeypatch):
         }
         prompt = pb.build_code_act_prompt(
             environments=actor.environments,
-            tools=dict(tools),
             can_store=True,
+            core=PromptSurface(),
         )
         return schemas, prompt
 
