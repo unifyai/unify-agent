@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+# Credentials this process holds outside its environment (memory v2's Sol token).
+from unify.process_secrets import registered_secrets
+
 KEY_SHAPED = re.compile(
     r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter
     r"|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{32,}"  # OpenAI / Anthropic style
@@ -15,6 +18,28 @@ KEY_SHAPED = re.compile(
 )
 _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _MIN_SECRET_LEN = 8
+
+# A credential in a structure an error message may carry: an Authorization header (any scheme), a bearer token,
+# or an api key / access token field, in header, kwargs, JSON or repr form. The name stays; the value goes.
+CREDENTIAL_STRUCTURE = re.compile(
+    r"(?i)(\bauthorization[\"']?\s*[:=]\s*[\"']?)(?:(?:bearer|basic|token)\s+)?[^\s\"',;}]+"
+    r"|(\bbearer\s+)[A-Za-z0-9._~+/=-]+"
+    r"|(\b(?:x-)?api[_-]?key[\"']?\s*[:=]\s*[\"']?|\b(?:access|auth)[_-]?token[\"']?\s*[:=]\s*[\"']?)[^\s\"',;}&]+",
+)
+
+
+def redact_error(text: str) -> str:
+    """Error text as it may be recorded (pass notes, ``errors.jsonl``, logs): registered credentials by value,
+    credential structures (:data:`CREDENTIAL_STRUCTURE`) and key-shaped strings (:data:`KEY_SHAPED`) removed.
+    """
+    for label, value in registered_secrets():
+        if len(value) >= _MIN_SECRET_LEN and value in text:
+            text = text.replace(value, f"<secret:{label}>")
+    text = CREDENTIAL_STRUCTURE.sub(
+        lambda m: f"{m.group(1) or m.group(2) or m.group(3)}<redacted>",
+        text,
+    )
+    return KEY_SHAPED.sub("<redacted:key-shaped>", text)
 
 
 class Redactor:
@@ -29,13 +54,15 @@ class Redactor:
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Redactor":
-        return cls(
-            {
-                k: v
-                for k, v in environ.items()
-                if any(p in k.upper() for p in _SECRET_NAME_PARTS)
-            },
-        )
+        """The environment's credentials by name, plus every :func:`unify.process_secrets.register_secret` value."""
+        secrets = {
+            k: v
+            for k, v in environ.items()
+            if any(p in k.upper() for p in _SECRET_NAME_PARTS)
+        }
+        for i, (label, value) in enumerate(registered_secrets()):
+            secrets[label if label not in secrets else f"{label}.{i}"] = value
+        return cls(secrets)
 
     def text(self, s: str) -> str:
         for label, value in self._secrets:

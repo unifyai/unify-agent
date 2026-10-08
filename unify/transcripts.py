@@ -162,6 +162,13 @@ def _secret_values() -> list[tuple[str, str]]:
                     found.setdefault(raw, name)
     except Exception:
         pass
+    # Credentials this process holds outside its environment (memory v2's Sol
+    # token, removed from os.environ once read).
+    from unify.process_secrets import registered_secrets
+
+    for name, value in registered_secrets():
+        if len(value) >= _MIN_SECRET_LEN:
+            found.setdefault(value, name)
     # Longest first, so a secret that contains another is replaced whole.
     return sorted(
         ((name, value) for value, name in found.items()),

@@ -66,7 +66,7 @@ from ..gate import Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
-from ..redact import KEY_SHAPED
+from ..redact import redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
 from ..sol_pass import PassConfig, PassOutcome, SolPass, SolRoute, unillm_turn
@@ -414,7 +414,10 @@ def _error(stores: Stores, text: str) -> None:
     try:
         stores.paths.errors.parent.mkdir(parents=True, exist_ok=True)
         with open(stores.paths.errors, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"where": "consolidate", "error": text[:500]}) + "\n")
+            fh.write(
+                json.dumps({"where": "consolidate", "error": redact_error(text)[:500]})
+                + "\n",
+            )
     except OSError:
         pass
 
@@ -653,10 +656,7 @@ async def run_due_passes(
         except Exception as exc:  # noqa: BLE001 - SolPass recorded the pass as failed
             # the outer bound (a pass that overran its deadline) is a deadline; anything else an error
             failure_code = "deadline" if isinstance(exc, TimeoutError) else "sol_error"
-            failure = KEY_SHAPED.sub(
-                "<redacted:key-shaped>",
-                f"pass error: {type(exc).__name__}: {exc}",
-            )
+            failure = redact_error(f"pass error: {type(exc).__name__}: {exc}")
             _error(stores, f"{pass_id}: {failure}")
         except BaseException:
             failure_code = "sol_error"  # cancelled or interrupted

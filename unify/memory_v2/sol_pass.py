@@ -46,7 +46,7 @@ from .evidence import EvidenceStore
 from .gate import Gate, ParentSnapshot
 from .gitio import Repo
 from .index import build_index
-from .redact import KEY_SHAPED
+from .redact import redact_error
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .trigger import PassRequest
 
@@ -747,7 +747,7 @@ def _money(usd: object) -> Decimal | None:
 
 
 def _redact(text: str) -> str:
-    return KEY_SHAPED.sub("<redacted:key-shaped>", text)
+    return redact_error(text)
 
 
 def _usd(value: Decimal) -> str:
@@ -1238,6 +1238,65 @@ _SOL_GATEWAY: contextvars.ContextVar[SolRoute | None] = contextvars.ContextVar(
 _GATEWAY_LOCK = threading.Lock()
 
 
+class SolRouteError(RuntimeError):
+    """Sol's declared route was not in effect for a Sol call (before it was sent, or seen in its event)."""
+
+
+class SolCallError(RuntimeError):
+    """A Sol call on the declared route failed. Its text is the exception's class and a fixed category only:
+    the original text (an echoed request header, say) never reaches pass notes, error rows or logs.
+    """
+
+
+_CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
+def _call_failure(exc: BaseException) -> tuple[str, str]:
+    """``(class name, category)`` of a failed call, from its type and status code only, never its text."""
+    name = type(exc).__name__
+    name = name if _CLASS_NAME.fullmatch(name) else "Exception"
+    status = getattr(exc, "status_code", None)
+    lowered = name.lower()
+    if (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and 100 <= status <= 599
+    ):
+        category = f"http_{status}"
+    elif "timeout" in lowered:
+        category = "timeout"
+    elif "connect" in lowered:
+        category = "connection"
+    elif "ratelimit" in lowered:
+        category = "rate_limit"
+    elif "auth" in lowered or "permission" in lowered:
+        category = "auth"
+    else:
+        category = "other"
+    return name, category
+
+
+def _check_route_in_effect(route: SolRoute) -> None:
+    """Refuse before any call unless unillm's request preparation, in this context, sends to *route*.
+
+    A pure call to the same function every attempt (retries included) prepares its transport with; it shows
+    the lookup it reads is the wrapped one. The prepared credential is compared, never kept or shown.
+    """
+    from unillm.clients import uni_llm
+
+    kw: dict = {"model": "openrouter/memory-v2-sol-route-check", "messages": []}
+    uni_llm._prepare_provider_request_kw(kw=kw, provider="openrouter", stream=False)
+    ok = (
+        str(kw.get("api_base") or "").rstrip("/") == route.base_url
+        and kw.get("api_key") == route.token.get_secret_value()
+    )
+    kw.clear()
+    if not ok:
+        raise SolRouteError(
+            "Sol's declared route is not in effect; no Sol call was made",
+        )
+
+
 def _install_sol_gateway() -> None:
     """Make unillm's per-call gateway lookup return Sol's route inside a Sol call; idempotent.
 
@@ -1308,8 +1367,13 @@ def unillm_turn(
     the endpoint must be an ``@openrouter`` one (the route replaces OpenRouter's transport). The scoped
     hook, which unillm calls before any process-wide listener, drops ``api_key`` from each event's request,
     so the token never reaches the event bus, and a call whose event shows another ``api_base`` fails the
-    turn (its cost then counts as unknown). The pricing is unchanged: the request still asks OpenRouter's
-    API for its charged cost, and a call the route does not price is ``unknown``.
+    turn (its cost then counts as unknown). Before each call, a pure check of unillm's request preparation
+    in this context refuses (no call made) unless it sends to the route; the same preparation serves every
+    retry. A failed call on the route raises :class:`SolCallError` naming only the exception's class and a
+    fixed category (``http_<status>``, ``timeout``, ``connection``, ``rate_limit``, ``auth``, ``other``), so
+    no error text (an echoed header, say) reaches pass notes, error rows or logs. The pricing is unchanged:
+    the request still asks OpenRouter's API for its charged cost, and a call the route does not price is
+    ``unknown``.
     """
     import unillm
 
@@ -1345,9 +1409,13 @@ def unillm_turn(
             if event.origin == origin:
                 costs.append(event.provider_cost)
 
+        failure: tuple[str, str] | None = None
+        timed_out = False
         async with unillm.allm_event_hook_scope(hook):
             scope = _SOL_GATEWAY.set(route) if route is not None else None
             try:
+                if route is not None:
+                    _check_route_in_effect(route)
                 await client.generate(
                     messages=copy.deepcopy(messages),
                     tools=tools,
@@ -1355,11 +1423,24 @@ def unillm_turn(
                     stateful=True,
                     **routed,
                 )
+            except Exception as exc:
+                if route is None or isinstance(exc, SolRouteError):
+                    raise
+                failure = _call_failure(exc)  # class and category only, never the text
+                timed_out = isinstance(exc, TimeoutError)
             finally:
                 if scope is not None:
                     _SOL_GATEWAY.reset(scope)
+        if failure is not None:
+            # raised outside the handler, so the original exception is not chained to it
+            name, category = failure
+            if (
+                timed_out
+            ):  # still a timeout to the pass, which treats it as its deadline
+                raise TimeoutError("a Sol call timed out")
+            raise SolCallError(f"Sol call failed: {name} ({category})")
         if any(misrouted):
-            raise RuntimeError("a Sol call did not take Sol's declared route")
+            raise SolRouteError("a Sol call did not take Sol's declared route")
         msg = client.messages[-1]
         msg = msg if isinstance(msg, dict) else dict(msg)
         if not costs or any(c is None for c in costs):
