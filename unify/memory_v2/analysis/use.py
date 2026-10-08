@@ -28,13 +28,17 @@ by cause (``cells_without_metadata`` is their sum):
   recording from before the field. These words are read only to name the cause, never for an outcome.
 
 A cell whose outcome is unknown (``tool_raised`` and the harness-answered causes, ``executor_error``, or
-an error too long to read, ``unread``) is counted in ``cells_outcome_unknown``; ``outcomes_known`` is
-then false, and the request's refusals and errors are unknown, never 0. Text is read only for its
-structure: the traceback's header, frame and chaining lines and the exception's type token, the diff's
-file headers, the harness's reply words above and, for legacy recordings only, the index's channel
-headings and item lines. An exception message is never read for meaning; a message deliberately written
-to imitate CPython's chain line, header and frame lines could still forge a block. Nothing is keyed on a
-task.
+an error too long to read, ``unread``) makes unknown the outcome of the items its code could reach, for
+this request only (``items_outcome_unknown``): the items it imports, calls or references, those a
+function it calls reaches (a ``def`` or ``class`` of the session whose body touched them), and every item
+of a channel it uses dynamically or as a module object (``*``: every item). A cell too large or too
+deep to parse reaches every item; one that does not compile, and a non-Python cell, reach none (a shell
+cell's use of the library is not seen either way). ``outcomes_known`` is true when no item's outcome is
+unknown. Text is read only for its structure: the traceback's header, frame and chaining lines and the
+exception's type token, the diff's file headers, the harness's reply words above and, for legacy
+recordings only, the index's channel headings and item lines. An exception message is never read for
+meaning; a message deliberately written to imitate CPython's chain line, header and frame lines could
+still forge a block. Nothing is keyed on a task.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 
@@ -922,7 +926,8 @@ def _exposure(
 
 # --- imports and calls -----------------------------------------------------------------------------------
 
-# A binding: ("item", item id) | ("module", channel) | ("package",) | ("dynamic", channel or "*")
+# A binding: ("item", item id) | ("module", channel) | ("package",) | ("dynamic", channel or "*") |
+# ("reaches", item ids, channel keys): a function or class of the session whose body touched those
 _Binding = tuple
 
 _ROW_KEYS = (
@@ -968,7 +973,12 @@ class _Tally:
 
 
 class _Cell(ast.NodeVisitor):
-    """Walks one cell in statement order; *bindings* persist from earlier cells of the session."""
+    """Walks one cell in statement order; *bindings* persist from earlier cells of the session.
+
+    ``touched_items`` and ``touched_channels`` are what the cell's code could reach: the items it
+    imports, calls or references, and the channel keys (``*`` for the package) it uses dynamically or as
+    a module object, including through a function or class of the session whose body touched them.
+    """
 
     def __init__(
         self,
@@ -979,6 +989,24 @@ class _Cell(ast.NodeVisitor):
     ) -> None:
         self.items, self.b, self.t, self.cell = items, bindings, tally, cell
         self.guard = 0
+        self.touched_items: set[str] = set()
+        self.touched_channels: set[str] = set()
+
+    def _use(self, item: str, key: str) -> None:
+        self.t.bump(item, key, self.cell)
+        self.touched_items.add(item)
+
+    def _reach(self, target: _Binding | None) -> None:
+        """A load of *target* that names no single item: what it can reach is touched."""
+        if target is None:
+            return
+        if target[0] in ("module", "dynamic"):
+            self.touched_channels.add(self._key(target[1]))
+        elif target[0] == "package":
+            self.touched_channels.add("*")
+        elif target[0] == "reaches":
+            self.touched_items |= target[1]
+            self.touched_channels |= target[2]
 
     # -- names ------------------------------------------------------------------------------------------
     def _key(self, channel: str) -> str:
@@ -1113,7 +1141,7 @@ class _Cell(ast.NodeVisitor):
                         self._unbind(name)
                         continue
                     self._bind(name, ("item", iid))
-                    self.t.bump(iid, "imported", self.cell)
+                    self._use(iid, "imported")
                 continue
             iid = self.items.item(channel, alias.name)
             target = alias.asname or alias.name
@@ -1121,7 +1149,7 @@ class _Cell(ast.NodeVisitor):
                 self._unbind(target)
                 continue
             self._bind(target, ("item", iid))
-            self.t.bump(iid, "imported", self.cell)
+            self._use(iid, "imported")
 
     # -- assignments ------------------------------------------------------------------------------------
     def _assign(self, targets: list[ast.AST], value: ast.AST | None) -> None:
@@ -1228,13 +1256,29 @@ class _Cell(ast.NodeVisitor):
             self.b.clear()
             self.b.update(saved)
 
+    def _body_reach(self, name: str, unbind: list[str], body: list[ast.AST]) -> None:
+        """Walk a ``def`` or ``class`` body; *name* is then bound to what the body touched (so a later
+        call of it, in any cell of the session, reaches that), or unbound when it touched nothing.
+        """
+        outer = self.touched_items, self.touched_channels
+        self.touched_items, self.touched_channels = set(), set()
+        try:
+            self._scoped(unbind, body)
+        finally:
+            inner = self.touched_items, self.touched_channels
+            self.touched_items = outer[0] | inner[0]
+            self.touched_channels = outer[1] | inner[1]
+        if inner[0] or inner[1]:
+            self._bind(name, ("reaches", frozenset(inner[0]), frozenset(inner[1])))
+        else:
+            self._unbind(name)
+
     def _function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for d in node.decorator_list:
             self.visit(d)
         for d in node.args.defaults + [d for d in node.args.kw_defaults if d]:
             self.visit(d)
-        self._scoped(self._args(node.args), list(node.body))
-        self._unbind(node.name)
+        self._body_reach(node.name, self._args(node.args), list(node.body))
 
     visit_FunctionDef = visit_AsyncFunctionDef = _function
 
@@ -1246,8 +1290,7 @@ class _Cell(ast.NodeVisitor):
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for d in node.decorator_list + node.bases + [k.value for k in node.keywords]:
             self.visit(d)
-        self._scoped([], list(node.body))
-        self._unbind(node.name)
+        self._body_reach(node.name, [], list(node.body))
 
     def _comprehension(self, node: ast.AST) -> None:
         saved = dict(self.b)
@@ -1274,11 +1317,12 @@ class _Cell(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         target = self.resolve(node.func)
         if target is not None and target[0] == "item":
-            self.t.bump(target[1], "called", self.cell)
+            self._use(target[1], "called")
             if self.guard:
-                self.t.bump(target[1], "guarded", self.cell)
+                self._use(target[1], "guarded")
         elif target is not None and target[0] == "dynamic":
             self.t.add(self.t.unknown, self._key(target[1]))
+            self._reach(target)
         if target is None or target[0] not in ("item", "module", "package"):
             self.visit(node.func)
         for a in node.args:
@@ -1289,7 +1333,10 @@ class _Cell(ast.NodeVisitor):
     def visit_Attribute(self, node: ast.Attribute) -> None:
         target = self.resolve(node) if isinstance(node.ctx, ast.Load) else None
         if target is not None and target[0] == "item":
-            self.t.bump(target[1], "referenced", self.cell)
+            self._use(target[1], "referenced")
+            return
+        if target is not None and target[0] in ("module", "package", "dynamic"):
+            self._reach(target)  # a module object used as a value: any of its functions
             return
         self.generic_visit(node)
 
@@ -1297,7 +1344,9 @@ class _Cell(ast.NodeVisitor):
         if isinstance(node.ctx, ast.Load):
             target = self.b.get(node.id)
             if target is not None and target[0] == "item":
-                self.t.bump(target[1], "referenced", self.cell)
+                self._use(target[1], "referenced")
+            else:
+                self._reach(target)
         else:
             self._unbind(node.id)
 
@@ -1500,6 +1549,24 @@ def attribute_errors(
 # --- the record ------------------------------------------------------------------------------------------
 
 
+def _reached(its: _Items, items: set[str], channels: set[str]) -> set[str]:
+    """The items of the pin *items* and *channels* reach: a channel key reaches each function of its
+    channel and each name the channel re-exports; ``*`` reaches every item; ``?`` none.
+    """
+    if "*" in channels:
+        return set(its.ids)
+    out = {i for i in items if i in its.known}
+    for channel in channels:
+        out |= {f"env/{channel}:{n}" for n in its.by_channel.get(channel, ())}
+        prefix = f"env/{channel}:"
+        for name in its.reexports:
+            if name.startswith(prefix):
+                iid = its.item(channel, name[len(prefix) :])
+                if iid is not None:
+                    out.add(iid)
+    return out
+
+
 def _ok_after(actions: Iterable[Any]) -> dict[str, int]:
     """Per memory channel, the latest cell holding an action the environment recorded as ``ok``."""
     latest: dict[str, int] = {}
@@ -1539,7 +1606,7 @@ def request_use(
     *cell_status* each cell's status from the runtime's structured result (:func:`runtime_status`,
     :func:`dict_status`, :func:`failed_status`), by tool call id: a mapping, or the record's own
     ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
-    ``other``), with ``outcomes_known`` false.
+    ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
     """
     lines = list(lines)
     its = _Items(items, surface)
@@ -1551,20 +1618,32 @@ def request_use(
     statuses = _statuses(cells[:MAX_CELLS], cell_status, its, _reply_causes(lines))
     unparsed = 0
     refusals: list[tuple[int, str]] = []
+    # what the cells whose outcome is unknown could reach (every item past MAX_CELLS: not read)
+    reach_items: set[str] = set()
+    reach_channels: set[str] = {"*"} if len(cells) > MAX_CELLS else set()
+    cells_unknown = 0
     for cell, status in zip(cells[:MAX_CELLS], statuses):
         idx = cell["index"]
         if status["fresh"]:
             sessions.pop(status["session"], None)
         bindings = sessions.setdefault(status["session"], {})
+        visitor: _Cell | None = None
+        # could have run, but its code was not read: it reaches every item
+        opaque = False
         if str(cell["language"]).lower() in ("python", "py", "python3"):
             code = cell["code"]
-            try:
-                if len(code) > MAX_CODE_CHARS:
-                    raise ValueError("cell too large")
-                tree = ast.parse(code)
-            except (SyntaxError, ValueError, RecursionError, MemoryError):
+            tree = None
+            if len(code) > MAX_CODE_CHARS:
                 unparsed += 1
-                tree = None
+                opaque = True
+            else:
+                try:
+                    tree = ast.parse(code)
+                except (SyntaxError, ValueError):  # does not compile: it never ran
+                    unparsed += 1
+                except (RecursionError, MemoryError):
+                    unparsed += 1
+                    opaque = True
             if tree is not None:
                 visitor = _Cell(its, bindings, tally, idx)
                 try:
@@ -1572,6 +1651,14 @@ def request_use(
                         visitor.visit(stmt)
                 except RecursionError:
                     unparsed += 1
+                    opaque = True
+        if _outcome_unknown(status):
+            cells_unknown += 1
+            if opaque:
+                reach_channels.add("*")
+            elif visitor is not None:
+                reach_items |= visitor.touched_items
+                reach_channels |= visitor.touched_channels
         for outcome, what in _outcomes(status["exits"], its, frozenset(changed)):
             if outcome == "unattributed":
                 tally.add(tally.unattributed, what)
@@ -1604,7 +1691,7 @@ def request_use(
         if st.get("cause") in by_cause:
             by_cause[st["cause"]] += 1
     unread = sum(st["status"] == "unread" for st in statuses)
-    cells_unknown = sum(_outcome_unknown(st) for st in statuses)
+    unknown_items = sorted(_reached(its, reach_items, reach_channels))
     return {
         "version": VERSION,
         "export_roots": roots,
@@ -1628,7 +1715,9 @@ def request_use(
         "cells_without_metadata_by_cause": by_cause,
         "cells_error_unread": unread,
         "cells_outcome_unknown": cells_unknown,
-        "outcomes_known": cells_unknown == 0 and len(cells) <= MAX_CELLS,
+        "items_outcome_unknown": unknown_items[:MAX_ITEMS_AT_PIN],
+        "items_outcome_unknown_count": len(unknown_items),
+        "outcomes_known": not unknown_items,
         "items": dict(list(rows.items())[:MAX_ITEM_ROWS]),
         "module_imports": dict(sorted(tally.module_imports.items())),
         "unknown_calls": dict(sorted(tally.unknown.items())),

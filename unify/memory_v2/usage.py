@@ -15,10 +15,23 @@ from typing import Iterable
 
 from .evidence import EvidenceStore
 
-__all__ = ["MAX_TABLE_ROWS", "USAGE_HEADING", "item_signals", "usage_table"]
+__all__ = [
+    "MAX_TABLE_ROWS",
+    "USAGE_HEADING",
+    "item_signals",
+    "outcome_report",
+    "usage_table",
+]
 
 MAX_TABLE_ROWS = 60
 USAGE_HEADING = "Library use since the previous consolidation"
+
+
+def outcome_report(kind: str, failing: int, known: int, unknown: int) -> str:
+    """``"<kind> k of n known (+u unknown)"``: *failing* requests with a *kind* (refusal or error) of the
+    *known* requests whose outcome for the item was known, and the *unknown* requests whose outcome for
+    it was not (a cell whose outcome is unknown could reach it)."""
+    return f"{kind} {failing} of {known} known (+{unknown} unknown)"
 
 
 def item_signals(item: str, evidence: EvidenceStore) -> dict:
@@ -40,10 +53,19 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
       the counts are lower bounds.
 
     Refusals and errors from requests that edited the item's channel in their scratch copy are not the
-    stored item's and are left out of every count and flag here. When a request did not record every
-    cell's outcome (``requests_outcome_unknown``), ``refusals`` and ``errors`` are None (unknown, never 0),
-    ``refusals_at_least`` and ``errors_at_least`` hold the counts that were recorded, and ``never_used``
-    is false.
+    stored item's and are left out of every count and flag here.
+
+    Outcomes are known or unknown per item and per request: a request's outcome for the item is unknown
+    only when one of its cells with an unknown outcome could reach the item (its code imported, called
+    or referenced it, or used its channel dynamically). ``requests_outcome_known`` and
+    ``requests_outcome_unknown`` count the requests at its pin each way. ``refusals_known`` and
+    ``errors_known`` are the counts over the known requests, ``requests_refusing_known`` and
+    ``requests_erroring_known`` the known requests with at least one, and ``refusals_report`` /
+    ``errors_report`` say ``refusals k of n known (+u unknown)``. ``refusals`` and ``errors`` are the
+    totals when every request's outcome for it was known and None (unknown, never 0) otherwise, with
+    ``refusals_at_least`` and ``errors_at_least`` holding every count recorded; ``refused_accepted`` is
+    likewise the known requests' count, ``refused_accepted_at_least`` every one recorded. ``never_used``
+    needs every request's outcome for it known.
     """
     use = evidence.item_use(item=item).get(item) or {}
 
@@ -52,7 +74,9 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
 
     touched = n("imported") + n("called") + n("referenced")
     failed = n("refused") + n("errored")
-    known = n("outcome_unknown") == 0
+    unknown = n("outcome_unknown")
+    known = unknown == 0
+    known_requests = max(n("requests") - unknown, 0)
     if n("shown") > 0:
         basis: str | None = "item"
     elif n("channel_shown") > 0:
@@ -78,9 +102,27 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
         "errors": n("errored") if known else None,
         "refusals_at_least": n("refused"),
         "errors_at_least": n("errored"),
-        "requests_outcome_unknown": n("outcome_unknown"),
+        "refusals_known": n("refused_known"),
+        "errors_known": n("errored_known"),
+        "requests_refusing_known": n("requests_refusing_known"),
+        "requests_erroring_known": n("requests_erroring_known"),
+        "requests_outcome_known": known_requests,
+        "requests_outcome_unknown": unknown,
+        "refusals_report": outcome_report(
+            "refusals",
+            n("requests_refusing_known"),
+            known_requests,
+            unknown,
+        ),
+        "errors_report": outcome_report(
+            "errors",
+            n("requests_erroring_known"),
+            known_requests,
+            unknown,
+        ),
         "outcomes_known": known,
-        "refused_accepted": n("refused_accepted"),
+        "refused_accepted": n("refused_accepted_known"),
+        "refused_accepted_at_least": n("refused_accepted"),
         "unknown_calls": n("unknown_calls"),
         "last_call_seq": evidence.last_call_seq(item),
         "used": n("called") > 0,
@@ -101,8 +143,11 @@ def usage_table(
     Deterministic: items in id order, at most :data:`MAX_TABLE_ROWS` lines (the rest are counted), and
     only harness counts. ``shown it`` counts requests whose prompt carried the item's own line, ``shown
     its channel`` those that showed its channel. Refusals and errors exclude requests that edited the
-    item's channel in their scratch copy. ``last call`` is how many requests ago the latest call site
-    was recorded, over every indexed request (``never`` when none).
+    item's channel in their scratch copy, and read ``k of n known (+u unknown)``: requests with one, of
+    the requests whose outcome for the item was known, and the requests whose outcome for it was not (a
+    cell with an unknown outcome could reach it). ``then accepted`` is marked ``+?`` (at least) when
+    some request's outcome for the item was unknown. ``last call`` is how many requests ago the latest
+    call site was recorded, over every indexed request (``never`` when none).
     """
     eids = sorted({e for e in eids if isinstance(e, str)})
     ids = sorted({i for i in items if isinstance(i, str)})
@@ -111,8 +156,10 @@ def usage_table(
     lines = [
         f"{USAGE_HEADING} ({len(eids)} requests; harness counts from cell code and tracebacks: "
         "static call sites, refusals are MemoryInputError raised out of the item, "
-        "'then accepted' means a later action on its channel succeeded; requests that edited "
-        "the item's channel are left out of refusals and errors):",
+        "'then accepted' means a later action on its channel succeeded; refusals and errors are "
+        "requests with one, of the requests whose outcome for the item was known, plus those whose "
+        "outcome for it was unknown; requests that edited the item's channel are left out of "
+        "refusals and errors):",
         "item | requests at pin | shown it | shown its channel | requests calling | calls | "
         "refusals | then accepted | other errors | dynamic calls in channel | last call",
     ]
@@ -120,14 +167,18 @@ def usage_table(
         u = use.get(item) or {}
         seq = evidence.last_call_seq(item)
         last = "never" if seq is None else f"{latest - seq} requests ago"
-        # "+?": some request at its pin did not record every cell's outcome; at least this many
-        more = "+?" if u.get("outcome_unknown", 0) else ""
+        unknown = u.get("outcome_unknown", 0)
+        known = max(u.get("requests", 0) - unknown, 0)
+        # "+?": some request's outcome for the item was unknown; at least this many
+        more = "+?" if unknown else ""
+        refusals = f"{u.get('requests_refusing_known', 0)} of {known} known (+{unknown} unknown)"
+        errors = f"{u.get('requests_erroring_known', 0)} of {known} known (+{unknown} unknown)"
         lines.append(
             f"{item} | {u.get('requests', 0)} | {u.get('shown', 0)} | "
             f"{u.get('channel_shown', 0)} | {u.get('used_requests', 0)} | "
-            f"{u.get('called', 0)} | {u.get('refused', 0)}{more} | "
+            f"{u.get('called', 0)} | {refusals} | "
             f"{u.get('refused_accepted', 0)}{more} | "
-            f"{u.get('errored', 0)}{more} | {u.get('unknown_calls', 0)} | {last}",
+            f"{errors} | {u.get('unknown_calls', 0)} | {last}",
         )
     if len(ids) > MAX_TABLE_ROWS:
         lines.append(f"(+{len(ids) - MAX_TABLE_ROWS} more items not shown)")
@@ -136,8 +187,9 @@ def usage_table(
     flags = evidence.request_flags(eids) if eids else {}
     if flags.get("outcome_unknown", 0):
         lines.append(
-            f"(+?: {flags['outcome_unknown']} of these requests did not record every cell's outcome, "
-            "so refusals, then accepted and other errors are at least the number shown)",
+            f"(unknown: {flags['outcome_unknown']} of these requests had a cell whose outcome was not "
+            "recorded and whose code could reach a function; only those functions count the request "
+            "as unknown, and their 'then accepted' is at least the number shown, marked +?)",
         )
     legacy, unknown = flags.get("exposure_legacy_text", 0), flags.get(
         "exposure_unknown",

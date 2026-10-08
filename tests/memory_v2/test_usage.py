@@ -57,6 +57,9 @@ def test_item_signals_flag_used_never_used_and_refusing_accepted_inputs(tmp_path
     lookup = usage.item_signals("env/x:lookup", ev)
     assert lookup["never_used"] and lookup["never_used_basis"] == "item"
     assert (lookup["refusals"], lookup["errors"]) == (0, 0)
+    assert lookup["refusals_report"] == "refusals 0 of 3 known (+0 unknown)"
+    assert parse["refusals_report"] == "refusals 1 of 3 known (+0 unknown)"
+    assert parse["refused_accepted"] == parse["refused_accepted_at_least"] == 1
     assert (
         lookup["requests_at_pin"],
         lookup["requests_shown"],
@@ -204,8 +207,14 @@ def test_sols_first_message_carries_the_usage_table_and_no_checker_text(tmp_path
     assert usage.USAGE_HEADING in table
     # item | at pin | shown it | shown its channel | calling | calls | refusals | then accepted |
     # other errors | dynamic | last call
-    assert "env/x:parse | 1 | 1 | 1 | 1 | 2 | 1 | 1 | 0 | 0 | 0 requests ago" in table
-    assert "env/x:lookup | 1 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | never" in table
+    assert (
+        "env/x:parse | 1 | 1 | 1 | 1 | 2 | 1 of 1 known (+0 unknown) | 1 | "
+        "0 of 1 known (+0 unknown) | 0 | 0 requests ago" in table
+    )
+    assert (
+        "env/x:lookup | 1 | 1 | 1 | 0 | 0 | 0 of 1 known (+0 unknown) | 0 | "
+        "0 of 1 known (+0 unknown) | 0 | never" in table
+    )
     # ruling R10: the checker's verdict changes nothing Sol is shown
     assert after.split("Current index:", 1)[1] == table
     for word in ("checker", "fail", "solved", "e1.checker"):

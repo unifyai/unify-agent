@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, PRIMARY KEY(item
 """
 
 # The item_use counts, in column order. Each is added to a store that lacks it (a store opened before
-# the column existed), as ``INTEGER NOT NULL DEFAULT 0``.
+# the column existed), as ``INTEGER NOT NULL DEFAULT 0``, or ``DEFAULT 1`` for :data:`_UNKNOWN_BY_DEFAULT`.
 _USE_COUNTS = (
     "imported",
     "called",
@@ -50,27 +50,90 @@ _USE_COUNTS = (
     "exposure_unknown",
     "outcome_unknown",
 )
+# Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
+# where its shown lists came from), never as known. Every insert sets every column, so the default only
+# ever fills the rows already there when an old store is migrated.
+_UNKNOWN_BY_DEFAULT = frozenset({"outcome_unknown", "exposure_unknown"})
 # Where a record's shown lists came from (``analysis.use``'s ``exposure_source``); a record without one
 # (from before the field) counts as ``unknown``.
 _EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
-# The item_use columns that hold one value per request (the same on each of its rows).
+# The item_use columns :meth:`EvidenceStore.request_flags` counts requests by (a request counts when any
+# of its rows has it). All but ``outcome_unknown`` hold one value per request; ``outcome_unknown`` is per
+# item (the items a cell with an unknown outcome could reach).
 _REQUEST_FLAGS = (
     "exposure_record",
     "exposure_legacy_text",
     "exposure_unknown",
     "outcome_unknown",
 )
+# Per-item sums over the requests whose outcome for the item was known (``outcome_unknown = 0``).
+_KNOWN_SUMS = (
+    ("refused_known", "SUM(CASE WHEN outcome_unknown=0 THEN refused ELSE 0 END)"),
+    ("errored_known", "SUM(CASE WHEN outcome_unknown=0 THEN errored ELSE 0 END)"),
+    (
+        "refused_accepted_known",
+        "SUM(CASE WHEN outcome_unknown=0 THEN refused_accepted ELSE 0 END)",
+    ),
+    (
+        "requests_refusing_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND refused>0 THEN 1 ELSE 0 END)",
+    ),
+    (
+        "requests_erroring_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND errored>0 THEN 1 ELSE 0 END)",
+    ),
+)
 _IN_CHUNK = 500
 
 
 def _migrate_item_use(db: sqlite3.Connection) -> None:
+    """Add the item_use columns a store lacks. Rows already there read ``outcome_unknown = 1`` and
+    ``exposure_unknown = 1`` (:data:`_UNKNOWN_BY_DEFAULT`): what they did not record is unknown.
+    """
     have = {r[1] for r in db.execute("PRAGMA table_info(item_use)")}
     with db:
         for col in _USE_COUNTS:
             if col not in have:
+                default = 1 if col in _UNKNOWN_BY_DEFAULT else 0
                 db.execute(
-                    f"ALTER TABLE item_use ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0",
+                    f"ALTER TABLE item_use ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}",
                 )
+
+
+def _exposure_source(use: dict) -> str:
+    """The record's ``exposure_source``; a record from before the field (``version`` below 4) whose
+    legacy reading found a section is ``legacy_text``, any other record without one ``unknown``.
+    """
+    source = use.get("exposure_source")
+    if source in _EXPOSURE_SOURCES:
+        return source
+    version, section = use.get("version"), use.get("memory_section_shown")
+    if (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version < 4
+        and isinstance(section, dict)
+        and section.get("shown") is True
+    ):
+        return "legacy_text"
+    return "unknown"
+
+
+def _unknown_items(use: dict, items: set[str]) -> set[str]:
+    """The items whose outcome the record leaves unknown: its ``items_outcome_unknown`` (every item when
+    that list was cut short), or, for a record without the list (an older or failed record), every item
+    unless ``outcomes_known`` is true."""
+    listed = use.get("items_outcome_unknown")
+    if isinstance(listed, list):
+        count = use.get("items_outcome_unknown_count")
+        if (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > len(listed)
+        ):
+            return set(items)
+        return {v for v in listed if isinstance(v, str)}
+    return set() if use.get("outcomes_known") is True else set(items)
 
 
 def _use_rows(eid: str, use: dict) -> list[tuple]:
@@ -80,9 +143,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
     channel's files (its refusals and errors are then in the ``_modified`` columns only);
     ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
-    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``outcome_unknown`` is
-    1 unless the record says every cell's outcome was known (``outcomes_known``; a record from before
-    the field counts as unknown), and the refusal and error columns are then lower bounds.
+    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
+    (``items_outcome_unknown``; for a record without that list, every item unless ``outcomes_known``),
+    and that row's refusal and error columns are then lower bounds.
     """
 
     def listed(key: str) -> set[str]:
@@ -103,16 +166,16 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     unknown = (
         use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
     )
-    source = use.get("exposure_source")
-    source = source if source in _EXPOSURE_SOURCES else "unknown"
+    source = _exposure_source(use)
     exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
-    outcome_unknown = int(use.get("outcomes_known") is not True)
 
     def n(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
+    every = pinned | {k for k in rows if isinstance(k, str)}
+    unknown_items = _unknown_items(use, every)
     out = []
-    for item in sorted(pinned | {k for k in rows if isinstance(k, str)}):
+    for item in sorted(every):
         r = rows.get(item) if isinstance(rows.get(item), dict) else {}
         channel = item.split(":", 1)[0].removeprefix("env/")
         out.append(
@@ -133,7 +196,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 n(r.get("refused_modified")),
                 n(r.get("errored_modified")),
                 *exposure,
-                outcome_unknown,
+                int(item in unknown_items),
             ),
         )
     return out
@@ -191,10 +254,15 @@ class EvidenceStore:
         episode when None).
 
         Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
-        with a call site), and the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
-        the requests whose memory section showed the item's line and its channel). Items are in id order.
+        with a call site), the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
+        the requests whose memory section showed the item's line and its channel; ``outcome_unknown`` the
+        requests in which a cell with an unknown outcome could reach the item), and the sums of
+        :data:`_KNOWN_SUMS` over the requests whose outcome for the item was known. Items are in id order.
         """
-        cols = ", ".join(f"SUM({c})" for c in _USE_COUNTS)
+        cols = ", ".join(
+            [f"SUM({c})" for c in _USE_COUNTS] + [expr for _, expr in _KNOWN_SUMS],
+        )
+        known_keys = [k for k, _ in _KNOWN_SUMS]
         base = (
             f"SELECT item, COUNT(*), SUM(CASE WHEN called > 0 THEN 1 ELSE 0 END), {cols} "
             "FROM item_use"
@@ -223,17 +291,19 @@ class EvidenceStore:
                         "requests": 0,
                         "used_requests": 0,
                         **dict.fromkeys(_USE_COUNTS, 0),
+                        **dict.fromkeys(known_keys, 0),
                     },
                 )
                 cur["requests"] += int(r[1] or 0)
                 cur["used_requests"] += int(r[2] or 0)
-                for c, v in zip(_USE_COUNTS, r[3:]):
+                for c, v in zip([*_USE_COUNTS, *known_keys], r[3:]):
                     cur[c] += int(v or 0)
         return dict(sorted(out.items()))
 
     def request_flags(self, eids: list[str] | None = None) -> dict[str, int]:
         """Per column of :data:`_REQUEST_FLAGS`, how many requests among *eids* (every indexed one when
-        None) have it set; a request counts when its pin held at least one item."""
+        None) have it set on any of their rows (``outcome_unknown``: some item's outcome was unknown); a
+        request counts when its pin held at least one item."""
         out = dict.fromkeys(_REQUEST_FLAGS, 0)
         cols = ", ".join(f"MAX({c})" for c in _REQUEST_FLAGS)
         if eids is None:

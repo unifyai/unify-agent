@@ -668,6 +668,17 @@ def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_
     ev = EvidenceStore(early)
     row = ev.item_use()["env/x:parse"]
     assert (row["called"], row["shown"], row["refused_modified"]) == (2, 0, 0)
+    # the row indexed before the columns existed reads as unknown, never as known (DEFAULT 1)
+    assert (row["outcome_unknown"], row["exposure_unknown"]) == (1, 1)
+    assert row["exposure_record"] == 0
+    assert ev.db.execute(
+        "SELECT outcome_unknown, exposure_unknown FROM item_use WHERE episode_id='e9'",
+    ).fetchone() == (1, 1)
+    from unify.memory_v2 import usage
+
+    sig = usage.item_signals("env/x:parse", ev)
+    assert sig["refusals"] is None and not sig["outcomes_known"]
+    assert sig["refusals_report"] == "refusals 0 of 0 known (+1 unknown)"
     _index(
         ev,
         "e1",
@@ -676,6 +687,8 @@ def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_
     )
     row = ev.item_use()["env/x:parse"]
     assert (row["refused_modified"], row["modified"], row["refused"]) == (1, 1, 0)
+    # rows indexed after the migration set every column: the new request is known
+    assert row["outcome_unknown"] == 1 and row["requests"] == 2
 
 
 # --- what the prompt showed ------------------------------------------------------------------------------
@@ -1061,12 +1074,14 @@ def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
     assert rec["cells_without_metadata"] == 1 and rec["cells_error_unread"] == 0
     assert rec["cells_without_metadata_by_cause"]["other"] == 1
     assert not rec["outcomes_known"]
-    assert (
-        rec["items"]["env/x:parse"]["refused"] == 1
-    )  # what was recorded, a lower bound
+    # only what the unknown cell's code reached is unknown: lookup, not parse or strict
+    assert rec["items_outcome_unknown"] == ["env/x:lookup"]
+    assert rec["cells_outcome_unknown"] == 1
+    assert rec["items"]["env/x:parse"]["refused"] == 1
     # a recording with no statuses at all (before the field): every cell unknown
     old = use.request_use(_lines(cells), ITEMS)
     assert old["cells_without_metadata"] == 2 and not old["outcomes_known"]
+    assert old["items_outcome_unknown"] == ["env/x:lookup", "env/x:parse"]
     # forged or malformed recorded entries are never trusted
     junk = [
         {
@@ -1106,16 +1121,31 @@ def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
     sig = usage.item_signals("env/x:lookup", ev)
     assert sig["errors"] is None and sig["errors_at_least"] == 0
     assert not sig["outcomes_known"] and sig["requests_outcome_unknown"] == 1
-    assert usage.item_signals("env/x:parse", ev)["refusals_at_least"] == 1
-    # shown and untouched, but a cell's outcome is unknown: not "never used"
-    assert not usage.item_signals("env/x:strict", ev)["never_used"]
+    assert sig["errors_report"] == "errors 0 of 0 known (+1 unknown)"
+    # parse's outcome was known in this request (the unknown cell never reached it): exact
+    parse = usage.item_signals("env/x:parse", ev)
+    assert parse["refusals"] == 1 and parse["outcomes_known"]
+    assert parse["refusals_report"] == "refusals 1 of 1 known (+0 unknown)"
+    # strict: shown, untouched, and no unknown cell could reach it: never used
+    assert usage.item_signals("env/x:strict", ev)["never_used"]
+    assert not sig["never_used"]  # lookup: a cell whose outcome is unknown reached it
     known = EvidenceStore(tmp_path / "known.sqlite")
     _index(known, "e1", complete, "2026-10-08T01:00:00Z")
     assert usage.item_signals("env/x:strict", known)["never_used"]
     assert usage.item_signals("env/x:lookup", known)["errors"] == 1
     table = usage.usage_table(ev, ["e1"], ITEMS)
-    assert " | 1+? | 0+? | 0+? | " in table  # parse: refused 1, at least
-    assert "(+?: 1 of these requests did not record every cell's outcome" in table
+    assert (
+        "env/x:parse | 1 | 1 | 1 | 1 | 1 | 1 of 1 known (+0 unknown) | 0 | "
+        "0 of 1 known (+0 unknown) | 0 | " in table
+    )
+    assert (
+        "env/x:lookup | 1 | 1 | 1 | 0 | 1 | 0 of 0 known (+1 unknown) | 0+? | "
+        "0 of 0 known (+1 unknown) | 0 | " in table
+    )
+    assert (
+        "(unknown: 1 of these requests had a cell whose outcome was not recorded and whose code could reach a function"
+        in table
+    )
 
 
 def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeypatch):
@@ -1381,6 +1411,7 @@ def test_empty_and_executor_failed_cells_are_counted_by_cause(lib):
         "other": 0,
     }
     assert rec["cells_without_metadata"] == 2 and rec["cells_outcome_unknown"] == 1
+    assert rec["items_outcome_unknown"] == ["env/x:parse"]
     assert rec["cell_status"][1]["exc"] == "OSError"
     # an empty cell alone leaves every outcome known
     alone = use.request_use(_lines(cells[:1]), ITEMS, cell_status=status)
@@ -1439,6 +1470,7 @@ def test_a_cell_the_harness_answered_itself_is_unknown_with_its_cause(lib):
         "other",
     ]
     assert rec["cells_without_metadata"] == len(names)
+    assert rec["items_outcome_unknown"] == ["env/x:parse"]
     # the words name a cause only for a cell without a structured result: with one, they are output
     with_status = use.request_use(
         lines,
@@ -1453,3 +1485,260 @@ def test_a_cell_the_harness_answered_itself_is_unknown_with_its_cause(lib):
     assert rec["cell_status"][0]["cause"] == "tool_raised"
     again = use.request_use(lines, ITEMS, cell_status=rec["cell_status"])
     assert again == rec
+
+
+def test_an_unknown_cell_reaches_only_what_its_code_could_reach(lib):
+    items = _channel_y(lib)
+    surface = use.library_surface(lib)
+    codes = [
+        # 0: defines a function whose body calls lookup (known cell)
+        "from env.x import lookup\ndef fetch(k):\n    return lookup(k)\n",
+        # 1: unknown: calls fetch, so it reaches lookup only
+        "fetch('a')\n",
+        # 2: unknown: uses channel y as a module object: every function of y, and what y re-exports
+        "import env.y\nhelp(env.y)\n",
+        # 3: unknown: plain code reaching nothing
+        "total = sum(range(10))\n",
+    ]
+    cells = [(c, None) for c in codes]
+    status = {"c0": use.runtime_status(None, items=items)}
+    rec = use.request_use(_lines(cells), items, surface=surface, cell_status=status)
+    assert rec["cells_outcome_unknown"] == 3
+    assert rec["items_outcome_unknown"] == [
+        "env/x:lookup",
+        "env/x:parse",  # y re-exports parse as yparse
+        "env/y:hidden",
+        "env/y:shout",
+    ]
+    # dynamic use of the package reaches every item; a cell too large to read too
+    pkg = use.request_use(
+        _lines([("import env\ngetattr(env, 'x')\n", None)]),
+        items,
+    )
+    assert pkg["items_outcome_unknown"] == sorted(items)
+    big = use.request_use(_lines([("x = 1\n" * 100_000, None)]), items)
+    assert big["items_outcome_unknown"] == sorted(items)
+    # a cell that does not compile never ran: it reaches nothing
+    bad = use.request_use(_lines([("from env.x import parse\nparse(\n", None)]), items)
+    assert bad["outcomes_known"] and bad["unparsed_cells"] == 1
+
+
+def _random_request(rng: random.Random, channels: dict[str, list[str]]):
+    """A seeded random request: cells built from fragments whose reach is known by construction, each
+    with a known or unknown status (and, when known, random exits). Returns the transcript lines, the
+    statuses by call id and the brute-force expectation: the items whose outcome is unknown and the
+    refusals and errors per item."""
+    ids = [f"env/{c}:{n}" for c, names in channels.items() for n in names]
+    defined: dict[str, set[str]] = {}
+    cells, statuses = [], {}
+    unknown: set[str] = set()
+    refused: dict[str, int] = {}
+    errored: dict[str, int] = {}
+    for i in range(rng.randint(1, 9)):
+        parts, reach = [], set()
+        for _ in range(rng.randint(1, 3)):
+            kind = rng.choice(
+                ["call", "attr", "dynamic", "module", "def", "callh", "plain"],
+            )
+            ch = rng.choice(sorted(channels))
+            fn = rng.choice(channels[ch])
+            item = f"env/{ch}:{fn}"
+            if kind == "call":
+                parts.append(f"from env.{ch} import {fn}\n{fn}(1)\n")
+                reach.add(item)
+            elif kind == "attr":
+                parts.append(f"import env.{ch}\nenv.{ch}.{fn}(1)\n")
+                reach.add(item)
+            elif kind == "dynamic":
+                parts.append(
+                    f"import env.{ch} as m_{ch}\ngetattr(m_{ch}, 'f' + '0')(1)\n",
+                )
+                reach |= {f"env/{ch}:{n}" for n in channels[ch]}
+            elif kind == "module":
+                parts.append(f"import env.{ch}\nhelp(env.{ch})\n")
+                reach |= {f"env/{ch}:{n}" for n in channels[ch]}
+            elif kind == "def":
+                name = f"h{len(defined)}"
+                parts.append(
+                    f"from env.{ch} import {fn}\ndef {name}():\n    return {fn}(1)\n",
+                )
+                defined[name] = {item}
+                reach.add(item)
+            elif kind == "callh" and defined:
+                name = rng.choice(sorted(defined))
+                parts.append(f"{name}()\n")
+                reach |= defined[name]
+            else:
+                parts.append("v = 1 + 1\n")
+        cells.append(("".join(parts), None))
+        mode = rng.choice(["ok", "error", "none", "raised", "executor", "unread"])
+        call = f"c{i}"
+        if mode == "ok":
+            statuses[call] = use.runtime_status(None, items=ids)
+        elif mode == "error":
+            exits = []
+            for _ in range(rng.randint(1, 3)):
+                ch = rng.choice(sorted(channels))
+                fn = rng.choice(channels[ch])
+                k = rng.choice(["refused", "errored"])
+                exits.append([k, ch, fn])
+                bucket = refused if k == "refused" else errored
+                bucket[f"env/{ch}:{fn}"] = bucket.get(f"env/{ch}:{fn}", 0) + 1
+            statuses[call] = {
+                "status": "error",
+                "exits": exits,
+                "session": None,
+                "fresh": False,
+            }
+        else:
+            unknown |= reach
+            if mode == "raised":
+                statuses[call] = use.failed_status("RuntimeError")
+            elif mode == "executor":
+                statuses[call] = use.dict_status(
+                    _plain("Traceback\nOSError: x\n"),
+                    items=ids,
+                )
+            elif mode == "unread":
+                statuses[call] = use.runtime_status(
+                    "x" * (use.MAX_TRACEBACK_CHARS + 1),
+                    items=ids,
+                )
+    return _lines(cells), statuses, unknown, refused, errored
+
+
+def test_per_item_unknowns_and_counts_equal_a_brute_force_recount(tmp_path):
+    """Seeded random requests mixing known and unknown cells over random items: the record's unknown
+    items are exactly what the unknown cells' code reached, and the evidence store's and the signals'
+    per-item known and unknown counts equal a recount over the requests."""
+    from unify.memory_v2 import usage
+
+    rng = random.Random(20261008)
+    channels = {"x": ["f0", "f1", "f2"], "y": ["f0", "f3"], "z": ["f1"]}
+    ids = sorted(f"env/{c}:{n}" for c, names in channels.items() for n in names)
+    for trial in range(6):
+        ev = EvidenceStore(tmp_path / f"e{trial}.sqlite")
+        expect = {
+            i: {
+                "unknown": 0,
+                "known": 0,
+                "refused": 0,
+                "refused_known": 0,
+                "refusing_known": 0,
+                "errored_known": 0,
+                "erroring_known": 0,
+            }
+            for i in ids
+        }
+        eids = []
+        for r in range(rng.randint(1, 8)):
+            lines, statuses, unknown, refused, errored = _random_request(rng, channels)
+            rec = use.request_use(lines, ids, cell_status=statuses)
+            assert rec["items_outcome_unknown"] == sorted(unknown), (trial, r)
+            assert rec["outcomes_known"] is (not unknown)
+            for i in ids:
+                row = rec["items"].get(i, {})
+                assert row.get("refused", 0) == refused.get(i, 0)
+                assert row.get("errored", 0) == errored.get(i, 0)
+                e = expect[i]
+                e["refused"] += refused.get(i, 0)
+                if i in unknown:
+                    e["unknown"] += 1
+                else:
+                    e["known"] += 1
+                    e["refused_known"] += refused.get(i, 0)
+                    e["refusing_known"] += int(refused.get(i, 0) > 0)
+                    e["errored_known"] += errored.get(i, 0)
+                    e["erroring_known"] += int(errored.get(i, 0) > 0)
+            eid = f"t{trial}r{r}"
+            eids.append(eid)
+            _index(ev, eid, rec, f"2026-10-08T0{r}:00:00Z")
+        totals = ev.item_use()
+        for i in ids:
+            e, t = expect[i], totals[i]
+            assert t["requests"] == e["known"] + e["unknown"]
+            assert t["outcome_unknown"] == e["unknown"]
+            assert t["refused"] == e["refused"]
+            assert t["refused_known"] == e["refused_known"]
+            assert t["requests_refusing_known"] == e["refusing_known"]
+            assert t["errored_known"] == e["errored_known"]
+            assert t["requests_erroring_known"] == e["erroring_known"]
+            sig = usage.item_signals(i, ev)
+            assert sig["requests_outcome_known"] == e["known"]
+            assert sig["requests_outcome_unknown"] == e["unknown"]
+            assert sig["refusals_report"] == (
+                f"refusals {e['refusing_known']} of {e['known']} known "
+                f"(+{e['unknown']} unknown)"
+            )
+            assert sig["errors_report"] == (
+                f"errors {e['erroring_known']} of {e['known']} known "
+                f"(+{e['unknown']} unknown)"
+            )
+            assert sig["refusals"] == (e["refused"] if not e["unknown"] else None)
+            table = usage.usage_table(ev, eids, ids)
+            assert (
+                f" | {e['refusing_known']} of {e['known']} known (+{e['unknown']} unknown) | "
+                in table.split(f"{i} | ", 1)[1].splitlines()[0] + " | "
+            )
+
+
+def test_an_unknown_cell_marks_its_items_for_that_request_only(tmp_path):
+    """One request with an unknown cell over parse leaves parse unknown in that request only; lookup
+    stays known there, and parse is known again in the next request."""
+    from unify.memory_v2 import usage
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    first = _record(
+        {"env/x:parse": {"called": 1}, "env/x:lookup": {"called": 1, "refused": 1}},
+        shown=ITEMS,
+    )
+    first.update(
+        {
+            "outcomes_known": False,
+            "items_outcome_unknown": ["env/x:parse"],
+            "items_outcome_unknown_count": 1,
+        },
+    )
+    second = _record({"env/x:parse": {"called": 1, "refused": 1}}, shown=ITEMS)
+    second.update({"items_outcome_unknown": [], "items_outcome_unknown_count": 0})
+    _index(ev, "e1", first, "2026-10-08T01:00:00Z")
+    _index(ev, "e2", second, "2026-10-08T02:00:00Z")
+    parse = usage.item_signals("env/x:parse", ev)
+    assert parse["refusals_report"] == "refusals 1 of 1 known (+1 unknown)"
+    assert parse["refusals"] is None and parse["refusals_known"] == 1
+    lookup = usage.item_signals("env/x:lookup", ev)
+    assert lookup["refusals_report"] == "refusals 1 of 2 known (+0 unknown)"
+    assert lookup["refusals"] == 1 and lookup["outcomes_known"]
+    strict = usage.item_signals("env/x:strict", ev)
+    assert strict["outcomes_known"] and strict["never_used"]
+    # a list cut short (more unknown items than it holds) marks every item of the request
+    cut = _record({}, shown=ITEMS)
+    cut.update(
+        {"items_outcome_unknown": ["env/x:parse"], "items_outcome_unknown_count": 9},
+    )
+    rows = {r[0]: r for r in _use_rows("e3", cut)}
+    col = 2 + _USE_COUNTS.index("outcome_unknown")
+    assert {i: rows[i][col] for i in ITEMS} == dict.fromkeys(ITEMS, 1)
+    # a failed record (no list, no outcomes_known) marks every item
+    rows = {
+        r[0]: r
+        for r in _use_rows(
+            "e4",
+            {"version": use.VERSION, "error": "TypeError", "items_at_pin": ITEMS},
+        )
+    }
+    assert {i: rows[i][col] for i in ITEMS} == dict.fromkeys(ITEMS, 1)
+
+
+def test_a_pre_v4_record_with_a_section_counts_as_legacy_text():
+    col = 2 + _USE_COUNTS.index("exposure_legacy_text")
+    unknown = 2 + _USE_COUNTS.index("exposure_unknown")
+    for version, shown, want in (
+        (3, True, (1, 0)),
+        (2, False, (0, 1)),
+        (4, True, (0, 1)),
+    ):
+        rec = _record({}, shown=ITEMS[:1], source=None)
+        rec.update({"version": version, "memory_section_shown": {"shown": shown}})
+        row = {r[0]: r for r in _use_rows("e1", rec)}["env/x:parse"]
+        assert (row[col], row[unknown]) == want, version
