@@ -6,6 +6,7 @@ from unify.memory_v2.replay import (
     RecordedEnv,
     RecordedError,
     ReplayMiss,
+    UnknownEffect,
     call_of,
     calls,
     env_from,
@@ -160,3 +161,56 @@ def test_a_write_function_is_held_to_exactly_its_recorded_write_calls():
     assert unrecorded.misses == [
         call_of("slack", "post", ["#ops"], {"text": "and again"}),
     ]
+
+
+# --- effects: unknown is a class of its own (I-Q1) -----------------------------------------------------------
+
+# dialogue actions are recorded with effect "unknown" (adapters/dialogue.py); an exported row without an effect
+# reads as unknown too
+SUBMIT = {
+    "channel": "dialogue:user",
+    "method": "reply",
+    "args": ["submit"],
+    "kwargs": {},
+    "response": {"valid": True},
+    "status": "ok",
+    "kind": "dialogue",
+}
+
+
+def submit_nothing(env):
+    """A careless write function under test: it should submit once and issues nothing."""
+    return None
+
+
+def test_an_effect_filter_fails_loudly_where_the_recorded_effect_is_unknown():
+    rows = [SUBMIT]
+    env = env_from(rows)
+    submit_nothing(env)
+    assert env.issued(effect="unknown") == []
+    # the vacuous comparison ([] == []) cannot be made: both sides refuse to filter unknown effects
+    with pytest.raises(UnknownEffect, match="dialogue:user"):
+        calls(rows, effect="write")
+    with pytest.raises(UnknownEffect):
+        calls(rows, effect="read")
+    # the unfiltered comparison over the function's own rows judges it: nothing was issued
+    assert env.issued() != calls(rows)
+    # unknown is selected as its own class
+    assert calls(rows, effect="unknown") == calls(rows)
+    assert calls([LOGIN, POST], effect="unknown") == []
+    # a served call recorded unknown makes issued's filter refuse as well
+    served = env_from(rows + [LOGIN])
+    getattr(served, "dialogue:user").reply("submit")
+    with pytest.raises(UnknownEffect):
+        served.issued(effect="write")
+    assert served.issued() == calls(rows)
+    assert served.issued(effect="unknown") == calls(rows)
+    # mixed rows: the tool channel's effects are known, the dialogue's are not, so a write filter refuses
+    with pytest.raises(UnknownEffect, match="dialogue:user"):
+        calls([LOGIN, POST, SUBMIT], effect="write")
+    # rows that all carry an effect filter as before
+    assert calls([LOGIN, POST], effect="write") == calls([POST])
+    with pytest.raises(ValueError, match="effect is one of"):
+        calls([LOGIN], effect="writes")
+    with pytest.raises(ValueError, match="effect is one of"):
+        env_from([LOGIN]).issued(effect="writes")
