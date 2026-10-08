@@ -202,23 +202,47 @@ def test_no_path_of_a_v2_library_fixture_is_refused():
 )
 def test_no_path_of_a_recorded_library_is_refused():
     seen: set[str] = set()
-    for repo in os.environ["MEMORY_V2_LIBRARY_REPOS"].split(":"):
-        git = ["git", "--git-dir", repo]
-        shas = subprocess.run(
-            [*git, "rev-list", "main"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        for sha in shas.stdout.split():
-            names = subprocess.run(
-                [*git, "ls-tree", "-r", "--name-only", "-z", sha],
-                capture_output=True,
-                check=True,
-            ).stdout.split(b"\0")
+    for repo in filter(None, os.environ["MEMORY_V2_LIBRARY_REPOS"].split(":")):
+        shas = _git(repo, "rev-list", "refs/heads/main", "--")
+        for sha in shas.decode("ascii").split():
+            names = _git(repo, "ls-tree", "-r", "--name-only", "-z", sha).split(b"\0")
             seen |= {n.decode("utf-8") for n in names if n}
     assert seen
     assert sorted(p for p in seen if not _admitted(p)) == []
+
+
+# Classes of git failure, named in the assertion (stderr itself is not echoed: it can carry paths).
+_GIT_FAILURES = (
+    ("dubious ownership", "safe.directory ownership check"),
+    ("not a git repository", "not a git repository"),
+    ("unknown revision", "no main branch"),
+    ("ambiguous argument", "no main branch"),
+    ("permission denied", "permission denied"),
+    ("no such file or directory", "missing path"),
+)
+
+
+def _git(repo: str, *args: str) -> bytes:
+    """Run git read-only on the bare *repo*, independent of the caller's git environment and config.
+
+    The variables a runner may set (``GIT_DIR``, ``GIT_INDEX_FILE``, ``GIT_CONFIG_*``…) are dropped, the
+    global and system config are not read, and ``safe.directory=*`` is set for this call only, so a
+    library repository owned by another user (a copied recording) is read rather than refused.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+    path = str(Path(repo).expanduser().resolve())
+    proc = subprocess.run(
+        ["git", "-c", "safe.directory=*", "--git-dir", path, *args],
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace").lower()
+        cls = next((c for k, c in _GIT_FAILURES if k in err), "other")
+        pytest.fail(f"git {args[0]} on {path} exited {proc.returncode}: {cls}")
+    return proc.stdout
 
 
 def test_the_allowed_root_entries_shadow_no_module():
