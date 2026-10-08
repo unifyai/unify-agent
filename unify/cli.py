@@ -1,15 +1,16 @@
-"""The terminal front ends: chat with the assistant, or drive the actor alone.
+"""The terminal front end: drive the actor.
 
-``unify`` (or ``python -m unify``) starts the slow brain in-process, wires the
-terminal to the in-app chat, and renders what the assistant sends back.
-Every line typed is an inbound ``UnifyMessageReceived`` event; every reply is
-the ``UnifyMessageSent`` event the brain publishes, so the terminal is one
-front end over the same loop any other client would drive.
+``unify act "request"`` (and ``unify`` or ``python -m unify`` with no
+subcommand, which runs ``act`` on a request read from stdin): one
+``CodeActActor`` takes the request, its progress streams to the terminal, a
+post it addresses to ``@user`` is shown and answered from the terminal, and
+the result is printed. This is the unit to compare against single-loop
+harnesses, and the shape a benchmark runner wants.
 
-``unify act "request"`` bypasses the conversation loop: one ``CodeActActor``
-takes the request, its progress streams to the terminal, any question it asks
-is answered from the terminal, and the result is printed. This is the unit to
-compare against single-loop harnesses, and the shape a benchmark runner wants.
+``unify chat`` is legacy and unsupported: the old conversation_manager product
+(``unify/legacy/``), which starts the slow brain in-process and wires the
+terminal to the in-app chat. It is kept for reference and is not expected to
+run after the loop trim.
 
 Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 ``--debug`` is given.
@@ -60,7 +61,7 @@ asked for while you keep typing; follow-up messages steer it.
 
 
 ACT_HELP = """\
-Drive one actor directly, without the conversation loop.
+Drive one actor directly. `unify` with no subcommand runs this command.
 
 The request is taken from the command line, or from stdin when omitted or
 given as "-". Progress lines stream to stderr while the actor works; the
@@ -116,17 +117,24 @@ def _add_common_options(
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="unify",
-        description="Chat with the local assistant, or drive its actor directly.",
+        description="Drive the actor (`unify act`, the default).",
     )
     _add_common_options(parser)
     commands = parser.add_subparsers(dest="command")
 
-    chat = commands.add_parser("chat", help="chat with the assistant (the default)")
+    chat = commands.add_parser(
+        "chat",
+        help="legacy, unsupported: the old conversation_manager product; "
+        "use `unify act`",
+        description="Legacy, unsupported: the old conversation_manager product "
+        "(unify/legacy/), not expected to run after the loop trim. Use "
+        "`unify act`.",
+    )
     _add_common_options(chat, subcommand=True)
 
     act = commands.add_parser(
         "act",
-        help="run one request through the actor, bypassing the conversation loop",
+        help="run a request through the actor (the default)",
         description=ACT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -152,11 +160,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="forbid execute_code: the actor may only call stored functions",
     )
     act.add_argument(
-        "--no-clarify",
-        action="store_true",
-        help="disable request_clarification; the actor must decide on its own",
-    )
-    act.add_argument(
         "--timeout",
         type=float,
         metavar="SECONDS",
@@ -179,9 +182,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "the actor (see the description)",
     )
 
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     if args.command is None:
-        args.command = "chat"
+        # No subcommand runs `act`, its request read from stdin.
+        args = parser.parse_args([*argv, "act"])
     return args
 
 
@@ -794,8 +799,11 @@ class Act:
         await self.start()
         args = self._args
         interactive = sys.stdin.isatty()
-        clarify = not args.no_clarify and interactive
-        if not args.no_clarify and not interactive:
+        # Someone can answer only at a terminal: there the actor's posts to
+        # @user are read and answered; otherwise the record says nobody reads
+        # them.
+        clarify = interactive
+        if not interactive:
             self._progress("stdin is not a terminal; the actor cannot ask questions")
         self._handle = await self._actor.act(
             request,

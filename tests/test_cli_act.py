@@ -17,9 +17,13 @@ from unify.cli import Act, _parse_args
 pytestmark = pytest.mark.no_unify_context
 
 
-def test_no_command_is_chat():
-    assert _parse_args([]).command == "chat"
-    assert _parse_args(["--debug"]).debug is True
+def test_no_command_is_act_reading_stdin():
+    args = _parse_args([])
+    assert (args.command, args.request) == ("act", None)
+    args = _parse_args(["--debug"])
+    assert (args.command, args.debug) == ("act", True)
+    # The legacy conversation product is still reachable by name.
+    assert _parse_args(["chat"]).command == "chat"
 
 
 @pytest.mark.parametrize(
@@ -58,7 +62,8 @@ def test_act_flags_parse():
     assert args.request == "count the rows"
     assert args.persist and args.no_store and args.json
     assert args.timeout == 12.0
-    assert args.no_compose is False and args.no_clarify is False
+    assert args.no_compose is False
+    assert not hasattr(args, "no_clarify")
 
 
 class _FakeHandle:
