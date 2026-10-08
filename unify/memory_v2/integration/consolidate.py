@@ -9,9 +9,15 @@ part). The pass runs Sol (:class:`..sol_pass.SolPass`) behind the gate, blocking
 Fixed bounds per pass: ``PassConfig(model, effort, max_calls=40, deadline_s=900, max_usd=E x a_tok)``.
 Sol's reasoning effort is the actor's effort for the run, passed in by the caller (there is no switch).
 The run guard (``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``, empty for none) starts no further pass once the Sol
-USD this home has committed plus the next pass's cap would exceed it; the request then stays due.
+USD this home has committed plus the next pass's cap would exceed it; the request then stays due. The
+commitment is kept in a ledger in the state dir (:func:`committed_sol_usd`): a pass reserves its whole cap
+before it starts and settles at its end to its known USD plus a per-call reserve for each unpriced call,
+so a pass that never ends (a killed process) keeps its whole cap committed. No reason text is read. The
+last call of a pass can overshoot the pass's cap (the cap is checked before each call), and with it the
+guard, by at most one call.
 
-Each pass sends two events through ``emit`` and appends them to ``<UNIFY_HOME>/memory_v2/events.jsonl``:
+Each pass sends two events through ``emit`` and appends them to the harness-only state dir's
+``events.jsonl`` (:func:`events_path`):
 
 * ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "sol_model",
   "sol_effort", "cap_usd"}``;
@@ -106,7 +112,6 @@ REASON_CODES = frozenset(
 )
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _PLAIN_DECIMAL = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
-_UNPRICED = re.compile(r"^note: ([0-9]+) unpriced calls\Z")  # sol_pass._unpriced
 _NO_INDEX_BUDGET = 10**9
 
 
@@ -139,7 +144,14 @@ def open_stores(paths: Paths) -> Stores:
 
 
 def events_path(paths: Paths) -> Path:
-    return paths.home / "memory_v2" / "events.jsonl"
+    """``paths.events`` (the harness-only state dir's ``events.jsonl``); the same file without that property."""
+    events = getattr(paths, "events", None)
+    return Path(events) if events is not None else paths.state_dir / "events.jsonl"
+
+
+def ledger_path(paths: Paths) -> Path:
+    """The run guard's ledger: one ``reserve`` line before each pass starts, one ``settle`` line after it."""
+    return paths.state_dir / "sol-spend.jsonl"
 
 
 class EpisodeLookup:
@@ -276,6 +288,12 @@ def sol_settings(settings: Any) -> SolSettings:
         getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "")
         or format(USD_PER_TOKEN, "f"),
     )
+    if (
+        a_tok <= 0
+    ):  # a zero cap would consume experience with passes that can make no call
+        raise ValueError(
+            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN must be greater than zero",
+        )
     guard_raw = getattr(settings, "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "") or ""
     guard = (
         _decimal("UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", guard_raw)
@@ -289,29 +307,82 @@ def sol_settings(settings: Any) -> SolSettings:
 
 
 def _usd(value: Decimal) -> str:
-    return format(value, "f")
+    return format(abs(value) if value.is_zero() else value, "f")
 
 
-def committed_sol_usd(evidence: EvidenceStore, reserve: Decimal) -> Decimal:
-    """The Sol USD recorded by every pass in this home, each unpriced call counted at *reserve*.
+def _ledger(stores: Stores, row: dict) -> None:
+    path = ledger_path(stores.paths)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+        fh.flush()
 
-    An unpriced call's cost is unknown, never zero; for the guard it is held at the per-call reserve a
-    pass itself holds against its cap (``max_usd / max_calls``).
+
+def _reserve(stores: Stores, pass_id: str, cap: Decimal, per_call: Decimal) -> None:
+    _ledger(
+        stores,
+        {
+            "pass_id": pass_id,
+            "phase": "reserve",
+            "cap_usd": _usd(cap),
+            "per_call_usd": _usd(per_call),
+        },
+    )
+
+
+def _settle(stores: Stores, pass_id: str, usd: str, unknown_cost_calls: int) -> None:
+    _ledger(
+        stores,
+        {
+            "pass_id": pass_id,
+            "phase": "settle",
+            "usd": usd,
+            "unknown_cost_calls": int(unknown_cost_calls),
+        },
+    )
+
+
+def committed_sol_usd(stores: Stores) -> Decimal:
+    """The Sol USD committed in this home, from the ledger's structured fields only.
+
+    A pass with a ``settle`` line counts its known USD plus ``unknown_cost_calls`` times the per-call
+    reserve it held (an unpriced call's cost is unknown, never zero). A pass with only its ``reserve``
+    line (it started and never settled) counts its whole cap. An unreadable line is skipped.
     """
     total = Decimal(0)
-    for usd, reasons in evidence.db.execute("SELECT usd, reasons FROM passes"):
-        known = money(usd) if usd is not None else UNKNOWN
-        if known != UNKNOWN:
-            total += Decimal(known)
+    open_: dict[str, tuple[Decimal, Decimal]] = (
+        {}
+    )  # reservations not yet settled, per pass id
+    try:
+        text = ledger_path(stores.paths).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return total
+    for line in text.splitlines():
         try:
-            notes = json.loads(reasons) if reasons else []
-        except ValueError:
-            notes = []
-        for note in notes if isinstance(notes, list) else []:
-            m = _UNPRICED.match(note) if isinstance(note, str) else None
-            if m:
-                total += int(m.group(1)) * reserve
-    return total
+            row = json.loads(line)
+            pid, phase = str(row["pass_id"]), row["phase"]
+            if phase == "reserve":
+                held = (
+                    _decimal("cap", row["cap_usd"]),
+                    _decimal("per call", row["per_call_usd"]),
+                )
+                if pid in open_:  # an earlier start of this id never settled
+                    total += open_[pid][0]
+                open_[pid] = held
+            elif phase == "settle":
+                known, n = money(row["usd"]), row["unknown_cost_calls"]
+                if (
+                    known == UNKNOWN
+                    or isinstance(n, bool)
+                    or not isinstance(n, int)
+                    or n < 0
+                ):
+                    continue  # unreadable: the reservation (if any) stays at its whole cap
+                per_call = open_.pop(pid, (Decimal(0), Decimal(0)))[1]
+                total += Decimal(known) + n * per_call
+        except (ValueError, KeyError, TypeError):
+            continue
+    return total + sum((cap for cap, _ in open_.values()), Decimal(0))
 
 
 # --- events and notes ------------------------------------------------------------------------------------
@@ -348,6 +419,7 @@ def _note_costs(
     eid: str,
     pass_id: str,
     rows: list[CostRow],
+    effort: str,
 ) -> None:
     for r in rows:
         note = {
@@ -358,6 +430,7 @@ def _note_costs(
             "usd": r.usd,
             "episode": eid,
             "pass_id": pass_id,
+            "sol_effort": effort,
         }
         try:
             stores.episodes.add_note(
@@ -477,6 +550,9 @@ async def run_due_passes(
     actor's reasoning effort for the run (Sol inherits it).
     """
     cfg = sol_settings(settings)
+    if not isinstance(effort, str) or not effort.strip():
+        _error(stores, f"no pass for {eid}: Sol's effort (the actor's) is empty")
+        return []  # nothing recorded; the request stays due
     trig = Trigger(
         stores.evidence,
         mode="batched",
@@ -510,7 +586,7 @@ async def run_due_passes(
         pass_id = f"{eid}.p{i}"
         if (
             cfg.run_guard_usd is not None
-            and committed_sol_usd(stores.evidence, reserve) + cap > cfg.run_guard_usd
+            and committed_sol_usd(stores) + cap > cfg.run_guard_usd
         ):
             # the run guard: no further pass starts; the request stays due
             _deliver(
@@ -528,6 +604,11 @@ async def run_due_passes(
             recording_turn(unillm_turn(cfg.model, effort), rows, cfg.model),
             config,
         )
+        try:
+            _reserve(stores, pass_id, cap, reserve)
+        except OSError as exc:  # an unrecorded commitment: start nothing
+            _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
+            break
         _deliver(stores, emit, _start_event(req, pass_id, cfg.model, effort, cap))
         started = clock()
         outcome: PassOutcome | None = None
@@ -550,7 +631,11 @@ async def run_due_passes(
             failure_code = "sol_error"  # cancelled or interrupted
             raise
         finally:
-            _note_costs(stores, sha, eid, pass_id, rows)
+            _note_costs(stores, sha, eid, pass_id, rows, effort)
+            try:
+                _settle(stores, pass_id, *_spend(outcome, rows)[:2])
+            except OSError as exc:  # unsettled: the whole cap stays committed
+                _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             _deliver(
                 stores,
                 emit,

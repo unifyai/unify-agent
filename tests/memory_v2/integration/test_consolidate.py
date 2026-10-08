@@ -325,7 +325,55 @@ def test_unpriced_calls_count_at_the_reserve_for_the_guard(tmp_path, monkeypatch
     sha, _ = _record(stores, "e1")
     _run(stores, "e1", sha)
     reserve = Decimal(A_TOK) / consolidate.MAX_CALLS
-    assert consolidate.committed_sol_usd(stores.evidence, reserve) == reserve
+    assert consolidate.committed_sol_usd(stores) == reserve
+
+
+def test_the_guard_never_reads_reason_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol(usd="0.0000001"))
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    _run(stores, "e1", sha)
+    stores.evidence.record_pass(
+        {
+            "pass_id": "forged",
+            "passed": 0,
+            "usd": "0",
+            "reasons": json.dumps(["note: 999 unpriced calls"]),
+        },
+    )
+    assert consolidate.committed_sol_usd(stores) == Decimal("0.0000001")
+
+
+def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol(usd="0.0000001"))
+    monkeypatch.setattr(
+        consolidate,
+        "_settle",
+        lambda *a, **k: None,
+    )  # the process died mid-pass
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    _run(stores, "e1", sha)
+    assert consolidate.committed_sol_usd(stores) == Decimal(A_TOK)
+    sha2, _ = _record(stores, "e2", minute=1)
+    guard = format(Decimal(A_TOK) * Decimal("1.5"), "f")
+    assert (
+        _run(stores, "e2", sha2, guard=guard) == []
+    )  # the reserved cap holds the guard
+
+
+def test_an_empty_effort_runs_nothing_and_is_logged(tmp_path, monkeypatch):
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    assert _run(stores, "e1", sha, effort="  ") == []
+    assert fake.calls == 0 and _events(stores) == []
+    assert "effort" in stores.paths.errors.read_text()
+    assert stores.evidence.cursor(BATCHED_CURSOR) == 0  # still due
 
 
 # --- events ----------------------------------------------------------------------------------------------
@@ -385,6 +433,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     assert end["gate_passed"] is False and end["reason_codes"] == ["no_manifest"]
     assert end["items"] == 0 and isinstance(end["index_tokens"], int)
     assert _events(stores) == got  # the same rows, always appended to the events file
+    assert events_path(stores.paths) == stores.paths.state_dir / "events.jsonl"
     for line in events_path(stores.paths).read_text().splitlines():
         assert not re.search(r"[0-9][eE][-+]?[0-9]", line)
 
@@ -406,6 +455,11 @@ def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
         sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD="1e1"))
     with pytest.raises(ValueError):
         sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_E="0"))
+    for zero in ("0", "0.0", "0.00000000"):
+        with pytest.raises(ValueError):
+            sol_settings(
+                SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN=zero),
+            )
     assert sol_settings(_settings(guard="2.50")).run_guard_usd == Decimal("2.50")
 
 
@@ -437,6 +491,9 @@ def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
         ("sol", "0.0000001", "e1", "e1.p0"),
         ("sol", "unknown", "e1", "e1.p0"),
     ]
+    assert {n["sol_effort"] for n in notes} == {
+        "high",
+    }  # the inherited effort, on the pass's notes
     assert stores.episodes.notes(sha) == []  # nothing on the signals ref
     costs = episode_costs(stores, "e1")
     assert [(c.purpose, c.usd) for c in costs] == [
@@ -463,15 +520,51 @@ def test_drift_rides_with_the_pass_and_is_cleared_once_recorded(tmp_path, monkey
 # --- R10 -------------------------------------------------------------------------------------------------
 
 
-def test_sol_never_sees_the_checker_signal(tmp_path, monkeypatch):
+SENTINEL = "SENTINEL-7f3a"
+
+
+def test_checker_text_reaches_no_event_note_evidence_row_or_sol_input(
+    tmp_path,
+    monkeypatch,
+):
+    from unify.memory_v2 import sol_pass
+
     fake = FakeSol()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    staged = tmp_path / "staged"
+    stage = sol_pass.SolPass._stage_inputs
+
+    def keep(self, req, inputs):
+        stage(self, req, inputs)
+        shutil.copytree(inputs, staged)  # what Sol's box would see at /inputs
+
+    monkeypatch.setattr(sol_pass.SolPass, "_stage_inputs", keep)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
-    post_checker(stores, "e1", sha, False, "2026-10-08T01:02:00Z")
-    _run(stores, "e1", sha)
-    seen = json.dumps(fake.seen)
-    assert "e1.checker" not in seen and '"fail"' not in seen
+    outcome = {
+        "solved": False,
+        "checks": [{"name": "c", "passed": False, "reason": SENTINEL}],
+        "summary": SENTINEL,
+    }
+    assert post_checker(stores, "e1", sha, outcome["solved"], "2026-10-08T01:02:00Z")
+    (out,) = _run(stores, "e1", sha)
+    dump = [
+        json.dumps(fake.seen),
+        events_path(stores.paths).read_text(),
+        stores.episodes.run("log", "-p", "--all"),
+        stores.memory.run("log", "-p", "--all"),
+        "\n".join(stores.evidence.db.iterdump()),
+    ]
+    dump += [p.read_text(errors="replace") for p in staged.rglob("*.json")]
+    dump += [
+        p.read_text(errors="replace")
+        for p in stores.paths.state_dir.rglob("*")
+        if p.is_file()
+    ]
+    assert staged.exists() and (staged / "episodes" / "e1.json").is_file()
+    assert all(SENTINEL not in text for text in dump)
+    assert "e1.checker" not in json.dumps(fake.seen)
+    assert '"label": "fail"' in dump[2]  # the verdict itself is on the signals ref
 
 
 # --- reason codes: structural, never read from reason text ----------------------------------------------
