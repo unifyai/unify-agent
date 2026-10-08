@@ -70,17 +70,43 @@ def _opaque(value: Any) -> Any:
     return f"<{type(value).__module__}.{type(value).__qualname__}>"
 
 
-#: Transport arguments that carry a credential: compared by digest, never kept or printed.
-CREDENTIALS = ("api_key",)
+#: Keys whose values are credentials, at any depth (transport arguments and headers): compared by digest, never
+#: kept or printed. Matched on the key name, case-insensitively.
+CREDENTIALS = ("api_key", "authorization", "x-api-key", "proxy-authorization")
+
+
+def _redact_credentials(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.lower() in CREDENTIALS and v is not None:
+                digest = hashlib.sha256(str(v).encode()).hexdigest()
+                out[k] = f"<credential sha256:{digest[:16]}>"
+            else:
+                out[k] = _redact_credentials(v)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_redact_credentials(v) for v in value]
+    return value
 
 
 def canonical(kw: dict) -> str:
-    body = dict(kw)
-    for name in CREDENTIALS:
-        if body.get(name) is not None:
-            digest = hashlib.sha256(str(body[name]).encode()).hexdigest()
-            body[name] = f"<credential sha256:{digest[:16]}>"
-    return json.dumps(body, sort_keys=True, default=_opaque, ensure_ascii=False)
+    return json.dumps(
+        _redact_credentials(dict(kw)),
+        sort_keys=True,
+        default=_opaque,
+        ensure_ascii=False,
+    )
+
+
+def test_canonical_never_keeps_a_credential():
+    body = {
+        "api_key": "sk-or-v1-FAKE",  # pragma: allowlist secret
+        "extra_headers": {"Authorization": "Bearer FAKE2"},  # pragma: allowlist secret
+        "model": "m",
+    }
+    text = canonical(body)
+    assert "FAKE" not in text and "<credential sha256:" in text
 
 
 class _Recording(ScriptedModel):
