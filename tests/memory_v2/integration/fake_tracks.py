@@ -94,6 +94,9 @@ def install(monkeypatch) -> Fakes:
             return WorktreeResult([WT_ACTION], WT_BEFORE, WT_AFTER, WT_DIFF)
 
     wc.WorktreeCapture, wc.WorktreeResult = WorktreeCapture, WorktreeResult
+    wc.active = (
+        lambda: None
+    )  # the worker's init asks for the active capture (hooks.worker_audit)
 
     # -- Track B: cost ------------------------------------------------------------------------
     cost = types.ModuleType(f"{PKG}.cost")

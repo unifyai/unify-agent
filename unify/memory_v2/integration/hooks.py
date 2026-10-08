@@ -73,16 +73,25 @@ def sandbox_objects(objects: dict) -> dict:
     return {k: v for k, v in objects.items() if k not in _LIBRARY_OBJECTS}
 
 
+def _checkout() -> Path | None:
+    """The run's memory export, only once it exists (a bind source that does not exist stops the worker)."""
+    run = _run()
+    if run is None:
+        return None
+    path = Path(run.paths.checkout)
+    return path if path.is_dir() else None
+
+
 def worker_paths() -> list[str]:
     """Import paths the worker puts first: the run's memory export."""
-    run = _run()
-    return [] if run is None else [str(run.paths.checkout)]
+    path = _checkout()
+    return [] if path is None else [str(path)]
 
 
 def worker_mounts() -> list[Path]:
     """Paths the worker's sandbox binds read-write: the run's memory export, nothing else."""
-    run = _run()
-    return [] if run is None else [Path(run.paths.checkout)]
+    path = _checkout()
+    return [] if path is None else [path]
 
 
 def worker_audit() -> dict | None:
@@ -95,14 +104,20 @@ def worker_audit() -> dict | None:
     """
     if _run() is None:
         return None
-    from .worktree_capture import active
+    try:
+        from .worktree_capture import active
 
-    capture = active()
-    if capture is None:
+        capture = active()
+        if capture is None:
+            return None
+        from .adapters import audit
+
+        return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - the worker always starts; this request then records no file events
+        logger.warning("memory v2: no audit for this worker (%s)", type(exc).__name__)
         return None
-    from .adapters import audit
-
-    return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
 
 
 def worker_cell_done(events: Any) -> None:

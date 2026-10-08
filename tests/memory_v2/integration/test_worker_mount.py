@@ -118,3 +118,35 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
         assert res["error"] is not None
     finally:
         await ex.close()
+
+
+def test_no_mount_or_import_path_until_the_export_exists(tmp_path, monkeypatch):
+    """A bind source that does not exist would stop the worker: nothing is mounted before the export is made."""
+    from unify.memory_v2.integration import hooks
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
+    paths = Paths.under(tmp_path / "state")
+    monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
+    assert not paths.checkout.exists()
+    assert hooks.worker_mounts() == [] and hooks.worker_paths() == []
+    paths.checkout.mkdir(parents=True)
+    assert hooks.worker_mounts() == [paths.checkout] and hooks.worker_paths() == [
+        str(paths.checkout),
+    ]
+
+
+def test_a_failing_audit_lookup_never_stops_the_worker(tmp_path, monkeypatch):
+    from unify.memory_v2.integration import hooks, worktree_capture
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
+    monkeypatch.setattr(
+        request_mod,
+        "_CURRENT",
+        SimpleNamespace(index="", paths=Paths.under(tmp_path / "state")),
+    )
+
+    def boom():
+        raise RuntimeError("capture state broken")
+
+    monkeypatch.setattr(worktree_capture, "active", boom)
+    assert hooks.worker_audit() is None
