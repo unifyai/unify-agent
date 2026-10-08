@@ -146,9 +146,8 @@ class RecordedEnv:
     """
 
     def __init__(self, actions: Iterable[Action | dict]) -> None:
-        self._table: dict[str, list[Action]] = (
-            {}
-        )  # per call, its recordings in recorded order
+        # per call, its recordings in recorded order
+        self._table: dict[str, list[Action]] = {}
         for a in map(_action, actions):
             if a.status in SERVED_STATUSES:
                 self._table.setdefault(
@@ -158,9 +157,8 @@ class RecordedEnv:
         self._next: dict[str, int] = {}
         self.served: list[tuple[str, str]] = []
         self.misses: list[dict] = []
-        self.repeats: list[dict] = (
-            []
-        )  # calls served after their recordings were used up
+        # calls served after their recordings were used up (the last recording repeated)
+        self.repeats: list[dict] = []
         self._issued: list[tuple[dict, str]] = []  # (call, the recording's effect)
 
     @classmethod
