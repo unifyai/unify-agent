@@ -18,7 +18,7 @@ from unify.memory_v2.analysis import shapes as shapes_module
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.integration.checkout import export_checkout
-from unify.memory_v2.integration.prompt import render_memory_section
+from unify.memory_v2.integration.prompt import GUIDE, render_memory_section
 from unify.memory_v2.shape_rows import lookup_from, shapes_at, snapshot_rows
 from unify.memory_v2.snapshot import item_bodies
 
@@ -632,46 +632,104 @@ def test_describe_renders_the_docstring_sections_and_recorded_inputs(library):
         memory.describe("no_such_function")
 
 
-def test_catalog_is_the_readme(library):
+def test_catalog_lists_the_channels_and_functions_the_prompt_no_longer_names(library):
+    """``memory.catalog()`` is where a cell learns what the library holds (the prompt's guide is constant):
+    the channel lines (counts, summary, suspect flag), then one line per function, read from the catalog.
+    """
     _, _, export, _, written = library
     memory = _helper(export)
-    assert memory.catalog() == written["README.md"].decode()
+    text = memory.catalog()
+    assert text.startswith(
+        f"Memory library: 2 channels, 6 functions, at {export} (first on the import path).\n"
+        "Channels:\n"
+        "- `env.dialogue_user`: 4 functions\n"
+        "- `env.worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n"
+        "Functions:\n"
+        "- `env.dialogue_user.parse_feedback(obs: dict) -> int`: Read the score from a feedback "
+        "observation. (input: observation)\n",
+    )
+    assert (
+        "- `env.worktree_workspace.read_ledger(path: str) -> list`: Read the ledger into rows. "
+        "(input: path)\n"
+    ) in text
+    assert "hidden_reader" not in text and "suspect" not in text
+    for phrase in (
+        "memory.find(value)",
+        "memory.describe(",
+        "MemoryInputError",
+        "proposals/<name>.md",
+    ):
+        assert phrase in text, phrase
+    # the channel lines are the harness's own (one formatter, in the helper)
+    data = json.loads(written[".memory/catalog.json"])
+    for row in data["channels"]:
+        assert catalogue.channel_line(row) + "\n" in text
+    assert catalogue.channel_line is memory_helper.channel_line
+    # the README is still written, and none of this changes it
+    assert written["README.md"].decode().startswith("# Memory library\n")
 
 
-# --- the prompt's channel catalogue ------------------------------------------------------------------------
+def test_suspect_channels_are_flagged_in_the_catalog_and_in_describe(library):
+    mem, sha, export, ev, written = library
+    flagged = catalogue.write_generated(
+        export,
+        shapes=_shapes(ev, sha),
+        suspect={"dialogue_user", "not_a_channel"},
+    )
+    assert (
+        flagged["README.md"] == written["README.md"]
+    )  # the README holds no drift state
+    rows = json.loads(flagged[".memory/catalog.json"])["channels"]
+    assert [(r["channel"], r.get("suspect")) for r in rows] == [
+        ("dialogue_user", True),
+        ("worktree_workspace", None),
+    ]
+    memory = _helper(export)
+    text = memory.catalog()
+    assert (
+        "- `env.dialogue_user`: 4 functions (suspect: the environment changed since these were "
+        "built; verify before use)\n"
+    ) in text
+    assert (
+        "- `env.worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n"
+        in text
+    )
+    assert "is suspect" in memory.describe("parse_feedback")
+    assert "suspect" not in memory.describe("read_ledger")
+    # with no suspect channel the catalog is byte for byte what it was
+    again = catalogue.write_generated(export, shapes=_shapes(ev, sha))
+    assert again == written
 
 
-def test_the_prompt_section_shows_channels_not_functions_and_is_byte_stable(
+def test_an_empty_librarys_catalog_says_so(tmp_path):
+    mem = Repo.init_bare(tmp_path / "memory")
+    export = tmp_path / "memory-checkout"
+    export_checkout(mem.git_dir, mem.head(), export)
+    catalogue.write_generated(export)
+    assert _helper(export).catalog() == (
+        "Memory library: empty (no channel holds a function yet). Do the work directly.\n"
+    )
+
+
+# --- the prompt's memory section ---------------------------------------------------------------------------
+
+
+def test_the_prompt_section_is_the_constant_guide_whatever_the_library_holds(
     library,
     tmp_path,
 ):
     mem, sha, export, _, _ = library
-    text = render_memory_section(export)
-    assert text.endswith(
-        "\nChannels:\n"
-        "- `env.dialogue_user`: 4 functions\n"
-        "- `env.worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n",
-    )
-    for name in ("read_ledger", "parse_feedback", "Read the ledger", "hidden_reader"):
-        assert name not in text
-    for phrase in (
-        "README.md",
-        "memory.find(value)",
-        "memory.describe",
-        "help(",
-        "example",
+    assert render_memory_section(export) == GUIDE
+    export_checkout(mem.git_dir, sha, tmp_path / "elsewhere")
+    assert render_memory_section(tmp_path / "elsewhere") == GUIDE
+    for name in (
+        "read_ledger",
+        "dialogue_user",
+        "worktree_workspace",
+        str(export),
+        "Channels",
     ):
-        assert phrase in text
-    assert f"`{export}`" in text
-    export_checkout(mem.git_dir, sha, export)
-    catalogue.write_generated(export)
-    assert render_memory_section(export) == text
-    flagged = render_memory_section(export, {"dialogue_user"})
-    assert "- `env.dialogue_user`: 4 functions (suspect:" in flagged
-    assert (
-        "worktree_workspace`: 2 functions, 1 note. Readers for the workspace's files.\n"
-        in flagged
-    )
+        assert name not in GUIDE
 
 
 def test_a_single_key_match_is_weak_unless_a_typed_structure_sits_under_it():

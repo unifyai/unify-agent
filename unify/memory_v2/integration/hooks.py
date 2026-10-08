@@ -52,7 +52,7 @@ def can_store(value: T) -> T | bool:
 
 def system_prompt(text: str) -> str:
     """*text* with the run's memory section appended, last in the cached prefix (spec §G6): the v2 index,
-    or the guide and channel catalogue under ``UNIFY_MEMORY_V2_SURFACING=catalogue``.
+    or under ``UNIFY_MEMORY_V2_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
     ``functions.search`` is dropped too; the change is the same for every request.

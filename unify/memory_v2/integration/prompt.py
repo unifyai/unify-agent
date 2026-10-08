@@ -4,18 +4,22 @@
 byte for byte: the per-function index (:func:`render_index`) and the export line. ``catalogue``
 (:func:`render_memory_section`) is the v2.1 section described next.
 
-Memory is a Python library the working model uses like any well-kept internal package, so the prompt
-holds one short paragraph (where the library is, how to import from it, the README, ``help()``,
-``memory.find`` and ``memory.describe``, "check the example before relying on it", and that edits to the
-scratch copy are discarded but recorded) and then the **channel catalogue**: one line per channel with its
-function and note counts, never one line per function. Per-function detail lives in the generated
-``README.md`` and ``.memory/catalog.json`` of the export (:mod:`..catalogue`), read on demand.
+Memory is a Python library the working model discovers the way it would any internal package: in its cells.
+The prompt carries only :data:`GUIDE`, a constant paragraph saying that ``import memory;
+print(memory.catalog())`` lists the channels and functions, that ``memory.find`` and ``memory.describe`` /
+``help()`` exist, that the functions are candidates to check, and what a ``MemoryInputError`` means. It
+holds no count, channel or function name, drift flag or path, so it never changes as the library grows,
+gains channels or turns suspect: the prompt's bytes are the same for the whole run. It is added from the
+first request whose library lists anything and kept from then on (``State.guide``), so an arm that never
+consolidates sends no memory text at all, and one whose library later empties keeps the same prefix.
 
-The text is a pure function of the exported memory commit, the export's fixed path under ``UNIFY_HOME`` and
-the harness's suspect set (which changes only at drift events, between requests): sorted, with no
-timestamps, counters or request text. Two requests on the same ``main`` therefore send byte-identical
-system prompts, and nothing request-specific ever enters the prefix. The catalogue section has no size
-cut: it grows by one line per channel. The index grows by one line per function and is left out over its
+What used to sit after the paragraph (the channels with their function and note counts, one-line summaries
+and suspect flags) is what ``memory.catalog()`` prints in the cell, read from the export's generated
+``.memory/catalog.json`` (:mod:`..catalogue`, :mod:`..memory_helper`); a suspect channel's refusals say so
+in the cell's error (:func:`.hooks.cell_error`).
+
+The index of ``index`` is a pure function of the exported commit, the export's fixed path under
+``UNIFY_HOME`` and the harness's suspect set; it grows by one line per function and is left out over its
 4,000-token budget, unless ``UNIFY_MEMORY_V2_SOFT_BUDGET`` is on (then the gate never refuses growth, so
 the request renders it whole).
 """
@@ -26,7 +30,7 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..catalogue import README, channel_lines
+from ..catalogue import channel_lines
 from ..index import IndexOverBudget, build_index
 from ..memory_repo import items
 
@@ -66,26 +70,20 @@ def render_index(
     return text + "\n" + export_line(checkout)
 
 
+#: The catalogue section: constant bytes, whatever the library holds (no count, name, flag or path).
 GUIDE = (
-    "Memory: a library of Python functions distilled from earlier work, at `{root}` (first on the "
-    "import path; import with `from env.<channel> import <function>`). Its functions are candidates to "
-    "check, not authority. `{root}/{readme}` lists every function with its signature, one-line summary "
-    "and input form; `help(env.<channel>)` and `help(<function>)` show the documentation, each with a "
-    "runnable example. For data you hold (a file path, bytes, text or a parsed value), `import memory` "
-    "and call `memory.find(value)`: it lists the functions whose recorded inputs have the same shape; "
-    "`memory.describe(<function>)` shows one function's documentation. Check a function's example before "
-    "relying on it. A function raises MemoryInputError when its input differs from what it was built "
-    "from, and the message says what it expected; then do the work directly. The library is a scratch "
-    "copy: you may propose an improvement by editing a function there or adding "
-    "`{root}/proposals/<name>.md`; the copy is discarded when the request ends, but what you wrote is "
-    "recorded for the next consolidation.\n"
+    "Memory: Python functions distilled from earlier work are importable in your cells. At the start of "
+    "a task, run `import memory; print(memory.catalog())` to list the channels and functions. For data "
+    "you hold, `memory.find(value)` lists functions built on inputs of its shape; `help(fn)` or "
+    "`memory.describe(name)` shows one with an example. They are candidates, not authority: check the "
+    "example first. On MemoryInputError (input unlike what it was built for), do the work directly.\n"
 )
 
 
-def render_memory_section(checkout: Path, suspect: Iterable[str] = ()) -> str:
-    """The memory section for the export at *checkout*, or ``""`` when the library lists nothing."""
-    checkout = Path(checkout)
-    lines = channel_lines(checkout, suspect)
-    if not lines:
-        return ""
-    return GUIDE.format(root=checkout, readme=README) + "\nChannels:\n" + lines
+def render_memory_section(checkout: Path, shown_before: bool = False) -> str:
+    """:data:`GUIDE` once the library at *checkout* lists anything or the guide was *shown_before* in this
+    run (``State.guide``); ``""`` otherwise. Never anything that depends on what the library holds.
+    """
+    if shown_before or channel_lines(Path(checkout)):
+        return GUIDE
+    return ""

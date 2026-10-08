@@ -177,6 +177,11 @@ def test_state_roundtrip_and_default(tmp_path):
     assert back.generations.generation("venmo") == 1
     assert isinstance(back.generations, Generations)
     assert [p.name for p in path.parent.iterdir()] == ["state.json"]
+    # the catalogue guide flag: absent until set (the v2 file is unchanged), then kept
+    assert back.guide is False and "guide" not in path.read_text()
+    back.guide = True
+    back.save()
+    assert State.load(path).guide is True and '"guide": true' in path.read_text()
 
 
 def test_lock_is_exclusive_and_times_out(tmp_path):

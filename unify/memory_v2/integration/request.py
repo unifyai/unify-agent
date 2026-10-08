@@ -3,14 +3,15 @@
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
 ``main`` into the scratch export the worker mounts, renders the memory section the system prompt ends with
 (``index``: under ``UNIFY_MEMORY_V2_SURFACING=index``, the default, the v2 per-function index and export
-line; under ``catalogue``, the guide paragraph and the channel catalogue, after writing the generated
-catalogue beside the export: README, ``.memory/catalog.json`` and the ``memory`` helper,
-:mod:`..catalogue`), takes the work tree's before snapshot, and opens the scope the actor runs in (its
-transcript continues the episode id and model costs are recorded). ``finish`` records the request as one
-episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
-start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
-appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
-and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
+line; under ``catalogue``, the constant guide paragraph once the library has listed anything in this run,
+after writing the generated catalogue beside the export: README, ``.memory/catalog.json`` with the
+suspect flags, and the ``memory`` helper, :mod:`..catalogue`), takes the work tree's before snapshot, and
+opens the scope the actor runs in (its transcript continues the episode id and model costs are recorded).
+``finish`` records the request as one episode and runs the consolidation passes that are due, blocking; it
+never raises. The passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the
+consolidation driver appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way.
+``abort`` cleans up and records nothing. The harness hooks read the current run (``current()``) for
+``index`` and ``paths``.
 
 Only pass/fail of a posted outcome is kept (ruling R10): ``take_outcome`` keeps ``solved`` and drops
 everything else at once, so no checker text reaches an episode, the evidence, Sol or a cell.
@@ -240,7 +241,8 @@ class RequestRun:
 
     def _surface_catalogue(self, consolidate: Any) -> None:
         """``UNIFY_MEMORY_V2_SURFACING=catalogue``: the generated catalogue beside the export (the pinned
-        commit's input shapes frozen) and the guide plus channel catalogue as the prompt's memory section.
+        commit's input shapes frozen, the suspect channels flagged) and the constant guide as the prompt's
+        memory section, from the first request whose library lists anything (then kept: ``State.guide``).
         """
         from ..catalogue import GENERATED, write_generated
         from ..shape_rows import lookup_from
@@ -251,6 +253,7 @@ class RequestRun:
             self.generated = write_generated(
                 checkout,
                 shapes=lookup_from(self._shape_rows(consolidate)),
+                suspect=self.state.suspect,
             )
         except (
             Exception
@@ -264,7 +267,16 @@ class RequestRun:
                 target = checkout / rel
                 if target.is_file() and not target.is_symlink():
                     target.unlink()
-        self.index = render_memory_section(checkout, self.state.suspect)
+        self.index = render_memory_section(checkout, self.state.guide)
+        if self.index and not self.state.guide:
+            self.state.guide = True
+            try:  # also saved at finish; saved now so an aborted request still fixes the prefix
+                self.state.save()
+            except OSError as exc:
+                logger.warning(
+                    "memory v2: the guide flag was not saved (%s)",
+                    type(exc).__name__,
+                )
 
     def _shape_rows(self, consolidate: Any) -> dict:
         """The pinned commit's input-shape rows, frozen on first export (:func:`..shape_rows.shapes_at`);

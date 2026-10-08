@@ -13,8 +13,8 @@ out as it is staged (``SolPass._stage_inputs``), so the sentinel check covers So
 
 Checked: the jsonl lines (the accepted outcome, a consolidation start and end with ``no_manifest``, decimal
 USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
-(the v2 index under ``UNIFY_MEMORY_V2_SURFACING=index``, the default; the guide paragraph and the channel
-catalogue under ``catalogue``);
+(the v2 index under ``UNIFY_MEMORY_V2_SURFACING=index``, the default; the constant guide under
+``catalogue``, on both visits);
 no review call; one episode commit whose ``actions.jsonl`` has the work-tree rows (a ``read`` of
 ``claims.csv`` with a csv shape and a ``write`` of ``summary.json`` on ``worktree:workspace``), whose
 ``cells.jsonl`` has the cell and whose meta has both snapshots; one pass/fail checker note; one ``passes``
@@ -53,7 +53,6 @@ from unify.memory_v2 import sol_pass
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import episode_dir, load_episode
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.catalogue import README
 from unify.memory_v2.index import HEADER
 from unify.memory_v2.integration import consolidate
 from unify.memory_v2.integration import request as request_mod
@@ -286,16 +285,14 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
         for m in actor_calls[0].messages
         if m.get("role") == "system"
     )
-    if surfacing == "catalogue":
-        guide = GUIDE.format(root=paths.checkout, readme=README)
-        assert guide in system
-        tail = system[system.rindex(guide) :]
-        assert tail.rstrip().endswith("Channels:\n- `env.spotify`: 1 function"), tail[
-            -400:
-        ]
-        assert "hello(apis, name)" not in tail  # channels, not functions
+    if (
+        surfacing == "catalogue"
+    ):  # the constant guide, last; nothing of the library itself
+        assert system.endswith("\n\n" + GUIDE), system[-600:]
+        assert HEADER not in system and "env.spotify" not in system
+        assert "hello(apis, name)" not in system and str(paths.checkout) not in system
     else:  # the v2 index, as in the screen build
-        assert HEADER in system and GUIDE.split("{", 1)[0] not in system
+        assert HEADER in system and GUIDE not in system
         tail = system[system.rindex(HEADER) :]
         assert "hello(apis, name)" in tail
         assert tail.rstrip().endswith(export_line(paths.checkout).rstrip()), tail[-400:]
@@ -382,6 +379,15 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert model2.kinds() == ["actor"]
     assert [line["type"] for line in lines2][-1] == "ended"
     assert len(exports) == 2 and exports[1] == exports[0], exports
+    if (
+        surfacing == "catalogue"
+    ):  # the second request ends its prompt with the same guide bytes
+        system2 = "\n".join(
+            _text(m.get("content"))
+            for m in model2.of("actor")[0].messages
+            if m.get("role") == "system"
+        )
+        assert system2.endswith("\n\n" + GUIDE), system2[-600:]
     assert not paths.checkout.exists()
 
     # 5. the sentinel is nowhere: the home (files, every git object incl. notes, the evidence db rows),

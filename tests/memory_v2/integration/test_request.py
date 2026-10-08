@@ -119,7 +119,7 @@ def test_begin_exports_memory_and_opens_the_scope(mv2, monkeypatch, surfacing):
         assert run.pin == mv2.sha and run.request == "Say hi to ada."
         assert (paths.checkout / "env/spotify/__init__.py").exists()
         if surfacing == "catalogue":
-            # the generated catalogue sits beside the commit's files; the prompt shows channels only
+            # the generated catalogue sits beside the commit's files; the prompt holds the constant guide
             readme = (paths.checkout / "README.md").read_text()
             assert "- `hello(apis, name)`: Say hi." in readme
             assert (paths.checkout / ".memory/catalog.json").is_file()
@@ -130,10 +130,15 @@ def test_begin_exports_memory_and_opens_the_scope(mv2, monkeypatch, surfacing):
                 ".memory/catalog.json",
                 ".memory/shapes.py",
             }
-            assert run.index.endswith("Channels:\n- `env.spotify`: 1 function\n")
-            assert "hello(apis, name)" not in run.index
+            from unify.memory_v2.integration.prompt import GUIDE
+            from unify.memory_v2.integration.state import State
+
+            assert run.index == GUIDE
+            # shown once, kept for the rest of the run (saved at once, so an abort keeps it too)
+            assert run.state.guide is True and State.load(paths.state).guide is True
         else:  # v2: the index in the prompt, nothing generated beside the export
             assert "`hello(apis, name)`" in run.index
+            assert run.state.guide is False and not paths.state.exists()
             assert run.generated == {}
             assert not (paths.checkout / "README.md").exists()
             assert not (paths.checkout / "memory.py").exists()

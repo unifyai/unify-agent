@@ -336,7 +336,7 @@ class ProductionSettings(BaseSettings):
     # exceed it. The v2.1 surfacing switches (same parser; each default is
     # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
     # per-function index in the prompt, nothing generated in the export) or
-    # ``catalogue`` (guide plus channel catalogue in the prompt; generated
+    # ``catalogue`` (a constant guide in the prompt; generated
     # README, catalogue and ``memory`` helper in the export; input shapes
     # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
     # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``

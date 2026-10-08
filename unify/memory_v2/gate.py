@@ -81,8 +81,8 @@ The checks:
   pytest run of the same kind, on the candidate tree (the module's names in scope, ``/memory`` the
   working directory, read-only); a failing or unrun example refuses that function.
 * **G4 size budget.** By default (``UNIFY_MEMORY_V2_SOFT_BUDGET=off``, as in v2) :func:`.index.build_index`
-  of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` what the prompt
-  carries is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
+  of the candidate fits ``budget_tokens``, or the candidate is refused. With ``soft_budget`` the library's
+  surface is measured (:func:`.catalogue.catalogue_tokens`, the generated README and the channel lines,
   under ``surfacing="catalogue"``; the index otherwise); over ``budget_tokens`` a ``note: G4 hygiene due``
   records that a hygiene pass is due and growth is never refused; only a surface that cannot be built
   fails.

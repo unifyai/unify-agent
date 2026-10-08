@@ -4,14 +4,18 @@ Memory is a library the working model uses like a well-kept internal Python pack
 harness writes, beside the committed files and never into a commit:
 
 * ``README.md``: the channels and, per function, its signature, one-line summary and input form;
-* ``.memory/catalog.json``: per function its module, name, signature, docstring sections, input form,
-  effect, a ``tier`` field reserved for promotion (always null for now), and the recorded input-shape
-  signatures of the inputs the gate admitted it on (``input_shapes``; left out when none were recorded);
+* ``.memory/catalog.json``: per channel its function and note counts, its module's summary and, when the
+  harness holds the channel suspect (drift), ``"suspect": true``; per function its module, name, signature,
+  docstring sections, input form, effect, a ``tier`` field reserved for promotion (always null for now),
+  and the recorded input-shape signatures of the inputs the gate admitted it on (``input_shapes``; left out
+  when none were recorded). ``memory.catalog()`` prints the channels from it, so the system prompt names
+  none of this;
 * ``memory.py`` (importable as ``memory``) and ``.memory/shapes.py``: :mod:`.memory_helper` and
   :mod:`.analysis.shapes`, copied byte for byte, so the cell's ``memory.find`` computes shapes with the
   same functions the gate recorded them with.
 
-Everything except ``input_shapes`` is a pure function of the exported tree. **Where the shapes come from.**
+Everything except ``input_shapes`` and the suspect flags (the harness's drift state, which changes only
+between requests) is a pure function of the exported tree. **Where the shapes come from.**
 The input-shape descriptors of each function's validated covers (:func:`.memory_helper.file_shape` of each
 covered file's recorded blob, :func:`.memory_helper.value_shape` of each covered observation) are kept as a
 snapshot per memory commit, written once (:mod:`.shape_rows`): a landed merge writes its commit's, and an
@@ -37,6 +41,7 @@ from pathlib import Path
 
 from . import docstrings
 from .manifest import INPUT_KINDS, compiled_artifact, shadows_import
+from .memory_helper import channel_line
 from .memory_repo import items
 from .snapshot import item_bodies
 
@@ -46,8 +51,8 @@ CATALOG = ".memory/catalog.json"
 SHAPES = ".memory/shapes.py"
 GENERATED = (README, HELPER, CATALOG, SHAPES)
 CATALOG_VERSION = 1
-# The soft size of the catalogue (README plus the prompt's channel lines), in estimated tokens. Past it the
-# gate notes that hygiene is due (UNIFY_MEMORY_V2_SOFT_BUDGET=on); it never refuses growth.
+# The soft size of the catalogue (README plus the channel lines ``memory.catalog()`` prints), in estimated
+# tokens. Past it the gate notes that hygiene is due (UNIFY_MEMORY_V2_SOFT_BUDGET=on); it never refuses growth.
 SOFT_BUDGET_TOKENS = 4000
 _MODULE_SUMMARY_CHARS = 120
 _HERE = Path(__file__).resolve().parent
@@ -152,22 +157,6 @@ def channels(tree: Path) -> list[dict]:
         }
         for ch, (n_fn, n_notes) in sorted(counts.items())
     ]
-
-
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'' if n == 1 else 's'}"
-
-
-def channel_line(row: dict, suspect: bool = False) -> str:
-    counts = _plural(row["functions"], "function")
-    if row["notes"]:
-        counts += ", " + _plural(row["notes"], "note")
-    line = f"- `env.{row['channel']}`: {counts}"
-    if row["summary"]:
-        line += f". {row['summary']}"
-    if suspect:
-        line += " (suspect: the environment changed since these were built; verify before use)"
-    return line
 
 
 def channel_lines(tree: Path, suspect: Iterable[str] = ()) -> str:
@@ -276,27 +265,41 @@ def readme_for_sol(tree: Path, budget_tokens: int = SOL_README_BUDGET_TOKENS) ->
     return "".join(out)
 
 
-def render_catalog(tree: Path, shapes: ShapeLookup | None = None) -> str:
-    """``.memory/catalog.json``: sorted keys, one trailing newline."""
+def render_catalog(
+    tree: Path,
+    shapes: ShapeLookup | None = None,
+    suspect: Iterable[str] = (),
+) -> str:
+    """``.memory/catalog.json``: sorted keys, one trailing newline. A channel in *suspect* carries
+    ``"suspect": true``; no other channel has the key."""
+    flagged = set(suspect)
     data = {
         "version": CATALOG_VERSION,
         "input_forms": dict(INPUT_KINDS),
-        "channels": channels(tree),
+        "channels": [
+            dict(row, suspect=True) if row["channel"] in flagged else row
+            for row in channels(tree)
+        ],
         "functions": functions(tree, shapes),
     }
     return json.dumps(data, sort_keys=True, indent=1, ensure_ascii=False) + "\n"
 
 
 def catalogue_tokens(tree: Path) -> int:
-    """The catalogue's size for G4's soft budget: the README plus the prompt's channel lines."""
+    """The catalogue's size for G4's soft budget: the README plus the channel lines (what
+    ``memory.catalog()`` prints of the channels; the prompt carries neither)."""
     return estimate_tokens(render_readme(tree)) + estimate_tokens(channel_lines(tree))
 
 
-def generated(tree: Path, shapes: ShapeLookup | None = None) -> dict[str, bytes]:
+def generated(
+    tree: Path,
+    shapes: ShapeLookup | None = None,
+    suspect: Iterable[str] = (),
+) -> dict[str, bytes]:
     """Every generated file of the export of *tree*, by relative path."""
     return {
         README: render_readme(tree).encode("utf-8"),
-        CATALOG: render_catalog(tree, shapes).encode("utf-8"),
+        CATALOG: render_catalog(tree, shapes, suspect).encode("utf-8"),
         HELPER: (_HERE / "memory_helper.py").read_bytes(),
         SHAPES: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }
@@ -305,14 +308,16 @@ def generated(tree: Path, shapes: ShapeLookup | None = None) -> dict[str, bytes]
 def write_generated(
     checkout: Path,
     shapes: ShapeLookup | None = None,
+    suspect: Iterable[str] = (),
 ) -> dict[str, bytes]:
     """Write the generated files into the export at *checkout*, replacing whatever is there; returns them.
+    The channels in *suspect* (the harness's drift state) are flagged in the catalog.
 
     A path the export already holds (a commit from before the paths were reserved) is replaced: the
     generated file wins. Nothing is followed: an existing link or directory at a generated path is removed.
     """
     checkout = Path(checkout)
-    files = generated(checkout, shapes)
+    files = generated(checkout, shapes, suspect)
     for rel, data in files.items():
         dest = checkout / rel
         parent = dest.parent

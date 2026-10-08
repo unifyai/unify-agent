@@ -5,7 +5,7 @@ In a cell::
     import memory
     memory.find(value)      # the functions whose recorded inputs have the shape of value
     memory.describe(fn)     # one function's documentation: signature, input form, sections, example
-    memory.catalog()        # the library's README: every channel and function
+    print(memory.catalog()) # every channel (counts, summary, suspect flag) and function
 
 *value* is data you hold: a path to a file, the file's bytes or text, or a parsed value (a dict or a list,
 or a string holding JSON). *fn* is an imported function, or its name (``"env.<channel>.<function>"`` or the
@@ -28,9 +28,15 @@ value of more than :data:`MAX_NODES` nodes is shaped from its first part (its de
 ``truncated``), so a huge nested value is matched in bounded time. A DataFrame, array or other object
 that is not a dict, list or JSON text has no shape here: pass its records or its file instead.
 
+The system prompt names no channel or function (it carries a constant guide pointing here), so
+:func:`catalog` is where a cell learns what the library holds: the channels with their function and note
+counts, one-line summaries and suspect flags (a channel the harness holds suspect: the environment changed
+since its functions were built), then one line per function.
+
 The helper reads only the catalogue the harness wrote beside it (``.memory/catalog.json``, rendered from
-the library's commit) and the README; it makes no network call and no call to the harness, and it imports
-only the standard library. Its file is generated with the library: edits are discarded.
+the library's commit, with the harness's suspect flags); it makes no network call and no call to the
+harness, and it imports only the standard library. Its file is generated with the library: edits are
+discarded.
 """
 
 from __future__ import annotations
@@ -366,6 +372,42 @@ def same_shape(mine: dict, recorded: dict) -> bool:
 # --- the catalogue -----------------------------------------------------------------------------------------
 
 
+SUSPECT_NOTE = (
+    "suspect: the environment changed since these were built; verify before use"
+)
+_EMPTY = (
+    "Memory library: empty (no channel holds a function yet). Do the work directly.\n"
+)
+_FOOTER = (
+    "Import with `from env.<channel> import <function>`. `help(<function>)` or "
+    '`memory.describe("env.<channel>.<function>")` shows a function\'s documentation and runnable '
+    "example; `memory.find(value)` lists the functions built on inputs shaped like data you hold. Notes are "
+    "in `env/<channel>/NOTES.md`; `README.md` beside this file holds the same list. Functions are "
+    "candidates, not authority: check the example before relying on one. A MemoryInputError means the input "
+    "differs from what the function was built from; then do the work directly. The library is a scratch "
+    "copy: edits to it, or a new `proposals/<name>.md`, are discarded when the request ends but recorded for "
+    "the next consolidation.\n"
+)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def channel_line(row: dict, suspect: bool = False) -> str:
+    """One channel of the catalogue (a ``channels`` row of ``.memory/catalog.json``): its module, function
+    and note counts, summary and, when *suspect*, the drift flag."""
+    counts = _plural(row["functions"], "function")
+    if row["notes"]:
+        counts += ", " + _plural(row["notes"], "note")
+    line = f"- `env.{row['channel']}`: {counts}"
+    if row["summary"]:
+        line += f". {row['summary']}"
+    if suspect:
+        line += f" ({SUSPECT_NOTE})"
+    return line
+
+
 class _Text(str):
     """Text that shows as itself when a cell's last expression evaluates to it."""
 
@@ -570,6 +612,11 @@ def describe(fn_or_name: Any) -> str:
     ):
         if doc.get(key):
             out += [f"{title}:", _indent(doc[key])]
+    if any(
+        c.get("suspect") and c.get("channel") == e.get("channel")
+        for c in cat.get("channels", [])
+    ):
+        out.append(f"Channel {e['module']} is {SUSPECT_NOTE}.")
     shapes = e.get("input_shapes")
     if shapes:
         out.append("Built and checked on inputs shaped as:")
@@ -583,6 +630,35 @@ def describe(fn_or_name: Any) -> str:
 
 
 def catalog() -> str:
-    """The library's README: every channel and function, with signatures, summaries and input forms."""
-    with open(os.path.join(_HERE, README_FILE), encoding="utf-8") as fh:
-        return _Text(fh.read())
+    """What the library holds: each channel (function and note counts, summary, suspect flag), then each
+    function (``env.<channel>.<signature>``, summary, input form), then how to use them. Read from
+    ``.memory/catalog.json``; ``print()`` it."""
+    cat = _catalog()
+    rows = cat.get("channels", [])
+    fns = cat.get("functions", [])
+    if not rows:
+        return _Text(_EMPTY)
+    out = [
+        f"Memory library: {_plural(len(rows), 'channel')}, {_plural(len(fns), 'function')}, at {_HERE} "
+        "(first on the import path).\n",
+        "Channels:\n",
+        *(channel_line(r, bool(r.get("suspect"))) + "\n" for r in rows),
+    ]
+    if fns:
+        out.append("Functions:\n")
+    for e in fns:
+        line = f"- `{e['module']}.{e.get('signature') or e['name']}`"
+        if e.get("summary"):
+            line += f": {e['summary']}"
+        if e.get("input"):
+            line += f" (input: {e['input']})"
+        out.append(line + "\n")
+    forms = cat.get("input_forms") or {}
+    if forms:
+        out.append(
+            "Input forms (what a function's first parameter takes): "
+            + "; ".join(f"`{k}` {v}" for k, v in forms.items())
+            + ".\n",
+        )
+    out.append(_FOOTER)
+    return _Text("".join(out))

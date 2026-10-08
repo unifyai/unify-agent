@@ -165,7 +165,7 @@ async def test_a_cell_imports_the_memory_helper_from_the_export(
         await ex.close()
     assert list(out) == [
         str(paths.checkout / "memory.py"),
-        "# Memory library",
+        f"Memory library: 1 channel, 1 function, at {paths.checkout} (first on the import path).",
         [],
         ["env.spotify.hello(apis, name)", "Say hi."],
     ]

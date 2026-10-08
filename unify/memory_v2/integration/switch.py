@@ -17,17 +17,19 @@ The v2.1 surfacing switches (lane S1). Each default restores the behaviour of th
 
 - ``UNIFY_MEMORY_V2_SURFACING``: ``index`` (default; empty means it): the system prompt ends with the v2
   per-function index and the export line, the export holds only the commit's files, no input shapes are
-  recorded or frozen, and Sol's first message carries the index. ``catalogue``: the guide paragraph and
-  the channel catalogue in the prompt; the generated ``README.md``, ``.memory/catalog.json``,
-  ``.memory/shapes.py`` and ``memory.py`` in every export; input shapes recorded at each merge and frozen
-  per commit; Sol's first message carries the README and its brief says never to write those files.
+  recorded or frozen, and Sol's first message carries the index. ``catalogue``: a constant guide paragraph
+  in the prompt (the same bytes for the whole run, from the first request with a non-empty library; the
+  channels, counts and suspect flags are what ``memory.catalog()`` prints in the cell); the generated
+  ``README.md``, ``.memory/catalog.json``, ``.memory/shapes.py`` and ``memory.py`` in every export; input
+  shapes recorded at each merge and frozen per commit; Sol's first message carries the README and its brief
+  says never to write those files.
 - ``UNIFY_MEMORY_V2_DOCSTRINGS``: ``off`` (default; empty means it) or ``on``: the gate's lean docstring
   standard (G1) and examples run (G3), with the standard and the check list in Sol's brief. The online
   driver and the offline replay (``memory_v2_offline/cadence_replay.py``) both build the gate from this
   switch (:func:`surfacing_options`), so a replay enforces exactly what Sol is told.
 - ``UNIFY_MEMORY_V2_SOFT_BUDGET``: ``off`` (default; empty means it): G4 refuses an index over 4,000
-  estimated tokens, as in v2. ``on``: G4 only notes that hygiene is due past the budget, measured on what
-  the prompt carries (the catalogue under ``catalogue``, the index under ``index``).
+  estimated tokens, as in v2. ``on``: G4 only notes that hygiene is due past the budget, measured on the
+  library's surface (the README and channel lines under ``catalogue``, the index under ``index``).
 
 Not switched (a declared safety fix in every mode): the layout refuses bytecode, compiled extensions and
 root entries other than ``env/``, ``workflows/`` and the test kit, and the gate refuses changes to the
