@@ -52,6 +52,9 @@ from .catalogue import readme_for_sol
 from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import Repo
 from .index import build_index
+from . import qa as _qa
+from . import testkit as _testkit
+from .qa_static import cuts as _cuts
 from .redact import redact_error
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .trigger import PassRequest
@@ -240,15 +243,10 @@ def sol_system(
 #: The v2 brief (every v2.1 switch at its default).
 SOL_SYSTEM = sol_system()
 
-# The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner.
-_MEMLAB_FILES = (
-    "analysis",
-    "replay.py",
-    "episodes.py",
-    "fingerprint.py",
-    "blobs.py",
-    "redact.py",
-)
+# The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner. When a stage-5 switch
+# is on or the library's tests use it, the whole test kit (:mod:`.testkit`: these, memlab.inputs, the pin
+# plugin, the blobs the tests name) is staged instead, the same kit the gate mounts.
+_MEMLAB_FILES = _testkit.BASE_MODULES
 _GITIO_STUB = '''\
 """memlab has no git inside the consolidation sandbox; this stands in for the names episodes.py imports."""
 
@@ -398,6 +396,9 @@ def export_for_sol(
     load: Callable[[str], Episode],
     eids: Iterable[str],
     dest: Path,
+    *,
+    response_blobs: tuple[BlobStore, Path] | None = None,
+    blob_min_bytes: int = _qa.RESPONSE_BLOB_BYTES,
 ) -> None:
     """Write ``<dest>/<episode_id>.json`` per episode: the request, cells and actions, and nothing else.
 
@@ -408,6 +409,13 @@ def export_for_sol(
     documented ``Action(**...)`` rebuild never meets an unknown key). Anything else an episode carries
     (transcript, regime, costs, diffs, fingerprints, cell errors, or attributes a later schema adds) is
     dropped.
+
+    With *response_blobs* (``(store, blobs dir)``; the stage-5 fixture-size switch, :mod:`.qa`) each episode
+    also lists, per action, ``response_blobs[i]`` (the blob id of its response's canonical JSON when that is
+    at least *blob_min_bytes*, the gate's :attr:`.qa.QAConfig.response_blob_bytes`, put in the store and
+    written to the blobs dir, else null) and
+    ``truncated[i]`` (where the recorder cut it: ``end``, ``middle`` or ``start``, else null), beside the
+    actions like ``memory_channels``.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -442,6 +450,22 @@ def export_for_sol(
                 env_channel(getattr(a, "kind", "tool"), a.channel) for a in ep.actions
             ],
         }
+        if response_blobs is not None:
+            store, bdir = response_blobs
+            bdir.mkdir(parents=True, exist_ok=True)
+            refs: list[str | None] = []
+            for a in ep.actions:
+                payload = json.dumps(a.response, sort_keys=True, default=str).encode()
+                sha = None
+                if a.response is not None and len(payload) >= blob_min_bytes:
+                    sha = store.put(payload)
+                    if not (bdir / sha).exists():
+                        (bdir / sha).write_bytes(payload)
+                refs.append(sha)
+            row["response_blobs"] = refs
+            row["truncated"] = [
+                next((c.where for c in _cuts(a)), None) for a in ep.actions
+            ]
         (dest / f"{eid}.json").write_text(
             json.dumps(row, sort_keys=True, default=str, indent=1) + "\n",
         )
@@ -918,9 +942,32 @@ class SolPass:
         except Exception as exc:  # noqa: BLE001 - a measurement never stops a pass
             return f"(library use not available: {type(exc).__name__})\n"
 
-    def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
+    @property
+    def _qa(self) -> "_qa.QAConfig":
+        """The gate's stage-5 configuration (off for a gate without one)."""
+        cfg = getattr(self.gate, "qa", None)
+        return cfg if isinstance(cfg, _qa.QAConfig) else _qa.QAConfig()
+
+    def _stage_inputs(
+        self,
+        req: PassRequest,
+        inputs: Path,
+        tree: Path | None = None,
+    ) -> None:
+        """The pass's read-only ``/inputs``; *tree* is the parent library (its tests decide the test kit)."""
         inputs.mkdir()
-        export_for_sol(self.load, list(req.episodes), inputs / "episodes")
+        store = getattr(self.gate, "blobs", None)
+        export_for_sol(
+            self.load,
+            list(req.episodes),
+            inputs / "episodes",
+            response_blobs=(
+                (store, inputs / "blobs")
+                if self._qa.fixture_size and isinstance(store, BlobStore)
+                else None
+            ),
+            blob_min_bytes=self._qa.response_blob_bytes,
+        )
         export_blobs(
             self.load,
             list(req.episodes),
@@ -937,7 +984,29 @@ class SolPass:
                 },
             ),
         )
-        _stage_memlab(inputs / "memlab")
+        # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
+        # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
+        staged = tree is not None and isinstance(store, BlobStore)
+        if staged:
+            staged = _testkit.stage_for_tree(
+                tree,
+                inputs,
+                has_blob=store.has,
+                read_blob=store.get,
+                blob_size=store.size,
+                force=self._qa.on,
+            )
+        elif self._qa.on:
+            _testkit.stage(
+                inputs,
+                [],
+                has_blob=lambda s: False,
+                read_blob=lambda s: b"",
+                blob_size=lambda s: 0,
+            )
+            staged = True
+        if not staged:
+            _stage_memlab(inputs / "memlab")
 
     def _cell(
         self,
@@ -1112,7 +1181,7 @@ class SolPass:
             box.mkdir()
             cells.mkdir()
             _mirror(wt, box)
-            self._stage_inputs(req, inputs)
+            self._stage_inputs(req, inputs, wt)
             _channel_dirs(box, _exported_channels(inputs / "episodes"))
             switches = self._switches()
             tools = sol_tools(
@@ -1129,7 +1198,12 @@ class SolPass:
             if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
             messages: list[dict] = [
-                {"role": "system", "content": sol_system(**switches)},
+                # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each
+                # unchanged while its switches are off)
+                {
+                    "role": "system",
+                    "content": _qa.system(sol_system(**switches), self._qa),
+                },
                 {"role": "user", "content": first},
             ]
             finished = False

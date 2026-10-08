@@ -243,6 +243,83 @@ def test_run_pytest_ids_for_classes_subdirs_and_skips(tmp_path):
     assert out.valid and out.returncode == 1
 
 
+_MOD_SKIP = (
+    'import pytest\n\npytest.importorskip("no_such_module_memv2")\n\n'
+    "def test_never():\n    assert 1\n"
+)
+_FN_SKIPS = (
+    "import pytest\n\n"
+    'def test_missing():\n    pytest.importorskip("no_such_module_memv2")\n\n'
+    "def test_handled():\n"
+    "    try:\n        import no_such_module_memv2  # noqa: F401\n"
+    "    except ImportError:\n        pytest.skip('optional dependency')\n\n"
+    # pytest's own importorskip wording with no import behind it: the mark is structural, never this text
+    "def test_worded():\n    pytest.skip(\"could not import 'no_such_module_memv2'\")\n\n"
+    "@pytest.mark.skip\ndef test_plain():\n    assert 0\n\n"
+    "def test_ok():\n    assert 1\n"
+)
+_PLAIN_MOD = (
+    'import pytest\n\npytest.skip("not here", allow_module_level=True)\n\n'
+    "def test_never():\n    assert 1\n"
+)
+
+
+def test_run_pytest_keeps_every_skip_a_skip_by_default(tmp_path):
+    """Without import_skips_fail run_pytest is as before: a skip for a missing import is a skip, and a run
+    whose only entry is a module skipped at collection exits 5 with an entry, which is invalid.
+    """
+    kw = dict(python=PYTHON, rw={}, cwd="/box", timeout_s=120)
+    one = _pytest_dir(tmp_path / "one", {"test_mod.py": _MOD_SKIP})
+    alone = run_pytest("/box/t", ro={one: "/box/t"}, **kw)
+    assert alone.returncode == 5 and not alone.valid, alone.output
+    assert not alone.failed and not alone.passed and len(alone.skipped) == 1
+    root = _pytest_dir(
+        tmp_path / "two",
+        {"test_mod.py": _MOD_SKIP, "test_fn.py": _FN_SKIPS},
+    )
+    both = run_pytest("/box/t", ro={root: "/box/t"}, **kw)
+    assert both.valid and both.returncode == 0, both.output
+    assert not both.failed and both.passed == {"test_fn.py::test_ok"}
+    assert {s for s in both.skipped if s.startswith("test_fn.py::")} == {
+        f"test_fn.py::test_{t}" for t in ("missing", "handled", "worded", "plain")
+    }
+    assert len(both.skipped) == 5  # the four above and the module's collection entry
+
+
+def test_run_pytest_counts_a_skip_for_a_failed_import_as_a_failure_when_asked(tmp_path):
+    """With import_skips_fail a module skipped at collection for an import fails as ``test module skipped``,
+    a test skipped by importorskip or while an ImportError is handled fails under its id, and every other skip
+    (pytest's importorskip wording with no import behind it, a plain module-level skip, a skip mark) stays a
+    skip: the plugin marks skips by their exception, never by message text."""
+    kw = dict(python=PYTHON, rw={}, cwd="/box", timeout_s=120, import_skips_fail=True)
+    one = _pytest_dir(tmp_path / "one", {"test_mod.py": _MOD_SKIP})
+    alone = run_pytest("/box/t", ro={one: "/box/t"}, **kw)
+    assert alone.returncode == 5 and alone.valid, alone.output  # 5: no test collected
+    assert alone.failed == {"test_mod.py::test module skipped"} and not alone.passed
+    assert not alone.skipped
+    root = _pytest_dir(
+        tmp_path / "two",
+        {
+            "test_mod.py": _MOD_SKIP,
+            "test_fn.py": _FN_SKIPS,
+            "test_plainmod.py": _PLAIN_MOD,
+        },
+    )
+    both = run_pytest("/box/t", ro={root: "/box/t"}, env={"PYTHONPATH": "/box"}, **kw)
+    assert both.failed == {
+        "test_mod.py::test module skipped",
+        "test_fn.py::test_missing",
+        "test_fn.py::test_handled",
+    }, both.output
+    assert both.passed == {"test_fn.py::test_ok"}
+    fn_skips = {s for s in both.skipped if s.startswith("test_fn.py::")}
+    assert fn_skips == {"test_fn.py::test_worded", "test_fn.py::test_plain"}
+    # the plain module skip, by its collection entry
+    assert len(both.skipped - fn_skips) == 1
+    assert all(s.startswith("test_plainmod.py::") for s in both.skipped - fn_skips)
+    assert both.valid and both.returncode == 0
+
+
 def test_run_pytest_forged_junit_is_invalid(tmp_path):
     forged = (
         '<testsuites><testsuite><testcase classname="t.test_y" name="test_bad"/>'

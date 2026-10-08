@@ -391,6 +391,20 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
     UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
     UNIFY_MEMORY_V2_SOL_USAGE: str = ""
+    # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
+    # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
+    # (``on``/``strict``) draws seeded random recorded inputs per new function;
+    # ``_QA_MUTATION`` mutation-tests it, refusing below
+    # ``_QA_MUTATION_MIN_KILL`` (a decimal string share, 0.5); ``_QA_DETERMINISM``
+    # pins clock and randomness and runs new tests twice; ``_QA_REPLAY`` refuses
+    # stand-in environments; ``_QA_FIXTURE_SIZE`` bounds test files and
+    # references recorded payloads by blob id.
+    UNIFY_MEMORY_V2_QA_FIXTURES: str = ""
+    UNIFY_MEMORY_V2_QA_MUTATION: str = ""
+    UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL: str = "0.5"
+    UNIFY_MEMORY_V2_QA_DETERMINISM: str = ""
+    UNIFY_MEMORY_V2_QA_REPLAY: str = ""
+    UNIFY_MEMORY_V2_QA_FIXTURE_SIZE: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -599,6 +613,12 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
         "UNIFY_MEMORY_V2_SOL_USAGE",
+        "UNIFY_MEMORY_V2_QA_FIXTURES",
+        "UNIFY_MEMORY_V2_QA_MUTATION",
+        "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",
+        "UNIFY_MEMORY_V2_QA_DETERMINISM",
+        "UNIFY_MEMORY_V2_QA_REPLAY",
+        "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
         mode="before",
     )
     @classmethod

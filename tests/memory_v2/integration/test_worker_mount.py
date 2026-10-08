@@ -275,6 +275,13 @@ def test_no_mount_or_import_path_until_the_export_exists(tmp_path, monkeypatch):
     assert hooks.worker_mounts() == [paths.checkout] and hooks.worker_paths() == [
         str(paths.checkout),
     ]
+    # the library test kit inside the export (its tests use memlab): after the export on the import path,
+    # mounted with it
+    (paths.checkout / ".memlab").mkdir()
+    assert hooks.worker_mounts() == [paths.checkout] and hooks.worker_paths() == [
+        str(paths.checkout),
+        str(paths.checkout / ".memlab"),
+    ]
 
 
 def test_a_failing_audit_lookup_never_stops_the_worker(tmp_path, monkeypatch):

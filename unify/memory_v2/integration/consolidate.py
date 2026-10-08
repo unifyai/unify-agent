@@ -76,6 +76,7 @@ from ..gate import Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
+from ..qa import QAConfig
 from ..redact import redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
@@ -654,6 +655,7 @@ async def run_due_passes(
         action_lookup=lookup.action,
         # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
         **surfacing_options(settings).gate_kwargs(),
+        qa=QAConfig.from_settings(settings),  # stage-5 test checks; all off by default
     )
     config = PassConfig(
         model=cfg.model,

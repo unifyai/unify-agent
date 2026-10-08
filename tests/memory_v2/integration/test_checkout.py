@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -254,3 +255,49 @@ def test_an_older_commits_bytecode_is_never_exported(tmp_path):
     exported = sorted(str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file())
     assert exported == ["env/spotify/__init__.py"]
     assert checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b")) == ""
+
+
+def test_the_export_ships_the_test_kit_when_the_librarys_tests_use_it(tmp_path):
+    """A library whose tests import memlab and name a recorded blob: the working model's export holds the
+    same kit (and blob) as the gate and Sol's box, outside the memory diff; a library that does not gets none.
+    """
+    blobs = BlobStore(tmp_path / "blobs")
+    screen = blobs.put(b"recorded screen")
+    test = (
+        "from memlab.inputs import blob\n\n\n"
+        f"def test_screen():\n    assert blob({screen!r}) == b'recorded screen'\n"
+    )
+    mem = Repo.init_bare(tmp_path / "memory")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        (wt / "env/spotify/tests").mkdir(parents=True)
+        (wt / "env/spotify/__init__.py").write_text(MOD)
+        (wt / "env/spotify/tests/test_hello.py").write_text(test)
+        sha = mem.commit_all(wt, "seed", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    dest = tmp_path / "memory-checkout"
+    export_checkout(mem.git_dir, sha, dest, blobs)
+    kit = dest / ".memlab"
+    assert (kit / "memlab" / "inputs.py").is_file() and (
+        kit / "_memv2_pin.py"
+    ).is_file()
+    assert (kit / "blobs" / screen).read_bytes() == b"recorded screen"
+    code = (
+        "import sys; sys.path[:0] = sys.argv[1:3]\n"
+        "from memlab.inputs import blob\n"
+        "print(blob(sys.argv[3]).decode())\n"
+    )
+    r = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(dest), str(kit), screen],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin"},
+        timeout=60,
+    )
+    assert r.stdout.strip() == "recorded screen", r.stderr
+    assert ".memlab" not in checkout_diff(mem.git_dir, sha, dest, blobs)
+    (tmp_path / "plain").mkdir()
+    plain_mem, plain_sha = _seed(tmp_path / "plain")
+    plain = tmp_path / "plain-checkout"
+    export_checkout(plain_mem.git_dir, plain_sha, plain, blobs)
+    assert not (plain / ".memlab").exists()

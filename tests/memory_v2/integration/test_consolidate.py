@@ -30,6 +30,8 @@ from unify.memory_v2.integration.consolidate import (
 )
 from unify.memory_v2.integration.paths import Paths
 from unify.memory_v2.integration.state import State
+from unify.memory_v2.qa import QAConfig
+from unify.memory_v2.sol_pass import SOL_SYSTEM
 from unify.memory_v2.redact import Redactor
 from unify.memory_v2.signals import Signal
 from unify.memory_v2.trigger import BATCHED_CURSOR
@@ -560,8 +562,8 @@ def test_checker_text_reaches_no_event_note_evidence_row_or_sol_input(
     staged = tmp_path / "staged"
     stage = sol_pass.SolPass._stage_inputs
 
-    def keep(self, req, inputs):
-        stage(self, req, inputs)
+    def keep(self, req, inputs, *tree):
+        stage(self, req, inputs, *tree)
         shutil.copytree(inputs, staged)  # what Sol's box would see at /inputs
 
     monkeypatch.setattr(sol_pass.SolPass, "_stage_inputs", keep)
@@ -802,3 +804,50 @@ def test_every_setting_the_driver_reads_is_a_build_setting():
     assert read <= set(ProductionSettings.model_fields), sorted(
         read - set(ProductionSettings.model_fields),
     )
+
+
+# --- stage-5 test checks (memory v2.1): the switches reach the gate and Sol's brief ------------------------
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on):
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    made = []
+    real = consolidate.Gate
+
+    def gate(*args, **kwargs):
+        made.append(real(*args, **kwargs))
+        return made[-1]
+
+    monkeypatch.setattr(consolidate, "Gate", gate)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    settings = _settings(e=1)
+    if on:
+        settings.UNIFY_MEMORY_V2_QA_FIXTURES = "strict"
+        settings.UNIFY_MEMORY_V2_QA_MUTATION = "on"
+    asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="high",
+            settings=settings,
+            emit=None,
+        ),
+    )
+    (g,) = made
+    system = fake.seen[0][0]["content"]
+    if on:
+        assert g.qa == QAConfig(fixtures="strict", mutation=True)
+        assert system.startswith(SOL_SYSTEM.split("Run tests as the gate does")[0])
+        assert (
+            "Mutants:" in system
+            and "Drawn inputs:" in system
+            and "Replay:" not in system
+        )
+    else:
+        assert g.qa == QAConfig() and not g.qa.on
+        assert system == SOL_SYSTEM

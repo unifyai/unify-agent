@@ -1,0 +1,268 @@
+"""The gate's mutation operators (memory v2.1 stage 5): sites, application, seeded choice, structural negatives.
+
+Pure: every mutant is compiled and executed here in the test process (no model code, no sandbox).
+"""
+
+import ast
+import hashlib
+
+import pytest
+
+from unify.memory_v2.mutation import (
+    MAX_NEGATIVES,
+    OPERATORS,
+    Site,
+    apply,
+    choose,
+    negatives,
+    reprint,
+    sites,
+)
+
+# Abridged from the offline sweep's merged ARC feedback reader (docs/design/memory-v2-end-to-end-example.md).
+MODULE = '''"""ARC submission feedback."""
+
+__all__ = ["feedback_state"]
+
+
+class MemoryInputError(ValueError):
+    pass
+
+
+def helper(x):
+    return x + 1
+
+
+def feedback_state(observation):
+    """Read a submission feedback message: (attempts used, correct, failed).
+
+    Effect: read
+    Input: observation
+    """
+    if not isinstance(observation, dict) or observation.get("type") != "SubmitFeedback":
+        raise MemoryInputError("expected a SubmitFeedback object")
+    attempts = observation.get("attempts_used")
+    if not isinstance(attempts, int) or attempts < 0:
+        raise MemoryInputError("attempts_used must be a non-negative integer")
+    return attempts, observation.get("correct") is True, observation.get("failed") is True
+'''
+
+
+def _obs(n, correct=False, failed=False, kind="SubmitFeedback"):
+    return {
+        "type": kind,
+        "valid": True,
+        "correct": correct,
+        "failed": failed,
+        "attempts_used": n,
+    }
+
+
+def _load(source):
+    ns: dict = {}
+    exec(compile(source, "<mutant>", "exec"), ns)  # noqa: S102 - our own fixture source
+    return ns
+
+
+def _outcome(ns, value):
+    try:
+        return ("ok", ns["feedback_state"](value))
+    except ns["MemoryInputError"]:
+        return ("refused", None)
+    except Exception as exc:  # noqa: BLE001
+        return ("error", type(exc).__name__)
+
+
+def test_sites_cover_every_operator_kind_in_walk_order():
+    found = sites(MODULE, "feedback_state")
+    kinds = [s.op for s in found]
+    assert sorted(set(kinds)) == sorted(OPERATORS)
+    assert kinds.count("negate") == 2  # the two guards
+    assert kinds.count("boolop") == 2
+    assert kinds.count("drop_raise") == 2
+    assert kinds.count("cmp") == 4  # != type, < 0, is True, is True
+    assert kinds.count("const") == 1  # the 0 (True is a bool, never a number here)
+    assert kinds.count("return_none") == 1
+    assert len(found) == 12
+    assert all(
+        s.line >= 15 for s in found
+    )  # inside the function, never the helper above
+    assert found == sites(MODULE, "feedback_state")  # deterministic
+
+
+def test_sites_of_a_missing_or_unparsable_function_are_empty():
+    assert sites(MODULE, "absent") == []
+    assert sites("def f(:\n", "f") == []
+
+
+@pytest.mark.parametrize("op", OPERATORS)
+def test_each_operator_changes_behaviour_as_named(op):
+    original = _load(MODULE)
+    for site in [s for s in sites(MODULE, "feedback_state") if s.op == op]:
+        text = apply(MODULE, "feedback_state", site)
+        assert text is not None
+        ast.parse(text)  # always valid Python
+        mutant = _load(text)
+        inputs = [
+            _obs(0),
+            _obs(1),
+            _obs(2, correct=True),
+            _obs(3, failed=True),
+            _obs(-1),
+            {"type": "DemoReply", "attempts_used": 2},
+            "SubmitFeedback",
+            {**_obs(1), "attempts_used": "1"},
+        ]
+        before = [_outcome(original, v) for v in inputs]
+        after = [_outcome(mutant, v) for v in inputs]
+        assert before != after, (
+            site,
+            text,
+        )  # every planted mutant here is observable on some input
+        assert mutant["helper"](1) == 2  # other functions are untouched
+
+
+def test_operator_semantics():
+    by = {}
+    for s in sites(MODULE, "feedback_state"):
+        by.setdefault(s.op, []).append(s)
+    ret = _load(apply(MODULE, "feedback_state", by["return_none"][0]))
+    assert ret["feedback_state"](_obs(1)) is None
+    const = _load(apply(MODULE, "feedback_state", by["const"][0]))
+    with pytest.raises(const["MemoryInputError"]):
+        const["feedback_state"](_obs(0))  # attempts < 1 now
+    dropped = [_load(apply(MODULE, "feedback_state", s)) for s in by["drop_raise"]]
+    assert ("ok", (-1, False, False)) in [_outcome(m, _obs(-1)) for m in dropped]
+    swapped = [apply(MODULE, "feedback_state", s) for s in by["boolop"]]
+    assert all(" and " in t.split("def feedback_state", 1)[1] for t in swapped)
+
+
+def test_apply_refuses_a_site_that_does_not_fit():
+    assert apply(MODULE, "feedback_state", Site("cmp", 1, 10_000)) is None
+    assert apply(MODULE, "feedback_state", Site("unknown", 1, 0)) is None
+    negate_on_wrong_node = Site("negate", 1, 0)  # node 0 is the docstring expression
+    assert apply(MODULE, "feedback_state", negate_on_wrong_node) is None
+    assert apply(MODULE, "absent", Site("cmp", 1, 0)) is None
+
+
+def test_reprint_is_the_unmutated_control():
+    text = reprint(MODULE)
+    assert text is not None and text != MODULE  # formatting changes
+    a, b = _load(MODULE), _load(text)
+    for v in (_obs(1), _obs(3, failed=True), {"type": "X"}):
+        assert _outcome(a, v) == _outcome(b, v)
+    assert reprint("def f(:\n") is None
+
+
+def test_choose_is_bounded_seeded_and_spread_over_kinds():
+    all_sites = sites(MODULE, "feedback_state")
+    seed = hashlib.sha256(b"candidate-1").digest()
+    a = choose(all_sites, seed, "env/arc:feedback_state", 6)
+    assert len(a) == 6 and len(set(a)) == 6
+    assert {s.op for s in a} == set(
+        OPERATORS,
+    )  # one of each kind before a second of any
+    assert a == choose(all_sites, seed, "env/arc:feedback_state", 6)  # reproducible
+    other = [
+        choose(
+            all_sites,
+            hashlib.sha256(f"c{i}".encode()).digest(),
+            "env/arc:feedback_state",
+            6,
+        )
+        for i in range(20)
+    ]
+    assert any(o != a for o in other)  # the seed changes the choice
+    assert choose(all_sites, seed, "env/arc:feedback_state", 100) == choose(
+        all_sites,
+        seed,
+        "env/arc:feedback_state",
+        100,
+    )
+    assert len(choose(all_sites, seed, "x", 100)) == len(all_sites)
+    assert choose([], seed, "x", 8) == []
+
+
+# --- structural negatives (the equivalence probe's broken inputs) ------------------------------------------
+
+
+def test_negatives_break_the_covers_shape_once_each_seeded_and_bounded():
+    covers = [_obs(1), _obs(2, correct=True)]
+    seed = hashlib.sha256(b"candidate").digest()
+    got = negatives(covers, seed, "env/dialogue_user:feedback_state")
+    labels = {label for _, label, _ in got}
+    fields = {f"{kind}:{f}" for kind in ("drop", "retype") for f in covers[0]}
+    assert labels == {"retype", "empty", "extra", "empty:type"} | fields
+    assert len(got) == 14 and all(i == 0 for i, _, _ in got)  # once each, first cover
+    by = {label: v for _, label, v in got}
+    assert "type" not in by["drop:type"] and len(by["drop:type"]) == 4
+    assert by["retype:attempts_used"]["attempts_used"] == "1"
+    assert by["retype:correct"]["correct"] == "false" and by["empty:type"]["type"] == ""
+    assert by["retype"] == [] and by["empty"] == {}
+    assert by["extra"] == {**covers[0], "unrecorded_field": 0}
+    assert covers == [_obs(1), _obs(2, correct=True)]  # the recordings are untouched
+    assert got == negatives(covers, seed, "env/dialogue_user:feedback_state")
+    few = negatives(covers, seed, "i", limit=3)
+    assert len(few) == 3 and {lb for _, lb, _ in few} <= labels
+    picks = {
+        tuple(lb for _, lb, _ in negatives(covers, bytes([i]) * 32, "i", limit=3))
+        for i in range(12)
+    }
+    assert len(picks) > 1  # the seed picks which, under the bound
+
+
+def test_negatives_of_records_lists_and_text():
+    rows = [{"id": 1, "tags": ["a"]}, {"id": 2, "tags": []}]
+    got = {lb: v for _, lb, v in negatives([rows], b"\0" * 32, "i", limit=99)}
+    assert got["empty"] == [] and got["retype"] == {}
+    assert got["drop[0]:id"] == [{"tags": ["a"]}, rows[1]]
+    assert got["empty[0]:tags"] == [{"id": 1, "tags": []}, rows[1]]
+    assert got["extra[0]"][0] == {"id": 1, "tags": ["a"], "unrecorded_field": 0}
+    text = {lb: v for _, lb, v in negatives(["You see: tree"], b"\0" * 32, "i")}
+    assert text == {"retype": 13, "empty": ""}
+    taken = {"unrecorded_field": 1}
+    (extra,) = [v for _, lb, v in negatives([taken], b"\0" * 32, "i") if lb == "extra"]
+    assert extra == {"unrecorded_field": 1, "unrecorded_field_": 0}
+
+
+def test_negatives_are_built_only_when_chosen_and_bounded_in_bytes():
+    """A wide record (3000 fields of 100 bytes, about 330 KB) is broken in linear time and memory: only the
+    chosen breaks are copied, and the copies stop at the byte bound with a note naming counts only.
+    """
+    wide = {f"field{i:05d}": "v" * 100 for i in range(3000)}
+    got = negatives([wide], b"\0" * 32, "i", limit=99)
+    assert 0 < len(got) < 99  # the default 2 MiB bound stops it, not the limit
+    notes: list[str] = []
+    small = negatives([wide], b"\0" * 32, "i", budget=400_000, notes=notes)
+    assert len(small) <= 1 + sum(lb in ("retype", "empty") for _, lb, _ in small)
+    (note,) = notes
+    assert (
+        note.startswith("structural negatives stopped at ")
+        and "400000-byte bound" in note
+    )
+    assert "field" not in note and "v" * 3 not in note
+    assert len(negatives([wide], b"\0" * 32, "i")) <= MAX_NEGATIVES
+    assert wide == {f"field{i:05d}": "v" * 100 for i in range(3000)}  # untouched
+
+
+def test_negatives_tell_guard_dropping_mutants_apart_from_the_original():
+    """On recorded inputs the environment accepted, a dropped or weakened shape guard looks equivalent (the
+    other guard masks it); the covers' structural negatives tell each such mutant apart.
+    """
+    covers = [_obs(1), _obs(2, correct=True)]
+    demo = {"type": "DemoReply", "demo_requests_used": 1, "pairs": [], "refused": False}
+    accepted = covers + [_obs(3, failed=True), demo, _obs(0)]
+    broken = [v for _, _, v in negatives(covers, b"\0" * 32, "i")]
+    base = _load(reprint(MODULE))
+
+    def same(ns, values):
+        return all(_outcome(ns, v) == _outcome(base, v) for v in values)
+
+    guards = [
+        s for s in sites(MODULE, "feedback_state") if s.op in ("drop_raise", "boolop")
+    ]
+    assert len(guards) == 4
+    for site in guards:
+        ns = _load(apply(MODULE, "feedback_state", site))
+        assert same(ns, accepted), site  # likely equivalent on accepted inputs alone
+        assert not same(ns, accepted + broken), site

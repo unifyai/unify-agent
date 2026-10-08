@@ -8,6 +8,12 @@ request wrote into the export is read as git configuration.
 The harness adds its generated catalogue to the export after the commit's files (:mod:`..catalogue`);
 :func:`checkout_diff` leaves out each generated file the request left byte-for-byte as written, so an
 untouched export still diffs empty, and records one the request changed.
+
+When the exported library's tests use the test kit (:mod:`..testkit`: they import ``memlab`` or name a recorded
+blob), the export also holds the kit at ``.memlab/`` (``memlab``, the pin plugin, the blobs the tests name;
+put on the worker's import path after the export, :func:`.hooks.worker_paths`), so the tests the working model
+reads or runs import as they do in the gate and in Sol's box. The kit is harness-owned (the gate's layout rules
+admit no ``.memlab`` in a library) and left out of the memory diff.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ import stat
 import tempfile
 from pathlib import Path
 
+from .. import testkit
 from ..blobs import BlobStore
 from ..gitio import GitError, Repo
 from ..manifest import unsafe_path
@@ -28,7 +35,11 @@ from .hardgit import git
 logger = logging.getLogger(__name__)
 
 MEMORY_DIFF_CAP = 256 * 1024
-_EXCLUDE = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc")
+_EXCLUDE = (
+    ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.pyc",
+    f":(exclude,glob){testkit.EXPORT_DIR}/**",
+)
 
 
 def _clear(dest: Path) -> None:
@@ -38,8 +49,14 @@ def _clear(dest: Path) -> None:
         shutil.rmtree(dest)
 
 
-def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
-    """Replace *dest* with the files of memory commit *sha*.
+def export_checkout(
+    memory_dir: Path,
+    sha: str,
+    dest: Path,
+    blobs: BlobStore | None = None,
+) -> None:
+    """Replace *dest* with the files of memory commit *sha*, and the test kit at ``.memlab/`` when the
+    library's tests use it (*blobs*: the recorded blobs they may name; None: no kit).
 
     Paths the gate refuses before extraction (:func:`..manifest.unsafe_path`: compiled code, start-up hooks,
     root entries outside the layout) are never exported: one an older commit holds must not be importable
@@ -64,6 +81,14 @@ def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
         drop = set(unsafe)
         files = {p: v for p, v in files.items() if p not in drop}
     materialise(Repo(Path(memory_dir)), files, dest)
+    if blobs is not None:
+        testkit.stage_for_tree(
+            dest,
+            dest / testkit.EXPORT_DIR,
+            has_blob=blobs.has,
+            read_blob=blobs.get,
+            blob_size=blobs.size,
+        )
 
 
 def _unexported(files: dict) -> list[str]:

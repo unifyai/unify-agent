@@ -21,6 +21,12 @@ _NAMES = (
     "UNIFY_MEMORY_V2_DOCSTRINGS",
     "UNIFY_MEMORY_V2_SOFT_BUDGET",
     "UNIFY_MEMORY_V2_SOL_USAGE",
+    "UNIFY_MEMORY_V2_QA_FIXTURES",
+    "UNIFY_MEMORY_V2_QA_MUTATION",
+    "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",
+    "UNIFY_MEMORY_V2_QA_DETERMINISM",
+    "UNIFY_MEMORY_V2_QA_REPLAY",
+    "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
     # retired by the online contract; a stale one in the environment must change nothing
     "UNIFY_MEMORY_V2_TRIGGER",
     "UNIFY_MEMORY_V2_SOL_BUDGET_USD",
@@ -182,3 +188,67 @@ def test_the_allowance_assignment_passes_the_credential_guards():
     assert re.search(r"(?i)token\s*=", line) is None
     parts = line.split("=", 1)[0].split("_")
     assert [p for p in parts if "TOKEN" in p] == ["TOKENS"]
+
+
+# --- stage-5 test checks in the gate (memory v2.1) ---------------------------------------------------------
+
+_QA_ON_OFF = (
+    "UNIFY_MEMORY_V2_QA_MUTATION",
+    "UNIFY_MEMORY_V2_QA_DETERMINISM",
+    "UNIFY_MEMORY_V2_QA_REPLAY",
+    "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+)
+
+
+def test_qa_switches_default_off():
+    s = ProductionSettings()
+    for name in _QA_ON_OFF + ("UNIFY_MEMORY_V2_QA_FIXTURES",):
+        assert getattr(s, name) == ""
+    assert s.UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL == "0.5"
+
+
+@pytest.mark.parametrize("name", _QA_ON_OFF)
+@pytest.mark.parametrize(
+    "raw,want",
+    [("", ""), ("off", ""), (" OFF ", ""), ("on", "on"), (" On ", "on")],
+)
+def test_qa_on_off_values(name, raw, want, monkeypatch):
+    assert _load(monkeypatch, name, raw) == want
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [("", ""), ("off", ""), ("on", "on"), (" Strict ", "strict")],
+)
+def test_qa_fixtures_values(raw, want, monkeypatch):
+    assert _load(monkeypatch, "UNIFY_MEMORY_V2_QA_FIXTURES", raw) == want
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [("", "0.5"), ("0", "0"), ("1", "1"), (" 0.75 ", "0.75")],
+)
+def test_qa_min_kill_values(raw, want, monkeypatch):
+    got = _load(monkeypatch, "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL", raw)
+    assert got == want and isinstance(got, str)
+
+
+@pytest.mark.parametrize(
+    "name,raw",
+    [
+        ("UNIFY_MEMORY_V2_QA_FIXTURES", "yes"),
+        ("UNIFY_MEMORY_V2_QA_FIXTURES", "1"),
+        ("UNIFY_MEMORY_V2_QA_MUTATION", "true"),
+        ("UNIFY_MEMORY_V2_QA_DETERMINISM", "strict"),
+        ("UNIFY_MEMORY_V2_QA_REPLAY", "1"),
+        ("UNIFY_MEMORY_V2_QA_FIXTURE_SIZE", "yes"),
+        ("UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL", "1.5"),
+        ("UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL", "5e-1"),
+        ("UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL", "-0.1"),
+        ("UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL", "half"),
+    ],
+)
+def test_qa_refuses_other_values(name, raw, monkeypatch):
+    monkeypatch.setenv(name, raw)
+    with pytest.raises(Exception, match=name):
+        ProductionSettings()

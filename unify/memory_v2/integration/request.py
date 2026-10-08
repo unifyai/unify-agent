@@ -307,7 +307,8 @@ class RequestRun:
         self.stores = consolidate.open_stores(paths)
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
-        export_checkout(paths.memory, self.pin, paths.checkout)
+        # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
+        export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
         # the use record's view of the pin, taken before anything is generated beside the export and
         # before the actor can edit the scratch copy
         self.item_ids = pinned_items(paths.checkout)
