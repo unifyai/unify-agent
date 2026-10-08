@@ -67,8 +67,10 @@ class _Timers:
         self.worker = None
         self._fingerprinted = None
         bp = sandbox.build_policy
-        walk = sandbox._walk_secret_files
-        fp = sandbox._root_fingerprint
+        # Absent on builds before the scan cache (a baseline run): those
+        # parts are then not split out.
+        walk = getattr(sandbox, "_walk_secret_files", None)
+        fp = getattr(sandbox, "_root_fingerprint", None)
         start = worker_mod.PythonWorker._start
         timers = self
 
@@ -103,8 +105,10 @@ class _Timers:
                 timers._add("start_s", time.perf_counter() - t)
 
         sandbox.build_policy = build_policy
-        sandbox._walk_secret_files = walk_secret_files
-        sandbox._root_fingerprint = root_fingerprint
+        if walk is not None:
+            sandbox._walk_secret_files = walk_secret_files
+        if fp is not None:
+            sandbox._root_fingerprint = root_fingerprint
         worker_mod.PythonWorker._start = worker_start
 
     def _add(self, name: str, value: float) -> None:
