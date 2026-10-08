@@ -8,6 +8,7 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
+import re
 from typing import Any, Optional
 
 import unillm
@@ -399,6 +400,12 @@ class ProductionSettings(BaseSettings):
     # Empty: no network at all.
     UNIFY_WORKSPACE_NETWORK: str = ""
     UNIFY_WORKSPACE_PROXY_PORT: int = 0
+    # Variables of the harness's environment a sandboxed command (the Python
+    # worker that runs every cell, a bash cell) gets besides the built-in
+    # allow-list (unify/sandbox.py, CELL_ENV_NAMES and CELL_ENV_PATTERNS): a
+    # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
+    # variables. A credential's name or a key-shaped value is never passed.
+    UNIFY_CELL_ENV_ALLOW: str = ""
     # What the model is asked to fill in to run a cell. Empty (or "legacy"):
     # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
     # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
@@ -614,6 +621,18 @@ class ProductionSettings(BaseSettings):
                     f"of 'model@provider' endpoints, not {v!r}",
                 )
         return ",".join(endpoints)
+
+    @field_validator("UNIFY_CELL_ENV_ALLOW", mode="before")
+    @classmethod
+    def parse_cell_env_allow(cls, v: Any) -> str:
+        entries = [part.strip() for part in str(v or "").split(",") if part.strip()]
+        for entry in entries:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\*?", entry):
+                raise ValueError(
+                    "UNIFY_CELL_ENV_ALLOW must be a comma list of variable names "
+                    f"and PREFIX_* patterns, not {v!r}",
+                )
+        return ",".join(entries)
 
     @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
     @classmethod

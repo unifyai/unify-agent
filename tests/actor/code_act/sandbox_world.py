@@ -70,6 +70,14 @@ def world(unify_home, monkeypatch, request):
     monkeypatch.setenv("FAKE_SERVICE_TOKEN", TOKEN_VALUE)
     monkeypatch.setenv("DB_PASSWORD", TOKEN_VALUE)
     monkeypatch.setenv("UNIFY_SANDBOX_PROBE", "visible")
+    # A cell gets an allow-list of the harness's environment: the probe is
+    # declared, and so are the two credentials, which the second filter (a
+    # credential's name) still keeps out.
+    monkeypatch.setattr(
+        SETTINGS,
+        "UNIFY_CELL_ENV_ALLOW",
+        "UNIFY_SANDBOX_PROBE,FAKE_SERVICE_*,DB_PASSWORD",
+    )
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0)

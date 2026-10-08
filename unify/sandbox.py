@@ -317,6 +317,100 @@ def scrubbed_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     return {k: v for k, v in source.items() if not _is_secret_env(k, v)}
 
 
+# What a sandboxed command (the Python worker that runs every cell, a bash
+# cell, a cell's subprocess, the sandboxed grep) gets from the harness's
+# environment: an allow-list, not the harness's environment minus a deny-list.
+# On 7 Oct 2026 a model-written cell enumerated os.environ and printed a
+# provider key; a key under a name no marker catches would pass a deny-list.
+# HOME is the harness's (the sandbox shows that path, empty unless mounted);
+# PYTHONPATH's entries are derived roots, checked before they are mounted.
+# The benchmark adapters' relay clients read *_RELAY_SOCKET, *_VERIFY_SOCKET
+# and *_RELAY_TIMEOUT in cell processes, and their sitecustomize reads
+# UNIFY_ENV_NAMESPACES (a factory's module:attribute) to leave a registered
+# namespace alone. TRUSTED_ENV, TMPDIR, USER/LOGNAME and the proxy variables
+# are set by :func:`sandbox_env` itself.
+CELL_ENV_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "LANG",
+        "TERM",
+        "PYTHONPATH",
+        "PYTHONUNBUFFERED",
+        "PYTHONIOENCODING",
+        "PYTHONDONTWRITEBYTECODE",
+        "UNIFY_ENV_NAMESPACES",
+    },
+)
+CELL_ENV_PATTERNS = ("LC_*", "*_RELAY_SOCKET", "*_VERIFY_SOCKET", "*_RELAY_TIMEOUT")
+
+# A value that is a provider key or other credential whatever its name: an
+# OpenAI/OpenRouter/Anthropic style ``sk-`` key, a Google API key, GitHub,
+# Hugging Face, Slack, GitLab and AWS access key formats, a PEM private key.
+_KEY_VALUE = re.compile(
+    r"(?<![A-Za-z0-9])(?:"
+    r"sk-[A-Za-z0-9_-]{16,}"
+    r"|AIza[0-9A-Za-z_-]{30,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|hf_[A-Za-z0-9]{20,}"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|glpat-[A-Za-z0-9_-]{20,}"
+    r"|AKIA[0-9A-Z]{16}"
+    r")|-----BEGIN [A-Z ]*PRIVATE KEY-----",
+)
+
+
+def _looks_like_key(value: str) -> bool:
+    """A key-shaped value (:data:`_KEY_VALUE`) or a URL with a password."""
+    return bool(_KEY_VALUE.search(value or "") or _URL_CREDENTIALS.search(value or ""))
+
+
+def _env_pattern_matches(pattern: str, name: str) -> bool:
+    if pattern.startswith("*"):
+        return name.endswith(pattern[1:])
+    if pattern.endswith("*"):
+        return name.startswith(pattern[:-1])
+    return name == pattern
+
+
+def _cell_env_patterns() -> tuple[str, ...]:
+    """:data:`CELL_ENV_PATTERNS` and ``UNIFY_CELL_ENV_ALLOW`` (names and
+    ``PREFIX_*`` patterns a runner declares for its own cell variables)."""
+    from unify.settings import SETTINGS
+
+    declared = str(getattr(SETTINGS, "UNIFY_CELL_ENV_ALLOW", "") or "")
+    return (*CELL_ENV_PATTERNS, *(p.strip() for p in declared.split(",") if p.strip()))
+
+
+def allowed_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """The allow-listed variables of *env* (default: this process's).
+
+    Even an allow-listed variable is left out when its name is a credential's
+    (:func:`_is_secret_env`) or its value looks like a key or holds a URL with
+    a password (:func:`_looks_like_key`): the deny-list is a second filter.
+    """
+    source = os.environ if env is None else env
+    patterns = _cell_env_patterns()
+    return {
+        k: v
+        for k, v in source.items()
+        if (k in CELL_ENV_NAMES or any(_env_pattern_matches(p, k) for p in patterns))
+        and not _is_secret_env(k, v)
+        and not _looks_like_key(v)
+    }
+
+
+def _account_name() -> Optional[str]:
+    """This account's name as the sandbox's generated ``/etc/passwd`` lists it."""
+    import pwd
+
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Policy
 # ---------------------------------------------------------------------------
@@ -2466,20 +2560,31 @@ def sandbox_env(
 ) -> dict[str, str]:
     """The environment a sandboxed command gets.
 
-    Without an explicit *env*, ``PATH`` starts with the cell interpreter's
-    directories (:func:`interpreter_bin_dirs`), so ``python`` and ``python3``
-    in a cell's subprocess or a bash cell are the interpreter cells run with,
-    whether or not the host's ``PATH`` has them. They are already mounted; no
-    mount changes. An explicit *env* (a cell's ``env=``) is kept as given.
+    Without an explicit *env*, it is built from an allow-list of the harness's
+    variables (:func:`allowed_env`), never from the harness's environment as a
+    whole, so a provider key is not in it whatever its name. ``PATH`` starts
+    with the cell interpreter's directories (:func:`interpreter_bin_dirs`), so
+    ``python`` and ``python3`` in a cell's subprocess or a bash cell are the
+    interpreter cells run with, whether or not the host's ``PATH`` has them.
+    They are already mounted; no mount changes. ``USER`` and ``LOGNAME`` are
+    the account the generated ``/etc/passwd`` lists. An explicit *env* (a
+    cell's ``env=``, already inside the sandbox) is kept as given, without
+    credential variables (:func:`scrubbed_env`).
     """
-    out = scrubbed_env(env)
     if env is None:
+        out = allowed_env()
         out["PATH"] = _interpreter_first_on_path(out.get("PATH"))
+        account = _account_name()
+        if account:
+            out["USER"] = out["LOGNAME"] = account
+    else:
+        out = scrubbed_env(env)
     # The fake clock's variables come from the harness only, as it has them.
     for name in TRUSTED_ENV:
         out.pop(name, None)
-        if name in os.environ:
-            out[name] = os.environ[name]
+        value = os.environ.get(name)
+        if value is not None and not _looks_like_key(value):
+            out[name] = value
     out["TMPDIR"] = "/tmp"
     if policy.network == "proxy":
         url = f"http://127.0.0.1:{policy.proxy_port}"
