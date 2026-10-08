@@ -274,18 +274,18 @@ def _tool_results(request: dict) -> list[str]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("review", ["standalone", "fork"])
 async def test_a_review_that_copies_the_section_is_refused(
     no_admission,
     monkeypatch,
-    review,
 ):
-    if review == "standalone":
-        monkeypatch.setattr(
-            caa,
-            "_review_fork_source",
-            lambda inner, actor: (None, "the test refuses the fork"),
-        )
+    # The standalone review offers the JSON library tools; the fork runs on
+    # the core surface (execute_code only), whose cells are covered by
+    # test_a_core_reviews_cell_that_copies_the_section_is_refused.
+    monkeypatch.setattr(
+        caa,
+        "_review_fork_source",
+        lambda inner, actor: (None, "the test refuses the fork"),
+    )
     from unify.actor.code_act_actor import CodeActActor
 
     stored: dict = {}
