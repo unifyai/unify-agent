@@ -95,6 +95,8 @@ class Episode:
     cells: list[Cell]
     actions: list[Action]
     memory_diff: str = ""
+    # only from integration.adapters.worktree.WorkTreeRecorder.diff (the records' redactor): text
+    # hunks, never a binary's bytes (R28)
     worktree_diff: str = ""
     costs: list[CostRow] = field(default_factory=list)
     fingerprints: dict = field(default_factory=dict)
