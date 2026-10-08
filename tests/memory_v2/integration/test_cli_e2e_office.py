@@ -12,7 +12,8 @@ records every message it is sent and finishes at once with no manifest. What was
 out as it is staged (``SolPass._stage_inputs``), so the sentinel check covers Sol's inputs too.
 
 Checked: the jsonl lines (the accepted outcome, a consolidation start and end with ``no_manifest``, decimal
-USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory index;
+USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
+(the guide paragraph and the channel catalogue);
 no review call; one episode commit whose ``actions.jsonl`` has the work-tree rows (a ``read`` of
 ``claims.csv`` with a csv shape and a ``write`` of ``summary.json`` on ``worktree:workspace``), whose
 ``cells.jsonl`` has the cell and whose meta has both snapshots; one pass/fail checker note; one ``passes``
@@ -51,11 +52,11 @@ from unify.memory_v2 import sol_pass
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import episode_dir, load_episode
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.index import HEADER
+from unify.memory_v2.catalogue import README
 from unify.memory_v2.integration import consolidate
 from unify.memory_v2.integration import request as request_mod
 from unify.memory_v2.integration.paths import Paths
-from unify.memory_v2.integration.prompt import export_line
+from unify.memory_v2.integration.prompt import GUIDE
 from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
@@ -272,17 +273,18 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
     actor_calls = model.of("actor")
     assert actor_calls[0].request.get("reasoning_effort") in (None, EFFORT)
 
-    # 2. the system prompt ends with the memory index; no review (or any other) model call
+    # 2. the system prompt ends with the memory section; no review (or any other) model call
     assert model.kinds() == ["actor", "actor"]
     system = "\n".join(
         _text(m.get("content"))
         for m in actor_calls[0].messages
         if m.get("role") == "system"
     )
-    assert HEADER in system
-    tail = system[system.rindex(HEADER) :]
-    assert "hello(apis, name)" in tail
-    assert tail.rstrip().endswith(export_line(paths.checkout).rstrip()), tail[-400:]
+    guide = GUIDE.format(root=paths.checkout, readme=README)
+    assert guide in system
+    tail = system[system.rindex(guide) :]
+    assert tail.rstrip().endswith("Channels:\n- `env.spotify`: 1 function"), tail[-400:]
+    assert "hello(apis, name)" not in tail  # channels, not functions
 
     # 3. one episode commit with the work-tree rows, the cell and both snapshots
     episodes = Repo(paths.episodes)

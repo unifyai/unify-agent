@@ -1,7 +1,9 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
-``main`` into the scratch export the worker mounts, renders the index the system prompt ends with, takes
+``main`` into the scratch export the worker mounts, writes the generated catalogue beside it (README,
+``.memory/catalog.json`` and the ``memory`` helper; :mod:`..catalogue`), renders the memory section the
+system prompt ends with (``index``: the guide paragraph and the channel catalogue), takes
 the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
 episode id and model costs are recorded). ``finish`` records the request as
 one episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
@@ -139,7 +141,11 @@ class RequestRun:
     def __init__(self, request: str, paths: Any) -> None:
         self.request = request
         self.paths = paths
-        self.index = ""
+        self.index = (
+            ""  # the memory section of the system prompt (prompt.render_memory_section)
+        )
+        # the export's generated files (relative path -> bytes), left out of memory.diff while unchanged
+        self.generated: dict[str, bytes] = {}
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -188,9 +194,10 @@ class RequestRun:
         return run
 
     def _open(self, sandbox: Any, transcripts: Any) -> None:
+        from ..catalogue import write_generated
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
-        from .prompt import render_index
+        from .prompt import render_memory_section
         from .state import State
 
         paths = self.paths
@@ -200,7 +207,19 @@ class RequestRun:
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
         export_checkout(paths.memory, self.pin, paths.checkout)
-        self.index = render_index(paths.checkout, self.state.suspect)
+        try:
+            self.generated = write_generated(
+                paths.checkout,
+                shapes=getattr(self.stores.evidence, "input_shapes", None),
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - the library stays importable without its catalogue
+            logger.warning(
+                "memory v2: the export's catalogue was not written (%s)",
+                type(exc).__name__,
+            )
+        self.index = render_memory_section(paths.checkout, self.state.suspect)
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
@@ -328,6 +347,7 @@ class RequestRun:
             self.pin,
             paths.checkout,
             stores.blobs,
+            generated=self.generated,
         )
         ended_at = _now()
         ep, redactor = trajectory.assemble(

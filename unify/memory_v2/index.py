@@ -1,5 +1,9 @@
 # unify/memory_v2/index.py
-"""The compact index Luna sees in its cached prefix (spec §6, D3).
+"""The v2 compact index: one line per function (spec §6, D3).
+
+v2.1 no longer puts it in the prompt: the prompt ends with the channel catalogue
+(:mod:`.integration.prompt`) and the per-function catalogue is the export's generated README
+(:mod:`.catalogue`). It is kept for the consolidation end event's ``index_tokens`` measurement.
 
 A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
 that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:

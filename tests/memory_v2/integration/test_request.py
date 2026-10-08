@@ -116,7 +116,19 @@ def test_begin_exports_memory_and_opens_the_scope(mv2):
         assert request_mod.current() is run
         assert run.pin == mv2.sha and run.request == "Say hi to ada."
         assert (paths.checkout / "env/spotify/__init__.py").exists()
-        assert "`hello(apis, name)`" in run.index
+        # the generated catalogue sits beside the commit's files; the prompt shows channels only
+        readme = (paths.checkout / "README.md").read_text()
+        assert "- `hello(apis, name)`: Say hi." in readme
+        assert (paths.checkout / ".memory/catalog.json").is_file()
+        assert (paths.checkout / "memory.py").is_file()
+        assert set(run.generated) == {
+            "README.md",
+            "memory.py",
+            ".memory/catalog.json",
+            ".memory/shapes.py",
+        }
+        assert run.index.endswith("Channels:\n- `env.spotify`: 1 function\n")
+        assert "hello(apis, name)" not in run.index
         assert hooks.system_prompt("S").endswith(run.index)
         assert hooks.worker_mounts() == [paths.checkout]
         assert not _lock_is_free(paths)
@@ -269,6 +281,8 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     (a_run, lines, memory_diff, ended_at), kw = f.of("assemble")
     assert a_run is run and [x["seq"] for x in lines] == [0, 1, 2]
     assert "scratch.py" in memory_diff
+    # the untouched generated catalogue is not something the request wrote
+    assert "README.md" not in memory_diff and "catalog.json" not in memory_diff
     assert kw == {
         "extra_actions": [fake_tracks.WT_ACTION],
         "worktree_before": fake_tracks.WT_BEFORE,

@@ -51,7 +51,8 @@ def can_store(value: T) -> T | bool:
 
 
 def system_prompt(text: str) -> str:
-    """*text* with the run's memory index appended, last in the cached prefix (spec §G6).
+    """*text* with the run's memory section (guide and channel catalogue) appended, last in the cached
+    prefix (spec §G6).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
     ``functions.search`` is dropped too; the change is the same for every request.
