@@ -23,6 +23,13 @@ The contract (online build, spec §F1 and D23):
   either value. Both are read from the controller's process environment only: a value that reaches
   ``os.environ`` after settings were built (from ``.env``, say) refuses every pass
   (:func:`settle_sol_route_env`). Every refusal of the route is a :class:`SolRouteRefused`.
+- ``UNIFY_MEMORY_V2_SOL_TOKEN_FD``: instead of ``UNIFY_MEMORY_V2_SOL_TOKEN`` (exactly one of the two), the number
+  (above 2) of a descriptor the launcher passes the controller, holding the token (one trailing newline
+  allowed). Settings only normalise it. When settings are first settled it is parsed and the descriptor read
+  once (at most :data:`TOKEN_FD_MAX_BYTES` bytes and :data:`TOKEN_FD_TIMEOUT_S` seconds), then closed, so no
+  later child inherits it; the token never enters ``os.environ`` (which carries only the number) and is
+  registered with the redactors. A bad number, or a descriptor not open, not inherited, not a pipe or file,
+  empty, oversize, slow or not holding a bearer token: every pass is refused, naming the rule, never a value.
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -30,7 +37,11 @@ read the same way by every consumer.
 
 from __future__ import annotations
 
+import os
 import re
+import select
+import stat
+import time
 from decimal import Decimal
 from typing import Any, MutableMapping
 from urllib.parse import urlsplit
@@ -46,6 +57,7 @@ SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS"
 SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
 SOL_BASE_URL = "UNIFY_MEMORY_V2_SOL_BASE_URL"
 SOL_TOKEN = "UNIFY_MEMORY_V2_SOL_TOKEN"
+SOL_TOKEN_FD = "UNIFY_MEMORY_V2_SOL_TOKEN_FD"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -132,6 +144,36 @@ def sol_token_setting(v: Any) -> SecretStr:
     """``UNIFY_MEMORY_V2_SOL_TOKEN`` as settings hold it: a stripped ``SecretStr``, never refused."""
     getter = getattr(v, "get_secret_value", None)
     return SecretStr(_stripped(getter() if callable(getter) else v))
+
+
+def sol_token_fd_setting(v: Any) -> str:
+    """``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` as settings hold it: stripped, never refused (a settings error would
+    print its input, a token set there by mistake included); :func:`settle_sol_route_env` parses it with
+    :func:`parse_sol_token_fd`.
+    """
+    return _stripped(v)
+
+
+def parse_sol_token_fd(v: Any) -> int | None:
+    """An inherited descriptor's number above 2 (not stdin, stdout or stderr), or ``None`` when empty.
+
+    Its error never quotes the value (it would print a token set here by mistake).
+    """
+    refusal = f"{SOL_TOKEN_FD} must be empty or a file descriptor number above 2"
+    if isinstance(v, bool):
+        raise ValueError(refusal)
+    if isinstance(v, int):
+        value = v
+    else:
+        text = _stripped(v)
+        if text == "":
+            return None
+        if not _DIGITS.fullmatch(text):
+            raise ValueError(refusal)
+        value = int(text)
+    if value <= 2:
+        raise ValueError(refusal)
+    return value
 
 
 class SolRouteRefused(ValueError):
@@ -233,13 +275,87 @@ def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
 _ENV_REFUSAL: str | None = None
 
 
+#: The most bytes Sol's token may take on its descriptor, and how long reading it may take.
+TOKEN_FD_MAX_BYTES = 4096
+TOKEN_FD_TIMEOUT_S = 5.0
+
+#: Sol's token as read from ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` (once per process; never in ``os.environ``).
+_FD_TOKEN: SecretStr | None = None
+_FD_TRIED = False
+
+
+def _read_token_fd(fd: int) -> str:
+    """Sol's token from inherited descriptor *fd*, which is then closed; refusals name the rule, never a value."""
+    where = f"{SOL_TOKEN_FD} names descriptor {fd}, which"
+    try:
+        mode = os.fstat(fd).st_mode
+        inherited = os.get_inheritable(fd)
+    except OSError:
+        raise SolRouteRefused(f"{where} is not open") from None
+    # opened by this process (PEP 446), not passed by the launcher: left alone
+    if not inherited:
+        raise SolRouteRefused(f"{where} was not inherited by this process")
+    data = b""
+    try:
+        if not (stat.S_ISFIFO(mode) or stat.S_ISREG(mode)):
+            raise SolRouteRefused(f"{where} is not a pipe or a file")
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        deadline = time.monotonic() + TOKEN_FD_TIMEOUT_S
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not poller.poll(max(1, int(left * 1000))):
+                raise SolRouteRefused(
+                    f"{where} did not reach its end within {TOKEN_FD_TIMEOUT_S:g} s",
+                )
+            chunk = os.read(fd, TOKEN_FD_MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+            if len(data) > TOKEN_FD_MAX_BYTES:
+                raise SolRouteRefused(
+                    f"{where} holds more than {TOKEN_FD_MAX_BYTES} bytes",
+                )
+    except OSError:
+        raise SolRouteRefused(f"{where} could not be read") from None
+    finally:
+        register_secret(SOL_TOKEN, data.decode("latin-1"))
+        try:
+            os.close(fd)  # whatever happened: no later child inherits it
+        except OSError:
+            pass
+    text = data.decode("latin-1")
+    text = text[:-1] if text.endswith("\n") else text
+    register_secret(SOL_TOKEN, text)
+    if not text:
+        raise SolRouteRefused(f"{where} is empty")
+    if not _BEARER_TOKEN.fullmatch(text):
+        raise SolRouteRefused(
+            f"{where} does not hold a bearer token: at least {_MIN_TOKEN_CHARS} characters from "
+            "A-Z a-z 0-9 . _ ~ -",
+        )
+    return text
+
+
+def sol_token(settings: Any) -> Any:
+    """The token Sol's route uses: the one read from ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` when that is set (empty
+    if it could not be read; :func:`sol_route` then refuses), else ``UNIFY_MEMORY_V2_SOL_TOKEN``.
+    """
+    if _stripped(getattr(settings, SOL_TOKEN_FD, "")):
+        return _FD_TOKEN if _FD_TOKEN is not None else SecretStr("")
+    return getattr(settings, SOL_TOKEN, "")
+
+
 def settle_sol_route_env(
     environ: MutableMapping[str, str],
     settings: Any,
 ) -> str | None:
     """Keep Sol's token out of *environ* and refuse every pass if *environ* and *settings* disagree.
 
-    Called once the settings are built (``unify/settings.py``) and again after the CLI loads ``.env``. Every
+    Called once the settings are built (``unify/settings.py``), again after the CLI loads ``.env`` and whenever
+    a pass is about to start. The first call with ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` set reads the token from that
+    descriptor and closes it (:func:`_read_token_fd`); a failed read, or both that and
+    ``UNIFY_MEMORY_V2_SOL_TOKEN`` set, refuses every pass. Every
     case variant of ``UNIFY_MEMORY_V2_SOL_TOKEN`` is removed from *environ* and its value registered for
     redaction (pydantic-settings matches names in any case). A token or base URL found in *environ* that the
     settings do not hold (one that arrived after they were built, from ``.env`` say, or two case variants
@@ -247,13 +363,27 @@ def settle_sol_route_env(
     :func:`sol_route` refuses every pass with the returned message. The message names settings, never
     values. Returns ``None`` when they agree.
     """
-    global _ENV_REFUSAL
+    global _ENV_REFUSAL, _FD_TOKEN, _FD_TRIED
     raw = getattr(settings, SOL_TOKEN, "")
     held_token = _stripped(
         raw.get_secret_value() if isinstance(raw, SecretStr) else raw,
     )
     register_secret(SOL_TOKEN, held_token)
     held_base = _stripped(getattr(settings, SOL_BASE_URL, ""))
+    held_fd = _stripped(getattr(settings, SOL_TOKEN_FD, ""))
+    fd_refusal = None
+    if held_fd and not _FD_TRIED:
+        _FD_TRIED = True
+        try:  # a SolRouteRefused is a ValueError; neither quotes a value
+            fd = parse_sol_token_fd(held_fd)
+            _FD_TOKEN = SecretStr(_read_token_fd(int(fd or 0)))
+        except ValueError as exc:
+            register_secret(SOL_TOKEN_FD, held_fd)  # a token set there by mistake
+            fd_refusal = f"{exc}; no consolidation pass starts"
+    if held_fd and held_token:
+        fd_refusal = fd_refusal or (
+            f"{SOL_TOKEN} and {SOL_TOKEN_FD} are both set (set exactly one); no consolidation pass starts"
+        )
     stray: list[str] = []
     for name in [k for k in environ if k.upper() == SOL_TOKEN]:
         value = environ.pop(name, "")
@@ -263,6 +393,11 @@ def settle_sol_route_env(
     for name in [k for k in environ if k.upper() == SOL_BASE_URL]:
         if _stripped(environ.get(name)) != held_base:
             stray.append(SOL_BASE_URL)
+    for name in [k for k in environ if k.upper() == SOL_TOKEN_FD]:
+        if _stripped(environ.get(name)) != held_fd:
+            stray.append(SOL_TOKEN_FD)
+    if fd_refusal and _ENV_REFUSAL is None:
+        _ENV_REFUSAL = fd_refusal
     if stray and _ENV_REFUSAL is None:
         _ENV_REFUSAL = (
             f"{' and '.join(sorted(set(stray)))} reached the environment after settings were read "
@@ -282,4 +417,5 @@ PARSERS = {
     # normalised only; checked by sol_route when a pass starts
     SOL_BASE_URL: sol_base_url_setting,
     SOL_TOKEN: sol_token_setting,
+    SOL_TOKEN_FD: sol_token_fd_setting,
 }

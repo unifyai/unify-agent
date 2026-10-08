@@ -55,7 +55,11 @@ ETC_ALLOW = (
 
 #: Never in a box's environment, whatever a caller passes: memory v2's route for Sol's own model calls.
 HARNESS_ONLY_ENV = frozenset(
-    {"UNIFY_MEMORY_V2_SOL_BASE_URL", "UNIFY_MEMORY_V2_SOL_TOKEN"},
+    {
+        "UNIFY_MEMORY_V2_SOL_BASE_URL",
+        "UNIFY_MEMORY_V2_SOL_TOKEN",
+        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+    },
 )
 
 # Resource bounds of every process in the box (the laptop VM has 8 GB).

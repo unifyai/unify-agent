@@ -362,7 +362,10 @@ class ProductionSettings(BaseSettings):
     # Sol's calls to a route of their own (a proxy listener with its own
     # token); empty, they go as shipped. They are checked when a pass starts
     # (a settings error would print the value), the token is a SecretStr and
-    # leaves this process's environment once read (below).
+    # leaves this process's environment once read (below). ``_SOL_TOKEN_FD``
+    # (instead of ``_SOL_TOKEN``, never both) names an inherited descriptor
+    # holding the token: read once when settings are settled (below), then
+    # closed; the token never enters the environment.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
@@ -370,6 +373,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
     UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
     UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
+    UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -572,6 +576,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
         "UNIFY_MEMORY_V2_SOL_BASE_URL",
         "UNIFY_MEMORY_V2_SOL_TOKEN",
+        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
         mode="before",
     )
     @classmethod
@@ -738,7 +743,10 @@ SETTINGS = ProductionSettings()
 # UNIFY_MEMORY_V2_SOL_TOKEN lives in SETTINGS (this, the controller process)
 # only: every case variant is removed from the environment once read, so no
 # subprocess inherits it, and its value stays registered with the value-based
-# redactors. The CLI checks again after loading .env. Unset, nothing changes.
+# redactors. With UNIFY_MEMORY_V2_SOL_TOKEN_FD set, this first settle reads the
+# token from that inherited descriptor and closes it, before the CLI or any
+# controller code can spawn a child. The CLI checks again after loading .env.
+# Unset, nothing changes.
 from unify.memory_v2.integration.switch import settle_sol_route_env  # noqa: E402
 
 settle_sol_route_env(os.environ, SETTINGS)

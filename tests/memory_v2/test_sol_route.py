@@ -21,6 +21,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1329,3 +1330,374 @@ def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
         consolidate.sol_settings(settings)
     shown = SOL_TOKEN in str(info.value) or SOL_BASE in str(info.value)
     assert not shown and "no consolidation pass starts" in str(info.value)
+
+
+# --- the token by descriptor (UNIFY_MEMORY_V2_SOL_TOKEN_FD) --------------------------------------------------
+
+_FD = "UNIFY_MEMORY_V2_SOL_TOKEN_FD"
+_FD_NAMES = (*_ROUTE_NAMES, _FD)
+
+
+@pytest.fixture
+def fd_route(monkeypatch):
+    """A process whose descriptor token was never read. Every descriptor a test opens is closed after it,
+    unless it was closed already (its number then reused by something else, which is left alone).
+    """
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    monkeypatch.setattr(switch, "_FD_TOKEN", None)
+    monkeypatch.setattr(switch, "_FD_TRIED", False)
+    for name in [k for k in os.environ if k.upper() in _FD_NAMES]:
+        monkeypatch.delenv(name)
+    opened: list[tuple[int, int, int]] = []
+    yield opened
+    for fd, dev, ino in opened:
+        try:
+            st = os.fstat(fd)
+            if (st.st_dev, st.st_ino) == (dev, ino):
+                os.close(fd)
+        except OSError:
+            pass
+
+
+def _track(opened: list, *fds: int) -> None:
+    for fd in fds:
+        st = os.fstat(fd)
+        opened.append((fd, st.st_dev, st.st_ino))
+
+
+def _token_fd(opened: list, data: bytes) -> int:
+    """A pipe holding *data*, its write end closed and its read end inheritable, as the launcher passes it."""
+    r, w = os.pipe()
+    _track(opened, r)
+    try:
+        os.write(w, data)
+    finally:
+        os.close(w)
+    os.set_inheritable(r, True)
+    return r
+
+
+def _is_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def _registered(value: str) -> bool:
+    from unify.process_secrets import registered_secrets
+
+    return any(v == value for _, v in registered_secrets())
+
+
+def _fd_settings(fd: object, base: str = SOL_BASE, token: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=base,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(token),
+        UNIFY_MEMORY_V2_SOL_TOKEN_FD=str(fd),
+    )
+
+
+@pytest.mark.parametrize("kind", ["pipe", "pipe without newline", "file"])
+def test_the_token_is_read_from_its_descriptor_which_is_then_closed(
+    monkeypatch,
+    tmp_path,
+    fd_route,
+    kind,
+):
+    """Settled once, the token comes from the inherited descriptor (one trailing newline stripped), the
+    descriptor is closed, the environment holds only its number, and the redactors hold the token.
+    """
+    from unify.settings import ProductionSettings
+
+    token = secrets.token_urlsafe(32)
+    data = token.encode() + (b"" if kind == "pipe without newline" else b"\n")
+    if kind == "file":
+        path = tmp_path / "token"
+        path.write_bytes(data)
+        fd = os.open(path, os.O_RDONLY)
+        _track(fd_route, fd)
+        os.set_inheritable(fd, True)
+        path.unlink()
+    else:
+        fd = _token_fd(fd_route, data)
+    monkeypatch.setenv(_FD, str(fd))
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_BASE_URL", SOL_BASE)
+    s = ProductionSettings()
+    refusal = switch.settle_sol_route_env(os.environ, s)
+    closed = not _is_open(fd)
+    cfg = consolidate.sol_settings(s)
+    in_env = any(token in v for v in os.environ.values())
+    used = cfg.route is not None and _digest(
+        cfg.route.token.get_secret_value(),
+    ) == _digest(token)
+    assert refusal is None and closed and used
+    assert not in_env and os.environ[_FD] == str(fd)
+    assert _registered(token)
+    assert s.UNIFY_MEMORY_V2_SOL_TOKEN.get_secret_value() == ""
+
+
+def test_a_child_spawned_after_the_read_does_not_inherit_the_descriptor(fd_route):
+    """Before the read, a child spawned without ``close_fds`` would inherit the pipe (the control); after it,
+    no descriptor of the child is that pipe.
+    """
+    fd = _token_fd(fd_route, secrets.token_urlsafe(32).encode() + b"\n")
+    ino = os.fstat(fd).st_ino
+    probe = (
+        "import json, os, stat\n"
+        "seen = False\n"
+        "for name in os.listdir('/proc/self/fd'):\n"
+        "    try:\n"
+        "        st = os.fstat(int(name))\n"
+        "    except OSError:\n"
+        "        continue\n"
+        f"    seen = seen or (stat.S_ISFIFO(st.st_mode) and st.st_ino == {ino})\n"
+        "print(json.dumps(seen))\n"
+    )
+
+    def child_sees_it() -> bool:
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            close_fds=False,  # the worst case: os.system, a fork
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    before = child_sees_it()
+    refusal = switch.settle_sol_route_env({}, _fd_settings(fd))
+    after = child_sees_it()
+    assert before and refusal is None and not after
+
+
+def test_both_token_settings_refuse_every_pass(fd_route):
+    token = secrets.token_urlsafe(32)
+    fd = _token_fd(fd_route, token.encode() + b"\n")
+    settings = _fd_settings(fd, token=SOL_TOKEN)
+    refusal = switch.settle_sol_route_env({}, settings)
+    closed = not _is_open(fd)
+    assert refusal is not None and closed
+    assert "UNIFY_MEMORY_V2_SOL_TOKEN and UNIFY_MEMORY_V2_SOL_TOKEN_FD" in refusal
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(settings)
+    text = refusal + str(info.value)
+    leaked = token in text or SOL_TOKEN in text
+    assert not leaked and "no consolidation pass starts" in str(info.value)
+
+
+def test_a_descriptor_without_the_base_url_refuses_every_pass(fd_route):
+    token = secrets.token_urlsafe(32)
+    fd = _token_fd(fd_route, token.encode() + b"\n")
+    settings = _fd_settings(fd, base="")
+    refusal = switch.settle_sol_route_env({}, settings)
+    closed = not _is_open(fd)
+    assert refusal is None and closed
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(settings)
+    text = str(info.value)
+    leaked = token in text
+    assert not leaked
+    assert "UNIFY_MEMORY_V2_SOL_BASE_URL is empty" in text
+
+
+_GOOD = "a-placeholder-token-from-a-pipe"  # pragma: allowlist secret
+
+
+@pytest.mark.parametrize(
+    "data,rule",
+    [
+        (b"", "is empty"),
+        (b"\n", "is empty"),
+        (b"A" * 4097, "more than 4096 bytes"),
+        (b"A" * 4096 + b"\n", "more than 4096 bytes"),
+        (b"short-token\n", "bearer token"),
+        (_GOOD.encode() + b" x\n", "bearer token"),
+        (_GOOD.encode() + b"\r\n", "bearer token"),
+        (_GOOD.encode() + b"\n\n", "bearer token"),
+        (_GOOD.encode() + b"+/=\n", "bearer token"),
+        (b"\xff" * 20 + b"\n", "bearer token"),
+    ],
+)
+def test_a_descriptor_without_a_bearer_token_refuses_every_pass(fd_route, data, rule):
+    fd = _token_fd(fd_route, data)
+    settings = _fd_settings(fd)
+    refusal = switch.settle_sol_route_env({}, settings)
+    closed = not _is_open(fd)
+    assert refusal is not None and closed
+    assert rule in refusal and "no consolidation pass starts" in refusal
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(settings)
+    body = data.rstrip(b"\n").decode("latin-1")
+    text = refusal + str(info.value)
+    leaked = len(body) >= 8 and body in text
+    assert not leaked
+    assert switch._FD_TOKEN is None and (len(body) < 8 or _registered(body))
+
+
+def test_an_unusable_descriptor_refuses_every_pass(fd_route):
+    """Not open, not inherited (this process's own, left open), not a pipe or a file (closed), or a bad
+    number (a token set there by mistake included): every pass is refused, and no refusal quotes a value.
+    """
+    own_r, own_w = os.pipe()  # not inheritable (PEP 446): never the launcher's
+    _track(fd_route, own_r, own_w)
+    os.write(own_w, _GOOD.encode())
+    device = os.open(os.devnull, os.O_RDONLY)
+    _track(fd_route, device)
+    os.set_inheritable(device, True)
+    gone_r, gone_w = os.pipe()  # opened last and closed: a number that is not open
+    os.close(gone_w)
+    os.close(gone_r)
+    gone = gone_r
+    cases = [
+        (gone, "is not open"),
+        (own_r, "was not inherited by this process"),
+        (device, "is not a pipe or a file"),
+        ("2", "file descriptor number above 2"),
+        ("abc", "file descriptor number above 2"),
+        (_GOOD, "file descriptor number above 2"),
+    ]
+    for fd, rule in cases:
+        switch._ENV_REFUSAL = None
+        switch._FD_TRIED = False
+        settings = _fd_settings(fd)
+        refusal = switch.settle_sol_route_env({}, settings)
+        with pytest.raises(switch.SolRouteRefused) as info:
+            consolidate.sol_settings(settings)
+        text = (refusal or "") + str(info.value)
+        leaked = _GOOD in text
+        assert refusal is not None and rule in refusal, rule
+        assert not leaked
+    assert _is_open(own_r) and not _is_open(device)
+    assert _registered(_GOOD)
+
+
+def test_a_writer_that_never_finishes_is_refused_in_bounded_time(monkeypatch, fd_route):
+    monkeypatch.setattr(switch, "TOKEN_FD_TIMEOUT_S", 0.2)
+    r, w = os.pipe()
+    _track(fd_route, r, w)
+    os.set_inheritable(r, True)
+    os.write(w, _GOOD.encode())  # no end of file: the write end stays open
+    start = time.monotonic()
+    refusal = switch.settle_sol_route_env({}, _fd_settings(r))
+    took = time.monotonic() - start
+    assert refusal is not None and "did not reach its end" in refusal
+    assert took < 5 and not _is_open(r)
+
+
+def test_a_refused_descriptor_is_flagged_in_the_runs_events(fd_route, tmp_path):
+    events = tmp_path / "events.jsonl"
+    stores = SimpleNamespace(
+        paths=SimpleNamespace(events=events, errors=tmp_path / "errors.jsonl"),
+    )
+    settings = _fd_settings(_token_fd(fd_route, b""))
+    with pytest.raises(switch.SolRouteRefused):
+        asyncio.run(
+            consolidate.run_due_passes(
+                stores,
+                "e1",
+                "0" * 40,
+                SimpleNamespace(),
+                effort="low",
+                settings=settings,
+                emit=None,
+            ),
+        )
+    (line,) = [json.loads(x) for x in events.read_text().splitlines()]
+    assert line["phase"] == "refused"
+    assert line["consolidation_refused"] == "route_not_in_effect"
+
+
+def test_the_descriptor_setting_is_normalised_in_settings_and_parsed_when_settled(
+    monkeypatch,
+    fd_route,
+):
+    from unify.settings import ProductionSettings
+
+    for raw, want in [("", None), (" 3 ", 3), ("17", 17), (9, 9)]:
+        assert switch.parse_sol_token_fd(raw) == want
+    for raw in ["0", "1", "2", "-3", "3.0", "0x3", True, -1, _GOOD]:
+        with pytest.raises(ValueError) as info:
+            switch.parse_sol_token_fd(raw)
+        leaked = _GOOD in str(info.value)
+        assert not leaked
+    monkeypatch.setenv(_FD, f" {_GOOD} ")
+    s = ProductionSettings()  # loads without refusing (an error would print the value)
+    held = s.UNIFY_MEMORY_V2_SOL_TOKEN_FD == _GOOD
+    assert held
+
+
+def test_the_descriptor_setting_never_reaches_a_cell_or_sols_box(monkeypatch):
+    monkeypatch.setenv(_FD, "7")
+    policy = SimpleNamespace(network="", proxy_port=None)
+    explicit = sandbox.sandbox_env(
+        policy,
+        {_FD: "7", _FD.lower(): "7", "PATH": "/usr/bin"},
+    )
+    for env in (sandbox.sandbox_env(policy), explicit, sandbox.scrubbed_env()):
+        assert not {n.upper() for n in env} & {_FD}
+    with pytest.raises(ValueError):
+        run_confined(["/bin/true"], env={_FD: "7"})
+
+
+def test_importing_settings_reads_the_descriptor_and_closes_it(tmp_path):
+    """In a fresh process given the descriptor (as the launcher passes it), ``import unify.settings`` reads
+    the token, closes the descriptor and leaves the token out of ``os.environ``; the child prints booleans
+    and a digest only.
+    """
+    import unify
+
+    token = secrets.token_urlsafe(32)
+    r, w = os.pipe()
+    try:
+        os.write(w, token.encode() + b"\n")
+    finally:
+        os.close(w)
+    root = Path(unify.__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _FD_NAMES}
+    env.update(
+        {
+            "UNIFY_MEMORY_V2_SOL_BASE_URL": SOL_BASE,
+            _FD: str(r),
+            "PYTHONPATH": os.pathsep.join(
+                [str(root), *filter(None, [env.get("PYTHONPATH", "")])],
+            ),
+        },
+    )
+    code = (
+        "import hashlib, json, os, sys\n"
+        "import unify.settings\n"
+        "from unify.memory_v2.integration import switch\n"
+        "from unify.process_secrets import registered_secrets\n"
+        f"fd = {r}\n"
+        "try:\n"
+        "    os.fstat(fd); still_open = True\n"
+        "except OSError:\n"
+        "    still_open = False\n"
+        "t = switch._FD_TOKEN.get_secret_value() if switch._FD_TOKEN else ''\n"
+        "print(json.dumps({'open': still_open, 'refused': switch._ENV_REFUSAL is not None,"
+        " 'in_env': bool(t) and any(t in v for v in os.environ.values()),"
+        " 'registered': any(v == t for _, v in registered_secrets()),"
+        " 'held': hashlib.sha256(t.encode()).hexdigest()}))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=tmp_path,
+            pass_fds=(r,),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    finally:
+        os.close(r)
+    shown = token in proc.stdout or token in proc.stderr
+    assert not shown
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    held = out.pop("held") == hashlib.sha256(token.encode()).hexdigest()
+    assert held
+    assert out == {"open": False, "refused": False, "in_env": False, "registered": True}

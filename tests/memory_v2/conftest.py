@@ -63,7 +63,11 @@ def _real_key_seen() -> list[str]:
 #: Sol's route (unify/memory_v2/integration/switch.py): its token is a credential as well, and a test never runs
 #: with a real route. The controller's settings may already hold it (unify.settings removes it from the
 #: environment once read), so both places are looked at; names only, never values.
-SOL_ROUTE = ("UNIFY_MEMORY_V2_SOL_TOKEN", "UNIFY_MEMORY_V2_SOL_BASE_URL")
+SOL_ROUTE = (
+    "UNIFY_MEMORY_V2_SOL_TOKEN",
+    "UNIFY_MEMORY_V2_SOL_BASE_URL",
+    "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+)
 
 
 def _sol_token_seen() -> list[str]:
@@ -74,6 +78,9 @@ def _sol_token_seen() -> list[str]:
     loaded = getattr(sys.modules.get("unify.settings"), "SETTINGS", None)
     if loaded is not None and _secret_value(getattr(loaded, name, "")).strip():
         seen.append(f"{name} (loaded)")
+    switch = sys.modules.get("unify.memory_v2.integration.switch")
+    if getattr(switch, "_FD_TOKEN", None) is not None:  # read from its descriptor
+        seen.append(f"{SOL_ROUTE[2]} (read)")
     return seen
 
 
