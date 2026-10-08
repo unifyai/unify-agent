@@ -39,6 +39,7 @@ from ..analysis.cells import _raw, _stdout
 from ..episodes import Action, Cell, Episode
 from ..fingerprint import fingerprint
 from ..redact import _MIN_SECRET_LEN, _SECRET_NAME_PARTS, Redactor
+from .adapters.dialogue import observation_fingerprint
 from .adapters.tool import RecordingObserver, action_fingerprints
 
 __all__ = [
@@ -354,6 +355,10 @@ def _fingerprints(actions: list[Action]) -> dict:
     out.update(
         action_fingerprints(actions),
     )  # tool keys, with capped responses at their full shape
+    # dialogue keys: the adapter's value-free observation shapes (line buckets, a trailing counter, JSON
+    # kind and keys) in place of the generic text labels, which carry values such as grid sizes
+    for key, row in observation_fingerprint(actions).items():
+        out[key] = {**out.get(key, {}), "shapes": row["shapes"]}
     return out
 
 
