@@ -749,10 +749,20 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
         route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
     )
 
+    seen: dict = {"route_after": "not read"}  # replaced only inside the turn's task
+
+    async def in_turns_task() -> None:
+        try:
+            await turn(_MESSAGES, _TOOLS)
+        except asyncio.CancelledError:
+            # the turn's own context: the route it set must have been reset on the way out
+            seen["route_after"] = sol_pass._SOL_GATEWAY.get()
+            raise
+
     async def scenario() -> dict:
         real_transport.hold = asyncio.Event()
         real_transport.started = asyncio.Event()
-        task = asyncio.create_task(turn(_MESSAGES, _TOOLS))
+        task = asyncio.create_task(in_turns_task())
         await asyncio.wait_for(real_transport.started.wait(), 10)
         task.cancel()
         cancelled = False
@@ -769,7 +779,7 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
         return {
             "cancelled": cancelled,
             "late": len(listener) > before,
-            "route_after": sol_pass._SOL_GATEWAY.get(),
+            "route_after": seen["route_after"],
         }
 
     out = asyncio.run(scenario())
