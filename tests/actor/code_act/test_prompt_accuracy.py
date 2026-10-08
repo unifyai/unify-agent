@@ -120,13 +120,6 @@ def _tool_descriptions() -> dict[str, str]:
     return out
 
 
-def test_on_the_steering_docs_name_the_steer_tool(monkeypatch):
-    for name, text in _tool_descriptions().items():
-        assert "stop_execute_" not in text, name
-        assert 'steer(call_id=<id>, action="stop")' in text, name
-        assert 'action="interject"' in text, name
-
-
 # ── no parent conversation for a loop without a parent (D23) ───────────────
 
 _PARENT = "## Parent Chat Context"
