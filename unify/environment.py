@@ -198,21 +198,32 @@ _URL_VARIABLES = frozenset(
 def _without_userinfo(url: str) -> str:
     """*url* without ``user:password@``; scheme, host, port, path, query kept.
 
-    An item that still holds ``@`` after that (no scheme, or a ``/``, ``?``
-    or ``#`` left unencoded in the password, which ends the authority early)
-    is dropped whole (``""``): a credential is never passed on by mistake.
+    Only the authority (``netloc``) is checked for ``@``: a path or query
+    may hold one legitimately (``/@scope/``, ``?ref=a@b``). An item whose
+    userinfo cannot be parsed out is dropped whole (``""``), so a credential
+    is never passed on by mistake: one with ``@`` but no authority (no
+    scheme), and one whose authority is not a valid ``host[:port]`` after
+    the userinfo is removed (a ``/``, ``?`` or ``#`` left unencoded in the
+    password ends the authority early, leaving ``user:pass`` as host and
+    port).
     """
+    if "@" not in url:
+        return url
     prefix = ""
     if "=" in url.split("://", 1)[0]:
         prefix, url = url.split("=", 1)
         prefix += "="
     try:
         parts = urlsplit(url)
+        if "@" in parts.netloc:
+            parts = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1])
+            url = parts.geturl()
+        parts.port  # noqa: B018 (raises ValueError unless host[:port])
     except ValueError:
         return ""
-    if "@" in parts.netloc:
-        url = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]).geturl()
-    return "" if "@" in url else prefix + url
+    if not parts.hostname:
+        return ""
+    return prefix + url
 
 
 def _strip_userinfo(env: Dict[str, str]) -> Dict[str, str]:

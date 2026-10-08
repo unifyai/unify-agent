@@ -649,6 +649,27 @@ def test_userinfo_never_survives_in_an_index_or_proxy_url():
     assert not any(host == "zero.example" for host, _ in hosts)
 
 
+def test_an_at_sign_outside_the_authority_is_kept():
+    """Only the authority holds userinfo: a path or query may hold ``@``
+    (a scoped package path, a query value) and is passed on unchanged,
+    while a password cut short by an unencoded ``?`` or ``#`` still drops
+    the item."""
+    strip = environment._without_userinfo
+    assert strip("https://m.example/@scope/simple") == (
+        "https://m.example/@scope/simple"
+    )
+    assert strip("https://m.example/simple?ref=a@b") == (
+        "https://m.example/simple?ref=a@b"
+    )
+    assert strip("idx=https://m.example/@s/") == "idx=https://m.example/@s/"
+    with_both = "https://u:p@m.example/s?ref=a@b"  # pragma: allowlist secret
+    assert strip(with_both) == "https://m.example/s?ref=a@b"
+    assert strip("https://u:p?ss@host/simple") == ""  # pragma: allowlist secret
+    assert strip("https://u:p#ss@host/simple") == ""  # pragma: allowlist secret
+    env = {"UV_INDEX_URL": "https://m.example/@scope/simple"}
+    assert environment._strip_userinfo(env) == env
+
+
 # ── the allow-list: the harness's, never a cell's ──────────────────────────
 
 
