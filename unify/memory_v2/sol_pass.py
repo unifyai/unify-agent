@@ -253,8 +253,9 @@ _OUTPUT_CAP = 8000
 _MAX_CELLS_PER_TURN = 8
 _MANIFEST_MAX_BYTES = 1024**2
 _MANIFEST_MAX_DEPTH = 16
-# Never mirrored out of the box: git metadata (anywhere), the pass directory (top level), caches.
-_NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache"})
+# Never mirrored out of the box: git metadata (anywhere), the pass directory (top level), caches. Test-run
+# caches (pytest's, hypothesis's) are Sol's run byproducts, never library content; the gate refuses them.
+_NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache", ".hypothesis"})
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
 
@@ -516,8 +517,8 @@ def _mirror(
 
     Directories and regular files (with their permission bits) are copied, links are recreated as links
     (the gate refuses them); FIFOs, sockets, devices and anything that cannot be read are left out (an
-    unreadable directory is left empty). ``.git``, ``__pycache__`` and ``.pytest_cache`` are never copied,
-    at any depth, nor *skip_top* names at the top.
+    unreadable directory is left empty). ``.git``, ``__pycache__``, ``.pytest_cache`` and ``.hypothesis`` are
+    never copied, at any depth, nor *skip_top* names at the top.
     """
     left_out: list[str] = []
 

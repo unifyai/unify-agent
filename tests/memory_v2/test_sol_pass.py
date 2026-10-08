@@ -12,7 +12,13 @@ from unify.memory_v2.episodes import Action, Cell, CostRow
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.sol_pass import SOL_SYSTEM, PassConfig, SolPass, export_for_sol
+from unify.memory_v2.sol_pass import (
+    SOL_SYSTEM,
+    PassConfig,
+    SolPass,
+    _mirror,
+    export_for_sol,
+)
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_episodes import _ep
 from tests.memory_v2.test_gate import ITEM, KIT, MAN, MOD, TEST
@@ -1184,3 +1190,20 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
         "G2: env/venmo:me declares input bytes, which a tool cover cannot give" in reply
     )
     assert out.checks == 1 and not out.passed
+
+
+def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
+    # the gate refuses a stray root entry, so a cache Sol's own test run left must never reach the commit
+    box, wt = tmp_path / "box", tmp_path / "wt"
+    for d in (".hypothesis/examples", ".pytest_cache/v", "env/venmo/__pycache__", "env/venmo/.hypothesis"):
+        (box / d).mkdir(parents=True)
+    (box / ".hypothesis/examples/a").write_text("x")
+    (box / "env/venmo/.hypothesis/b").write_text("x")
+    (box / "env/venmo/NOTES.md").write_text("# Venmo\n")
+    wt.mkdir()
+    assert _mirror(box, wt) == []
+    assert sorted(str(p.relative_to(wt)) for p in wt.rglob("*")) == [
+        "env",
+        "env/venmo",
+        "env/venmo/NOTES.md",
+    ]
