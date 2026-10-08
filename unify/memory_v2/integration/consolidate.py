@@ -284,15 +284,15 @@ def sol_settings(settings: Any) -> SolSettings:
             f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
         )
     a_tok = _decimal(
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN",
-        getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN", "")
+        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
+        getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
         or format(USD_PER_TOKEN, "f"),
     )
     if (
         a_tok <= 0
     ):  # a zero cap would consume experience with passes that can make no call
         raise ValueError(
-            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN must be greater than zero",
+            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS must be greater than zero",
         )
     guard_raw = getattr(settings, "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD", "") or ""
     guard = (

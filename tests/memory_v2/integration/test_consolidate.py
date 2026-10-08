@@ -50,7 +50,7 @@ def _settings(e=1, guard="", model="openai/gpt-6-sol"):
         UNIFY_MEMORY_V2="on",
         UNIFY_MEMORY_V2_E=e,
         UNIFY_MEMORY_V2_SOL_MODEL=model,
-        UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN=A_TOK,
+        UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=A_TOK,
         UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD=guard,
     )
 
@@ -449,7 +449,7 @@ def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
     )
     with pytest.raises(ValueError):
         sol_settings(
-            SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN="7.3E-7"),
+            SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS="7.3E-7"),
         )
     with pytest.raises(ValueError):
         sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD="1e1"))
@@ -458,7 +458,7 @@ def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
     for zero in ("0", "0.0", "0.00000000"):
         with pytest.raises(ValueError):
             sol_settings(
-                SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKEN=zero),
+                SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=zero),
             )
     assert sol_settings(_settings(guard="2.50")).run_guard_usd == Decimal("2.50")
 
@@ -759,3 +759,20 @@ def test_open_stores_is_idempotent(tmp_path):
     head = (a.memory.head(), a.episodes.head())
     b = _stores(tmp_path)
     assert (b.memory.head(), b.episodes.head()) == head
+
+
+def test_every_setting_the_driver_reads_is_a_build_setting():
+    """The driver reads its switches by name; a renamed setting must never be read under its old name."""
+    import inspect
+    import re
+
+    from unify.memory_v2.integration import consolidate
+    from unify.settings import ProductionSettings
+
+    read = set(
+        re.findall(r'"(UNIFY_MEMORY_V2_[A-Z0-9_]+)"', inspect.getsource(consolidate)),
+    )
+    assert read, "the driver reads no v2 setting by name"
+    assert read <= set(ProductionSettings.model_fields), sorted(
+        read - set(ProductionSettings.model_fields),
+    )
