@@ -74,6 +74,9 @@ start go through the sandbox.
 from __future__ import annotations
 
 import contextvars
+import hashlib
+import json
+import logging
 import os
 import re
 import shutil
@@ -454,18 +457,217 @@ def _secret_rule(name: str) -> Optional[str]:
     return None
 
 
-_SECRET_SCAN_CACHE: dict[Path, tuple[tuple, list, list]] = {}
+# The interpreter roots' scan (_find_secret_files with ``cached``): about 60k
+# entries, a second or so, the same in every harness process until a package
+# is installed. It is kept in this process (_SECRET_SCAN_CACHE) and on disk
+# (_scan_cache_dir), keyed on the root and its fingerprint (_root_fingerprint).
+_SECRET_SCAN_CACHE: dict[Path, tuple[str, list, list]] = {}
+# Bump when the scan's matching or walking rules change (_secret_rule,
+# _secret_entries): every cache entry written under another version is stale.
+# The rule tables themselves (_CREDENTIAL_NAMES, _PUBLIC_PEM,
+# _ENV_FILE_ALLOWED) are part of the key as they are.
+_ROOT_SCAN_RULES_VERSION = 1
+_ROOT_SCAN_SCHEMA = 1
+# How deep below the root and below each of its site-packages the fingerprint
+# stats directories: a new entry at depth 1 to 3 below either moves it.
+_ROOT_SCAN_FINGERPRINT_DEPTH = 2
+# A disk entry is rescanned after a day whatever its fingerprint, which bounds
+# the residual (an entry made deeper than the fingerprint) to a day.
+_ROOT_SCAN_MAX_AGE_S = 86_400.0
+# A fingerprinted directory changed this recently may change again within the
+# file system's timestamp granularity without moving it: not cached.
+_ROOT_SCAN_SETTLE_NS = 2_000_000_000
+_SCAN_RULES = frozenset({"mask-env-file", "mask-credentials"})
 
 
-def _scan_stamp(root: Path) -> tuple:
-    """What changes when a package is installed into an interpreter root."""
-    stamps = []
-    for p in (root, *sorted(root.glob("lib/python3*/site-packages"))):
+def _rules_digest() -> str:
+    """The scan's rules as data: its version and the name tables it matches."""
+    data = [
+        _ROOT_SCAN_RULES_VERSION,
+        sorted(_CREDENTIAL_NAMES),
+        sorted(_PUBLIC_PEM),
+        sorted(_ENV_FILE_ALLOWED),
+    ]
+    return hashlib.sha256(json.dumps(data).encode()).hexdigest()
+
+
+def _root_fingerprint(root: Path, skip: Sequence[Path]) -> tuple[str, int]:
+    """``(digest, newest change in ns)`` of what can add a secret file to *root*.
+
+    The digest covers the scan's rules (:func:`_rules_digest`), the root's
+    name, the *skip* paths that meet it (they change what the walk enters),
+    and the device, inode, mtime and ctime of the root and of every directory
+    down to :data:`_ROOT_SCAN_FINGERPRINT_DEPTH` below it and below each of
+    its ``lib/python3*/site-packages`` (a few hundred stats: no file is read,
+    and links are not followed). A directory's mtime and ctime move when an
+    entry is made, removed or renamed in it (the ctime cannot be set back),
+    and its inode when it is replaced, so a file made at depth 1 to 3 below
+    either base moves the digest; an installer always makes or replaces a
+    ``.dist-info`` at site-packages' top level.
+    """
+    h = hashlib.sha256()
+    meeting = sorted(str(s) for s in skip if _within(s, root) or _within(root, s))
+    h.update(json.dumps([_rules_digest(), str(root), meeting]).encode())
+    newest = 0
+    bases = [root, *sorted(root.glob("lib/python3*/site-packages"))]
+    for base in bases:
         try:
-            stamps.append((str(p), p.stat().st_mtime_ns))
+            st = os.stat(base)
         except OSError:
+            h.update(f"{base}\0missing\n".encode())
             continue
-    return tuple(stamps)
+        level = [(base, st)]
+        for depth in range(_ROOT_SCAN_FINGERPRINT_DEPTH + 1):
+            below = []
+            for directory, st in level:
+                h.update(
+                    f"{directory}\0{st.st_dev}\0{st.st_ino}\0{st.st_mtime_ns}"
+                    f"\0{st.st_ctime_ns}\n".encode(),
+                )
+                newest = max(newest, st.st_mtime_ns, st.st_ctime_ns)
+                if depth == _ROOT_SCAN_FINGERPRINT_DEPTH:
+                    continue
+                try:
+                    entries = sorted(os.scandir(directory), key=lambda e: e.name)
+                except OSError:
+                    h.update(f"{directory}\0unreadable\n".encode())
+                    continue
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            below.append(
+                                (Path(entry.path), entry.stat(follow_symlinks=False)),
+                            )
+                    except OSError:
+                        h.update(f"{entry.path}\0unreadable\n".encode())
+            level = below
+    return h.hexdigest(), newest
+
+
+def _scan_cache_dir(avoid: Sequence[Path] = ()) -> Optional[Path]:
+    """Where the interpreter roots' scans are kept across processes, or ``None``.
+
+    ``$XDG_CACHE_HOME/unify/sandbox-scans`` (an absolute ``XDG_CACHE_HOME``
+    only), else ``~/.cache/unify/sandbox-scans``. No cell can write it: cells
+    write only the workspace, a private ``/tmp`` and (the installer) the
+    package venv and its cache, and a home's ``.cache`` is never mounted
+    (:func:`_root_refusal` refuses a root that is or holds it, and
+    :func:`_workspace_refusal` a workspace that is or holds it). ``None``, so
+    the scan is kept in memory only, when the directory meets one of *avoid*
+    (the workspace, the state and log directories, the scanned roots): an
+    unusual ``XDG_CACHE_HOME`` inside something a cell can see or write.
+    """
+    raw = os.environ.get("XDG_CACHE_HOME", "")
+    base = Path(raw) if raw and os.path.isabs(raw) else Path.home() / ".cache"
+    path = Path(os.path.realpath(base / "unify" / "sandbox-scans"))
+    for a in avoid:
+        a = Path(os.path.realpath(a))
+        if _within(path, a) or _within(a, path):
+            return None
+    return path
+
+
+def _scan_cache_file(cache_dir: Path, root: Path) -> Path:
+    return cache_dir / (hashlib.sha256(str(root).encode()).hexdigest()[:32] + ".json")
+
+
+def _scan_cache_load(
+    cache_dir: Path,
+    root: Path,
+    key: str,
+) -> Optional[tuple[list, list]]:
+    """The cached ``(files, dirs)`` of *root* under *key*, ``None`` if absent,
+    unreadable, malformed, of another root or key, older than
+    :data:`_ROOT_SCAN_MAX_AGE_S`, not this user's own mode-0600 file, or
+    naming a found path that is gone."""
+    path = _scan_cache_file(cache_dir, root)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            st = os.fstat(fh.fileno())
+            if not (
+                path.parent.stat().st_uid == os.getuid() == st.st_uid
+                and st.st_mode & 0o7777 == 0o600
+                and (st.st_mode & 0o170000) == 0o100000
+            ):
+                return None
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not (
+        isinstance(data, dict)
+        and set(data) == {"schema", "root", "key", "created", "files", "dirs"}
+        and data["schema"] == _ROOT_SCAN_SCHEMA
+        and data["root"] == str(root)
+        and data["key"] == key
+        and isinstance(data["created"], (int, float))
+        and 0 <= time.time() - data["created"] <= _ROOT_SCAN_MAX_AGE_S
+    ):
+        return None
+    out: list[list[tuple[Path, str]]] = [[], []]
+    for i, name, exists in ((0, "files", os.path.isfile), (1, "dirs", os.path.isdir)):
+        entries = data[name]
+        if not isinstance(entries, list):
+            return None
+        for item in entries:
+            if not (
+                isinstance(item, list)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and os.path.isabs(item[0])
+                and item[1] in _SCAN_RULES
+                and exists(item[0])
+            ):
+                return None
+            out[i].append((Path(item[0]), item[1]))
+    return out[0], out[1]
+
+
+def _scan_cache_store(
+    cache_dir: Path,
+    root: Path,
+    key: str,
+    files: list[tuple[Path, str]],
+    dirs: list[tuple[Path, str]],
+) -> None:
+    """Write *root*'s scan atomically (a temporary file, then ``os.replace``),
+    mode 0600 in a mode-0700 directory of this user's. A failure is logged at
+    debug and leaves the in-memory cache only."""
+    log = logging.getLogger(__name__)
+    payload = {
+        "schema": _ROOT_SCAN_SCHEMA,
+        "root": str(root),
+        "key": key,
+        "created": time.time(),
+        "files": [[str(p), r] for p, r in files],
+        "dirs": [[str(p), r] for p, r in dirs],
+    }
+    tmp = None
+    try:
+        cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = os.lstat(cache_dir)
+        if (st.st_mode & 0o170000) != 0o040000 or st.st_uid != os.getuid():
+            log.debug("sandbox scan cache: %s is not this user's directory", cache_dir)
+            return
+        if st.st_mode & 0o077:
+            os.chmod(cache_dir, 0o700)
+        fd, tmp = tempfile.mkstemp(dir=cache_dir, prefix=".scan-", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            json.dump(payload, fh)
+        os.replace(tmp, _scan_cache_file(cache_dir, root))
+        tmp = None
+    except OSError as exc:
+        log.debug("sandbox scan cache: not written to %s: %s", cache_dir, exc)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def _secret_entries(
@@ -508,45 +710,83 @@ def _secret_entries(
     return files, dirs, subdirs, len(entries)
 
 
+def _walk_secret_files(
+    root: Path,
+    skip: Sequence[Path],
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+    """``(files, dirs)`` to mask under *root*, read now, at every depth."""
+    f_out: list[tuple[Path, str]] = []
+    d_out: list[tuple[Path, str]] = []
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        if any(_within(directory, s) for s in skip):
+            continue
+        found = _secret_entries(directory)
+        if found is None:
+            continue
+        f_out += found[0]
+        d_out += found[1]
+        stack += found[2]
+    return f_out, d_out
+
+
 def _find_secret_files(
     roots: Sequence[Path],
     skip: Sequence[Path],
     *,
     cached: Sequence[Path] = (),
+    cache_dir: Optional[Path] = None,
 ) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
     """``(files, dirs)`` to mask, with rules, anywhere under each mounted root.
 
     Every depth, hidden directories included: ``.env*`` files, ``*.pem``
     other than public CA bundles, ``*key*.json`` and the names of
     :data:`CREDENTIAL_PATHS` (a directory of those names is masked whole and
-    not entered). A link of such a name masks its target. The scan of a root
-    in *cached* (the interpreter's, about 60k entries) is reused until the
-    root or its site-packages changes.
+    not entered). A link of such a name masks its target.
+
+    The scan of a root in *cached* (the interpreter's, about 60k entries) is
+    reused while its fingerprint (:func:`_root_fingerprint`) is unchanged: in
+    this process, and across processes from *cache_dir*
+    (:func:`_scan_cache_dir`) when one is given, so it runs once per venv
+    rather than once per harness process. A disk entry is used only if its
+    schema, root, key and age check out, it is this user's mode-0600 file and
+    every path it names still exists; anything else rescans and rewrites it.
+    A cache that cannot be written leaves the in-memory one; masking never
+    depends on it.
+
+    Residual: a secret-named file made deeper than the fingerprint (below a
+    directory at depth 2 under the root or a site-packages, e.g.
+    ``site-packages/pkg/sub/deep/x.pem``) in a tree that is otherwise
+    unchanged is not masked until the fingerprint moves or the disk entry is
+    a day old. Installers make a ``.dist-info`` at site-packages' top level, so
+    an install refreshes it; nothing a cell runs can write these roots.
     """
     files: list[tuple[Path, str]] = []
     dirs: list[tuple[Path, str]] = []
     for root in roots:
-        stamp = _scan_stamp(root) if root in cached else None
+        if root not in cached:
+            f_out, d_out = _walk_secret_files(root, skip)
+            files += f_out
+            dirs += d_out
+            continue
+        key, newest = _root_fingerprint(root, skip)
         hit = _SECRET_SCAN_CACHE.get(root)
-        if stamp is not None and hit is not None and hit[0] == stamp:
+        if hit is not None and hit[0] == key:
             files += hit[1]
             dirs += hit[2]
             continue
-        f_out: list[tuple[Path, str]] = []
-        d_out: list[tuple[Path, str]] = []
-        stack = [root]
-        while stack:
-            directory = stack.pop()
-            if any(_within(directory, s) for s in skip):
-                continue
-            found = _secret_entries(directory)
-            if found is None:
-                continue
-            f_out += found[0]
-            d_out += found[1]
-            stack += found[2]
-        if stamp is not None:
-            _SECRET_SCAN_CACHE[root] = (stamp, f_out, d_out)
+        loaded = (
+            _scan_cache_load(cache_dir, root, key) if cache_dir is not None else None
+        )
+        if loaded is not None:
+            f_out, d_out = loaded
+        else:
+            f_out, d_out = _walk_secret_files(root, skip)
+        if time.time_ns() - newest > _ROOT_SCAN_SETTLE_NS:
+            _SECRET_SCAN_CACHE[root] = (key, f_out, d_out)
+            if loaded is None and cache_dir is not None:
+                _scan_cache_store(cache_dir, root, key, f_out, d_out)
         files += f_out
         dirs += d_out
     return files, dirs
@@ -1461,6 +1701,8 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 and os.path.isdir(d.path)
             },
         )
+        from unify.environment import installer_cache
+
         found_files, found_dirs = _find_secret_files(
             bound,
             skip,
@@ -1469,6 +1711,9 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
                 for d in derived
                 if d.kind == "interpreter"
             ],
+            cache_dir=_scan_cache_dir(
+                [workspace, state_dir, installer_cache(), *log_dirs, *bound],
+            ),
         )
         for path, rule in found_dirs:
             if all(path != d for d, _ in masked_dirs):
@@ -1481,7 +1726,6 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         # directory) and changes every cell. What inside it is masked or hidden anyway, its views put back
         # read-only, the installer's cache and a state directory inside it
         # (hidden whole, wrap_argv) are not entered.
-        from unify.environment import installer_cache
         from unify.transcripts import INTERNAL_DIRNAME
 
         state_inside = state_dir != workspace and _within(state_dir, workspace)
