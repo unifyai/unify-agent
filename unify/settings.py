@@ -376,6 +376,8 @@ class ProductionSettings(BaseSettings):
     # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
     # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``
     # turns G4's 4,000-token index refusal into a hygiene note.
+    # ``_SOL_USAGE`` (empty/off or on) ends each pass's first message with
+    # the table of how requests used each library function.
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
@@ -388,6 +390,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SURFACING: str = "index"
     UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
     UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
+    UNIFY_MEMORY_V2_SOL_USAGE: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -595,6 +598,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SURFACING",
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
+        "UNIFY_MEMORY_V2_SOL_USAGE",
         mode="before",
     )
     @classmethod

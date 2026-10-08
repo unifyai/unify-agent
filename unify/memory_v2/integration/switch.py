@@ -30,6 +30,9 @@ The contract (online build, spec §F1 and D23):
   later child inherits it; the token never enters ``os.environ`` (which carries only the number) and is
   registered with the redactors. A bad number, or a descriptor not open, not inherited, not a pipe or file,
   empty, oversize, slow or not holding a bearer token: every pass is refused, naming the rule, never a value.
+- ``UNIFY_MEMORY_V2_SOL_USAGE``: ``on``, ``off`` or empty (empty and ``off`` mean off). When on, each pass's
+  first message ends with the table of how requests used each library function (``usage.usage_table``);
+  off, that message is as before. The use record itself is kept either way.
 
 The v2.1 surfacing switches (lane S1). Each default restores the behaviour of the v2 screen build
 (``9deefbfd1``) exactly, so a paired v2 vs v2.1 comparison runs on one build:
@@ -87,6 +90,7 @@ SOL_EFFORT = "UNIFY_MEMORY_V2_SOL_EFFORT"
 SURFACING = "UNIFY_MEMORY_V2_SURFACING"
 DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
+SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -523,6 +527,16 @@ def surfacing_options(settings: Any) -> SurfacingOptions:
     )
 
 
+def parse_sol_usage(v: Any) -> str:
+    """``on``, or ``""`` for off (empty or ``off``)."""
+    value = _stripped(v).lower()
+    if value in ("", "off"):
+        return ""
+    if value != "on":
+        raise ValueError(f"{SOL_USAGE} must be empty, 'off' or 'on', not {v!r}")
+    return value
+
+
 #: The validator for each setting (unify/settings.py ``parse_memory_v2``).
 PARSERS = {
     SWITCH: parse_switch,
@@ -538,4 +552,5 @@ PARSERS = {
     SURFACING: parse_surfacing,
     DOCSTRINGS: parse_docstrings,
     SOFT_BUDGET: parse_soft_budget,
+    SOL_USAGE: parse_sol_usage,
 }

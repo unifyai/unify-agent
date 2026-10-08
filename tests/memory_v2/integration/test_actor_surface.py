@@ -252,6 +252,35 @@ def test_the_prompt_never_changes_as_the_library_grows_or_drifts(tmp_path, monke
     assert _helper(paths.checkout).catalog().startswith("Memory library: empty")
 
 
+def test_the_catalogue_records_that_it_showed_the_guide_and_no_item(
+    tmp_path,
+    monkeypatch,
+):
+    """Use telemetry under ``catalogue``: the renderer records exactly what the prompt shows (the guide's
+    digest and size, renderer ``catalogue``) and no channel or item, since the guide names none; per-item
+    exposure comes from the cells. An empty library shows nothing.
+    """
+    from unify.memory_v2.analysis import use
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
+    paths = Paths.under(tmp_path / "home")
+    mem = Repo.init_bare(paths.memory)
+    run = _request(paths, monkeypatch)
+    assert run.index == ""
+    assert run.shown == use.record_shown("", channels=(), renderer="catalogue")
+    assert run.shown["bytes"] == 0 and run.shown["channels"] == run.shown["items"] == []
+    _land(mem, {"env/spotify/__init__.py": MOD})
+    run = _request(paths, monkeypatch)
+    assert run.index == prompt.GUIDE
+    want = use.record_shown(prompt.GUIDE, channels=(), renderer="catalogue")
+    assert run.shown == want
+    assert want["renderer"] == "catalogue" and want["bytes"] == len(
+        prompt.GUIDE.encode(),
+    )
+    assert want["channels"] == [] and want["items"] == []
+    assert hooks.system_prompt("SYS").endswith(prompt.GUIDE)
+
+
 def test_the_guide_is_constant_short_and_names_nothing_of_the_library():
     guide = prompt.GUIDE
     assert estimate_tokens(guide) <= 120

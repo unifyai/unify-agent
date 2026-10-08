@@ -16,7 +16,9 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 Sol sees only what :func:`export_for_sol` and :func:`export_blobs` write (ruling R10): request, cells,
-actions, and the file blobs worktree actions recorded. Nothing about outcomes, signals or checkers reaches it.
+actions, and the file blobs worktree actions recorded; its first message adds the index and, with
+``PassConfig.show_usage`` (``UNIFY_MEMORY_V2_SOL_USAGE=on``), a table of how requests used each function
+(:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it.
 """
 
 from __future__ import annotations
@@ -367,6 +369,8 @@ class PassConfig:
     max_usd: Decimal = Decimal("1.00")
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
+    # UNIFY_MEMORY_V2_SOL_USAGE: end the first message with the library-use table (off: as before)
+    show_usage: bool = False
 
 
 @dataclass
@@ -897,6 +901,23 @@ class SolPass:
             index = f"(index not built: {exc})"
         return f"Current index:\n{index}"
 
+    def _usage(self, req: PassRequest, tree: Path) -> str:
+        """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions
+        of memory ``main`` at *tree*: harness counts only, nothing of a checker (ruling R10).
+        """
+        from .memory_repo import items as memory_items
+        from .usage import usage_table
+
+        try:
+            ids = [
+                it.item_id
+                for it in memory_items(tree).items
+                if it.kind == "env_function"
+            ]
+            return usage_table(self.ev, list(req.episodes), ids)
+        except Exception as exc:  # noqa: BLE001 - a measurement never stops a pass
+            return f"(library use not available: {type(exc).__name__})\n"
+
     def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
         inputs.mkdir()
         export_for_sol(self.load, list(req.episodes), inputs / "episodes")
@@ -1098,13 +1119,18 @@ class SolPass:
                 docstrings=switches["docstrings"],
                 soft_budget=switches["soft_budget"],
             )
+            first = (
+                f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
+                + self._library_message(
+                    wt,
+                    switches,
+                )
+            )
+            if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
+                first += f"\n\n{self._usage(req, wt)}"
             messages: list[dict] = [
                 {"role": "system", "content": sol_system(**switches)},
-                {
-                    "role": "user",
-                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
-                    + self._library_message(wt, switches),
-                },
+                {"role": "user", "content": first},
             ]
             finished = False
             while (

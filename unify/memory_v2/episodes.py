@@ -103,6 +103,9 @@ class Episode:
     # Assistant replies in order. ``request`` holds every user message in order: the first is
     # the request, the rest are observations.
     replies: list[str] = field(default_factory=list)
+    # How the request used the memory library (``analysis.use.request_use``), written as
+    # ``memory_use.json``; None (no file) when nothing computed it.
+    memory_use: dict | None = None
 
 
 def episode_dir(ep: Episode) -> str:
@@ -167,6 +170,10 @@ class EpisodeWriter:
             "worktree.diff": r.text(ep.worktree_diff),
             "cost.jsonl": _jsonl([asdict(c) for c in ep.costs]),
         }
+        if ep.memory_use is not None:
+            files["memory_use.json"] = (
+                json.dumps(r.obj(ep.memory_use), sort_keys=True, indent=1) + "\n"
+            )
         rel = episode_dir(ep)
         base = self.repo.head()
         with self.repo.temp_checkout() as wt:
@@ -204,6 +211,10 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
         replies = json.loads(read("replies.json"))
     except GitError:
         replies = []
+    try:  # absent from episodes recorded without use telemetry; unreadable is the same as absent
+        memory_use = json.loads(read("memory_use.json"))
+    except (GitError, ValueError, RecursionError):
+        memory_use = None
     actions = []
     for row in lines("actions.jsonl"):
         row["response"] = _uncap(row["response"], blobs)
@@ -218,4 +229,5 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
         worktree_diff=read("worktree.diff"),
         costs=[CostRow(**c) for c in lines("cost.jsonl")],
         replies=replies,
+        memory_use=memory_use if isinstance(memory_use, dict) else None,
     )

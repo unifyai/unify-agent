@@ -280,6 +280,9 @@ class SolSettings:
     run_guard_usd: Decimal | None
     # Sol's own route (UNIFY_MEMORY_V2_SOL_BASE_URL / _SOL_TOKEN or _SOL_TOKEN_FD); None: as shipped
     route: SolRoute | None = None
+    show_usage: bool = (
+        False  # UNIFY_MEMORY_V2_SOL_USAGE: the use table in each pass's first message
+    )
 
     @property
     def cap_usd(self) -> Decimal:
@@ -301,7 +304,8 @@ def _decimal(name: str, value: Any) -> Decimal:
 
 
 def sol_settings(settings: Any) -> SolSettings:
-    """The Sol model, E, the USD allowance per token, the run guard and Sol's route from *settings*.
+    """The Sol model, E, the USD allowance per token, the run guard, Sol's route and whether Sol is shown
+    the use table (``UNIFY_MEMORY_V2_SOL_USAGE``) from *settings*.
 
     Defaults if unset. :func:`run_due_passes` reads them before anything else, so a refused value (Sol's
     route with one of its two settings empty, say) starts no pass and makes no call. Sol's route is settled
@@ -352,7 +356,10 @@ def sol_settings(settings: Any) -> SolSettings:
             f"{SOL_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_SOL_MODEL must be an "
             "@openrouter endpoint (or a bare model id)",
         )
-    return SolSettings(model, e, a_tok, guard, route)
+    from .switch import parse_sol_usage
+
+    usage = parse_sol_usage(getattr(settings, "UNIFY_MEMORY_V2_SOL_USAGE", "") or "")
+    return SolSettings(model, e, a_tok, guard, route, usage == "on")
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -654,6 +661,7 @@ async def run_due_passes(
         max_calls=MAX_CALLS,
         deadline_s=DEADLINE_S,
         max_usd=cap,
+        show_usage=cfg.show_usage,
     )
     outcomes: list[PassOutcome] = []
     for i, req in enumerate(due):

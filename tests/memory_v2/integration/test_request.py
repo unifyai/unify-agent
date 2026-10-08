@@ -412,6 +412,110 @@ def test_abort_after_finish_changes_nothing(mv2):
     _left_nothing(mv2.paths)
 
 
+def _cell_lines(code: str, system: str, error: str | None = None) -> list[dict]:
+    meta = {"duration_ms": 1, **({"error": error} if error else {})}
+    return [
+        {"seq": 0, "type": "system_prompt", "content": system},
+        {
+            "seq": 1,
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_code",
+                            "arguments": json.dumps({"code": code}),
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            "seq": 2,
+            "type": "message",
+            "message": {
+                "role": "tool",
+                "tool_call_id": "c0",
+                "content": [{"type": "text", "text": json.dumps(meta)}],
+            },
+        },
+    ]
+
+
+def test_finish_records_how_the_request_used_the_library(mv2):
+    """The record is computed at finish from the transcript against the items at the pin, written as the
+    episode's ``memory_use.json`` and indexed per item. The cell edited ``hello`` in its scratch copy, so
+    the refusal it then raised is booked as the edit's, never the stored function's."""
+    import hashlib
+
+    from unify.memory_v2.episodes import episode_dir
+    from unify.memory_v2.evidence import EvidenceStore
+    from unify.memory_v2.gitio import Repo
+
+    run = _begin(mv2, "Say hi to ada.")
+    assert run.item_ids == ["env/spotify:hello"]
+    # a function the cell writes into its scratch copy is not a memory item
+    (mv2.paths.checkout / "env/spotify/__init__.py").write_text(
+        "class MemoryInputError(ValueError):\n    pass\n\n"
+        "def hello(apis, name):\n    raise MemoryInputError(name)\n\n"
+        "def extra():\n    return 1\n",
+    )
+    code = "from env.spotify import hello as hi, extra\nextra()\nhi(None, 'ada')\n"
+    module = mv2.paths.checkout / "env/spotify/__init__.py"
+    error = (
+        "Traceback (most recent call last):\n"
+        '  File "<string>", line 3, in <module>\n'
+        f'  File "{module}", line 5, in hello\n'
+        "    raise MemoryInputError(name)\n"
+        "env.spotify.MemoryInputError: ada\n"
+    )
+    _transcript(run, *_cell_lines(code, f"core\n\n{run.index}", error))
+    # the code tool's structured result, as the tool loop hands it over (hooks.tool_result); the
+    # rendered metadata block above is never read for it
+    from unify.actor.execution.types import ExecutionResult
+
+    hooks.tool_result("execute_code", "c0", ExecutionResult(error=error, duration_ms=1))
+    assert run.cell_status["c0"]["exits"] == [["refused", "spotify", "hello"]]
+    _finish(mv2, run)
+    rel = episode_dir(run)
+    raw = Repo(mv2.paths.episodes).show("main", f"{rel}/memory_use.json")
+    rec = json.loads(raw)
+    assert rec["items_at_pin"] == ["env/spotify:hello"]
+    assert set(rec["items"]) == {"env/spotify:hello"}
+    assert rec["export_roots"][0] == str(mv2.paths.checkout)
+    assert rec["modified_channels"] == ["spotify"]
+    hello = rec["items"]["env/spotify:hello"]
+    assert (hello["imported"], hello["called"]) == (1, 1)
+    assert (hello["refused"], hello["refused_modified"]) == (0, 1)
+    assert rec["outcomes_known"] and rec["cells_without_metadata"] == 0
+    assert rec["items_outcome_unknown"] == [] and rec["cells_outcome_unknown"] == 0
+    assert set(rec["cells_without_metadata_by_cause"].values()) == {0}
+    assert [c["status"] for c in rec["cell_status"]] == ["error"]
+    assert hello["modified_in_request"] is True
+    shown = rec["memory_section_shown"]
+    assert shown["shown"]
+    assert shown["sha256"] == hashlib.sha256(run.index.encode()).hexdigest()
+    assert rec["shown_items"] == ["env/spotify:hello"]
+    assert rec["shown_channels"] == ["spotify"]
+    # from the renderer's own record, confirmed against the prompt the transcript holds
+    assert rec["exposure_source"] == "record" and shown["prompt_confirmed"] is True
+    assert rec["shown_record"]["renderer"] == "index"
+    assert rec["shown_record"]["items"] == ["env/spotify:hello"]
+    assert run.index not in raw.decode()  # names and a digest, never the section's text
+    totals = EvidenceStore(mv2.paths.evidence).item_use()
+    row = totals["env/spotify:hello"]
+    assert (row["called"], row["refused"], row["refused_modified"]) == (1, 0, 1)
+    assert (row["shown"], row["channel_shown"], row["modified"]) == (1, 1, 1)
+    assert (row["exposure_record"], row["exposure_legacy_text"]) == (1, 0)
+    assert (row["outcome_unknown"], row["prompt_unconfirmed"]) == (0, 0)
+    assert not mv2.paths.errors.exists()
+    _left_nothing(mv2.paths)
+
+
 # ── the outcome: pass/fail only ──────────────────────────────────────────────
 
 

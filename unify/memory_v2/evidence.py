@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel T
   passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
+CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, PRIMARY KEY(item, episode_id));
 """
 # The input-shape snapshots of ``UNIFY_MEMORY_V2_SURFACING=catalogue`` (:mod:`.shape_rows`), created by the
 # first write, so a store that never freezes a snapshot (``index``, the default) keeps the v2 schema.
@@ -38,11 +39,195 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
   PRIMARY KEY(commit_sha, item));
 """
 
+# The item_use counts, in column order. Each is added to a store that lacks it (a store opened before
+# the column existed), as ``INTEGER NOT NULL DEFAULT 0``, or ``DEFAULT 1`` for :data:`_UNKNOWN_BY_DEFAULT`.
+_USE_COUNTS = (
+    "imported",
+    "called",
+    "refused",
+    "errored",
+    "refused_accepted",
+    "referenced",
+    "guarded",
+    "unknown_calls",
+    "shown",
+    "channel_shown",
+    "modified",
+    "refused_modified",
+    "errored_modified",
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
+    "outcome_unknown",
+    "prompt_unconfirmed",
+)
+# Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
+# where its shown lists came from), never as known. Every insert sets every column, so the default only
+# ever fills the rows already there when an old store is migrated.
+_UNKNOWN_BY_DEFAULT = frozenset({"outcome_unknown", "exposure_unknown"})
+# Where a record's shown lists came from (``analysis.use``'s ``exposure_source``); a record without one
+# (from before the field) counts as ``unknown``.
+_EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
+# The item_use columns :meth:`EvidenceStore.request_flags` counts requests by (a request counts when any
+# of its rows has it). All but ``outcome_unknown`` hold one value per request; ``outcome_unknown`` is per
+# item (the items a cell with an unknown outcome could reach).
+_REQUEST_FLAGS = (
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
+    "outcome_unknown",
+    "prompt_unconfirmed",
+)
+# Per-item sums over the requests whose outcome for the item was known (``outcome_unknown = 0``).
+_KNOWN_SUMS = (
+    ("refused_known", "SUM(CASE WHEN outcome_unknown=0 THEN refused ELSE 0 END)"),
+    ("errored_known", "SUM(CASE WHEN outcome_unknown=0 THEN errored ELSE 0 END)"),
+    (
+        "refused_accepted_known",
+        "SUM(CASE WHEN outcome_unknown=0 THEN refused_accepted ELSE 0 END)",
+    ),
+    (
+        "requests_refusing_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND refused>0 THEN 1 ELSE 0 END)",
+    ),
+    (
+        "requests_erroring_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND errored>0 THEN 1 ELSE 0 END)",
+    ),
+)
+_IN_CHUNK = 500
+
+
+def _migrate_item_use(db: sqlite3.Connection) -> None:
+    """Add the item_use columns a store lacks. Rows already there read ``outcome_unknown = 1`` and
+    ``exposure_unknown = 1`` (:data:`_UNKNOWN_BY_DEFAULT`): what they did not record is unknown.
+    """
+    have = {r[1] for r in db.execute("PRAGMA table_info(item_use)")}
+    with db:
+        for col in _USE_COUNTS:
+            if col not in have:
+                default = 1 if col in _UNKNOWN_BY_DEFAULT else 0
+                db.execute(
+                    f"ALTER TABLE item_use ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}",
+                )
+
+
+def _exposure_source(use: dict) -> str:
+    """The record's ``exposure_source``; a record from before the field (``version`` below 4) whose
+    legacy reading found a section is ``legacy_text``, any other record without one ``unknown``.
+    """
+    source = use.get("exposure_source")
+    if source in _EXPOSURE_SOURCES:
+        return source
+    version, section = use.get("version"), use.get("memory_section_shown")
+    if (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version < 4
+        and isinstance(section, dict)
+        and section.get("shown") is True
+    ):
+        return "legacy_text"
+    return "unknown"
+
+
+def _unknown_items(use: dict, items: set[str]) -> set[str]:
+    """The items whose outcome the record leaves unknown: its ``items_outcome_unknown`` (every item when
+    that list was cut short), or, for a record without the list (an older or failed record), every item
+    unless ``outcomes_known`` is true."""
+    listed = use.get("items_outcome_unknown")
+    if isinstance(listed, list):
+        count = use.get("items_outcome_unknown_count")
+        if (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > len(listed)
+        ):
+            return set(items)
+        return {v for v in listed if isinstance(v, str)}
+    return set() if use.get("outcomes_known") is True else set(items)
+
+
+def _use_rows(eid: str, use: dict) -> list[tuple]:
+    """One ``item_use`` row per item at the episode's pin (an exposure, zeros included) and per item the
+    record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
+    channel plus on ``env`` itself; ``shown`` whether the item's own line was in the prompt's memory
+    section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
+    channel's files (its refusals and errors are then in the ``_modified`` columns only);
+    ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
+    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``prompt_unconfirmed``
+    is 1 when the shown lists came from the record but no recorded system prompt ends with its text;
+    ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
+    (``items_outcome_unknown``; for a record without that list, every item unless ``outcomes_known``),
+    and that row's refusal and error columns are then lower bounds.
+    """
+
+    def listed(key: str) -> set[str]:
+        value = use.get(key)
+        return (
+            {v for v in value if isinstance(v, str)}
+            if isinstance(value, list)
+            else set()
+        )
+
+    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
+    pinned = listed("items_at_pin")
+    shown, channels, changed = (
+        listed("shown_items"),
+        listed("shown_channels"),
+        listed("modified_channels"),
+    )
+    unknown = (
+        use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
+    )
+    source = _exposure_source(use)
+    exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
+    section = use.get("memory_section_shown")
+    unconfirmed = int(
+        source == "record"
+        and isinstance(section, dict)
+        and section.get("prompt_confirmed") is False,
+    )
+
+    def n(value: object) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    every = pinned | {k for k in rows if isinstance(k, str)}
+    unknown_items = _unknown_items(use, every)
+    out = []
+    for item in sorted(every):
+        r = rows.get(item) if isinstance(rows.get(item), dict) else {}
+        channel = item.split(":", 1)[0].removeprefix("env/")
+        out.append(
+            (
+                item,
+                eid,
+                n(r.get("imported")),
+                n(r.get("called")),
+                n(r.get("refused")),
+                n(r.get("errored")),
+                n(r.get("refused_then_accepted")),
+                n(r.get("referenced")),
+                n(r.get("guarded")),
+                n(unknown.get(channel)) + n(unknown.get("*")),
+                int(item in shown),
+                int(channel in channels),
+                int(channel in changed),
+                n(r.get("refused_modified")),
+                n(r.get("errored_modified")),
+                *exposure,
+                int(item in unknown_items),
+                unconfirmed,
+            ),
+        )
+    return out
+
 
 class EvidenceStore:
     def __init__(self, path: Path) -> None:
         self.db = sqlite3.connect(str(path))
         self.db.executescript(_SCHEMA)
+        _migrate_item_use(self.db)
 
     def index_episode(self, ep: Episode, commit_sha: str) -> int:
         with self.db:
@@ -69,7 +254,111 @@ class EvidenceStore:
                 "INSERT INTO experience VALUES(?,?,?)",
                 (ep.episode_id, tokens, how),
             )
+            use = getattr(ep, "memory_use", None)
+            if isinstance(use, dict):
+                cols = ", ".join(("item", "episode_id", *_USE_COUNTS))
+                marks = ",".join("?" * (2 + len(_USE_COUNTS)))
+                self.db.executemany(
+                    f"INSERT OR REPLACE INTO item_use({cols}) VALUES({marks})",
+                    _use_rows(ep.episode_id, use),
+                )
             return int(cur.lastrowid)
+
+    # -- item use (memory v2.1 telemetry) --------------------------------------------------------------
+
+    def item_use(
+        self,
+        eids: list[str] | None = None,
+        item: str | None = None,
+    ) -> dict[str, dict]:
+        """Per item (only *item* when given), the summed ``item_use`` counts over *eids* (every indexed
+        episode when None).
+
+        Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
+        with a call site), the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
+        the requests whose memory section showed the item's line and its channel; ``outcome_unknown`` the
+        requests in which a cell with an unknown outcome could reach the item), and the sums of
+        :data:`_KNOWN_SUMS` over the requests whose outcome for the item was known. Items are in id order.
+        """
+        cols = ", ".join(
+            [f"SUM({c})" for c in _USE_COUNTS] + [expr for _, expr in _KNOWN_SUMS],
+        )
+        known_keys = [k for k, _ in _KNOWN_SUMS]
+        base = (
+            f"SELECT item, COUNT(*), SUM(CASE WHEN called > 0 THEN 1 ELSE 0 END), {cols} "
+            "FROM item_use"
+        )
+        out: dict[str, dict] = {}
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            where: list[str] = []
+            params: list[str] = []
+            if item is not None:
+                where.append("item=?")
+                params.append(item)
+            if chunk is not None:
+                where.append(f"episode_id IN ({','.join('?' * len(chunk))})")
+                params.extend(chunk)
+            clause = f" WHERE {' AND '.join(where)}" if where else ""
+            rows = self.db.execute(f"{base}{clause} GROUP BY item", params).fetchall()
+            for r in rows:
+                cur = out.setdefault(
+                    r[0],
+                    {
+                        "requests": 0,
+                        "used_requests": 0,
+                        **dict.fromkeys(_USE_COUNTS, 0),
+                        **dict.fromkeys(known_keys, 0),
+                    },
+                )
+                cur["requests"] += int(r[1] or 0)
+                cur["used_requests"] += int(r[2] or 0)
+                for c, v in zip([*_USE_COUNTS, *known_keys], r[3:]):
+                    cur[c] += int(v or 0)
+        return dict(sorted(out.items()))
+
+    def request_flags(self, eids: list[str] | None = None) -> dict[str, int]:
+        """Per column of :data:`_REQUEST_FLAGS`, how many requests among *eids* (every indexed one when
+        None) have it set on any of their rows (``outcome_unknown``: some item's outcome was unknown); a
+        request counts when its pin held at least one item."""
+        out = dict.fromkeys(_REQUEST_FLAGS, 0)
+        cols = ", ".join(f"MAX({c})" for c in _REQUEST_FLAGS)
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            clause, params = "", []
+            if chunk is not None:
+                clause = f" WHERE episode_id IN ({','.join('?' * len(chunk))})"
+                params = list(chunk)
+            rows = self.db.execute(
+                f"SELECT episode_id, {cols} FROM item_use{clause} GROUP BY episode_id",
+                params,
+            ).fetchall()
+            for r in rows:
+                for c, v in zip(_REQUEST_FLAGS, r[1:]):
+                    out[c] += int(bool(v))
+        return out
+
+    def last_call_seq(self, item: str) -> int | None:
+        """The ``seq`` of the latest indexed episode with a call site of *item*, or None."""
+        row = self.db.execute(
+            "SELECT MAX(e.seq) FROM item_use u JOIN episodes e ON e.episode_id=u.episode_id "
+            "WHERE u.item=? AND u.called > 0",
+            (item,),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    def latest_seq(self) -> int:
+        """The ``seq`` of the latest indexed episode (0 when none)."""
+        row = self.db.execute("SELECT MAX(seq) FROM episodes").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
 
     def seq_of(self, eid: str) -> int:
         row = self.db.execute(

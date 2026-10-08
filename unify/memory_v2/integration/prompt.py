@@ -31,7 +31,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from ..catalogue import channel_lines
-from ..index import IndexOverBudget, build_index
+from ..index import IndexOverBudget, index_with_names
 from ..memory_repo import items
 
 logger = logging.getLogger(__name__)
@@ -53,21 +53,37 @@ def render_index(
 ) -> str:
     """The v2 index for the export at *checkout*, or ``""`` when it lists no item or is over budget
     (*budget_tokens*, :data:`INDEX_BUDGET_TOKENS` when None)."""
+    return render_memory(checkout, suspect, budget_tokens)[0]
+
+
+def render_memory(
+    checkout: Path,
+    suspect: Iterable[str] = (),
+    budget_tokens: int | None = None,
+) -> tuple[str, dict]:
+    """(:func:`render_index`'s text, what it shows as :func:`..analysis.use.record_shown` records it).
+
+    The record holds the channel and item names the text carries and the text's digest, never the text;
+    the request's use record reads it, so it never has to find the section in the prompt by its wording.
+    """
+    from ..analysis.use import record_shown
+
     checkout = Path(checkout)
-    if not any(it.kind != "workflow" and it.listed for it in items(checkout).items):
-        return ""
-    try:
-        text = build_index(
-            checkout,
-            budget_tokens=(
-                INDEX_BUDGET_TOKENS if budget_tokens is None else budget_tokens
-            ),
-            suspect=set(suspect),
-        )
-    except IndexOverBudget as exc:  # the gate's budget check makes this unexpected
-        logger.warning("memory v2: index left out of the prompt: %s", exc)
-        return ""
-    return text + "\n" + export_line(checkout)
+    text, ids, channels = "", [], []
+    if any(it.kind != "workflow" and it.listed for it in items(checkout).items):
+        try:
+            index, ids, channels = index_with_names(
+                checkout,
+                budget_tokens=(
+                    INDEX_BUDGET_TOKENS if budget_tokens is None else budget_tokens
+                ),
+                suspect=set(suspect),
+            )
+        except IndexOverBudget as exc:  # the gate's budget check makes this unexpected
+            logger.warning("memory v2: index left out of the prompt: %s", exc)
+        else:
+            text = index + "\n" + export_line(checkout)
+    return text, record_shown(text, channels=channels, items=ids, renderer="index")
 
 
 #: The catalogue section: constant bytes, whatever the library holds (no count, name, flag or path).
@@ -84,6 +100,18 @@ def render_memory_section(checkout: Path, shown_before: bool = False) -> str:
     """:data:`GUIDE` once the library at *checkout* lists anything or the guide was *shown_before* in this
     run (``State.guide``); ``""`` otherwise. Never anything that depends on what the library holds.
     """
-    if shown_before or channel_lines(Path(checkout)):
-        return GUIDE
-    return ""
+    return render_catalogue(checkout, shown_before)[0]
+
+
+def render_catalogue(checkout: Path, shown_before: bool = False) -> tuple[str, dict]:
+    """(:func:`render_memory_section`'s text, what it shows as :func:`..analysis.use.record_shown` records it).
+
+    The guide names no channel or function, so the record names none: it says the guide was shown (its
+    digest and size, renderer ``catalogue``) and nothing per item. Per-item exposure under ``catalogue``
+    comes from the cells' own ``memory.catalog()`` / ``find`` / ``describe`` / ``help`` calls and imports.
+    """
+    from ..analysis.use import record_shown
+
+    checkout = Path(checkout)
+    text = GUIDE if shown_before or channel_lines(checkout) else ""
+    return text, record_shown(text, channels=(), items=(), renderer="catalogue")

@@ -339,6 +339,27 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     )  # the export is not the work tree
     assert len(ep.cells) == 1
     assert ep.cells[0].code == _code(paths.checkout)
+    # the cell's structured result reached the use record through the tool loop (hooks.tool_result)
+    assert ep.memory_use["cells"] == 1 and ep.memory_use["cells_without_metadata"] == 0
+    assert [c["status"] for c in ep.memory_use["cell_status"]] == ["ok"]
+    assert ep.memory_use["outcomes_known"] is True
+    assert ep.memory_use["items_outcome_unknown"] == []
+    assert set(ep.memory_use["cells_without_metadata_by_cause"].values()) == {0}
+    # what the prompt showed, from the renderer's record, confirmed on the real actor path: the
+    # system prompt the transcript recorded ends with exactly the section the request rendered
+    section = ep.memory_use["memory_section_shown"]
+    assert ep.memory_use["exposure_source"] == "record"
+    assert section["shown"] is True and section["prompt_confirmed"] is True
+    if (
+        surfacing == "catalogue"
+    ):  # the guide names no channel or function: shown, nothing per item
+        assert ep.memory_use["shown_record"]["renderer"] == "catalogue"
+        assert (
+            ep.memory_use["shown_items"] == [] and ep.memory_use["shown_channels"] == []
+        )
+    else:
+        assert ep.memory_use["shown_record"]["renderer"] == "index"
+        assert "env/spotify:hello" in ep.memory_use["shown_items"]
     assert "3 claims" in ep.cells[0].output
     assert ep.replies[-1] == FINAL
     assert ep.worktree_before and ep.worktree_after

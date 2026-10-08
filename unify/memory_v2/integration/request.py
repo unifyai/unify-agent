@@ -1,17 +1,19 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
-``main`` into the scratch export the worker mounts, renders the memory section the system prompt ends with
-(``index``: under ``UNIFY_MEMORY_V2_SURFACING=index``, the default, the v2 per-function index and export
-line; under ``catalogue``, the constant guide paragraph once the library has listed anything in this run,
-after writing the generated catalogue beside the export: README, ``.memory/catalog.json`` with the
-suspect flags, and the ``memory`` helper, :mod:`..catalogue`), takes the work tree's before snapshot, and
-opens the scope the actor runs in (its transcript continues the episode id and model costs are recorded).
-``finish`` records the request as one episode and runs the consolidation passes that are due, blocking; it
-never raises. The passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the
-consolidation driver appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way.
-``abort`` cleans up and records nothing. The harness hooks read the current run (``current()``) for
-``index`` and ``paths``.
+``main`` into the scratch export the worker mounts, notes its memory functions (for the use record),
+renders the memory section the system prompt ends with (``index``: under ``UNIFY_MEMORY_V2_SURFACING=index``,
+the default, the v2 per-function index and export line; under ``catalogue``, the constant guide paragraph
+once the library has listed anything in this run, after writing the generated catalogue beside the export:
+README, ``.memory/catalog.json`` with the suspect flags, and the ``memory`` helper, :mod:`..catalogue`) and
+records what it shows in either mode (``shown``: names and a digest, :func:`..analysis.use.record_shown`;
+under ``catalogue`` that is the guide alone), takes the work tree's before snapshot, and opens the scope the
+actor runs in (its transcript continues the episode id and model costs are recorded). ``finish`` records
+the request as one episode, with how it used the library (``memory_use.json``, indexed in the evidence
+store's ``item_use`` table), and runs the consolidation passes that are due, blocking; it never raises. The
+passes' start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
+appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
+and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
 
 Only pass/fail of a posted outcome is kept (ruling R10): ``take_outcome`` keeps ``solved`` and drops
 everything else at once, so no checker text reaches an episode, the evidence, Sol or a cell.
@@ -28,7 +30,7 @@ import secrets
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,8 @@ _CURRENT: Any = None
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
 CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
+#: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
+MAX_STATUSES = 10_000
 _ERROR_CHARS = 2000
 
 
@@ -140,6 +144,76 @@ def check_hidden(paths: Any, policy: Any) -> None:
         )
 
 
+def pinned_items(checkout: Path) -> list[str]:
+    """The ids of the memory functions in the export at *checkout* (listed or not), in id order."""
+    from ..memory_repo import items
+
+    return sorted(
+        it.item_id for it in items(Path(checkout)).items if it.kind == "env_function"
+    )
+
+
+def memory_use(
+    ep: Any,
+    item_ids: list[str],
+    *,
+    redactor: Any = None,
+    export_roots: list[str] | tuple[str, ...] = (),
+    surface: dict | None = None,
+    shown: dict | None = None,
+    shown_text: str = "",
+    cell_status: dict | None = None,
+) -> dict:
+    """The request's use record (:func:`..analysis.use.request_use`).
+
+    It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
+    so the offline analyser recomputes the same record from the written episode), against the items at
+    the pin, the export's roots and the library's import surface taken before the actor ran, *shown*,
+    what the memory-section renderer recorded (its digest is taken again over *shown_text*, the section
+    as rendered, through *redactor*, as the transcript's copy of the prompt is), and *cell_status*, each
+    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). A
+    failure is recorded as its exception type, with the items at the pin; it never stops the episode.
+    """
+    from ..analysis import use
+
+    def clean(value: Any) -> Any:
+        return redactor.obj(value) if redactor is not None else value
+
+    try:
+        if isinstance(shown, dict) and redactor is not None and shown_text:
+            shown = {**shown, **use.section_digest(redactor.text(shown_text))}
+        return use.request_use(
+            clean(list(ep.transcript)),
+            item_ids,
+            [
+                clean(
+                    {
+                        "cell": a.cell,
+                        "kind": getattr(a, "kind", "tool"),
+                        "channel": a.channel,
+                        "status": a.status,
+                    },
+                )
+                for a in ep.actions
+            ],
+            memory_diff=(
+                redactor.text(ep.memory_diff or "")
+                if redactor is not None
+                else ep.memory_diff or ""
+            ),
+            export_roots=export_roots,
+            surface=surface,
+            shown=shown,
+            cell_status=cell_status,
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
+        return {
+            "version": use.VERSION,
+            "error": type(exc).__name__,
+            "items_at_pin": list(item_ids)[: use.MAX_ITEMS_AT_PIN],
+        }
+
+
 def _plain(value: Any) -> Any:
     """*value* with every Decimal as a plain decimal string (never exponent notation)."""
     if isinstance(value, Decimal):
@@ -163,6 +237,14 @@ class RequestRun:
         self.surfacing: Any = (
             None  # the v2.1 switches read at open (switch.SurfacingOptions)
         )
+        # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
+        self.shown: dict | None = None
+        # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
+        self.item_ids: list[str] = []
+        self.surface: dict | None = None
+        self.export_roots: list[str] = []
+        # Each code cell's status from the runtime's structured result, by tool call id (note_result).
+        self.cell_status: dict[str, dict] = {}
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -213,6 +295,7 @@ class RequestRun:
     def _open(self, sandbox: Any, transcripts: Any) -> None:
         from unify.settings import SETTINGS
 
+        from ..analysis import use
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
@@ -225,13 +308,18 @@ class RequestRun:
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
         export_checkout(paths.memory, self.pin, paths.checkout)
+        # the use record's view of the pin, taken before anything is generated beside the export and
+        # before the actor can edit the scratch copy
+        self.item_ids = pinned_items(paths.checkout)
+        self.surface = use.library_surface(paths.checkout)
+        self.export_roots = use.roots_of(paths.checkout)
         self.surfacing = surfacing_options(SETTINGS)
         if self.surfacing.catalogue:
             self._surface_catalogue(consolidate)
         else:  # the v2 index and export line, byte for byte; nothing generated in the export
-            from .prompt import render_index
+            from .prompt import render_memory
 
-            self.index = render_index(
+            self.index, self.shown = render_memory(
                 paths.checkout,
                 self.state.suspect,
                 sys.maxsize if self.surfacing.soft_budget else None,
@@ -259,7 +347,7 @@ class RequestRun:
         """
         from ..catalogue import GENERATED, write_generated
         from ..shape_rows import lookup_from
-        from .prompt import render_memory_section
+        from .prompt import render_catalogue
 
         checkout = self.paths.checkout
         try:
@@ -280,7 +368,8 @@ class RequestRun:
                 target = checkout / rel
                 if target.is_file() and not target.is_symlink():
                     target.unlink()
-        self.index = render_memory_section(checkout, self.state.guide)
+        # what the prompt shows is the guide alone (names nothing): recorded as such for the use record
+        self.index, self.shown = render_catalogue(checkout, self.state.guide)
         if self.index and not self.state.guide:
             self.state.guide = True
             try:  # also saved at finish; saved now so an aborted request still fixes the prefix
@@ -315,6 +404,45 @@ class RequestRun:
         from ..redact import Redactor
 
         return Redactor.from_environ(os.environ)
+
+    # -- cell results -----------------------------------------------------------------------------
+
+    def note_result(self, call_id: Any, result: Any) -> None:
+        """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
+        to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
+        sessions. A plain mapping (the code tool's own result for an empty cell, or when its session
+        executor raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
+        kept; later ones are then unknown.
+        """
+        from ..analysis import use
+
+        if call_id is None or len(self.cell_status) >= MAX_STATUSES:
+            return
+        if isinstance(result, Mapping):
+            status = use.dict_status(
+                result,
+                items=self.item_ids,
+                roots=self.export_roots,
+            )
+        else:
+            status = use.runtime_status(
+                getattr(result, "error", None),
+                getattr(result, "session_id", None),
+                getattr(result, "session_created", None),
+                items=self.item_ids,
+                roots=self.export_roots,
+            )
+        self.cell_status[str(call_id)] = status
+
+    def note_failure(self, call_id: Any, exc: BaseException) -> None:
+        """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
+        outcome is unknown (``tool_raised``), with the exception's class name when it is a builtin one.
+        """
+        from ..analysis import use
+
+        if call_id is None or len(self.cell_status) >= MAX_STATUSES:
+            return
+        self.cell_status[str(call_id)] = use.failed_status(type(exc).__name__)
 
     # -- the outcome ------------------------------------------------------------------------------
 
@@ -463,6 +591,16 @@ class RequestRun:
             worktree_before=wt.before,
             worktree_after=wt.after,
             worktree_diff=wt.diff,
+        )
+        ep.memory_use = memory_use(
+            ep,
+            self.item_ids,
+            redactor=redactor,
+            export_roots=self.export_roots,
+            surface=self.surface,
+            shown=self.shown,
+            shown_text=self.index,
+            cell_status=dict(self.cell_status),
         )
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)

@@ -45,13 +45,14 @@ MONEY = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
 CSV = b"vendor_id,invoice_no,amount,due_date,status\nV-17,INV-0042,1250.50,2026-10-14,open\n"
 
 
-def _settings(e=1, guard="", model="openai/gpt-6-sol"):
+def _settings(e=1, guard="", model="openai/gpt-6-sol", usage=""):
     return SimpleNamespace(
         UNIFY_MEMORY_V2="on",
         UNIFY_MEMORY_V2_E=e,
         UNIFY_MEMORY_V2_SOL_MODEL=model,
         UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=A_TOK,
         UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD=guard,
+        UNIFY_MEMORY_V2_SOL_USAGE=usage,
     )
 
 
@@ -463,6 +464,29 @@ def test_cap_is_e_times_the_allowance_as_a_plain_decimal():
                 SimpleNamespace(UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS=zero),
             )
     assert sol_settings(_settings(guard="2.50")).run_guard_usd == Decimal("2.50")
+    assert defaults.show_usage is False and cfg.show_usage is False
+    assert sol_settings(_settings(usage="on")).show_usage is True
+    assert sol_settings(_settings(usage="off")).show_usage is False
+    with pytest.raises(ValueError):
+        sol_settings(SimpleNamespace(UNIFY_MEMORY_V2_SOL_USAGE="yes"))
+
+
+@pytest.mark.parametrize("usage, shown", [("", False), ("off", False), ("on", True)])
+def test_the_sol_usage_switch_reaches_the_passes_first_message(
+    tmp_path,
+    monkeypatch,
+    usage,
+    shown,
+):
+    from unify.memory_v2.usage import USAGE_HEADING
+
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    _run(stores, "e1", sha, usage=usage)
+    first = fake.seen[0][1]["content"]
+    assert (USAGE_HEADING in first) is shown
 
 
 def test_emit_failures_never_stop_the_pass(tmp_path, monkeypatch):
