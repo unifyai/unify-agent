@@ -418,7 +418,7 @@ def test_reserved_paths():
         ".memory/x/y",
     ):
         assert catalogue.reserved(p)
-    # anything a cell's `import memory` or `import env` could resolve to, and root extension modules
+    # anything a cell's `import memory` or `import env` could resolve to
     for p in (
         "memory",
         "memory.abi3.so",
@@ -428,26 +428,33 @@ def test_reserved_paths():
         "memory/data.txt",
         "env.py",
         "env.so",
-        "helper.so",
-        "helper.pyd",
     ):
         assert catalogue.reserved(p), p
+    # compiled code elsewhere is not a reserved name: manifest.unsafe_path refuses it (G6)
     for p in (
         "env/x/README.md",
         "env/x/__init__.py",
         "env/x/tests/data.json",
         "unify_memory_testkit.py",
         "memoryless.txt",
+        "helper.so",
+        "helper.pyd",
     ):
         assert not catalogue.reserved(p), p
-    # the layout refuses them too, and an extension module anywhere
-    from unify.memory_v2.manifest import layout_allowed
+    # the gate refuses each before extraction too (layout or unsafe_path), and an extension module anywhere
+    from unify.memory_v2.manifest import layout_allowed, unsafe_path
 
-    for p in ("memory.abi3.so", "env.py", "memory/notes.md", "env/x/tests/fast.so"):
-        assert not layout_allowed(p), p
-    assert layout_allowed("env/x/tests/data.json") and layout_allowed(
-        "unify_memory_testkit.py",
-    )
+    for p in (
+        "memory.abi3.so",
+        "env.py",
+        "memory/notes.md",
+        "env/x/tests/fast.so",
+        "helper.so",
+        "helper.pyd",
+    ):
+        assert not layout_allowed(p) or unsafe_path(p) is not None, p
+    for p in ("env/x/tests/data.json", "unify_memory_testkit.py"):
+        assert layout_allowed(p) and unsafe_path(p) is None, p
 
 
 def test_the_helper_and_its_shape_functions_import_only_the_standard_library():

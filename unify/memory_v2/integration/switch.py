@@ -31,9 +31,10 @@ The v2.1 surfacing switches (lane S1). Each default restores the behaviour of th
   estimated tokens, as in v2. ``on``: G4 only notes that hygiene is due past the budget, measured on the
   library's surface (the README and channel lines under ``catalogue``, the index under ``index``).
 
-Not switched (a declared safety fix in every mode): the layout refuses bytecode, compiled extensions and
-root entries other than ``env/``, ``workflows/`` and the test kit, and the gate refuses changes to the
-paths the harness reserves for its generated catalogue (:mod:`unify.memory_v2.manifest`).
+Not switched (a declared safety fix in every mode): the gate refuses bytecode, native code, start-up hooks
+and root entries other than ``env/``, ``workflows/`` and the test kit before extraction
+(:func:`unify.memory_v2.manifest.unsafe_path`), and changes to the paths the harness reserves for its
+generated catalogue (:func:`unify.memory_v2.catalogue.reserved`).
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.

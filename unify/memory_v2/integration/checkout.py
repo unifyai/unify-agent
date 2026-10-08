@@ -21,7 +21,7 @@ from pathlib import Path
 
 from ..blobs import BlobStore
 from ..gitio import GitError, Repo
-from ..manifest import compiled_artifact, shadows_import
+from ..manifest import unsafe_path
 from ..snapshot import listing, materialise
 from .hardgit import git
 
@@ -41,10 +41,9 @@ def _clear(dest: Path) -> None:
 def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
     """Replace *dest* with the files of memory commit *sha*.
 
-    Bytecode, compiled extensions and root entries that could shadow an import
-    (:func:`..manifest.compiled_artifact`, :func:`..manifest.shadows_import`) are never exported: the gate
-    refuses them now, and one an older commit holds must not be importable from the cell. A merged library
-    holds none, so its export is exactly its files.
+    Paths the gate refuses before extraction (:func:`..manifest.unsafe_path`: compiled code, start-up hooks,
+    root entries outside the layout) are never exported: one an older commit holds must not be importable
+    from the cell. A merged library holds none, so its export is exactly its files.
     """
     dest = Path(dest)
     _clear(dest)
@@ -57,7 +56,7 @@ def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
     unsafe = _unexported(files)
     if unsafe:
         logger.warning(
-            "memory v2: %d importable artefact(s) of memory %s left out of the export: %s",
+            "memory v2: %d path(s) the gate refuses in memory %s left out of the export: %s",
             len(unsafe),
             sha[:12],
             unsafe[:5],
@@ -69,7 +68,7 @@ def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
 
 def _unexported(files: dict) -> list[str]:
     """The paths of a commit's listing that :func:`export_checkout` leaves out, sorted."""
-    return sorted(p for p in files if compiled_artifact(p) or shadows_import(p))
+    return sorted(p for p in files if unsafe_path(p) is not None)
 
 
 def remove_checkout(dest: Path) -> None:

@@ -1,17 +1,19 @@
 """What the import system could load from the library is refused (v2.1 review I4), in every mode.
 
-The layout (:func:`unify.memory_v2.manifest.layout_allowed`) admits no bytecode, compiled extension or
-``__pycache__`` entry anywhere, no root entry but ``env/``, ``workflows/`` and the test kit, and no root name
-that could shadow an import (``env``/``memory``, the startup hooks, a standard-library, built-in or installed
-module, ``pytest*`` or the gate runner's imports). The export never writes such a file from an older commit.
+The gate refuses before extraction what :func:`unify.memory_v2.manifest.unsafe_path` names (bytecode,
+native code and ``__pycache__`` entries anywhere, ``.pth`` files and start-up hooks under any suffix, and
+every root entry but ``env/``, ``workflows/`` and the test kit), beside the older layout and forbidden-file
+refusals; :func:`unify.memory_v2.catalogue.reserved` names the root entries that could shadow ``import env``
+or ``import memory``. The export never writes such a file from an older commit. The gate-level cases are in
+``test_gate_layout.py``.
 
 These refusals are a declared safety fix applied whatever the v2.1 switches say, so they must refuse nothing
 a v2 library holds: :func:`test_no_path_of_a_v2_library_fixture_is_refused` checks every library path in the
 v2 suite's fixtures (and the paths the v2 design records name), and
 :func:`test_no_path_of_a_recorded_library_is_refused` checks real libraries when
 ``MEMORY_V2_LIBRARY_REPOS`` names their memory repositories (colon-separated bare repos, every commit on
-``main``). Pure functions only; the gate-level and export tests live in ``test_gate.py`` and
-``integration/test_checkout.py``.
+``main``). Pure functions only; the gate-level and export tests live in ``test_gate_layout.py``, ``test_gate.py``
+and ``integration/test_checkout.py``.
 """
 
 import importlib
@@ -60,13 +62,15 @@ REFUSED = [
     "workflows/__pycache__/x.pyc",
 ]
 
-# Refused, but not as import artefacts: outside the layout, or forbidden configuration (G6).
-OTHER = (
-    "x.pth",
-    "NOTES.md",
-    "notes.txt",
-    "proposals/better.md",
-    "env/venmo/tests/sitecustomize.txt",
+# Root entries the gate also names reserved: the generated catalogue and what `import env` or
+# `import memory` could resolve to.
+RESERVED = (
+    "memory.abi3.so",
+    "memory.cpython-312-x86_64-linux-gnu.so",
+    "env.py",
+    "memory/notes.md",
+    "README.md",
+    ".memory/catalog.json",
 )
 
 # Paths the v2 design records name for real screen libraries (docs/design/memory-v2*.md in the research
@@ -149,8 +153,14 @@ def _fixture_paths() -> list[str]:
 
 
 def _refused_early(path: str) -> bool:
-    """Refused by the gate before anything is extracted: outside the layout, or a forbidden file (G6)."""
-    return not m.layout_allowed(path) or m.forbidden(path)
+    """Refused by the gate before anything is extracted (``Gate._early``): a forbidden file (G6), outside
+    the layout, :func:`~unify.memory_v2.manifest.unsafe_path`, or a reserved path."""
+    return (
+        not m.layout_allowed(path)
+        or m.forbidden(path)
+        or m.unsafe_path(path) is not None
+        or reserved(path)
+    )
 
 
 @pytest.mark.parametrize("path", REFUSED)
@@ -158,28 +168,32 @@ def test_importable_artefacts_and_foreign_root_entries_are_refused(path):
     assert _refused_early(path), path
 
 
+@pytest.mark.parametrize("path", RESERVED)
+def test_the_gate_names_env_and_memory_root_entries_reserved(path):
+    assert reserved(path) and _refused_early(path), path
+
+
 @pytest.mark.parametrize(
     "path",
-    [p for p in REFUSED if p not in OTHER],
+    [
+        p
+        for p in REFUSED
+        if p not in RESERVED and m.layout_allowed(p) and not m.forbidden(p)
+    ],
 )
-def test_the_gate_names_each_import_artefact_reserved(path):
-    """The gate's reserved-path reason (``file X is reserved``) covers every artefact an import could load;
-    the other refused paths are refused as outside the layout or forbidden."""
-    assert reserved(path), path
+def test_unsafe_path_names_every_other_artefact(path):
+    """What the older layout and forbidden checks admit, unsafe_path refuses; reserved is only for names."""
+    assert m.unsafe_path(path) is not None and not reserved(path), path
 
 
-@pytest.mark.parametrize("path", OTHER)
-def test_other_entries_are_refused_without_being_import_names(path):
-    assert not reserved(path) and _refused_early(path)
+def _admitted(path: str) -> bool:
+    return not _refused_early(path)
 
 
 def test_no_path_of_a_v2_library_fixture_is_refused():
     paths = [p for p in _fixture_paths() + RECORDED_V2_PATHS if _declarable(p)]
     assert len(paths) >= 25, paths  # the fixtures were found
-    refused = [
-        p for p in paths if not m.layout_allowed(p) or reserved(p) or m.forbidden(p)
-    ]
-    assert refused == []
+    assert [p for p in paths if not _admitted(p)] == []
 
 
 @pytest.mark.skipif(
@@ -204,22 +218,19 @@ def test_no_path_of_a_recorded_library_is_refused():
             ).stdout.split(b"\0")
             seen |= {n.decode("utf-8") for n in names if n}
     assert seen
-    refused = sorted(
-        p for p in seen if not m.layout_allowed(p) or reserved(p) or m.forbidden(p)
-    )
-    assert refused == []
+    assert sorted(p for p in seen if not _admitted(p)) == []
 
 
 def test_the_allowed_root_entries_shadow_no_module():
     """``env`` is the library itself; ``workflows`` and the test kit must not be importable names."""
-    names = m.shadowed_module_names() | set(sys.stdlib_module_names) | m.GATE_IMPORTS
+    names = m.shadowed_module_names() | set(sys.stdlib_module_names) | m.root_shadowed()
     assert "workflows" not in names
     assert m.TESTKIT.removesuffix(".py") not in names - m._RESERVED_STEMS
 
 
 def test_random_root_names_and_suffixes_are_refused():
     """Seeded: any root entry other than env/, workflows/ and the test kit is refused, and any bytecode or
-    extension suffix anywhere, whatever its name."""
+    extension suffix anywhere, whatever its name, by unsafe_path's bytecode reason."""
     rng = random.Random(20261008)
     stdlib = sorted(sys.stdlib_module_names)
     stems = set(rng.sample(stdlib, 40)) | {
@@ -274,13 +285,11 @@ def test_random_root_names_and_suffixes_are_refused():
     for _ in range(600):
         path = rng.choice(stems) + rng.choice(suffixes)
         if path.split("/", 1)[0] in m.ROOT_DIRS and "/" in path:
-            # the library's own directories: only artefacts are newly refused there
-            if m.compiled_artifact(path):
-                assert not m.layout_allowed(path), path
-            else:
-                assert m.layout_allowed(path) == _v2_layout_allowed(path), path
+            # the library's own directories: only artefacts are newly refused there, and the layout is v2's
+            assert (m.unsafe_path(path) is not None) == _artefact(path), path
+            assert m.layout_allowed(path) == _v2_layout_allowed(path), path
             continue
-        assert not m.layout_allowed(path), path
+        assert _refused_early(path), path
     for _ in range(400):
         depth = rng.randint(0, 3)
         parts = ["env", rng.choice(["venmo", "shell_uv", "env"]), "tests"][
@@ -288,12 +297,21 @@ def test_random_root_names_and_suffixes_are_refused():
         ]
         parts += [rng.choice(stems) for _ in range(depth)]
         path = "/".join(parts + [rng.choice(stems) + rng.choice(compiled)])
-        assert (
-            m.compiled_artifact(path) and not m.layout_allowed(path) and reserved(path)
+        assert m.unsafe_path(path) == (
+            "G6",
+            f"bytecode or native code file {path}",
         ), path
 
 
-def test_startup_hook_names_are_forbidden_with_any_suffix_anywhere():
+def _artefact(path: str) -> bool:
+    """Bytecode, a native extension or a ``__pycache__`` entry, by the names the review lists."""
+    parts = path.split("/")
+    return "__pycache__" in parts or parts[-1].lower().endswith(
+        (".pyc", ".pyo", ".so", ".pyd", ".dll", ".dylib"),
+    )
+
+
+def test_startup_hook_names_are_refused_with_any_suffix_anywhere():
     rng = random.Random(7)
     for _ in range(100):
         stem = rng.choice(["sitecustomize", "usercustomize"])
@@ -302,9 +320,11 @@ def test_startup_hook_names_are_forbidden_with_any_suffix_anywhere():
             ["", "env/venmo/", "env/venmo/tests/", "env/venmo/tests/data/"],
         )
         path = f"{where}{stem}{suffix}"
-        assert m.forbidden(path), path
-        if "/" not in path or m.compiled_artifact(path):
-            assert not m.layout_allowed(path), path
+        got = m.unsafe_path(path)
+        assert got is not None and got[0] == "G6" and path in got[1], path
+        assert got[1].startswith(
+            ("interpreter start-up hook", "bytecode or native code file"),
+        ), path
 
 
 def test_sol_and_the_gate_run_pytest_without_bytecode():

@@ -772,8 +772,7 @@ class Gate:
             (
                 "G1",
                 f"file {p} is reserved: the harness generates README.md, memory.py and .memory/ in "
-                "every export, no root entry may shadow an import (`memory`, `env`, a standard or "
-                "installed module), and no bytecode or compiled extension is admitted",
+                "every export, and no root entry may shadow `import memory` or `import env`",
             )
             for p in run.changed
             if p in run.c_files and reserved(p)

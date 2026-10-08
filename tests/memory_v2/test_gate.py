@@ -866,32 +866,52 @@ def test_gate_support_allowlist(probe, support):
 
 
 @pytest.mark.parametrize(
-    "path",
+    "path, reason",
     [
-        "env/__init__.pyc",
-        "sitecustomize.pyc",
-        "json.pyc",
-        "pytest.pyc",
-        "json/__init__.pyc",
-        "env/venmo/__pycache__/__init__.cpython-312.pyc",
-        "env/venmo/tests/fixture.pyc",
-        "env/venmo/tests/fast.so",
-        "notes.txt",
+        ("env/__init__.pyc", "G6: bytecode or native code file env/__init__.pyc"),
+        ("sitecustomize.pyc", "G6: bytecode or native code file sitecustomize.pyc"),
+        ("json.pyc", "G6: bytecode or native code file json.pyc"),
+        ("pytest.pyc", "G6: bytecode or native code file pytest.pyc"),
+        ("json/__init__.pyc", "G6: bytecode or native code file json/__init__.pyc"),
+        (
+            "env/venmo/__pycache__/__init__.cpython-312.pyc",
+            "G6: bytecode cache path env/venmo/__pycache__/__init__.cpython-312.pyc",
+        ),
+        (
+            "env/venmo/tests/fixture.pyc",
+            "G6: bytecode or native code file env/venmo/tests/fixture.pyc",
+        ),
+        (
+            "env/venmo/tests/fast.so",
+            "G6: bytecode or native code file env/venmo/tests/fast.so",
+        ),
+        (
+            "notes.txt",
+            "G1: root entry notes.txt is outside the layout (the root holds only env/, "
+            "workflows/ and unify_memory_testkit.py)",
+        ),
     ],
 )
-def test_gate_refuses_bytecode_and_foreign_root_entries(probe, path):
-    """v2.1 I4 (every mode): bytecode, extensions and root entries other than env/, workflows/ and the test
-    kit are refused before extraction, declared or not."""
+def test_gate_refuses_bytecode_and_foreign_root_entries(probe, path, reason):
+    """v2.1 I4 (every mode), through the probe gate: manifest.unsafe_path's reason comes first, before
+    anything is extracted, declared or not. A declaration support_allowed refuses (any path outside
+    env/<channel>/tests/) stops earlier, as a malformed manifest. test_gate_layout.py covers the classes.
+    """
+    from unify.memory_v2.manifest import support_allowed
+
     mem, ev, gate = probe
     parent = mem.head()
     cand = _candidate(mem, {**PROBE_BASE, path: "x = 1\n"})
-    for man in ({"items": [PROBE_ITEM], "support": [path]}, {"items": [PROBE_ITEM]}):
-        res = gate.check(parent, cand, man)
-        assert not res.passed and not res.checks["G1"], res.reasons
-        assert any(
-            path in r
-            and ("outside the layout" in r or "reserved" in r or "forbidden" in r)
-            for r in res.reasons
+    res = gate.check(parent, cand, {"items": [PROBE_ITEM]})
+    assert not res.passed and res.reasons[0] == reason, res.reasons
+    assert all(f"{c}: not evaluated" in res.reasons for c in ("G2", "G3", "G4", "G5"))
+    res = gate.check(parent, cand, {"items": [PROBE_ITEM], "support": [path]})
+    assert not res.passed and not res.checks["G1"], res.reasons
+    if support_allowed(path):
+        assert res.reasons[0] == reason, res.reasons
+    else:
+        assert res.reasons[0].startswith(
+            f"G1: malformed manifest: support file {path} is not ",
         ), res.reasons
 
 
