@@ -119,9 +119,14 @@ def test_worker_cell_done_stamps_records_on_the_harness_clock(tmp_path, monkeypa
     )
     hooks.worker_cell_done(None)  # a cell with no audit (the hook not installed)
     hooks.worker_cell_done("garbage")  # never raises
-    assert cap._events == [
-        (1234.5, [read]),
-    ]  # process starts are not kept (no shell rows here)
+    # only the known path fields are kept (no tid); process starts are not kept (no shell rows here)
+    kept = {
+        "event": "open",
+        "path": str(ws / "a.csv"),
+        "mode": "r",
+        "cell_thread": True,
+    }
+    assert cap._events == [(1234.5, [kept])]
     assert (cap.dropped, cap.failed) == (2, 1)
 
 
@@ -165,8 +170,8 @@ _CELL = (
 )
 
 
-def _run_child(init: dict, root: Path) -> dict:
-    spec = {"init": init, "source": _CELL.format(root=str(root))}
+def _run_child(init: dict, root: Path, source: str | None = None) -> dict:
+    spec = {"init": init, "source": source or _CELL.format(root=str(root))}
     proc = subprocess.run(
         [
             sys.executable,
@@ -223,6 +228,32 @@ def test_child_reports_a_hook_that_could_not_load(tmp_path):
     assert (
         "audit" not in got["done"] and got["done"]["error"] is None
     )  # the cell is unaffected
+
+
+_TAMPERING_CELL = (
+    "async def __exec_wrapper():\n"
+    "    import sys\n"
+    "    hook = sys.modules['_unify_memory_v2_cell_audit']\n"
+    "    def boom():\n"
+    "        raise RuntimeError('tampered')\n"
+    "    hook.end = boom\n"
+    "    hook.drain = lambda: {'records': [object()]}\n"
+    "    return 7\n"
+)
+
+
+def test_a_tampered_hook_never_loses_the_cell_or_its_done_message(tmp_path):
+    got = _run_child(
+        {"audit": {"roots": [str(tmp_path)], "path": audit_mod.__file__}},
+        tmp_path,
+        _TAMPERING_CELL,
+    )
+    assert got["state"] == "on"
+    done = got["done"]
+    assert done["error"] is None and done["result"] == 7
+    assert (
+        done["audit"] is None
+    )  # a drain that cannot be sent is dropped, the done message is not
 
 
 # -- the real sandboxed worker (bubblewrap; remote run) -------------------------------------------------

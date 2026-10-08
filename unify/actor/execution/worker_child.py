@@ -1266,11 +1266,23 @@ class Worker:
             self.audit = None
             return f"{type(exc).__name__}: {exc}"[:300]
 
-    def _audit_drain(self) -> Any:
+    def _audit(self, control: str) -> None:
+        """``begin`` or ``end`` on the audit hook; a tampered hook never changes the cell."""
         try:
-            return self.audit.drain()
+            getattr(self.audit, control)()
+        except Exception:  # noqa: BLE001 - the records are hints only
+            pass
+
+    def _audit_drain(self) -> Any:
+        """The hook's drained records if they can be sent, else None: the ``done`` message is never lost."""
+        try:
+            drained = self.audit.drain()
+            if isinstance(drained, dict):
+                json.dumps(drained)
+                return drained
         except Exception:  # noqa: BLE001 - a tampered hook never loses the cell
-            return None
+            pass
+        return None
 
     @staticmethod
     def _import(spec: list) -> Any:
@@ -1633,12 +1645,12 @@ class Worker:
             before = Inventory.snapshot(ns) if listing else None
             try:
                 if self.audit is not None:
-                    self.audit.begin()
+                    self._audit("begin")
                 exec(compile(msg["source"], "<string>", "exec"), ns)
                 result = await ns["__exec_wrapper"]()
             finally:
                 if self.audit is not None:
-                    self.audit.end()
+                    self._audit("end")
                 ns.pop("__exec_wrapper", None)
                 if before is not None:
                     try:

@@ -317,7 +317,7 @@ class PythonWorker:
                 ready["missing"],
             )
         if ready.get("audit", "on") != "on":
-            logger.warning("memory v2: no audit hook in the worker: %s", ready["audit"])
+            logger.warning("memory v2: no audit hook in the worker: %r", ready["audit"])
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr is not None
