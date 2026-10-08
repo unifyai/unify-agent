@@ -200,6 +200,10 @@ A static review of PR #209 found five ways the derived roots could show more tha
 - Tests: `tests/actor/code_act/test_sandbox_root_hardening.py`.
 - **Still open:** namespace packages (no `__init__.py`) under an editable root are not bound; `.env*` *directories* are entered, not masked whole (a venv may be named `.env`); `*key*.json` may mask a package data file of that name; the workspace venv and other `readonly_state` mounts are not secret-scanned (their contents are the harness's or the installer's).
 
+## Security: grep's fallback runs in the sandbox (8 Oct 2026)
+
+- **Fixed (PR "SECURITY: run grep's Python fallback inside the sandbox"):** without a ripgrep the sandbox shows (one in `~/.cargo/bin` fails the allowlisted root, so this is common), `grep` compiled and matched the model's regex and read the files in the harness process (`_grep_python`, a catastrophic-backtracking hang guarded only by path checks). It now runs a fixed script with the harness's interpreter (`-I -S -c`, the pattern as JSON data in argv) under bwrap with the cell policy, killed by process group at `GREP_TIMEOUT_S` with a clear error (`engine: "python-sandboxed"`); the harness only parses the JSON hits and drops any in a path the policy refuses. Without bubblewrap both engines refuse (`sandbox-required`); nothing matches in-process. Open: the ripgrep path still turns a timeout into a silent `truncated` (unchanged), and the full test run of this change is on an OPS host.
+
 ## Known defects and test status
 - **`library_shortlist.shortlist_block` (lines ~435–437) and `_gated_block` swallow any exception at DEBUG level.** A missing embedding key silently drops the shortlist. Log a warning at least.
 - **`test_can_store_true_merges_redundant_functions`** passes 3/5 live under the old defaults. The review sometimes searches only by the new function's exact name, so it never sees the narrower variants.
