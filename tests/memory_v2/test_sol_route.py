@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -328,6 +330,14 @@ def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, miss
         "http://proxy internal/v1",
         "http://proxy.internal/v\n1",
         "http://proxy.internal/\x00v1",
+        # plain http off a loopback or private-network address: the token would travel in clear
+        "http://proxy.internal/v1",
+        "http://8.8.8.8/v1",
+        "http://169.254.169.254/v1",
+        "http://0.0.0.0:8080/v1",
+        "http://100.64.0.1/v1",
+        "http://172.32.0.1/v1",
+        "http://[2001:db8::1]/v1",
     ],
 )
 def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
@@ -350,6 +360,12 @@ def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
         (SOL_BASE + "/", SOL_BASE),
         ("https://proxy.internal", "https://proxy.internal"),
         ("HTTPS://proxy.internal:8443/api/v1", "HTTPS://proxy.internal:8443/api/v1"),
+        ("http://localhost:18081/sol/v1", "http://localhost:18081/sol/v1"),
+        ("http://10.1.2.3:8080/sol/v1/", "http://10.1.2.3:8080/sol/v1"),
+        ("http://172.16.0.9/sol/v1", "http://172.16.0.9/sol/v1"),
+        ("http://192.168.4.5:9/sol/v1", "http://192.168.4.5:9/sol/v1"),
+        ("http://[::1]:18081/sol/v1", "http://[::1]:18081/sol/v1"),
+        ("http://[fd00::7]:18081/sol/v1", "http://[fd00::7]:18081/sol/v1"),
     ],
 )
 def test_the_base_url_validator_accepts_http_urls(raw, want):
@@ -363,6 +379,9 @@ def test_the_base_url_validator_accepts_http_urls(raw, want):
         "tok\nen-placeholder",  # pragma: allowlist secret
         "tok\x00en-placeholder",  # pragma: allowlist secret
         "tokén-placeholder",  # pragma: allowlist secret
+        "short-placehold",  # pragma: allowlist secret
+        'quote"d-placeholder-value',  # pragma: allowlist secret
+        "padding=in-the-placeholder",  # pragma: allowlist secret
     ],
 )
 def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw):
@@ -454,3 +473,507 @@ def test_sols_box_refuses_the_route_in_its_environment():
             run_confined(["/bin/true"], env={name: SOL_TOKEN})
         leaked = SOL_TOKEN in str(info.value)
         assert not leaked
+
+
+# --- concurrency: only Sol's own call takes Sol's route ------------------------------------------------------
+
+
+def _is_actor(t: dict) -> bool:
+    return t.get("api_base") == ACTOR_BASE and t.get("api_key") == _digest(ACTOR_KEY)
+
+
+def _is_sol(t: dict) -> bool:
+    return t.get("api_base") == SOL_BASE and t.get("api_key") == _digest(SOL_TOKEN)
+
+
+def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
+    monkeypatch,
+    actor_gateway,
+    restore_unillm,
+):
+    """While Sol's call is parked mid-flight: a task created before it, a task created the way the worker
+    serves a cell's ``query_llm`` (``worker._serve``: from the running cell's context), a thread and an
+    executor job each prepare the actor's transport; Sol's call, before and after them, prepares its own.
+    """
+    import unify.common.llm_client as llm_client
+
+    seen: dict = {}
+    gates: dict = {}
+
+    class Parked:
+        messages: list = []
+
+        async def generate(self, **kw):
+            seen["sol"] = _redacted(_prepare(extra_headers=kw.get("extra_headers")))
+            gates["in"].set()
+            await gates["out"].wait()
+            seen["sol_after"] = _redacted(_prepare())
+            self.messages = [{"role": "assistant", "content": "ok"}]
+
+    monkeypatch.setattr(llm_client, "new_llm_client", lambda model, **kw: Parked())
+    turn = unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+
+    async def served() -> dict:
+        return _redacted(_prepare())
+
+    async def scenario() -> None:
+        gates["in"], gates["out"], go = (
+            asyncio.Event(),
+            asyncio.Event(),
+            asyncio.Event(),
+        )
+
+        async def actor() -> None:  # created before the Sol call
+            await go.wait()
+            seen["actor"] = _redacted(_prepare())
+            seen["served"] = await asyncio.create_task(served())
+
+        actor_task = asyncio.create_task(actor())
+        sol_task = asyncio.create_task(turn([{"role": "user", "content": "u"}], []))
+        await asyncio.wait_for(gates["in"].wait(), 10)
+        go.set()
+        await asyncio.wait_for(actor_task, 10)
+        out: dict = {}
+        thread = threading.Thread(
+            target=lambda: out.__setitem__("t", _redacted(_prepare())),
+        )
+        thread.start()
+        thread.join(10)
+        seen["thread"] = out.get("t", {})
+        seen["executor"] = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: _redacted(_prepare()),
+        )
+        seen["main"] = _redacted(_prepare())
+        gates["out"].set()
+        msg, _usd = await asyncio.wait_for(sol_task, 10)
+        seen["msg"] = msg
+
+    asyncio.run(scenario())
+
+    assert _is_sol(seen["sol"]) and _is_sol(seen["sol_after"])
+    assert seen["sol"]["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.sol"}
+    others = {
+        k: _is_actor(seen[k]) for k in ("actor", "served", "thread", "executor", "main")
+    }
+    assert others == dict.fromkeys(others, True)
+    assert not any("extra_headers" in seen[k] for k in others)
+    assert seen["msg"]["content"] == "ok"
+    assert sol_pass._SOL_GATEWAY.get() is None
+
+
+# --- unillm's real call path, with a fake transport (no network) ---------------------------------------------
+
+REAL_MODEL = (
+    "openai/gpt-5.6-sol"  # the model the scripted transport tests build clients for
+)
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "noop",
+            "description": "Does nothing.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
+def _completion(cost: float = 0.01):
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion.model_validate(
+        {
+            "id": "cmpl-sol-route",
+            "object": "chat.completion",
+            "created": 0,
+            "model": REAL_MODEL,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "stop",
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "tool_calls": None,
+                    },
+                },
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+                "cost": cost,
+            },
+        },
+    )
+
+
+@pytest.fixture
+def real_transport(monkeypatch, actor_gateway, restore_unillm):
+    """``litellm.acompletion`` replaced by a fake that keeps each call's route (its credential by digest only)
+    and can be held open; unillm's response cache off. Everything above the transport is unillm's own path.
+    """
+    import unillm.clients.uni_llm as uni_llm
+    from unillm.settings import SETTINGS as unillm_settings
+
+    monkeypatch.setenv("UNILLM_CACHE", "false")
+    monkeypatch.setattr(unillm_settings, "UNILLM_CACHE", False)
+    state = SimpleNamespace(sent=[], hold=None, started=None)
+
+    async def fake_acompletion(*, shared_session=None, client=None, **kw):
+        state.sent.append(
+            {
+                "api_base": kw.get("api_base"),
+                "api_key": _digest(kw.get("api_key")),
+                "extra_headers": dict(kw.get("extra_headers") or {}),
+            },
+        )
+        if state.started is not None:
+            state.started.set()
+        if state.hold is not None:
+            await state.hold.wait()
+        return _completion()
+
+    monkeypatch.setattr(uni_llm.litellm, "acompletion", fake_acompletion)
+    return state
+
+
+@pytest.fixture
+def listener():
+    """A process-wide unillm listener (as the event bus is) recording, per event, whether it held a key."""
+    import unillm
+
+    events: list[dict] = []
+
+    def record(event) -> None:
+        request = event.request if isinstance(event.request, dict) else {}
+        events.append(
+            {
+                "has_key": "api_key" in request,
+                "api_base": request.get("api_base"),
+                "origin": event.origin,
+            },
+        )
+
+    handle = unillm.add_llm_event_listener(record)
+    try:
+        yield events
+    finally:
+        unillm.remove_llm_event_listener(handle)
+
+
+_MESSAGES = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+
+
+def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_own(
+    real_transport,
+    listener,
+):
+    from unify.common.llm_client import new_llm_client
+
+    turn = unillm_turn(
+        REAL_MODEL,
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    msg, _usd = asyncio.run(turn(_MESSAGES, _TOOLS))
+    assert msg.get("content") == "ok"
+    assert len(real_transport.sent) == 1
+    sol = real_transport.sent[0]
+    assert _is_sol(sol)
+    assert sol["extra_headers"].get("X-Unify-Call-Kind") == "memory_v2.sol"
+    sol_events = [e for e in listener if e["origin"] == "memory_v2.sol"]
+    assert sol_events and all(
+        not e["has_key"] and e["api_base"] == SOL_BASE for e in sol_events
+    )
+
+    # an actor call after it, on the same process: the actor's gateway and key, no Sol header
+    actor = new_llm_client(
+        f"{REAL_MODEL}@openrouter",
+        cache=False,
+        reasoning_effort="low",
+    )
+
+    async def actor_call() -> None:
+        await actor.generate(messages=_MESSAGES, tools=_TOOLS, tool_choice="auto")
+
+    asyncio.run(actor_call())
+    assert len(real_transport.sent) == 2
+    after = real_transport.sent[1]
+    assert _is_actor(after)
+    assert after["extra_headers"].get("X-Unify-Call-Kind") != "memory_v2.sol"
+
+
+def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
+    real_transport,
+    listener,
+):
+    """Sol's caller gives up mid-call; unillm leaves the request running and bills it when it returns. Both
+    the cancellation's event and the late one pass through Sol's hook, so no listener sees the token.
+    """
+    turn = unillm_turn(
+        REAL_MODEL,
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+
+    async def scenario() -> dict:
+        real_transport.hold = asyncio.Event()
+        real_transport.started = asyncio.Event()
+        task = asyncio.create_task(turn(_MESSAGES, _TOOLS))
+        await asyncio.wait_for(real_transport.started.wait(), 10)
+        task.cancel()
+        cancelled = False
+        try:
+            await task
+        except asyncio.CancelledError:
+            cancelled = True
+        before = len(listener)
+        real_transport.hold.set()
+        for _ in range(500):  # the late event, bounded
+            if len(listener) > before:
+                break
+            await asyncio.sleep(0.01)
+        return {
+            "cancelled": cancelled,
+            "late": len(listener) > before,
+            "route_after": sol_pass._SOL_GATEWAY.get(),
+        }
+
+    out = asyncio.run(scenario())
+    assert out["cancelled"] and out["late"] and out["route_after"] is None
+    assert len(real_transport.sent) == 1 and _is_sol(real_transport.sent[0])
+    sol_events = [e for e in listener if e["origin"] == "memory_v2.sol"]
+    assert len(sol_events) >= 2
+    assert all(not e["has_key"] for e in sol_events)
+    assert all(e["api_base"] == SOL_BASE for e in sol_events)
+
+
+# --- misroutes are refused ------------------------------------------------------------------------------
+
+
+def test_a_route_not_in_effect_is_refused_before_any_call(
+    monkeypatch,
+    actor_gateway,
+    restore_unillm,
+):
+    """If unillm stopped reading its gateway lookup through the wrapped module global (drift), the pre-call
+    check sees the actor's route and refuses: generate is never called.
+    """
+    from unillm.clients import uni_llm
+
+    calls: list = []
+    built = _fake_client(monkeypatch, lambda kw: calls.append(1))
+    turn = unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    monkeypatch.setattr(uni_llm, "_llm_gateway", uni_llm._llm_gateway.__wrapped__)
+    with pytest.raises(sol_pass.SolRouteError) as info:
+        _run(turn)
+    leaked = SOL_TOKEN in str(info.value)
+    assert not leaked
+    assert calls == [] and "generate" not in built
+    assert sol_pass._SOL_GATEWAY.get() is None
+
+
+# --- failed Sol calls leave no credential in notes, error rows or logs --------------------------------------
+
+
+class _EchoingError(Exception):
+    """A provider error whose text echoes the request's Authorization header (as an SDK puts a body in str)."""
+
+    status_code = 401
+
+
+def _echo() -> str:
+    return f"Error code: 401 - {{'echo': {{'Authorization': 'Bearer {SOL_TOKEN}'}}}}"
+
+
+def test_a_failed_routed_call_is_recorded_as_its_class_and_category_only(
+    monkeypatch,
+    restore_unillm,
+):
+    def on_generate(kw):
+        raise _EchoingError(_echo())
+
+    _fake_client(monkeypatch, on_generate)
+    turn = unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    with pytest.raises(sol_pass.SolCallError) as info:
+        _run(turn)
+    text = str(info.value)
+    exact = text == "Sol call failed: _EchoingError (http_401)"
+    unchained = info.value.__context__ is None and info.value.__cause__ is None
+    leaked = SOL_TOKEN in text
+    assert exact and unchained and not leaked
+    assert sol_pass._SOL_GATEWAY.get() is None
+
+
+def test_a_routed_timeout_stays_a_timeout_without_its_text(monkeypatch, restore_unillm):
+    def on_generate(kw):
+        raise TimeoutError(_echo())
+
+    _fake_client(monkeypatch, on_generate)
+    turn = unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    with pytest.raises(TimeoutError) as info:
+        _run(turn)
+    leaked = SOL_TOKEN in str(info.value)
+    assert not leaked and not isinstance(info.value, sol_pass.SolCallError)
+
+
+def test_pass_notes_and_the_pass_row_hold_no_token(
+    monkeypatch,
+    tmp_path,
+    restore_unillm,
+):
+    """The routed turn's failure in a real pass, and (defence in depth) a raw turn whose error text carries
+    the registered token and a bearer header: neither credential reaches the notes or the recorded row.
+    """
+    from tests.memory_v2.test_sol_pass import _run as run_pass
+    from tests.memory_v2.test_sol_pass import _sol
+    from unify.process_secrets import register_secret
+
+    def on_generate(kw):
+        raise _EchoingError(_echo())
+
+    _fake_client(monkeypatch, on_generate)
+    routed = unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    other = "unregistered-bearer-placeholder-0123"  # pragma: allowlist secret
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+
+    async def raw(messages, tools):
+        raise RuntimeError(f"echo {SOL_TOKEN} and Authorization: Bearer {other}")
+
+    rows: list[str] = []
+    for i, turn in enumerate((routed, raw)):
+        (tmp_path / str(i)).mkdir()
+        _mem, ev, sol = _sol(tmp_path / str(i), turn)
+        out = run_pass(sol, f"p{i}")
+        recorded = ev.db.execute(
+            "SELECT reasons FROM passes WHERE pass_id=?",
+            (f"p{i}",),
+        ).fetchone()[0]
+        rows.append(" ".join(out.reasons) + " " + str(recorded))
+    named = "SolCallError: Sol call failed: _EchoingError (http_401)" in rows[0]
+    leaked = [i for i, text in enumerate(rows) if SOL_TOKEN in text or other in text]
+    assert named and leaked == []
+
+
+def test_error_rows_transcripts_and_redactors_drop_the_registered_token(tmp_path):
+    from unify import transcripts
+    from unify.memory_v2.integration.request import RequestRun
+    from unify.memory_v2.redact import Redactor, redact_error
+    from unify.process_secrets import register_secret
+
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    present = any(k.upper() == "UNIFY_MEMORY_V2_SOL_TOKEN" for k in os.environ)
+    errors = tmp_path / "errors.jsonl"
+    consolidate._error(
+        SimpleNamespace(paths=SimpleNamespace(errors=errors)),
+        f"px: pass error: RuntimeError: {SOL_TOKEN}",
+    )
+    RequestRun._error(
+        SimpleNamespace(episode_id="e1", paths=SimpleNamespace(errors=errors)),
+        "passes",
+        RuntimeError(f"echo {SOL_TOKEN}"),
+        lambda line: None,
+    )
+    texts = [
+        errors.read_text(),
+        redact_error(f"x {SOL_TOKEN} y"),
+        redact_error("headers={'Authorization': 'Bearer abcdefgh12345678'}"),
+        Redactor.from_environ({}).text(f"x {SOL_TOKEN} y"),
+        transcripts.scrub(f"x {SOL_TOKEN} y"),
+    ]
+    leaked = [
+        i for i, t in enumerate(texts) if SOL_TOKEN in t or "abcdefgh12345678" in t
+    ]
+    assert not present and leaked == []
+    assert len(errors.read_text().splitlines()) == 2
+
+
+# --- the environment: any letter case, and .env --------------------------------------------------------------
+
+_ROUTE_NAMES = ("UNIFY_MEMORY_V2_SOL_TOKEN", "UNIFY_MEMORY_V2_SOL_BASE_URL")
+
+
+def test_a_token_in_any_letter_case_leaves_the_environment(monkeypatch):
+    from unify.settings import ProductionSettings
+
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    monkeypatch.setenv("unify_memory_v2_sol_token", SOL_TOKEN)
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_BASE_URL", SOL_BASE)
+    s = ProductionSettings()
+    held = _digest(s.UNIFY_MEMORY_V2_SOL_TOKEN.get_secret_value()) == _digest(SOL_TOKEN)
+    refusal = switch.settle_sol_route_env(os.environ, s)
+    left = [k for k in os.environ if k.upper() == "UNIFY_MEMORY_V2_SOL_TOKEN"]
+    assert held and refusal is None and left == []
+    assert consolidate.sol_settings(s).route is not None
+
+
+def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    other = "a-different-placeholder-token"  # pragma: allowlist secret
+    env = {"UNIFY_MEMORY_V2_SOL_TOKEN": SOL_TOKEN, "unify_memory_v2_sol_token": other}
+    settings = SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=SOL_BASE,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(SOL_TOKEN),
+    )
+    refusal = switch.settle_sol_route_env(env, settings)
+    assert refusal is not None and env == {}
+    leaked = SOL_TOKEN in refusal or other in refusal
+    assert not leaked
+    with pytest.raises(ValueError):
+        consolidate.sol_settings(settings)
+
+
+def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
+    monkeypatch,
+    tmp_path,
+):
+    """Settings are read before the CLI loads ``.env``: a route only there would silently leave Sol on the
+    actor's route, so every pass is refused, naming the settings and never their values.
+    """
+    from dotenv import load_dotenv
+
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+        monkeypatch.delenv(name)
+    settings = SimpleNamespace()  # as read before .env: neither set
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        f"UNIFY_MEMORY_V2_SOL_BASE_URL={SOL_BASE}\nUNIFY_MEMORY_V2_SOL_TOKEN={SOL_TOKEN}\n",
+    )
+    try:
+        load_dotenv(dotenv)
+        refusal = switch.settle_sol_route_env(os.environ, settings)
+        token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
+    finally:
+        for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+            os.environ.pop(name, None)
+    assert refusal is not None and not token_left
+    leaked = SOL_TOKEN in refusal or SOL_BASE in refusal
+    assert not leaked
+    assert ".env" in refusal and all(n in refusal for n in _ROUTE_NAMES)
+    with pytest.raises(ValueError) as info:
+        consolidate.sol_settings(settings)
+    shown = SOL_TOKEN in str(info.value) or SOL_BASE in str(info.value)
+    assert not shown and "no consolidation pass starts" in str(info.value)

@@ -68,7 +68,9 @@ SOL_ROUTE = ("UNIFY_MEMORY_V2_SOL_TOKEN", "UNIFY_MEMORY_V2_SOL_BASE_URL")
 
 def _sol_token_seen() -> list[str]:
     name = SOL_ROUTE[0]
-    seen = [name] if (os.environ.get(name) or "").strip() else []
+    seen = [
+        n for n in os.environ if n.upper() == name and (os.environ[n] or "").strip()
+    ]
     loaded = getattr(sys.modules.get("unify.settings"), "SETTINGS", None)
     if loaded is not None and _secret_value(getattr(loaded, name, "")).strip():
         seen.append(f"{name} (loaded)")
@@ -77,7 +79,7 @@ def _sol_token_seen() -> list[str]:
 
 REAL_KEY_SEEN = sorted(set(_real_key_seen() + _sol_token_seen()))
 
-for _name in SOL_ROUTE:
+for _name in [n for n in os.environ if n.upper() in SOL_ROUTE]:  # any letter case
     os.environ.pop(_name, None)
 
 for _name in PROVIDER_KEYS:
