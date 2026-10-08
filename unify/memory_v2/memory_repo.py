@@ -18,6 +18,10 @@ _EFFECT = re.compile(r"^\s*Effect:\s*(read|write|unknown)\s*$", re.M)
 # The declared input form (a manifest ``input``, :data:`.manifest.INPUT_KINDS`): any word is read here; the
 # gate checks it against the manifest and the index shows only a known form.
 _INPUT = re.compile(r"^\s*Input:\s*([A-Za-z_]{1,40})\s*$", re.M)
+_INPUT_LINE = re.compile(
+    r"^[ \t]*Input:",
+    re.M,
+)  # every Input: line, well-formed or not
 
 
 @dataclass
@@ -31,6 +35,9 @@ class Item:
     effect: str
     listed: bool
     input: str = ""  # the docstring's ``Input:`` form, or "" without one
+    input_lines: int = (
+        0  # how many ``Input:`` lines the docstring holds (the gate allows one)
+    )
 
 
 @dataclass
@@ -108,6 +115,7 @@ def items(checkout: Path) -> ItemsReport:
                         m.group(1) if m else "",
                         listed is None or node.name in listed,
                         form.group(1) if form else "",
+                        len(_INPUT_LINE.findall(doc)),
                     ),
                 )
     for notes in sorted(checkout.glob("env/*/NOTES.md")):

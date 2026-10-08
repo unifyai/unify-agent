@@ -539,11 +539,19 @@ class Gate:
         }
 
     def _inputs(self, run: _Run) -> None:
-        """A new or changed environment function declares its input; a declared input equals ``Input:``."""
+        """A new or changed environment function declares its input; a declared input equals its one
+        ``Input:`` line."""
         doc = self._doc_inputs(run)
+        lines = {
+            i.item_id: i.input_lines
+            for i in (run.c_report.items if run.c_report is not None else [])
+        }
         for it in run.man.items:
             if it.kind != "env_function" or it.item not in doc:
                 continue  # an absent item (or an unreadable module) is refused elsewhere
+            if lines.get(it.item, 0) > 1:
+                run.fail("G1", f"{it.item} has more than one Input: line")
+                continue
             if it.input is None:
                 changed = (
                     run.p_bodies.get(it.item, ("", ""))[:2]

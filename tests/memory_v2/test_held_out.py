@@ -451,6 +451,11 @@ def test_the_manifest_takes_an_input_form_from_the_fixed_list_only():
     )
 
     assert set(INPUT_KINDS) == {"path", "text", "bytes", "observation", "env"}
+    import unify.memory_v2.manifest as manifest_module
+
+    rules = manifest_module.__doc__
+    assert "{input_forms}" not in rules
+    assert ", ".join(f"``{name}``" for name in INPUT_KINDS) in rules
     for name in INPUT_KINDS:
         assert f"{name} (" in describe_input_kinds()
     item = {

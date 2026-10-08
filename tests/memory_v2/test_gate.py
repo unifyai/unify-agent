@@ -269,6 +269,16 @@ def test_gate_g1_a_new_function_declares_its_input_and_its_docstring_agrees(worl
     assert res.manifest_invalid and not res.checks["G1"] and not res.passed
 
 
+def test_gate_g1_refuses_a_second_input_line(world):
+    mem, ev, gate = world
+    parent = mem.head()
+    two = MOD.replace("    Input: env\n", "    Input: env\n    Input: text\n")
+    cand = _candidate(mem, {**FILES, "env/venmo/__init__.py": two})
+    res = gate.check(parent, cand, MAN)
+    assert not res.checks["G1"]
+    assert "G1: env/venmo:me has more than one Input: line" in res.reasons, res.reasons
+
+
 def test_gate_g1_an_unchanged_function_needs_no_input(world):
     """Only new or changed functions must declare one; a skeleton change lists unchanged ones too."""
     mem, ev, gate = world

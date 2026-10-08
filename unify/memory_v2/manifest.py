@@ -33,7 +33,7 @@ Manifest rules for consolidators
   header), a JSON key path (``a.b``, ``items[]``), a YAML key path or a keyword path, and the gate checks
   that unseen in-domain values are accepted and out-of-domain values are refused. A new or changed
   environment function declares the form its first parameter takes in ``input`` (one of the brief's
-  fixed list: ``path``, ``text``, ``bytes``, ``observation``, ``env``) and states the same form in its
+  fixed list: {input_forms}) and states the same form in its
   docstring as a line ``Input: <form>``; the gate refuses an unknown or missing form and a docstring that
   disagrees, and passes each covered input to the function in that form. An action's channel is
   its key when the key has no ``:`` (``venmo``), else ``<kind>_<key>`` (``shell:uv`` is ``env/shell_uv``,
@@ -111,6 +111,12 @@ INPUT_KINDS: dict[str, str] = {
     "observation": "a dialogue or tool observation value, as recorded",
     "env": "the environment object, such as `apis`",
 }
+# The consolidator rules name the forms from the one constant (they are embedded in Sol's brief verbatim).
+if __doc__:
+    __doc__ = __doc__.replace(
+        "{input_forms}",
+        ", ".join(f"``{name}``" for name in INPUT_KINDS),
+    )
 
 
 def describe_semantic_types() -> str:
