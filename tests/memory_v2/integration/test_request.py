@@ -573,7 +573,12 @@ def test_cli_with_the_switch_off_is_as_shipped(monkeypatch):
 
 @pytest.mark.parametrize("actor_effort", ["low", "medium", "high"])
 @pytest.mark.parametrize("sol_effort", ["actor", "low", "medium"])
-def test_a_fixed_sol_effort_overrides_the_actors_only_when_declared(mv2, monkeypatch, actor_effort, sol_effort):
+def test_a_fixed_sol_effort_overrides_the_actors_only_when_declared(
+    mv2,
+    monkeypatch,
+    actor_effort,
+    sol_effort,
+):
     from unify.session_details import SESSION_DETAILS
 
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
@@ -595,3 +600,30 @@ def test_the_sol_effort_setting_is_validated():
     assert switch.parse_sol_effort(" Medium ") == "medium"
     with pytest.raises(ValueError):
         switch.parse_sol_effort("xhigh")
+
+
+def test_quit_without_consolidation_records_the_episode_and_starts_no_pass(mv2):
+    # a driver ending its stream: {"quit": true, "consolidate": false}; no pass may be tied to the stream's end
+    run = _begin(mv2, "Say hi to ada.")
+    _transcript(run)
+    progress, emitted = _finish(mv2, run, consolidate=False)
+    names = mv2.fakes.names()
+    assert "assemble" in names and "post_checker" in names
+    assert "run_due_passes" not in names
+    episodes = mv2.paths.episodes
+    log = os.popen(f"git --git-dir {episodes} log --format=%s main").read()
+    assert log.splitlines()[0] == f"episode {run.episode_id}"
+    assert emitted == [
+        {
+            "type": "consolidation",
+            "phase": "held",
+            "episode_id": run.episode_id,
+            "reason_codes": ["quit_without_consolidation"],
+        },
+    ]
+    held = [
+        json.loads(x) for x in mv2.paths.events.read_text().splitlines() if x.strip()
+    ]
+    assert held == emitted
+    assert any("no consolidation pass started" in p for p in progress)
+    _left_nothing(mv2.paths)

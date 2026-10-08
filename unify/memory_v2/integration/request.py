@@ -272,6 +272,30 @@ class RequestRun:
             return None
         return lambda event: emit(_plain(dict(event)))
 
+    def _held(
+        self,
+        eid: str,
+        progress: Callable[[str], None],
+        emit: Callable[[dict], None] | None,
+    ) -> None:
+        """The episode is recorded; the driver asked that no pass start (it is ending its stream)."""
+        from . import consolidate
+
+        event = {
+            "type": "consolidation",
+            "phase": "held",
+            "episode_id": eid,
+            "reason_codes": ["quit_without_consolidation"],
+        }
+        consolidate._deliver(
+            self.stores,
+            self._emitter(emit),
+            event,
+        )  # the events file and --jsonl
+        progress(
+            "memory v2: episode recorded; no consolidation pass started (quit without consolidation)",
+        )
+
     def _error(
         self,
         stage: str,
@@ -304,9 +328,12 @@ class RequestRun:
         *,
         progress: Callable[[str], None],
         emit: Callable[[dict], None] | None = None,
+        consolidate: bool = True,
     ) -> None:
         """Record the request and run the due passes (blocking); never raises. *handle* is unused: the
-        transcript is the record."""
+        transcript is the record. With *consolidate* False (a driver's ``{"quit": true, "consolidate":
+        false}``) the episode is recorded and no pass starts; due passes stay due, and one ``held`` event
+        says so."""
         if self._closed:
             return
         try:
@@ -316,7 +343,10 @@ class RequestRun:
             except Exception as exc:  # noqa: BLE001
                 self._error("episode", exc, progress)
                 return
-            await self._consolidate(eid, sha, progress, emit)
+            if consolidate:
+                await self._consolidate(eid, sha, progress, emit)
+            else:
+                self._held(eid, progress, emit)
         except BaseException as exc:
             self._error("finish", exc, progress)
             if not isinstance(exc, Exception):
