@@ -17,6 +17,7 @@ def login(apis, username: str, password: str) -> str:
     """Log in once and return the access token.
 
     Effect: read
+    Input: env
     """
     return apis.venmo.login(username=username, password=password)["access_token"]
 
@@ -48,6 +49,8 @@ def test_items_lists_public_functions_notes_and_workflows(tmp_path):
     ids = {i.item_id: i for i in rep.items}
     assert "env/venmo:login" in ids and "env/venmo:_token" not in ids
     assert ids["env/venmo:login"].effect == "read" and ids["env/venmo:login"].listed
+    assert ids["env/venmo:login"].input == "env"
+    assert ids["env/venmo:list_friends"].input == ""  # no Input: line
     assert (
         "env/venmo/NOTES.md#pagination" in ids
         and "workflows/pay.md" in ids

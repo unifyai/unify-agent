@@ -31,7 +31,11 @@ Manifest rules for consolidators
   type in ``field_types`` (``{"<field>": "<type>"}``, a type from the fixed list in the brief; unknown
   types are refused); the field is a CSV column (``#3`` for the third column of a file without a
   header), a JSON key path (``a.b``, ``items[]``), a YAML key path or a keyword path, and the gate checks
-  that unseen in-domain values are accepted and out-of-domain values are refused. An action's channel is
+  that unseen in-domain values are accepted and out-of-domain values are refused. A new or changed
+  environment function declares the form its first parameter takes in ``input`` (one of the brief's
+  fixed list: {input_forms}) and states the same form in its
+  docstring as a line ``Input: <form>``; the gate refuses an unknown or missing form and a docstring that
+  disagrees, and passes each covered input to the function in that form. An action's channel is
   its key when the key has no ``:`` (``venmo``), else ``<kind>_<key>`` (``shell:uv`` is ``env/shell_uv``,
   ``worktree:workspace`` is ``env/worktree_workspace``, ``dialogue:user`` is ``env/dialogue_user``; other
   characters become ``_``). Only environment functions have covers. Tests must check the function
@@ -97,6 +101,23 @@ SEMANTIC_TYPES: dict[str, tuple[str, int | None, int | None]] = {
 }
 _FIELD_NAME_MAX = 200
 
+# Declared input forms: what an environment function's first parameter takes (``input`` in its manifest item,
+# and an ``Input: <form>`` line in its docstring). The gate's held-out check passes each covered input in this
+# form, and the index shows it. This list grows only by the lead's decision, never by a pass.
+INPUT_KINDS: dict[str, str] = {
+    "path": "a path to a work-tree file",
+    "text": "the text of a file or of an output",
+    "bytes": "the raw bytes of a file",
+    "observation": "a dialogue or tool observation value, as recorded",
+    "env": "the environment object, such as `apis`",
+}
+# The consolidator rules name the forms from the one constant (they are embedded in Sol's brief verbatim).
+if __doc__:
+    __doc__ = __doc__.replace(
+        "{input_forms}",
+        ", ".join(f"``{name}``" for name in INPUT_KINDS),
+    )
+
 
 def describe_semantic_types() -> str:
     """The fixed list with each type's domain, from SEMANTIC_TYPES (for the consolidator's brief)."""
@@ -110,6 +131,11 @@ def describe_semantic_types() -> str:
             domain = f"{'integer' if kind == 'int' else kind} {low}–{high}"
         out.append(f"{name} ({domain})")
     return ", ".join(out)
+
+
+def describe_input_kinds() -> str:
+    """The fixed list of input forms with what each passes, from INPUT_KINDS (for the consolidator's brief)."""
+    return ", ".join(f"{name} ({what})" for name, what in INPUT_KINDS.items())
 
 
 # Job functions (end-to-end code) are not expected in v0 (spec §4) and have no admitted location.
@@ -164,6 +190,7 @@ class ManifestItem:
     field_types: dict[str, str] = field(
         default_factory=dict,
     )  # field -> SEMANTIC_TYPES key
+    input: str | None = None  # an INPUT_KINDS key; None: not declared
 
     @property
     def channel(self) -> str | None:
@@ -325,6 +352,21 @@ def _field_types(raw: object, item: str, kind: str) -> dict[str, str]:
     return dict(raw)
 
 
+def _input(raw: object, item: str, kind: str) -> str | None:
+    """An environment function's declared input form, from INPUT_KINDS, or None when not given."""
+    if raw is None:
+        return None
+    if kind != "env_function":
+        raise ManifestError(f"{item}: only environment functions declare an input")
+    if not isinstance(raw, str) or raw not in INPUT_KINDS:
+        raise ManifestError(
+            f"{item}: unknown input {raw!r}; the fixed list is {', '.join(INPUT_KINDS)}"[
+                :300
+            ],
+        )
+    return raw
+
+
 def parse_manifest(manifest: object) -> Manifest:
     """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError."""
     if not isinstance(manifest, dict):
@@ -365,6 +407,7 @@ def parse_manifest(manifest: object) -> Manifest:
                 tests,
                 covers,
                 _field_types(raw.get("field_types"), item, kind),
+                _input(raw.get("input"), item, kind),
             ),
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]

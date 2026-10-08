@@ -1,11 +1,17 @@
 # unify/memory_v2/index.py
-"""The compact index Luna sees in its cached prefix (spec §6, D3)."""
+"""The compact index Luna sees in its cached prefix (spec §6, D3).
+
+A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
+that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:
+text)``. The index is a function of the tree alone, so the same commit gives the same bytes.
+"""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
 
+from .manifest import INPUT_KINDS
 from .memory_repo import items
 
 HEADER = (
@@ -43,6 +49,8 @@ def build_index(
             if it.kind == "env_function"
             else f"- note: {it.name} — {it.doc}"
         )
+        if it.kind == "env_function" and it.input in INPUT_KINDS:
+            line += f" (input: {it.input})"
         by_channel.setdefault(ch, []).append(line)
     parts = [HEADER]
     for ch in sorted(by_channel):

@@ -27,6 +27,7 @@ def me(apis):
     """Return the logged-in user's id.
 
     Effect: read
+    Input: env
     """
     return apis.venmo.me()["user_id"]
 '''
@@ -85,6 +86,7 @@ ITEM = {
     "source_episodes": ["e1"],
     "tests": ["env/venmo/tests/test_me.py"],
     "covers": [["e1", 0]],
+    "input": "env",
 }
 MAN = {
     "items": [ITEM],
@@ -231,6 +233,69 @@ def test_gate_g1_malformed_manifest_fails_closed(world):
     ):
         res = gate.check(parent, cand, bad)
         assert not res.passed and not res.checks["G1"], bad
+
+
+def test_gate_g1_a_new_function_declares_its_input_and_its_docstring_agrees(world):
+    mem, ev, gate = world
+    parent = mem.head()
+    cand = _candidate(mem, FILES)
+    assert gate.check(parent, cand, MAN).checks["G1"]
+    # a new function without an input
+    bare = {k: v for k, v in ITEM.items() if k != "input"}
+    res = gate.check(parent, cand, {**MAN, "items": [bare]})
+    assert not res.checks["G1"]
+    assert any(
+        r.startswith("G1: env/venmo:me declares no input (one of path, text, bytes")
+        for r in res.reasons
+    ), res.reasons
+    # the manifest says text, the docstring's Input: line says env
+    res = gate.check(parent, cand, _man(input="text"))
+    assert not res.checks["G1"]
+    assert (
+        "G1: env/venmo:me declares input text but its docstring's Input: line says env"
+        in res.reasons
+    ), res.reasons
+    # a docstring without an Input: line
+    no_line = _candidate(
+        mem,
+        {**FILES, "env/venmo/__init__.py": MOD.replace("    Input: env\n", "")},
+    )
+    res = gate.check(parent, no_line, MAN)
+    assert not res.checks["G1"]
+    assert (
+        "G1: env/venmo:me declares input env but its docstring's Input: line says missing"
+        in res.reasons
+    ), res.reasons
+    # an unknown form is refused with the manifest
+    res = gate.check(parent, cand, _man(input="file"))
+    assert res.manifest_invalid and not res.checks["G1"] and not res.passed
+
+
+def test_gate_g1_refuses_a_second_input_line(world):
+    mem, ev, gate = world
+    parent = mem.head()
+    two = MOD.replace("    Input: env\n", "    Input: env\n    Input: text\n")
+    cand = _candidate(mem, {**FILES, "env/venmo/__init__.py": two})
+    res = gate.check(parent, cand, MAN)
+    assert not res.checks["G1"]
+    assert "G1: env/venmo:me has more than one Input: line" in res.reasons, res.reasons
+
+
+def test_gate_g1_an_unchanged_function_needs_no_input(world):
+    """Only new or changed functions must declare one; a skeleton change lists unchanged ones too."""
+    mem, ev, gate = world
+    old = MOD.replace("    Input: env\n", "")
+    parent = _merged(mem, {**FILES, "env/venmo/__init__.py": old})
+    cand = _candidate(mem, {"env/venmo/__init__.py": '"""Venmo."""\n' + old})
+    bare = {k: v for k, v in ITEM.items() if k != "input"}
+    res = gate.check(
+        parent,
+        cand,
+        {"items": [{**bare, "tests": []}], "skeleton": ["env/venmo"]},
+    )
+    assert not any(
+        "declares no input" in r or "Input: line" in r for r in res.reasons
+    ), res.reasons
 
 
 def test_gate_g1_item_must_exist_in_candidate(world):
@@ -406,7 +471,7 @@ def test_gate_g3_code_item_needs_a_changed_test(world):
     assert not res.checks["G3"]
 
 
-SLACK = '__all__ = ["x"]\n\ndef x():\n    """One.\n\n    Effect: read\n    """\n    return 1\n'
+SLACK = '__all__ = ["x"]\n\ndef x():\n    """One.\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
 SLACK_TEST = "from env.slack import x\n\ndef test_x():\n    assert x() == 1\n"
 
 
@@ -448,7 +513,7 @@ def test_gate_g5_growth_must_cover_a_new_call(world):
     first = _candidate(mem, FILES)
     assert gate.merge(parent, first, MAN, "p1", "incremental", "venmo", "0").passed
     grown = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "who"]') + (
-        '\n\ndef who(apis):\n    """Alias of me.\n\n    Effect: read\n    """\n'
+        '\n\ndef who(apis):\n    """Alias of me.\n\n    Effect: read\n    Input: env\n    """\n'
         "    return me(apis)\n"
     )
     test2 = TEST.replace("import me", "import who").replace(
@@ -665,7 +730,7 @@ def test_probe_p3_covers_only_on_environment_functions(probe):
     ).passed
     assert ev.covered() == {("e1", 0)}
     mod2 = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "me2"]') + (
-        '\n\ndef me2(apis):\n    """Again.\n\n    Effect: read\n    """\n'
+        '\n\ndef me2(apis):\n    """Again.\n\n    Effect: read\n    Input: env\n    """\n'
         '    return apis.venmo.me()["user_id"] * 2\n'
     )
     c1 = _candidate(
@@ -708,7 +773,7 @@ def test_gate_g5_counts_only_validated_covers(probe):
         "0",
     ).passed
     mod2 = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "me2"]') + (
-        '\n\ndef me2(apis):\n    """Again.\n\n    Effect: read\n    """\n    return 2\n'
+        '\n\ndef me2(apis):\n    """Again.\n\n    Effect: read\n    Input: env\n    """\n    return 2\n'
     )
     c1 = _candidate(
         mem,
@@ -793,7 +858,7 @@ def test_gate_refuses_submodules(probe):
 def test_gate_deleted_and_unlisted_must_be_real_items(probe):
     mem, ev, gate = probe
     two = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "who"]') + (
-        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    """\n    return 1\n'
+        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
     )
     parent = _merged(mem, {**PROBE_BASE, "env/venmo/__init__.py": two})
     # deleting `who` properly passes (no item changes beside it)
@@ -836,7 +901,7 @@ def test_gate_deleted_and_unlisted_must_be_real_items(probe):
 def test_gate_scope_is_per_item(probe):
     mem, ev, gate = probe
     two = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "who"]') + (
-        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    """\n    return 1\n'
+        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
     )
     parent = _merged(mem, {"env/venmo/__init__.py": two})
     # declaring `me` must not let an undeclared rewrite of `who` through
@@ -873,7 +938,7 @@ def test_gate_suite_keeps_every_test_that_passed_on_the_parent(tmp_path, world):
     mem, ev, _ = world
     parent = _merged(mem, PROBE_BASE)
     two = MOD.replace('__all__ = ["me"]', '__all__ = ["me", "who"]') + (
-        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    """\n    return 1\n'
+        '\n\ndef who(apis):\n    """Who.\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
     )
     cand = _candidate(
         mem,
@@ -999,7 +1064,7 @@ def test_gate_inspects_exactly_the_committed_tree(world):
 
 
 def _fn(name, body):
-    return f'\n\ndef {name}(apis):\n    """Do it.\n\n    Effect: read\n    """\n    {body}\n'
+    return f'\n\ndef {name}(apis):\n    """Do it.\n\n    Effect: read\n    Input: env\n    """\n    {body}\n'
 
 
 def _venmo(
@@ -1029,7 +1094,7 @@ T_LOGIN = (
 )
 T_OLD = "from env.venmo import old\n\ndef test_old():\n    assert old(None) == 1\n"
 LOGIN_FAST = (
-    '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    """\n'
+    '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    Input: env\n    """\n'
     '    return "FAST" if fast else "broken"\n'
 )
 T_FAST = (
@@ -1054,6 +1119,7 @@ def _fitem(iid, tests=(), covers=(("e1", 0),)):
         "source_episodes": ["e1"],
         "tests": list(tests),
         "covers": [list(c) for c in covers],
+        "input": "env",
     }
 
 
@@ -1323,7 +1389,7 @@ def test_r2_m3_item_ids_are_strict(r2, man):
 # --- fix round 3: plausible consolidator mistakes (probe_r2: R1-R9) ---------------------------------------
 
 LOGIN_KEEP = (
-    '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    """\n'
+    '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    Input: env\n    """\n'
     '    return "FAST" if fast else _tok(apis)\n'
 )
 
@@ -1504,7 +1570,7 @@ def test_r3_r9_a_new_channel_with_a_docstring_needs_skeleton(r2):
 def test_r3_only_a_literal_all_is_exempt_from_the_skeleton(extra, pinned):
     from unify.memory_v2.snapshot import module_skeleton
 
-    a = b'__all__ = ["f"]\n\ndef f(apis):\n    """x\n\n    Effect: read\n    """\n    return 1\n'
+    a = b'__all__ = ["f"]\n\ndef f(apis):\n    """x\n\n    Effect: read\n    Input: env\n    """\n    return 1\n'
     assert (module_skeleton(a) != module_skeleton(a + extra)) is pinned
 
 

@@ -246,8 +246,29 @@ def _all_actions(store):
             "ok",
             kind="dialogue",
         ),
+        # two feedback observations: a constant message-kind tag and a constant number (identity and
+        # format), a varying attempt and a varying flag
+        _dl(24, {"type": "SubmitFeedback", "version": 3, "attempt": 1, "ok": True}),
+        _dl(25, {"type": "SubmitFeedback", "version": 3, "attempt": 2, "ok": False}),
+        # SEVEN and WIDE again with other values, so their fields vary across covers
+        _dl(26, {k: 10 * v for k, v in SEVEN.items()}),
+        _dl(27, {**{k: 100 + v for k, v in WIDE.items()}, "zmonth": 7}),
+        _dl(28, {"room": "yard", "items": ["rope", "map"], "steps": 5}),
     ]
     return acts
+
+
+def _dl(index, obs):
+    return Action(
+        index,
+        "dialogue:user",
+        "reply",
+        ["look"],
+        {},
+        obs,
+        "ok",
+        kind="dialogue",
+    )
 
 
 @pytest.fixture
@@ -417,6 +438,39 @@ def test_the_manifest_takes_declared_types_from_the_fixed_list_only():
         "kind": "env_note",
         "field_types": {"a": "month"},
     }
+    with pytest.raises(ManifestError):
+        parse_manifest({"items": [note]})
+
+
+def test_the_manifest_takes_an_input_form_from_the_fixed_list_only():
+    from unify.memory_v2.manifest import (
+        INPUT_KINDS,
+        ManifestError,
+        describe_input_kinds,
+        parse_manifest,
+    )
+
+    assert set(INPUT_KINDS) == {"path", "text", "bytes", "observation", "env"}
+    import unify.memory_v2.manifest as manifest_module
+
+    rules = manifest_module.__doc__
+    assert "{input_forms}" not in rules
+    assert ", ".join(f"``{name}``" for name in INPUT_KINDS) in rules
+    for name in INPUT_KINDS:
+        assert f"{name} (" in describe_input_kinds()
+    item = {
+        "item": "env/worktree_workspace:parse_load_log",
+        "kind": "env_function",
+        "covers": [["h1", 4]],
+    }
+    for kind in INPUT_KINDS:
+        (parsed,) = parse_manifest({"items": [{**item, "input": kind}]}).items
+        assert parsed.input == kind
+    assert parse_manifest({"items": [item]}).items[0].input is None
+    for bad in ("file", "Text", "", 3, ["text"], {"text": 1}):
+        with pytest.raises(ManifestError):
+            parse_manifest({"items": [{**item, "input": bad}]})
+    note = {"item": "env/x/NOTES.md#a", "kind": "env_note", "input": "text"}
     with pytest.raises(ManifestError):
         parse_manifest({"items": [note]})
 
@@ -777,11 +831,268 @@ def test_dialogue_perturbs_json_leaves_and_keeps_structure(recorded):
     store, acts = recorded
     p = plan("env/dialogue_user:parse", _covers(acts, 5), seen=acts, blob=store.get)
     fields = {c.field: c.payload["observation"] for c in p.cases if c.field}
+    # one observation from one episode is no support for constancy: every field varies
     assert set(fields) == {"room", "items[]", "steps"}
     for obs in fields.values():
         assert set(obs) == {"room", "items", "steps"} and len(obs["items"]) == 2
     assert fields["steps"]["steps"] > 3
     assert fields["room"]["room"] not in {"hall"}
+    assert not any("not perturbed" in n for n in p.notes)
+
+
+SUBMIT = [
+    {"type": "SubmitFeedback", "version": 3, "attempt": n, "ok": n % 2 == 0}
+    for n in range(1, 5)
+]
+DEMOS = [
+    {"type": "DemosFeedback", "version": 3, "demos": n, "shown": [n, n + 1]}
+    for n in range(1, 4)
+]
+
+
+def _arc_pool():
+    """ARC-like feedback: Submit and Demos messages on one channel, across three episodes."""
+    msgs = [_dl(i, m) for i, m in enumerate(SUBMIT + DEMOS)]
+    eids = ["a1", "a2", "a3", "a1", "a2", "a3", "a1"]
+    return msgs, list(zip(eids, msgs))
+
+
+def test_a_tag_constant_within_its_message_shape_across_the_store_is_identity():
+    """Submit and Demos messages share a channel; type is constant within each field-name set."""
+    msgs, pool = _arc_pool()
+    p = plan(
+        "env/dialogue_user:parse_feedback",
+        [("a1", 0, msgs[0]), ("a2", 1, msgs[1])],
+        seen=msgs,
+        blob=lambda sha: b"",
+        pool=pool,
+    )
+    assert {c.field for c in p.cases if c.field} == {"attempt"}  # ok: a boolean
+    (note,) = [n for n in p.notes if "not perturbed" in n]
+    assert "type" in note and "version" in note
+    assert (
+        "SubmitFeedback" not in note and "3" not in note
+    )  # names fields, never values
+    d = plan(
+        "env/dialogue_user:parse_demos",
+        [("a1", 4, msgs[4])],
+        seen=msgs,
+        blob=lambda sha: b"",
+        pool=pool,
+    )
+    assert {c.field for c in d.cases if c.field} == {"demos", "shown[]"}
+    # without the field-name split, type would hold two values: both shapes' types are kept here
+    assert all(c.field != "type" for c in p.cases + d.cases)
+
+
+def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
+    def room(i, r):
+        return _dl(i, {"room": r, "steps": 3})
+
+    covers = [("b1", 0, room(0, "kitchen")), ("b2", 1, room(1, "kitchen"))]
+    # the covers agree, but a same-shape observation elsewhere in the store differs: room varies
+    wider = [(e, a) for e, _, a in covers] + [("b3", room(2, "hall"))]
+    p = plan(
+        "env/dialogue_user:r",
+        covers,
+        seen=[],
+        blob=lambda sha: b"",
+        pool=wider,
+    )
+    fields = {c.field for c in p.cases if c.field}
+    assert (
+        "room" in fields and "steps" not in fields
+    )  # steps: 3 observations, 3 episodes, one value
+    # three observations from one episode: no support, every field varies
+    one_ep = [("b1", room(i, "kitchen")) for i in range(3)]
+    q = plan(
+        "env/dialogue_user:r",
+        covers[:1],
+        seen=[],
+        blob=lambda sha: b"",
+        pool=one_ep,
+    )
+    assert {c.field for c in q.cases if c.field} == {"room", "steps"}
+    # two observations from two episodes: below the minimum, every field varies
+    two = [(e, a) for e, _, a in covers]
+    r = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"", pool=two)
+    assert {c.field for c in r.cases if c.field} == {"room", "steps"}
+    # the default pool is the covers (and seen actions, here none)
+    default = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"")
+    assert {c.field for c in default.cases if c.field} == {"room", "steps"}
+
+
+def test_a_tool_keyword_is_constant_only_across_every_recorded_call_in_the_pool(
+    recorded,
+):
+    store, acts = recorded
+    # an enumeration of prefixes (three distinct ticket ids) still varies
+    t = plan("env/worktree_workspace:r", _covers(acts, 7), seen=acts, blob=store.get)
+    assert "ticket_id" in {c.field for c in t.cases}
+    calls = [_search("red", 5), _search("blue", 5), _search("green", 5)]
+    pool = list(zip(["k1", "k2", "k3"], calls))
+    k = plan(
+        "env/shop:search",
+        [("k1", 0, calls[0])],
+        seen=calls[:1],
+        blob=store.get,
+        pool=pool,
+    )
+    assert {c.field for c in k.cases if c.field} == {"colour"}
+    assert any("limit" in n and "not perturbed" in n for n in k.notes)
+    # one more recorded call elsewhere with another limit: limit varies, and its range spans that call
+    pool2 = pool + [("k4", _search("red", 50))]
+    k2 = plan(
+        "env/shop:search",
+        [("k1", 0, calls[0])],
+        seen=calls[:1],
+        blob=store.get,
+        pool=pool2,
+    )
+    lim = next(c for c in k2.cases if c.field == "limit")
+    assert lim.payload["kwargs"]["limit"] > 50
+
+
+def test_the_declared_input_decides_the_first_argument_form(recorded):
+    """path: a mounted file; text: the decoded text; bytes: the mounted file, read as bytes."""
+    store, acts = recorded
+    item = "env/worktree_workspace:read_stock"
+    by = {
+        kind: plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind=kind)
+        for kind in (None, "path", "text", "bytes")
+    }
+    legacy = [c for c in by[None].cases if c.field is None][0]
+    assert legacy.payload["form"] == "path" and legacy.file == STOCK
+    assert [c.payload for c in by["path"].cases] == [c.payload for c in by[None].cases]
+    text = [c for c in by["text"].cases if c.field is None][0]
+    assert text.payload["form"] == "text" and text.file is None
+    assert text.payload["observation"] == STOCK.decode()
+    assert all(isinstance(c.payload["observation"], str) for c in by["text"].cases)
+    raw = [c for c in by["bytes"].cases if c.field is None][0]
+    assert raw.payload["form"] == "bytes" and raw.file == STOCK
+    assert raw.payload["path"].startswith("/cases/files/")
+    # the same fields are perturbed whatever the form
+    assert {c.field for c in by["text"].cases} == {c.field for c in by["path"].cases}
+    # a form a cover's kind cannot give fails the item (C1)
+    env = plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind="env")
+    assert env.cases == []
+    assert env.unfit == ["declares input env, which a worktree cover cannot give"]
+    # a dialogue observation declared as an observation is passed as before
+    d = plan(
+        "env/dialogue_user:p",
+        _covers(acts, 24, 25),
+        seen=acts,
+        blob=store.get,
+        input_kind="observation",
+    )
+    legacy_d = plan(
+        "env/dialogue_user:p",
+        _covers(acts, 24, 25),
+        seen=acts,
+        blob=store.get,
+    )
+    assert d.cases and all(c.payload["form"] == "observation" for c in d.cases)
+    assert [c.payload for c in d.cases] == [c.payload for c in legacy_d.cases]
+
+
+def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(recorded):
+    store, _ = recorded
+    calls = [
+        _search(
+            "red",
+            5,
+            response={"items": [{"sku": "A-1", "qty": 4}], "kind": "page"},
+        ),
+        _search(
+            "blue",
+            10,
+            response={"items": [{"sku": "B-2", "qty": 9}], "kind": "page"},
+        ),
+    ]
+    third = _search(
+        "green",
+        5,
+        response={"items": [{"sku": "C-3", "qty": 1}], "kind": "page"},
+    )
+    p = plan(
+        "env/shop:parse_page",
+        [("h1", i, a) for i, a in enumerate(calls)],
+        seen=calls,
+        blob=store.get,
+        input_kind="observation",
+        pool=[("h1", calls[0]), ("h1", calls[1]), ("h2", third)],
+    )
+    assert {c.field for c in p.cases if c.field} == {"items[].sku", "items[].qty"}
+    for c in p.cases:
+        assert c.payload["form"] == "observation" and c.param is None
+        assert c.payload["kwargs"] in (
+            {"colour": "red", "limit": 5},
+            {"colour": "blue", "limit": 10},
+        )
+    sku = next(c for c in p.cases if c.field == "items[].sku" and c.cover == ("h1", 0))
+    assert sku.payload["observation"]["items"][0]["sku"] not in ("A-1", "B-2")
+    assert (
+        sku.payload["observation"]["kind"] == "page"
+    )  # constant in 3 responses, 2 episodes
+    # a rejection of the call exempts keywords, never response fields
+    assert all(c.family[0] == "tool_response" for c in p.cases)
+
+
+def test_a_declared_form_a_cover_cannot_give_fails_the_item(recorded):
+    """C1: a declared form that no covered input can be given in would check nothing."""
+    store, acts = recorded
+
+    def unfit(cover_idx, kind, covers=None):
+        return plan(
+            "env/x:f",
+            covers or _covers(acts, *cover_idx),
+            seen=acts,
+            blob=store.get,
+            input_kind=kind,
+        ).unfit
+
+    assert unfit([5], "path") == [
+        "declares input path, which a dialogue cover cannot give",
+    ]
+    assert unfit([4], "env") == [
+        "declares input env, which a worktree cover cannot give",
+    ]
+    assert unfit([0], "bytes") == [
+        "declares input bytes, which a tool cover cannot give",
+    ]
+    assert unfit([5], "text") == [
+        "declares input text, which a dialogue cover with a non-text observation cannot give",
+    ]
+    plain = _search("red", 5, response="3 results")
+    assert unfit(None, "observation", [("h1", 0, plain)]) == [
+        "declares input observation, which a tool cover without a JSON response cannot give",
+    ]
+    # forms the covers can give pass; a plain-text observation gives nothing to perturb: a note
+    assert (
+        unfit([4], "text") == []
+        and unfit([0], "env") == []
+        and unfit([5], "observation") == []
+    )
+    text_obs = _dl(0, "Inventory: wood 1")
+    p = plan(
+        "env/x:f",
+        [("h1", 0, text_obs)],
+        seen=[],
+        blob=store.get,
+        input_kind="observation",
+    )
+    assert p.unfit == [] and p.cases == []
+    assert any("give nothing to perturb as observation" in n for n in p.notes)
+    # a failing form is reported by run_plan as a failure, before anything runs
+    v = run_plan(
+        "env/x:f",
+        plan("env/x:f", _covers(acts, 5), seen=acts, blob=store.get, input_kind="path"),
+        tree=Path("/nonexistent"),
+        python=Path("/x"),
+        work=Path("/nonexistent/w"),
+        runner=_rows_runner([]),
+    )
+    assert v.failures == ["declares input path, which a dialogue cover cannot give"]
 
 
 def test_shell_covers_are_skipped_with_a_note(recorded):
@@ -927,7 +1238,26 @@ def shop(tmp_path, recorded):
     return mem, gate
 
 
-def _check(mem, gate, channel, module, covers, fn, field_types=None):
+def _default_input(channel):
+    for prefix, kind in (
+        ("worktree_", "path"),
+        ("dialogue_", "observation"),
+        ("shell_", "text"),
+    ):
+        if channel.startswith(prefix):
+            return kind
+    return "env"
+
+
+def _check(mem, gate, channel, module, covers, fn, field_types=None, input_kind=None):
+    """Commit *module* and gate it; the item declares *input_kind* in its manifest and docstring."""
+    input_kind = input_kind or _default_input(channel)
+    if "    Input: " not in module:
+        module = module.replace(
+            "    Effect: read\n",
+            f"    Effect: read\n    Input: {input_kind}\n",
+            1,
+        )
     parent = mem.head()
     test = f"env/{channel}/tests/test_{fn}.py"
     with mem.temp_checkout("main") as wt:
@@ -946,6 +1276,7 @@ def _check(mem, gate, channel, module, covers, fn, field_types=None):
                 "source_episodes": ["h1"],
                 "tests": [test],
                 "covers": [["h1", i] for i in covers],
+                "input": input_kind,
                 **({"field_types": field_types} if field_types else {}),
             },
         ],
@@ -1446,3 +1777,134 @@ def test_a_declaration_contradicted_by_a_later_recorded_value_fails_g2(shop):
         f"{item} declared nonneg_money field amount does not match its recorded values",
         f"{item} declared percentage field pct does not match its recorded values",
     ], res.reasons
+
+
+# --- fix 13: constant fields are identity; items declare their input --------------------------------------
+
+TAG_CHECK = """    if not isinstance(obs, dict) or obs.get("type") != "SubmitFeedback":
+        raise MemoryInputError("not a submit feedback observation")
+    return obs["attempt"]"""
+ATTEMPT_WHITELIST = """    if obs.get("type") != "SubmitFeedback" or obs["attempt"] not in (1, 2):
+        raise MemoryInputError("not a recorded attempt")
+    return obs["attempt"]"""
+
+
+@needs_bwrap
+@pytest.mark.parametrize(
+    "body, refused",
+    [(TAG_CHECK, []), (ATTEMPT_WHITELIST, ["attempt"])],
+    ids=["constant-tag-by-equality", "whitelist-over-two-values"],
+)
+def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
+    shop,
+    body,
+    refused,
+):
+    """The tag is constant in every same-shape message of the store (4 messages, 3 episodes)."""
+    mem, gate = shop
+    extra = {
+        "h2": [
+            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 3, "ok": True}),
+        ],
+        "h3": [
+            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 4, "ok": False}),
+        ],
+    }
+    for eid, recorded_actions in extra.items():
+        gate.ev.index_episode(_ep(episode_id=eid, actions=recorded_actions), "1" * 40)
+    base = gate.lookup
+    gate.lookup = lambda eid, i: (
+        extra[eid][i]
+        if eid in extra and 0 <= i < len(extra[eid])
+        else None if eid in extra else base(eid, i)
+    )
+    mod = _module("parse_feedback", "obs", body, doc="Parse submit feedback.")
+    res = _check(mem, gate, "dialogue_user", mod, [24, 25], "parse_feedback")
+    got = [r for r in res.reasons if "held-out value refused" in r]
+    assert got == [
+        f"G2: env/dialogue_user:parse_feedback held-out value refused: {f}"
+        for f in refused
+    ], res.reasons
+    assert res.checks["G2"] is (not refused)
+    assert any(
+        r.startswith("note:") and "not perturbed: type, version" in r
+        for r in res.reasons
+    ), res.reasons
+
+
+ROOM_WHITELIST = """    if obs["room"] != "hall":
+        raise MemoryInputError("not the recorded room")
+    return obs"""
+
+
+@needs_bwrap
+def test_a_declared_form_the_covers_cannot_give_fails_g2(shop):
+    """C1: a dialogue whitelist declared as taking a path would otherwise check nothing."""
+    mem, gate = shop
+    mod = _module("parse", "obs", ROOM_WHITELIST, doc="Parse a room.")
+    res = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="path")
+    assert res.checks["G1"], res.reasons
+    assert not res.checks["G2"]
+    assert (
+        "G2: env/dialogue_user:parse declares input path, which a dialogue cover cannot give"
+        in res.reasons
+    ), res.reasons
+    # declared as an observation, the whitelist is caught on its one cover
+    ok = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="observation")
+    assert [r for r in ok.reasons if "held-out value refused" in r] == [
+        "G2: env/dialogue_user:parse held-out value refused: room",
+    ], ok.reasons
+
+
+STOCK_TEXT_HEAD = """    if not isinstance(data, str):
+        raise MemoryInputError("data must be the file's text")
+    lines = data.splitlines()
+    if not lines or lines[0] != "sku,colour,qty,price,restocked":
+        raise MemoryInputError("unexpected columns")
+    rows = [ln.split(",") for ln in lines[1:] if ln]
+"""
+STOCK_TEXT_SHAPE = STOCK_TEXT_HEAD + "    return rows"
+STOCK_TEXT_WHITELIST = STOCK_TEXT_HEAD + """    for r in rows:
+        if r[1] not in ("red", "blue"):
+            raise MemoryInputError("unknown colour")
+    return rows"""
+
+
+@needs_bwrap
+@pytest.mark.parametrize(
+    "body, input_kind, refused, baseline_refused",
+    [
+        (STOCK_TEXT_SHAPE, "text", [], False),
+        (STOCK_TEXT_WHITELIST, "text", ["colour"], False),
+        # declared as a path, the same text reader refuses its own covered input: nothing is checked
+        (STOCK_TEXT_SHAPE, "path", [], True),
+    ],
+    ids=["text-shape-only", "text-whitelist", "declared-path"],
+)
+def test_a_text_reader_is_called_with_the_files_text(
+    shop,
+    body,
+    input_kind,
+    refused,
+    baseline_refused,
+):
+    """A parse_load_log(data)-style reader gets the decoded text when it declares input text."""
+    mem, gate = shop
+    mod = _module("read_stock_text", "data", body, doc="Parse a stock CSV's text.")
+    res = _check(
+        mem,
+        gate,
+        "worktree_workspace",
+        mod,
+        [4],
+        "read_stock_text",
+        input_kind=input_kind,
+    )
+    assert res.checks["G1"], res.reasons
+    got = [r for r in res.reasons if "held-out value refused" in r]
+    assert got == [
+        f"G2: env/worktree_workspace:read_stock_text held-out value refused: {f}"
+        for f in refused
+    ], res.reasons
+    own = any("refuses 1 of its own covered inputs" in r for r in res.reasons)
+    assert own is baseline_refused, res.reasons

@@ -117,11 +117,13 @@ What to build, in priority order:
      the first argument `apis`;
    - shell channels: functions that parse a command's output text into values, with an output-shape check (the
      gate never runs commands; tests feed recorded outputs);
-   - worktree channels: readers and writers for recurring files (taking a path or bytes), with schema checks
+   - worktree channels: readers and writers for recurring files (taking a path, text or bytes), with schema checks
      (delimiter, columns, types, sign and date conventions) that raise on files of another shape;
    - dialogue channels: observation parsers, an action grammar, transition facts and small predictors.
    Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
-   `Effect: unknown`. Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
+   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as
+   "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
+   Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
    differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
    when you add it, together with every public function of the module in items).
    Scope is shape, not observed values. A check or refusal names only types, columns or fields, required keys, the
@@ -151,7 +153,7 @@ then write the code and see it pass. Revise existing
 modules in place; do not add near-duplicates. Prefer nothing over a weak function: the library must earn its place.
 
 Finish by writing /memory/.pass/manifest.json (never committed):
-{"items":[{"item":"env/<channel>:<function>","kind":"env_function","source_episodes":[...],
+{"items":[{"item":"env/<channel>:<function>","kind":"env_function","input":"<form>","source_episodes":[...],
   "tests":["env/<channel>/tests/test_<function>.py"],"covers":[[episode_id, action_index], ...]}],
  "support":["unify_memory_testkit.py"],"skeleton":[],"unlisted":[],"deleted":[],"deleted_tests":[],"summary":"..."}
 `covers` lists the recorded actions on the function's own channel whose observations its tests check: tool calls
@@ -173,6 +175,7 @@ SOL_SYSTEM = (
     .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
     .replace("{checks}", str(MAX_CHECKS))
     .replace("{semantic_types}", _manifest.describe_semantic_types())
+    .replace("{input_kinds}", _manifest.describe_input_kinds())
     + "\n"
     + _manifest_rules()
     + "\n"

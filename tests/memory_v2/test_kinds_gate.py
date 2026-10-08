@@ -203,6 +203,7 @@ def read_invoices(data):
     """Parse an accounts-payable invoices CSV (bytes) into dicts; raise on another layout.
 
     Effect: read
+    Input: bytes
     """
     lines = data.decode("utf-8").splitlines()
     cols = ["vendor_id", "invoice_no", "amount", "due_date", "status"]
@@ -234,6 +235,7 @@ WT_ITEM = {
     "source_episodes": ["o1"],
     "tests": ["env/worktree_workspace/tests/test_read_invoices.py"],
     "covers": [["o1", 0]],
+    "input": "bytes",
 }
 WT_MAN = {
     "items": [WT_ITEM],
@@ -332,7 +334,11 @@ def test_gate_g2_admits_shell_and_dialogue_covers_on_their_channels(
 ):
     mem, ev, gate, _ = office
     parent = mem.head()
-    mod = READER.replace("read_invoices", "parse")
+    form = {"shell_uv": "text", "dialogue_user": "observation"}[channel]
+    mod = READER.replace("read_invoices", "parse").replace(
+        "Input: bytes",
+        f"Input: {form}",
+    )
     test = (
         f"from env.{channel} import parse\n\n"
         "def test_parse():\n    assert parse(b'a,b,c,d,e') == []\n"
@@ -349,6 +355,7 @@ def test_gate_g2_admits_shell_and_dialogue_covers_on_their_channels(
                 "source_episodes": ["o1"],
                 "tests": [f"env/{channel}/tests/test_parse.py"],
                 "covers": [["o1", index]],
+                "input": form,
             },
         ],
     }
