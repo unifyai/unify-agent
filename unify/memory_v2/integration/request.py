@@ -26,7 +26,7 @@ import os
 import secrets
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -317,19 +317,39 @@ class RequestRun:
     def note_result(self, call_id: Any, result: Any) -> None:
         """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
         to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
-        sessions. At most ``MAX_STATUSES`` calls are kept; later ones are then unknown.
+        sessions. A plain mapping (the code tool's own result for an empty cell, or when its session
+        executor raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
+        kept; later ones are then unknown.
         """
         from ..analysis import use
 
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
-        self.cell_status[str(call_id)] = use.runtime_status(
-            getattr(result, "error", None),
-            getattr(result, "session_id", None),
-            getattr(result, "session_created", None),
-            items=self.item_ids,
-            roots=self.export_roots,
-        )
+        if isinstance(result, Mapping):
+            status = use.dict_status(
+                result,
+                items=self.item_ids,
+                roots=self.export_roots,
+            )
+        else:
+            status = use.runtime_status(
+                getattr(result, "error", None),
+                getattr(result, "session_id", None),
+                getattr(result, "session_created", None),
+                items=self.item_ids,
+                roots=self.export_roots,
+            )
+        self.cell_status[str(call_id)] = status
+
+    def note_failure(self, call_id: Any, exc: BaseException) -> None:
+        """Keep that a code cell's tool call raised instead of returning (``hooks.tool_result``): its
+        outcome is unknown (``tool_raised``), with the exception's class name when it is a builtin one.
+        """
+        from ..analysis import use
+
+        if call_id is None or len(self.cell_status) >= MAX_STATUSES:
+            return
+        self.cell_status[str(call_id)] = use.failed_status(type(exc).__name__)
 
     # -- the outcome ------------------------------------------------------------------------------
 
@@ -454,7 +474,7 @@ class RequestRun:
             surface=self.surface,
             shown=self.shown,
             shown_text=self.index,
-            cell_status=self.cell_status,
+            cell_status=dict(self.cell_status),
         )
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)

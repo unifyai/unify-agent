@@ -1059,6 +1059,7 @@ def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
     rec = use.request_use(_lines(cells), ITEMS, cell_status=_status(cells, skip=(1,)))
     assert [c["status"] for c in rec["cell_status"]] == ["error", "unknown"]
     assert rec["cells_without_metadata"] == 1 and rec["cells_error_unread"] == 0
+    assert rec["cells_without_metadata_by_cause"]["other"] == 1
     assert not rec["outcomes_known"]
     assert (
         rec["items"]["env/x:parse"]["refused"] == 1
@@ -1176,6 +1177,7 @@ def test_bindings_follow_the_execution_session(lib):
         "exits": [],
         "session": 1,
         "fresh": False,
+        "cause": "other",
     }
 
 
@@ -1199,3 +1201,255 @@ def test_a_failing_record_keeps_the_items_at_the_pin():
     ep.transcript = None  # not iterable: request_use raises
     rec = memory_use(ep, ITEMS)
     assert rec["error"] == "TypeError" and rec["items_at_pin"] == ITEMS
+
+
+# --- fix round 3: names, plain results, causes, per-item unknowns, prompts ---------------------------------
+
+
+def _frame_traceback(root, func: str, kind: str = "ValueError") -> str:
+    """A traceback leaving ``env/x/__init__.py`` under *root* through a frame named *func*."""
+    return (
+        "Traceback (most recent call last):\n"
+        '  File "<cell 0>", line 1, in <module>\n'
+        f'  File "{root}/env/x/__init__.py", line 3, in {func}\n'
+        "    raise\n"
+        f"{kind}: boom\n"
+    )
+
+
+def test_only_identifier_shaped_function_names_are_kept(tmp_path):
+    root = str(tmp_path / "checkout")
+    kept = ["parse", "Outer.method", "_helper", "a" * use.MAX_NAME_CHARS]
+    other = [
+        "<lambda>",
+        "<module>",
+        "parse; rm -rf /",
+        "a b",
+        "Outer..method",
+        "x" * (use.MAX_NAME_CHARS + 1),
+        "9lives",
+    ]
+    for func in kept + other:
+        status = use.runtime_status(
+            _frame_traceback(root, func),
+            items=ITEMS,
+            roots=[root],
+        )
+        want = func if func in kept else use.OTHER_NAME
+        assert status["exits"] == [["errored", "x", want]], func
+    # an <other> exit is never an item, even when the pin has a function called "other"
+    pin = ITEMS + ["env/x:other"]
+    lam = use.runtime_status(
+        _frame_traceback(root, "<lambda>"),
+        items=pin,
+        roots=[root],
+    )
+    cells = [("from env.x import parse\nparse(1)\n", None)]
+    rec = use.request_use(_lines(cells), pin, cell_status={"c0": lam})
+    assert rec["unattributed_errors"] == {"x": 1} and "env/x:other" not in rec["items"]
+    # recorded entries are re-checked: a non-identifier name is dropped, <other> is kept
+    recorded = [
+        {
+            "call": "c0",
+            "status": "error",
+            "exits": [
+                ["errored", "x", "a b"],
+                ["errored", "x", "x" * (use.MAX_NAME_CHARS + 1)],
+                ["errored", "x", use.OTHER_NAME],
+                ["refused", "x", "Outer.method"],
+                ["refused", "x", "parse"],
+            ],
+        },
+    ]
+    rec = use.request_use(_lines(cells), ITEMS, cell_status=recorded)
+    assert rec["cell_status"][0]["exits"] == [
+        ["errored", "x", use.OTHER_NAME],
+        ["refused", "x", "Outer.method"],
+        ["refused", "x", "parse"],
+    ]
+    assert rec["items"]["env/x:parse"]["refused"] == 1
+    assert rec["unattributed_errors"] == {"x": 2}
+
+
+def _executor_traceback(exc: BaseException) -> str:
+    try:
+        raise exc
+    except (
+        BaseException
+    ):  # noqa: BLE001 - the harness's own traceback, as execute_code keeps it
+        return traceback.format_exc()
+
+
+class SandboxGone(RuntimeError):
+    pass
+
+
+def _plain(error: str | None, session_id=None) -> dict:
+    """The legacy ``execute_code``'s own plain result (an empty cell, or its session executor raised)."""
+    return {
+        "stdout": "",
+        "stderr": "",
+        "result": None,
+        "error": error,
+        "state_mode": "stateful",
+        "session_id": session_id,
+        "session_name": None,
+        "session_created": False,
+        "duration_ms": 0,
+    }
+
+
+def test_plain_results_and_raised_calls_reach_the_record_with_a_status(monkeypatch):
+    run = RequestRun("r", None)
+    run.item_ids = list(ITEMS)
+    monkeypatch.setattr(hooks, "_run", lambda: run)
+    assert hooks.result_hook() is hooks.tool_result
+    hooks.tool_result("execute_code", "c0", _plain(None, session_id=3))
+    hooks.tool_result(
+        "execute_code",
+        "c1",
+        _plain(_executor_traceback(TimeoutError("worker gone"))),
+    )
+    hooks.tool_result("execute_code", "c2", _plain(_executor_traceback(SandboxGone())))
+    hooks.tool_result("execute_code", "c3", None, raised=TypeError("bad keyword"))
+    hooks.tool_result("execute_code", "c4", None, raised=SandboxGone())
+    hooks.tool_result("other_tool", "c5", _plain(None))  # not the code tool
+    hooks.tool_result("other_tool", "c6", None, raised=TypeError("x"))
+    # a runtime result left as a dict (a list stdout) is read as one
+    hooks.tool_result(
+        "execute_code",
+        "c7",
+        {**_plain(None, session_id=2), "stdout": [], "duration_ms": 4},
+    )
+    assert sorted(run.cell_status) == ["c0", "c1", "c2", "c3", "c4", "c7"]
+    assert run.cell_status["c0"] == {
+        "status": "empty",
+        "exits": [],
+        "session": None,
+        "fresh": False,
+        "cause": "empty",
+    }
+    assert run.cell_status["c1"]["status"] == "error"
+    assert run.cell_status["c1"]["cause"] == "executor_error"
+    assert run.cell_status["c1"]["exc"] == "TimeoutError"
+    assert run.cell_status["c2"]["exc"] == use.OTHER_NAME  # not a builtin exception
+    assert run.cell_status["c3"] == {
+        "status": "unknown",
+        "exits": [],
+        "session": None,
+        "fresh": False,
+        "cause": "tool_raised",
+        "exc": "TypeError",
+    }
+    assert run.cell_status["c4"]["exc"] == use.OTHER_NAME
+    assert run.cell_status["c7"] == {
+        "status": "ok",
+        "exits": [],
+        "session": 2,
+        "fresh": False,
+    }
+    assert "worker gone" not in json.dumps(run.cell_status)  # names only
+    # no run: no hook at all
+    monkeypatch.setattr(hooks, "_run", lambda: None)
+    assert hooks.result_hook() is None
+
+
+def test_empty_and_executor_failed_cells_are_counted_by_cause(lib):
+    codes = [
+        "",  # empty: nothing ran
+        "from env.x import parse\nparse(1)\n",  # the executor raised: parse's outcome unknown
+        "from env.x import lookup\nlookup('a')\n",  # ok
+    ]
+    cells = [(c, None) for c in codes]
+    status = {
+        "c0": use.dict_status(_plain(None), items=ITEMS),
+        "c1": use.dict_status(
+            _plain(_executor_traceback(OSError("pipe"))),
+            items=ITEMS,
+        ),
+        "c2": use.runtime_status(None, 1, True, items=ITEMS),
+    }
+    rec = use.request_use(_lines(cells), ITEMS, cell_status=status)
+    assert [c["status"] for c in rec["cell_status"]] == ["empty", "error", "ok"]
+    assert rec["cells_without_metadata_by_cause"] == {
+        "empty": 1,
+        "executor_error": 1,
+        "tool_raised": 0,
+        "cancelled": 0,
+        "timeout": 0,
+        "step_cap": 0,
+        "other": 0,
+    }
+    assert rec["cells_without_metadata"] == 2 and rec["cells_outcome_unknown"] == 1
+    assert rec["cell_status"][1]["exc"] == "OSError"
+    # an empty cell alone leaves every outcome known
+    alone = use.request_use(_lines(cells[:1]), ITEMS, cell_status=status)
+    assert alone["outcomes_known"] and alone["cells_without_metadata"] == 1
+    # the notebook projection wraps the same plain result as a cell result: still read as empty
+    wrapped = NotebookCellResult(
+        stdout=[],
+        error=None,
+        duration_ms=0,
+        session_created=False,
+    )
+    notebook = use.request_use(
+        _lines(cells[:1], projection="notebook"),
+        ITEMS,
+        cell_status={
+            "c0": use.runtime_status(
+                wrapped.error,
+                wrapped.session_id,
+                wrapped.session_created,
+                items=ITEMS,
+            ),
+        },
+    )
+    assert notebook["cell_status"] == alone["cell_status"]
+
+
+_HARNESS_REPLIES = {
+    "cancelled": "Cancelled: the requester cancelled the request before this call finished.",
+    "timeout": "Cancelled: the timeout (300s) was reached before this call finished.",
+    "step_cap": "Cancelled: the step limit (max_steps (500) exceeded) ended the request before "
+    "this call finished.",
+    "not_run_timeout": "Not run: timeout (300s) exceeded before this call started.",
+    "not_run_cap": "Not run: max_steps (500) exceeded before this call started.",
+    "stopped": "Cancelled: the request was stopped for making no progress before this call "
+    "finished.",
+    "limit": "⚠️ Error: 'execute_code' was not run: its call limit is reached.",
+}
+
+
+def test_a_cell_the_harness_answered_itself_is_unknown_with_its_cause(lib):
+    names = list(_HARNESS_REPLIES)
+    cells = [
+        (f"from env.x import parse\nparse({i})\n", None) for i in range(len(names))
+    ]
+    lines = _lines(cells)
+    for i, name in enumerate(names):
+        lines[2 + 2 * i]["message"]["content"] = _HARNESS_REPLIES[name]
+    rec = use.request_use(lines, ITEMS)
+    assert [c["cause"] for c in rec["cell_status"]] == [
+        "cancelled",
+        "timeout",
+        "step_cap",
+        "timeout",
+        "step_cap",
+        "cancelled",
+        "other",
+    ]
+    assert rec["cells_without_metadata"] == len(names)
+    # the words name a cause only for a cell without a structured result: with one, they are output
+    with_status = use.request_use(
+        lines,
+        ITEMS,
+        cell_status={f"c{i}": use.runtime_status(None, items=ITEMS) for i in range(7)},
+    )
+    assert {c["status"] for c in with_status["cell_status"]} == {"ok"}
+    assert with_status["cells_without_metadata"] == 0 and with_status["outcomes_known"]
+    # a tool call that raised keeps its own cause; offline it reads back the same
+    raised = {"c0": use.failed_status("TypeError")}
+    rec = use.request_use(lines, ITEMS, cell_status=raised)
+    assert rec["cell_status"][0]["cause"] == "tool_raised"
+    again = use.request_use(lines, ITEMS, cell_status=rec["cell_status"])
+    assert again == rec

@@ -11,15 +11,30 @@ Everything is structural. Imports and calls come from each cell's syntax tree. E
 the runtime's structured result of the cell (``ExecutionResult.error``, ``session_id`` and
 ``session_created``), which the harness notes by tool call id as the result comes back
 (``hooks.tool_result``, :func:`runtime_status`) and the record keeps, reduced to names, as
-``cell_status``; frames are read by file path and function name. The rendered tool message is never read
-for a status, so nothing a cell prints can stand in for one, in either code projection. A cell with no
-structured status (a recording from before the field, a tool call that failed outright) is ``unknown``:
-it is counted in ``cells_without_metadata`` (an error too long to read in ``cells_error_unread``),
-``outcomes_known`` is then false, and the request's refusals and errors are unknown, never 0. Text is
-read only for its structure: the traceback's header, frame and chaining lines and the exception's type
-token, the diff's file headers and, for legacy recordings only, the index's channel headings and item
-lines. An exception message is never read for meaning; a message deliberately written to imitate
-CPython's chain line, header and frame lines could still forge a block. Nothing is keyed on a task.
+``cell_status``; frames are read by file path and function name, and a function name is kept only when
+each dotted part is an identifier (else ``<other>``). The rendered tool message is never read for a
+status, so nothing a cell prints can stand in for one, in either code projection.
+
+Some cells have no structured result from the runtime; ``cells_without_metadata_by_cause`` counts them
+by cause (``cells_without_metadata`` is their sum):
+
+* ``empty``: the code tool's own plain result for an empty cell (status ``empty``; nothing ran);
+* ``executor_error``: its plain result when the session executor itself raised (status ``error``, with
+  the exception's class name when it is a builtin exception, else ``<other>``);
+* ``tool_raised``: the tool call raised before returning (the harness notes the exception's class, as
+  above);
+* ``cancelled``, ``timeout``, ``step_cap``: the harness answered the call itself, as its own reply's
+  opening words say (``Cancelled: ...``, ``Not run: ...``); ``other`` for anything else, such as a
+  recording from before the field. These words are read only to name the cause, never for an outcome.
+
+A cell whose outcome is unknown (``tool_raised`` and the harness-answered causes, ``executor_error``, or
+an error too long to read, ``unread``) is counted in ``cells_outcome_unknown``; ``outcomes_known`` is
+then false, and the request's refusals and errors are unknown, never 0. Text is read only for its
+structure: the traceback's header, frame and chaining lines and the exception's type token, the diff's
+file headers, the harness's reply words above and, for legacy recordings only, the index's channel
+headings and item lines. An exception message is never read for meaning; a message deliberately written
+to imitate CPython's chain line, header and frame lines could still forge a block. Nothing is keyed on a
+task.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 
@@ -49,7 +64,8 @@ are channels of the pin, ``*``, or ``?`` for a name the pin has no channel for (
 kept beyond item ids and channel names).
 
 Names bound by a cell persist into later cells of the same execution session (the structured result's
-``session_id``; a cell without a status stays in the previous cell's session) and are dropped when a
+``session_id``; a cell without a structured result from the runtime stays in the previous cell's
+session) and are dropped when a
 result reports a new session (``session_created``).
 
 What the prompt showed is a structured record, not a reading of the prompt's text: whatever renders the
@@ -67,6 +83,7 @@ whether a section was shown).
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import json
 import math
@@ -80,7 +97,9 @@ __all__ = [
     "HEADER_PREFIX",
     "VERSION",
     "attribute_errors",
+    "dict_status",
     "env_channel",
+    "failed_status",
     "library_surface",
     "memory_section",
     "modified_channels",
@@ -95,7 +114,7 @@ __all__ = [
     "use_from_episode_dir",
 ]
 
-VERSION = 4
+VERSION = 5
 SHOWN_VERSION = 1
 
 #: The start of the v2 index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
@@ -103,9 +122,38 @@ SHOWN_VERSION = 1
 HEADER_PREFIX = "Memory library: candidates to check, not authority."
 
 EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
-#: A cell's status: its structured result had no error, had one, had one too large to read, or there
-#: was no structured result for it.
-CELL_STATUSES = ("ok", "error", "unread", "unknown")
+#: A cell's status: its structured result had no error, had one, had one too large to read, the cell was
+#: empty, or there was no structured result for it.
+CELL_STATUSES = ("ok", "error", "unread", "empty", "unknown")
+#: Why a cell has no structured result from the runtime (``cells_without_metadata_by_cause``).
+CAUSES = (
+    "empty",
+    "executor_error",
+    "tool_raised",
+    "cancelled",
+    "timeout",
+    "step_cap",
+    "other",
+)
+#: What a function or exception name that is not identifier-shaped (or not allowed) is kept as.
+OTHER_NAME = "<other>"
+#: The exception class names a cell status may keep: the builtin exceptions'.
+EXCEPTION_NAMES = frozenset(
+    n
+    for n, v in vars(builtins).items()
+    if isinstance(v, type) and issubclass(v, BaseException)
+)
+# The harness's own replies to a call it answered itself (``unify.common._async_tool.loop`` and
+# ``loop_stop``), by opening words, in order: the cause they name.
+_REPLY_CAUSES = (
+    ("Cancelled: the step limit (", "step_cap"),
+    ("Not run: the step limit (", "step_cap"),
+    ("Not run: max_steps (", "step_cap"),
+    ("Cancelled: the timeout (", "timeout"),
+    ("Not run: the timeout (", "timeout"),
+    ("Not run: timeout (", "timeout"),
+    ("Cancelled: ", "cancelled"),
+)
 
 REFUSAL_TYPE = "MemoryInputError"
 
@@ -437,6 +485,24 @@ def _session_of(value: Any) -> int | str | None:
     return value if not isinstance(value, str) else value[:MAX_NAME_CHARS]
 
 
+def _name_shape(name: Any) -> str:
+    """*name* when it is a (dotted) identifier of at most :data:`MAX_NAME_CHARS` characters, else
+    :data:`OTHER_NAME`: a frame's function name is kept only in that shape, so nothing else a traceback
+    holds (or a block forged in a message) can land in the record."""
+    if (
+        isinstance(name, str)
+        and 0 < len(name) <= MAX_NAME_CHARS
+        and all(part.isidentifier() for part in name.split("."))
+    ):
+        return name
+    return OTHER_NAME
+
+
+def _exc_name(name: Any) -> str:
+    """*name* when it is a builtin exception's class name, else :data:`OTHER_NAME`."""
+    return name if isinstance(name, str) and name in EXCEPTION_NAMES else OTHER_NAME
+
+
 def runtime_status(
     error: Any,
     session_id: Any = None,
@@ -472,9 +538,79 @@ def runtime_status(
     }
 
 
+def _no_result(status: str, cause: str, exc: Any = None) -> dict:
+    out = {
+        "status": status,
+        "exits": [],
+        "session": None,
+        "fresh": False,
+        "cause": cause,
+    }
+    if cause in ("executor_error", "tool_raised"):
+        out["exc"] = _exc_name(exc)
+    return out
+
+
+def _traceback_type(text: Any) -> str | None:
+    """The class name (last dotted part) of the last exception a traceback shows, or None."""
+    blocks = parse_traceback(text) if isinstance(text, str) else []
+    kind = blocks[-1]["type"] if blocks else None
+    return kind.rsplit(".", 1)[-1] if isinstance(kind, str) else None
+
+
+def dict_status(
+    value: Any,
+    *,
+    items: Iterable[str] | _Items,
+    roots: Iterable[str] = (),
+) -> dict:
+    """One cell's status from the code tool's plain ``dict`` result (the legacy projection returns one,
+    unwrapped, for an empty cell and when the session executor itself raised).
+
+    A dict whose ``stdout`` is a list is a runtime result left unwrapped and is read as one
+    (:func:`runtime_status`). Otherwise ``error`` None is an ``empty`` cell (nothing ran) and an ``error``
+    string the executor's own failure: status ``error`` with cause ``executor_error`` and the exception's
+    class name when it is a builtin exception (else ``<other>``); its traceback is the harness's, so it
+    has no exits, and the outcome of what the cell's code reaches is unknown. Neither holds a session.
+    """
+    get = value.get if hasattr(value, "get") else (lambda k, d=None: d)
+    error = get("error")
+    if isinstance(get("stdout"), list):
+        return runtime_status(
+            error,
+            get("session_id"),
+            get("session_created"),
+            items=items,
+            roots=roots,
+        )
+    if error is None:
+        return _no_result("empty", "empty")
+    return _no_result("error", "executor_error", _traceback_type(error))
+
+
+def failed_status(exc_name: Any) -> dict:
+    """The status of a code cell whose tool call raised instead of returning (``tool_raised``): unknown,
+    with the exception's class name when it is a builtin exception (else ``<other>``).
+    """
+    return _no_result("unknown", "tool_raised", exc_name)
+
+
 def _kept_status(entry: Any, its: _Items) -> dict | None:
-    """A status read back (from :func:`runtime_status` or a recorded ``cell_status`` entry), or None."""
+    """A status read back (from :func:`runtime_status`, :func:`dict_status`, :func:`failed_status` or a
+    recorded ``cell_status`` entry), or None when it is not one of their shapes."""
     if not isinstance(entry, dict) or entry.get("status") not in CELL_STATUSES:
+        return None
+    status, cause = entry["status"], entry.get("cause")
+    if cause is not None:
+        expected = (
+            "empty"
+            if cause == "empty"
+            else "error" if cause == "executor_error" else "unknown"
+        )
+        if cause not in CAUSES or status != expected:
+            return None
+        return _no_result(status, cause, entry.get("exc"))
+    if status == "empty":
         return None
     exits: list[list[str]] = []
     raw = entry.get("exits")
@@ -485,22 +621,63 @@ def _kept_status(entry: Any, its: _Items) -> dict | None:
             and e[0] in ("refused", "errored")
             and e[1] in its.by_channel
             and isinstance(e[2], str)
-            and 0 < len(e[2]) <= MAX_NAME_CHARS
+            and (e[2] == OTHER_NAME or _name_shape(e[2]) == e[2])
             and len(exits) < MAX_EXITS
         ):
             exits.append([e[0], e[1], e[2]])
     return {
-        "status": entry["status"],
-        "exits": exits if entry["status"] == "error" else [],
+        "status": status,
+        "exits": exits if status == "error" else [],
         "session": _session_of(entry.get("session")),
         "fresh": entry.get("fresh") is True,
     }
 
 
-def _statuses(cells: list[dict], cell_status: Any, its: _Items) -> list[dict]:
+def _reply_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                return part["text"]
+    return ""
+
+
+def _reply_causes(lines: Iterable[Any]) -> dict[str, str]:
+    """Per tool call id, the cause the harness's own reply names (``cancelled``, ``timeout``,
+    ``step_cap``), from the reply's opening words only; calls with any other reply are left out. Read
+    only for a cell without a structured result, and only to name why it has none."""
+    out: dict[str, str] = {}
+    for row in _fold(lines):
+        msg = row.get("message")
+        if msg.get("role") != "tool" or msg.get("tool_call_id") is None:
+            continue
+        head = _reply_text(msg.get("content")).lstrip()[:200]
+        for prefix, cause in _REPLY_CAUSES:
+            if head.startswith(prefix):
+                out[str(msg["tool_call_id"])] = cause
+                break
+    return out
+
+
+def _outcome_unknown(status: dict) -> bool:
+    """Whether a cell's outcome is unknown: no result, an unread error, or the executor's own failure."""
+    return status["status"] in ("unknown", "unread") or (
+        status.get("cause") == "executor_error"
+    )
+
+
+def _statuses(
+    cells: list[dict],
+    cell_status: Any,
+    its: _Items,
+    causes: dict[str, str] | None = None,
+) -> list[dict]:
     """Each cell's status, in cell order, from *cell_status* (by call id: a mapping, or a list of entries
-    with ``call``); ``unknown`` where it has none, staying in the previous cell's session.
+    with ``call``); ``unknown`` where it has none, with the cause the harness's reply names (*causes*,
+    else ``other``). A cell without a runtime result stays in the previous cell's session.
     """
+    causes = causes or {}
     by_call: dict[str, Any] = {}
     if isinstance(cell_status, dict):
         by_call = {str(k): v for k, v in cell_status.items()}
@@ -512,13 +689,18 @@ def _statuses(cells: list[dict], cell_status: Any, its: _Items) -> list[dict]:
     session: int | str | None = None
     for cell in cells:
         kept = _kept_status(by_call.get(cell["call"]), its)
-        if kept is None or kept["status"] == "unknown":
-            kept = {
-                "status": "unknown",
-                "exits": [],
-                "session": session,
-                "fresh": False,
-            }
+        if kept is None or (
+            kept["status"] == "unknown" and kept.get("cause") != "tool_raised"
+        ):
+            kept = _no_result("unknown", causes.get(cell["call"], "other"))
+        elif (
+            kept["status"] == "ok" and "cause" not in kept and not cell["code"].strip()
+        ):
+            # an empty cell: the notebook projection wraps the code tool's plain result, the legacy
+            # one hands it over as it is (``dict_status``); both read ``empty``
+            kept = _no_result("empty", "empty")
+        if "cause" in kept:
+            kept["session"] = session
         session = kept["session"]
         out.append({"call": cell["call"], **kept})
     return out
@@ -1242,7 +1424,9 @@ def _exits(
     roots: tuple[str, ...],
 ) -> list[tuple[str, str, str]]:
     """``(kind, channel, function)`` per exception of a traceback that left a memory module (see
-    :func:`attribute_errors`), at most :data:`MAX_EXITS`."""
+    :func:`attribute_errors`), at most :data:`MAX_EXITS`; a function name that is not a dotted
+    identifier of at most :data:`MAX_NAME_CHARS` characters is kept as :data:`OTHER_NAME`.
+    """
     out: list[tuple[str, str, str]] = []
     left_groups: set[int] = set()
     for block in parse_traceback(text):
@@ -1260,7 +1444,7 @@ def _exits(
                 (
                     "refused" if kind == REFUSAL_TYPE else "errored",
                     channel,
-                    func[:MAX_NAME_CHARS],
+                    _name_shape(func),
                 ),
             )
             if "group" in block:
@@ -1352,9 +1536,10 @@ def request_use(
     wrote into its export, *export_roots* the export's path(s) as the cells import it (:func:`roots_of`),
     *surface* the library's import surface at the pin (:func:`library_surface`), *shown* what the
     memory-section renderer recorded (:func:`record_shown`; None for a legacy recording) and
-    *cell_status* each cell's status from the runtime's structured result (:func:`runtime_status`), by
-    tool call id: a mapping, or the record's own ``cell_status`` list. A cell it does not cover is
-    ``unknown``: counted in ``cells_without_metadata``, with ``outcomes_known`` false.
+    *cell_status* each cell's status from the runtime's structured result (:func:`runtime_status`,
+    :func:`dict_status`, :func:`failed_status`), by tool call id: a mapping, or the record's own
+    ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
+    ``other``), with ``outcomes_known`` false.
     """
     lines = list(lines)
     its = _Items(items, surface)
@@ -1363,7 +1548,7 @@ def request_use(
     tally = _Tally()
     sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
-    statuses = _statuses(cells[:MAX_CELLS], cell_status, its)
+    statuses = _statuses(cells[:MAX_CELLS], cell_status, its, _reply_causes(lines))
     unparsed = 0
     refusals: list[tuple[int, str]] = []
     for cell, status in zip(cells[:MAX_CELLS], statuses):
@@ -1414,8 +1599,12 @@ def request_use(
         or len(cells) > MAX_CELLS
     )
     star = its.star or {}
-    without = sum(s["status"] == "unknown" for s in statuses)
-    unread = sum(s["status"] == "unread" for s in statuses)
+    by_cause = dict.fromkeys(CAUSES, 0)
+    for st in statuses:
+        if st.get("cause") in by_cause:
+            by_cause[st["cause"]] += 1
+    unread = sum(st["status"] == "unread" for st in statuses)
+    cells_unknown = sum(_outcome_unknown(st) for st in statuses)
     return {
         "version": VERSION,
         "export_roots": roots,
@@ -1435,9 +1624,11 @@ def request_use(
         "cells": len(cells),
         "unparsed_cells": unparsed,
         "cell_status": statuses,
-        "cells_without_metadata": without,
+        "cells_without_metadata": sum(by_cause.values()),
+        "cells_without_metadata_by_cause": by_cause,
         "cells_error_unread": unread,
-        "outcomes_known": without == 0 and unread == 0 and len(cells) <= MAX_CELLS,
+        "cells_outcome_unknown": cells_unknown,
+        "outcomes_known": cells_unknown == 0 and len(cells) <= MAX_CELLS,
         "items": dict(list(rows.items())[:MAX_ITEM_ROWS]),
         "module_imports": dict(sorted(tally.module_imports.items())),
         "unknown_calls": dict(sorted(tally.unknown.items())),

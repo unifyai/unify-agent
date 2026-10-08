@@ -83,6 +83,15 @@ async def _raise(exc: BaseException) -> None:
     raise exc
 
 
+def _memory_v2_result_hook():
+    """UNIFY_MEMORY_V2=on with a request run: memory v2's hook for a finished tool
+    call (``hooks.tool_result``); None otherwise, and then the loop never enters
+    it, so with memory v2 off a call is processed exactly as without it."""
+    from unify.memory_v2.integration import hooks
+
+    return hooks.result_hook()
+
+
 def _record_failure(
     tracker: Any,
     *,
@@ -741,14 +750,18 @@ class ToolsData:
                             },
                         )
 
+        # UNIFY_MEMORY_V2=on with a request run: the hook noting a code cell's
+        # structured result, by call id, for the request's use record. None
+        # otherwise, and then it is never entered; it never fails the call.
+        _mv2_note = None
+        _returned = False
         try:
+            _mv2_note = _memory_v2_result_hook()
             raw = task.result()
-            # UNIFY_MEMORY_V2=on: a code cell's structured result, by call id, for the
-            # request's use record; inert otherwise, and never fails the call.
-            with suppress(Exception):
-                from unify.memory_v2.integration import hooks as _mv2
-
-                _mv2.tool_result(name, call_id, raw)
+            _returned = True
+            if _mv2_note is not None:
+                with suppress(Exception):
+                    _mv2_note(name, call_id, raw)
             # The loop adopts no handle a call returns, so one still running
             # would have no owner once the call has ended: it is stopped.
             await self._stop_returned_handles(raw, name)
@@ -760,6 +773,9 @@ class ToolsData:
             consecutive_failures.reset_failures()
         except Exception as exc:
             result = _failure_text(exc)
+            if _mv2_note is not None and not _returned:  # the call itself raised
+                with suppress(Exception):
+                    _mv2_note(name, call_id, None, raised=exc)
             _record_failure(
                 consecutive_failures,
                 exc=exc,

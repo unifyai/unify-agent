@@ -139,7 +139,8 @@ def _identity_hooks() -> types.ModuleType:
     hooks.begin_request = lambda request: None
     hooks.worker_audit = lambda: None
     hooks.worker_cell_done = lambda events: None
-    hooks.tool_result = lambda name, call_id, raw: None
+    hooks.result_hook = lambda: None
+    hooks.tool_result = lambda name, call_id, raw, *, raised=None: None
 
     def __getattr__(name: str):  # a new call site must be added here, deliberately
         raise AttributeError(
@@ -267,7 +268,29 @@ def _first_difference(a: list[str], b: list[str]) -> str:
 async def test_off_is_byte_identical_to_memory_v2_absent(core_world, monkeypatch):
     monkeypatch.setattr(time_context, "perf_counter", lambda: 0.0)
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "")
+    # the tool loop's memory-v2 hook: asked for at each finished call, None while off, never entered
+    from unify.common._async_tool import tools_data
+    from unify.memory_v2.integration import hooks as real_hooks
+
+    resolved: list = []
+    entered: list = []
+    ask = real_hooks.result_hook
+
+    def observed_result_hook():
+        hook = ask()
+        resolved.append(hook)
+        return hook
+
+    monkeypatch.setattr(real_hooks, "result_hook", observed_result_hook)
+    monkeypatch.setattr(
+        real_hooks,
+        "tool_result",
+        lambda *a, **k: entered.append(a),
+    )
     off = await _visit(core_world, monkeypatch)
+    assert resolved and all(hook is None for hook in resolved), resolved
+    assert entered == []  # the hook was never entered
+    assert tools_data._memory_v2_result_hook() is None
 
     # nothing of memory v2 was made under UNIFY_HOME
     paths = Paths.under(core_world["state"])

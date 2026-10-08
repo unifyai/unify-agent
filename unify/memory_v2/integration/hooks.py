@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -120,13 +121,32 @@ def worker_audit() -> dict | None:
         return None
 
 
-def tool_result(name: str, call_id: Any, raw: Any) -> None:
-    """Note a finished tool call's structured result for the request's use record (``memory_use``).
+def result_hook() -> Callable[..., None] | None:
+    """The tool loop's hook for a finished tool call (:func:`tool_result`), or None while the switch is
+    off or no request run is active: the loop then never enters it (``tools_data``), so with memory v2
+    off a tool call runs exactly as shipped. Never raises."""
+    try:
+        return tool_result if _run() is not None else None
+    except Exception as exc:  # noqa: BLE001 - the loop goes on without the hook
+        logger.warning("memory v2: no tool result hook (%s)", type(exc).__name__)
+        return None
 
-    Only a code cell's ``ExecutionResult`` (either projection) is kept, by *call_id*, as names: its
-    status, the memory items its traceback left, its session (``analysis.use.runtime_status``). The use
-    record reads this, never the rendered tool message, so a cell's printed output cannot pose as its
-    status. Inert while off or with no run; never raises; *name* is the tool's name, unused.
+
+def tool_result(
+    name: str,
+    call_id: Any,
+    raw: Any,
+    *,
+    raised: BaseException | None = None,
+) -> None:
+    """Note a finished code cell's structured result for the request's use record (``memory_use``).
+
+    Kept by *call_id*, as names only (``analysis.use``): a code cell's ``ExecutionResult`` (either
+    projection; its status, the memory items its traceback left, its session), the code tool's plain
+    ``dict`` result (``execute_code`` only: an empty cell, or its session executor raised), or, with
+    *raised*, that the ``execute_code`` call raised instead of returning (its outcome is then unknown).
+    The use record reads this, never the rendered tool message, so a cell's printed output cannot pose
+    as its status. Inert while off or with no run; never raises.
     """
     run = _run()
     if run is None:
@@ -134,7 +154,17 @@ def tool_result(name: str, call_id: Any, raw: Any) -> None:
     try:
         from unify.actor.execution.types import ExecutionResult
 
-        if isinstance(raw, ExecutionResult):
+        if raised is not None:
+            if name == "execute_code":
+                run.note_failure(call_id, raised)
+        elif isinstance(raw, ExecutionResult):
+            run.note_result(call_id, raw)
+        elif (
+            name == "execute_code"
+            and isinstance(raw, Mapping)
+            and "error" in raw
+            and "session_id" in raw
+        ):
             run.note_result(call_id, raw)
     except Exception as exc:  # noqa: BLE001 - recording never fails a tool call
         logger.warning(
