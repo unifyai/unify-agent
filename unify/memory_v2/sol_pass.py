@@ -42,6 +42,8 @@ from .evidence import EvidenceStore
 from .gate import Gate, ParentSnapshot
 from .gitio import Repo
 from .index import build_index
+from . import qa as _qa
+from .qa_static import cuts as _cuts
 from .redact import KEY_SHAPED
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .trigger import PassRequest
@@ -314,6 +316,8 @@ def export_for_sol(
     load: Callable[[str], Episode],
     eids: Iterable[str],
     dest: Path,
+    *,
+    response_blobs: tuple[BlobStore, Path] | None = None,
 ) -> None:
     """Write ``<dest>/<episode_id>.json`` per episode: the request, cells and actions, and nothing else.
 
@@ -324,6 +328,12 @@ def export_for_sol(
     documented ``Action(**...)`` rebuild never meets an unknown key). Anything else an episode carries
     (transcript, regime, costs, diffs, fingerprints, cell errors, or attributes a later schema adds) is
     dropped.
+
+    With *response_blobs* (``(store, blobs dir)``; the stage-5 fixture-size switch, :mod:`.qa`) each episode
+    also lists, per action, ``response_blobs[i]`` (the blob id of its response's canonical JSON when that is
+    at least :data:`.qa.RESPONSE_BLOB_BYTES`, put in the store and written to the blobs dir, else null) and
+    ``truncated[i]`` (where the recorder cut it: ``end``, ``middle`` or ``start``, else null), beside the
+    actions like ``memory_channels``.
     """
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -358,6 +368,22 @@ def export_for_sol(
                 env_channel(getattr(a, "kind", "tool"), a.channel) for a in ep.actions
             ],
         }
+        if response_blobs is not None:
+            store, bdir = response_blobs
+            bdir.mkdir(parents=True, exist_ok=True)
+            refs: list[str | None] = []
+            for a in ep.actions:
+                payload = json.dumps(a.response, sort_keys=True, default=str).encode()
+                sha = None
+                if a.response is not None and len(payload) >= _qa.RESPONSE_BLOB_BYTES:
+                    sha = store.put(payload)
+                    if not (bdir / sha).exists():
+                        (bdir / sha).write_bytes(payload)
+                refs.append(sha)
+            row["response_blobs"] = refs
+            row["truncated"] = [
+                next((c.where for c in _cuts(a)), None) for a in ep.actions
+            ]
         (dest / f"{eid}.json").write_text(
             json.dumps(row, sort_keys=True, default=str, indent=1) + "\n",
         )
@@ -789,9 +815,25 @@ class SolPass:
         self.mem, self.gate, self.ev = memory, gate, evidence
         self.load, self.turn, self.cfg = load, model_turn, config
 
+    @property
+    def _qa(self) -> "_qa.QAConfig":
+        """The gate's stage-5 configuration (off for a gate without one)."""
+        cfg = getattr(self.gate, "qa", None)
+        return cfg if isinstance(cfg, _qa.QAConfig) else _qa.QAConfig()
+
     def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
         inputs.mkdir()
-        export_for_sol(self.load, list(req.episodes), inputs / "episodes")
+        store = getattr(self.gate, "blobs", None)
+        export_for_sol(
+            self.load,
+            list(req.episodes),
+            inputs / "episodes",
+            response_blobs=(
+                (store, inputs / "blobs")
+                if self._qa.fixture_size and isinstance(store, BlobStore)
+                else None
+            ),
+        )
         export_blobs(
             self.load,
             list(req.episodes),
@@ -809,6 +851,13 @@ class SolPass:
             ),
         )
         _stage_memlab(inputs / "memlab")
+        if (
+            self._qa.on
+        ):  # stage 5: recorded inputs for tests, as the gate's runs have them
+            shutil.copyfile(
+                Path(__file__).parent / "inputs.py",
+                inputs / "memlab" / "inputs.py",
+            )
 
     def _cell(
         self,
@@ -990,7 +1039,7 @@ class SolPass:
             except ValueError as exc:  # over budget, or an unreadable notes file
                 index = f"(index not built: {exc})"
             messages: list[dict] = [
-                {"role": "system", "content": SOL_SYSTEM},
+                {"role": "system", "content": _qa.system(SOL_SYSTEM, self._qa)},
                 {
                     "role": "user",
                     "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}",
