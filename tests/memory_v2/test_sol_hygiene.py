@@ -228,7 +228,7 @@ def arc(tmp_path):
 
 # --- a merge inside the normal pass ------------------------------------------------------------------------
 
-SOL_READS_COVERS = "print(open('/inputs/library_covers.json').read())"
+SOL_READS_COVERS = "print(open('/inputs/library.json').read())"
 
 
 def test_a_scripted_pass_merges_the_duplicated_validation_and_the_gate_admits_it(arc):
@@ -262,7 +262,8 @@ def test_a_scripted_pass_merges_the_duplicated_validation_and_the_gate_admits_it
         f"- {PSF}: 2 recorded covers\n- {RSF}: 1 recorded cover\n- {SS}: 3 recorded covers"
         in user
     )
-    assert json.loads(script.outputs["c1"]) == {
+    library = json.loads(script.outputs["c1"])["functions"]
+    assert {row["item"]: row["cover_ids"] for row in library} == {
         item: [["a1", i] for i in RECORDED[item]] for item in sorted(RECORDED)
     }
     # an edit without a red test lands: the pass adds nothing, shrinks the module, and the old tests hold it

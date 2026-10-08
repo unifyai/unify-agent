@@ -16,15 +16,19 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 Sol sees only what :func:`export_for_sol` and :func:`export_blobs` write (ruling R10): request, cells,
-actions, and the file blobs worktree actions recorded; and, so it can tend the library (D26), the recorded
-covers of the library's functions on the pass's channels (:func:`library_covers`: item and action ids). Its
-first message adds the index (or the README under ``catalogue``), those functions' cover counts and, with
+actions, and the file blobs worktree actions recorded; and, from the harness, :func:`previous_gate` (the last
+refused gate lines per channel) and :func:`library_summary` (the library's functions on the pass's channels,
+with their recorded covers as item and action ids, so it can tend the library: D26). Its first message adds
+the index (or the README under ``catalogue``), those functions' cover counts and, with
 ``PassConfig.show_usage`` (``UNIFY_MEMORY_V2_SOL_USAGE=on``), a table of how requests used each function
-(:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it.
+(:func:`.usage.usage_table`, harness counts). Nothing about outcomes, signals or checkers reaches it. The
+pass's messages are kept (:meth:`SolPass.transcript`, redacted and bounded) for the driver to store on the
+episode repo.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextvars
 import copy
@@ -41,7 +45,7 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from pydantic import SecretStr
 
@@ -52,12 +56,13 @@ from .evidence import EvidenceStore
 from .gate import Gate, ParentSnapshot
 from .catalogue import readme_for_sol
 from .docstrings import describe_standard as describe_docstring_standard
-from .gitio import Repo
+from .gitio import GitError, Repo
 from .index import build_index
+from .memory_repo import items as memory_items
 from . import qa as _qa
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
-from .redact import redact_error
+from .redact import Redactor, redact_error
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .snapshot import item_bodies
 from .trigger import PassRequest
@@ -101,7 +106,10 @@ You consolidate an agent's recorded work into a shared library that a cheaper wo
 You work in a sandbox with no network. /memory is the library (a copy of its git checkout that you edit; the
 harness commits it when you finish); /inputs is read-only and holds request.json (this pass's request: kind,
 channel, episodes), episodes/<episode_id>.json (the recorded episodes for this pass), blobs/ (the file contents
-the episodes' worktree actions recorded, one file per blob id, with index.json naming any skipped) and `memlab`, a
+the episodes' worktree actions recorded, one file per blob id, with index.json naming any skipped), library.json
+(the library's functions on this pass's channels: signature, summary, covers so far and their ids, the pass that
+last changed each), previous_gate.json (per channel, the reasons the gate gave when it last refused a pass there or
+refused an item there) and `memlab`, a
 toolkit: memlab.analysis.cells (call_sites), memlab.analysis.provenance (def_use_edges, value_edges),
 memlab.analysis.slicing (backward_slice, generic_methods, prelude), memlab.analysis.antiunify (antiunify),
 memlab.analysis.recorded (actions_of_kind, worktree_files, load_blob), memlab.analysis.shapes (shape, signature,
@@ -127,6 +135,8 @@ subprocess.run([sys.executable, "-m", "pytest", "env/<channel>/tests", "-q", "-p
 "--rootdir", "/memory", "-c", "/dev/null", "--import-mode=importlib"],
 env={"PYTHONPATH": "/memory", "PYTHONDONTWRITEBYTECODE": "1"}).
 
+Fix what the last gate refused before adding more (previous_gate.json). Rank what to store by how many episodes it
+recurs in, and prefer extending an existing function (library.json) over adding one: fewer, more general functions.
 What to build, in priority order:
 1. env/<channel>/__init__.py: general, parametric Python functions for the environment work that recurs:
    - tool channels: auth once, typed call wrappers, pagination, known pitfalls, taking the environment object as
@@ -170,7 +180,7 @@ then write the code and see it pass. Revise existing
 modules in place; do not add near-duplicates. Prefer nothing over a weak function: the library must earn its place.
 
 Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each
-function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where
+function's recorded covers; /inputs/library.json holds them in cover_ids as [episode_id, action_index] lists) and, where
 it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside
 the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or
 unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused
@@ -353,6 +363,24 @@ _MANIFEST_MAX_DEPTH = 16
 _NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache", ".hypothesis"})
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
+
+# /inputs/previous_gate.json: per memory channel, the last refused pass's gate lines (at most this many,
+# each at most _CHECK_REASON_CHARS), looked for among this many most recent refused passes
+PREVIOUS_GATE_LINES = 10
+PREVIOUS_GATE_SCAN = 200
+# The harness-written lines of a refused pass's reasons: the gate's checks and the pass's own structural
+# refusals. Notes, model or pass errors and held-out notes are left out.
+_GATE_LINE = re.compile(r"^(?:G[1-6]: |no manifest\Z|over quota: |manifest: )")
+_NAMES_A_CHANNEL = re.compile(r"\benv[/.][a-z]")
+# per-item admission's prefixes on a gate line: an item refused in a pass that landed, or a reduction refused
+_ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
+# /inputs/library.json: an orientation index of the pass's channels, at most this many tokens
+LIBRARY_BUDGET_TOKENS = 2000
+_SUMMARY_CHARS = 200
+# Sol's transcript: JSON lines on this notes ref of the request's episode commit, bounded
+TRANSCRIPT_REF = "sol-transcripts"
+TRANSCRIPT_MAX_BYTES = 256 * 1024
+TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
 
 # Structured causes of a pass's end (PassOutcome.codes), set where each cause arises, never read back from
 # reason text. A passed pass is exactly ["ok"]; a refused pass lists the gate checks that refused (G1..G6).
@@ -546,6 +574,272 @@ def export_blobs(
         json.dumps({"exported": exported, "skipped": skipped}, sort_keys=True) + "\n",
     )
     return {"exported": exported, "skipped": skipped}
+
+
+def previous_gate(evidence: EvidenceStore, channels: Iterable[str]) -> dict:
+    """``/inputs/previous_gate.json``: per memory channel of the pass, the last refused pass's gate lines.
+
+    Only harness-written lines are kept (``G1``..``G6`` and the pass's own ``no manifest``, ``over quota``
+    and ``manifest:`` refusals), never notes, model errors or anything a checker wrote (the evidence store
+    holds none), each redacted and at most 200 characters. A line belongs to a channel when it names
+    ``env/<channel>`` (or ``env.<channel>``), or names no channel and the refused pass covered the channel
+    (a batched pass, or an incremental pass on it). Per channel: the most recent refused pass among the
+    last :data:`PREVIOUS_GATE_SCAN` with such a line, at most :data:`PREVIOUS_GATE_LINES` of its lines in
+    the gate's order, and ``more`` counting those left out. A channel with no such refusal is absent. A pass
+    that landed after refusing some of its items (per-item admission) counts too, with its ``item refused:``
+    lines read as the gate lines they carry (as are a refused reduction's ``reduced:`` lines).
+    """
+    rows = evidence.refused_passes(PREVIOUS_GATE_SCAN)
+    out: dict[str, dict] = {}
+    for ch in sorted({c for c in channels if isinstance(c, str)}):
+        names_ch = re.compile(rf"\benv[/.]{re.escape(ch)}(?![a-z0-9_])")
+        for pass_id, row_channel, reasons in rows:
+            lines = [
+                r
+                for r in (
+                    _ITEM_PREFIX.sub("", x, count=1)
+                    for x in reasons
+                    if isinstance(x, str)
+                )
+                if _GATE_LINE.match(r)
+                and (
+                    names_ch.search(r)
+                    or (row_channel in (None, ch) and not _NAMES_A_CHANNEL.search(r))
+                )
+            ]
+            if lines:
+                out[ch] = {
+                    "pass_id": pass_id,
+                    "reasons": [
+                        _redact(r)[:_CHECK_REASON_CHARS]
+                        for r in lines[:PREVIOUS_GATE_LINES]
+                    ],
+                    "more": max(0, len(lines) - PREVIOUS_GATE_LINES),
+                }
+                break
+    return {
+        "about": "per memory channel: the reasons the gate gave when it last refused a pass there",
+        "channels": out,
+    }
+
+
+def last_passes(
+    memory: Repo,
+    rev: str,
+    tree: Path,
+    channels: Iterable[str],
+) -> dict[str, str]:
+    """Per public function of the channels' modules, the pass that last changed one of its lines.
+
+    ``git blame`` of ``env/<channel>/__init__.py`` at *rev* (*tree* is that revision checked out) gives
+    each line's commit; the function's newest one (in *rev*'s history order) names its pass by its ``Pass``
+    trailer. A function last changed by a commit without one (a harness edit) is left out, as is a module
+    that git or the parser cannot read: this orients Sol, it checks nothing.
+    """
+    try:
+        order = {
+            sha: i
+            for i, sha in enumerate(memory.run("rev-list", "--reverse", rev).split())
+        }
+        log = memory.run(
+            "log",
+            "--format=%x1e%H%x1f%(trailers:key=Pass,valueonly)",
+            rev,
+        )
+    except GitError:
+        return {}
+    pass_of: dict[str, str] = {}
+    for rec in log.split("\x1e"):
+        sha, _, value = rec.partition("\x1f")
+        first = value.strip().splitlines()
+        if sha.strip() and first:
+            pass_of[sha.strip()] = first[0].strip()
+    out: dict[str, str] = {}
+    for ch in sorted({c for c in channels if isinstance(c, str)}):
+        path = f"env/{ch}/__init__.py"
+        if not _manifest.SKELETON_ID.match(f"env/{ch}") or not (tree / path).is_file():
+            continue
+        try:
+            shas = memory.blame_lines(rev, path)
+            module = ast.parse((tree / path).read_text())
+        except (GitError, SyntaxError, ValueError, OSError):
+            continue
+        for node in module.body:
+            if not isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ) or node.name.startswith("_"):
+                continue
+            start = min([d.lineno for d in node.decorator_list] + [node.lineno])
+            mine = shas[start - 1 : node.end_lineno or node.lineno]
+            newest = max(mine, key=lambda s: order.get(s, -1), default=None)
+            if newest in pass_of:
+                out[f"env/{ch}:{node.name}"] = pass_of[newest]
+    return out
+
+
+def library_summary(
+    tree: Path,
+    channels: Iterable[str],
+    covers: Mapping[str, int],
+    last_pass: Mapping[str, str],
+    *,
+    budget_tokens: int = LIBRARY_BUDGET_TOKENS,
+    cover_ids: Mapping[str, list] | None = None,
+) -> dict:
+    """``/inputs/library.json``: the listed functions of the pass's channels, for orientation.
+
+    One row per function (``item``, ``signature``, ``summary``: its docstring's first line, ``covers``:
+    recorded covers so far, ``last_pass``: the pass that last changed it, or None), in item order, while
+    the whole stays within *budget_tokens*; ``truncated`` then counts the rows left out (/memory holds
+    every function in full). Nothing here comes from outcomes or signals.
+
+    With *cover_ids* (:func:`library_covers`: every environment function of the channels with its recorded
+    covers as ``[episode_id, action_index]`` lists, for tending the library, D26) every such function has a
+    row with ``cover_ids`` too, and the budget bounds only the descriptive fields: past it, a row keeps
+    ``item``, ``covers``, ``cover_ids`` and ``last_pass``, and ``truncated`` counts the rows without a
+    signature and summary. A deleted function's covers must all pass to a kept one, so none is ever cut.
+    """
+    wanted = {c for c in channels if isinstance(c, str)}
+    fns = sorted(
+        (
+            it
+            for it in memory_items(tree).items
+            if it.kind == "env_function"
+            and it.listed
+            and it.path.split("/")[1] in wanted
+        ),
+        key=lambda it: it.item_id,
+    )
+    about = "the listed functions on this pass's memory channels; /memory holds them in full"
+    if cover_ids is not None:
+        about = (
+            "the functions on this pass's memory channels with their recorded covers (cover_ids: "
+            "[episode_id, action_index]); /memory holds them in full"
+        )
+    rows: list[dict] = []
+    used = len(json.dumps({"about": about, "functions": [], "truncated": len(fns)}))
+    described: set[str] = set()
+    for it in fns:
+        row = {
+            "item": it.item_id,
+            "signature": it.signature[:_SUMMARY_CHARS],
+            "summary": it.doc[:_SUMMARY_CHARS],
+            "covers": int(covers.get(it.item_id, 0)),
+            "last_pass": last_pass.get(it.item_id),
+        }
+        size = len(json.dumps(row)) + 2
+        # index.estimate_tokens: four characters a token
+        if (used + size + 3) // 4 > budget_tokens:
+            break
+        rows.append(row)
+        described.add(it.item_id)
+        used += size
+    if cover_ids is None:
+        return {"about": about, "functions": rows, "truncated": len(fns) - len(rows)}
+    for row in rows:
+        row["cover_ids"] = [list(c) for c in cover_ids.get(row["item"], [])]
+    for item in sorted({it.item_id for it in fns} | set(cover_ids)):
+        if item not in described:
+            rows.append(
+                {
+                    "item": item,
+                    "covers": int(covers.get(item, len(cover_ids.get(item, [])))),
+                    "cover_ids": [list(c) for c in cover_ids.get(item, [])],
+                    "last_pass": last_pass.get(item),
+                },
+            )
+    rows.sort(key=lambda r: r["item"])
+    return {
+        "about": about,
+        "functions": rows,
+        "truncated": sum(1 for r in rows if "signature" not in r),
+    }
+
+
+def _plain(o: object, chars: int) -> object:
+    """JSON data with every string cut to *chars* characters (keys included)."""
+    if isinstance(o, str):
+        return o[:chars]
+    if isinstance(o, dict):
+        return {str(k)[:chars]: _plain(v, chars) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_plain(v, chars) for v in o]
+    return o
+
+
+def _scrub(o: object) -> object:
+    """JSON data with :func:`.redact.redact_error` applied to every string and key: every secret registered
+    with :mod:`unify.process_secrets` (Sol's route token among them) as it stands now, credential structures
+    and key shapes."""
+    if isinstance(o, str):
+        return redact_error(o)
+    if isinstance(o, dict):
+        return {redact_error(str(k)): _scrub(v) for k, v in o.items()}
+    if isinstance(o, list):
+        return [_scrub(v) for v in o]
+    return o
+
+
+def transcript_lines(
+    messages: list,
+    pass_id: str,
+    redactor: Redactor | None = None,
+    *,
+    max_bytes: int = TRANSCRIPT_MAX_BYTES,
+    string_chars: int = TRANSCRIPT_STRING_CHARS,
+    brief: str | None = None,
+) -> list[str]:
+    """Sol's message list as JSON lines ``{"pass_id", "i", "message"}``: redacted first, then bounded.
+
+    Each message becomes plain JSON, then *redactor* (the run's environment credentials and registered
+    secrets by value, then key shapes; key shapes alone without one) and :func:`.redact.redact_error` (every
+    secret registered with :mod:`unify.process_secrets` when the lines are made, so a token registered after
+    the redactor was built, such as Sol's route token, is caught too; credential structures; key shapes)
+    rewrite every string and key before anything is cut, so a cut never leaves part of a secret unredacted.
+    Then every string is cut to *string_chars* characters and the lines stop before *max_bytes* in all,
+    ending with ``{"pass_id", "truncated": n}`` for the *n* messages left out. The brief (``SOL_SYSTEM``, or
+    *brief*: the pass's own under its switches) is named (``(SOL_SYSTEM)``), not copied; a message that is
+    not JSON data is named by its type.
+    """
+    red = redactor if redactor is not None else Redactor()
+    briefs = {SOL_SYSTEM} | ({brief} if brief is not None else set())
+    marker_room = 200
+    lines: list[str] = []
+    used = 0
+    for i, m in enumerate(messages):
+        if (
+            isinstance(m, dict)
+            and m.get("role") == "system"
+            and m.get("content") in briefs
+        ):
+            m = {"role": "system", "content": "(SOL_SYSTEM)"}
+        try:
+            msg = _plain(
+                _scrub(red.obj(json.loads(json.dumps(m, default=str)))),
+                string_chars,
+            )
+            line = json.dumps(
+                {"pass_id": pass_id, "i": i, "message": msg},
+                sort_keys=True,
+            )
+        except (RecursionError, ValueError, TypeError):
+            line = json.dumps(
+                {
+                    "pass_id": pass_id,
+                    "i": i,
+                    "message": f"(unserialisable {type(m).__name__})",
+                },
+            )
+        size = len(line.encode("utf-8")) + 1
+        if used + size > max_bytes - marker_room:
+            lines.append(
+                json.dumps({"pass_id": pass_id, "truncated": len(messages) - i}),
+            )
+            break
+        lines.append(line)
+        used += size
+    return lines
 
 
 def _stage_memlab(lab: Path) -> None:
@@ -935,9 +1229,54 @@ class SolPass:
         load: Callable[[str], Episode],
         model_turn: ModelTurn,
         config: PassConfig,
+        *,
+        redactor: Redactor | None = None,
     ) -> None:
         self.mem, self.gate, self.ev = memory, gate, evidence
         self.load, self.turn, self.cfg = load, model_turn, config
+        self.redactor = redactor  # for the transcript: the run's registered secrets
+        # the last run's message list, kept for :meth:`transcript`
+        self.messages: list[dict] = []
+
+    def transcript(self, pass_id: str) -> list[str]:
+        """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`)."""
+        first = self.messages[0] if self.messages else None
+        brief = (
+            first.get("content")
+            if isinstance(first, dict) and first.get("role") == "system"
+            else None
+        )
+        return transcript_lines(
+            self.messages,
+            pass_id,
+            self.redactor,
+            brief=brief if isinstance(brief, str) else None,
+        )
+
+    def _stage_context(
+        self,
+        inputs: Path,
+        tree: Path,
+        rev: str,
+        cover_ids: Mapping[str, list] | None = None,
+    ) -> None:
+        """``previous_gate.json`` and ``library.json`` in *inputs*, for the channels Sol is shown.
+
+        *tree* is the library at *rev* (the pass's parent) checked out; *cover_ids* (:func:`library_covers`)
+        adds each function's recorded cover ids to ``library.json`` (D26).
+        """
+        channels = _exported_channels(inputs / "episodes")
+        (inputs / "previous_gate.json").write_text(
+            json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
+        )
+        summary = library_summary(
+            tree,
+            channels,
+            self.ev.cover_counts(),
+            last_passes(self.mem, rev, tree, channels),
+            cover_ids=cover_ids,
+        )
+        (inputs / "library.json").write_text(json.dumps(summary) + "\n")
 
     def _switches(self) -> dict[str, bool]:
         """The v2.1 switches Sol's brief states: the gate's own (the driver builds the gate from them)."""
@@ -1150,6 +1489,7 @@ class SolPass:
         return reasons
 
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
+        self.messages = []
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
             return PassOutcome(
@@ -1232,9 +1572,10 @@ class SolPass:
             self._stage_inputs(req, inputs, wt)
             channels = _exported_channels(inputs / "episodes")
             _channel_dirs(box, channels)
-            # D26: Sol tends the library on its channels, so it sees each function's recorded covers (ids only)
+            # D26: Sol tends the library on its channels, so library.json gives each function's recorded
+            # covers (ids only) beside the last gate's refusals and the summary of its functions
             covers = library_covers(wt, channels, self.ev.covers())
-            (inputs / "library_covers.json").write_text(json.dumps(covers))
+            self._stage_context(inputs, wt, parent, covers)
             tended = "\n".join(
                 f"- {i}: {len(c)} recorded cover{'' if len(c) == 1 else 's'}"
                 for i, c in covers.items()
@@ -1264,6 +1605,7 @@ class SolPass:
                 },
                 {"role": "user", "content": first},
             ]
+            self.messages = messages
             finished = False
             while (
                 not finished

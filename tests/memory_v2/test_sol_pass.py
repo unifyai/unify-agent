@@ -12,12 +12,20 @@ from unify.memory_v2.episodes import Action, Cell, CostRow
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import RULE_EPISODES, Gate
 from unify.memory_v2.gitio import Repo
+from unify.memory_v2.index import estimate_tokens
+from unify.memory_v2.redact import Redactor
 from unify.memory_v2.sol_pass import (
+    LIBRARY_BUDGET_TOKENS,
+    PREVIOUS_GATE_LINES,
     SOL_SYSTEM,
     PassConfig,
     SolPass,
     _mirror,
     export_for_sol,
+    last_passes,
+    library_summary,
+    previous_gate,
+    transcript_lines,
 )
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_episodes import _ep
@@ -1310,3 +1318,370 @@ def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
         "env/venmo",
         "env/venmo/NOTES.md",
     ]
+
+
+# --- distillation inputs: the last gate's refusals, the library summary, the kept transcript ---------------
+
+
+def _recorded(ev, pass_id, channel, reasons, passed=0):
+    ev.record_pass(
+        {
+            "pass_id": pass_id,
+            "kind": "batched" if channel is None else "incremental",
+            "channel": channel,
+            "parent": "0" * 40,
+            "candidate": None,
+            "passed": passed,
+            "reasons": json.dumps(reasons),
+            "usd": "0",
+            "patch_blob": None,
+        },
+    )
+
+
+_NOT_GATE = [
+    "note: 2 unpriced calls",
+    "model call failed: RuntimeError: provider down",
+    "G2 held-out values: env/venmo:me 3 values accepted",
+    "pre-existing: env/venmo/tests/test_me.py still fails ['t'], as on the parent",
+    "pass error: CancelledError: ",
+]
+
+
+def test_previous_gate_keeps_the_last_refused_passes_gate_lines_per_channel(tmp_path):
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _recorded(ev, "old", None, ["G2: env/venmo:me covers no recorded action"])
+    _recorded(ev, "won", None, [], passed=1)
+    many = [
+        f"G3: env/venmo/tests/test_f{i}.py is not green on the candidate (exit 1) "
+        + "x" * 400
+        for i in range(15)
+    ]
+    budget = "G4: index needs 5000 tokens; budget 4000"
+    _recorded(ev, "new", None, [*_NOT_GATE, *many, budget])
+    _recorded(
+        ev,
+        "inc",
+        "slack",
+        ["G1: env/slack:post names no source episode", "no manifest"],
+    )
+    out = previous_gate(ev, ["venmo", "slack", "shell_uv"])["channels"]
+    venmo = out["venmo"]
+    assert (
+        venmo["pass_id"] == "new"
+    )  # the newest refusal, not the older one or the passed pass
+    assert venmo["reasons"] == [r[:200] for r in many[:PREVIOUS_GATE_LINES]]
+    assert venmo["more"] == 6  # the five other G3 lines and the G4 line
+    assert out["slack"] == {
+        "pass_id": "inc",
+        "reasons": ["G1: env/slack:post names no source episode", "no manifest"],
+        "more": 0,
+    }
+    # a line naming no channel belongs to every channel the refused (batched) pass covered
+    assert out["shell_uv"] == {"pass_id": "new", "reasons": [budget], "more": 0}
+    for row in out.values():
+        assert len(row["reasons"]) <= PREVIOUS_GATE_LINES
+        assert all(len(r) <= 200 and r not in _NOT_GATE for r in row["reasons"])
+
+
+def test_previous_gate_leaves_out_channels_with_no_refusal_of_theirs(tmp_path):
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _recorded(
+        ev,
+        "inc",
+        "slack",
+        ["no manifest", "G2: env/slack:post covers no recorded action"],
+    )
+    _recorded(
+        ev,
+        "venmo_x",
+        None,
+        ["G2: env/venmo_x:f covers no recorded action", *_NOT_GATE],
+    )
+    out = previous_gate(ev, ["venmo", "slack"])
+    assert set(out["channels"]) == {
+        "slack",
+    }  # env/venmo_x is not env/venmo; notes are not gate lines
+
+
+def test_previous_gate_reads_the_items_a_landed_pass_refused(tmp_path):
+    # per-item admission: a pass that landed after refusing an item still tells Sol what the gate refused
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _recorded(ev, "old", None, ["G2: env/venmo:pay covers no recorded action"])
+    ev.record_pass(
+        {
+            "pass_id": "reduced",
+            "kind": "batched",
+            "channel": None,
+            "parent": "0" * 40,
+            "candidate": "1" * 40,
+            "passed": 1,
+            "reasons": json.dumps(
+                ["item refused: G2: env/venmo:me covers (e1,9), not recorded"],
+            ),
+            "usd": "0",
+            "merged": "2" * 40,
+            "items_merged": json.dumps(["env/venmo:friends"]),
+            "items_refused": json.dumps({"env/venmo:me": ["G2"]}),
+        },
+    )
+    _recorded(ev, "clean", None, [], passed=1)  # landed whole: refused nothing
+    assert previous_gate(ev, ["venmo"])["channels"]["venmo"] == {
+        "pass_id": "reduced",
+        "reasons": ["G2: env/venmo:me covers (e1,9), not recorded"],
+        "more": 0,
+    }
+
+
+def _put(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _module(names, doc="Read a thing."):
+    return "".join(
+        f'def {n}(apis, x):\n    """{doc}\n\n    Effect: read\n    """\n    return x\n\n\n'
+        for n in names
+    )
+
+
+def test_library_summary_lists_the_channels_functions_with_covers_and_last_pass(
+    tmp_path,
+):
+    mem = Repo.init_bare(tmp_path / "m.git")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        _put(wt / "env/venmo/__init__.py", _module(["me", "pay"]))
+        _put(wt / "env/slack/__init__.py", _module(["post"]))
+        s1 = mem.commit_all(wt, "first", {"Pass": "p1", "Episode": ["e1"]})
+    mem.fast_forward("main", s1, expected_old=base)
+    with mem.temp_checkout() as wt:
+        src = (wt / "env/venmo/__init__.py").read_text()
+        _put(
+            wt / "env/venmo/__init__.py",
+            src.replace(
+                'def pay(apis, x):\n    """Read a thing.',
+                'def pay(apis, x):\n    """Pay a friend.',
+            ),
+        )
+        s2 = mem.commit_all(wt, "second", {"Pass": "p2"})
+    mem.fast_forward("main", s2, expected_old=s1)
+    with mem.temp_checkout() as wt:
+        last = last_passes(mem, mem.head(), wt, ["venmo"])
+        assert last == {"env/venmo:me": "p1", "env/venmo:pay": "p2"}
+        out = library_summary(
+            wt,
+            ["venmo"],
+            {"env/venmo:me": 3, "env/slack:post": 9},
+            last,
+        )
+    assert out["truncated"] == 0
+    assert out["functions"] == [
+        {
+            "item": "env/venmo:me",
+            "signature": "me(apis, x)",
+            "summary": "Read a thing.",
+            "covers": 3,
+            "last_pass": "p1",
+        },
+        {
+            "item": "env/venmo:pay",
+            "signature": "pay(apis, x)",
+            "summary": "Pay a friend.",
+            "covers": 0,
+            "last_pass": "p2",
+        },
+    ]
+
+
+def test_library_summary_stays_within_its_token_budget(tmp_path):
+    tree = tmp_path / "t"
+    _put(
+        tree / "env/venmo/__init__.py",
+        _module([f"fn_{i}" for i in range(300)], doc="D" * 150),
+    )
+    out = library_summary(tree, ["venmo"], {}, {})
+    assert estimate_tokens(json.dumps(out)) <= LIBRARY_BUDGET_TOKENS
+    assert 0 < len(out["functions"]) < 300
+    assert out["truncated"] == 300 - len(out["functions"])
+    assert all(len(f["summary"]) <= 200 for f in out["functions"])
+
+
+def test_library_summary_with_cover_ids_lists_every_functions_ids_past_the_budget(
+    tmp_path,
+):
+    # D26 and the distillation inputs share one file: each function's recorded cover ids are never cut
+    tree = tmp_path / "t"
+    _put(
+        tree / "env/venmo/__init__.py",
+        _module([f"fn_{i:03d}" for i in range(300)], doc="D" * 150),
+    )
+    ids = {f"env/venmo:fn_{i:03d}": [["e1", i]] for i in range(300)}
+    ids["env/venmo:gone"] = [
+        ["e2", 0],
+        ["e2", 1],
+    ]  # covered, but no longer a listed function
+    counts = {item: len(c) for item, c in ids.items()}
+    out = library_summary(tree, ["venmo"], counts, {}, cover_ids=ids)
+    rows = {r["item"]: r for r in out["functions"]}
+    assert set(rows) == set(ids)
+    assert [r["item"] for r in out["functions"]] == sorted(ids)
+    assert all(
+        rows[i]["cover_ids"] == ids[i] and rows[i]["covers"] == len(ids[i]) for i in ids
+    )
+    described = [r for r in out["functions"] if "signature" in r]
+    assert 0 < len(described) < 300
+    assert out["truncated"] == len(ids) - len(described)
+    # the descriptive part stays within the budget the summary alone has
+    alone = library_summary(tree, ["venmo"], counts, {})
+    assert [r["item"] for r in alone["functions"]] == [r["item"] for r in described]
+
+
+PLANTED = "tok-PLANTED-0123456789abcdef"  # pragma: allowlist secret
+
+
+def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
+    red = Redactor({"FAKE_TOKEN": PLANTED})
+    shaped = "sk-proj-" + "A" * 40
+    messages = [
+        {"role": "system", "content": SOL_SYSTEM},
+        {"role": "user", "content": f"Pass p9: {PLANTED} {shaped}"},
+        _call("c1", "execute_code", {"code": f"print({PLANTED!r})"}),
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "x" * 40 + PLANTED,
+        },  # straddles the cut
+        {"role": "tool", "tool_call_id": "c2", "content": {PLANTED: [PLANTED]}},
+        *(
+            {"role": "tool", "tool_call_id": f"b{i}", "content": "y" * 1000}
+            for i in range(200)
+        ),
+    ]
+    lines = transcript_lines(messages, "p9", red, max_bytes=8000, string_chars=50)
+    text = "\n".join(lines)
+    assert "tok-PLANT" not in text and shaped not in text  # not even a cut-off prefix
+    assert "<secret:FAKE_TOKEN>" in text and "<redacted:key-shaped>" in text
+    assert len(text.encode()) + 1 <= 8000
+    rows = [json.loads(ln) for ln in lines]
+    assert all(r["pass_id"] == "p9" for r in rows)
+    assert rows[0]["message"] == {"role": "system", "content": "(SOL_SYSTEM)"}
+    assert rows[-1]["truncated"] == len(messages) - len(rows) + 1 > 0
+    assert all(
+        len(v) <= 50
+        for r in rows[:-1]
+        for v in r["message"].values()
+        if isinstance(v, str)
+    )
+    # nothing to cut: every message kept
+    short = transcript_lines(messages[:3], "p9", red)
+    assert [json.loads(ln)["i"] for ln in short] == [0, 1, 2]
+    assert PLANTED not in "\n".join(short)
+
+
+def test_transcript_redacts_a_secret_registered_after_its_redactor_was_built(
+    monkeypatch,
+):
+    # Sol's route token is registered with unify.process_secrets and is never in os.environ; the transcript
+    # applies redact_error at the time it is made, so even a redactor built earlier cannot let it through
+    from unify import process_secrets
+
+    token = "solroute-" + "Q" * 30  # pragma: allowlist secret
+    red = Redactor({})
+    monkeypatch.setitem(process_secrets._SECRETS, token, "UNIFY_MEMORY_V2_SOL_TOKEN")
+    messages = [
+        {"role": "user", "content": f"route {token}"},
+        {"role": "tool", "tool_call_id": "c1", "content": {token: "Bearer " + token}},
+    ]
+    for redactor in (red, None):
+        text = "\n".join(
+            transcript_lines(messages, "p1", redactor, string_chars=12),
+        )
+        assert "solroute" not in text and "QQQQ" not in text
+        assert "<secret:UNIFY_MEMORY_V2_SOL_TOKEN>"[:12] in text
+
+
+_NO_OUTCOME_KEYS = {
+    "outcome",
+    "solved",
+    "passed",
+    "label",
+    "signal",
+    "signals",
+    "checker",
+    "checks",
+    "verdict",
+    "reward",
+    "score",
+    "regime",
+    "task",
+    "task_id",
+}
+
+
+def _keys(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _keys(v)
+
+
+def test_the_pass_stages_the_new_inputs_and_keeps_its_transcript(tmp_path, monkeypatch):
+    staged = tmp_path / "staged"
+    stage = SolPass._stage_context
+
+    def keep(self, inputs, tree, rev, cover_ids=None):
+        stage(self, inputs, tree, rev, cover_ids)
+        shutil.copytree(inputs, staged, ignore=shutil.ignore_patterns("memlab"))
+
+    monkeypatch.setattr(SolPass, "_stage_context", keep)
+    model = Turns([])
+    mem, ev, sol = _store_backed(tmp_path, model)
+    _recorded(
+        ev,
+        "earlier",
+        None,
+        ["G3: env/venmo/tests/test_me.py has no red run", "note: x"],
+    )
+    out = asyncio.run(sol.run(PassRequest("batched", None, ["e1"], False), "pt"))
+    assert not out.passed
+    gate = json.loads((staged / "previous_gate.json").read_text())
+    assert gate["channels"] == {
+        "venmo": {
+            "pass_id": "earlier",
+            "reasons": ["G3: env/venmo/tests/test_me.py has no red run"],
+            "more": 0,
+        },
+    }
+    library = json.loads((staged / "library.json").read_text())
+    assert library["functions"] == [] and library["truncated"] == 0
+    for name in ("previous_gate.json", "library.json"):
+        text = (staged / name).read_text()
+        assert MARK not in text and "e1.checker" not in text
+        assert not set(_keys(json.loads(text))) & _NO_OUTCOME_KEYS, name
+    rows = [json.loads(ln) for ln in sol.transcript("pt")]
+    assert [r["message"]["role"] for r in rows] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert rows[0]["message"]["content"] == "(SOL_SYSTEM)"
+    assert rows[2]["message"]["tool_calls"][0]["function"]["name"] == "finish"
+
+
+def test_sol_system_points_at_the_last_gate_and_ranks_by_recurrence():
+    flat = " ".join(SOL_SYSTEM.split())
+    assert (
+        "Fix what the last gate refused before adding more (previous_gate.json)."
+        in flat
+    )
+    assert "Rank what to store by how many episodes it recurs in" in flat
+    assert (
+        "prefer extending an existing function (library.json) over adding one" in flat
+    )
+    assert "Never store: results of calls with effects, credentials" in flat
+    assert "anything about whether a request was solved" in flat

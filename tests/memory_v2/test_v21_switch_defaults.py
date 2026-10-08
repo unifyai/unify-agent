@@ -153,7 +153,7 @@ def test_each_switch_takes_only_its_values(monkeypatch, name, parse, values):
 # Everything else at the switch defaults is 9deefbfd1's, byte for byte.
 D26_PARAGRAPH = (
     "Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each\n"
-    "function's recorded covers; /inputs/library_covers.json holds them as [episode_id, action_index] lists) and, where\n"
+    "function's recorded covers; /inputs/library.json holds them in cover_ids as [episode_id, action_index] lists) and, where\n"
     "it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside\n"
     "the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or\n"
     "unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused\n"
@@ -174,8 +174,23 @@ D26_FIRST_MESSAGE_TAIL = (
 )
 TELEMETRY_TABLES = {"item_use"}
 # Merged into memory-v2-int2. Per-item admission and structural Effect (memory-v2-item-admission) extend the
-# Effect: sentence and say which rules refuse an item alone. Each entry is (old, new), applied once each.
+# Effect: sentence and say which rules refuse an item alone; the distillation inputs (memory-v2-distill-inputs)
+# name library.json and previous_gate.json in /inputs and add two sentences before what to build (D26's covers
+# now live in library.json). Each entry is (old, new), applied once each.
 REPLACES = [
+    (
+        "with index.json naming any skipped) and `memlab`, a\n",
+        "with index.json naming any skipped), library.json\n"
+        "(the library's functions on this pass's channels: signature, summary, covers so far and their ids, the pass that\n"
+        "last changed each), previous_gate.json (per channel, the reasons the gate gave when it last refused a pass there or\n"
+        "refused an item there) and `memlab`, a\n",
+    ),
+    (
+        "\n\nWhat to build, in priority order:\n",
+        "\n\nFix what the last gate refused before adding more (previous_gate.json). Rank what to store by how many episodes it\n"
+        "recurs in, and prefer extending an existing function (library.json) over adding one: fewer, more general functions.\n"
+        "What to build, in priority order:\n",
+    ),
     (
         "   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as\n",
         '   `Effect: unknown` (a function taking the environment that covers a call recorded with effect "write" must say\n'

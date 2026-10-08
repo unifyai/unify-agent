@@ -143,6 +143,21 @@ class Repo:
             raise GitError("a note line must be a single line")
         self.run("notes", f"--ref={ref}", "append", "-m", text, sha)
 
+    def append_note_lines(self, sha: str, lines: Sequence[str], ref: str) -> None:
+        """Append *lines* (each a single line) to *sha*'s note on *ref* in one call; the text goes by stdin."""
+        if any("\n" in ln or "\r" in ln for ln in lines):
+            raise GitError("a note line must be a single line")
+        if lines:
+            self.run(
+                "notes",
+                f"--ref={ref}",
+                "append",
+                "-F",
+                "-",
+                sha,
+                input="\n".join(lines) + "\n",
+            )
+
     def notes(self, sha: str, ref: str = "signals") -> list[str]:
         try:
             out = self.run("notes", f"--ref={ref}", "show", sha)

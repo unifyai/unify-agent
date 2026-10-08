@@ -45,6 +45,11 @@ event, ``{"type": "consolidation", "phase": "refused", "episode_id", "consolidat
 in ``errors.jsonl``): a run with any such event consolidated nothing because of its route, which is not a
 null result of consolidation.
 
+Sol's transcript (its messages, tool calls and tool results, redacted by the environment's credentials
+and every registered secret, Sol's route token among them, then by :func:`..redact.redact_error`, then
+bounded: :func:`..sol_pass.transcript_lines`) goes as note lines on ``refs/notes/sol-transcripts`` of the
+same episode commit, one JSON line per message with its ``pass_id``.
+
 Money is a plain decimal string, never an exponent; a measurement that could not be taken is ``None``.
 Sol's per-turn cost rows go as note lines on ``refs/notes/costs`` of the request's episode commit: a pass
 can only start after that commit (the trigger and the export read it), and one episode is one append-only
@@ -79,7 +84,7 @@ from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
 from ..qa import QAConfig
-from ..redact import redact_error
+from ..redact import Redactor, redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
 from ..sol_pass import (
@@ -89,6 +94,7 @@ from ..sol_pass import (
     PassOutcome,
     SolPass,
     SolRoute,
+    TRANSCRIPT_REF,
     otel_on,
     unillm_turn,
 )
@@ -507,6 +513,14 @@ def _note_costs(
             _error(stores, f"cost note: {type(exc).__name__}: {exc}")
 
 
+def _note_transcript(stores: Stores, sha: str, pass_id: str, sol: SolPass) -> None:
+    """Sol's redacted, bounded transcript as note lines on :data:`..sol_pass.TRANSCRIPT_REF` of *sha*."""
+    try:
+        stores.episodes.append_note_lines(sha, sol.transcript(pass_id), TRANSCRIPT_REF)
+    except Exception as exc:  # noqa: BLE001 - a record, never a failure of the pass
+        _error(stores, f"{pass_id}: transcript: {type(exc).__name__}")
+
+
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     """(listed items, index tokens) of memory ``main`` now; None for what could not be measured."""
     tmp = Path(tempfile.mkdtemp(prefix="memv2-after-"))
@@ -703,6 +717,7 @@ async def run_due_passes(
                 cfg.model,
             ),
             config,
+            redactor=Redactor.from_environ(os.environ),
         )
         try:
             _reserve(stores, pass_id, cap, reserve)
@@ -729,6 +744,7 @@ async def run_due_passes(
             raise
         finally:
             _note_costs(stores, sha, eid, pass_id, rows, effort)
+            _note_transcript(stores, sha, pass_id, sol)
             try:
                 _settle(stores, pass_id, *_spend(outcome, rows)[:2])
             except OSError as exc:  # unsettled: the whole cap stays committed
