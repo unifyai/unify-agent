@@ -142,8 +142,8 @@ def _fixture_paths() -> list[str]:
     found: set[str] = set()
     for name in FIXTURE_MODULES:
         module = importlib.import_module(name)
-        for value in vars(module).values():
-            if isinstance(value, (dict, list, tuple)):
+        for key, value in vars(module).items():
+            if not key.startswith("__") and isinstance(value, (dict, list, tuple)):
                 _strings(value, found)
     return sorted(p for p in found if p == m.TESTKIT or _LIBRARY_PATH.match(p))
 
