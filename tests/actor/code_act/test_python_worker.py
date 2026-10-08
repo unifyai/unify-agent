@@ -280,6 +280,94 @@ async def test_a_cells_response_model_crosses_as_its_schema(worker_world, answer
         await ex.close()
 
 
+OPUS = "anthropic/claude-opus-4.6@openrouter"
+LUNA = "openai/gpt-6-luna@openrouter"
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+async def test_a_cell_can_call_only_the_sessions_model(worker_world, monkeypatch):
+    """UNIFY_CELL_LLM_MODELS at its default: a cell's query_llm and unillm,
+    and a stored function's, are refused another model before any client is
+    built in the harness; query_llm without model= uses the session's."""
+    import unillm
+
+    import unify.common.reasoning as reasoning
+    from unify.function_manager.function_manager import _LineageTrackedFunction
+    from unify.function_manager.source_labels import compile_function_source
+    from unify.session_details import SESSION_DETAILS
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MODEL", LUNA)
+    monkeypatch.setattr(SETTINGS, "UNIFY_CELL_LLM_MODELS", "")
+    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
+    built: list = []
+
+    class FakeClient:
+        async def generate(self, **_kwargs):
+            return "configured"
+
+    def fake_new_llm_client(model=None, **_kwargs):
+        built.append(model)
+        return FakeClient()
+
+    def no_client(*_args, **_kwargs):
+        raise AssertionError("a unillm client was built in the harness")
+
+    monkeypatch.setattr(reasoning, "new_llm_client", fake_new_llm_client)
+    monkeypatch.setattr(unillm, "AsyncUnify", no_client)
+    monkeypatch.setattr(unillm, "Unify", no_client)
+    source = (
+        "async def ask_other(q):\n" f"    return await query_llm(q, model={OPUS!r})\n"
+    )
+    ns: dict = {}
+    exec(compile_function_source("ask_other", source), ns)
+    ex, _ = executor_with_fakes()
+    ex.register_fm_globals(
+        {"ask_other": _LineageTrackedFunction(ns["ask_other"], "ask_other")},
+    )
+    try:
+        _, res = await run(
+            ex,
+            "seen = []\n"
+            "try:\n"
+            f"    await query_llm('x', model={OPUS!r})\n"
+            "except Exception as e:\n"
+            "    seen.append(f'{type(e).__name__}: {e}')\n"
+            "try:\n"
+            f"    unillm.AsyncUnify({OPUS!r})\n"
+            "except Exception as e:\n"
+            "    seen.append(f'{type(e).__name__}: {e}')\n"
+            "try:\n"
+            "    await ask_other('x')\n"
+            "except Exception as e:\n"
+            "    seen.append(f'{type(e).__name__}: {e}')\n"
+            "try:\n"
+            "    unillm.SETTINGS\n"
+            "except Exception as e:\n"
+            "    seen.append(type(e).__name__)\n"
+            "seen.append(await query_llm('x'))\n"
+            "seen",
+        )
+        assert res["error"] is None, res["error"]
+        refused_query, refused_unillm, refused_stored, refused_attr, answer = res[
+            "result"
+        ]
+        message = (
+            f"can only use the session's model {LUNA} here (UNIFY_CELL_LLM_MODELS)"
+        )
+        assert refused_query == (
+            f"CellModelRefused: query_llm {message}; omit model= to use it"
+        )
+        assert refused_unillm.startswith("CellModelRefused: unillm.AsyncUnify() ")
+        assert message in refused_unillm
+        assert refused_stored == refused_query
+        assert refused_attr == "CellAttributeRefused"
+        # Only the call without model= built a client: the configured model.
+        assert answer == "configured" and built == [None]
+    finally:
+        await ex.close()
+
+
 @needs_bwrap
 @pytest.mark.asyncio
 async def test_a_cell_cannot_read_secrets_write_the_store_or_reach_the_network(
