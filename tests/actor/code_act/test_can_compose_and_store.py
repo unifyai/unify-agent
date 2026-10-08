@@ -87,7 +87,7 @@ async def test_can_store_true_defers_storage_to_review_loop():
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(300)
-async def test_can_store_true_merges_redundant_functions():
+async def test_can_store_true_merges_redundant_functions(monkeypatch):
     """
     The storage review loop should recognise overlapping functions in the
     store and merge them: add a unified version and delete the old ones.
@@ -98,9 +98,28 @@ async def test_can_store_true_merges_redundant_functions():
     The storage review should detect the overlap, store the merged
     version, and delete the now-redundant entries.
 
+    The review gate is answered "review" here, so the review it opens runs
+    as shipped. The gate itself would skip it when the session already
+    stored ``greet`` (a known limitation of the frozen review; FREEZE-TODO),
+    and this test is of the review's merge, not of the gate.
+
     result() resolves after the task phase; storage runs in the background.
     The test waits for done() to confirm the storage loop has completed.
     """
+    from unify.actor import review_gate
+
+    gate_asked: list[bool] = []
+
+    async def _review(**_kwargs):
+        gate_asked.append(True)
+        return review_gate.GateDecision(
+            review=True,
+            reason="test: the merge review runs",
+            decided=True,
+        )
+
+    monkeypatch.setattr(review_gate, "decide", _review)
+
     fm = FunctionManager(include_primitives=False)
 
     # Seed the store with two narrow, overlapping greeting functions.
@@ -138,6 +157,9 @@ async def test_can_store_true_merges_redundant_functions():
             if asyncio.get_event_loop().time() > deadline:
                 raise TimeoutError("Storage loop did not complete in time")
             await asyncio.sleep(0.5)
+
+        # The library held entries, so the gate was asked (and said review).
+        assert gate_asked == [True]
 
         # The merged function should have been stored.
         final = fm.filter_functions()
