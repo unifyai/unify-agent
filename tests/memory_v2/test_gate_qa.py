@@ -1293,6 +1293,32 @@ def test_a_library_whose_tests_use_the_kit_is_checked_the_same_under_every_switc
     )
 
 
+# the same test reaching the kit through pytest.importorskip, as a defensive test might
+CLOCK_SKIP_TEST = CLOCK_REPLAY_TEST.replace(
+    "from memlab.episodes import Action\nfrom memlab.replay import RecordedEnv\n",
+    'import pytest\n\nAction = pytest.importorskip("memlab.episodes").Action\n'
+    'RecordedEnv = pytest.importorskip("memlab.replay").RecordedEnv\n',
+)
+
+
+def test_a_test_reaching_the_kit_by_a_dynamic_import_gets_it_with_every_switch_off(
+    tmp_path,
+):
+    """pytest.importorskip("memlab.replay") is a kit import: every switch off, the kit is mounted exactly
+    as for a static import, so the test never skips in one setting and runs in another (N1).
+    """
+    assert CLOCK_SKIP_TEST != CLOCK_REPLAY_TEST
+    runs = []
+    for name, test in (("static", CLOCK_REPLAY_TEST), ("dynamic", CLOCK_SKIP_TEST)):
+        files, man = _cl(test)
+        runner = FakePytest(module="env/phone/__init__.py")
+        res = _check(tmp_path / name, PHONE, files, man, pytest_runner=runner)
+        assert res.passed, res.reasons
+        runs.append(list(runner.calls))
+    assert runs[1] and all(c[1] == ["/inputs", "/memory"] for c in runs[1])
+    assert [c[5] for c in runs[0]] == [c[5] for c in runs[1]]
+
+
 def _kit_preview(tmp_path, test, module=CLOCK_MOD, qa=None):
     files, man = _cl(test, module=module)
     reasons = _preview(
@@ -1331,6 +1357,27 @@ def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path)
         f"G3: [qa:kit] {CL_TEST} line 2 imports memlab.replay.Replayer, which the test kit "
         f"(version {testkit.KIT_VERSION}) does not provide"
     )
+    unnamed = CLOCK_FAKE_TEST + (
+        '\nimport importlib\n\nNAME = "mem" + "lab"\nMOD = importlib.import_module(NAME)\n'
+    )
+    line = unnamed.count("\n")
+    (reason,) = _kit_preview(
+        tmp_path / "c",
+        unnamed,
+    )  # every switch off: a run-time name may be the kit
+    assert reason == (
+        f"G3: [qa:kit] {CL_TEST} line {line} imports a module whose name is not a constant string "
+        "(import_module, importorskip or __import__); name it with a constant, so the test kit is "
+        "staged wherever the library's tests run"
+    )
+    long = (
+        CLOCK_REPLAY_TEST
+        + f'\nimport importlib\n\nimportlib.import_module("memlab.{"x" * 200}")\n'
+    )
+    (reason,) = _kit_preview(tmp_path / "d", long)
+    assert (
+        f"imports memlab.{'x' * 70}..., which the test kit" in reason
+    )  # capped at 80 characters
     by_path = CLOCK_REPLAY_TEST + '\nSCREENS = "/inputs/blobs"\n'
     line = by_path.count("\n")
     (reason,) = _kit_preview(tmp_path / "b", by_path)

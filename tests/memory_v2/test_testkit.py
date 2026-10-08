@@ -95,6 +95,37 @@ def test_which_tests_use_the_kit():
     assert not testkit.is_test_side("env/phone/__init__.py")
 
 
+def test_dynamic_imports_of_the_kit_are_kit_imports():
+    """importlib.import_module, pytest.importorskip and __import__ with a constant name are imports; one
+    whose name is not a constant may be the kit, so it counts and is found by line."""
+    for src in (
+        b'import importlib\nm = importlib.import_module("memlab.inputs")\n',
+        b'import pytest\nreplay = pytest.importorskip("memlab.replay")\n',
+        b'from pytest import importorskip\nreplay = importorskip(modname="memlab.replay")\n',
+        b'lab = __import__("memlab")\n',
+        b'import builtins\npin = builtins.__import__("_memv2_pin")\n',
+    ):
+        assert testkit.imports_kit(src), src
+        assert testkit.dynamic_unnamed(src) == []
+        assert testkit.unresolved(src) == []
+    assert not testkit.imports_kit(
+        b'import importlib\nimportlib.import_module("json")\n',
+    )
+    assert not testkit.imports_kit(
+        b'import importlib\nimportlib.import_module(".memlab", "x")\n',
+    )
+    unnamed = (
+        b'import importlib\n\nNAME = "mem" + "lab"\nm = importlib.import_module(NAME)\n'
+    )
+    assert testkit.imports_kit(unnamed) and testkit.dynamic_unnamed(unnamed) == [4]
+    assert testkit.uses_kit([unnamed], {"ab" * 32}.__contains__, [])
+    assert testkit.unresolved(
+        b'import pytest\npytest.importorskip("memlab.nope")\n',
+    ) == [
+        (2, "memlab.nope"),
+    ]
+
+
 def test_library_code_using_the_kit_is_found_by_line():
     src = b"""import importlib
 

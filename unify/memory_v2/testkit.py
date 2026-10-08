@@ -173,14 +173,42 @@ def _parse(source: bytes) -> ast.Module | None:
         return None
 
 
+# Calls that import a module named by their first argument (``importlib.import_module``,
+# ``pytest.importorskip``, ``__import__``), matched by the called name whatever it is reached through.
+DYNAMIC_IMPORTS = ("import_module", "importorskip", "__import__")
+
+
+def _dynamic(tree: ast.Module) -> list[tuple[int, str | None]]:
+    """``(line, module)`` of each dynamic import call; ``module`` None when not a constant string."""
+    out: list[tuple[int, str | None]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        called = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+        if called not in DYNAMIC_IMPORTS:
+            continue
+        arg = node.args[0] if node.args else None
+        if arg is None:
+            arg = next(
+                (k.value for k in node.keywords if k.arg in ("name", "modname")),
+                None,
+            )
+        ok = isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+        out.append((node.lineno, arg.value if ok else None))
+    return out
+
+
 def _imports(tree: ast.Module) -> list[tuple[int, str, list[str]]]:
-    """``(line, module, names)`` of each absolute import (``names`` empty for ``import m``)."""
+    """``(line, module, names)`` of each absolute import (``names`` empty for ``import m``), dynamic imports
+    with a constant absolute name included."""
     out = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             out += [(node.lineno, a.name, []) for a in node.names]
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             out.append((node.lineno, node.module, [a.name for a in node.names]))
+    out += [(line, m, []) for line, m in _dynamic(tree) if m and not m.startswith(".")]
     return out
 
 
@@ -190,9 +218,25 @@ def _kit_name(dotted: str) -> bool:
 
 
 def imports_kit(source: bytes) -> bool:
-    """Whether a source file imports ``memlab`` or the pin plugin."""
+    """Whether a source file imports ``memlab`` or the pin plugin (statically or by a dynamic import with a
+    constant name), or may (a dynamic import whose name is not a constant, which :func:`dynamic_unnamed`
+    finds and the gate refuses in a test)."""
     tree = _parse(source)
-    return tree is not None and any(_kit_name(m) for _, m, _ in _imports(tree))
+    return tree is not None and (
+        any(_kit_name(m) for _, m, _ in _imports(tree))
+        or any(m is None for _, m in _dynamic(tree))
+    )
+
+
+def dynamic_unnamed(source: bytes) -> list[int]:
+    """Lines of dynamic imports whose module name is not a constant string (the kit cannot be staged for
+    a name known only at run time)."""
+    tree = _parse(source)
+    return (
+        []
+        if tree is None
+        else sorted({line for line, m in _dynamic(tree) if m is None})
+    )
 
 
 def uses_kit(
@@ -200,7 +244,8 @@ def uses_kit(
     has_blob: Callable[[str], bool],
     refs: list[str],
 ) -> bool:
-    """Whether test-side *sources* use the kit: a ``memlab`` or pin import, or a named recorded blob."""
+    """Whether test-side *sources* use the kit: a ``memlab`` or pin import (dynamic ones included; one
+    with a run-time name counts), or a named recorded blob."""
     return any(imports_kit(s) for s in sources) or any(has_blob(r) for r in refs)
 
 

@@ -863,8 +863,9 @@ class QAChecks:
 
     # -- the kit stays a test-side tool ---------------------------------------------------------------------
     def kit(self) -> None:
-        """Refuse new or changed library code that uses the kit, test imports the kit does not provide, and
-        tests that name the ``/inputs`` path (each would work in one place a library's tests run, not all).
+        """Refuse new or changed library code that uses the kit, test imports the kit does not provide, test
+        imports of a module named only at run time, and tests that name the ``/inputs`` path (each would work
+        in one place a library's tests run, not all).
 
         Run wherever the kit is mounted (a switch on, or the library's tests use it); static, no test runs.
         """
@@ -882,10 +883,18 @@ class QAChecks:
                     )
                 continue
             for line, what in testkit.unresolved(source):
+                what = what if len(what) <= 80 else what[:77] + "..."
                 self._fail(
                     "kit",
                     f"{p} line {line} imports {what}, which the test kit (version "
                     f"{testkit.KIT_VERSION}) does not provide",
+                )
+            for line in testkit.dynamic_unnamed(source):
+                self._fail(
+                    "kit",
+                    f"{p} line {line} imports a module whose name is not a constant string "
+                    "(import_module, importorskip or __import__); name it with a constant, so the test "
+                    "kit is staged wherever the library's tests run",
                 )
             for line in testkit.names_inputs_path(source):
                 self._fail(
