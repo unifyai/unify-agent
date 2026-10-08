@@ -243,6 +243,44 @@ def test_run_pytest_ids_for_classes_subdirs_and_skips(tmp_path):
     assert out.valid and out.returncode == 1
 
 
+def test_run_pytest_counts_a_skip_for_a_missing_import_as_a_failure(tmp_path):
+    """A module skipped at collection (importorskip at module level) fails as ``test module skipped``, an
+    importorskip in a test fails under its id, and any other skip stays a skip; no skip message is kept.
+    """
+    mod = (
+        'import pytest\n\npytest.importorskip("no_such_module_memv2")\n\n'
+        "def test_never():\n    assert 1\n"
+    )
+    kw = dict(python=PYTHON, rw={}, cwd="/box", timeout_s=120)
+    one = _pytest_dir(tmp_path / "one", {"test_mod.py": mod})
+    alone = run_pytest("/box/t", ro={one: "/box/t"}, **kw)
+    assert (
+        alone.returncode in (0, 5) and alone.valid
+    ), alone.output  # 5: no test collected
+    assert alone.failed == {"test_mod.py::test module skipped"} and not alone.passed
+    assert not alone.skipped
+    root = _pytest_dir(
+        tmp_path / "two",
+        {
+            "test_mod.py": mod,
+            "test_fn.py": (
+                "import pytest\n\n"
+                'def test_missing():\n    pytest.importorskip("no_such_module_memv2")\n\n'
+                "@pytest.mark.skip\ndef test_plain():\n    assert 0\n\n"
+                "def test_ok():\n    assert 1\n"
+            ),
+        },
+    )
+    both = run_pytest("/box/t", ro={root: "/box/t"}, **kw)
+    assert both.failed == {
+        "test_mod.py::test module skipped",
+        "test_fn.py::test_missing",
+    }, both.output
+    assert both.passed == {"test_fn.py::test_ok"}
+    assert both.skipped == {"test_fn.py::test_plain"}
+    assert both.valid and both.returncode == 0
+
+
 def test_run_pytest_forged_junit_is_invalid(tmp_path):
     forged = (
         '<testsuites><testsuite><testcase classname="t.test_y" name="test_bad"/>'

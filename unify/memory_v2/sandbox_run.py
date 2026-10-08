@@ -492,8 +492,9 @@ class PytestOutcome:
 
     Untrusted when model code runs in the tested process: that code shares pytest's process and can
     rewrite the junit report or the exit status. ``valid`` is False when the report is missing, a link or
-    another non-regular file, too large, malformed, or contradicts pytest's exit status (0 needs no failure, 1 at least one, 5 no test; any
-    other status is invalid); a gate must then treat the run as failed.
+    another non-regular file, too large, malformed, or contradicts pytest's exit status (0 needs no failure, 1
+    at least one, 5 no test or only modules skipped at collection; any other status is invalid); a gate must
+    then treat the run as failed. A skip for a missing import is a failure (:data:`MODULE_SKIPPED`).
     """
 
     passed: set[str] = field(default_factory=set)
@@ -565,6 +566,15 @@ def _read_junit(junit_dir: Path) -> list[ET.Element] | None:
         os.close(fd)
 
 
+# A skip for a missing import counts as a failure in the gate's runs: a test whose import is missing in one
+# place it runs must not pass there silently. pytest's junit writes "collection skipped" for a module skipped
+# at collection (``pytest.importorskip`` or ``pytest.skip(allow_module_level=True)`` at module level), reported
+# as ``<file>::test module skipped``, and "could not import ..." for ``pytest.importorskip`` in a test.
+_MODULE_SKIP = "collection skipped"
+_IMPORT_SKIP = "could not import "
+MODULE_SKIPPED = "test module skipped"
+
+
 def run_pytest(
     tests_dir_in_box: str,
     *,
@@ -615,13 +625,26 @@ def run_pytest(
         if cases is None:
             out.valid = False
             return out
+        missing: set[str] = (
+            set()
+        )  # skipped for a missing import: failures, as an ImportError would be
+        module_skips = 0
         for case in cases:
             name = _case_id(case, cwd, tests_dir_in_box)
             tags = {child.tag for child in case}
             if tags & {"failure", "error"}:
                 out.failed.add(name)
             elif "skipped" in tags:
-                out.skipped.add(name)
+                why = (
+                    case.find("skipped").get("message") or ""
+                )  # pytest's own text; never reported
+                if why == _MODULE_SKIP:
+                    module_skips += 1
+                    missing.add(name.split("::", 1)[0] + "::" + MODULE_SKIPPED)
+                elif why.startswith(_IMPORT_SKIP):
+                    missing.add(name)
+                else:
+                    out.skipped.add(name)
             else:
                 out.passed.add(name)
         out.passed -= out.failed
@@ -630,6 +653,8 @@ def run_pytest(
         out.valid = (
             (rc == 0 and not out.failed and bool(cases))
             or (rc == 1 and bool(out.failed))
-            or (rc == 5 and not cases)
+            # pytest exits 5 when every module was skipped at collection (no test collected)
+            or (rc == 5 and len(cases) == module_skips)
         )
+        out.failed |= missing
         return out
