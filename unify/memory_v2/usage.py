@@ -26,7 +26,10 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
 
     Exposure is what the request's prompt showed, not what its pin held: ``requests_shown`` counts the
     requests whose memory section carried the item's own line, ``requests_channel_shown`` those that
-    showed its channel (a catalogue of channels shows no item lines).
+    showed its channel (a catalogue of channels shows no item lines). ``exposure_sources`` counts the
+    requests at its pin by where their shown lists came from: ``record`` (the harness recorded what it
+    rendered), ``legacy_text`` (a recording without that record, read from the prompt's text by the v2
+    index's wording) or ``unknown`` (neither; such a request counts as showing nothing).
 
     * ``used``: some request has a call site of it;
     * ``never_used``: requests were shown it, or its channel when ``never_used_basis`` is ``"channel"``,
@@ -57,6 +60,11 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
         "requests_at_pin": n("requests"),
         "requests_shown": n("shown"),
         "requests_channel_shown": n("channel_shown"),
+        "exposure_sources": {
+            "record": n("exposure_record"),
+            "legacy_text": n("exposure_legacy_text"),
+            "unknown": n("exposure_unknown"),
+        },
         "used_requests": n("used_requests"),
         "imported": n("imported"),
         "calls": n("called"),
@@ -114,4 +122,15 @@ def usage_table(
         lines.append(f"(+{len(ids) - MAX_TABLE_ROWS} more items not shown)")
     if not ids:
         lines.append("(the library has no functions yet)")
+    flags = evidence.request_flags(eids) if eids else {}
+    legacy, unknown = flags.get("exposure_legacy_text", 0), flags.get(
+        "exposure_unknown",
+        0,
+    )
+    if legacy or unknown:
+        lines.append(
+            f"(shown counts: {flags.get('exposure_record', 0)} requests from the harness's record of "
+            f"what it showed, {legacy} read from the prompt's text (legacy), {unknown} unknown and "
+            "counted as showing nothing)",
+        )
     return "\n".join(lines) + "\n"

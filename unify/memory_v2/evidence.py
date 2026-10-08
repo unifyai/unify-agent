@@ -45,7 +45,15 @@ _USE_COUNTS = (
     "modified",
     "refused_modified",
     "errored_modified",
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
 )
+# Where a record's shown lists came from (``analysis.use``'s ``exposure_source``); a record without one
+# (from before the field) counts as ``unknown``.
+_EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
+# The item_use columns that hold one value per request (the same on each of its rows).
+_REQUEST_FLAGS = ("exposure_record", "exposure_legacy_text", "exposure_unknown")
 _IN_CHUNK = 500
 
 
@@ -64,7 +72,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
     channel plus on ``env`` itself; ``shown`` whether the item's own line was in the prompt's memory
     section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
-    channel's files (its refusals and errors are then in the ``_modified`` columns only).
+    channel's files (its refusals and errors are then in the ``_modified`` columns only);
+    ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
+    what the prompt showed, the legacy reading of the prompt's text, or unknown).
     """
 
     def listed(key: str) -> set[str]:
@@ -85,6 +95,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     unknown = (
         use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
     )
+    source = use.get("exposure_source")
+    source = source if source in _EXPOSURE_SOURCES else "unknown"
+    exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
 
     def n(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -110,6 +123,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 int(channel in changed),
                 n(r.get("refused_modified")),
                 n(r.get("errored_modified")),
+                *exposure,
             ),
         )
     return out
@@ -206,6 +220,30 @@ class EvidenceStore:
                 for c, v in zip(_USE_COUNTS, r[3:]):
                     cur[c] += int(v or 0)
         return dict(sorted(out.items()))
+
+    def request_flags(self, eids: list[str] | None = None) -> dict[str, int]:
+        """Per column of :data:`_REQUEST_FLAGS`, how many requests among *eids* (every indexed one when
+        None) have it set; a request counts when its pin held at least one item."""
+        out = dict.fromkeys(_REQUEST_FLAGS, 0)
+        cols = ", ".join(f"MAX({c})" for c in _REQUEST_FLAGS)
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            clause, params = "", []
+            if chunk is not None:
+                clause = f" WHERE episode_id IN ({','.join('?' * len(chunk))})"
+                params = list(chunk)
+            rows = self.db.execute(
+                f"SELECT episode_id, {cols} FROM item_use{clause} GROUP BY episode_id",
+                params,
+            ).fetchall()
+            for r in rows:
+                for c, v in zip(_REQUEST_FLAGS, r[1:]):
+                    out[c] += int(bool(v))
+        return out
 
     def last_call_seq(self, item: str) -> int | None:
         """The ``seq`` of the latest indexed episode with a call site of *item*, or None."""

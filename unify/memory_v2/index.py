@@ -36,8 +36,27 @@ def build_index(
     suspect: set[str] = frozenset(),
     channels: list[str] | None = None,
 ) -> str:
+    return index_with_names(
+        checkout,
+        budget_tokens=budget_tokens,
+        suspect=suspect,
+        channels=channels,
+    )[0]
+
+
+def index_with_names(
+    checkout: Path,
+    *,
+    budget_tokens: int = 4000,
+    suspect: set[str] = frozenset(),
+    channels: list[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """:func:`build_index`'s text, with the item ids whose own lines it carries and the channels it heads
+    (both sorted): what the index shows, for the use record (``analysis.use.record_shown``).
+    """
     rep = items(checkout)
     by_channel: dict[str, list[str]] = {}
+    shown: list[str] = []
     for it in rep.items:
         if it.kind == "workflow" or not it.listed:
             continue
@@ -51,6 +70,8 @@ def build_index(
         )
         if it.kind == "env_function" and it.input in INPUT_KINDS:
             line += f" (input: {it.input})"
+        if it.kind == "env_function":
+            shown.append(it.item_id)
         by_channel.setdefault(ch, []).append(line)
     parts = [HEADER]
     for ch in sorted(by_channel):
@@ -65,4 +86,4 @@ def build_index(
         raise IndexOverBudget(
             f"index needs {estimate_tokens(text)} tokens; budget {budget_tokens}",
         )
-    return text
+    return text, sorted(shown), sorted(by_channel)

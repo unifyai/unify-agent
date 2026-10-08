@@ -2,7 +2,8 @@
 
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
 ``main`` into the scratch export the worker mounts, notes its memory functions (for the use record),
-renders the index the system prompt ends with, takes
+renders the index the system prompt ends with and records what it shows (``shown``: names and a digest,
+:func:`..analysis.use.record_shown`), takes
 the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
 episode id and model costs are recorded). ``finish`` records the request as
 one episode, with how it used the library (``memory_use.json``, indexed in the evidence store's
@@ -140,13 +141,17 @@ def memory_use(
     redactor: Any = None,
     export_roots: list[str] | tuple[str, ...] = (),
     surface: dict | None = None,
+    shown: dict | None = None,
+    shown_text: str = "",
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`).
 
     It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
     so the offline analyser recomputes the same record from the written episode), against the items at
-    the pin, the export's roots and the library's import surface taken before the actor ran. A failure
-    is recorded as its exception type, with the items at the pin; it never stops the episode.
+    the pin, the export's roots and the library's import surface taken before the actor ran, and *shown*,
+    what the memory-section renderer recorded; its digest is taken again over *shown_text* (the section
+    as rendered) through *redactor*, as the transcript's copy of the prompt is. A failure is recorded as
+    its exception type, with the items at the pin; it never stops the episode.
     """
     from ..analysis import use
 
@@ -154,6 +159,8 @@ def memory_use(
         return redactor.obj(value) if redactor is not None else value
 
     try:
+        if isinstance(shown, dict) and redactor is not None and shown_text:
+            shown = {**shown, **use.section_digest(redactor.text(shown_text))}
         return use.request_use(
             clean(list(ep.transcript)),
             item_ids,
@@ -175,6 +182,7 @@ def memory_use(
             ),
             export_roots=export_roots,
             surface=surface,
+            shown=shown,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -202,6 +210,8 @@ class RequestRun:
         self.request = request
         self.paths = paths
         self.index = ""
+        # What the memory section shows (``analysis.use.record_shown``), set where it is rendered.
+        self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
         self.item_ids: list[str] = []
         self.surface: dict | None = None
@@ -257,7 +267,7 @@ class RequestRun:
         from ..analysis import use
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
-        from .prompt import render_index
+        from .prompt import render_memory
         from .state import State
 
         paths = self.paths
@@ -270,7 +280,7 @@ class RequestRun:
         self.item_ids = pinned_items(paths.checkout)
         self.surface = use.library_surface(paths.checkout)
         self.export_roots = use.roots_of(paths.checkout)
-        self.index = render_index(paths.checkout, self.state.suspect)
+        self.index, self.shown = render_memory(paths.checkout, self.state.suspect)
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
@@ -416,6 +426,8 @@ class RequestRun:
             redactor=redactor,
             export_roots=self.export_roots,
             surface=self.surface,
+            shown=self.shown,
+            shown_text=self.index,
         )
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)

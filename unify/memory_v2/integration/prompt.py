@@ -12,7 +12,7 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from ..index import IndexOverBudget, build_index
+from ..index import IndexOverBudget, index_with_names
 from ..memory_repo import items
 
 logger = logging.getLogger(__name__)
@@ -29,16 +29,28 @@ def export_line(checkout: Path) -> str:
 
 def render_index(checkout: Path, suspect: Iterable[str] = ()) -> str:
     """The index for the export at *checkout*, or ``""`` when it lists no item or is over budget."""
+    return render_memory(checkout, suspect)[0]
+
+
+def render_memory(checkout: Path, suspect: Iterable[str] = ()) -> tuple[str, dict]:
+    """(:func:`render_index`'s text, what it shows as :func:`..analysis.use.record_shown` records it).
+
+    The record holds the channel and item names the text carries and the text's digest, never the text;
+    the request's use record reads it, so it never has to find the section in the prompt by its wording.
+    """
+    from ..analysis.use import record_shown
+
     checkout = Path(checkout)
-    if not any(it.kind != "workflow" and it.listed for it in items(checkout).items):
-        return ""
-    try:
-        text = build_index(
-            checkout,
-            budget_tokens=INDEX_BUDGET_TOKENS,
-            suspect=set(suspect),
-        )
-    except IndexOverBudget as exc:  # the gate's budget check makes this unexpected
-        logger.warning("memory v2: index left out of the prompt: %s", exc)
-        return ""
-    return text + "\n" + export_line(checkout)
+    text, ids, channels = "", [], []
+    if any(it.kind != "workflow" and it.listed for it in items(checkout).items):
+        try:
+            index, ids, channels = index_with_names(
+                checkout,
+                budget_tokens=INDEX_BUDGET_TOKENS,
+                suspect=set(suspect),
+            )
+        except IndexOverBudget as exc:  # the gate's budget check makes this unexpected
+            logger.warning("memory v2: index left out of the prompt: %s", exc)
+        else:
+            text = index + "\n" + export_line(checkout)
+    return text, record_shown(text, channels=channels, items=ids, renderer="index")

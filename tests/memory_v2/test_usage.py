@@ -77,6 +77,28 @@ def test_item_signals_flag_used_never_used_and_refusing_accepted_inputs(tmp_path
     assert not unseen["never_used"] and unseen["requests_at_pin"] == 0
 
 
+def test_signals_and_the_table_say_where_the_shown_counts_came_from(tmp_path):
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    for n, source in enumerate(("record", "legacy_text", "unknown")):
+        _index(
+            ev,
+            f"e{n}",
+            _record({}, shown=ITEMS, channels=["x"], source=source),
+            f"2026-10-08T0{n}:00:00Z",
+        )
+    sig = usage.item_signals("env/x:parse", ev)
+    assert sig["exposure_sources"] == {"record": 1, "legacy_text": 1, "unknown": 1}
+    table = usage.usage_table(ev, ["e0", "e1", "e2"], ITEMS)
+    assert table.splitlines()[-1] == (
+        "(shown counts: 1 requests from the harness's record of what it showed, 1 read from the "
+        "prompt's text (legacy), 1 unknown and counted as showing nothing)"
+    )
+    # every request from the record: no note, the table is as before
+    only = usage.usage_table(ev, ["e0"], ITEMS)
+    assert "shown counts" not in only
+    assert only.splitlines()[-1].startswith("env/x:strict | ")
+
+
 # --- Sol's first message ---------------------------------------------------------------------------------
 
 

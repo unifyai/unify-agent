@@ -9,6 +9,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import random
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -25,9 +27,10 @@ from unify.memory_v2.episodes import (
     episode_dir,
     load_episode,
 )
-from unify.memory_v2.evidence import EvidenceStore
+from unify.memory_v2.evidence import _USE_COUNTS, EvidenceStore, _use_rows
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.index import HEADER, build_index
+from unify.memory_v2.index import HEADER, build_index, index_with_names
+from unify.memory_v2.integration.prompt import render_index, render_memory
 from unify.memory_v2.integration.request import memory_use
 from unify.memory_v2.redact import Redactor
 
@@ -337,7 +340,9 @@ def test_env_channel_copy_matches_the_episodes_mapping():
 # --- the memory section ----------------------------------------------------------------------------------
 
 
-def test_the_memory_section_is_hashed_and_counted_from_the_system_prompt(lib):
+def test_a_legacy_recording_finds_the_section_by_the_v2_header_and_says_so(lib):
+    """Without the renderer's record (a recording from before it), the section is found by the v2 index's
+    opening line, and the record says the shown lists came from that legacy reading."""
     index = build_index(lib)
     assert HEADER.startswith(use.HEADER_PREFIX)
     rec = use.request_use(_lines([], system=f"core prompt\n\n{index}"), ITEMS)
@@ -347,8 +352,13 @@ def test_the_memory_section_is_hashed_and_counted_from_the_system_prompt(lib):
     assert shown["bytes"] == len(index.encode()) and shown["est_tokens"] == -(
         -len(index) // 4
     )
-    none = use.request_use(_lines([]), ITEMS)["memory_section_shown"]
-    assert not none["shown"] and none["sha256"] is None
+    assert rec["exposure_source"] == "legacy_text" and shown["source"] == "legacy_text"
+    assert rec["shown_record"] is None and shown["prompt_confirmed"] is None
+    none = use.request_use(_lines([]), ITEMS)
+    assert not none["memory_section_shown"]["shown"]
+    assert none["memory_section_shown"]["sha256"] is None
+    # nothing says whether a section was shown: unknown, never "shown nothing" from a record
+    assert none["exposure_source"] == "unknown" and none["shown_items"] == []
 
 
 # --- bounds, determinism, vendoring ----------------------------------------------------------------------
@@ -396,15 +406,20 @@ def test_the_record_is_written_with_the_episode_and_recomputed_from_its_director
         ["from env.x import parse as p\np(1)\n", "import env.x\nenv.x.lookup('a')\n"],
     )
     acts = [Action(1, "x", "get", [], {}, None, "ok", "read")]
-    ep = _ep(transcript=_lines(cells), actions=acts, cells=[])
+    text, shown = render_memory(lib)
+    ep = _ep(transcript=_lines(cells, system=f"core\n\n{text}"), actions=acts, cells=[])
     ep.memory_use = memory_use(
         ep,
         ITEMS,
         redactor=Redactor(),
         export_roots=use.roots_of(lib),
         surface=use.library_surface(lib),
+        shown=shown,
+        shown_text=text,
     )
     assert ep.memory_use["export_roots"][0] == str(lib)
+    assert ep.memory_use["exposure_source"] == "record"
+    assert ep.memory_use["shown_items"] == ITEMS
     assert ep.memory_use["items"]["env/x:parse"]["refused_then_accepted"] == 1
     repo, blobs = Repo.init_bare(tmp_path / "episodes.git"), BlobStore(tmp_path / "b")
     sha = EpisodeWriter(repo, blobs, Redactor()).write(ep)
@@ -454,6 +469,7 @@ def _record(
     shown=(),
     channels=(),
     modified=(),
+    source="record",
 ) -> dict:
     base = dict.fromkeys(
         (
@@ -475,6 +491,7 @@ def _record(
         "shown_items": list(shown),
         "shown_channels": list(channels),
         "modified_channels": list(modified),
+        **({"exposure_source": source} if source is not None else {}),
     }
 
 
@@ -518,6 +535,43 @@ def test_the_evidence_table_aggregates_per_item(tmp_path):
     assert (
         totals["env/x:parse"]["shown"] == 0
     )  # records without shown lists show nothing
+
+
+def test_the_evidence_counts_where_each_requests_shown_lists_came_from(tmp_path):
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    sources = {
+        "e1": "record",
+        "e2": "record",
+        "e3": "legacy_text",
+        "e4": "unknown",
+        "e5": None,
+    }
+    for n, (eid, source) in enumerate(sorted(sources.items())):
+        _index(
+            ev,
+            eid,
+            _record({}, shown=ITEMS[:1], channels=["x"], source=source),
+            f"2026-10-08T0{n}:00:00Z",
+        )
+    row = ev.item_use()["env/x:lookup"]
+    # a record from before the field counts as unknown
+    assert (
+        row["exposure_record"],
+        row["exposure_legacy_text"],
+        row["exposure_unknown"],
+    ) == (
+        2,
+        1,
+        2,
+    )
+    assert row["shown"] == 5  # the shown lists are counted whatever their source
+    assert ev.request_flags() == {
+        "exposure_record": 2,
+        "exposure_legacy_text": 1,
+        "exposure_unknown": 2,
+    }
+    assert ev.request_flags(["e1", "e3"])["exposure_legacy_text"] == 1
+    assert ev.request_flags([]) == dict.fromkeys(ev.request_flags(), 0)
 
 
 def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_path):
@@ -568,18 +622,159 @@ def test_a_store_from_before_the_table_or_its_columns_opens_and_is_migrated(tmp_
 
 
 def test_shown_items_are_the_items_whose_own_lines_the_section_carries(lib):
+    """Legacy reading: the items whose own lines the v2 index carries."""
     (lib / "env/x/__init__.py").write_text(MODULE + '\n__all__ = ["parse", "strict"]\n')
     index = build_index(lib)
     rec = use.request_use(_lines([], system=f"core\n\n{index}"), ITEMS)
     assert rec["shown_items"] == ["env/x:parse", "env/x:strict"]  # lookup is unlisted
-    assert rec["shown_channels"] == ["x"]
+    assert rec["shown_channels"] == ["x"] and rec["exposure_source"] == "legacy_text"
     assert use.request_use(_lines([]), ITEMS)["shown_items"] == []
 
 
 def test_a_catalogue_of_channels_shows_channels_and_no_items(lib):
+    """Legacy reading of a catalogue that kept the v2 header."""
     catalogue = f"{use.HEADER_PREFIX} Channels:\n- env.x: 3 functions for parsing lines\n- env.zz: 1\n"
     rec = use.request_use(_lines([], system=f"core\n\n{catalogue}"), ITEMS)
     assert rec["shown_items"] == [] and rec["shown_channels"] == ["x"]
+    assert rec["exposure_source"] == "legacy_text"
+
+
+def test_the_real_renderer_records_what_the_index_shows(lib):
+    """The record comes from the renderer itself (``prompt.render_memory``), not from the prompt's text."""
+    (lib / "env/x/__init__.py").write_text(MODULE + '\n__all__ = ["parse", "strict"]\n')
+    text, shown = render_memory(lib)
+    assert text == render_index(lib) and text.startswith(build_index(lib))
+    assert build_index(lib) == index_with_names(lib)[0]
+    assert shown["renderer"] == "index" and shown["channels"] == ["x"]
+    assert shown["items"] == ["env/x:parse", "env/x:strict"]  # lookup is unlisted
+    assert shown["sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    assert text not in json.dumps(shown)  # names and a digest, never the text
+    rec = use.request_use(_lines([], system=f"core\n\n{text}"), ITEMS, shown=shown)
+    assert rec["exposure_source"] == "record" and rec["shown_record"] == shown
+    assert rec["shown_items"] == ["env/x:parse", "env/x:strict"]
+    assert rec["shown_channels"] == ["x"]
+    section = rec["memory_section_shown"]
+    assert section["shown"] and section["prompt_confirmed"] is True
+    assert (section["sha256"], section["bytes"]) == (shown["sha256"], shown["bytes"])
+    # an empty library renders nothing and records that nothing was shown
+    empty = lib.parent / "empty"
+    (empty / "env").mkdir(parents=True)
+    text0, shown0 = render_memory(empty)
+    assert text0 == "" and shown0["sha256"] is None and shown0["channels"] == []
+    rec0 = use.request_use(_lines([]), ITEMS, shown=shown0)
+    assert rec0["exposure_source"] == "record" and rec0["shown_items"] == []
+    assert not rec0["memory_section_shown"]["shown"]
+
+
+S1_GUIDE = (
+    "Memory: a library of Python functions distilled from earlier work, at `/mem/checkout` (first on "
+    "the import path; import with `from env.<channel> import <function>`). Its functions are candidates "
+    "to check, not authority.\n\nChannels:\n- `env.x`: 3 functions. Parse and look up lines.\n"
+)
+
+
+def test_an_s1_style_section_without_the_old_header_still_counts_what_it_showed(lib):
+    """A channel catalogue in new wording (S1): the old header is absent, so the legacy reading finds
+    nothing, but the renderer's record still counts every channel and item it showed."""
+    assert use.HEADER_PREFIX not in S1_GUIDE
+    lines = _lines([], system=f"core prompt\n\n{S1_GUIDE}")
+    blind = use.request_use(lines, ITEMS)
+    assert blind["exposure_source"] == "unknown" and blind["shown_channels"] == []
+    catalogue = use.record_shown(S1_GUIDE, channels=["x"], renderer="catalogue")
+    rec = use.request_use(lines, ITEMS, shown=catalogue)
+    assert rec["exposure_source"] == "record"
+    assert rec["shown_channels"] == ["x"] and rec["shown_items"] == []
+    assert rec["memory_section_shown"]["prompt_confirmed"] is True
+    listing = use.record_shown(
+        S1_GUIDE,
+        channels=["x"],
+        items=["env/x:parse", "env/x:lookup"],
+        renderer="catalogue",
+    )
+    rec = use.request_use(lines, ITEMS, shown=listing)
+    assert rec["shown_items"] == ["env/x:lookup", "env/x:parse"]
+    # the evidence row of each shown item says so, and where it came from
+    rows = {r[0]: r for r in _use_rows("e1", rec)}
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("shown")] == 1
+    assert rows["env/x:strict"][2 + _USE_COUNTS.index("shown")] == 0
+    assert rows["env/x:strict"][2 + _USE_COUNTS.index("channel_shown")] == 1
+    assert rows["env/x:parse"][2 + _USE_COUNTS.index("exposure_record")] == 1
+
+
+def test_a_recorded_section_the_prompt_does_not_end_with_still_counts_and_says_so(lib):
+    shown = use.record_shown(
+        S1_GUIDE,
+        channels=["x"],
+        items=["env/x:parse"],
+        renderer="catalogue",
+    )
+    later = _lines([], system=f"core\n\n{S1_GUIDE}\nsomething appended after")
+    rec = use.request_use(later, ITEMS, shown=shown)
+    assert rec["shown_items"] == ["env/x:parse"]
+    assert rec["memory_section_shown"]["prompt_confirmed"] is False
+    # no system prompt was sent at all: nothing was shown
+    unsent = [ln for ln in _lines([]) if ln["type"] != "system_prompt"]
+    rec = use.request_use(unsent, ITEMS, shown=shown)
+    assert rec["exposure_source"] == "record" and rec["shown_items"] == []
+    assert not rec["memory_section_shown"]["shown"]
+    assert rec["memory_section_shown"]["prompt_confirmed"] is None
+    # only items and channels of the pin count
+    other = use.record_shown(
+        S1_GUIDE,
+        channels=["zz"],
+        items=["env/zz:f"],
+        renderer="catalogue",
+    )
+    rec = use.request_use(_lines([], system=S1_GUIDE), ITEMS, shown=other)
+    assert rec["shown_items"] == [] and rec["shown_channels"] == []
+
+
+def test_record_shown_keeps_names_and_a_digest_only_for_random_inputs():
+    """Seeded random names and texts: the record is sorted, bounded and deterministic, drops malformed
+    names, counts each item's channel, shows nothing for an empty text and never holds the text.
+    """
+    rng = random.Random(20261008)
+    alphabet = "abcxyz_019"
+    for _ in range(200):
+        chans = [
+            "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 6)))
+            for _ in range(rng.randint(0, 8))
+        ]
+        ids = [
+            f"env/{rng.choice(chans or ['q'])}:{rng.choice(['f', 'g', '9bad', 'h-i', ''])}"
+            for _ in range(rng.randint(0, 8))
+        ]
+        secret = f"VALUE-{rng.getrandbits(64):x}"
+        text = rng.choice(["", f"Memory section holding {secret}\n"])
+        rec = use.record_shown(text, channels=chans, items=ids, renderer="index")
+        assert rec == use.record_shown(
+            text,
+            channels=list(reversed(chans)),
+            items=ids,
+            renderer="index",
+        )
+        assert secret not in json.dumps(rec)
+        valid_ids = sorted(
+            {i for i in ids if re.fullmatch(r"env/[A-Za-z_]\w*:[A-Za-z_]\w*", i)},
+        )
+        if not text:
+            assert (
+                rec["channels"] == [] and rec["items"] == [] and rec["sha256"] is None
+            )
+            continue
+        assert rec["items"] == valid_ids
+        assert rec["channels"] == sorted(
+            {c for c in chans if re.fullmatch(r"[A-Za-z_]\w*", c)}
+            | {i.split(":")[0][4:] for i in valid_ids},
+        )
+        assert rec["sha256"] == hashlib.sha256(text.encode()).hexdigest()
+        assert rec["bytes"] == len(text.encode())
+    # a malformed record read back (a hand-edited memory_use.json) is ignored, never trusted
+    for bad in ({}, {"version": 99}, {"version": 1, "sha256": "nothex", "bytes": 1}):
+        assert (
+            use.request_use(_lines([]), ITEMS, shown=bad)["exposure_source"]
+            == "unknown"
+        )
 
 
 # --- the agent's own edits -------------------------------------------------------------------------------

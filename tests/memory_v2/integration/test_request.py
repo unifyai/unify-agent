@@ -462,10 +462,16 @@ def test_finish_records_how_the_request_used_the_library(mv2):
     assert shown["sha256"] == hashlib.sha256(run.index.encode()).hexdigest()
     assert rec["shown_items"] == ["env/spotify:hello"]
     assert rec["shown_channels"] == ["spotify"]
+    # from the renderer's own record, confirmed against the prompt the transcript holds
+    assert rec["exposure_source"] == "record" and shown["prompt_confirmed"] is True
+    assert rec["shown_record"]["renderer"] == "index"
+    assert rec["shown_record"]["items"] == ["env/spotify:hello"]
+    assert run.index not in raw.decode()  # names and a digest, never the section's text
     totals = EvidenceStore(mv2.paths.evidence).item_use()
     row = totals["env/spotify:hello"]
     assert (row["called"], row["refused"], row["refused_modified"]) == (1, 0, 1)
     assert (row["shown"], row["channel_shown"], row["modified"]) == (1, 1, 1)
+    assert (row["exposure_record"], row["exposure_legacy_text"]) == (1, 0)
     assert not mv2.paths.errors.exists()
     _left_nothing(mv2.paths)
 

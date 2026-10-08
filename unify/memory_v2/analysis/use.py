@@ -10,10 +10,10 @@ and the offline funnel analyser recomputes it from an exported episode directory
 Everything is structural. Imports and calls come from each cell's syntax tree; errors come from the
 frames of the traceback in the executor's metadata block of the cell's result (its ``error`` field,
 never the cell's printed output), by file path and function name. Text is read only for its structure:
-the traceback's header, frame and chaining lines and the exception's type token, the index's channel
-headings and item lines, and the diff's file headers. An exception message is never read for meaning;
-a message deliberately written to imitate CPython's chain line, header and frame lines could still
-forge a block. Nothing is keyed on a task.
+the traceback's header, frame and chaining lines and the exception's type token, the diff's file headers
+and, for legacy recordings only, the index's channel headings and item lines. An exception message is
+never read for meaning; a message deliberately written to imitate CPython's chain line, header and frame
+lines could still forge a block. Nothing is keyed on a task.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 
@@ -45,12 +45,16 @@ kept beyond item ids and channel names).
 Names bound by a cell persist into later cells of the same execution session (the result metadata's
 ``session_id``) and are dropped when a result reports a new session (``session_created``).
 
-``memory_section_shown`` describes the memory section of the request's system prompts: the text from the
-index's fixed header to the end of the prompt (the harness appends it last), as a SHA-256, its UTF-8 byte
-count and the index's own token estimate (characters / 4). ``shown_channels`` are the channels it names
-(``## env.<channel>`` headings, or ``- env.<channel>`` catalogue lines) and ``shown_items`` the items whose
-own lines (``- `name(...)` ``) appear under a shown channel's heading; with a catalogue of channels only,
-the item list is empty.
+What the prompt showed is a structured record, not a reading of the prompt's text: whatever renders the
+memory section calls :func:`record_shown` with the channel and item names it rendered and the exact text
+it appended (kept only as a SHA-256, its UTF-8 byte count and the index's token estimate), and the record
+keeps that as ``shown_record``. ``shown_channels`` and ``shown_items`` are its names (items and channels of
+the pin) when a system prompt was sent; ``memory_section_shown.prompt_confirmed`` says whether a recorded
+system prompt ends with exactly that text. ``exposure_source`` says where the shown lists came from:
+``record``; ``legacy_text`` for a recording without the record, where the section is found by the v2
+index's opening line (:data:`HEADER_PREFIX`) and read by its ``## env.<channel>`` headings, ``- env.<channel>``
+catalogue lines and ``- `name(...)` `` item lines; or ``unknown`` when neither is there (nothing can say
+whether a section was shown).
 """
 
 from __future__ import annotations
@@ -74,17 +78,23 @@ __all__ = [
     "memory_section",
     "modified_channels",
     "parse_traceback",
+    "record_shown",
     "request_use",
     "roots_of",
+    "section_digest",
     "shown_in",
     "transcript_cells",
     "use_from_episode_dir",
 ]
 
-VERSION = 2
+VERSION = 3
+SHOWN_VERSION = 1
 
-#: The start of the index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
+#: The start of the v2 index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
+#: Used only for legacy recordings, which have no ``shown_record``.
 HEADER_PREFIX = "Memory library: candidates to check, not authority."
+
+EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
 
 REFUSAL_TYPE = "MemoryInputError"
 
@@ -103,8 +113,10 @@ MAX_REEXPORTS = 500
 MAX_ROOTS = 4
 MAX_REEXPORT_HOPS = 8
 MAX_DIFF_CHARS = 2_000_000
+MAX_RENDERER_CHARS = 64
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+_IDENT_RE = re.compile(_IDENT)
 _ITEM_ID = re.compile(rf"^env/({_IDENT}):({_IDENT})\Z")
 _FRAME = re.compile(r'^  File "(?P<file>.*)", line \d+, in (?P<func>.+)$')
 _TYPE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)(?::|$)")
@@ -524,6 +536,132 @@ def shown_in(
                 if iid in its.known:
                     shown.add(iid)
     return sorted(shown)[:MAX_ITEMS_AT_PIN], sorted(channels)[:MAX_CHANNEL_KEYS]
+
+
+def section_digest(text: str) -> dict:
+    """``{"sha256", "bytes", "est_tokens"}`` of a memory section's exact text (``sha256`` None when empty).
+
+    ``est_tokens`` is the index's own estimate (characters / 4).
+    """
+    if not isinstance(text, str) or not text:
+        return {"sha256": None, "bytes": 0, "est_tokens": 0}
+    raw = text.encode("utf-8")
+    return {
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "est_tokens": math.ceil(len(text) / 4),
+    }
+
+
+def record_shown(
+    text: str,
+    *,
+    channels: Iterable[str],
+    items: Iterable[str] = (),
+    renderer: str,
+) -> dict:
+    """What a memory-section renderer put in the system prompt, as names and a digest.
+
+    Call it where the section is rendered, with the exact *text* the harness appends to the system prompt
+    (``""`` when it appends nothing), the *channels* the text names (``"x"`` for ``env/x``), the *items*
+    whose own lines it carries (``"env/x:parse"``; leave empty for a catalogue of channels) and a short
+    *renderer* name (``"index"``, ``"catalogue"``). Keep the result on the request run; the use record
+    reads it instead of searching the prompt's text, so the section's wording can change freely.
+
+    Only names and a digest are kept, never the text: ``{"version", "renderer", "channels", "items",
+    "sha256", "bytes", "est_tokens"}``. Malformed names are dropped, each item's channel counts as shown,
+    and an empty *text* shows nothing whatever names are passed. Deterministic and bounded.
+    """
+    text = text if isinstance(text, str) else ""
+    ids = sorted(
+        {i for i in items if isinstance(i, str) and _ITEM_ID.match(i)},
+    )[:MAX_ITEMS_AT_PIN]
+    names = {c for c in channels if isinstance(c, str) and _IDENT_RE.fullmatch(c)}
+    names |= {_ITEM_ID.match(i).group(1) for i in ids}
+    name = renderer if isinstance(renderer, str) else ""
+    return {
+        "version": SHOWN_VERSION,
+        "renderer": name[:MAX_RENDERER_CHARS],
+        "channels": sorted(names)[:MAX_CHANNEL_KEYS] if text else [],
+        "items": ids if text else [],
+        **section_digest(text),
+    }
+
+
+def _valid_shown(value: Any) -> dict | None:
+    """A ``shown_record`` read back (from :func:`record_shown` or a recorded ``memory_use.json``), or None."""
+    if not isinstance(value, dict) or value.get("version") != SHOWN_VERSION:
+        return None
+    sha, size = value.get("sha256"), value.get("bytes")
+    if sha is not None and not (
+        isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)
+    ):
+        return None
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return None
+    tokens = value.get("est_tokens")
+
+    def names(key: str, pattern: re.Pattern) -> list[str]:
+        got = value.get(key)
+        if not isinstance(got, list):
+            return []
+        return sorted({v for v in got if isinstance(v, str) and pattern.fullmatch(v)})
+
+    renderer = value.get("renderer")
+    return {
+        "version": SHOWN_VERSION,
+        "renderer": renderer[:MAX_RENDERER_CHARS] if isinstance(renderer, str) else "",
+        "channels": names("channels", _IDENT_RE)[:MAX_CHANNEL_KEYS],
+        "items": names("items", _ITEM_ID)[:MAX_ITEMS_AT_PIN],
+        "sha256": sha,
+        "bytes": size,
+        "est_tokens": (
+            tokens if isinstance(tokens, int) and not isinstance(tokens, bool) else 0
+        ),
+    }
+
+
+def _ends_with(prompt: str, sha: str, size: int) -> bool:
+    raw = prompt.encode("utf-8")
+    return (
+        len(raw) >= size and hashlib.sha256(raw[len(raw) - size :]).hexdigest() == sha
+    )
+
+
+def _exposure(
+    prompts: list[str],
+    shown: Any,
+    its: _Items,
+) -> tuple[str, dict, dict | None, list[str], list[str]]:
+    """(exposure source, ``memory_section_shown``, the shown record kept, shown items, shown channels)."""
+    record = _valid_shown(shown)
+    if record is not None:
+        sent = bool(prompts) and record["sha256"] is not None
+        section = {
+            "shown": sent,
+            "sha256": record["sha256"] if sent else None,
+            "bytes": record["bytes"] if sent else 0,
+            "est_tokens": record["est_tokens"] if sent else 0,
+            "prompts": len(prompts),
+            "distinct": 1 if sent else 0,
+            "prompt_confirmed": (
+                any(_ends_with(p, record["sha256"], record["bytes"]) for p in prompts)
+                if sent
+                else None
+            ),
+            "source": "record",
+        }
+        if not sent:
+            return "record", section, record, [], []
+        items = [i for i in record["items"] if i in its.known]
+        channels = [c for c in record["channels"] if c in its.channels]
+        return "record", section, record, items, channels
+    _, sections = _sections(prompts, HEADER_PREFIX)
+    section = {**memory_section(prompts), "prompt_confirmed": None}
+    if not sections:
+        return "unknown", {**section, "source": "unknown"}, None, [], []
+    items, channels = shown_in(sections, its)
+    return "legacy_text", {**section, "source": "legacy_text"}, None, items, channels
 
 
 # --- imports and calls -----------------------------------------------------------------------------------
@@ -1102,13 +1240,15 @@ def request_use(
     memory_diff: str = "",
     export_roots: Iterable[str] = (),
     surface: Any = None,
+    shown: Any = None,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
     *lines* are the request's transcript lines, *items* the item ids at its pin, *actions* its recorded
     actions (dicts or objects with ``cell``, ``kind``, ``channel`` and ``status``), *memory_diff* what it
     wrote into its export, *export_roots* the export's path(s) as the cells import it (:func:`roots_of`),
-    and *surface* the library's import surface at the pin (:func:`library_surface`).
+    *surface* the library's import surface at the pin (:func:`library_surface`) and *shown* what the
+    memory-section renderer recorded (:func:`record_shown`; None for a legacy recording).
     """
     lines = list(lines)
     its = _Items(items, surface)
@@ -1160,8 +1300,11 @@ def request_use(
     for iid, row in tally.items.items():
         row["modified_in_request"] = iid.split(":", 1)[0][len("env/") :] in changed
     prompts = _system_prompts(lines)
-    _, sections = _sections(prompts, HEADER_PREFIX)
-    shown_items, shown_channels = shown_in(sections, its)
+    source, section, shown_record, shown_items, shown_channels = _exposure(
+        prompts,
+        shown,
+        its,
+    )
     rows = {k: tally.items[k] for k in sorted(tally.items)}
     truncated = (
         len(rows) > MAX_ITEM_ROWS
@@ -1178,7 +1321,9 @@ def request_use(
             "star": {k: star[k] for k in sorted(star)[:MAX_CHANNEL_KEYS]},
             "reexports": dict(sorted(its.reexports.items())[:MAX_REEXPORTS]),
         },
-        "memory_section_shown": memory_section(prompts),
+        "memory_section_shown": section,
+        "exposure_source": source,
+        "shown_record": shown_record,
         "shown_items": shown_items,
         "shown_channels": shown_channels,
         "modified_channels": changed,
@@ -1211,7 +1356,8 @@ def _jsonl(path: Path) -> list[dict]:
 
 def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -> dict:
     """:func:`request_use` over an exported episode directory (``transcript.jsonl``, ``actions.jsonl``,
-    ``memory.diff``), with the export roots and import surface its ``memory_use.json`` recorded.
+    ``memory.diff``), with the export roots, import surface and shown record its ``memory_use.json``
+    recorded.
 
     *items* default to the ``items_at_pin`` recorded there (empty without one).
     """
@@ -1236,4 +1382,5 @@ def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -
         memory_diff=diff,
         export_roots=roots if isinstance(roots, list) else (),
         surface=recorded.get("surface"),
+        shown=recorded.get("shown_record"),
     )
