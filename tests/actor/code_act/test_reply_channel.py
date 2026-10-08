@@ -140,7 +140,7 @@ def test_the_code_tool_mentions_reply_only_under_the_switch(monkeypatch):
     def described() -> tuple[str, str]:
         tool = CodeActActor().get_tools("act")["execute_code"]
         fn = getattr(tool, "fn", tool)
-        core = core_surface.core_tools({"execute_code": tool}, steering=False)
+        core = core_surface.core_tools({"execute_code": tool})
         core_fn = getattr(core["execute_code"], "fn", core["execute_code"])
         return tuple(
             method_to_schema(f, "execute_code")["function"]["description"]
@@ -158,12 +158,12 @@ def test_the_code_tool_mentions_reply_only_under_the_switch(monkeypatch):
             "example ``reply(answer)`` when the answer is in a variable.",
         )
     caps = notebook_cells.Capabilities()
-    assert notebook_cells.describe(caps, steering=False, structured=False).endswith(
+    assert notebook_cells.describe(caps, structured=False).endswith(
         "You answer, and take any action the requester defines, by replying, or "
         "from a cell with `reply(text)`, which ends your turn.",
     )
     # A request answered by final_response has no reply to send.
-    assert notebook_cells.describe(caps, steering=False, structured=True).endswith(
+    assert notebook_cells.describe(caps, structured=True).endswith(
         "You answer by calling `final_response`.",
     )
 

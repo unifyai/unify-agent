@@ -216,7 +216,6 @@ async def test_request_clarification_in_a_cell_is_the_json_tool_in_python():
     session = core_surface.Session(
         tools={},
         prompt=core_surface.PromptSurface(),
-        steering=False,
         objects={},
         clarification=core_surface._clarification_factory(
             (up, down),

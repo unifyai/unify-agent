@@ -95,14 +95,6 @@ def require_prerequisites(*, can_compose: bool) -> None:
         )
 
 
-def offers_steering(environments: Mapping[str, Any]) -> bool:
-    """Whether the loop's steering tools (``wait``, ``steer``,
-    ``ask_about_completed_tool``) are offered: never. The loop has none (a
-    turn's calls run in order, each to completion), so neither the prompt
-    nor ``execute_code``'s description names them, sub-actors or not."""
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Documentation
 # ---------------------------------------------------------------------------
@@ -1331,7 +1323,7 @@ _SESSION_TOOLS = re.compile(
 )
 
 
-def execute_code_doc(doc: str, *, steering: bool) -> str:
+def execute_code_doc(doc: str) -> str:
     """``execute_code``'s description for the core surface: no
     ``execute_function`` to prefer, no session tools to choose a session
     with."""
@@ -1359,7 +1351,7 @@ def _copy_function(fn: Callable[..., Any], doc: str) -> Callable[..., Any]:
     return copied
 
 
-def core_tools(tools: Mapping[str, Any], *, steering: bool) -> Dict[str, Any]:
+def core_tools(tools: Mapping[str, Any]) -> Dict[str, Any]:
     """The session's JSON tools: ``execute_code`` alone, described for this surface."""
     from unify.common.tool_spec import ToolSpec
 
@@ -1367,7 +1359,7 @@ def core_tools(tools: Mapping[str, Any], *, steering: bool) -> Dict[str, Any]:
     if tool is None:
         return {}
     fn = tool.fn if isinstance(tool, ToolSpec) else tool
-    copied = _copy_function(fn, execute_code_doc(fn.__doc__ or "", steering=steering))
+    copied = _copy_function(fn, execute_code_doc(fn.__doc__ or ""))
     if isinstance(tool, ToolSpec):
         return {"execute_code": dataclasses.replace(tool, fn=copied)}
     return {"execute_code": copied}
@@ -1385,7 +1377,6 @@ class PromptSurface:
     functions: bool = True
     guidance: bool = True
     clarification: bool = False
-    steering: bool = False
     policy: WritePolicy = WritePolicy()
     #: A response format is set: the answer is a ``final_response`` call.
     structured: bool = False
@@ -1402,17 +1393,11 @@ class PromptSurface:
             else "When the request is addressed, answer with a reply that "
             "calls no tool."
         )
-        loop = (
-            " `wait`, `steer` and `ask_about_completed_tool` manage calls "
-            "while they run."
-            if self.steering
-            else ""
-        )
         return "### Tools\n\n" + _fill(
             "`execute_code` runs cells of Python (or bash, with "
             '`language="bash"`) in a persistent sandbox. Everything else '
             "the harness provides is a Python object in that sandbox, called "
-            f"from code and awaited, and listed below.{loop} {answer}",
+            f"from code and awaited, and listed below. {answer}",
         )
 
     def index(self) -> str:
@@ -1548,29 +1533,6 @@ class PromptSurface:
             its output as data.
         """).strip()
 
-    def tool_selection(self, shipped: str) -> str:
-        """Handles and the steering checkpoint, from the shipped Tool
-        Selection section, where the steering tools exist; nothing otherwise
-        (the rest of that section is about choosing between JSON tools)."""
-        marker = "### Responding to a steering checkpoint"
-        if not self.steering or marker not in shipped:
-            return ""
-        handles = "### Handles\n\n" + "\n".join(
-            _fill(line)
-            for line in (
-                "- **Handle adoption:** a steerable handle a cell returns as "
-                "its **last expression** is adopted by the outer loop for "
-                "steering (ask, stop, pause, resume) -- never consume a handle "
-                "inside a cell (print it, await-and-discard it) when the loop "
-                "needs steering.",
-                "- **Handle lifetime:** an adopted handle is steerable while "
-                "its work runs, and its completion is the outcome to report "
-                "-- never pause a handle or relaunch finished work to keep it "
-                "open for corrections that have not arrived.",
-            )
-        )
-        return handles + "\n\n" + marker + shipped.split(marker, 1)[1]
-
 
 def _fill(text: str) -> str:
     if text.startswith("#") or not text:
@@ -1681,7 +1643,6 @@ class Session:
 
     tools: Dict[str, Any]
     prompt: PromptSurface
-    steering: bool
     objects: Dict[str, Any]
     clarification: Any
 
@@ -1715,7 +1676,6 @@ def start_session(
     actor: Any,
     *,
     sandbox: Any,
-    environments: Mapping[str, Any],
     tools: Mapping[str, Any],
     policy: WritePolicy,
     store_skills: bool,
@@ -1733,8 +1693,7 @@ def start_session(
     the loop offers only on the turn that compresses, when ``store_skills``)
     and puts the rest in *sandbox* as Python objects.
     """
-    steering = offers_steering(environments)
-    session_tools = core_tools(tools, steering=steering)
+    session_tools = core_tools(tools)
     if store_skills and "store_skills" in tools:
         session_tools["store_skills"] = tools["store_skills"]
     objects = sandbox_objects(actor, policy=policy)
@@ -1753,7 +1712,6 @@ def start_session(
         functions=FUNCTIONS in objects,
         guidance=GUIDANCE in objects,
         clarification=clarification_enabled,
-        steering=steering,
         policy=policy,
         structured=structured,
         store_skills_on_compression="store_skills" in session_tools,
@@ -1762,7 +1720,6 @@ def start_session(
     return Session(
         tools=session_tools,
         prompt=prompt,
-        steering=steering,
         objects=objects,
         clarification=clarification,
     )

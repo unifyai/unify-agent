@@ -27,36 +27,9 @@ _TOOL_SELECTION = textwrap.dedent("""
       (branching, loops, combining intermediate results); a
       `print()`, `await handle.result()`, or temporary variable around a
       single call is boilerplate, not composition.
-    - **Handle adoption:** `execute_function` structurally guarantees the
-      returned handle is exposed to the outer loop for steering (ask,
-      stop, pause, resume). Inside `execute_code` a handle is only
-      adopted when it is the **last expression** — never consume a handle
-      inside a code block (print it, await-and-discard it) when the loop
-      needs steering.
-    - **Handle lifetime:** an adopted handle is steerable while its work
-      runs, and its completion is the outcome to report — never pause a
-      handle or relaunch finished work to keep it open for corrections
-      that have not arrived.
     - Procedures are **not** primitives — use the GuidanceManager JSON
       tools (`GuidanceManager_search`, `GuidanceManager_add_guidance`, …)
       directly.
-
-    ### Responding to a steering checkpoint
-
-    A running block suspends when a correction reaches it, and you get a
-    turn carrying the interjection and a progress report. Work already
-    done has already happened — a replacement block must not repeat it.
-    `steer(call_id=<id>, action="stop")` abandons the block (choose when the
-    correction changes the *remaining* work — an irreversible step the
-    correction was meant to prevent is worse than a discarded plan);
-    `steer(call_id=<id>, action="interject", payload=<text>)` resumes it as
-    written, the text available via `steering.messages` (choose when the
-    remaining work is unchanged). Do not stop on every interjection either.
-    When a correction concerns work already running in `primitives.*`
-    handles, route it via `handle.interject(...)` rather than restarting the
-    plan — `steer` is for handles the outer async tool loop is tracking for
-    you, not for handles you are holding directly in code.
-
 """).strip()
 
 
@@ -203,7 +176,6 @@ def _shipped_sandbox_environment_section(*, has_primitives: bool) -> str:
         | `query_llm` / `list_llms` | Semantic LLM calls from code (doctrine below); full contract `help(query_llm)`, endpoints `list_llms()` |
         | `run_coro_sync` | Drives a coroutine factory from a sync façade under the already-running loop |
         | `unillm` | Advanced direct LLM usage beyond `query_llm` |
-        | `SteerableToolHandle` | Handle type sub-actor and stored-function calls return; make it the last expression to hand steering to the outer loop |
 
         ```python
         {query_signature}
@@ -391,7 +363,7 @@ def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> 
 # text occurs: a section holds only some of them.
 
 # UNIFY_PROMPT_TRIM, no environment in the ``primitives`` namespace: nothing
-# in the sandbox is a primitive, and nothing returns a steerable handle.
+# in the sandbox is a primitive.
 _TRIM_NO_PRIMITIVES = (
     (re.compile(r"\(`primitives\.\*`, `query_llm`, …\)"), "(`query_llm`, …)"),
     (
@@ -400,27 +372,9 @@ _TRIM_NO_PRIMITIVES = (
     ),
     (
         re.compile(
-            r"stored function or primitive by name\. A steerable handle reaches the"
-            r"\s+outer loop \(for `steer`\) when it is the result of `execute_function` or"
-            r"\s+the last expression of a cell\.",
+            r"stored function or primitive by name\.",
         ),
         "stored function by name.",
-    ),
-    (
-        re.compile(
-            r"\nWhen a correction concerns work already running in `primitives\.\*`"
-            r"\s+handles, .*?directly in code\.",
-            re.DOTALL,
-        ),
-        "",
-    ),
-    (re.compile(r"\| `SteerableToolHandle` \|[^\n]*\n"), ""),
-    (
-        re.compile(
-            r"- \*\*Handle adoption:\*\*.*?(?=- Procedures are)",
-            re.DOTALL,
-        ),
-        "",
     ),
     (
         re.compile(r" primitive calls,(?P<ws>\s+)filters"),
@@ -682,7 +636,6 @@ def _build_core_prompt(
     )
     parts.append(_unified(sandbox, _CORE_SANDBOX_SEARCH, _CORE_SANDBOX_SEARCH_PYTHON))
     parts.append(core.index())
-    parts.append(core.tool_selection(_TOOL_SELECTION))
     parts.append(core.python_first())
     parts.append(
         _unified(

@@ -23,13 +23,13 @@ written in the cell itself, as Jupyter magics on its first lines:
 ``%%what_if`` with ``%%session NAME`` is a what-if on that notebook; any of
 the location magics may come with ``%%bash`` except ``%%what_if`` (bash
 refuses read-only runs). The first comment of the cell, or else its first
-line of code, becomes the runtime's ``thought``, so the inspection digest,
-active-work metadata and logs keep a per-step line.
+line of code, becomes the runtime's ``thought``, so active-work metadata and
+logs keep a per-step line.
 
 Only what the model sees changes. The function behind the tool, every one
 of its arguments and hidden channels (steering, notifications,
 clarification, parent chat context), the ``ExecutionResult`` it returns,
-handle adoption, events and stored-function recording are the runtime's own:
+events and stored-function recording are the runtime's own:
 a parsed cell is passed to it as the arguments the legacy projection would
 have sent. The model reads a cell's result as a notebook shows it (what it
 printed, ``[stderr]``, ``Out: <repr>``, the traceback) instead of the JSON
@@ -485,8 +485,8 @@ class NotebookCellResult(ExecutionResult):
     first and what steered the block after the traceback, when anything did,
     then the line naming the session's variables
     (``UNIFY_VARIABLE_INVENTORY``), when it changed. No session or timing
-    metadata. A result that is or holds a steerable handle keeps the
-    shipped rendering while the loop adopts it.
+    metadata. A result that is or holds a handle keeps the shipped
+    rendering.
     """
 
     def to_llm_content(self) -> List[dict]:
@@ -573,7 +573,6 @@ _CODE_FIELD = (
 def describe(
     caps: Capabilities,
     *,
-    steering: bool,
     structured: bool,
     network: str = "",
 ) -> str:
@@ -623,18 +622,6 @@ def describe(
         "and its text, `Out: <repr>` of the last expression, and the traceback "
         "if it failed.",
     )
-    if steering:
-        out.append(
-            "A steerable handle as the cell's last expression is adopted by "
-            "the outer loop for steering. A running cell can be corrected: "
-            "checkpoints sit between top-level statements, at the top of every "
-            "loop body and before every `primitives.*` call; on a correction "
-            "the cell suspends and you get a turn with a progress report, where "
-            '`steer(call_id=<id>, action="stop")` abandons it and interjecting '
-            "again resumes it as written. A checkpoint runs only when the cell "
-            "yields, so prefer async calls in work that may need correcting "
-            "partway through.",
-        )
     out.append(_closing(structured))
     return "\n\n".join(out)
 
@@ -700,7 +687,6 @@ def project_tools(
     tools: Mapping[str, Any],
     *,
     caps: Capabilities,
-    steering: bool,
     structured: bool,
     parent_context: bool,
     resolve_session_name: Callable[[str], Any],
@@ -828,7 +814,6 @@ def project_tools(
 
     execute_code.__doc__ = describe(
         caps,
-        steering=steering,
         structured=structured,
         network=network,
     )

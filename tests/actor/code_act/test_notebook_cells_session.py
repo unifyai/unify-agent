@@ -361,7 +361,6 @@ async def test_stored_function_calls_record_the_same_cases(
             tools = nb.project_tools(
                 tools,
                 caps=nb.Capabilities(bash=True),
-                steering=False,
                 structured=False,
                 parent_context=False,
                 resolve_session_name=actor._resolve_session_name,
@@ -498,7 +497,6 @@ async def test_active_work_sees_the_cell_with_its_caption_and_nothing_reaches_th
     tools = nb.project_tools(
         actor.get_tools("act"),
         caps=nb.Capabilities(),
-        steering=True,
         structured=False,
         parent_context=False,
         resolve_session_name=actor._resolve_session_name,

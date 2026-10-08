@@ -443,13 +443,8 @@ class _ActorRunner:
 
         The actor is an independent CodeActActor with its own sandbox,
         prompt, and (optionally) a curated set of directly callable
-        functions.  It returns a steerable handle, allowing the caller
-        to monitor progress and steer (stop, pause, resume, interject) the
-        actor mid-flight.
-
-        Actors are **steerable** — once spawned, dynamic steering helpers
-        appear (stop, pause, resume, interject) so you can monitor progress and
-        redirect the actor mid-flight, just like any other steerable handle.
+        functions.  It returns a handle to the running actor;
+        ``await handle.result()`` gives its final result.
 
         When to use
         -----------
@@ -631,9 +626,8 @@ class _ActorRunner:
         Returns
         -------
         SteerableToolHandle
-            A live handle to the running actor.  The handle supports
-            mid-flight steering (stop, pause, resume, interject).  The
-            final string result is surfaced when the actor completes.
+            A live handle to the running actor.  ``await handle.result()``
+            returns the final result when the actor completes.
         """
         from unify.actor.execution import _PARENT_CHAT_CONTEXT
 
@@ -825,16 +819,12 @@ class ActorEnvironment(BaseEnvironment):
 
         # With environment namespaces registered it is no longer the only one.
         lead = "" if environment_aliases() else "The one `primitives.*` surface. "
-        # The core surface has no execute_function.
-        via = ""
         lines = [
             f"### `{fq_prefix}` — Actor Delegation\n",
             f"{lead}Awaiting a call returns a "
-            f"`SteerableToolHandle` (`handle = await {fq_prefix}.act(...)`): "
-            f"make the handle the last expression of `execute_code`{via} "
-            "so the outer loop can steer it — "
-            "`await handle.result()` only when the code itself composes on the "
-            "result.\n",
+            f"`SteerableToolHandle` (`handle = await {fq_prefix}.act(...)`); "
+            "`await handle.result()` gives the sub-actor's result, and the "
+            "cell that started it ends only once it has finished.\n",
         ]
         lines.append(f"**`{heading}`**")
         if filtered_doc:

@@ -302,7 +302,6 @@ def _project(runtime: Runtime, *, parent_context=False, caps=ALL, names=None, **
     return nb.project_tools(
         tools,
         caps=caps,
-        steering=kw.pop("steering", True),
         structured=kw.pop("structured", False),
         parent_context=parent_context,
         resolve_session_name=(names or {}).get,
@@ -505,7 +504,7 @@ def test_an_install_alone_does_not_call_the_runtime(monkeypatch):
 
 
 def test_the_description_names_only_the_magics_the_session_has():
-    full = nb.describe(ALL, steering=True, structured=False, network="no network")
+    full = nb.describe(ALL, structured=False, network="no network")
     for magic in (
         "%%bash",
         "%pip install",
@@ -516,13 +515,12 @@ def test_the_description_names_only_the_magics_the_session_has():
     ):
         assert magic in full, magic
     assert "workspace sandbox" in full and "no network" in full
-    assert '`steer(call_id=<id>, action="stop")`' in full
-    assert "steering.messages" not in full
+    assert "steer(" not in full
     assert full.endswith(
         "A cell is for computing. You answer, and take any action the requester "
         "defines, by replying.",
     )
-    python_only = nb.describe(PYTHON_ONLY, steering=False, structured=True)
+    python_only = nb.describe(PYTHON_ONLY, structured=True)
     assert "%%bash" not in python_only and "workspace sandbox" not in python_only
     assert "steer(" not in python_only
     assert python_only.endswith("You answer by calling `final_response`.")
@@ -656,6 +654,6 @@ def test_origin_capture_reads_a_bash_cell_as_bash(monkeypatch):
 
 
 def test_the_what_if_line_says_what_the_copy_discards():
-    text = nb.describe(ALL, steering=False, structured=False)
+    text = nb.describe(ALL, structured=False)
     assert "its changes are discarded" in text
     assert "stays changed" not in text

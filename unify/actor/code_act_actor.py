@@ -836,18 +836,6 @@ _STORAGE_BASE_INSTRUCTIONS = (
 # Shared tool docstrings
 # ---------------------------------------------------------------------------
 
-# UNIFY_PROMPT_ACCURACY: the steering docs name the tool that exists. The
-# per-call stop_* tools they describe were replaced by `steer` (its stop and
-# interject actions), which the actor prompt already names.
-_STALE_STEERING_DOC = (
-    (
-        re.compile(r"``stop_execute_(?:code|function)_<call_id>``"),
-        '``steer(call_id=<id>, action="stop")``',
-    ),
-    (re.compile(r"interjecting(\s+)again"), '``action="interject"``'),
-)
-
-
 # No delegation through primitives.actor: execute_function's docs do not
 # offer the sub-actor primitive as their example of a primitive.
 _SUB_ACTOR_EXAMPLES_DOC = (
@@ -977,7 +965,6 @@ def _correct_tool_docs(
     from unify.actor import placeholder_note
 
     rewrites: list = []
-    rewrites.extend(_STALE_STEERING_DOC)
     rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
     rewrites.extend(_LEAN_TOOL_DOCS)
     rewrites.append(_LEAN_INSTALL_DOC)
@@ -4097,7 +4084,6 @@ class CodeActActor(BaseCodeActActor):
         core_session = core_surface.start_session(
             self,
             sandbox=sandbox,
-            environments=sandbox_envs,
             tools=base_tools,
             policy=core_surface.WritePolicy(
                 can_store=effective_can_store,
@@ -4138,7 +4124,6 @@ class CodeActActor(BaseCodeActActor):
             base_tools = notebook_cells.project_tools(
                 base_tools,
                 caps=notebook_cells.Capabilities(bash=True),
-                steering=core_session.prompt.steering,
                 structured=response_format is not None,
                 parent_context=_injects_actor_primitives(sandbox_envs),
                 resolve_session_name=self._resolve_session_name,
