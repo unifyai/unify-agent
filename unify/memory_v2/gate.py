@@ -54,15 +54,37 @@ The checks:
   already had red (the parent's own version fails on the parent, and a test it failed now passes; a
   collection error counts for the whole file) while importing library functions of which the pass edits
   none. Every edited environment function has at least one test of the first kind, so its change is
-  observed by a red run. A *clean-up pass* (D26: it adds no item and the library shrinks: the channel
-  modules' function definitions or the AST nodes of those definitions fall, and neither they nor the
-  nodes of other module code grow; comments and docstrings never count) may exempt an edited function
-  from the red run only when the change keeps its behaviour: a parent test file that passed on the
-  parent, calls it (an import alone does not count) and still passes in both runs below; and on every
-  recorded cover of the function (the evidence store's and this manifest's), run confined on the
-  parent's and the candidate's version through G2's runner and replay, both return the same value
-  (canonical JSON), refuse alike, raise the same exception class and issue the same environment calls.
-  A cover that cannot be read, given or compared voids the exemption. Without it the function needs a
+  observed by a red run.
+
+  **Behaviour check (D28): any change in what a stored function returns on recorded inputs needs a
+  failing-then-passing test.** In every pass, for every channel it changes (any file under
+  ``env/<channel>/`` added, edited or deleted: a public function, a private helper, a constant, a
+  decorator, an alias or other module-level code), every public function of the parent's module (a
+  ``def``, or a name bound by assignment or import that has recorded covers) whose name the candidate's
+  module still binds (a ``def``, an assignment such as ``A = B`` or an import) runs confined on the
+  parent's and the candidate's version through G2's runner and replay. It runs on its recorded covers
+  (the evidence store's and this manifest's; beyond :data:`.held_out.MAX_OUTPUT_COVERS` a hash-seeded
+  sample) and on the recorded actions of its channel in the pass's own episodes (at most
+  :data:`MAX_EPISODE_INPUTS`, chosen by hash), each in the parent's declared input form. Both must
+  return the same value (canonical JSON), refuse alike, raise the same exception class and issue the
+  same environment calls. A function whose results differ on any of them, or cannot be compared (not
+  JSON, timed out, not run in time), or whose input form changed, must be listed in ``items`` with a
+  test of this pass that is red on the parent's library and green on the candidate's; otherwise the
+  pass is refused, naming the function and the number of differing inputs (ids, never values). A cover
+  that cannot be read or given is skipped with a note; an action that cannot be given in the declared
+  form is not compared; a deleted name is G5's. New functions have no parent version and are exempt
+  (G2 and the red run hold them). This replaces task-10's rule that a helper or constant change needs no
+  test: an unchanged body whose results change is a change. The check is bounded per pass at
+  :data:`BEHAVIOUR_BUDGET_S` seconds and :data:`BEHAVIOUR_MAX_CASES` compared inputs; exhausting either
+  refuses the pass ("behaviour check not completed"), never merges it unchecked.
+
+  A *clean-up pass* (D26: it adds no item and the library shrinks: the channel modules' function
+  definitions or the AST nodes of those definitions fall, and neither they nor the nodes of other module
+  code grow; comments and docstrings never count) may exempt an edited function from the red run only
+  when the change keeps its behaviour: a parent test file that passed on the parent, calls it (an import
+  alone does not count) and still passes in both runs below; and the behaviour check above shows it
+  doing the same on every recorded cover (none unread or ungiven, at most the cap; a recorded rejection
+  that gives no input aside) and on the pass's recorded episode actions. Without it the function needs a
   red test as in any pass (a repair changes behaviour, so it always does); new tests of a clean-up pass
   need only be green. Then, per channel, against the parent's suite (the baseline, ruling R19):
 
@@ -86,8 +108,8 @@ The checks:
   and is a successful observation (a recorded rejection cover, status ``error``, is not new coverage), or
   the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
   recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
-  cover of an item the candidate keeps unchanged or whose change G3 vetted (a red test, or the same
-  results on its recorded covers).
+  cover of a kept item whose channel the pass leaves unchanged or that G3's behaviour check showed doing
+  the same. A function changed under a red test holds only the covers this manifest lists for it (I1).
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   key-shaped string in a changed file or the manifest; every public function of a changed module declares
   ``Effect:`` and is defined once; every module parses.
@@ -98,22 +120,28 @@ uncommitted tree, for the consolidator's ``check`` tool; it never decides or rec
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
-from .episodes import Action
+from .episodes import Action, env_channel
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
 from .held_out import (
+    MAX_ACTIONS_PER_EPISODE,
     MAX_OUTPUT_COVERS,
+    MAX_POOL_ACTIONS,
     MAX_POOL_EPISODES,
+    OUTPUTS_BUDGET_S,
+    Case,
     _form,
     _unfit_reason,
     output_cases,
@@ -149,6 +177,7 @@ from .snapshot import (
     materialise,
     module_skeleton,
     notes_preamble,
+    public_bindings,
     tree_listing,
     without_listed,
 )
@@ -170,6 +199,13 @@ _REDACTED = "<redacted:key-shaped>"
 # A check (:meth:`Gate.preview`) examines at most this many covers, naming at most this many episodes.
 PREVIEW_MAX_COVERS = 500
 PREVIEW_MAX_EPISODES = 32
+
+# G3's behaviour check (D28), per pass: the seconds its confined runs may take and the recorded inputs it may
+# compare (each run on both versions); either exhausted refuses the pass. Each changed channel's functions are
+# also run on at most this many recorded actions of the channel in the pass's own episodes (chosen by hash).
+BEHAVIOUR_BUDGET_S = 600.0
+BEHAVIOUR_MAX_CASES = 2000
+MAX_EPISODE_INPUTS = 64
 
 
 @dataclass
@@ -286,6 +322,69 @@ def _unfit_forms(
     return out
 
 
+@dataclass
+class _Probe:
+    """One function's behaviour check (D28): the inputs to run on both versions and what they showed."""
+
+    item: str
+    strict: bool  # an edited function claiming the clean-up exemption: every recorded cover, none unread
+    cases: list[Case] = field(default_factory=list)
+    # recorded covers among the cases
+    covers: set[tuple[str, int]] = field(default_factory=set)
+    why: str | None = None  # not shown to do the same before anything runs
+    # recorded covers that cannot be read or given (not strict: noted, not compared)
+    skipped: int = 0
+    differ: list[tuple[str, int]] = field(default_factory=list)
+    unjudged: list[tuple[str, int]] = field(default_factory=list)
+
+    def verdict(self) -> str | None:
+        """None when it does the same on every compared input; else why not (cover ids, never a value)."""
+        if self.why is not None:
+            return self.why
+        parts = []
+        for ids, what in (
+            (self.differ, "its results differ from the parent's on {n} {of}"),
+            (
+                self.unjudged,
+                "its results on {n} {of} cannot be compared (not run in time, timed out or not JSON)",
+            ),
+        ):
+            for of, chosen in (
+                ("recorded covers", [c for c in ids if c in self.covers]),
+                (
+                    "recorded actions of this pass's episodes",
+                    [c for c in ids if c not in self.covers],
+                ),
+            ):
+                if chosen:
+                    parts.append(
+                        what.format(n=len(chosen), of=of)
+                        + f": {[list(c) for c in sorted(chosen)[:5]]}",
+                    )
+        return "; ".join(parts) or None
+
+
+class _Budget:
+    """G3's behaviour-check budget for one pass (D28): wall-clock seconds left."""
+
+    def __init__(self, seconds: float) -> None:
+        self.end = time.monotonic() + seconds
+
+    def left(self) -> float:
+        return self.end - time.monotonic()
+
+
+def _sample(covers: set[tuple[str, int]], seed: str, n: int) -> set[tuple[str, int]]:
+    """At most *n* of *covers*, chosen by a hash seeded with *seed* (deterministic, independent of order)."""
+    if len(covers) <= n:
+        return set(covers)
+
+    def rank(c: tuple[str, int]) -> str:
+        return hashlib.sha256(f"{seed}\0{c[0]}\0{c[1]}".encode()).hexdigest()
+
+    return set(sorted(covers, key=rank)[:n])
+
+
 class _WithSources:
     """The evidence store, with an item's manifest source episodes counted as its episodes.
 
@@ -338,9 +437,15 @@ class _Run:
     pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
         default_factory=dict,
     )
-    # edited functions whose change G3 vetted: a red test observed it, or the function does the same as its
-    # parent version on every recorded cover (D26). None: not judged (a preview runs no G3).
-    vetted: set[str] | None = None
+    # functions of the changed channels that G3's behaviour check showed doing what their parent versions did
+    # on every compared input (D28). None: not judged (a preview runs no G3).
+    same: set[str] | None = None
+    # the parent's declared input forms by function, read once (False: its library cannot be read)
+    p_inputs: dict[str, str] | bool | None = None
+    # changed channel -> recorded actions of the channel in the pass's own episodes (G3's behaviour check)
+    episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
+        default_factory=dict,
+    )
 
     def fail(self, check: str, reason: str) -> None:
         # reasons are stored in the evidence store; test output in them is model-controlled
@@ -1000,7 +1105,8 @@ class Gate:
     def _g3(self, run: _Run) -> None:
         man, changed = run.man, set(run.changed)
         new_tests = sorted({t for it in man.items for t in it.tests if t in changed})
-        # an unchanged function listed under a skeleton change is held by the regression run
+        # an unchanged function listed under a skeleton change is held by the regression run and, if its
+        # results change, by the behaviour check (D28)
         edited = {
             it.item
             for it in man.items
@@ -1011,11 +1117,14 @@ class Gate:
         # a clean-up pass may edit a function without a red test when an old test holds it (D26)
         cleanup = self._cleanup(run)
         unseen: set[str] = set()
+        # already refused here: the behaviour check need not run them
+        refused: set[str] = set()
         for it in man.items:
             if it.item in edited and not any(t in changed for t in it.tests):
                 if cleanup:
                     unseen.add(it.item)
                 else:
+                    refused.add(it.item)
                     run.fail("G3", f"{it.item} has no new or changed test")
         missing = [t for t in new_tests if t not in run.c_files]
         for t in missing:
@@ -1045,38 +1154,139 @@ class Gate:
                         f"{t} is not green on the candidate ({_describe(on_cand)}) "
                         f"{on_cand.output[-300:]}",
                     )
-        # each edited function is seen changing behaviour by at least one classically red test
-        observed: set[str] = set()
+        # a function declared with a test that is red on the parent may change behaviour (each edited
+        # function is seen changing by at least one such test)
+        declared: set[str] = set()
         for it in man.items:
             tests = {t for t in it.tests if t in changed and t in run.c_files}
-            if it.item in edited and tests & classic:
-                observed.add(it.item)
+            if tests & classic:
+                declared.add(it.item)
             elif it.item in edited and tests:
                 if cleanup:
                     unseen.add(it.item)
                 else:
+                    refused.add(it.item)
                     run.fail(
                         "G3",
                         f"{it.item} is edited, but none of its tests is red on the parent's library",
                     )
         protected = self._suites(run)
-        # the clean-up exemption holds only for a change that keeps behaviour: an old passing test calls the
-        # function, and it does what the parent's version did on every recorded cover (D26)
-        preserved: set[str] = set()
-        for k, item in enumerate(sorted(unseen)):
-            if not self._held(run, item, protected):
-                why: str | None = "no parent test that passed on the parent calls it"
-            else:
-                why = self._same_results(run, item, run.tmp / f"same-{k}")
-            if why is None:
-                preserved.add(item)
+        self._behaviour(run, unseen, declared, refused, protected)
+
+    def _behaviour(
+        self,
+        run: _Run,
+        unseen: set[str],
+        declared: set[str],
+        refused: set[str],
+        protected: set[str],
+    ) -> None:
+        """G3's behaviour check (D28): any change in what a stored function returns on recorded inputs needs
+        a failing-then-passing test.
+
+        For every channel the pass changes (any file under ``env/<channel>/``), every public function of the
+        parent's module (a ``def``, or a name bound by assignment or import that has recorded covers) whose
+        name the candidate's module still binds runs confined on both versions (:meth:`_probe`,
+        :meth:`_run_probe`), unless *declared* (a test of it in this pass is red on the parent) or already
+        *refused*. A function that differs, or cannot be compared, on any input is refused. An edited
+        function claiming the clean-up exemption (*unseen*) must also be called by a *protected* parent test
+        and is compared on every recorded cover (none unread, at most :data:`.held_out.MAX_OUTPUT_COVERS`).
+        Sets ``run.same``; a budget run out refuses the pass.
+        """
+        recorded: dict[str, set[tuple[str, int]]] = {}
+        for it, e, i in self.ev.covers():
+            recorded.setdefault(it, set()).add((e, i))
+        probes: dict[str, _Probe] = {}
+        for item in sorted(unseen):
+            if self._held(run, item, protected):
+                probes[item] = self._probe(run, item, recorded, strict=True)
             else:
                 run.fail(
                     "G3",
-                    f"{item} is edited in a clean-up pass without a red test, and {why}; a change of "
-                    "behaviour needs a test that is red on the parent's library",
+                    self._exemption_refused(
+                        item,
+                        "no parent test that passed on the parent calls it",
+                    ),
                 )
-        run.vetted = observed | preserved
+        for channel in sorted(self._changed_channels(run)):
+            module = f"{channel}/__init__.py"
+            before = public_bindings(
+                (run.p_tree / module).read_bytes() if module in run.p_files else None,
+            )
+            after = public_bindings(
+                (run.c_tree / module).read_bytes() if module in run.c_files else None,
+            )
+            for name, is_def in sorted((before or {}).items()):
+                item = f"{channel}:{name}"
+                if (
+                    item in probes
+                    or item in unseen
+                    or item in declared
+                    or item in refused
+                ):
+                    continue
+                if after is None or name not in after:
+                    continue  # deleted: its recorded covers stay covered under G5
+                if is_def or item in recorded:
+                    probes[item] = self._probe(run, item, recorded, strict=False)
+        total = sum(len(p.cases) for p in probes.values())
+        if total > BEHAVIOUR_MAX_CASES:
+            run.fail(
+                "G3",
+                f"behaviour check not completed: {total} recorded inputs of the changed channels' functions "
+                f"exceed the {BEHAVIOUR_MAX_CASES} compared in one pass; change fewer channels or functions",
+            )
+            run.same = set()
+            return
+        budget = _Budget(BEHAVIOUR_BUDGET_S)
+        same: set[str] = set()
+        for k, item in enumerate(sorted(probes)):
+            pr = probes[item]
+            if pr.why is None and not self._run_probe(
+                run,
+                pr,
+                run.tmp / f"same-{k}",
+                budget,
+            ):
+                run.fail(
+                    "G3",
+                    f"behaviour check not completed: its {BEHAVIOUR_BUDGET_S:g} s budget ran out at {item}",
+                )
+                break
+            why = pr.verdict()
+            if why is None:
+                same.add(item)
+            elif pr.strict:
+                run.fail("G3", self._exemption_refused(item, why))
+            else:
+                run.fail(
+                    "G3",
+                    f"{item} changes behaviour without a test: {why}; any change in what a stored function "
+                    "returns on recorded inputs needs a test, listed under it in the manifest, that fails on "
+                    "the parent's library and passes on the candidate's",
+                )
+            if pr.skipped:
+                run.note(
+                    f"G3 behaviour check: {pr.skipped} recorded covers of {item} cannot be read or given "
+                    "and were not compared",
+                )
+        run.same = same
+
+    @staticmethod
+    def _exemption_refused(item: str, why: str) -> str:
+        return (
+            f"{item} is edited in a clean-up pass without a red test, and {why}; a change of behaviour "
+            "needs a test that is red on the parent's library"
+        )
+
+    @staticmethod
+    def _changed_channels(run: _Run) -> set[str]:
+        """``env/<channel>`` of every channel with an added, edited or deleted file."""
+        return {
+            "/".join(p.split("/")[:2])
+            for p in run.changed
+            if p.startswith("env/") and p.count("/") >= 2
+        }
 
     def _test_only_repair(
         self,
@@ -1285,40 +1495,92 @@ class Gate:
             raise KeyError(sha)
         return self.blobs.get(sha)
 
-    def _same_results(self, run: _Run, item: str, work: Path) -> str | None:
-        """None when *item* does what its parent version did on every recorded cover; else why not.
+    def _forms(self, run: _Run, item: str) -> tuple[str | None, str | None] | None:
+        """*item*'s declared input form in the parent and in the candidate (None: the kind's convention).
 
-        The covers are every recorded cover of *item* in the evidence store plus its covers in this
-        manifest (not only those the pass lists). Each recorded input runs confined on both versions, in
-        the parent's declared input form, through G2's runner and replay (:func:`.held_out.output_cases`,
-        :func:`.held_out.run_outputs`); the return values (canonical JSON), refusals, raised exception
-        classes and issued environment calls must be equal. A recorded rejection that gives no input is
-        skipped; any other cover that cannot be read, given or compared means the results are not shown
-        to be the same. The reason names cover ids only, never a value.
+        A candidate name bound by assignment or import has no docstring of its own and keeps the parent's
+        form. None when the parent's library cannot be read.
         """
-        covers = {(e, i) for it, e, i in self.ev.covers() if it == item}
+        if run.p_inputs is None:
+            try:
+                p_report = items(run.p_tree)
+            except ValueError:
+                run.p_inputs = False
+            else:
+                run.p_inputs = {
+                    i.item_id: i.input
+                    for i in p_report.items
+                    if i.kind == "env_function"
+                }
+        if run.p_inputs is False:
+            return None
+
+        def known(v: str | None) -> str | None:
+            return v if v in INPUT_KINDS else None
+
+        p_form = known(run.p_inputs.get(item, ""))
+        c_docs = self._doc_inputs(run)
+        return p_form, (known(c_docs[item]) if item in c_docs else p_form)
+
+    def _episode_inputs(self, run: _Run, channel: str) -> list[tuple[str, int, Action]]:
+        """The recorded actions on *channel* (``env/<name>``) in the pass's own episodes (its manifest's source
+        and cover episodes), shell commands aside: at most :data:`MAX_EPISODE_INPUTS`, chosen by hash.
+        """
+        if channel not in run.episode_inputs:
+            name = channel.split("/", 1)[1]
+            found: list[tuple[str, int, Action]] = []
+            read = 0
+            for eid in self._named_episodes(run):
+                for i in range(MAX_ACTIONS_PER_EPISODE):
+                    if read >= MAX_POOL_ACTIONS:
+                        break
+                    a = self.lookup(eid, i)
+                    read += 1
+                    if a is None:
+                        break
+                    kind = getattr(a, "kind", "tool")
+                    if kind != "shell" and env_channel(kind, a.channel) == name:
+                        found.append((eid, i, a))
+            keep = _sample({(e, i) for e, i, _ in found}, channel, MAX_EPISODE_INPUTS)
+            run.episode_inputs[channel] = [c for c in found if (c[0], c[1]) in keep]
+        return run.episode_inputs[channel]
+
+    def _probe(
+        self,
+        run: _Run,
+        item: str,
+        recorded: dict[str, set[tuple[str, int]]],
+        *,
+        strict: bool,
+    ) -> _Probe:
+        """The recorded inputs *item* is compared on, without running anything (D26, D28).
+
+        Its recorded covers (the evidence store's, *recorded* by item, and this manifest's) and the recorded actions of its
+        channel in the pass's own episodes (:meth:`_episode_inputs`, so that a repair of an input no cover
+        holds is seen), each in the parent's declared input form. Not *strict*: beyond
+        :data:`.held_out.MAX_OUTPUT_COVERS` covers a hash-seeded sample, and a cover that cannot be read or
+        given is skipped (counted for a note). *strict* (an edited function claiming the clean-up exemption):
+        it needs a recorded cover, at most the cap, every one read and given (a recorded rejection that gives
+        no input aside). Either way an action that cannot be given in the declared form is not compared, and
+        a changed input form, or a parent library that cannot be read, is a difference.
+        """
+        pr = _Probe(item, strict)
+        covers = set(recorded.get(item, ()))
         covers |= {
             (e, i) for it in run.man.items if it.item == item for e, i in it.covers
         }
-        if not covers:
-            return "it has no recorded cover to compare its results on"
-        if len(covers) > MAX_OUTPUT_COVERS:
-            return f"its {len(covers)} recorded covers exceed the {MAX_OUTPUT_COVERS} compared"
-        try:
-            p_report = items(run.p_tree)
-        except ValueError:
-            return "the parent's library cannot be read"
-
-        def form(report: ItemsReport | None) -> str | None:
-            docs = {
-                i.item_id: i.input
-                for i in (report.items if report is not None else [])
-                if i.kind == "env_function"
-            }
-            declared = docs.get(item, "")
-            return declared if declared in INPUT_KINDS else None
-
-        p_form, c_form = form(p_report), form(run.c_report)
+        if strict and not covers:
+            pr.why = "it has no recorded cover to compare its results on"
+            return pr
+        if strict and len(covers) > MAX_OUTPUT_COVERS:
+            pr.why = f"its {len(covers)} recorded covers exceed the {MAX_OUTPUT_COVERS} compared"
+            return pr
+        covers = _sample(covers, item, MAX_OUTPUT_COVERS)
+        forms = self._forms(run, item)
+        if forms is None:
+            pr.why = "the parent's library cannot be read"
+            return pr
+        p_form, c_form = forms
         acts: list[tuple[str, int, Action]] = []
         unread: list[list] = []
         for e, i in sorted(covers):
@@ -1327,55 +1589,74 @@ class Gate:
                 unread.append([e, i])
             else:
                 acts.append((e, i, a))
-        if unread:
-            return f"{len(unread)} of its recorded covers cannot be read: {unread[:5]}"
+        if unread and strict:
+            pr.why = (
+                f"{len(unread)} of its recorded covers cannot be read: {unread[:5]}"
+            )
+            return pr
+        pr.skipped += len(unread)
+        given = {(e, i) for e, i, _ in acts}
+        acts += [
+            c
+            for c in self._episode_inputs(run, item.split(":", 1)[0])
+            if (c[0], c[1]) not in given
+        ]
         if any(_form(a, p_form) != _form(a, c_form) for _, _, a in acts):
-            return "its input form changed"
+            pr.why = "its input form changed"
+            return pr
         cases, unfit = output_cases(acts, self._blob, p_form)
         rejected = {
             (e, i)
             for e, i, a in acts
             if is_rejection(a) and getattr(a, "kind", "tool") != "shell"
         }
-        unfit = [list(c) for c in unfit if c not in rejected]
-        if unfit:
-            return (
-                f"{len(unfit)} of its recorded covers cannot be given to it (a shell cover, another "
-                f"input form or an unreadable file): {unfit[:5]}"
+        unfit_covers = [list(c) for c in unfit if c in given and c not in rejected]
+        if unfit_covers and strict:
+            pr.why = (
+                f"{len(unfit_covers)} of its recorded covers cannot be given to it (a shell cover, another "
+                f"input form or an unreadable file): {unfit_covers[:5]}"
             )
-        if not cases:
-            return "none of its recorded covers gives it an input to compare its results on"
-        before = run_outputs(
-            item,
-            cases,
-            tree=run.p_tree,
-            python=self.python,
-            work=work / "parent",
-        )
-        after = run_outputs(
-            item,
-            cases,
-            tree=run.c_tree,
-            python=self.python,
-            work=work / "candidate",
-        )
-        unjudged = sorted(
+            return pr
+        pr.skipped += len(unfit_covers)
+        pr.cases = cases
+        pr.covers = {c.cover for c in cases if c.cover in given}
+        if strict and not pr.covers:
+            pr.why = "none of its recorded covers gives it an input to compare its results on"
+        return pr
+
+    def _run_probe(self, run: _Run, pr: _Probe, work: Path, budget: _Budget) -> bool:
+        """Run *pr*'s cases confined on the parent's and the candidate's *item*, through G2's runner and
+        replay (:func:`.held_out.run_outputs`): the return value (canonical JSON), refusal, raised exception
+        class and issued environment calls must be equal. Records the differing and the uncomparable cases;
+        False when the *budget* ran out (the check is then not completed).
+        """
+        if not pr.cases:
+            return True
+        results = []
+        for side, tree in (("parent", run.p_tree), ("candidate", run.c_tree)):
+            left = budget.left()
+            if left <= 0:
+                return False
+            results.append(
+                run_outputs(
+                    pr.item,
+                    pr.cases,
+                    tree=tree,
+                    python=self.python,
+                    work=work / side,
+                    timeout_s=min(left, OUTPUTS_BUDGET_S),
+                ),
+            )
+        if budget.left() <= 0:
+            return False
+        before, after = results
+        pr.unjudged = sorted(
             c for c in before if before[c] is None or after.get(c) is None
         )
-        differ = sorted(
-            c for c in before if c not in unjudged and before[c] != after[c]
+        pr.differ = sorted(
+            c for c in before if c not in pr.unjudged and before[c] != after[c]
         )
-        if differ:
-            return (
-                f"its results differ from the parent's on {len(differ)} recorded covers: "
-                f"{[list(c) for c in differ[:5]]}"
-            )
-        if unjudged:
-            return (
-                f"its results on {len(unjudged)} recorded covers cannot be compared (not run in "
-                f"time, timed out or not JSON): {[list(c) for c in unjudged[:5]]}"
-            )
-        return None
+        return True
 
     def _g4(self, run: _Run) -> None:
         try:
@@ -1401,12 +1682,19 @@ class Gate:
         recorded = self.ev.covers()
         held = {(e, i) for _, e, i in run.covers}
 
+        changed = self._changed_channels(run)
+
         def keeps(it: str) -> bool:
-            """A kept item still handles its recorded covers: unchanged, or its change vetted by G3."""
+            """A kept item still does on its recorded covers what it did (I1, D28): its channel is unchanged,
+            or G3's behaviour check showed it doing the same. A function changed under a red test holds only
+            the covers this manifest lists for it (already in ``held``)."""
             if it in deleted or it not in run.c_bodies:
                 return False
-            same = run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
-            return same or run.vetted is None or it in run.vetted
+            if run.same is None:  # a preview runs no G3
+                return True
+            if it.split(":", 1)[0] not in changed:
+                return run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
+            return it in run.same
 
         held |= {(e, i) for it, e, i in recorded if keeps(it)}
         lost: dict[str, list[tuple[str, int]]] = {}
