@@ -175,11 +175,70 @@ def installer_cache() -> Path:
     return store_home() / "uv-cache"
 
 
+# The passed-on variables that hold URLs (whitespace-separated lists, a
+# ``UV_INDEX`` entry possibly ``name=url``): their userinfo is removed.
+_URL_VARIABLES = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "PIP_INDEX_URL",
+        "PIP_EXTRA_INDEX_URL",
+    }
+    | {name for name in _INSTALLER_ENV if name.startswith("UV_INDEX")}
+    | {name for name in _INSTALLER_ENV if name.endswith("_INDEX_URL")}
+    | {"UV_DEFAULT_INDEX"},
+)
+
+
+def _without_userinfo(url: str) -> str:
+    """*url* without ``user:password@``; scheme, host, port, path, query kept."""
+    prefix = ""
+    if "=" in url.split("://", 1)[0]:
+        prefix, url = url.split("=", 1)
+        prefix += "="
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return prefix + url
+    if "@" not in parts.netloc:
+        return prefix + url
+    return prefix + parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]).geturl()
+
+
+def _strip_userinfo(env: Dict[str, str]) -> Dict[str, str]:
+    """*env* with the userinfo removed from every URL variable's URLs.
+
+    Index and proxy credentials never reach the installer (or anything it
+    starts): authenticated indexes go through the allow-listing index proxy
+    (:class:`unify.sandbox.EgressProxy`), never through credentials in a
+    URL.
+    Only the variable's name is logged, never its value.
+    """
+    import logging
+
+    out = dict(env)
+    for name, value in env.items():
+        if name not in _URL_VARIABLES or "@" not in value:
+            continue
+        stripped = " ".join(_without_userinfo(item) for item in value.split())
+        if stripped != " ".join(value.split()):
+            out[name] = stripped
+            logging.getLogger(__name__).warning("userinfo removed from %s", name)
+    return out
+
+
 def installer_env() -> Dict[str, str]:
     """The environment ``uv`` runs with: :data:`_INSTALLER_ENV`, never the
-    harness's (which holds the provider credentials)."""
-    return sandbox.scrubbed_env(
-        {name: os.environ[name] for name in _INSTALLER_ENV if name in os.environ},
+    harness's (which holds the provider credentials), with no userinfo in
+    its URLs (:func:`_strip_userinfo`)."""
+    return _strip_userinfo(
+        sandbox.scrubbed_env(
+            {name: os.environ[name] for name in _INSTALLER_ENV if name in os.environ},
+        ),
     )
 
 

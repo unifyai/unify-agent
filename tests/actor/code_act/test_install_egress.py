@@ -604,3 +604,53 @@ async def test_a_cell_cannot_widen_the_allow_list(core_world, monkeypatch):
     assert "NO_PROXY" not in env
     # The cell's variables stayed in the worker.
     assert "UV_INDEX_URL" not in os.environ
+
+
+# ── no credentials in the installer's URLs ──────────────────────────────────
+
+
+def test_the_installer_env_carries_no_userinfo(monkeypatch):
+    """Proxy and index URLs reach the installer without ``user:password@``,
+    keeping scheme, host, port and path; nothing else changes; the log names
+    the variable only."""
+    import logging
+
+    secret_values = {
+        "HTTPS_PROXY": "http://u:tok@proxy.example:3128",  # pragma: allowlist secret
+        "http_proxy": "http://u:tok@proxy.example:3128/",  # pragma: allowlist secret
+        "UV_INDEX_URL": "https://u:tok@mirror.example:8443/simple/?x=1",  # pragma: allowlist secret
+        "UV_EXTRA_INDEX_URL": "https://a.example/s https://u:tok@b.example/s",  # pragma: allowlist secret
+        "UV_INDEX": "internal=https://u:tok@c.example/simple",  # pragma: allowlist secret
+    }
+    plain = {
+        "LANG": "C.UTF-8",
+        "UV_HTTP_TIMEOUT": "30",
+        "NO_PROXY": "localhost",
+        "UV_DEFAULT_INDEX": "https://d.example/simple",
+    }
+    for name in [*secret_values, *plain]:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in {**secret_values, **plain}.items():
+        monkeypatch.setenv(name, value)
+    records: list[str] = []
+    handler = logging.Handler(logging.DEBUG)
+    handler.emit = lambda record: records.append(record.getMessage())
+    # Unify's loggers do not propagate to the root, where caplog listens.
+    logger = logging.getLogger("unify.environment")
+    logger.addHandler(handler)
+    try:
+        env = environment.installer_env()
+    finally:
+        logger.removeHandler(handler)
+    assert not any("u:tok" in v or "tok@" in v for v in env.values()), env
+    assert env["HTTPS_PROXY"] == "http://proxy.example:3128"
+    assert env["http_proxy"] == "http://proxy.example:3128/"
+    assert env["UV_INDEX_URL"] == "https://mirror.example:8443/simple/?x=1"
+    assert env["UV_EXTRA_INDEX_URL"] == "https://a.example/s https://b.example/s"
+    assert env["UV_INDEX"] == "internal=https://c.example/simple"
+    for name, value in plain.items():
+        assert env[name] == value, name
+    logged = "\n".join(records)
+    assert "tok" not in logged and "proxy.example" not in logged, logged
+    for name in secret_values:
+        assert f"userinfo removed from {name}" in logged
