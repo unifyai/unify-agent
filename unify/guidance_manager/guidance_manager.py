@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from typing import Any, Dict, FrozenSet, List, Optional, Union
 
 from unify import db
+from unify import outcome as outcome_mod
 from ..common.exact_patch import PatchEdit
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in
 from ..common.stale_reason import StaleReason, merge_stale_reasons
@@ -269,6 +270,9 @@ class GuidanceManager(BaseGuidanceManager):
             raise ValueError(
                 "At least one field (title/content) must be provided.",
             )
+        # The checker's outcome, which the storage review reads, stays out
+        # of the library (unify/outcome.py).
+        outcome_mod.refuse_carried("guidance.add", title, content)
         g = Guidance(
             title=title or "",
             content=content or "",
@@ -319,6 +323,7 @@ class GuidanceManager(BaseGuidanceManager):
             updates["function_ids"] = validated.function_ids
         if not updates:
             raise ValueError("At least one field must be provided for an update.")
+        outcome_mod.refuse_carried("guidance.update", title, content)
 
         row = self._own_row(guidance_id)
         if row is None:
@@ -448,6 +453,8 @@ class GuidanceManager(BaseGuidanceManager):
 
         if not str(why or "").strip():
             raise ValueError("say `why` the entry needs this patch")
+        # The patched content is checked by update_guidance.
+        outcome_mod.refuse_carried("guidance.patch", why)
         try:
             wanted = collect_edits(
                 old=old,

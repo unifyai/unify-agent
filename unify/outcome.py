@@ -9,10 +9,15 @@ checker and not from the agent.
 
 The outcome is held in memory, on the session's handle. It is never
 written to a file and never put in the environment, so nothing the agent
-runs through the workspace can read it from disk. Every section
+runs through the workspace can read it from disk. The section the review
+reads carries the verdict only (:func:`render`): whether the task was solved,
+the score and how many checks passed, never a check's name or reason or the
+checker's summary, which can name the expected answer. Every section
 :func:`render` builds is remembered (in memory) so that the session
-transcripts (unify/transcripts.py) can replace it with
-:data:`REDACTED` in every line they write (:func:`redact`). ``unify act --jsonl``
+transcripts (unify/transcripts.py) can replace it with :data:`REDACTED` in
+every line they write (:func:`redact`), and a library write that carries one
+is refused (:func:`refuse_carried`): the store is read by every later cell.
+``unify act --jsonl``
 receives it as a control line on the stdin channel the driving program
 already writes (``{"outcome": {...}}``); a program that runs the actor in
 process calls :func:`post` itself.
@@ -39,7 +44,7 @@ import re
 import threading
 import weakref
 from collections import OrderedDict
-from typing import Any, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol
 
 MAX_CHECKS = 20
 MAX_NAME = 120
@@ -61,6 +66,10 @@ _RENDERED_LOCK = threading.Lock()
 
 class OutcomeError(ValueError):
     """A posted outcome that is malformed or has no session to go to."""
+
+
+class OutcomeCarried(PermissionError):
+    """A library write that carries an outcome section the harness rendered."""
 
 
 class OutcomeReceiver(Protocol):
@@ -182,6 +191,53 @@ def _forms(section: str) -> list[str]:
     return list(dict.fromkeys((section, once, twice)))
 
 
+def _sections() -> list[str]:
+    with _RENDERED_LOCK:
+        return sorted(_RENDERED, key=len, reverse=True)
+
+
+def carries_section(text: str) -> bool:
+    """Whether *text* holds an outcome section this process rendered.
+
+    Exact match, raw or JSON-escaped (as :func:`redact` matches), never on
+    words: a model's own account of a verdict is not a section.
+    """
+    if not isinstance(text, str) or OUTCOME_HEADER not in text:
+        return False
+    return any(form in text for section in _sections() for form in _forms(section))
+
+
+def _strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _strings(key)
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _strings(item)
+
+
+def refuse_carried(what: str, *values: Any) -> None:
+    """Raise :class:`OutcomeCarried` when any text in *values* carries a section.
+
+    *what* names the write (``functions.add``, ...). Every string inside the
+    values (nested lists and mappings included) is checked with
+    :func:`carries_section`. The libraries are read by every later task's
+    cells, so the checker's outcome, which the storage review alone reads,
+    may not be copied into them.
+    """
+    for text in _strings(values):
+        if carries_section(text):
+            raise OutcomeCarried(
+                f"{what} refused: it carries the outcome section of the review's "
+                "prompt verbatim, and the checker's outcome stays out of the "
+                "libraries every later task reads. Store what the session "
+                "taught in your own words instead.",
+            )
+
+
 def redact(line: str) -> str:
     """*line* with every outcome section this process rendered replaced.
 
@@ -191,9 +247,7 @@ def redact(line: str) -> str:
     """
     if OUTCOME_HEADER not in line:
         return line
-    with _RENDERED_LOCK:
-        sections = sorted(_RENDERED, key=len, reverse=True)
-    for section in sections:
+    for section in _sections():
         for form in _forms(section):
             if form in line:
                 line = line.replace(form, REDACTED)
@@ -205,8 +259,13 @@ def redact(line: str) -> str:
 def render(outcome: Optional[dict]) -> str:
     """The review's section on the checked outcome; empty without one.
 
+    The verdict only: solved or not, the score, and how many checks passed.
+    A check's name and reason and the checker's summary are left out, since
+    they can name the expected answer and the review's writes outlive the
+    session; the normalized outcome on the session's handle keeps them.
     The section is remembered, so a transcript line never carries it
-    (:func:`redact`).
+    (:func:`redact`) and a library write that does is refused
+    (:func:`refuse_carried`).
     """
     parts: list[str] = []
     if outcome is not None:
@@ -222,25 +281,15 @@ def render(outcome: Optional[dict]) -> str:
             lines.append(f"- Score: {outcome['score']:g}")
         total = outcome.get("checks_total", len(outcome["checks"]))
         if total:
-            shown = len(outcome["checks"])
-            more = f"; {total - shown} not shown" if total > shown else ""
             lines.append(
-                f"- Checks: {outcome.get('checks_passed', 0)} of {total} passed{more}",
+                f"- Checks: {outcome.get('checks_passed', 0)} of {total} passed",
             )
-            for check in outcome["checks"]:
-                mark = {True: "passed", False: "FAILED", None: "unknown"}[
-                    check["passed"]
-                ]
-                reason = f": {check['reason']}" if check["reason"] else ""
-                lines.append(f"  - {mark} `{check['name']}`{reason}")
-        if outcome.get("summary"):
-            lines.append(f"\nChecker's summary: {outcome['summary']}")
         if outcome["solved"] is False:
             lines.append(
                 "\nThe task was not solved, so the procedure the conversation "
                 "followed did not work as a whole, whatever the agent said. Do "
                 "not store it as a working function; keep only a part the "
-                "checks show to be sound, if any.",
+                "trajectory shows to be sound, if any.",
             )
         elif outcome["solved"] is True:
             lines.append("\nThe task was solved.")

@@ -24,6 +24,7 @@ from typing import (
     Union,
 )
 from unify import db
+from unify import outcome as outcome_mod
 from ..common.exact_patch import PatchEdit
 from ..common.sql_filters import and_clauses, invalid_filter_error, not_in, or_clauses
 from ..common.semantic_search import SIMILARITY_FIELD, rank_by_similarity
@@ -1162,6 +1163,14 @@ class FunctionManager(BaseFunctionManager):
             implementations = [implementations]
         # UNIFY_STORE_FROM_SESSION: a bare name is the session's own source.
         implementations, parse_errors = session_source.expand(implementations)
+        # The checker's outcome, which the storage review reads, stays out
+        # of the library (unify/outcome.py).
+        outcome_mod.refuse_carried(
+            "functions.add",
+            implementations,
+            preconditions,
+            requirements,
+        )
 
         parsed: List[Tuple[str, ast.Module, ast.FunctionDef, str]] = []
         temp_names: Set[str] = set()
@@ -1551,6 +1560,10 @@ class FunctionManager(BaseFunctionManager):
             )
         except PatchRefused as exc:
             return refused(str(exc))
+        try:
+            outcome_mod.refuse_carried("functions.patch", patched, why)
+        except outcome_mod.OutcomeCarried as exc:
+            return refused(str(exc))
         problem = syntax_refusal(patched)
         if problem is not None:
             return refused(
@@ -1676,6 +1689,10 @@ class FunctionManager(BaseFunctionManager):
 
         if not str(why or "").strip():
             return refused("say `why` the recorded behaviour was wrong")
+        try:
+            outcome_mod.refuse_carried("functions.retire", why)
+        except outcome_mod.OutcomeCarried as exc:
+            return refused(str(exc))
         try:
             wanted = int(case_id)
         except (TypeError, ValueError):

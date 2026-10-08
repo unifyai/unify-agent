@@ -45,9 +45,11 @@ from unify.settings import SETTINGS
 
 # Fresh per process: logs of earlier runs cannot match it.
 MARKER = f"outcome-marker-{uuid.uuid4().hex[:12]}"
-OUTCOME = {**FAILED, "summary": MARKER}
-# What the checker wrote, as the review read it: the summary, a check's
-# reason and the section's header.
+# The review reads the verdict only: the marker is in the source it names,
+# and in the summary, which it does not read.
+OUTCOME = {**FAILED, "source": MARKER, "summary": MARKER}
+# What the checker wrote: the marker, a check's reason and the section's
+# header.
 NEEDLES = (MARKER, "no email to Kim", outcome_mod.OUTCOME_HEADER)
 
 # Run in the worker: for each place, what was read and every needle found.

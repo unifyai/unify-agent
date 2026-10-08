@@ -138,8 +138,8 @@ def test_the_section_says_whose_verdict_it_is():
     assert "- Solved: no" in text
     assert "- Score: 0.5" in text
     assert "- Checks: 1 of 2 passed" in text
-    assert "FAILED `email_sent`: no email to Kim" in text
-    assert "passed `no_side_effects`" in text
+    # the verdict only: no check's name or reason (test_review_outcome_text.py)
+    assert "no email to Kim" not in text and "email_sent" not in text
     assert "not from the agent" in text
     assert outcome_mod.render(None) == ""
     assert caa._storage_review_outcome_note() == ""
@@ -236,7 +236,7 @@ async def test_the_outcome_reaches_the_standalone_review(switches, monkeypatch):
     section = text.index(outcome_mod.OUTCOME_HEADER)
     final = text.index("## Final Result\n\n")
     assert text.index("## Completed Trajectory") < section < final
-    assert "FAILED `email_sent`: no email to Kim" in text
+    assert "- Solved: no" in text and "no email to Kim" not in text
     # the final result is the reply the task ended on, not the closing reply
     # and not the loop's stop notice
     assert text[final:] == f"## Final Result\n\n{SESSION_REPLY}"
@@ -342,7 +342,8 @@ async def test_the_outcome_never_reaches_the_disk_or_the_environment(switches):
     from unify.workspace import get_local_root
 
     marker = "outcome-marker-7f3e9c"
-    outcome = {**FAILED, "summary": marker}
+    # The review reads the source, not the summary (the verdict only).
+    outcome = {**FAILED, "source": marker, "summary": marker}
     _note, requests, handle, _ = await _persistent_review(outcome=outcome)
     assert marker in _review_text(requests[3])
     assert handle._outcome["summary"] == marker
