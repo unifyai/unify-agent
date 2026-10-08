@@ -223,18 +223,23 @@ def test_untouched_generated_files_stay_out_of_the_diff(tmp_path):
 
 
 def test_an_older_commits_bytecode_is_never_exported(tmp_path):
-    """v2.1 I4: a commit from before the layout refused bytecode, extensions and shadowing root entries is
-    exported without them, so a cell can never import a sourceless ``.pyc`` from the library; the untouched
-    export still diffs empty (what was left out is not something the request deleted).
+    """v2.1 I4: a commit from before the gate refused what manifest.unsafe_path names (bytecode, extensions,
+    root entries outside the layout) is exported without them, so a cell can never import a sourceless
+    ``.pyc`` from the library; the untouched export still diffs empty (what was left out is not something
+    the request deleted).
     """
-    planted = {
-        "env/__init__.pyc": "x",
-        "json.pyc": "x",
-        "sitecustomize.pyc": "x",
-        "env/spotify/__pycache__/__init__.cpython-312.pyc": "x",
-        "env/spotify/fast.so": "x",
-        "pytest_shadow.txt": "x",
-    }
+    # not a dict literal: test_gate_layout's fixture sweep reads those as libraries the gate must admit
+    planted = dict.fromkeys(
+        [
+            "env/__init__.pyc",
+            "json.pyc",
+            "sitecustomize.pyc",
+            "env/spotify/__pycache__/__init__.cpython-312.pyc",
+            "env/spotify/fast.so",
+            "pytest_shadow.txt",
+        ],
+        "x",
+    )
     mem = Repo.init_bare(tmp_path / "memory")
     base = mem.head()
     with mem.temp_checkout() as wt:
