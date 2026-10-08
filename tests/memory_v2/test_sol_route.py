@@ -13,9 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
+import json
 import logging
 import os
+import secrets
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -340,6 +346,9 @@ def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, miss
         "http://8.8.8.8/v1",
         "http://169.254.169.254/v1",
         "http://0.0.0.0:8080/v1",
+        # plain http to 127.0.0.1 always names its port, as the launcher sends it
+        "http://127.0.0.1/sol/v1",
+        "http://127.0.0.1:/sol/v1",
     ],
 )
 def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
@@ -382,6 +391,10 @@ def test_the_base_url_validator_accepts_http_urls(raw, want):
         "short-placehold",  # pragma: allowlist secret
         'quote"d-placeholder-value',  # pragma: allowlist secret
         "padding=in-the-placeholder",  # pragma: allowlist secret
+        "padded-the-placeholder==",  # pragma: allowlist secret
+        # + and / percent-encode (%2B, %2F) or JSON-escape (\/) into forms value redaction would miss
+        "plus+in-the-placeholder",  # pragma: allowlist secret
+        "slash/in-the-placeholder",  # pragma: allowlist secret
     ],
 )
 def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw):
@@ -389,6 +402,20 @@ def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw)
         switch.parse_sol_token(raw)
     leaked = "placeholder" in str(info.value)
     assert not leaked
+
+
+def test_the_token_validator_accepts_the_launchers_url_safe_tokens():
+    """The office key proxy issues ``secrets.token_urlsafe(32)``; 16 unreserved characters is the floor."""
+    tokens = [secrets.token_urlsafe(32) for _ in range(200)] + [
+        "a" * 16,
+        "Az09._~-" * 2,
+        SOL_TOKEN,
+    ]
+    kept = [
+        _digest(switch.parse_sol_token(t).get_secret_value()) == _digest(t)
+        for t in tokens
+    ]
+    assert all(kept)
 
 
 def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
@@ -722,10 +749,20 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
         route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
     )
 
+    seen: dict = {"route_after": "not read"}  # replaced only inside the turn's task
+
+    async def in_turns_task() -> None:
+        try:
+            await turn(_MESSAGES, _TOOLS)
+        except asyncio.CancelledError:
+            # the turn's own context: the route it set must have been reset on the way out
+            seen["route_after"] = sol_pass._SOL_GATEWAY.get()
+            raise
+
     async def scenario() -> dict:
         real_transport.hold = asyncio.Event()
         real_transport.started = asyncio.Event()
-        task = asyncio.create_task(turn(_MESSAGES, _TOOLS))
+        task = asyncio.create_task(in_turns_task())
         await asyncio.wait_for(real_transport.started.wait(), 10)
         task.cancel()
         cancelled = False
@@ -742,7 +779,7 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
         return {
             "cancelled": cancelled,
             "late": len(listener) > before,
-            "route_after": sol_pass._SOL_GATEWAY.get(),
+            "route_after": seen["route_after"],
         }
 
     out = asyncio.run(scenario())
@@ -877,6 +914,217 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
     assert named and leaked == []
 
 
+def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_path):
+    """A Sol call that finds the route not in effect ends the pass with ``route_not_in_effect``, which the end
+    event carries (not the generic ``sol_error``).
+    """
+    from tests.memory_v2.test_sol_pass import _run as run_pass
+    from tests.memory_v2.test_sol_pass import _sol
+
+    async def misrouted(messages, tools):
+        raise sol_pass.SolRouteError("a Sol call did not take Sol's declared route")
+
+    _mem, _ev, sol = _sol(tmp_path, misrouted)
+    out = run_pass(sol, "p0")
+    codes = consolidate.reason_codes(out, None)
+    assert not out.passed
+    assert sol_pass.CODE_ROUTE_NOT_IN_EFFECT in out.codes
+    assert codes[0] == "route_not_in_effect" and "sol_error" not in codes
+
+
+# --- unillm's own copies of a failed call's text --------------------------------------------------------------
+
+
+def test_unillms_retry_warnings_are_redacted_once_the_route_is_installed(
+    monkeypatch,
+    restore_unillm,
+    caplog,
+):
+    """``unillm.retry`` logs the first 200 characters of a failed call's text as a WARNING, which reaches the
+    controller's stderr. Building a routed turn puts a redacting filter on that exact logger, once.
+    """
+    from unify.process_secrets import register_secret
+
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    _fake_client(monkeypatch, lambda kw: None)
+    for _ in range(2):  # idempotent
+        unillm_turn(
+            "openai/gpt-6-sol",
+            "low",
+            route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+        )
+    retry = logging.getLogger(sol_pass.RETRY_LOGGER)
+    ours = [f for f in retry.filters if getattr(f, "_memory_v2_sol", False)]
+    other = "unregistered-bearer-placeholder-4567"  # pragma: allowlist secret
+    with caplog.at_level(logging.DEBUG, logger=sol_pass.RETRY_LOGGER):
+        retry.warning(
+            f"not retried, treated as permanent: AuthenticationError: {_echo()}",
+        )
+        retry.warning("retries exhausted after %d attempts: %s", 3, _echo())
+        retry.warning("echo {'Authorization': 'Bearer %s'}", other)
+        try:
+            raise RuntimeError(f"echo {SOL_TOKEN}")
+        except RuntimeError:
+            retry.warning("with a traceback", exc_info=True)
+    texts = [caplog.text] + [r.getMessage() for r in caplog.records]
+    leaked = [i for i, t in enumerate(texts) if SOL_TOKEN in t or other in t]
+    assert len(ours) == 1
+    assert len(caplog.records) == 4 and leaked == []
+    assert (
+        "<secret:UNIFY_MEMORY_V2_SOL_TOKEN>" in caplog.text
+        and "<redacted>" in caplog.text
+    )
+
+
+def test_sols_per_call_log_file_is_rewritten_redacted(
+    monkeypatch,
+    tmp_path,
+    restore_unillm,
+):
+    """Sol's client (only) gets unillm's ``on_log_file`` callback, which rewrites the finalised per-call log
+    (``UNILLM_LOG_DIR``; it holds ``str(error)`` as is) with the token and credential structures removed.
+    """
+    import unify.common.llm_client as llm_client
+    from unify.process_secrets import register_secret
+
+    register_secret("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    callbacks: list = []
+
+    class LoggingClient:
+        def set_on_log_file(self, cb):
+            callbacks.append(cb)
+            return self
+
+    monkeypatch.setattr(
+        llm_client,
+        "new_llm_client",
+        lambda model, **kw: LoggingClient(),
+    )
+    unillm_turn("openai/gpt-6-sol", "low")  # unset: the shipped client, no callback
+    assert callbacks == []
+    unillm_turn(
+        "openai/gpt-6-sol",
+        "low",
+        route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+    )
+    assert callbacks == [sol_pass._redact_log_file]
+
+    other = "unregistered-bearer-placeholder-8901"  # pragma: allowlist secret
+    log = tmp_path / "0001.cache_miss.txt"
+    log.write_text(
+        json.dumps(
+            {
+                "request": {"model": "openai/gpt-6-sol", "api_base": SOL_BASE},
+                "error": {"type": "AuthenticationError", "message": _echo()},
+                "echo": f"Authorization: Bearer {other}",
+            },
+        ),
+    )
+    clean = tmp_path / "clean.txt"
+    clean.write_text("nothing to redact\n")
+    before = clean.stat().st_mtime_ns
+    callbacks[0](log)
+    callbacks[0](clean)
+    text = log.read_text()
+    leaked = SOL_TOKEN in text or other in text
+    assert not leaked and "AuthenticationError" in text and SOL_BASE in text
+    assert (
+        clean.read_text() == "nothing to redact\n"
+        and clean.stat().st_mtime_ns == before
+    )
+    left = sorted(
+        p.name for p in tmp_path.iterdir()
+    )  # no temporary file left beside them
+    assert left == sorted([log.name, clean.name])
+
+
+def test_sols_route_refuses_to_start_while_unillm_records_spans(
+    monkeypatch,
+    restore_unillm,
+):
+    """unillm's OTel spans keep a failed call's text as is (``error.message``), so with ``UNILLM_OTEL`` on the
+    route fails closed: the settings refuse (no pass starts) and a routed turn cannot be built.
+    """
+    unillm_logger = importlib.import_module("unillm.logger")
+    monkeypatch.setattr(unillm_logger, "_OTEL_ENABLED", True)
+    made: list = []
+    _fake_client(monkeypatch, lambda kw: made.append(1))
+    routed = SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=SOL_BASE,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(SOL_TOKEN),
+    )
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(routed)
+    with pytest.raises(sol_pass.SolRouteError) as built:
+        unillm_turn(
+            "openai/gpt-6-sol",
+            "low",
+            route=SolRoute(SOL_BASE, SecretStr(SOL_TOKEN)),
+        )
+    texts = (str(info.value), str(built.value))
+    leaked = any(SOL_TOKEN in t for t in texts)
+    assert not leaked and all("UNILLM_OTEL" in t for t in texts)
+    assert made == []
+    # the shipped route is unaffected by OTel
+    assert consolidate.sol_settings(SimpleNamespace()).route is None
+
+
+def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
+    """A refused route starts no pass, ever: each request appends one value-free ``refused`` event to the run's
+    ``events.jsonl`` (and the --jsonl stream), so the cell is flagged, not read as a null result. With the route
+    unset, no such event is sent.
+    """
+    events = tmp_path / "events.jsonl"
+    errors = tmp_path / "errors.jsonl"
+    stores = SimpleNamespace(paths=SimpleNamespace(events=events, errors=errors))
+    emitted: list[dict] = []
+    refused = SimpleNamespace(
+        UNIFY_MEMORY_V2_SOL_BASE_URL=SOL_BASE,
+        UNIFY_MEMORY_V2_SOL_TOKEN=SecretStr(""),
+    )
+    for eid in ("e1", "e2"):
+        with pytest.raises(switch.SolRouteRefused):
+            asyncio.run(
+                consolidate.run_due_passes(
+                    stores,
+                    eid,
+                    "0" * 40,
+                    SimpleNamespace(),
+                    effort="low",
+                    settings=refused,
+                    emit=emitted.append,
+                ),
+            )
+    lines = [json.loads(line) for line in events.read_text().splitlines()]
+    want = [
+        {
+            "type": "consolidation",
+            "phase": "refused",
+            "episode_id": eid,
+            "consolidation_refused": "route_not_in_effect",
+            "reason_codes": ["route_not_in_effect"],
+        }
+        for eid in ("e1", "e2")
+    ]
+    assert lines == want and emitted == want
+    leaked = SOL_BASE in events.read_text()
+    assert not leaked
+
+    events.unlink()
+    out = asyncio.run(
+        consolidate.run_due_passes(
+            stores,
+            "e3",
+            "0" * 40,
+            SimpleNamespace(),
+            effort="",  # stops right after the settings, before any store is touched
+            settings=SimpleNamespace(),
+            emit=emitted.append,
+        ),
+    )
+    assert out == [] and not events.exists() and len(emitted) == 2
+
+
 def test_error_rows_transcripts_and_redactors_drop_the_registered_token(tmp_path):
     from unify import transcripts
     from unify.memory_v2.integration.request import RequestRun
@@ -943,6 +1191,110 @@ def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
     assert not leaked
     with pytest.raises(ValueError):
         consolidate.sol_settings(settings)
+
+
+def test_sol_settings_settles_again_so_a_late_value_is_refused_off_the_cli(monkeypatch):
+    """An embedder that loads ``.env`` after importing unify never runs the CLI's settle: the pass start
+    settles again, so the late route is refused (not silently replaced by the actor's) and its token leaves.
+    """
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+        monkeypatch.delenv(name)
+    settings = SimpleNamespace()  # as read before the late values arrived: neither set
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_BASE_URL", SOL_BASE)
+    monkeypatch.setenv("UNIFY_MEMORY_V2_SOL_TOKEN", SOL_TOKEN)
+    with pytest.raises(switch.SolRouteRefused) as info:
+        consolidate.sol_settings(settings)
+    text = str(info.value)
+    token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
+    leaked = SOL_TOKEN in text or SOL_BASE in text
+    assert not token_left and not leaked
+    assert ".env" in text and "no consolidation pass starts" in text
+
+
+def test_the_cli_settles_after_loading_dotenv(monkeypatch, tmp_path, capsys):
+    """``cli._configure_environment`` settles after ``load_dotenv``, so a route only in ``.env`` is refused
+    on the CLI path too, and the refusal it prints names settings, never values.
+    """
+    from unify import cli
+
+    unify_logger = importlib.import_module("unify.logger")
+    order: list[str] = []
+    monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
+    for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("UNIFY_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(unify_logger, "configure_log_dir", lambda d: None)
+
+    def fake_load_dotenv(*a, **k):
+        order.append("load_dotenv")
+        os.environ["UNIFY_MEMORY_V2_SOL_BASE_URL"] = SOL_BASE
+        os.environ["UNIFY_MEMORY_V2_SOL_TOKEN"] = SOL_TOKEN
+        return True
+
+    real_settle = switch.settle_sol_route_env
+
+    def settle(environ, settings):
+        order.append("settle")
+        return real_settle(environ, settings)
+
+    monkeypatch.setattr(cli, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(switch, "settle_sol_route_env", settle)
+    try:
+        cli._configure_environment(
+            SimpleNamespace(home=str(tmp_path / "home"), debug=True),
+        )
+        token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
+        refused = switch._ENV_REFUSAL is not None
+    finally:
+        for name in [k for k in os.environ if k.upper() in _ROUTE_NAMES]:
+            os.environ.pop(name, None)
+    err = capsys.readouterr().err
+    leaked = SOL_TOKEN in err or SOL_BASE in err
+    assert order == ["load_dotenv", "settle"]
+    assert refused and not token_left and not leaked
+    assert "memory v2:" in err and ".env" in err
+
+
+def test_importing_settings_takes_the_token_out_of_the_environment(tmp_path):
+    """``import unify.settings`` (a fresh process) leaves no case variant of the token in ``os.environ`` and
+    holds it in SETTINGS; the child prints booleans only.
+    """
+    import unify
+
+    root = Path(unify.__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _ROUTE_NAMES}
+    env.update(
+        {
+            "UNIFY_MEMORY_V2_SOL_BASE_URL": SOL_BASE,
+            "unify_memory_v2_sol_token": SOL_TOKEN,
+            "PYTHONPATH": os.pathsep.join(
+                [str(root), *filter(None, [env.get("PYTHONPATH", "")])],
+            ),
+        },
+    )
+    code = (
+        "import hashlib, json, os\n"
+        "import unify.settings as s\n"
+        "t = s.SETTINGS.UNIFY_MEMORY_V2_SOL_TOKEN.get_secret_value()\n"
+        "print(json.dumps({'left': [k.upper() for k in os.environ"
+        " if k.upper() == 'UNIFY_MEMORY_V2_SOL_TOKEN'],"
+        " 'held': hashlib.sha256(t.encode()).hexdigest()}))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    shown = SOL_TOKEN in proc.stdout or SOL_TOKEN in proc.stderr
+    assert not shown
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    held = out["held"] == hashlib.sha256(SOL_TOKEN.encode()).hexdigest()
+    assert out["left"] == [] and held
 
 
 def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(

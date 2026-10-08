@@ -27,12 +27,20 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
-``run_guard``, ``sol_error``, and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
+``run_guard``, ``sol_error``, ``route_not_in_effect`` (a Sol call found Sol's declared route not in effect),
+and ``ok`` for a passed pass. They are structural: :attr:`PassOutcome.codes`
 (set where each cause arises in the pass and the gate), the type of an exception that ended a pass, or the
 run guard; reason text is never read. A failed pass with no listed cause (memory ``main`` moved during the
 merge) is ``sol_error``. A pass the run guard holds back sends one end event (``calls`` 0, ``usd`` "0",
 ``reason_codes`` ``["run_guard"]``) and no start event, since no pass started. The full reasons stay
 harness-side in the evidence store's ``passes`` row.
+
+When Sol's route is set but refused (:class:`.switch.SolRouteRefused`: malformed, half set, not what the
+settings hold, or ``UNILLM_OTEL`` on), no pass ever starts, so each request instead sends one value-free
+event, ``{"type": "consolidation", "phase": "refused", "episode_id", "consolidation_refused":
+"route_not_in_effect", "reason_codes": ["route_not_in_effect"]}``, before the refusal is raised (and recorded
+in ``errors.jsonl``): a run with any such event consolidated nothing because of its route, which is not a
+null result of consolidation.
 
 Money is a plain decimal string, never an exponent; a measurement that could not be taken is ``None``.
 Sol's per-turn cost rows go as note lines on ``refs/notes/costs`` of the request's episode commit: a pass
@@ -47,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -69,11 +78,26 @@ from ..memory_repo import items as memory_items
 from ..redact import redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
-from ..sol_pass import PassConfig, PassOutcome, SolPass, SolRoute, unillm_turn
+from ..sol_pass import (
+    CODE_ROUTE_NOT_IN_EFFECT,
+    OTEL_REFUSAL,
+    PassConfig,
+    PassOutcome,
+    SolPass,
+    SolRoute,
+    otel_on,
+    unillm_turn,
+)
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
-from .switch import SOL_BASE_URL, SOL_TOKEN, sol_route
+from .switch import (
+    SOL_BASE_URL,
+    SOL_TOKEN,
+    SolRouteRefused,
+    settle_sol_route_env,
+    sol_route,
+)
 
 __all__ = [
     "DEADLINE_S",
@@ -109,6 +133,7 @@ REASON_CODES = frozenset(
         "pass_cap",
         "run_guard",
         "sol_error",
+        CODE_ROUTE_NOT_IN_EFFECT,
         "ok",
     },
 )
@@ -277,8 +302,12 @@ def sol_settings(settings: Any) -> SolSettings:
     """The Sol model, E, the USD allowance per token, the run guard and Sol's route from *settings*.
 
     Defaults if unset. :func:`run_due_passes` reads them before anything else, so a refused value (Sol's
-    route with one of its two settings empty, say) starts no pass and makes no call.
+    route with one of its two settings empty, say) starts no pass and makes no call. Sol's route is settled
+    against the process environment again first (:func:`.switch.settle_sol_route_env`), so a value that
+    reached the environment late (``.env`` loaded by an embedder after unify was imported) is refused here
+    too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.SolRouteRefused`.
     """
+    settle_sol_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
     raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
     if isinstance(raw_e, bool):
@@ -315,10 +344,12 @@ def sol_settings(settings: Any) -> SolSettings:
     )
     route = SolRoute(*pair) if pair is not None else None
     model = model or SOL_MODEL
+    if route is not None and otel_on():
+        raise SolRouteRefused(OTEL_REFUSAL)
     if route is not None and not (
         model if "@" in model else f"{model}@openrouter"
     ).endswith("@openrouter"):
-        raise ValueError(
+        raise SolRouteRefused(
             f"{SOL_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_SOL_MODEL must be an "
             "@openrouter endpoint (or a bare model id)",
         )
@@ -575,7 +606,23 @@ async def run_due_passes(
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
     actor's reasoning effort for the run (Sol inherits it).
     """
-    cfg = sol_settings(settings)
+    try:
+        cfg = sol_settings(settings)
+    except SolRouteRefused:
+        # visible in the run's own events, value-free; the request stays due and refuses again next time
+        if stores is not None:
+            _deliver(
+                stores,
+                emit,
+                {
+                    "type": "consolidation",
+                    "phase": "refused",
+                    "episode_id": eid,
+                    "consolidation_refused": CODE_ROUTE_NOT_IN_EFFECT,
+                    "reason_codes": [CODE_ROUTE_NOT_IN_EFFECT],
+                },
+            )
+        raise
     if not isinstance(effort, str) or not effort.strip():
         _error(stores, f"no pass for {eid}: Sol's effort (the actor's) is empty")
         return []  # nothing recorded; the request stays due
