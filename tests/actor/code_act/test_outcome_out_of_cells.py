@@ -273,19 +273,26 @@ async def test_a_later_cell_finds_no_outcome_anywhere_it_can_read(
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.timeout(240)
-@pytest.mark.parametrize("workspace", ["default", "the state directory"])
+@pytest.mark.parametrize("workspace", ["default", "holding the state directory"])
 async def test_a_later_cell_cannot_open_the_internal_transcripts(
     outcome_world,
     monkeypatch,
     workspace,
 ):
-    if workspace == "the state directory":
-        # The widest workspace a deployment can configure: UNIFY_HOME itself,
-        # a parent of internal-transcripts, bound writable.
-        monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", str(outcome_world["state"]))
+    state = outcome_world["state"]
+    if workspace == "holding the state directory":
+        # The widest workspace a deployment can configure: one that holds
+        # UNIFY_HOME, a parent of internal-transcripts, bound writable
+        # (UNIFY_HOME itself is refused as a workspace).
+        project = outcome_world["home"].parent / "project"
+        state = project / ".unify"
+        state.mkdir(parents=True)
+        monkeypatch.setenv("UNIFY_HOME", str(state))
+        monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", str(project))
         monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
+        db.reset_store()
     await _task_one(monkeypatch, "standalone")
-    internal = outcome_world["state"] / "internal-transcripts"
+    internal = state / "internal-transcripts"
     sessions = _review_sessions(internal)
     assert sessions, f"no review session indexed in {internal}"
     target = sessions[0]["path"]
@@ -427,31 +434,45 @@ def _visible(argv: list[str], path: Path) -> bool:
     return visible
 
 
-@pytest.mark.parametrize("log_dir", ["outside", "inside the workspace"])
+@pytest.mark.parametrize(
+    "log_dir",
+    ["outside", "inside the workspace", "under UNIFY_HOME"],
+)
 def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
     unify_home,
     monkeypatch,
     tmp_path,
     log_dir,
 ):
-    """The full mount list, for the default workspace and for UNIFY_HOME itself,
-    with the LLM request log outside or inside the workspace."""
+    """The full mount list, for the default workspace and for a workspace that
+    holds UNIFY_HOME, with the LLM request log outside the workspace, inside
+    it, or under UNIFY_HOME; a workspace that is UNIFY_HOME itself is refused."""
     from unify import environment
 
-    home = Path(os.path.realpath(unify_home))
-    internal = home / "internal-transcripts"
-    for local_root in ("", str(home)):
+    base = Path(os.path.realpath(unify_home))
+    for layout in ("default", "holding the state directory", "the state directory"):
+        if layout == "default":
+            home, local_root = base, ""
+            workspace = home / "workspace"
+        elif layout == "holding the state directory":
+            workspace = base / "project"
+            home, local_root = workspace / ".unify", str(workspace)
+        else:
+            home, local_root = base, str(base)
+            workspace = base
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("UNIFY_HOME", str(home))
         monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", local_root)
-        workspace = Path(local_root) if local_root else home / "workspace"
-        logs = (
-            Path(os.path.realpath(tmp_path)) / "llm-logs"
-            if log_dir == "outside"
-            else workspace / "llm-logs"
-        )
+        internal = home / "internal-transcripts"
+        logs = {
+            "outside": Path(os.path.realpath(tmp_path)) / "llm-logs",
+            "inside the workspace": workspace / "llm-logs",
+            "under UNIFY_HOME": home / "logs" / "llm-logs",
+        }[log_dir]
         monkeypatch.setenv("UNILLM_LOG_DIR", str(logs))
         monkeypatch.setenv("UNIFY_OTEL_LOG_DIR", str(logs.parent / "otel"))
         policy = sandbox.build_policy(fresh=True)
-        hidden = (internal, logs, logs.parent / "otel")
+        hidden = (internal, logs, logs.parent / "otel", home / "store.sqlite")
         for path in hidden:
             assert policy.readable_violation(path) is not None, path
             assert policy.readable_violation(path / "x.jsonl") is not None, path
@@ -459,9 +480,7 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
         assert policy.readable_violation(home / "transcripts" / "s.jsonl") is None
         if not sys.platform.startswith("linux") or sandbox.bwrap_path() is None:
             continue
-        if log_dir == "inside the workspace":
-            # A workspace that holds a log directory is refused as a whole
-            # (the workspace kind, _workspace_refusal), before anything runs.
+        if layout == "the state directory":
             with pytest.raises(sandbox.SandboxRefusal) as raised:
                 sandbox.wrap_argv(["true"], policy)
             assert raised.value.rule == "root-allowlist"
@@ -472,7 +491,7 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
             writable=[environment.environment_dir(), environment.installer_cache()],
         )
         for path in hidden:
-            assert not _visible(argv, path), (local_root, path, argv)
+            assert not _visible(argv, path), (layout, path, argv)
         assert _visible(argv, workspace / "data.txt"), argv
         assert _visible(argv, home / "transcripts"), argv
 
