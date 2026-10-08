@@ -295,10 +295,15 @@ _SECRET_ENV_WORDS = frozenset({"PAT", "AUTH", "PASSWD", "PASS"})
 # A URL with a password in it (a database URL with user and password, an
 # index URL with a token as its password).
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
+# Harness-only by exact name, whatever the markers say: memory v2's route for
+# Sol's model calls (its URL names Sol's proxy listener; the token is its key).
+HARNESS_ONLY_ENV = frozenset(
+    {"UNIFY_MEMORY_V2_SOL_BASE_URL", "UNIFY_MEMORY_V2_SOL_TOKEN"},
+)
 
 
 def _is_secret_env(name: str, value: str) -> bool:
-    if is_secret_name(name):
+    if name.upper() in HARNESS_ONLY_ENV or is_secret_name(name):
         return True
     words = re.split(r"[^A-Z0-9]+", name.upper())
     if any(w in _SECRET_ENV_WORDS for w in words):

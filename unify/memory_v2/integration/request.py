@@ -265,7 +265,9 @@ class RequestRun:
         exc: BaseException,
         progress: Callable[[str], None],
     ) -> None:
-        text = f"{type(exc).__name__}: {exc}"[:_ERROR_CHARS]
+        from ..redact import redact_error
+
+        text = redact_error(f"{type(exc).__name__}: {exc}")[:_ERROR_CHARS]
         row = {
             "ts": _now(),
             "episode_id": self.episode_id,

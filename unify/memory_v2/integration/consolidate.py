@@ -66,13 +66,14 @@ from ..gate import Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
-from ..redact import KEY_SHAPED
+from ..redact import redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
-from ..sol_pass import PassConfig, PassOutcome, SolPass, unillm_turn
+from ..sol_pass import PassConfig, PassOutcome, SolPass, SolRoute, unillm_turn
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
+from .switch import SOL_BASE_URL, SOL_TOKEN, sol_route
 
 __all__ = [
     "DEADLINE_S",
@@ -250,6 +251,8 @@ class SolSettings:
     experience_budget: int
     usd_per_token: Decimal
     run_guard_usd: Decimal | None
+    # Sol's own route (UNIFY_MEMORY_V2_SOL_BASE_URL / _SOL_TOKEN); None: as shipped
+    route: SolRoute | None = None
 
     @property
     def cap_usd(self) -> Decimal:
@@ -271,7 +274,11 @@ def _decimal(name: str, value: Any) -> Decimal:
 
 
 def sol_settings(settings: Any) -> SolSettings:
-    """The Sol model, E, the USD allowance per token and the run guard from *settings* (defaults if unset)."""
+    """The Sol model, E, the USD allowance per token, the run guard and Sol's route from *settings*.
+
+    Defaults if unset. :func:`run_due_passes` reads them before anything else, so a refused value (Sol's
+    route with one of its two settings empty, say) starts no pass and makes no call.
+    """
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
     raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
     if isinstance(raw_e, bool):
@@ -301,7 +308,21 @@ def sol_settings(settings: Any) -> SolSettings:
         if str(guard_raw).strip()
         else None
     )
-    return SolSettings(model or SOL_MODEL, e, a_tok, guard)
+    # both or neither, checked here (before any pass starts); no error quotes a value
+    pair = sol_route(
+        getattr(settings, SOL_BASE_URL, ""),
+        getattr(settings, SOL_TOKEN, ""),
+    )
+    route = SolRoute(*pair) if pair is not None else None
+    model = model or SOL_MODEL
+    if route is not None and not (
+        model if "@" in model else f"{model}@openrouter"
+    ).endswith("@openrouter"):
+        raise ValueError(
+            f"{SOL_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_SOL_MODEL must be an "
+            "@openrouter endpoint (or a bare model id)",
+        )
+    return SolSettings(model, e, a_tok, guard, route)
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -393,7 +414,10 @@ def _error(stores: Stores, text: str) -> None:
     try:
         stores.paths.errors.parent.mkdir(parents=True, exist_ok=True)
         with open(stores.paths.errors, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"where": "consolidate", "error": text[:500]}) + "\n")
+            fh.write(
+                json.dumps({"where": "consolidate", "error": redact_error(text)[:500]})
+                + "\n",
+            )
     except OSError:
         pass
 
@@ -603,7 +627,15 @@ async def run_due_passes(
             gate,
             stores.evidence,
             lookup.episode,
-            recording_turn(unillm_turn(cfg.model, effort), rows, cfg.model),
+            recording_turn(
+                (
+                    unillm_turn(cfg.model, effort)
+                    if cfg.route is None
+                    else unillm_turn(cfg.model, effort, route=cfg.route)
+                ),
+                rows,
+                cfg.model,
+            ),
             config,
         )
         try:
@@ -624,10 +656,7 @@ async def run_due_passes(
         except Exception as exc:  # noqa: BLE001 - SolPass recorded the pass as failed
             # the outer bound (a pass that overran its deadline) is a deadline; anything else an error
             failure_code = "deadline" if isinstance(exc, TimeoutError) else "sol_error"
-            failure = KEY_SHAPED.sub(
-                "<redacted:key-shaped>",
-                f"pass error: {type(exc).__name__}: {exc}",
-            )
+            failure = redact_error(f"pass error: {type(exc).__name__}: {exc}")
             _error(stores, f"{pass_id}: {failure}")
         except BaseException:
             failure_code = "sol_error"  # cancelled or interrupted

@@ -53,6 +53,11 @@ ETC_ALLOW = (
     "alternatives",
 )
 
+#: Never in a box's environment, whatever a caller passes: memory v2's route for Sol's own model calls.
+HARNESS_ONLY_ENV = frozenset(
+    {"UNIFY_MEMORY_V2_SOL_BASE_URL", "UNIFY_MEMORY_V2_SOL_TOKEN"},
+)
+
 # Resource bounds of every process in the box (the laptop VM has 8 GB).
 RLIMIT_AS_BYTES = 4 * 1024**3
 RLIMIT_NPROC_COUNT = 256
@@ -384,6 +389,9 @@ def run_confined(
     bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
     ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
     """
+    for name in env or {}:
+        if name.upper() in HARNESS_ONLY_ENV:
+            raise ValueError(f"{name} never enters the box")
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise RuntimeError("bubblewrap is required")

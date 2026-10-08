@@ -176,6 +176,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _configure_environment(args: argparse.Namespace) -> Path:
     """Point the runtime at its home directory and route logs there."""
     load_dotenv()
+    # Settings were read before .env: a Sol route value only there is refused
+    # (it would leave Sol on the actor's route) and its token leaves the
+    # environment.
+    from unify.memory_v2.integration.switch import settle_sol_route_env
+    from unify.settings import SETTINGS
+
+    refusal = settle_sol_route_env(os.environ, SETTINGS)
+    if refusal is not None:
+        print(f"memory v2: {refusal}", file=sys.stderr)
     if args.home:
         os.environ["UNIFY_HOME"] = str(Path(args.home).expanduser())
     home = Path(os.environ.get("UNIFY_HOME", "").strip() or "~/.unify").expanduser()
