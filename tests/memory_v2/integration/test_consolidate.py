@@ -1079,3 +1079,25 @@ def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on
     else:
         assert g.qa == QAConfig() and not g.qa.on
         assert system == SOL_SYSTEM
+
+
+@pytest.mark.parametrize("step", [RuntimeError("upstream failed"), "sleep"])
+def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(tmp_path, monkeypatch, step):
+    # Sol's proxy serves one Sol call at a time: after a call ended by an error or the deadline (it may still be
+    # running upstream), the session starts no further pass; the request stays due
+    fake = FakeSol(script=[step])
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    monkeypatch.setattr(consolidate, "DEADLINE_S", 0.2)
+    original = consolidate.Trigger.after_episode
+
+    def twice(self, eid):
+        due = original(self, eid)
+        return list(due) * 2  # two passes due in one session
+
+    monkeypatch.setattr(consolidate.Trigger, "after_episode", twice)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    outcomes = _run(stores, "e1", sha)
+    assert fake.calls == 1
+    assert [e["phase"] for e in _events(stores)] == ["start", "end"]
+    assert len(outcomes) <= 1

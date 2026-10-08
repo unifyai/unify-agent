@@ -810,4 +810,12 @@ async def run_due_passes(
         if outcome is None:
             break
         outcomes.append(outcome)
+        if _CALL_MAY_BE_IN_FLIGHT & set(getattr(outcome, "codes", None) or ()):
+            # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
+            # one Sol call at a time: start no further pass in this session (the requests stay due)
+            break
     return outcomes
+
+
+#: Pass end codes after which a model call may still be in flight at Sol's proxy.
+_CALL_MAY_BE_IN_FLIGHT = frozenset({"deadline", "sol_error", "route_not_in_effect"})
