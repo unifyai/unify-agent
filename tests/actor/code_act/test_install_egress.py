@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -29,6 +30,7 @@ import sys
 import textwrap
 import threading
 import types
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -117,6 +119,39 @@ def _ask(proxy: sandbox.EgressProxy, request: bytes) -> tuple[str, bytes]:
 
 def _connect(target: str) -> bytes:
     return f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode()
+
+
+@contextmanager
+def _logged(name: str):
+    """The messages logged to *name* inside the block (Unify's loggers do
+    not propagate to the root, where caplog listens)."""
+    records: list[str] = []
+    handler = logging.Handler(logging.DEBUG)
+    handler.emit = lambda record: records.append(record.getMessage())
+    logger = logging.getLogger(name)
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+
+
+@pytest.fixture
+def loopback_index(monkeypatch):
+    """Every name resolves to 127.0.0.1, which the address filter is told is
+    public: a loopback listener stands in for an index host."""
+    monkeypatch.setattr(
+        sandbox,
+        "_resolve",
+        lambda host, port: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+        ],
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "public_address",
+        lambda a: a == "127.0.0.1" or _REAL_PUBLIC(a),
+    )
 
 
 def _client_hello(sni: str | None, *, ech: bool = False) -> bytes:
@@ -388,6 +423,46 @@ def test_tunnels_are_capped_and_closed_with_the_proxy(monkeypatch):
     held.close()
 
 
+@pytest.mark.timeout(60)
+def test_refusals_are_bounded_and_the_model_never_reads_client_text(
+    listener,
+    loopback_index,
+):
+    """A package's code in the installer's sandbox can open as many refused
+    tunnels as it likes, each naming a target or TLS server of its choice.
+    Only the first few are kept and logged, each cut short; the rest are
+    counted; and the note appended to the install's output (which the model
+    reads) quotes neither the CONNECT targets nor the server names."""
+    with _logged("unify.sandbox") as records:
+        with sandbox.egress_proxy([("index.test", listener.port)]) as proxy:
+            long_name = "injected-" + "x" * 6000 + ".example:443"
+            status, _ = _ask(proxy, f"CONNECT {long_name} HTTP/1.1\r\n\r\n".encode())
+            assert status.startswith("HTTP/1.1 403"), status
+            status, data = _tunnel(
+                proxy,
+                f"index.test:{listener.port}",
+                _client_hello("injected-sni.example"),
+            )
+            assert status.startswith("HTTP/1.1 200") and data == b"", status
+            for i in range(60):
+                status, _ = _ask(proxy, _connect(f"injected-{i}.example:443"))
+                assert status.startswith("HTTP/1.1 403"), status
+            note = environment._refusal_note(proxy)
+            kept, unlisted = list(proxy.refused), proxy.unlisted
+    assert len(kept) == sandbox._REFUSALS_KEPT, len(kept)
+    assert unlisted == 62 - sandbox._REFUSALS_KEPT
+    limit = sandbox._REFUSAL_TEXT + 3
+    assert all(len(t) <= limit and len(r) <= limit for t, r in kept), kept[0]
+    warnings = [r for r in records if r.startswith("installer proxy")]
+    assert len(warnings) <= sandbox._REFUSALS_KEPT + 2, len(warnings)
+    assert f"{unlisted} more refusals" in warnings[-1]
+    assert "injected" not in note and "example" not in note, note
+    assert "a host off the allow-list" in note
+    assert "TLS server name was not its CONNECT host" in note
+    assert f"(+{unlisted} more refusals)" in note
+    assert len(note) < 1000, len(note)
+
+
 def test_userinfo_never_survives_in_an_index_or_proxy_url():
     strip = environment._without_userinfo
     proxy = "http://u:tok@proxy:3128"  # pragma: allowlist secret
@@ -625,7 +700,9 @@ def test_the_installer_has_no_network_but_the_proxy_to_the_index(
     assert listener.accepted == 0
     # A refusal reaches the caller with the rule behind it.
     assert "installer-index-only" in outcome["stderr"]
-    assert "evil.example:443 is not a package index host" in outcome["stderr"]
+    assert "a host off the allow-list" in outcome["stderr"]
+    # Never the target the client named: that text is the client's.
+    assert "evil.example" not in outcome["stderr"]
     # What runs at install time is confined as a shell cell is.
     assert not any(sandbox.is_secret_name(k) for k in seen["env"]), seen["env"]
     assert TOKEN_VALUE not in seen["env"].values()
@@ -698,7 +775,7 @@ def test_real_uv_cannot_fetch_from_a_host_off_the_allow_list(world, monkeypatch)
     )
     assert not outcome["success"], outcome
     assert "installer-index-only" in outcome["stderr"], outcome["stderr"]
-    assert "evil.example:443 is not a package index host" in outcome["stderr"]
+    assert "a host off the allow-list" in outcome["stderr"]
     outcome = environment.install(
         ["probe @ http://169.254.169.254/latest/probe-0.1-py3-none-any.whl"],
     )

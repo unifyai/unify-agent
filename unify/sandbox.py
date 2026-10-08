@@ -2577,6 +2577,11 @@ _CLIENT_HELLO_S = 10.0
 _ECH_EXTENSION = 0xFE0D
 # At most this many tunnels are open at once; more are refused.
 _MAX_TUNNELS = 32
+# Of one proxy's refusals, the first this many are kept, logged and shown
+# to the model (as fixed notes); the rest are only counted. Each kept target
+# and reason is cut to _REFUSAL_TEXT characters.
+_REFUSALS_KEPT = 20
+_REFUSAL_TEXT = 200
 # The well-known NAT64 prefix (RFC 6052): the last 32 bits are the IPv4
 # address a translator reaches, link-local and private ones included. The
 # local-use prefix (64:ff9b:1::/48, RFC 8215) embeds it at a position its
@@ -2618,6 +2623,11 @@ def public_address(address: str) -> bool:
         if ip.sixtofour is not None and not public_address(str(ip.sixtofour)):
             return False
     return ip.is_global and not ip.is_multicast
+
+
+def _clip(text: str) -> str:
+    """*text* cut to :data:`_REFUSAL_TEXT` characters."""
+    return text if len(text) <= _REFUSAL_TEXT else text[:_REFUSAL_TEXT] + "..."
 
 
 def _host_key(host: str) -> str:
@@ -2806,8 +2816,13 @@ class EgressProxy:
     proxy cannot see is the request inside TLS: a ``Host`` header naming
     another site on the same CDN is the CDN's to refuse (domain fronting).
 
-    Every refusal is logged and kept in :attr:`refused` as
-    ``(target, reason)``.
+    The first :data:`_REFUSALS_KEPT` refusals are logged and kept in
+    :attr:`refused` as ``(target, reason)`` (each cut to
+    :data:`_REFUSAL_TEXT` characters), with a fixed note per refusal in
+    :attr:`notes` for the model to read: a note never quotes the CONNECT
+    target or TLS server name the client sent. Later refusals are only
+    counted (:attr:`unlisted`), so a client opening thousands of refused
+    tunnels cannot flood the log or the install's output.
 
     The allow-list is fixed when the proxy starts, by the harness; nothing
     the sandboxed command sends can add to it. :func:`wrap_argv` mounts the
@@ -2819,6 +2834,9 @@ class EgressProxy:
     def __init__(self, allowed: Sequence[tuple[str, int]]) -> None:
         self.allowed = frozenset((_host_key(h), int(p)) for h, p in allowed)
         self.refused: list[tuple[str, str]] = []
+        self.notes: list[str] = []
+        self.unlisted = 0
+        self._refused_lock = threading.Lock()
         self.directory = Path(tempfile.mkdtemp(prefix="unify-installer-proxy-"))
         self.path = self.directory / "proxy.sock"
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -2862,6 +2880,11 @@ class EgressProxy:
             except OSError:
                 pass
         shutil.rmtree(self.directory, ignore_errors=True)
+        if self.unlisted:
+            logging.getLogger(__name__).warning(
+                "installer proxy: %d more refusals, not logged",
+                self.unlisted,
+            )
 
     def _track(self, s: socket.socket) -> socket.socket:
         with self._open_lock:
@@ -2879,29 +2902,50 @@ class EgressProxy:
             except OSError:
                 return
             if not self._slots.acquire(blocking=False):
-                self._refuse(
-                    conn,
-                    "?",
-                    "503 Service Unavailable",
-                    f"more than {_MAX_TUNNELS} tunnels at once",
-                )
+                reason = f"more than {_MAX_TUNNELS} tunnels at once"
+                self._refuse(conn, "?", "503 Service Unavailable", reason, reason)
                 conn.close()
                 continue
             threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
 
-    def _note_refusal(self, target: str, reason: str) -> None:
-        import logging
+    def _note_refusal(self, target: str, reason: str, note: str) -> None:
+        """Keep and log a refusal, or count it past the first few.
 
-        self.refused.append((target, reason))
-        # repr(): a target or reason quoting client bytes cannot forge log lines.
-        logging.getLogger(__name__).warning(
-            "installer proxy: refused %r: %r",
-            target,
-            reason,
-        )
+        *target* and *reason* may quote what the client sent (they are for
+        the harness's log); *note* is fixed text the model may read.
+        """
+        target, reason = _clip(target), _clip(reason)
+        with self._refused_lock:
+            kept = len(self.refused) < _REFUSALS_KEPT
+            if kept:
+                self.refused.append((target, reason))
+                self.notes.append(note)
+            else:
+                self.unlisted += 1
+            first_unlisted = not kept and self.unlisted == 1
+        if kept:
+            # repr(): a target or reason quoting client bytes cannot forge
+            # log lines.
+            logging.getLogger(__name__).warning(
+                "installer proxy: refused %r: %r",
+                target,
+                reason,
+            )
+        elif first_unlisted:
+            logging.getLogger(__name__).warning(
+                "installer proxy: more than %d refusals; the rest are counted",
+                _REFUSALS_KEPT,
+            )
 
-    def _refuse(self, conn: socket.socket, target: str, status: str, reason: str):
-        self._note_refusal(target, reason)
+    def _refuse(
+        self,
+        conn: socket.socket,
+        target: str,
+        status: str,
+        reason: str,
+        note: str,
+    ) -> None:
+        self._note_refusal(target, reason, note)
         body = f"Refused by the Unify installer proxy: {reason}\n".encode()
         try:
             conn.sendall(
@@ -2924,22 +2968,25 @@ class EgressProxy:
                     return
                 head += data
                 if len(head) > _PROXY_HEAD_LIMIT:
-                    self._refuse(conn, "?", "431 Too Large", "request head too large")
+                    reason = "request head too large"
+                    self._refuse(conn, "?", "431 Too Large", reason, reason)
                     return
             head, _, early = head.partition(b"\r\n\r\n")
             line = head.split(b"\r\n", 1)[0].decode("latin-1")
             parts = line.split(" ")
             if len(parts) != 3 or parts[0] != "CONNECT":
-                self._refuse(
-                    conn,
-                    line[:200],
-                    "405 Method Not Allowed",
-                    "only CONNECT tunnels to the package index are proxied",
-                )
+                reason = "only CONNECT tunnels to the package index are proxied"
+                self._refuse(conn, line, "405 Method Not Allowed", reason, reason)
                 return
             target = _authority(parts[1])
             if target is None:
-                self._refuse(conn, parts[1][:200], "400 Bad Request", "bad target")
+                self._refuse(
+                    conn,
+                    parts[1],
+                    "400 Bad Request",
+                    "bad target",
+                    "a malformed CONNECT target",
+                )
                 return
             name = f"{target[0]}:{target[1]}"
             if target not in self.allowed:
@@ -2948,11 +2995,19 @@ class EgressProxy:
                     name,
                     "403 Forbidden",
                     f"{name} is not a package index host",
+                    "a host off the allow-list (only the package index hosts "
+                    "are reached)",
                 )
                 return
             up, reason = self._connect(*target)
             if up is None:
-                self._refuse(conn, name, "403 Forbidden", reason)
+                self._refuse(
+                    conn,
+                    name,
+                    "403 Forbidden",
+                    reason,
+                    "a package index host with no reachable public address",
+                )
                 return
             self._track(up)
             conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -2966,13 +3021,20 @@ class EgressProxy:
                     time.monotonic() + _CLIENT_HELLO_S,
                 )
             except _HelloRefused as exc:
-                self._note_refusal(name, f"tunnel to {name}: {exc}")
+                # Its text is fixed, with numbers at most: no client bytes.
+                self._note_refusal(
+                    name,
+                    f"tunnel to {name}: {exc}",
+                    f"a tunnel whose TLS ClientHello was refused: {exc}",
+                )
                 return
             if sni != target[0]:
                 self._note_refusal(
                     name,
                     f"tunnel to {name}: the ClientHello names {sni!r}, "
                     f"not {target[0]!r} (SNI must be the CONNECT host)",
+                    "a tunnel whose TLS server name was not its CONNECT host "
+                    "(SNI must be the CONNECT host)",
                 )
                 return
             up.sendall(first)

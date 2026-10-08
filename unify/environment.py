@@ -356,11 +356,21 @@ def _check_specifiers(specifiers: List[str]) -> None:
             )
 
 
-def _refusal_note(refused: List[Tuple[str, str]]) -> str:
-    reasons = list(dict.fromkeys(reason for _, reason in refused))
+def _refusal_note(egress: sandbox.EgressProxy) -> str:
+    """What the model reads of *egress*'s refusals: each kept refusal's fixed
+    note once, and how many more there were.
+
+    Never the CONNECT target or TLS server name a client sent: the client is
+    uv, or code a model-installed package runs inside the installer's
+    sandbox, so that text is the model's to choose. The harness's log keeps
+    it (:meth:`unify.sandbox.EgressProxy._note_refusal`).
+    """
+    notes = "; ".join(dict.fromkeys(egress.notes))
+    if egress.unlisted:
+        notes += f" (+{egress.unlisted} more refusals)"
     return (
         f"Refused by workspace sandbox rule `installer-index-only` "
-        f"({sandbox.RULES['installer-index-only']}): " + "; ".join(reasons) + "\n"
+        f"({sandbox.RULES['installer-index-only']}): {notes}\n"
     )
 
 
@@ -405,12 +415,12 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
                 env=env,
                 cwd=cwd,
             )
-        refused = list(egress.refused)
+        note = _refusal_note(egress) if egress.refused else ""
     importlib.invalidate_caches()
     stderr = result.stderr
-    if refused:
+    if note:
         # uv reports only "tunnel error: unsuccessful"; say what was refused.
-        stderr = (stderr or "").rstrip("\n") + "\n" + _refusal_note(refused)
+        stderr = (stderr or "").rstrip("\n") + "\n" + note
     return {
         "success": result.returncode == 0,
         "stdout": result.stdout,
