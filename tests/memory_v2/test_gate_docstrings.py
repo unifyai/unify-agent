@@ -888,7 +888,10 @@ def test_fixture_elements_are_bounded_and_value_free():
     from unify.memory_v2.gate import FIXTURE_ELEMENTS, _fixture_elements
 
     big = json.dumps([{"score": i} for i in range(1000)]).encode()
-    assert len(_fixture_elements(big)) == FIXTURE_ELEMENTS
+    # the first FIXTURE_ELEMENTS records, then one level down their values: at most 2 x FIXTURE_ELEMENTS in all
+    elements = _fixture_elements(big)
+    assert elements[:FIXTURE_ELEMENTS] == [{"score": i} for i in range(FIXTURE_ELEMENTS)]
+    assert len(elements) <= 2 * FIXTURE_ELEMENTS
     lines = b"\n".join(json.dumps({"score": i}).encode() for i in range(50))
     assert len(_fixture_elements(lines)) == FIXTURE_ELEMENTS
     assert _fixture_elements(b"\xff\xfe") == [] and _fixture_elements(b"3") == []
