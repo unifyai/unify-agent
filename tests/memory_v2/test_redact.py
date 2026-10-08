@@ -39,3 +39,33 @@ def test_pem_private_key_blocks_are_redacted_whole_or_cut():
     ).endswith("\nz")
     assert "MIIEpAIBAAKCAQEA" not in KEY_SHAPED.sub("<k>", cut)
     assert KEY_SHAPED.search(public) is None
+
+
+def test_redact_imports_where_unify_is_absent(tmp_path):
+    # memlab copies this module into Sol's box, which has no unify package
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import unify.memory_v2.redact as red
+
+    pkg = tmp_path / "memlab"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    shutil.copy(Path(red.__file__), pkg / "redact.py")
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(tmp_path)!r})\n"
+        "sys.modules['unify'] = None  # as in the box: unify cannot be imported\n"
+        "import memlab.redact as r\n"
+        "print(r.registered_secrets(), r.Redactor().text('x'))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip() == "() x"

@@ -6,7 +6,13 @@ import re
 from typing import Any, Mapping
 
 # Credentials this process holds outside its environment (memory v2's Sol token).
-from unify.process_secrets import registered_secrets
+try:
+    from unify.process_secrets import registered_secrets
+except ImportError:  # copied into Sol's box as part of memlab, where unify is absent: it holds no secrets there
+
+    def registered_secrets() -> tuple:  # type: ignore[misc]
+        return ()
+
 
 KEY_SHAPED = re.compile(
     r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter
