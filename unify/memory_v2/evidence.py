@@ -206,6 +206,30 @@ class EvidenceStore:
             for r in self.db.execute("SELECT episode_id, action_index FROM covers")
         }
 
+    def cover_counts(self) -> dict[str, int]:
+        """Recorded covers per item (the gate adds them when it merges a pass)."""
+        return {
+            r[0]: int(r[1])
+            for r in self.db.execute("SELECT item, COUNT(*) FROM covers GROUP BY item")
+        }
+
+    def refused_passes(self, limit: int) -> list[tuple[str, str | None, list]]:
+        """``(pass_id, channel, reasons)`` of the *limit* most recently recorded refused passes, newest first.
+
+        Reasons that do not parse as a JSON list read as ``[]``.
+        """
+        out = []
+        for pass_id, channel, raw in self.db.execute(
+            "SELECT pass_id, channel, reasons FROM passes WHERE passed=0 ORDER BY rowid DESC LIMIT ?",
+            (int(limit),),
+        ):
+            try:
+                reasons = json.loads(raw) if raw else []
+            except ValueError:
+                reasons = []
+            out.append((pass_id, channel, reasons if isinstance(reasons, list) else []))
+        return out
+
     def record_pass(self, row: dict) -> None:
         with self.db:
             self.db.execute(

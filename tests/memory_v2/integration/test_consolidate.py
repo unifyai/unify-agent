@@ -506,6 +506,33 @@ def test_sol_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
     assert out.usd == "0.0000001" and out.unknown_cost_calls == 1
 
 
+def test_sol_transcript_is_kept_redacted_on_the_episode_commit(tmp_path, monkeypatch):
+    secret = "planted-fake-token-6c1d2e"  # pragma: allowlist secret
+    monkeypatch.setenv("UNIFY_TEST_FAKE_TOKEN", secret)
+    msg = {"role": "assistant", "content": f"the token is {secret}"}
+    fake = FakeSol(script=[(msg, "0.0000001"), (_finish(), "0.0000001")])
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    (out,) = _run(stores, "e1", sha)
+    assert secret in json.dumps(fake.seen)  # Sol itself saw it; the record must not
+    rows = [json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")]
+    assert {r["pass_id"] for r in rows} == {"e1.p0"}
+    assert [r["message"]["role"] for r in rows] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert (
+        rows[2]["message"]["content"] == "the token is <secret:UNIFY_TEST_FAKE_TOKEN>"
+    )
+    assert secret not in stores.episodes.run("log", "-p", "--all")
+    assert secret not in json.dumps(rows)
+
+
 # --- drift and suspect -----------------------------------------------------------------------------------
 
 

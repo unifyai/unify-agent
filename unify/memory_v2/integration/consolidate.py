@@ -34,6 +34,10 @@ merge) is ``sol_error``. A pass the run guard holds back sends one end event (``
 ``reason_codes`` ``["run_guard"]``) and no start event, since no pass started. The full reasons stay
 harness-side in the evidence store's ``passes`` row.
 
+Sol's transcript (its messages, tool calls and tool results, redacted by the environment's registered
+secrets and key shapes, then bounded: :func:`..sol_pass.transcript_lines`) goes as note lines on
+``refs/notes/sol-transcripts`` of the same episode commit, one JSON line per message with its ``pass_id``.
+
 Money is a plain decimal string, never an exponent; a measurement that could not be taken is ``None``.
 Sol's per-turn cost rows go as note lines on ``refs/notes/costs`` of the request's episode commit: a pass
 can only start after that commit (the trigger and the export read it), and one episode is one append-only
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -66,10 +71,10 @@ from ..gate import Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
-from ..redact import KEY_SHAPED
+from ..redact import KEY_SHAPED, Redactor
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
-from ..sol_pass import PassConfig, PassOutcome, SolPass, unillm_turn
+from ..sol_pass import TRANSCRIPT_REF, PassConfig, PassOutcome, SolPass, unillm_turn
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
@@ -443,6 +448,14 @@ def _note_costs(
             _error(stores, f"cost note: {type(exc).__name__}: {exc}")
 
 
+def _note_transcript(stores: Stores, sha: str, pass_id: str, sol: SolPass) -> None:
+    """Sol's redacted, bounded transcript as note lines on :data:`..sol_pass.TRANSCRIPT_REF` of *sha*."""
+    try:
+        stores.episodes.append_note_lines(sha, sol.transcript(pass_id), TRANSCRIPT_REF)
+    except Exception as exc:  # noqa: BLE001 - a record, never a failure of the pass
+        _error(stores, f"{pass_id}: transcript: {type(exc).__name__}")
+
+
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     """(listed items, index tokens) of memory ``main`` now; None for what could not be measured."""
     tmp = Path(tempfile.mkdtemp(prefix="memv2-after-"))
@@ -605,6 +618,7 @@ async def run_due_passes(
             lookup.episode,
             recording_turn(unillm_turn(cfg.model, effort), rows, cfg.model),
             config,
+            redactor=Redactor.from_environ(os.environ),
         )
         try:
             _reserve(stores, pass_id, cap, reserve)
@@ -634,6 +648,7 @@ async def run_due_passes(
             raise
         finally:
             _note_costs(stores, sha, eid, pass_id, rows, effort)
+            _note_transcript(stores, sha, pass_id, sol)
             try:
                 _settle(stores, pass_id, *_spend(outcome, rows)[:2])
             except OSError as exc:  # unsettled: the whole cap stays committed
