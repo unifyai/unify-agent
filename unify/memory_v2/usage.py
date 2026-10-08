@@ -22,26 +22,41 @@ USAGE_HEADING = "Library use since the previous consolidation"
 
 
 def item_signals(item: str, evidence: EvidenceStore) -> dict:
-    """The implicit use signals of *item* over every indexed request whose pin held it.
+    """The implicit use signals of *item* over every indexed request.
+
+    Exposure is what the request's prompt showed, not what its pin held: ``requests_shown`` counts the
+    requests whose memory section carried the item's own line, ``requests_channel_shown`` those that
+    showed its channel (a catalogue of channels shows no item lines).
 
     * ``used``: some request has a call site of it;
-    * ``never_used``: requests saw it at their pin, and none imported, called or referenced it;
+    * ``never_used``: requests were shown it, or its channel when ``never_used_basis`` is ``"channel"``,
+      and none imported, called or referenced it, and it never refused or failed;
     * ``refusing_accepted_inputs``: some refusal of it was followed, later in the same request, by an
       action on its channel the environment recorded as ``ok`` (a channel-level proxy);
     * ``uncertain``: dynamic calls on its channel (``getattr`` and the like) could have reached it, so
       the counts are lower bounds.
 
-    The counts behind them are returned too, with ``last_call_seq`` (None when never called).
+    Refusals and errors from requests that edited the item's channel in their scratch copy are not the
+    stored item's and are left out of every count and flag here.
     """
-    use = evidence.item_use().get(item) or {}
+    use = evidence.item_use(item=item).get(item) or {}
 
     def n(key: str) -> int:
         return int(use.get(key, 0) or 0)
 
     touched = n("imported") + n("called") + n("referenced")
+    failed = n("refused") + n("errored")
+    if n("shown") > 0:
+        basis: str | None = "item"
+    elif n("channel_shown") > 0:
+        basis = "channel"
+    else:
+        basis = None
     return {
         "item": item,
-        "requests": n("requests"),
+        "requests_at_pin": n("requests"),
+        "requests_shown": n("shown"),
+        "requests_channel_shown": n("channel_shown"),
         "used_requests": n("used_requests"),
         "imported": n("imported"),
         "calls": n("called"),
@@ -53,7 +68,8 @@ def item_signals(item: str, evidence: EvidenceStore) -> dict:
         "unknown_calls": n("unknown_calls"),
         "last_call_seq": evidence.last_call_seq(item),
         "used": n("called") > 0,
-        "never_used": n("requests") > 0 and touched == 0,
+        "never_used": basis is not None and touched == 0 and failed == 0,
+        "never_used_basis": basis,
         "refusing_accepted_inputs": n("refused_accepted") > 0,
         "uncertain": n("unknown_calls") > 0,
     }
@@ -67,8 +83,10 @@ def usage_table(
     """The use of each item in *items* over the requests *eids* (a pass's batch), one line per item.
 
     Deterministic: items in id order, at most :data:`MAX_TABLE_ROWS` lines (the rest are counted), and
-    only harness counts. ``last call`` is how many requests ago the latest call site was recorded, over
-    every indexed request (``never`` when none).
+    only harness counts. ``shown it`` counts requests whose prompt carried the item's own line, ``shown
+    its channel`` those that showed its channel. Refusals and errors exclude requests that edited the
+    item's channel in their scratch copy. ``last call`` is how many requests ago the latest call site
+    was recorded, over every indexed request (``never`` when none).
     """
     eids = sorted({e for e in eids if isinstance(e, str)})
     ids = sorted({i for i in items if isinstance(i, str)})
@@ -77,16 +95,18 @@ def usage_table(
     lines = [
         f"{USAGE_HEADING} ({len(eids)} requests; harness counts from cell code and tracebacks: "
         "static call sites, refusals are MemoryInputError raised out of the item, "
-        "'then accepted' means a later action on its channel succeeded):",
-        "item | requests seeing it | requests calling | calls | refusals | then accepted | "
-        "other errors | dynamic calls in channel | last call",
+        "'then accepted' means a later action on its channel succeeded; requests that edited "
+        "the item's channel are left out of refusals and errors):",
+        "item | requests at pin | shown it | shown its channel | requests calling | calls | "
+        "refusals | then accepted | other errors | dynamic calls in channel | last call",
     ]
     for item in ids[:MAX_TABLE_ROWS]:
         u = use.get(item) or {}
         seq = evidence.last_call_seq(item)
         last = "never" if seq is None else f"{latest - seq} requests ago"
         lines.append(
-            f"{item} | {u.get('requests', 0)} | {u.get('used_requests', 0)} | "
+            f"{item} | {u.get('requests', 0)} | {u.get('shown', 0)} | "
+            f"{u.get('channel_shown', 0)} | {u.get('used_requests', 0)} | "
             f"{u.get('called', 0)} | {u.get('refused', 0)} | {u.get('refused_accepted', 0)} | "
             f"{u.get('errored', 0)} | {u.get('unknown_calls', 0)} | {last}",
         )
