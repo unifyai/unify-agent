@@ -46,7 +46,10 @@ Manifest rules for consolidators
   the parent's library (or hangs there). Repairing a parent test file that was already red also counts,
   but only as a test-only repair: its parent version fails on the parent, a test it failed passes in
   your version (a file that did not even import counts as a whole), and it imports no function your pass
-  changes. A changed function always needs a test that fails on the parent's library.
+  changes. A changed function always needs a test that fails on the parent's library, except in a
+  clean-up pass (no item added; fewer channel modules, non-blank module lines or public functions, and
+  none of them more): there a parent test that passed on the parent and imports the function is enough,
+  and new tests need only pass.
 * **Skeleton.** A channel's *skeleton* is its module minus its public functions and a literal
   ``__all__ = [...]``: the docstring, imports, private helpers and any other module-level statement, plus
   the preamble of its ``NOTES.md`` (the text before the first ``## `` heading). Changing it, including
@@ -63,7 +66,8 @@ Manifest rules for consolidators
   its suite fully green; a channel you do not touch may stay broken, with a note.
   ``deleted_tests`` retires a parent test file only when your commit removes it and every library name it
   imports (``from env.<channel> import ...``; ``import env.<channel>`` means the whole channel) is an item
-  this manifest deletes.
+  this manifest deletes. Every recorded input a deleted function covered (a recorded rejection aside) must
+  stay covered: list it in a remaining function's ``covers``.
 * **Support.** The only root helper is ``unify_memory_testkit.py``; other helpers live under
   ``env/<channel>/tests/`` and must not be named like tests, like an installed or standard module, ``env``
   or the test kit. No ``conftest.py``, pytest or packaging configuration, ``.pth`` files, executables,
