@@ -199,7 +199,7 @@ def test_hooks_open_the_run_under_the_switch(mv2):
         _abort(mv2, run)
 
 
-# ── the actor's effort is recorded; Sol's is the declared constant ──────────
+# ── Sol's effort matches the actor's unless a mismatch ablation fixes it ────
 
 
 @pytest.mark.parametrize(
@@ -216,8 +216,8 @@ def test_the_effort_is_the_actors(mv2, monkeypatch, effort, want):
     _transcript(run)
     _finish(mv2, run)
     _, kw = mv2.fakes.of("run_due_passes")
-    # the run records the actor's effort; Sol's is the declared constant (D23 as revised 8 Oct)
-    assert run.effort == want and kw["effort"] == "low"
+    # Sol's effort matches the actor's by default (the lead, 8 Oct)
+    assert run.effort == want and kw["effort"] == want
 
 
 def test_an_assistant_default_model_brings_its_effort(mv2, monkeypatch):
@@ -289,12 +289,12 @@ def test_finish_records_the_episode_and_runs_the_passes(mv2):
     # the passes: inherited effort, the settings, and an emitter
     (_, p_eid, p_sha, state), kw = f.of("run_due_passes")
     assert (p_eid, p_sha) == (eid, sha)
-    assert kw["settings"] is SETTINGS and kw["effort"] == SETTINGS.UNIFY_MEMORY_V2_SOL_EFFORT == "low"
+    assert kw["settings"] is SETTINGS and kw["effort"] == run.effort
     assert mv2.paths.state.exists()
     # the events reach the CLI's emitter, money as plain decimal strings (never an exponent)
     assert [e["phase"] for e in emitted] == ["start", "end"]
     assert emitted[0]["cap_usd"] == "0.00000073" and emitted[1]["usd"] == "0.0000001"
-    assert emitted[0]["sol_effort"] == "low"  # Sol's declared effort, whatever the actor's
+    assert emitted[0]["sol_effort"] == run.effort
     assert emitted[1]["reason_codes"] == ["no_manifest"]
     assert progress == []
     assert f.cost_active == [True, False]
@@ -572,8 +572,8 @@ def test_cli_with_the_switch_off_is_as_shipped(monkeypatch):
 
 
 @pytest.mark.parametrize("actor_effort", ["low", "medium", "high"])
-@pytest.mark.parametrize("sol_effort", ["low", "medium"])
-def test_sols_effort_is_the_declared_setting_never_the_actors(mv2, monkeypatch, actor_effort, sol_effort):
+@pytest.mark.parametrize("sol_effort", ["actor", "low", "medium"])
+def test_a_fixed_sol_effort_overrides_the_actors_only_when_declared(mv2, monkeypatch, actor_effort, sol_effort):
     from unify.session_details import SESSION_DETAILS
 
     monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
@@ -583,13 +583,15 @@ def test_sols_effort_is_the_declared_setting_never_the_actors(mv2, monkeypatch, 
     _transcript(run)
     _finish(mv2, run)
     _, kw = mv2.fakes.of("run_due_passes")
-    assert kw["effort"] == sol_effort and run.effort == actor_effort
+    want = actor_effort if sol_effort == "actor" else sol_effort
+    assert kw["effort"] == want and run.effort == actor_effort
 
 
 def test_the_sol_effort_setting_is_validated():
     from unify.memory_v2.integration import switch
 
-    assert switch.parse_sol_effort("") == "low"
+    assert switch.parse_sol_effort("") == "actor"
+    assert switch.parse_sol_effort("low") == "low"
     assert switch.parse_sol_effort(" Medium ") == "medium"
     with pytest.raises(ValueError):
         switch.parse_sol_effort("xhigh")

@@ -32,10 +32,11 @@ SOL_EFFORT = "UNIFY_MEMORY_V2_SOL_EFFORT"
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
 SOL_ALLOWANCE_DEFAULT = "0.00000073"
-#: Sol's reasoning effort: a declared constant of the memory system, the same in every actor row (the lead, 8 Oct,
-#: D23 revised: "low it is for now, but could bump to medium if need be").
-SOL_EFFORT_DEFAULT = "low"
-SOL_EFFORTS = ("low", "medium", "high")
+#: Sol's reasoning effort. ``actor`` (the default) matches the actor's effort for the run (the lead, 8 Oct ~15:4xZ:
+#: "match the agent doing the task's effort with the agent that writes the stored memory"); ``low``, ``medium`` or
+#: ``high`` fixes it, for a declared mismatch ablation only (e.g. a HIGH actor with a LOW storer).
+SOL_EFFORT_DEFAULT = "actor"
+SOL_EFFORTS = ("actor", "low", "medium", "high")
 
 #: A plain decimal: digits, optionally a point and more digits. No sign, exponent, separator or name.
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
@@ -110,7 +111,8 @@ def parse_sol_run_guard(v: Any) -> str:
 
 
 def parse_sol_effort(v: Any) -> str:
-    """Sol's reasoning effort: ``low`` (the default), ``medium`` or ``high``; never the actor's."""
+    """Sol's reasoning effort: ``actor`` (the default: the actor's effort for the run), or a fixed ``low``,
+    ``medium`` or ``high`` for a declared mismatch ablation."""
     value = _stripped(v).lower() or SOL_EFFORT_DEFAULT
     if value not in SOL_EFFORTS:
         raise ValueError(f"{SOL_EFFORT} must be one of {', '.join(SOL_EFFORTS)}, not {v!r}")

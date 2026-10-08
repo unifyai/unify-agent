@@ -60,7 +60,7 @@ from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
 EFFORT = "medium"  # the actor's reasoning effort for the run
-SOL_EFFORT = "low"  # Sol's: the memory system's declared constant, never the actor's (D23 as revised 8 Oct)
+SOL_EFFORT = EFFORT  # Sol's matches the actor's by default (the lead, 8 Oct)
 SOL_USD = "0.0000005"  # what the fake Sol turn reports per call
 CHANNEL = "worktree:workspace"
 STRAY = "env/stray_note.py"
@@ -266,7 +266,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
     assert end["gate_passed"] is False and end["calls"] == 1
     assert isinstance(end["usd"], str) and PLAIN_DECIMAL.match(end["usd"]), end
     assert Decimal(end["usd"]) == Decimal(SOL_USD)
-    # Sol's effort is the declared constant, not the actor's: the event and the turn Sol was given
+    # Sol's effort matches the actor's: the event and the turn Sol was given
     assert start["sol_effort"] == SOL_EFFORT
     assert fake.efforts == [SOL_EFFORT] and len(fake.sent) == 1
     assert fake.models == [start["sol_model"]]
