@@ -34,8 +34,8 @@ from unify.legacy.conversation_manager.events import (
     ActorHandleResponse,
     UnifyMessageSent,
 )
-from unify.common._async_tool.dynamic_tools_factory import DynamicToolFactory
-from unify.common._async_tool.utils import get_handle_paused_state
+from unify.legacy.dynamic_tools_factory import DynamicToolFactory
+from unify.legacy.handle_state import get_handle_paused_state
 from unify.legacy.conversation_manager.task_actions import (
     OPERATION_MAP,
     safe_call_id_suffix,

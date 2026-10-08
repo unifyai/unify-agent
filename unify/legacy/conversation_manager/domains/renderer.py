@@ -15,7 +15,7 @@ from datetime import datetime
 from time import perf_counter
 from typing import Any
 
-from unify.common._async_tool.utils import get_handle_paused_state
+from unify.legacy.handle_state import get_handle_paused_state
 from unify.common.startup_timing import log_startup_timing
 from unify.legacy.conversation_manager.domains.chat_history import (
     ChatHistory,

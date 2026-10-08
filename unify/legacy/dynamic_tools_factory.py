@@ -1,3 +1,7 @@
+"""Legacy, unused, unsupported: the factory of the dynamic steering tools the
+conversation manager's brain uses, moved from ``unify/common/_async_tool/`` (8 Oct
+2026), where nothing the actor runs reaches it."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5,7 +9,7 @@ import inspect
 from enum import Enum
 from typing import Any, Callable, Dict, Optional
 from contextlib import suppress
-from .tools_data import ToolsData
+from unify.common._async_tool.tools_data import ToolsData
 
 
 class SteerAction(str, Enum):
@@ -357,7 +361,9 @@ class DynamicToolFactory:
                 _arg_repr = ""
 
             async def _ask(_handle=handle, **_kw):
-                from .messages import forward_handle_call as _forward_handle_call
+                from unify.common._async_tool.messages import (
+                    forward_handle_call as _forward_handle_call,
+                )
 
                 return await _forward_handle_call(
                     _handle,
