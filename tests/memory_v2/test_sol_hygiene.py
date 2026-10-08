@@ -352,6 +352,17 @@ STATE_REORDERED = STATE_INLINE.replace(
     'for k in ("valid", "correct", "failed")',
 )
 
+# parse_submit_feedback with less code, refusing the same shapes
+PSF_SHORT = HEAD.replace(
+    'raise MemoryInputError("invalid SubmitFeedback field types")',
+    "raise MemoryInputError",
+)
+# parse_submit_feedback changing its result on the retry with three attempts only
+PSF_TWISTED = HEAD.replace(
+    "    return observation\n",
+    '    return dict(observation, valid=observation["attempts_used"] != 3)\n',
+)
+
 
 def _refused_reason(item, why):
     return (
@@ -425,4 +436,37 @@ def test_a_parent_test_that_only_imports_the_function_does_not_hold_it(arc):
     )
     base = _merged(mem, {T_SS: calls})
     res = gate.check(base, _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED}), man)
+    assert res.passed, res.reasons
+
+
+def test_a_kept_function_takes_over_a_deleted_ones_covers_only_if_its_behaviour_is_kept(
+    arc,
+):
+    mem, ev, gate, ep, parent = arc
+    # an earlier pass recorded parse_submit_feedback on cover 3, which read_submit_feedback also covers
+    ev.add_cover(PSF, "a1", 3)
+    man = {
+        "items": [_item(PSF, [T_PSF], RECORDED[PSF])],
+        "deleted": [RSF],
+        "deleted_tests": [T_RSF],
+    }
+    # parse_submit_feedback is edited in the same pass and now answers cover 3 differently: its recorded
+    # cover no longer vouches for the deleted function's input (I1)
+    twisted = _candidate(mem, {MODULE: PSF_TWISTED + STATE_INLINE, T_RSF: None})
+    res = gate.check(parent, twisted, man)
+    assert not res.passed and res.refused == ["G3", "G5"], res.reasons
+    assert (
+        _refused_reason(
+            PSF,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        )
+        in res.reasons
+    ), res.reasons
+    assert [r for r in res.reasons if r.startswith("G5:")] == [
+        f"G5: deleted item {RSF} covered 1 recorded inputs that no remaining item covers "
+        "(list them in a remaining item's covers): [['a1', 3]]",
+    ]
+    # edited the same way it keeps behaviour: its recorded cover takes the deleted function's over
+    short = _candidate(mem, {MODULE: PSF_SHORT + STATE_INLINE, T_RSF: None})
+    res = gate.check(parent, short, man)
     assert res.passed, res.reasons

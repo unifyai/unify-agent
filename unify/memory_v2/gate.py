@@ -86,7 +86,8 @@ The checks:
   and is a successful observation (a recorded rejection cover, status ``error``, is not new coverage), or
   the library shrinks by the clean-up measure above. Every recorded input a deleted item covered (except
   recorded rejections) is covered by a remaining item: one of this pass's validated covers, or a recorded
-  cover of an item the candidate keeps.
+  cover of an item the candidate keeps unchanged or whose change G3 vetted (a red test, or the same
+  results on its recorded covers).
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   key-shaped string in a changed file or the manifest; every public function of a changed module declares
   ``Effect:`` and is defined once; every module parses.
@@ -1399,9 +1400,15 @@ class Gate:
         deleted = set(run.man.deleted)
         recorded = self.ev.covers()
         held = {(e, i) for _, e, i in run.covers}
-        held |= {
-            (e, i) for it, e, i in recorded if it not in deleted and it in run.c_bodies
-        }
+
+        def keeps(it: str) -> bool:
+            """A kept item still handles its recorded covers: unchanged, or its change vetted by G3."""
+            if it in deleted or it not in run.c_bodies:
+                return False
+            same = run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
+            return same or run.vetted is None or it in run.vetted
+
+        held |= {(e, i) for it, e, i in recorded if keeps(it)}
         lost: dict[str, list[tuple[str, int]]] = {}
         for it, e, i in sorted(recorded):
             if it not in deleted or (e, i) in held:
