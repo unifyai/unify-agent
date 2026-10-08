@@ -14,9 +14,10 @@ The contract (online build, spec §F1 and D23):
 - ``UNIFY_MEMORY_V2_SOL_BASE_URL`` and ``UNIFY_MEMORY_V2_SOL_TOKEN``: Sol's own route, both or neither. Set,
   Sol's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of Sol's own,
   so the actor's route never carries Sol's model); empty, they go as shipped. The URL is http(s) with a
-  host and no user, password, query or fragment; plain http only to exactly ``127.0.0.1`` (the launcher's
-  loopback bridge; the token travels in a header). The token is a secret: a bearer token (RFC 6750 ``b64token`` characters,
-  at least 16 of them), held as a ``SecretStr`` and registered with every value-based redactor
+  host and no user, password, query or fragment; plain http only to exactly ``127.0.0.1`` with an explicit
+  port (the launcher's loopback bridge; the token travels in a header). The token is a secret: at least 16
+  URL-safe characters (RFC 3986 unreserved: ``A-Z a-z 0-9 . _ ~ -``, as ``secrets.token_urlsafe`` makes),
+  held as a ``SecretStr`` and registered with every value-based redactor
   (:func:`unify.process_secrets.register_secret`). Settings only normalise the two (a settings error would
   print its input), and :func:`sol_route` checks them when a pass is about to start; its errors never quote
   either value. Both are read from the controller's process environment only: a value that reaches
@@ -163,16 +164,19 @@ def parse_sol_base_url(v: Any) -> str:
         raise ValueError(f"{refusal}: it has a fragment")
     if parts.scheme.lower() == "http" and parts.hostname != HTTP_HOST:
         raise ValueError(f"{refusal}: plain http is allowed only to {HTTP_HOST}")
+    if parts.scheme.lower() == "http" and port is None:
+        raise ValueError(f"{refusal}: plain http to {HTTP_HOST} needs an explicit port")
     return text.rstrip("/")
 
 
 #: The one host plain http may name: the launcher's loopback bridge to Sol's proxy listener (the token travels
-#: in a header, in clear). Exactly this IPv4 literal, compared as text: no other name, address or DNS lookup.
+#: in a header, in clear). Exactly this IPv4 literal, compared as text: no other name, address or DNS lookup;
+#: always with an explicit port, as the launcher sends it (``http://127.0.0.1:<port>/sol/v1``).
 HTTP_HOST = "127.0.0.1"
 
 
 def parse_sol_token(v: Any) -> SecretStr:
-    """The token as a ``SecretStr``: printable ASCII without spaces (it goes in a header); empty when unset.
+    """The token as a ``SecretStr``: URL-safe characters only (it goes in a header); empty when unset.
 
     Errors never quote the value.
     """
@@ -180,15 +184,16 @@ def parse_sol_token(v: Any) -> SecretStr:
     if value and not _BEARER_TOKEN.fullmatch(value):
         raise ValueError(
             f"{SOL_TOKEN} must be a bearer token: at least {_MIN_TOKEN_CHARS} characters from "
-            "A-Z a-z 0-9 - . _ ~ + / (then = padding only)",
+            "A-Z a-z 0-9 . _ ~ -",
         )
     return SecretStr(value)
 
 
-#: RFC 6750 ``b64token``, at least 16 characters: it goes in a header, and a token this distinctive can be
-#: redacted by value without touching other text (no quoting or escaping form differs from it).
+#: At least 16 RFC 3986 unreserved characters (``secrets.token_urlsafe`` output fits): it goes in a header,
+#: and no percent-encoding, JSON or other escaping form differs from it, so redaction by value always finds it
+#: (``+``, ``/`` and ``=`` would turn into ``%2B``, ``\/`` and the like).
 _MIN_TOKEN_CHARS = 16
-_BEARER_TOKEN = re.compile(r"(?=.{%d})[A-Za-z0-9\-._~+/]+=*" % _MIN_TOKEN_CHARS, re.S)
+_BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~-]{%d,}" % _MIN_TOKEN_CHARS)
 
 
 def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:

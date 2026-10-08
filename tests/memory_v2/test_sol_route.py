@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import secrets
 import threading
 from types import SimpleNamespace
 
@@ -340,6 +341,9 @@ def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, miss
         "http://8.8.8.8/v1",
         "http://169.254.169.254/v1",
         "http://0.0.0.0:8080/v1",
+        # plain http to 127.0.0.1 always names its port, as the launcher sends it
+        "http://127.0.0.1/sol/v1",
+        "http://127.0.0.1:/sol/v1",
     ],
 )
 def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
@@ -382,6 +386,10 @@ def test_the_base_url_validator_accepts_http_urls(raw, want):
         "short-placehold",  # pragma: allowlist secret
         'quote"d-placeholder-value',  # pragma: allowlist secret
         "padding=in-the-placeholder",  # pragma: allowlist secret
+        "padded-the-placeholder==",  # pragma: allowlist secret
+        # + and / percent-encode (%2B, %2F) or JSON-escape (\/) into forms value redaction would miss
+        "plus+in-the-placeholder",  # pragma: allowlist secret
+        "slash/in-the-placeholder",  # pragma: allowlist secret
     ],
 )
 def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw):
@@ -389,6 +397,20 @@ def test_the_token_validator_refuses_unsendable_tokens_without_quoting_them(raw)
         switch.parse_sol_token(raw)
     leaked = "placeholder" in str(info.value)
     assert not leaked
+
+
+def test_the_token_validator_accepts_the_launchers_url_safe_tokens():
+    """The office key proxy issues ``secrets.token_urlsafe(32)``; 16 unreserved characters is the floor."""
+    tokens = [secrets.token_urlsafe(32) for _ in range(200)] + [
+        "a" * 16,
+        "Az09._~-" * 2,
+        SOL_TOKEN,
+    ]
+    kept = [
+        _digest(switch.parse_sol_token(t).get_secret_value()) == _digest(t)
+        for t in tokens
+    ]
+    assert all(kept)
 
 
 def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
