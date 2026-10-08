@@ -3,7 +3,9 @@
 
 A function's line ends with the form its first argument takes, from its docstring's ``Input:`` line, when
 that names a known form (:data:`.manifest.INPUT_KINDS`): ``- `parse_load_log(data)` — Parse ... (input:
-text)``. The index is a function of the tree alone, so the same commit gives the same bytes.
+text)``. A function whose ``Effect:`` line says ``write`` is marked ``(writes)``: the gate refuses a function
+that covers a recorded write call without saying so (stage 7), so every such function carries the mark.
+The index is a function of the tree alone, so the same commit gives the same bytes.
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ def build_index(
         )
         if it.kind == "env_function" and it.input in INPUT_KINDS:
             line += f" (input: {it.input})"
+        if it.kind == "env_function" and it.effect == "write":
+            line += " (writes)"
         by_channel.setdefault(ch, []).append(line)
     parts = [HEADER]
     for ch in sorted(by_channel):

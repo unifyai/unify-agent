@@ -11,7 +11,10 @@ the runtime confinement of every run (:mod:`.sandbox_run`). Its rules are struct
 may touch and keep every old test passing against the new library. Documented limits:
 
 * **Test adequacy** is not judged: a weak test that is red on the parent and green on the candidate passes.
-* **Effect: lines** are checked for presence, not truthfulness.
+* **Effect: lines** are checked for presence, and for ``write`` only where the recording shows it: a
+  function taking the environment that covers a tool call recorded with effect ``write`` must declare
+  ``Effect: write``. A call the environment did not declare an effect for (``unknown``) proves nothing,
+  and a ``read`` or ``unknown`` declaration on a function covering no recorded write is not checked.
 * **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
   successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
   that the item agrees with it: the item's own tests over recorded fixtures check that (spec F3).
@@ -76,7 +79,11 @@ The checks:
   and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   key-shaped string in a changed file or the manifest; every public function of a changed module declares
-  ``Effect:`` and is defined once; every module parses.
+  ``Effect:`` and is defined once; every module parses. **Structural Effect:** an environment function in
+  ``items`` that covers a tool call whose recorded effect is ``write`` (:attr:`.episodes.Action.effect`,
+  the effect the environment declared for the method; never inferred from names) declares
+  ``Effect: write``, unless its declared input is a recorded value (``path``, ``text``, ``bytes``,
+  ``observation``: it parses what a call returned and makes no call).
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
@@ -225,6 +232,27 @@ def _exercised(source: bytes, *bodies: dict) -> set[str] | None:
     }
 
 
+# The input forms that hand a function a recorded value, not the environment: such a function parses what a
+# call returned and makes no call itself, so the effect of the calls it covers is not its own.
+_VALUE_FORMS = frozenset({"path", "text", "bytes", "observation"})
+
+
+def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> bool:
+    """Whether a function makes a recorded write call: structural, from the recording, never from names.
+
+    A tool call's effect is what the recording holds (:attr:`.episodes.Action.effect`, the effect the
+    environment declared for the method; ``unknown`` when undeclared, which proves nothing). No other
+    kind counts: a file, shell or dialogue cover is an observation the function reads. A function whose
+    declared input is a recorded value (:data:`_VALUE_FORMS`) parses a response and makes no call.
+    """
+    if form in _VALUE_FORMS:
+        return False
+    return any(
+        getattr(a, "kind", "tool") == "tool" and getattr(a, "effect", "") == "write"
+        for _, _, a in covers
+    )
+
+
 def _unfit_forms(
     covers: list[tuple[str, int, Action]],
     input_kind: str | None,
@@ -303,6 +331,8 @@ class _Run:
     pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
         default_factory=dict,
     )
+    # environment functions that cover a recorded write call (structural Effect; G6)
+    writes: set[str] = field(default_factory=set)
 
     def fail(self, check: str, reason: str) -> None:
         # reasons are stored in the evidence store; test output in them is model-controlled
@@ -861,6 +891,10 @@ class Gate:
                             and getattr(action, "kind", "tool") != "shell"
                         ):
                             run.rejections.add((eid, idx))
+                declared = self._doc_inputs(run).get(it.item, "")
+                form = it.input or (declared if declared in INPUT_KINDS else None)
+                if _covers_a_write(valid, form):
+                    run.writes.add(it.item)
                 if valid and all(
                     is_rejection(a) and getattr(a, "kind", "tool") != "shell"
                     for _, _, a in valid
@@ -868,14 +902,11 @@ class Gate:
                     run.fail("G2", f"{it.item} covers only recorded rejections")
                 elif valid and preview:
                     # the structural input-form check only: no held-out perturbation
-                    declared = self._doc_inputs(run).get(it.item, "")
-                    form = it.input or (declared if declared in INPUT_KINDS else None)
                     for why in _unfit_forms(valid, form)[:5]:
                         run.fail("G2", f"{it.item} {why}")
                 elif valid:
                     if seen is None:
                         seen = seen_actions(self._named_episodes(run), self.lookup)
-                    declared = self._doc_inputs(run).get(it.item, "")
                     self._held_out(
                         run,
                         it.item,
@@ -883,7 +914,7 @@ class Gate:
                         seen,
                         run.tmp / f"held-out-{n}",
                         it.field_types,
-                        it.input or (declared if declared in INPUT_KINDS else None),
+                        form,
                         self._pool(run, valid),
                     )
             elif it.kind == "workflow" and not preview:
@@ -1221,9 +1252,21 @@ class Gate:
                             "G6",
                             f"{path} defines public function {name} more than once",
                         )
+            effects = {}
             for i in run.c_report.items:
-                if i.kind == "env_function" and i.path in changed and not i.effect:
+                if i.kind != "env_function":
+                    continue
+                effects[i.item_id] = i.effect
+                if i.path in changed and not i.effect:
                     run.fail("G6", f"{i.item_id} has no Effect: line")
+            # structural Effect: a function that covers a recorded write call is a writer
+            for item in sorted(run.writes):
+                if effects.get(item, "write") != "write":
+                    run.fail(
+                        "G6",
+                        f"{item} covers a recorded write call, so it must declare Effect: write "
+                        f"(it declares {effects[item] or 'none'})",
+                    )
         for p in run.changed:
             if p in run.c_files:
                 text = (run.c_tree / p).read_bytes().decode("utf-8", "ignore")

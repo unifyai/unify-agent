@@ -121,7 +121,8 @@ What to build, in priority order:
      (delimiter, columns, types, sign and date conventions) that raise on files of another shape;
    - dialogue channels: observation parsers, an action grammar, transition facts and small predictors.
    Each public function's docstring has a one-line summary and a line `Effect: read`, `Effect: write` or
-   `Effect: unknown`, and a line `Input: <form>` saying what its first parameter takes, the same form as
+   `Effect: unknown` (a function taking the environment that covers a call recorded with effect "write" must say
+   `Effect: write`), and a line `Input: <form>` saying what its first parameter takes, the same form as
    "input" in its manifest entry (the gate passes each covered input in that form), one of: {input_kinds}.
    Each function checks the shape of its inputs and raises MemoryInputError(diagnosis) when it
    differs. Define MemoryInputError in the module (that is module skeleton: declare "skeleton": ["env/<channel>"]
