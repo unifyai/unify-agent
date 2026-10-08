@@ -139,13 +139,22 @@ def snapshot_repo(git_dir: Path) -> Repo:
 
 
 def sandbox_hidden(workspace: Path) -> Callable[[str], bool]:
-    """What the workspace sandbox hides from cells, as a predicate over work-tree-relative paths."""
+    """What the capture never records, as a predicate over work-tree-relative paths: what the sandbox policy
+    hides from cells, and any path one of whose components the sandbox's own secret rule masks in a mounted root
+    (``.env*`` files, credential directories and files, private ``.pem`` keys, ``*key*.json``). The workspace is the
+    user's own data and the policy may show such a file to cells; the snapshot still never keeps it (fail closed).
+    A failure to evaluate either rule hides the path."""
     from unify import sandbox
 
     policy = sandbox.build_policy()
 
     def hidden(rel: str) -> bool:
-        return policy.readable_violation(workspace / rel) is not None
+        try:
+            if any(sandbox._secret_rule(part) for part in Path(rel).parts):
+                return True
+            return policy.readable_violation(workspace / rel) is not None
+        except Exception:  # noqa: BLE001 - fail closed
+            return True
 
     return hidden
 

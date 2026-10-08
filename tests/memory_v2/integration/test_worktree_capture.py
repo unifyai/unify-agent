@@ -405,7 +405,8 @@ def test_default_hidden_paths_follow_the_sandbox_policy(
     monkeypatch.setattr(capture_mod, "_ACTIVE", None)
     ws = world["workspace"]
     (ws / ".env").write_text("TOKEN=POLICY-HIDDEN\n")
-    (ws / "id_rsa").write_text("POLICY-HIDDEN-KEY\n")
+    (ws / "server.pem").write_text("POLICY-HIDDEN-PEM\n")
+    (ws / "svc-key.json").write_text('{"k": "POLICY-HIDDEN-JSON"}\n')
     assert sandbox.build_policy(fresh=True).workspace == ws.resolve()
     paths = Paths.under(world["state"])
     monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
@@ -413,7 +414,33 @@ def test_default_hidden_paths_follow_the_sandbox_policy(
     cap.begin()
     result = cap.finish([])
     files = tree_files(Repo(paths.worktree_git), result.before)
-    assert "data.txt" in files and ".env" not in files and "id_rsa" not in files
+    assert "data.txt" in files
+    # the sandbox's own secret rule: never snapshotted, whatever the policy shows cells in the workspace
+    assert not {".env", "server.pem", "svc-key.json"} & set(files)
+
+
+def test_sandbox_secret_rule_hides_paths_fail_closed(tmp_path, monkeypatch):
+    """Remote run: every path component the sandbox's secret rule masks hides the path; an error hides it too."""
+    from unify import sandbox
+
+    hidden = capture_mod.sandbox_hidden(tmp_path)
+    for rel in (
+        ".env",
+        ".env.local",
+        "conf/.aws/credentials",
+        "certs/server.pem",
+        "gcp-key.json",
+        ".ssh/id_ed25519",
+    ):
+        assert hidden(rel), rel
+    for rel in ("data.txt", "certs/cacert.pem", "report.json", ".env.example"):
+        assert not hidden(rel), rel
+
+    def boom(name):
+        raise RuntimeError("rule failed")
+
+    monkeypatch.setattr(sandbox, "_secret_rule", boom)
+    assert capture_mod.sandbox_hidden(tmp_path)("data.txt")
 
 
 # -- review fix round (I1, I2, M2, abort) -----------------------------------------------------------------
