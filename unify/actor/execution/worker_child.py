@@ -14,7 +14,8 @@ nothing a cell prints or a subprocess writes can reach the channel.
 Harness -> worker::
 
     {"op": "init", "sys_path": [...], "builtins": [...], "globals": {...},
-     "help": bool}
+     "help": bool, "audit": {"roots": [...], "path": str}}
+                                              (audit: only under UNIFY_MEMORY_V2)
     {"op": "exec", "id": n, "source": str, "sync": {...}, "scratch": bool,
      "inventory": true}                       (only when asked)
     {"op": "reply", "id": k, "value": ..., "coroutine": bool}
@@ -22,7 +23,8 @@ Harness -> worker::
 
 Worker -> harness::
 
-    {"op": "ready", "missing": {name: error}}
+    {"op": "ready", "missing": {name: error}, "audit": "on" | error}
+                                              (audit: only when init asked)
     {"op": "call" | "describe" | "dir", "id": k, "target": {...}, ...}
     {"op": "fn_begin", "id": k, "name": str, "mode": "run" | "call",
      "args": [...], "kwargs": {...}}
@@ -38,7 +40,8 @@ the call between its begin and its end. While one runs, every request carries
 ``"cases": [token, ...]``, the recordings it belongs to, so the harness adds
 the environment calls it serves to those cases.
     {"op": "done", "id": n, "result": ..., "error": str | None, ...,
-     "inventory": str | None}                 (when the exec asked for it)
+     "inventory": str | None,                 (when the exec asked for it)
+     "audit": {"records", "dropped", "failed", "bytes"}}   (when installed)
 
 Values cross as JSON with a few tagged forms (``{"__unify__": tag, ...}``):
 tuples, sets, bytes, non-string dictionary keys, dates and times, decimals,
@@ -956,6 +959,10 @@ class Worker:
         self.reply = Reply()
         # UNIFY_VARIABLE_INVENTORY=on: what this namespace's cells bound.
         self.inventory = Inventory()
+        # UNIFY_MEMORY_V2 (spec §3a): the work-tree audit hook, only when the
+        # harness asks for it in init; ``audit_state`` is "on" or why not.
+        self.audit: Any = None
+        self.audit_state: Optional[str] = None
 
     # -- channel -------------------------------------------------------------
     def send(self, msg: dict) -> None:
@@ -1234,8 +1241,36 @@ class Worker:
             # Under -S there is no site-installed help(); this one prints the
             # harness objects' documentation too.
             self.ns["help"] = self.help
+        if isinstance(msg.get("audit"), dict):
+            self.audit_state = self._install_audit(msg["audit"])
         self.base_ns = dict(self.ns)
         return missing
+
+    def _install_audit(self, spec: dict) -> str:
+        """Install the memory-v2 audit hook (``unify/memory_v2/integration/
+        adapters/audit.py``), loaded by its file path so no ``unify`` package
+        code runs here; "on", or why it is not installed."""
+        try:
+            import importlib.util
+
+            roots = [r for r in spec.get("roots") or [] if isinstance(r, str)]
+            found = importlib.util.spec_from_file_location(
+                "_unify_memory_v2_audit",
+                str(spec.get("path")),
+            )
+            module = importlib.util.module_from_spec(found)
+            found.loader.exec_module(module)
+            self.audit = module.install(roots)
+            return "on"
+        except Exception as exc:  # noqa: BLE001 - the cells run without it
+            self.audit = None
+            return f"{type(exc).__name__}: {exc}"[:300]
+
+    def _audit_drain(self) -> Any:
+        try:
+            return self.audit.drain()
+        except Exception:  # noqa: BLE001 - a tampered hook never loses the cell
+            return None
 
     @staticmethod
     def _import(spec: list) -> Any:
@@ -1597,9 +1632,13 @@ class Worker:
             ns = dict(self.ns) if msg.get("scratch") else self.ns
             before = Inventory.snapshot(ns) if listing else None
             try:
+                if self.audit is not None:
+                    self.audit.begin()
                 exec(compile(msg["source"], "<string>", "exec"), ns)
                 result = await ns["__exec_wrapper"]()
             finally:
+                if self.audit is not None:
+                    self.audit.end()
                 ns.pop("__exec_wrapper", None)
                 if before is not None:
                     try:
@@ -1637,6 +1676,7 @@ class Worker:
                 "stderr": self._stderr,
                 **({"reply": reply} if reply is not None else {}),
                 **({"inventory": inventory} if listing else {}),
+                **({"audit": self._audit_drain()} if self.audit is not None else {}),
             },
         )
 
@@ -1720,7 +1760,10 @@ def main() -> None:
     asyncio.set_event_loop(loop)
     worker.loop = loop
     threading.Thread(target=worker.reader, daemon=True).start()
-    worker.send({"op": "ready", "missing": missing, "pid": os.getpid()})
+    ready = {"op": "ready", "missing": missing, "pid": os.getpid()}
+    if worker.audit_state is not None:
+        ready["audit"] = worker.audit_state
+    worker.send(ready)
     loop.run_forever()
 
 
