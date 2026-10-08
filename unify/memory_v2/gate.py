@@ -134,13 +134,18 @@ class GateResult:
     passed: bool
     checks: dict[str, bool] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+    # The checks that refused, in order (structured; ``checks`` also marks unevaluated checks False).
+    refused: list[str] = field(default_factory=list)
+    # The manifest could not be parsed (refused under G1).
+    manifest_invalid: bool = False
 
 
-def _failed(reason: str) -> GateResult:
+def _failed(reason: str, check: str | None = None) -> GateResult:
     return GateResult(
         False,
         {c: False for c in CHECKS},
         [KEY_SHAPED.sub(_REDACTED, reason)],
+        [check] if check else [],
     )
 
 
@@ -241,6 +246,8 @@ class _Run:
         # reasons are stored in the evidence store; test output in them is model-controlled
         self.res.checks[check] = False
         self.res.passed = False
+        if check not in self.res.refused:
+            self.res.refused.append(check)
         self.res.reasons.append(KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}"))
 
     def note(self, reason: str) -> None:
@@ -303,6 +310,7 @@ class Gate:
         if p_sha is None or c_sha is None:
             res = _failed(
                 f"G1: unresolvable revision {parent!r} or {candidate!r}"[:300],
+                "G1",
             )
             self._record(
                 parent,
@@ -429,6 +437,7 @@ class Gate:
         try:
             run.man = parse_manifest(run.manifest_raw)
         except ManifestError as exc:
+            run.res.manifest_invalid = True
             run.stop([("G1", f"malformed manifest: {exc}")])
             return False
         p_sha, c_sha = self._resolve(run.parent), self._resolve(run.candidate)

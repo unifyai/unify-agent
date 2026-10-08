@@ -218,6 +218,16 @@ _NEVER_COPIED = frozenset({".git", "__pycache__", ".pytest_cache"})
 _EPISODE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _UNKNOWN = "unknown"
 
+# Structured causes of a pass's end (PassOutcome.codes), set where each cause arises, never read back from
+# reason text. A passed pass is exactly ["ok"]; a refused pass lists the gate checks that refused (G1..G6).
+CODE_OK = "ok"
+CODE_NO_MANIFEST = "no_manifest"
+CODE_MANIFEST_INVALID = "manifest_invalid"
+CODE_OVER_QUOTA = "over_quota"
+CODE_DEADLINE = "deadline"
+CODE_PASS_CAP = "pass_cap"
+CODE_SOL_ERROR = "sol_error"
+
 
 class ModelTurn(Protocol):
     async def __call__(
@@ -251,6 +261,9 @@ class PassOutcome:
     reasons: list[str] = field(default_factory=list)
     summary: str = ""
     unknown_cost_calls: int = 0
+    codes: list[str] = field(
+        default_factory=list,
+    )  # structured causes (the CODE_* constants)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -796,6 +809,12 @@ class SolPass:
         notes: list[str] = []
         stop: str | None = None  # why no further cell runs: deadline or quota
         over_quota: str | None = None
+        causes: list[str] = []  # PassOutcome.codes, set where each cause arises
+        errored = False
+
+        def cause(code: str) -> None:
+            if code not in causes:
+                causes.append(code)
 
         def remaining() -> float:
             return deadline - time.monotonic()
@@ -814,6 +833,7 @@ class SolPass:
                 reasons,
                 summary,
                 spend.unknown,
+                [CODE_OK] if passed else list(causes),
             )
 
         with (
@@ -847,6 +867,7 @@ class SolPass:
             ):
                 if remaining() <= 0:
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached"
+                    cause(CODE_DEADLINE)
                     break
                 calls += 1
                 try:
@@ -857,9 +878,12 @@ class SolPass:
                 except TimeoutError:
                     spend.unknown += 1
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached during a model call"
+                    cause(CODE_DEADLINE)
                     break
                 except Exception as exc:  # the call may still have cost money
                     spend.unknown += 1
+                    errored = True
+                    cause(CODE_SOL_ERROR)
                     notes.append(
                         _redact(f"model call failed: {type(exc).__name__}: {exc}")[
                             :300
@@ -873,6 +897,8 @@ class SolPass:
                     spend.usd += cost
                 if not isinstance(msg, dict):
                     notes.append(f"model returned {type(msg).__name__}, not a message")
+                    errored = True
+                    cause(CODE_SOL_ERROR)
                     break
                 messages.append(msg)
                 tool_calls = msg.get("tool_calls") or []
@@ -915,6 +941,7 @@ class SolPass:
                         )
                     elif remaining() <= 0:
                         stop = f"pass deadline of {self.cfg.deadline_s} s reached"
+                        cause(CODE_DEADLINE)
                         content = f"not run: {stop}"
                     else:
                         ran += 1
@@ -940,6 +967,13 @@ class SolPass:
                     messages.append(
                         {"role": "user", "content": "Use execute_code, or finish."},
                     )
+            if (
+                not finished
+                and stop is None
+                and not errored
+                and (calls >= max_calls or spend.usd + spend.unknown * reserve >= cap)
+            ):
+                cause(CODE_PASS_CAP)  # the call cap or the USD cap ended the pass
             if stop is not None and over_quota is None:
                 notes.append(stop)
             summary = _redact(summary)
@@ -949,6 +983,7 @@ class SolPass:
                 )  # also restores the host's access to every entry
             if over_quota is not None:
                 # no mirror, no commit: the tree is not looked at further
+                cause(CODE_OVER_QUOTA)
                 return outcome(
                     False,
                     None,
@@ -956,6 +991,7 @@ class SolPass:
                 )
             found, manifest, problem = _read_manifest(box)
             if not found:
+                cause(CODE_NO_MANIFEST)
                 return outcome(
                     False,
                     None,
@@ -963,6 +999,7 @@ class SolPass:
                 )
             if problem is not None:
                 notes.append(problem)
+                cause(CODE_MANIFEST_INVALID)
             _remove(box / ".pass")
             _clear_checkout(wt)
             left_out = _mirror(box, wt, skip_top=frozenset({".pass"}))
@@ -984,6 +1021,10 @@ class SolPass:
             req.channel,
             _usd(spend.usd),
         )
+        if getattr(res, "manifest_invalid", False):
+            cause(CODE_MANIFEST_INVALID)
+        for check in getattr(res, "refused", []):
+            cause(check)  # the gate checks that refused: G1..G6
         # the pass's own notes (left-out entries, deadline, model failures) follow the gate's reasons
         tail = notes + _unpriced(spend.unknown)
         self.ev.add_pass_notes(pass_id, tail)
