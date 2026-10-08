@@ -154,6 +154,7 @@ def test_a_write_function_is_held_to_exactly_its_recorded_write_calls():
     announce_twice(extra, ["deploy done"])
     assert extra.issued(effect="write") != calls(recorded, effect="write")
     assert len(extra.issued(effect="write")) == 2
+    assert extra.repeats == calls([POST])  # the second post had no recording of its own
 
     unrecorded = env_from(recorded)
     with pytest.raises(ReplayMiss):  # a write nobody recorded is never answered
@@ -214,3 +215,61 @@ def test_an_effect_filter_fails_loudly_where_the_recorded_effect_is_unknown():
         calls([LOGIN], effect="writes")
     with pytest.raises(ValueError, match="effect is one of"):
         env_from([LOGIN]).issued(effect="writes")
+
+
+# --- repeated identical calls replay in recorded order (I-Q2) ------------------------------------------------
+
+STATUS = {
+    "channel": "jobs",
+    "method": "status",
+    "args": ["j1"],
+    "kwargs": {},
+    "effect": "read",
+}
+POLL = [
+    {**STATUS, "response": {"state": "pending"}},
+    {
+        "channel": "jobs",
+        "method": "submit",
+        "args": ["j1"],
+        "kwargs": {},
+        "response": {"ok": True},
+        "effect": "write",
+    },
+    {**STATUS, "response": {"state": "done"}},
+]
+
+
+def submit_and_wait(env):
+    """A function under test: reads the status, submits, then reads the status again."""
+    before = env.jobs.status("j1")["state"]
+    env.jobs.submit("j1")
+    after = env.jobs.status("j1")["state"]
+    return before, after
+
+
+def test_identical_calls_are_answered_in_recorded_order():
+    env = env_from(POLL)
+    assert submit_and_wait(env) == ("pending", "done")  # not the first recording twice
+    assert env.issued() == calls(POLL) and not env.misses and not env.repeats
+    # past the last recording, the last one repeats, and the call is listed (never silently)
+    assert env.jobs.status("j1") == {"state": "done"}
+    assert env.repeats == [call_of("jobs", "status", ["j1"], {})]
+    assert env.issued() != calls(POLL)  # the extra read shows in the comparison too
+    # the key stays exact: another argument is a miss, not the next recording
+    with pytest.raises(ReplayMiss):
+        env.jobs.status("j2")
+
+
+def test_a_recorded_failure_then_success_replays_in_that_order():
+    rows = [
+        {**STATUS, "response": None, "status": "error", "error": "HTTP 503"},
+        {**STATUS, "response": {"state": "done"}},
+    ]
+    env = env_from(rows)
+    with pytest.raises(RecordedError, match="503"):
+        env.jobs.status("j1")
+    assert env.jobs.status("j1") == {"state": "done"}
+    # each replay starts from the first recording
+    with pytest.raises(RecordedError):
+        env_from(rows).jobs.status("j1")

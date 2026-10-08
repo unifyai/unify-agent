@@ -12,8 +12,9 @@ never builds a fake environment of its own:
   calls of its own recorded rows: ``assert env.issued() == calls(rows) and not env.misses``.
 
 Rows are :class:`~.episodes.Action` objects or exported action dicts (unknown keys ignored; a dict without a
-status counts as ``ok``). Only rows recorded ``ok`` or ``error`` are served; the first recording of a call
-answers it.
+status counts as ``ok``). Only rows recorded ``ok`` or ``error`` are served. Identical calls are answered in
+recorded order, as the episode happened (a status polled twice returns its first, then its second recording);
+once a call's recordings are used up its last one is repeated, and that call is listed in ``env.repeats``.
 
 Effects are ``read``, ``write`` or ``unknown`` (:data:`EFFECTS`), and ``unknown`` is a class of its own: the
 dialogue adapter records every action, and the tool adapter every call that declares no effect, as
@@ -137,18 +138,29 @@ class _Channel:
 class RecordedEnv:
     """``env.<channel>.<method>(*args, **kwargs)`` returns the recorded response of the identical call.
 
-    Only calls recorded as ``ok`` or ``error`` are served; the first recording of a call wins. A call
-    without a recording raises :class:`ReplayMiss`; a recorded failure raises :class:`RecordedError`.
-    ``served`` lists ``(channel, method)`` of each call served; :meth:`issued` the full calls.
+    Only calls recorded as ``ok`` or ``error`` are served. Identical calls are answered in recorded order;
+    past the last recording of a call its last one is repeated and the call is listed in ``repeats``. A call
+    without a recording raises :class:`ReplayMiss` (and is listed in ``misses``); a recorded failure raises
+    :class:`RecordedError`. ``served`` lists ``(channel, method)`` of each call served; :meth:`issued` the
+    full calls.
     """
 
     def __init__(self, actions: Iterable[Action | dict]) -> None:
-        self._table: dict[str, Action] = {}
+        self._table: dict[str, list[Action]] = (
+            {}
+        )  # per call, its recordings in recorded order
         for a in map(_action, actions):
             if a.status in SERVED_STATUSES:
-                self._table.setdefault(_key(a.channel, a.method, a.args, a.kwargs), a)
+                self._table.setdefault(
+                    _key(a.channel, a.method, a.args, a.kwargs),
+                    [],
+                ).append(a)
+        self._next: dict[str, int] = {}
         self.served: list[tuple[str, str]] = []
         self.misses: list[dict] = []
+        self.repeats: list[dict] = (
+            []
+        )  # calls served after their recordings were used up
         self._issued: list[tuple[dict, str]] = []  # (call, the recording's effect)
 
     @classmethod
@@ -159,7 +171,7 @@ class RecordedEnv:
         return cls(rows)
 
     def issued(self, *, effect: str | None = None) -> list[dict]:
-        """The calls served so far, in order (recorded errors included, misses not); *effect*
+        """The calls served so far, in order (recorded errors and repeats included, misses not); *effect*
         keeps only those whose recording has that effect (``"read"`` or ``"write"`` raises
         :class:`UnknownEffect` when a served call's recorded effect is ``unknown``)."""
         _check_effect(effect, (c["channel"] for c, e in self._issued if e == "unknown"))
@@ -171,12 +183,20 @@ class RecordedEnv:
         return _Channel(self, channel)
 
     def _serve(self, channel: str, method: str, args: Any, kwargs: Any) -> Any:
-        a = self._table.get(_key(channel, method, args, kwargs))
-        if a is None:
+        key = _key(channel, method, args, kwargs)
+        recorded = self._table.get(key)
+        if not recorded:
             self.misses.append(call_of(channel, method, args, kwargs))
             raise ReplayMiss(
                 f"no recorded call {channel}.{method} with these arguments",
             )
+        n = self._next.get(key, 0)
+        if n < len(recorded):
+            a = recorded[n]
+            self._next[key] = n + 1
+        else:
+            a = recorded[-1]
+            self.repeats.append(call_of(channel, method, args, kwargs))
         self.served.append((channel, method))
         self._issued.append((call_of(channel, method, args, kwargs), a.effect))
         if a.status == "error":
