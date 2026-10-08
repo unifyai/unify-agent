@@ -25,3 +25,17 @@ def test_from_environ_takes_only_secret_names_and_long_values():
     )
     assert r.text("abcdefgh12") == "<secret:MY_API_KEY>"
     assert r.text("/usr/bin abc") == "/usr/bin abc"
+
+
+def test_pem_private_key_blocks_are_redacted_whole_or_cut():
+    from unify.memory_v2.redact import KEY_SHAPED
+
+    full = "a\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3NzaC1\nmore\n-----END OPENSSH PRIVATE KEY-----\nz"  # pragma: allowlist secret
+    cut = "head\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\npart"  # pragma: allowlist secret
+    public = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN\n-----END PUBLIC KEY-----"
+    assert "AAAAB3NzaC1" not in KEY_SHAPED.sub("<k>", full) and KEY_SHAPED.sub(
+        "<k>",
+        full,
+    ).endswith("\nz")
+    assert "MIIEpAIBAAKCAQEA" not in KEY_SHAPED.sub("<k>", cut)
+    assert KEY_SHAPED.search(public) is None

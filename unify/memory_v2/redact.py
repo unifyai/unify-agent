@@ -8,7 +8,10 @@ from typing import Any, Mapping
 KEY_SHAPED = re.compile(
     r"sk-or-v1-[0-9a-f]{64}"  # OpenRouter
     r"|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{32,}"  # OpenAI / Anthropic style
-    r"|AKIA[0-9A-Z]{16}",  # AWS access key id
+    r"|AKIA[0-9A-Z]{16}"  # AWS access key id
+    # a PEM private-key block (RSA, EC, OPENSSH, ENCRYPTED, plain PKCS#8), whole, or to the end of the text
+    # when its END line was cut off: the armour is the format, so the block goes however it is labelled
+    r"|-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----(?s:.*?)(?:-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----|\Z)",
 )
 _SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _MIN_SECRET_LEN = 8
