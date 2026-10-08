@@ -14,9 +14,14 @@ The contract (online build, spec §F1 and D23):
 - ``UNIFY_MEMORY_V2_SOL_BASE_URL`` and ``UNIFY_MEMORY_V2_SOL_TOKEN``: Sol's own route, both or neither. Set,
   Sol's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of Sol's own,
   so the actor's route never carries Sol's model); empty, they go as shipped. The URL is http(s) with a
-  host and no user, password, query or fragment. The token is a secret: printable ASCII without spaces,
-  held as a ``SecretStr``. Settings only normalise the two (a settings error would print its input), and
-  :func:`sol_route` checks them when a pass is about to start; its errors never quote either value.
+  host and no user, password, query or fragment; plain http only to a loopback or private-network address
+  (the token travels in a header). The token is a secret: a bearer token (RFC 6750 ``b64token`` characters,
+  at least 16 of them), held as a ``SecretStr`` and registered with every value-based redactor
+  (:func:`unify.process_secrets.register_secret`). Settings only normalise the two (a settings error would
+  print its input), and :func:`sol_route` checks them when a pass is about to start; its errors never quote
+  either value. Both are read from the controller's process environment only: a value that reaches
+  ``os.environ`` after settings were built (from ``.env``, say) refuses every pass
+  (:func:`settle_sol_route_env`).
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -24,12 +29,15 @@ read the same way by every consumer.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from decimal import Decimal
-from typing import Any
+from typing import Any, MutableMapping
 from urllib.parse import urlsplit
 
 from pydantic import SecretStr
+
+from unify.process_secrets import register_secret
 
 SWITCH = "UNIFY_MEMORY_V2"
 EXPERIENCE_BUDGET = "UNIFY_MEMORY_V2_E"
@@ -154,7 +162,37 @@ def parse_sol_base_url(v: Any) -> str:
         raise ValueError(f"{refusal}: it has a query")
     if parts.fragment or "#" in text:
         raise ValueError(f"{refusal}: it has a fragment")
+    if parts.scheme.lower() == "http" and not _on_private_network(parts.hostname):
+        raise ValueError(
+            f"{refusal}: plain http is allowed only to a loopback or private-network address",
+        )
     return text.rstrip("/")
+
+
+def _on_private_network(host: str) -> bool:
+    """``localhost``, or a loopback or private IP literal: IPv4 127/8, 10/8, 172.16/12, 192.168/16; IPv6 ::1
+    and fc00::/7. A pure parse (no DNS lookup): any other name may resolve anywhere, so it needs https.
+    """
+    if host.lower() == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(addr in net for net in _PRIVATE_NETWORKS)
+
+
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+    )
+)
 
 
 def parse_sol_token(v: Any) -> SecretStr:
@@ -163,11 +201,18 @@ def parse_sol_token(v: Any) -> SecretStr:
     Errors never quote the value.
     """
     value = sol_token_setting(v).get_secret_value()
-    if value and not all("!" <= c <= "~" for c in value):
+    if value and not _BEARER_TOKEN.fullmatch(value):
         raise ValueError(
-            f"{SOL_TOKEN} must be printable ASCII without spaces or control characters",
+            f"{SOL_TOKEN} must be a bearer token: at least {_MIN_TOKEN_CHARS} characters from "
+            "A-Z a-z 0-9 - . _ ~ + / (then = padding only)",
         )
     return SecretStr(value)
+
+
+#: RFC 6750 ``b64token``, at least 16 characters: it goes in a header, and a token this distinctive can be
+#: redacted by value without touching other text (no quoting or escaping form differs from it).
+_MIN_TOKEN_CHARS = 16
+_BEARER_TOKEN = re.compile(r"(?=.{%d})[A-Za-z0-9\-._~+/]+=*" % _MIN_TOKEN_CHARS, re.S)
 
 
 def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
@@ -176,6 +221,10 @@ def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
     Exactly one set is refused (fail closed: no pass starts, so no call is made), as is either value in a
     wrong form. No error quotes a value.
     """
+    if _ENV_REFUSAL is not None:
+        raise ValueError(_ENV_REFUSAL)
+    raw = token.get_secret_value() if isinstance(token, SecretStr) else token
+    register_secret(SOL_TOKEN, raw)  # kept redacted by value even if refused below
     base = parse_sol_base_url(base_url)
     secret = parse_sol_token(token)
     if not base and not secret.get_secret_value():
@@ -187,6 +236,50 @@ def sol_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
             f"{missing} is empty, so no consolidation pass starts",
         )
     return base, secret
+
+
+#: Why every pass is refused, once :func:`settle_sol_route_env` found the environment and the settings
+#: disagreeing about Sol's route; sticky for the life of the process.
+_ENV_REFUSAL: str | None = None
+
+
+def settle_sol_route_env(
+    environ: MutableMapping[str, str],
+    settings: Any,
+) -> str | None:
+    """Keep Sol's token out of *environ* and refuse every pass if *environ* and *settings* disagree.
+
+    Called once the settings are built (``unify/settings.py``) and again after the CLI loads ``.env``. Every
+    case variant of ``UNIFY_MEMORY_V2_SOL_TOKEN`` is removed from *environ* and its value registered for
+    redaction (pydantic-settings matches names in any case). A token or base URL found in *environ* that the
+    settings do not hold (one that arrived after they were built, from ``.env`` say, or two case variants
+    with different values) would otherwise silently leave Sol on the actor's route, so from then on
+    :func:`sol_route` refuses every pass with the returned message. The message names settings, never
+    values. Returns ``None`` when they agree.
+    """
+    global _ENV_REFUSAL
+    raw = getattr(settings, SOL_TOKEN, "")
+    held_token = _stripped(
+        raw.get_secret_value() if isinstance(raw, SecretStr) else raw,
+    )
+    register_secret(SOL_TOKEN, held_token)
+    held_base = _stripped(getattr(settings, SOL_BASE_URL, ""))
+    stray: list[str] = []
+    for name in [k for k in environ if k.upper() == SOL_TOKEN]:
+        value = environ.pop(name, "")
+        register_secret(SOL_TOKEN, value)
+        if _stripped(value) != held_token:
+            stray.append(SOL_TOKEN)
+    for name in [k for k in environ if k.upper() == SOL_BASE_URL]:
+        if _stripped(environ.get(name)) != held_base:
+            stray.append(SOL_BASE_URL)
+    if stray and _ENV_REFUSAL is None:
+        _ENV_REFUSAL = (
+            f"{' and '.join(sorted(set(stray)))} reached the environment after settings were read "
+            "(from .env, or in another letter case), so Sol's route is not what the settings hold; no "
+            "consolidation pass starts. Set both in the controller's process environment, not .env"
+        )
+    return _ENV_REFUSAL
 
 
 #: The validator for each setting (unify/settings.py ``parse_memory_v2``).

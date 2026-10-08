@@ -677,6 +677,9 @@ class ProductionSettings(BaseSettings):
 # Singleton instance for production code
 SETTINGS = ProductionSettings()
 # UNIFY_MEMORY_V2_SOL_TOKEN lives in SETTINGS (this, the controller process)
-# only: removed from the environment once read, so no subprocess inherits it,
-# whatever its environment is built from. Unset, nothing changes.
-os.environ.pop("UNIFY_MEMORY_V2_SOL_TOKEN", None)
+# only: every case variant is removed from the environment once read, so no
+# subprocess inherits it, and its value stays registered with the value-based
+# redactors. The CLI checks again after loading .env. Unset, nothing changes.
+from unify.memory_v2.integration.switch import settle_sol_route_env  # noqa: E402
+
+settle_sol_route_env(os.environ, SETTINGS)
