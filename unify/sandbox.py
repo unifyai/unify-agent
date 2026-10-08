@@ -2422,6 +2422,9 @@ def wrap_argv(
         workdir = str(policy.workspace)
     # Every mount point on the root's tmpfs exists now; nothing more is
     # written there.
+    # The /bin/sh wrapper runs outside the sandbox and exports the harness's
+    # own working directory as PWD; the command gets its sandbox one instead.
+    args += ["--setenv", "PWD", workdir]
     args += ["--remount-ro", "/", "--chdir", workdir, "--"]
     _refuse_broad_binds(
         args,
