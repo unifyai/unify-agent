@@ -4,7 +4,8 @@
 ``main`` into the scratch export the worker mounts, renders the index the system prompt ends with, takes
 the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
 episode id and model costs are recorded). ``finish`` records the request as
-one episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
+one episode (with ``UNIFY_MEMORY_V2_DIALOGUE`` set, its transcript's dialogue actions too:
+:mod:`.adapters.dialogue`) and runs the consolidation passes that are due, blocking; it never raises. The passes'
 start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
 appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
 and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
@@ -108,6 +109,13 @@ def new_episode_id(transcripts_dir: Path) -> str:
         eid = f"{stamp}-{secrets.token_hex(4)}"
         if not (transcripts_dir / f"{eid}.jsonl").exists():
             return eid
+
+
+def dialogue_counterpart() -> str:
+    """The dialogue counterpart ``UNIFY_MEMORY_V2_DIALOGUE`` names (``env``), or ``""`` when it is off."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_MEMORY_V2_DIALOGUE", "") or ""
 
 
 def check_hidden(paths: Any, policy: Any) -> None:
@@ -330,12 +338,22 @@ class RequestRun:
             stores.blobs,
         )
         ended_at = _now()
+        extra_actions = wt.actions
+        counterpart = dialogue_counterpart()
+        if counterpart:
+            # UNIFY_MEMORY_V2_DIALOGUE: the transcript's dialogue actions follow the work-tree rows
+            from .adapters.dialogue import dialogue_actions
+
+            extra_actions = [
+                *wt.actions,
+                *dialogue_actions(lines, counterpart, redactor=self.redactor()),
+            ]
         ep, redactor = trajectory.assemble(
             self,
             lines,
             memory_diff,
             ended_at,
-            extra_actions=wt.actions,
+            extra_actions=extra_actions,
             worktree_before=wt.before,
             worktree_after=wt.after,
             worktree_diff=wt.diff,

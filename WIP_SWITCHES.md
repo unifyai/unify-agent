@@ -88,6 +88,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. The trigger is size-based and batched (the spec's F1): one pass becomes due once the experience recorded since the last pass reaches E tokens, and it covers every channel with new evidence. E times the allowance is one pass's USD cap. The passes run on the Sol model at the actor's reasoning effort for the run (there is no effort switch). With a run guard set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
 - **Evidence:** E and the allowance follow the offline cadence replay and the memory-v2 preregistrations (continual-harness-research); the guard is a runaway stop, not the expected cutoff.
 
+## UNIFY_MEMORY_V2_DIALOGUE
+
+- **Values:** empty (the same as `off`) or `env`.
+- **Default:** empty.
+- **What it does:** It applies only with `UNIFY_MEMORY_V2=on`. With `env`, each request's episode also records its dialogue actions: every turn-ending reply (text, no tool call) is one action on the channel `env` (memory channel `env/env/`), paired with the counterpart's next message as its observation. The action is read from the reply's structure only: a trailing JSON object names its method by its first member whose value is an identifier (`{"action": "submit", "grid": g}` is `submit(g)`), else the reply's last line is `act(line)`. The observation is the counterpart's message, parsed when it is wholly JSON, redacted, and kept whole up to 65,536 characters. A benchmark whose actions are text in the replies (Continual-ARC) then leaves actions a consolidation item can cover. Off, episodes are recorded as without the setting.
+- **Evidence:** keyless tests only (`tests/memory_v2/test_arc_dialogue.py`, `tests/memory_v2/integration/test_cli_e2e_arc.py`); the Continual-ARC memory-v2 arm needs it.
+
 ## UNIFY_CLOCK_PLACEMENT
 
 - **Values:** empty (the same as `system`) or `first_message`.

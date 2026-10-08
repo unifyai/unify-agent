@@ -11,6 +11,10 @@ The contract (online build, spec §F1 and D23):
   plain decimal string; empty means ``0.00000073``.
 - ``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD``: a non-negative plain decimal string, or empty for no guard. When
   set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
+- ``UNIFY_MEMORY_V2_DIALOGUE``: ``off`` (or empty; the default) or ``env``. With ``env``, each request's
+  episode also records the dialogue actions of its transcript (each turn-ending reply's action, paired with
+  the counterpart's next message; :mod:`.adapters.dialogue`) on the channel ``env``, which is the memory
+  channel ``env`` (``env/env/``). Off, the episode is recorded exactly as without the setting.
 
 Money stays a decimal string as written (never a float), and exponent forms are refused, so a value is
 read the same way by every consumer.
@@ -27,6 +31,7 @@ EXPERIENCE_BUDGET = "UNIFY_MEMORY_V2_E"
 SOL_MODEL = "UNIFY_MEMORY_V2_SOL_MODEL"
 SOL_ALLOWANCE = "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS"
 SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
+DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
@@ -112,3 +117,21 @@ PARSERS = {
     SOL_ALLOWANCE: parse_sol_allowance,
     SOL_RUN_GUARD: parse_sol_run_guard,
 }
+
+
+#: The counterparts ``UNIFY_MEMORY_V2_DIALOGUE`` may name: the channel key of the recorded dialogue
+#: actions. ``env`` is the counterpart a benchmark runner serves (the offline imports' name).
+DIALOGUE_COUNTERPARTS = ("env",)
+
+
+def parse_dialogue(v: Any) -> str:
+    """The dialogue counterpart, or ``""`` for off (empty or ``off``)."""
+    value = _stripped(v).lower()
+    if value in ("", "off"):
+        return ""
+    if value not in DIALOGUE_COUNTERPARTS:
+        raise ValueError(f"{DIALOGUE} must be empty, 'off' or 'env', not {v!r}")
+    return value
+
+
+PARSERS[DIALOGUE] = parse_dialogue
