@@ -1344,34 +1344,29 @@ def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path)
 
 def test_mutation_is_not_judged_when_the_probe_gets_no_output(tmp_path):
     """Every probe row a replay miss: no survivor can be judged equivalent, so the kill share is not
-    judged either; a note under "on", a refusal under strict, never a silent pass."""
+    judged either, and the mutation switch alone refuses the pass (fixtures off or strict), never a note.
+    """
     files, man = _hp()
     missing = _fake_probe({"cover": {"outcome": "miss"}, "sample": {"outcome": "miss"}})
-    on = _check(
-        tmp_path / "on",
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(mutation=True, runner=missing),
-    )
-    assert on.passed, on.reasons
-    (note,) = [r for r in on.reasons if "[qa:mutation]" in r]
-    assert note.startswith("note: [qa:mutation] ") and "mutation not judged" in note
-    strict = _check(
-        tmp_path / "strict",
-        CRAFTER,
-        files,
-        man,
-        pytest_runner=FakePytest(),
-        qa=QAConfig(mutation=True, fixtures="strict", runner=missing),
-    )
-    assert not strict.passed and strict.refused == ["G3"]
-    assert any(
-        r.startswith("G3: [qa:mutation] ") and "mutation not judged" in r
-        for r in strict.reasons
-    )
-    _no_values(strict)
+    for name, qa in (
+        ("on", QAConfig(mutation=True, runner=missing)),
+        ("strict", QAConfig(mutation=True, fixtures="strict", runner=missing)),
+    ):
+        res = _check(
+            tmp_path / name,
+            CRAFTER,
+            files,
+            man,
+            pytest_runner=FakePytest(),
+            qa=qa,
+        )
+        assert not res.passed and res.refused == ["G3"], (name, res.reasons)
+        assert any(
+            r.startswith("G3: [qa:mutation] ") and "mutation not judged" in r
+            for r in res.reasons
+        )
+        assert not any(r.startswith("note: [qa:mutation] ") for r in res.reasons)
+        _no_values(res)
 
 
 def test_drawn_inputs_are_not_judged_when_the_covers_do_not_return_under_the_probe(

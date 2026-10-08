@@ -37,8 +37,8 @@ refused or raised) of the covers, the drawn inputs and the covers' structural ne
 (:func:`.mutation.negatives`: a field dropped, retyped, emptied or added) is likely equivalent and leaves the
 count; the negatives keep a mutant that drops a shape guard from looking equivalent. A kill share below the
 threshold refuses the pass, naming operator kinds and lines. When survivors remain but the probe got no
-informative row (every input missed the replay or was unbound), the check is "not judged": a refusal under
-``strict``, else a note. First the tests run on the module re-printed unchanged (the control): if that is not
+informative row (every input missed the replay or was unbound), the check is "not judged", which refuses the
+pass. First the tests run on the module re-printed unchanged (the control): if that is not
 green, nothing is judged.
 
 **Determinism** (``UNIFY_MEMORY_V2_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
@@ -1262,10 +1262,7 @@ class QAChecks:
                         "mutants survive and the probe got no output of the function on any recorded or "
                         "structurally broken input (replay misses, unbound arguments)"
                     )
-                    if cfg.strict:
-                        self._fail("mutation", why)
-                    else:
-                        self._note("mutation", why)
+                    self._fail("mutation", why)
                     return
                 for site, text in survived:
                     target.write_text(text, encoding="utf-8")
