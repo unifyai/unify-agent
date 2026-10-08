@@ -6,13 +6,21 @@ because no recording showed it. The gate checks this by calling the item, confin
 observation with one value at a time replaced by a type-valid value no recording holds, and refusing the
 item if it then refuses an input it accepted unchanged.
 
-Perturbations come from types alone, never from task ids, stream positions, benchmark names or words:
+Perturbations come from types alone, never from task ids, stream positions, benchmark names or words.
+
+**A field with one value is identity or format, never perturbed.** A field (a key path, a column, a keyword
+path) whose recorded value is the same across every covered input of the item (up to
+:data:`MAX_CONSTANCY_COVERS` covers, plus, for a tool keyword or response field, every recorded call of the
+same ``channel.method``) is identity or format: a message-kind tag (``"type": "SubmitFeedback"``), a schema
+version, a constant currency. Perturbing it would perturb what the input is, not a value within an observed
+range, so it is kept, for strings, numbers and booleans alike, and a note names the field (never a value).
+A field with two or more distinct recorded values is perturbed:
 
 * a string keeps its literal format parts and varies the rest within its character classes. The literal
   parts are the longest common prefix and suffix of the field's distinct observed values, cut back to
   boundaries between character-class runs (letters, digits, each other character) in every value: ids
   ``E1243`` and ``E1488`` keep ``E``; ``ENG-0042``, ``OPS-0043`` and ``SAL-0044`` share nothing, so the prefix
-  varies. With one distinct observed value nothing is literal. In the varying part letters stay letters of
+  varies. In the varying part letters stay letters of
   the same case and digits stay digits (hex-like parts stay hex); every other character is kept, so a
   value's non-alphanumeric skeleton never changes. The result differs from the original and is absent
   from every recorded value the gate sees (the episodes the manifest names and the covered files);
@@ -69,6 +77,8 @@ that field); every allowed refusal is noted. Every refusal an exemption allows i
 * Tool items: response values and positional arguments are never perturbed; only keywords whose name is
   a parameter of the function are; a check placed after the environment call is invisible behind the
   replay miss.
+* A field with one recorded value is never perturbed, so a guard on it (an id equal to the one recorded)
+  is not seen; with few covers, more fields hold one value.
 * Numbers change one at a time, so a row-sum or cross-row total check can be flagged; dates move together
   only within a record, so a cross-row order (rows sorted by date) can be flagged.
 * Fixed value domains (months 1–12, probabilities 0–1) are perturbed like any range (open question for
@@ -119,6 +129,9 @@ RESULTS_MAX_BYTES = 4 * 1024**2
 _MAX_DEPTH = 8
 _MAX_LEAVES = 5000
 _ATTEMPTS = 32
+MAX_CONSTANCY_COVERS = (
+    256  # covers read to tell a constant field (identity or format) from a varying one
+)
 
 _INT_TEXT = re.compile(r"^[+-]?(?:0|[1-9]\d*)\Z")
 _DECIMAL_TEXT = re.compile(r"^[+-]?\d+\.\d+\Z")
@@ -948,10 +961,11 @@ def plan(
         kind = getattr(a, "kind", "tool")
         if kind != "shell" and a.status == "ok" and not is_rejection(a):
             chosen.setdefault((eid, idx), a)
-    order = sorted(
+    ranked = sorted(
         chosen,
         key=lambda c: hashlib.sha256(f"{item}\0{c[0]}\0{c[1]}".encode()).digest(),
-    )[:MAX_COVERS_PER_ITEM]
+    )
+    order = ranked[:MAX_COVERS_PER_ITEM]
     docs = {c: _doc(chosen[c], blob) for c in order}
     docs = {c: d for c, d in docs.items() if d is not None}
     _exemptions(out, covers, chosen, seen, blob)
@@ -961,19 +975,33 @@ def plan(
         for part in (a.args, a.kwargs, a.response, a.error):
             _strings(part, strings)
     stats: dict[tuple, list] = {}
-    for c, d in docs.items():
-        fam = family(chosen[c])
+    # every distinct recorded value of each field: one alone makes the field identity or format
+    distinct: dict[tuple, set[str]] = {}
+
+    def observe(fam: tuple, d: Any, ranged: bool) -> None:
         for name, (_, _, values) in d.fields().items():
-            stats.setdefault((fam, name), []).extend(values)
+            if ranged:
+                stats.setdefault((fam, name), []).extend(values)
+            distinct.setdefault((fam, name), set()).update(_key(v) for v in values)
+
+    for c, d in docs.items():
+        observe(family(chosen[c]), d, True)
+        for _, (_, _, values) in d.fields().items():
             _strings(values, strings)
+    for c in ranked[
+        :MAX_CONSTANCY_COVERS
+    ]:  # covers beyond the checked ones still show a field varying
+        if c not in docs:
+            d = _doc(chosen[c], blob)
+            if d is not None:
+                observe(family(chosen[c]), d, False)
+    families = {family(chosen[c]) for c in docs}
     for a in seen:  # a tool field's range is every recorded call of the same method
         if getattr(a, "kind", "tool") == "tool" and isinstance(a.kwargs, dict):
-            fam = family(a)
-            if any(family(chosen[c]) == fam for c in docs):
-                for name, (_, _, values) in (
-                    _Json(a.kwargs, lambda o: o).fields().items()
-                ):
-                    stats.setdefault((fam, name), []).extend(values)
+            if family(a) in families:
+                observe(family(a), _Json(a.kwargs, lambda o: o), True)
+    constant = {k for k, v in distinct.items() if len(v) == 1}
+    kept: list[str] = []  # fields kept as identity or format, for the note
     if any(isinstance(d, _Yaml) for d in docs.values()):
         strings |= _YAML_LITERALS
 
@@ -1013,6 +1041,10 @@ def plan(
         for name, (loc, value, _) in fields:
             if name in typed:
                 continue
+            if (fam, name) in constant:
+                if name not in kept:
+                    kept.append(name)
+                continue
             if checked >= MAX_FIELDS_PER_COVER:
                 break
             seed = seed_of(item, c[0], c[1], name)
@@ -1047,6 +1079,11 @@ def plan(
             else:
                 case.payload = {"kind": kind, "observation": rendered}
             out.cases.append(case)
+    if kept:
+        out.notes.append(
+            "fields with one value across every covered input, kept as identity or format and "
+            "not perturbed: " + ", ".join(k[:80] for k in kept[:_NAMED]) + _more(kept),
+        )
     unwritten = {n: t for n, t in unwritten.items() if n not in typed_any}
     for name, sem in list(unwritten.items())[:5]:
         out.notes.append(

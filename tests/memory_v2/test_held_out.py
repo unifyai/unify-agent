@@ -246,8 +246,29 @@ def _all_actions(store):
             "ok",
             kind="dialogue",
         ),
+        # two feedback observations: a constant message-kind tag and a constant number (identity and
+        # format), a varying attempt and a varying flag
+        _dl(24, {"type": "SubmitFeedback", "version": 3, "attempt": 1, "ok": True}),
+        _dl(25, {"type": "SubmitFeedback", "version": 3, "attempt": 2, "ok": False}),
+        # SEVEN and WIDE again with other values, so their fields vary across covers
+        _dl(26, {k: 10 * v for k, v in SEVEN.items()}),
+        _dl(27, {**{k: 100 + v for k, v in WIDE.items()}, "zmonth": 7}),
+        _dl(28, {"room": "yard", "items": ["rope", "map"], "steps": 5}),
     ]
     return acts
+
+
+def _dl(index, obs):
+    return Action(
+        index,
+        "dialogue:user",
+        "reply",
+        ["look"],
+        {},
+        obs,
+        "ok",
+        kind="dialogue",
+    )
 
 
 @pytest.fixture
@@ -572,10 +593,20 @@ def test_a_bad_currency_code_is_one_upper_casing_cannot_fix(recorded):
 
 def test_declared_fields_come_first_within_the_field_limit(recorded):
     store, acts = recorded
-    p, by = _declared(acts, store, 21, {"zmonth": "month"}, "env/dialogue_user:r")
-    assert ("zmonth", "in") in by and ("zmonth", "out") in by
+    # two covers, so the untagged fields vary across them (a field with one value is not perturbed)
+    p = plan(
+        "env/dialogue_user:r",
+        _covers(acts, 21, 27),
+        seen=acts,
+        blob=store.get,
+        field_types={"zmonth": "month"},
+    )
+    sides = {c.side for c in p.cases if c.field == "zmonth" and c.cover == ("h1", 21)}
+    assert sides == {"in", "out"}
     assert not any("zmonth" in n and "not in any covered input" in n for n in p.notes)
-    untagged = {c.field for c in p.cases if c.field and c.side is None}
+    untagged = {
+        c.field for c in p.cases if c.field and c.side is None and c.cover == ("h1", 21)
+    }
     assert len(untagged) == MAX_FIELDS_PER_COVER
 
 
@@ -775,13 +806,63 @@ def test_a_perturbed_date_moves_the_other_dates_of_its_record_by_the_same_offset
 
 def test_dialogue_perturbs_json_leaves_and_keeps_structure(recorded):
     store, acts = recorded
-    p = plan("env/dialogue_user:parse", _covers(acts, 5), seen=acts, blob=store.get)
-    fields = {c.field: c.payload["observation"] for c in p.cases if c.field}
+    p = plan(
+        "env/dialogue_user:parse",
+        _covers(acts, 5, 28),
+        seen=acts,
+        blob=store.get,
+    )
+    fields = {
+        c.field: c.payload["observation"]
+        for c in p.cases
+        if c.field and c.cover == ("h1", 5)
+    }
     assert set(fields) == {"room", "items[]", "steps"}
     for obs in fields.values():
         assert set(obs) == {"room", "items", "steps"} and len(obs["items"]) == 2
-    assert fields["steps"]["steps"] > 3
-    assert fields["room"]["room"] not in {"hall"}
+    assert fields["steps"]["steps"] > 5
+    assert fields["room"]["room"] not in {"hall", "yard"}
+    # on one cover alone, room and steps hold one value each: identity or format, not perturbed
+    one = plan("env/dialogue_user:parse", _covers(acts, 5), seen=acts, blob=store.get)
+    assert {c.field for c in one.cases if c.field} == {"items[]"}
+    assert any(
+        "room, steps" in n and "not perturbed" in n for n in one.notes
+    ), one.notes
+
+
+def test_a_field_constant_across_every_covered_input_is_identity_not_perturbed(
+    recorded,
+):
+    """A message-kind tag ("type") and a constant number are identity or format; varying fields vary."""
+    store, acts = recorded
+    p = plan(
+        "env/dialogue_user:parse_feedback",
+        _covers(acts, 24, 25),
+        seen=acts,
+        blob=store.get,
+    )
+    perturbed = {c.field for c in p.cases if c.field}
+    assert perturbed == {"attempt"}  # ok is a boolean: never perturbed
+    (note,) = [n for n in p.notes if "not perturbed" in n]
+    assert "type" in note and "version" in note
+    # the note names fields, never values
+    assert "SubmitFeedback" not in note and "3" not in note
+    # an enumeration of prefixes (three distinct ticket ids) still varies
+    t = plan("env/worktree_workspace:r", _covers(acts, 7), seen=acts, blob=store.get)
+    assert "ticket_id" in {c.field for c in t.cases}
+    # a field with two observed values (red and blue) is still perturbed: a whitelist over it is caught
+    s = plan("env/shop:search", _covers(acts, 0, 1), seen=acts, blob=store.get)
+    assert {"colour", "limit"} <= {c.field for c in s.cases}
+    # a tool keyword is constant only when every recorded call of the method agrees
+    calls = [_search("red", 5), _search("blue", 5)]
+    k = plan(
+        "env/shop:search",
+        [("h1", i, a) for i, a in enumerate(calls)],
+        seen=calls,
+        blob=store.get,
+    )
+    assert {c.field for c in k.cases if c.field} == {"colour"}
+    assert any("limit" in n and "not perturbed" in n for n in k.notes)
 
 
 def test_shell_covers_are_skipped_with_a_note(recorded):
@@ -1216,12 +1297,13 @@ def test_a_dialogue_item_is_checked_and_reasons_are_capped_at_five(shop):
     body = f"""    if obs != {SEVEN!r}:
         raise MemoryInputError("not the recorded observation")
     return obs"""
+    # two covers, so every field varies across them (on one cover each field holds one value)
     res = _check(
         mem,
         gate,
         "dialogue_user",
         _module("parse", "obs", body, doc="Parse the counts."),
-        [10],
+        [10, 26],
         "parse",
     )
     refused = [r for r in res.reasons if "held-out value refused" in r]
@@ -1446,3 +1528,39 @@ def test_a_declaration_contradicted_by_a_later_recorded_value_fails_g2(shop):
         f"{item} declared nonneg_money field amount does not match its recorded values",
         f"{item} declared percentage field pct does not match its recorded values",
     ], res.reasons
+
+
+# --- a field with one recorded value is identity or format --------------------------------------------------
+
+TAG_CHECK = """    if not isinstance(obs, dict) or obs.get("type") != "SubmitFeedback":
+        raise MemoryInputError("not a submit feedback observation")
+    return obs["attempt"]"""
+ATTEMPT_WHITELIST = """    if obs.get("type") != "SubmitFeedback" or obs["attempt"] not in (1, 2):
+        raise MemoryInputError("not a recorded attempt")
+    return obs["attempt"]"""
+
+
+@needs_bwrap
+@pytest.mark.parametrize(
+    "body, refused",
+    [(TAG_CHECK, []), (ATTEMPT_WHITELIST, ["attempt"])],
+    ids=["constant-tag-by-equality", "whitelist-over-two-values"],
+)
+def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
+    shop,
+    body,
+    refused,
+):
+    mem, gate = shop
+    mod = _module("parse_feedback", "obs", body, doc="Parse submit feedback.")
+    res = _check(mem, gate, "dialogue_user", mod, [24, 25], "parse_feedback")
+    got = [r for r in res.reasons if "held-out value refused" in r]
+    assert got == [
+        f"G2: env/dialogue_user:parse_feedback held-out value refused: {f}"
+        for f in refused
+    ], res.reasons
+    assert res.checks["G2"] is (not refused)
+    assert any(
+        r.startswith("note:") and "not perturbed: type, version" in r
+        for r in res.reasons
+    ), res.reasons
