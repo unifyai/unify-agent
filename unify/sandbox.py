@@ -2420,12 +2420,61 @@ def _notice(directory: Path) -> str:
     return str(directory / MASK_NOTICE_NAME)
 
 
+_PYTHON_NAMES = ("python", "python3")
+
+
+def interpreter_bin_dirs() -> list[str]:
+    """The directories that give a sandboxed command ``python`` and ``python3``.
+
+    Cells run with this interpreter (the worker starts ``sys.executable``),
+    which the root already mounts by every name it is reached through
+    (:func:`_interpreter_candidates`). Its own directory comes first (a venv's
+    ``bin``, which usually has both names); the resolved install's directory
+    follows only when the first lacks one of them. Nothing is created: a name
+    neither directory has stays unresolved.
+    """
+    dirs: list[str] = []
+    missing = set(_PYTHON_NAMES)
+    for candidate in (
+        os.path.dirname(os.path.abspath(sys.executable)),
+        os.path.dirname(os.path.realpath(sys.executable)),
+    ):
+        if not missing or candidate in dirs:
+            continue
+        found = {
+            name
+            for name in missing
+            if os.access(os.path.join(candidate, name), os.X_OK)
+        }
+        if found:
+            dirs.append(candidate)
+            missing -= found
+    return dirs
+
+
+def _interpreter_first_on_path(path: Optional[str]) -> str:
+    """*path* with :func:`interpreter_bin_dirs` first, each entry once."""
+    entries = (path if path is not None else os.defpath).split(os.pathsep)
+    return os.pathsep.join(
+        dict.fromkeys(entry for entry in (*interpreter_bin_dirs(), *entries) if entry),
+    )
+
+
 def sandbox_env(
     policy: SandboxPolicy,
     env: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
-    """The environment a sandboxed command gets."""
+    """The environment a sandboxed command gets.
+
+    Without an explicit *env*, ``PATH`` starts with the cell interpreter's
+    directories (:func:`interpreter_bin_dirs`), so ``python`` and ``python3``
+    in a cell's subprocess or a bash cell are the interpreter cells run with,
+    whether or not the host's ``PATH`` has them. They are already mounted; no
+    mount changes. An explicit *env* (a cell's ``env=``) is kept as given.
+    """
     out = scrubbed_env(env)
+    if env is None:
+        out["PATH"] = _interpreter_first_on_path(out.get("PATH"))
     # The fake clock's variables come from the harness only, as it has them.
     for name in TRUSTED_ENV:
         out.pop(name, None)
