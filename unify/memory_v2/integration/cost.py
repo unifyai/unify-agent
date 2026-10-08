@@ -4,7 +4,8 @@ Two sources, one row shape (:class:`..episodes.CostRow`):
 
 * :class:`CostListener`, registered once per process with ``unillm.add_llm_event_listener``
   (:func:`install`), records the request's own calls while it is active (the CLI runs one request per
-  process). The purpose comes from the call's origin tag: Sol's calls (origin ``memory_v2.sol...``) are
+  process). The purpose comes from the call's origin tag: Sol's calls (origin ``memory_v2.sol`` or
+  ``memory_v2.sol.<more>``) are
   skipped, because the pass records its own through :func:`recording_turn`; an origin containing
   ``embed`` is ``embedding``; every other call is ``actor``.
 * :func:`recording_turn` wraps Sol's model turn and appends one ``sol`` row per turn.
@@ -53,6 +54,8 @@ def money(value: Any) -> str:
         amount = to_decimal_usd(value)
     if amount is None or not amount.is_finite() or amount < 0:
         return UNKNOWN
+    if amount.is_zero():
+        amount = abs(amount)  # never "-0"
     return decimal_string(amount) or UNKNOWN
 
 
@@ -69,7 +72,7 @@ def _tokens(response: Any) -> tuple[int | None, int | None]:
 
 
 def _purpose(origin: str) -> str | None:
-    if origin.startswith(SOL_ORIGIN):
+    if origin == SOL_ORIGIN or origin.startswith(SOL_ORIGIN + "."):
         return None
     return "embedding" if "embed" in origin else "actor"
 

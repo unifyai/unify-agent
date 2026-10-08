@@ -57,9 +57,11 @@ def test_sol_origin_is_skipped_and_embedding_is_its_own_purpose():
     lis.activate()
     lis(_event(0.5, origin="memory_v2.sol"))
     lis(_event(0.5, origin="memory_v2.sol.pass"))
+    lis(_event(0.0625, origin="memory_v2.solar"))  # not Sol's origin
     lis(_event(0.25, origin="SemanticSearch.embed_query"))
     lis(_event(0.125, origin=None))
     assert [(r.purpose, r.usd) for r in lis.rows] == [
+        ("actor", "0.0625"),
         ("embedding", "0.25"),
         ("actor", "0.125"),
     ]
@@ -85,6 +87,8 @@ def test_unreported_tokens_and_model_stay_unknown_and_bad_events_never_raise():
         ("unknown", "unknown"),
         ("-0.01", "unknown"),
         ("NaN", "unknown"),
+        ("-0", "0"),
+        ("-0.00", "0.00"),
         (None, "unknown"),
     ],
 )
