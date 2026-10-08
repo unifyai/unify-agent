@@ -56,8 +56,6 @@ async def test_storage_check_runs_after_stop():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()
@@ -119,8 +117,6 @@ async def test_storage_check_runs_after_stop_no_reason():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()
@@ -186,8 +182,6 @@ async def test_storage_check_incoming_event_has_instructions():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()

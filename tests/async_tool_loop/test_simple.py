@@ -35,7 +35,6 @@ from tests.async_helpers import (
 )
 
 import pytest
-import unillm
 
 pytestmark = pytest.mark.llm_call
 
@@ -98,71 +97,58 @@ async def test_happy_path_single_sync_tool(llm_config):
 #  CONCURRENT sync/async tools                                                #
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
-@_handle_project
-async def test_concurrent_tools_waits_for_all_results(llm_config):
+async def test_a_turns_calls_run_in_order_before_the_next_model_call():
     """
-    The loop launches `fast` and `slow` concurrently but must *not* call the
-    model again until *both* have finished.
+    One turn asks for `fast` and `slow`: the loop runs them in call order,
+    each to completion (no overlap), and calls the model again only once
+    both have finished. The model is scripted: nothing leaves the process.
     """
+    from tests import cache_discipline_helpers as h
+
     events: list[tuple[str, float]] = []
 
-    async def fast():
-        events.append(("fast_start", time.monotonic()))
-        await asyncio.sleep(0.05)
-        events.append(("fast_end", time.monotonic()))
-        return "fast"
-
-    fast.__name__ = "fast"
-    fast.__qualname__ = "fast"
-
     async def slow():
+        """Take a while."""
         events.append(("slow_start", time.monotonic()))
         await asyncio.sleep(0.30)
         events.append(("slow_end", time.monotonic()))
         return "slow"
 
-    slow.__name__ = "slow"
-    slow.__qualname__ = "slow"
+    async def fast():
+        """Return at once."""
+        events.append(("fast_start", time.monotonic()))
+        await asyncio.sleep(0.05)
+        events.append(("fast_end", time.monotonic()))
+        return "fast"
 
-    class InstrumentedClient(unillm.AsyncUnify):
-        async def generate(self, **kwargs):  # noqa: D401
+    def _turn(calls):
+        def reply():
             events.append(("generate", time.monotonic()))
-            return await super().generate(**kwargs)
+            return h.completion(calls=calls) if calls else h.completion(content="ok")
 
-    # Manually constructing to support inheritance, but mirroring new_llm_client defaults
-    client = InstrumentedClient(
-        llm_config["model"],
-        **{k: v for k, v in llm_config.items() if k != "model"},
-    )
+        return reply
 
-    _ = await start_async_tool_loop(
-        client,
-        message=(
-            "Call *both* tools `fast` and `slow` in parallel, wait for the "
-            "results, then reply with 'ok'."
-        ),
-        tools={"fast": fast, "slow": slow},
-    ).result()
+    with h.scripted([_turn([("slow", {}), ("fast", {})]), _turn([])]):
+        client = h.new_client()
+        answer = await start_async_tool_loop(
+            client,
+            message="Call both tools, then reply with 'ok'.",
+            tools={"fast": fast, "slow": slow},
+            log_steps=False,
+        ).result()
 
-    # 1. there were at least two model calls (tool-request + final answer)
-    generate_times = [t for e, t in events if e == "generate"]
-    assert len(generate_times) >= 2
-
-    # 2. the last LLM call happened AFTER the slow tool finished
-    slow_end = next(t for e, t in events if e == "slow_end")
-    assert generate_times[-1] > slow_end
-
-    # 3. the two tools actually overlapped
-    fast_start = next(t for e, t in events if e == "fast_start")
-    fast_end = next(t for e, t in events if e == "fast_end")
-    slow_start = next(t for e, t in events if e == "slow_start")
-    assert fast_start < slow_start < fast_end
-
-    # 4. the first assistant turn really requested BOTH tool calls
-    first_llm_turn = next(
-        m for m in client.messages if m["role"] == "assistant" and m.get("tool_calls")
-    )
-    assert len(first_llm_turn["tool_calls"]) == 2
+    assert answer == "ok"
+    names = [e for e, _ in events]
+    assert names == [
+        "generate",
+        "slow_start",
+        "slow_end",
+        "fast_start",
+        "fast_end",
+        "generate",
+    ]
+    results = [m["content"] for m in client.messages if m["role"] == "tool"]
+    assert results == ["slow", "fast"]
 
 
 # --------------------------------------------------------------------------- #

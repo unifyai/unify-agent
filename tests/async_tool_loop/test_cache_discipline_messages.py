@@ -6,9 +6,6 @@ its last call: every earlier assistant message lost its
 session parked, and a storage review's compaction note shortened the tool
 results it covered. With the switch on both are skipped, so each request is
 the previous request plus what came after it.
-
-With the switch off the same scripts are compared to the upstream bytes by
-``test_cache_discipline_tools.py``.
 """
 
 from __future__ import annotations

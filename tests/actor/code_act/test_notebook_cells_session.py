@@ -13,8 +13,7 @@ both ways and compare what happens:
   field the model can no longer fill;
 * cells in the real sandboxed worker keep, isolate, discard and separate
   state as the matching legacy arguments do, and bash runs;
-* product paths behave as on the legacy projection: a sub-agent handle that
-  is a cell's last expression is adopted and steered, a cell asks a
+* product paths behave as on the legacy projection: a cell asks a
   clarification and gets the answer, parent chat context reaches a
   sub-agent, the heartbeat notification fires, and stored-function calls
   record the same cases.
