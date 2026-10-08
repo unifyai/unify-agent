@@ -93,10 +93,10 @@ from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
 from .switch import (
     SOL_BASE_URL,
-    SOL_TOKEN,
     SolRouteRefused,
     settle_sol_route_env,
     sol_route,
+    sol_token,
 )
 
 __all__ = [
@@ -276,7 +276,7 @@ class SolSettings:
     experience_budget: int
     usd_per_token: Decimal
     run_guard_usd: Decimal | None
-    # Sol's own route (UNIFY_MEMORY_V2_SOL_BASE_URL / _SOL_TOKEN); None: as shipped
+    # Sol's own route (UNIFY_MEMORY_V2_SOL_BASE_URL / _SOL_TOKEN or _SOL_TOKEN_FD); None: as shipped
     route: SolRoute | None = None
 
     @property
@@ -338,10 +338,7 @@ def sol_settings(settings: Any) -> SolSettings:
         else None
     )
     # both or neither, checked here (before any pass starts); no error quotes a value
-    pair = sol_route(
-        getattr(settings, SOL_BASE_URL, ""),
-        getattr(settings, SOL_TOKEN, ""),
-    )
+    pair = sol_route(getattr(settings, SOL_BASE_URL, ""), sol_token(settings))
     route = SolRoute(*pair) if pair is not None else None
     model = model or SOL_MODEL
     if route is not None and otel_on():
