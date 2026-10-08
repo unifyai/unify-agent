@@ -8,8 +8,8 @@ and runs it again.
 Symbolic throughout, so a failure here is a regression in the machinery
 rather than a judgement call: the patch is supplied directly, which pins what
 the mechanism does with a given correction. Whether a real model writes a
-usable correction in the first place is a different question, covered against
-a live LLM in ``test_live_steering_eval``.
+usable correction in the first place was a different question, covered against
+a live LLM by an eval that went with the patch writer in the loop trim.
 """
 
 from __future__ import annotations

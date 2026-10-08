@@ -641,19 +641,6 @@ def _calls(*codes: str) -> list[dict]:
     return messages
 
 
-def test_the_inspection_digest_reads_the_cells_caption(monkeypatch):
-    from unify.common._async_tool.transcript_ops import _tool_call_meta
-
-    messages = _calls("# Totalling March invoices\nx = 1", "%%bash\nls -la")
-    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", "")
-    assert [m["thought"] for m in _tool_call_meta(messages).values()] == [None, None]
-    monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", "notebook")
-    assert [m["thought"] for m in _tool_call_meta(messages).values()] == [
-        "Totalling March invoices",
-        "ls -la",
-    ]
-
-
 def test_origin_capture_reads_a_bash_cell_as_bash(monkeypatch):
     from unify.function_manager import origin_capture
 

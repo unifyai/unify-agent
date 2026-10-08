@@ -87,7 +87,7 @@ This is how the user can redirect an agent mid-task without the overhead of stop
 
 ### Steering code that is already running
 
-**Files:** `unify/function_manager/steering.py`, `steering_patcher.py`
+**File:** `unify/function_manager/steering.py`
 
 Between LLM turns is not enough for `execute_code` and `execute_function`,
 whose work happens *inside* one tool call. A correction arriving four sends
@@ -115,9 +115,10 @@ parts:
   begins and discarded when it returns. That bound is what makes the rest
   sound: no cache key can outlive the execution it describes.
 
-The patch itself is written by an LLM owned by the execution engine
-(`steering_patcher`), given the running source and the calls already
-completed, and restricted to rewriting functions the block defines.
+The patch writer (an LLM given the running source and the calls already
+completed) went with the loop trim: nothing in the harness writes a patch any
+more. What stays is the cell-side checkpoint progress, which a failed cell
+reports to the model.
 
 Two limits. Replay records that a side effect happened; it cannot undo one, so
 invalidation is explicit rather than inferred. And a probe only runs when the
@@ -330,23 +331,6 @@ This three-layer separation prevents prompt injection between nesting levels and
 
 ---
 
-## Multi-request coordination
-
-**File:** `unify/common/_async_tool/multi_handle.py`
-
-A single tool loop can serve **multiple concurrent requests** through the `MultiHandleCoordinator`. Each request gets:
-
-- A unique `request_id`
-- Its own clarification and notification queues
-- Independent completion/cancellation
-- Tagged interjections so the LLM knows which request a message belongs to
-
-The LLM calls `final_answer(request_id, answer)` to complete specific requests. The loop continues until all requests are done (or persists indefinitely if `persist=True`).
-
-This is used by the ConversationManager to handle multiple user messages that arrive while the brain is already processing — rather than queuing them sequentially, they're multiplexed through a shared loop with shared context.
-
----
-
 ## Testing
 
 **Directory:** `tests/`
@@ -396,10 +380,8 @@ unify/
 │   │   └── _async_tool/
 │   │       ├── loop.py                 # async_tool_loop_inner (the engine)
 │   │       ├── loop_config.py          # LoopConfig, TOOL_LOOP_LINEAGE
-│   │       ├── multi_handle.py         # MultiHandleCoordinator
 │   │       ├── propagation_mode.py     # ChatContextPropagation enum
 │   │       ├── context_compression.py  # Transparent context compression
-│   │       ├── dynamic_tools_factory.py # Runtime tool generation
 │   │       └── messages.py             # forward_handle_call, mirror dispatch
 │   ├── actor/
 │   │   ├── base.py                     # BaseActor, BaseCodeActActor
