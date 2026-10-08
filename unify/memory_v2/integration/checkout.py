@@ -12,6 +12,7 @@ untouched export still diffs empty, and records one the request changed.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import stat
@@ -20,8 +21,11 @@ from pathlib import Path
 
 from ..blobs import BlobStore
 from ..gitio import GitError, Repo
+from ..manifest import compiled_artifact, shadows_import
 from ..snapshot import listing, materialise
 from .hardgit import git
+
+logger = logging.getLogger(__name__)
 
 MEMORY_DIFF_CAP = 256 * 1024
 _EXCLUDE = (":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc")
@@ -35,7 +39,13 @@ def _clear(dest: Path) -> None:
 
 
 def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
-    """Replace *dest* with exactly the files of memory commit *sha*."""
+    """Replace *dest* with the files of memory commit *sha*.
+
+    Bytecode, compiled extensions and root entries that could shadow an import
+    (:func:`..manifest.compiled_artifact`, :func:`..manifest.shadows_import`) are never exported: the gate
+    refuses them now, and one an older commit holds must not be importable from the cell. A merged library
+    holds none, so its export is exactly its files.
+    """
     dest = Path(dest)
     _clear(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +54,22 @@ def export_checkout(memory_dir: Path, sha: str, dest: Path) -> None:
         raise GitError(
             f"memory {sha[:12]} holds entries an export refuses: {refused[:5]}",
         )
+    unsafe = _unexported(files)
+    if unsafe:
+        logger.warning(
+            "memory v2: %d importable artefact(s) of memory %s left out of the export: %s",
+            len(unsafe),
+            sha[:12],
+            unsafe[:5],
+        )
+        drop = set(unsafe)
+        files = {p: v for p, v in files.items() if p not in drop}
     materialise(Repo(Path(memory_dir)), files, dest)
+
+
+def _unexported(files: dict) -> list[str]:
+    """The paths of a commit's listing that :func:`export_checkout` leaves out, sorted."""
+    return sorted(p for p in files if compiled_artifact(p) or shadows_import(p))
 
 
 def remove_checkout(dest: Path) -> None:
@@ -84,6 +109,11 @@ def checkout_diff(
         f":(exclude,literal){rel}"
         for rel, data in sorted((generated or {}).items())
         if _unchanged(Path(dest), rel, data)
+    )
+    # what the export left out of the commit is not something the request deleted
+    excludes += tuple(
+        f":(exclude,literal){rel}"
+        for rel in _unexported(listing(Repo(Path(memory_dir)), base)[0])
     )
     with tempfile.TemporaryDirectory(prefix="memv2-idx-") as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}

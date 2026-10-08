@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from . import docstrings
-from .manifest import INPUT_KINDS, compiled_extension, shadows_import
+from .manifest import INPUT_KINDS, compiled_artifact, shadows_import
 from .memory_repo import items
 from .snapshot import item_bodies
 
@@ -57,12 +57,13 @@ ShapeLookup = Callable[[str, str], "tuple[list[dict], bool] | None"]
 
 
 def reserved(path: str) -> bool:
-    """Whether *path* (relative, POSIX) is one the harness generates in every export, or a root entry that
-    could shadow ``import memory`` or ``import env`` (any ``memory.*`` or ``env.*``, ``memory/``) or a
-    compiled extension at the root."""
+    """Whether *path* (relative, POSIX) is one the harness generates in every export, a root entry that could
+    shadow an import (:func:`.manifest.shadows_import`: ``memory.*``, ``env.*``, ``memory/``, a standard or
+    installed module name), or bytecode or a compiled extension anywhere (:func:`.manifest.compiled_artifact`).
+    Refused in every mode (a declared safety fix: no library needs one)."""
     if path in (README, HELPER) or path == ".memory" or path.startswith(".memory/"):
         return True
-    return shadows_import(path) or ("/" not in path and compiled_extension(path))
+    return shadows_import(path) or compiled_artifact(path)
 
 
 def body_digest(body: str) -> str:

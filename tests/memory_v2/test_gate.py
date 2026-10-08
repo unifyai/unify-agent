@@ -865,6 +865,36 @@ def test_gate_support_allowlist(probe, support):
     assert not res.passed and not res.checks["G1"]
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "env/__init__.pyc",
+        "sitecustomize.pyc",
+        "json.pyc",
+        "pytest.pyc",
+        "json/__init__.pyc",
+        "env/venmo/__pycache__/__init__.cpython-312.pyc",
+        "env/venmo/tests/fixture.pyc",
+        "env/venmo/tests/fast.so",
+        "notes.txt",
+    ],
+)
+def test_gate_refuses_bytecode_and_foreign_root_entries(probe, path):
+    """v2.1 I4 (every mode): bytecode, extensions and root entries other than env/, workflows/ and the test
+    kit are refused before extraction, declared or not."""
+    mem, ev, gate = probe
+    parent = mem.head()
+    cand = _candidate(mem, {**PROBE_BASE, path: "x = 1\n"})
+    for man in ({"items": [PROBE_ITEM], "support": [path]}, {"items": [PROBE_ITEM]}):
+        res = gate.check(parent, cand, man)
+        assert not res.passed and not res.checks["G1"], res.reasons
+        assert any(
+            path in r
+            and ("outside the layout" in r or "reserved" in r or "forbidden" in r)
+            for r in res.reasons
+        ), res.reasons
+
+
 def test_gate_support_helper_under_tests_is_admitted(probe):
     mem, ev, gate = probe
     parent = mem.head()

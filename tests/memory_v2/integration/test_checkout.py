@@ -215,3 +215,32 @@ def test_untouched_generated_files_stay_out_of_the_diff(tmp_path):
     os.symlink(secret, dest / "memory.py")
     d = checkout_diff(mem.git_dir, sha, dest, blobs, generated=generated)
     assert "memory.py" in d and "SENTINEL-generated-link" not in d
+
+
+def test_an_older_commits_bytecode_is_never_exported(tmp_path):
+    """v2.1 I4: a commit from before the layout refused bytecode, extensions and shadowing root entries is
+    exported without them, so a cell can never import a sourceless ``.pyc`` from the library; the untouched
+    export still diffs empty (what was left out is not something the request deleted).
+    """
+    planted = {
+        "env/__init__.pyc": "x",
+        "json.pyc": "x",
+        "sitecustomize.pyc": "x",
+        "env/spotify/__pycache__/__init__.cpython-312.pyc": "x",
+        "env/spotify/fast.so": "x",
+        "pytest_shadow.txt": "x",
+    }
+    mem = Repo.init_bare(tmp_path / "memory")
+    base = mem.head()
+    with mem.temp_checkout() as wt:
+        (wt / "env/spotify/__pycache__").mkdir(parents=True)
+        (wt / "env/spotify/__init__.py").write_text(MOD)
+        for rel, text in planted.items():
+            (wt / rel).write_text(text)
+        sha = mem.commit_all(wt, "old", {})
+    mem.fast_forward("main", sha, expected_old=base)
+    dest = tmp_path / "co"
+    export_checkout(mem.git_dir, sha, dest)
+    exported = sorted(str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file())
+    assert exported == ["env/spotify/__init__.py"]
+    assert checkout_diff(mem.git_dir, sha, dest, BlobStore(tmp_path / "b")) == ""

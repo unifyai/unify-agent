@@ -90,7 +90,11 @@ The checks:
   and is a successful observation: a recorded rejection cover (status ``error``) is not new coverage.
 * **G6 safety.** No links, executables, submodules, or git, pytest or interpreter configuration files; no
   key-shaped string in a changed file or the manifest; every public function of a changed module declares
-  ``Effect:`` and is defined once; every module parses.
+  ``Effect:`` and is defined once; every module parses. Before anything is extracted, the layout refuses
+  bytecode, compiled extensions and ``__pycache__`` entries anywhere, root entries other than ``env/``,
+  ``workflows/`` and the test kit, root names that could shadow an import, and ``sitecustomize``/
+  ``usercustomize`` with any suffix (:func:`.manifest.layout_allowed`, :func:`.manifest.forbidden`): a
+  declared safety fix (v2.1 review I4) applied in every mode, since no library the gate admits needs one.
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
@@ -753,8 +757,8 @@ class Gate:
             (
                 "G1",
                 f"file {p} is reserved: the harness generates README.md, memory.py and .memory/ in "
-                "every export, and no root entry may shadow `import memory` or `import env` or be a "
-                "compiled extension",
+                "every export, no root entry may shadow an import (`memory`, `env`, a standard or "
+                "installed module), and no bytecode or compiled extension is admitted",
             )
             for p in run.changed
             if p in run.c_files and reserved(p)

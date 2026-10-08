@@ -173,22 +173,77 @@ FORBIDDEN_NAMES = frozenset(
 )
 # Names that would shadow the memory library or the test kit from inside a tests directory.
 _RESERVED_STEMS = frozenset({"env", "unify_memory_testkit"})
-# Import names a root entry of the export must never take: the library package and the generated helper
-# (``memory.py``), in any suffix (``memory.abi3.so``, ``env.py``) or as a directory (``memory/``).
+
+# --- what the import system could load from the library (v2.1 review I4) ------------------------------------
+# A declared safety fix, applied whatever the v2.1 switches say: these rules refuse only what no library the
+# gate can admit ever needs, so every library a v2 build merged keeps passing (the gate's tests check the v2
+# fixtures and a recorded library's paths against them).
+#
+# Root entries. A manifest can declare only item files, tests, skeleton files and support files (gate G1's
+# "undeclared change"), and the layout puts every one of those under ``env/`` (``ITEM_ID`` env_function and
+# env_note, ``TEST_PATH``, ``MODULE_PATH``, ``NOTES_PATH``, helpers under ``TESTS_DIR``) or ``workflows/``
+# (``ITEM_ID`` workflow), or is the root test kit (``TESTKIT``). Nothing else is ever a root entry of a merged
+# commit, so nothing else is admitted there: a root ``json.pyc``, ``pytest/`` or ``sitecustomize.txt`` is
+# refused by name before it can be imported. (``README.md``, ``memory.py`` and ``.memory/`` are the
+# harness's generated catalogue, never a commit's; ``proposals/`` is written by the working model in its
+# scratch export and only recorded in the episode.)
+ROOT_DIRS = frozenset({"env", "workflows"})
+ROOT_FILES = frozenset({TESTKIT})
+# Import names a root entry must never take beyond the interpreter's own (:func:`shadowed_module_names`):
+# the library package and the generated helper, the startup hooks ``site`` runs, and what the gate's
+# confined pytest and examples runner import (pytest and its plugins, doctest's helpers).
 SHADOWED_IMPORTS = frozenset({"env", "memory"})
-# Compiled extension modules: the import system prefers them to source, so none is admitted anywhere.
+STARTUP_STEMS = frozenset({"sitecustomize", "usercustomize"})
+GATE_IMPORTS = frozenset(
+    {
+        "pytest",
+        "_pytest",
+        "pluggy",
+        "iniconfig",
+        "packaging",
+        "doctest",
+        "functools",
+        "importlib",
+        "io",
+    },
+)
+# Bytecode and compiled extension modules: the import system loads a sourceless ``x.pyc`` beside the
+# library's sources, an unchecked-hash ``__pycache__`` entry in place of its source, and an extension module
+# before source, so none is admitted anywhere (a library is source, tests and data).
+BYTECODE_SUFFIXES = (".pyc", ".pyo")
 COMPILED_SUFFIXES = (".so", ".pyd", ".dylib", ".dll")
 
 
-def compiled_extension(path: str) -> bool:
-    return path.rsplit("/", 1)[-1].lower().endswith(COMPILED_SUFFIXES)
+def compiled_artifact(path: str) -> bool:
+    """Whether *path* is bytecode, a compiled extension module or anything under ``__pycache__``."""
+    parts = path.split("/")
+    return "__pycache__" in parts or parts[-1].lower().endswith(
+        BYTECODE_SUFFIXES + COMPILED_SUFFIXES,
+    )
+
+
+def root_allowed(path: str) -> bool:
+    """Whether *path*'s root entry is one a library has: ``env/``, ``workflows/`` or the test kit."""
+    return path in ROOT_FILES or ("/" in path and path.split("/", 1)[0] in ROOT_DIRS)
 
 
 def shadows_import(path: str) -> bool:
-    """Whether *path* is a root entry an ``import env`` or ``import memory`` in a cell could resolve to."""
-    if "/" in path:
-        return path.split("/", 1)[0] == "memory"
-    return path.split(".", 1)[0] in SHADOWED_IMPORTS
+    """Whether *path* is a root entry an import in a cell or in the gate's runs could resolve to: one named
+    (before its first ``.``) like ``env`` or ``memory`` other than the library's own ``env/`` package, a
+    startup hook, a standard-library, built-in or installed top-level module, ``pytest*`` or one the gate's
+    runner imports. Structural: the name is compared with the interpreter's module names, never read.
+    """
+    root = path.split("/", 1)[0]
+    if path in ROOT_FILES or ("/" in path and root in ROOT_DIRS):
+        return False
+    stem = root.split(".", 1)[0]
+    return (
+        stem in SHADOWED_IMPORTS
+        or stem in STARTUP_STEMS
+        or stem in GATE_IMPORTS
+        or stem.startswith("pytest")
+        or stem in shadowed_module_names()
+    )
 
 
 class ManifestError(ValueError):
@@ -270,7 +325,12 @@ def shadowed_module_names() -> frozenset[str]:
 
 def forbidden(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
-    return name in FORBIDDEN_NAMES or name.endswith(".pth")
+    return (
+        name in FORBIDDEN_NAMES
+        or name.endswith(".pth")
+        or name.split(".", 1)[0]
+        in STARTUP_STEMS  # any suffix: sitecustomize.pyc, usercustomize/
+    )
 
 
 def _stem(part: str) -> str:
@@ -300,10 +360,12 @@ def support_allowed(path: str) -> bool:
 def layout_allowed(path: str) -> bool:
     """Whether the layout admits *path*: channel modules, notes, tests, helpers, workflows, the test kit.
 
-    No submodules in v0; nothing under a tests directory takes a reserved name (``env``, the test kit);
-    no compiled extension anywhere, and no root entry named like ``env`` or ``memory`` (:func:`shadows_import`).
+    No submodules in v0; nothing under a tests directory takes a reserved name (``env``, the test kit); no
+    bytecode or compiled extension anywhere (:func:`compiled_artifact`); no root entry but ``env/``,
+    ``workflows/`` and the test kit (:func:`root_allowed`), and none that could shadow an import
+    (:func:`shadows_import`).
     """
-    if compiled_extension(path) or shadows_import(path):
+    if compiled_artifact(path) or not root_allowed(path) or shadows_import(path):
         return False
     m = TESTS_DIR.match(path)
     if m is not None:
