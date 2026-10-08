@@ -160,6 +160,8 @@ Finish by writing /memory/.pass/manifest.json (never committed):
 with status "ok" and a response, shell commands with an output tail, worktree reads or writes with a recorded blob,
 dialogue actions with status "ok" and an observation, and any recorded rejection (status "error" with its error, or a
 nonzero exit) that justifies a value check (never covers made only of rejections).
+A function that replaces a value it computed from its input under a condition encodes a policy; it needs covers
+from at least two episodes.
 Before finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's
 manifest, provenance, scope, cover-channel, index and safety checks (not the tests) on your current files, changes
 nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels

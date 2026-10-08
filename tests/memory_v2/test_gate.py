@@ -15,6 +15,7 @@ from unify.memory_v2.snapshot import blob_id, listing, materialise, tree_listing
 from unify.memory_v2.sandbox_run import PytestOutcome
 from unify.memory_v2.signals import Signal
 from tests.memory_v2.test_episodes import _ep
+from tests.memory_v2.test_overrides import RULE_BODY
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -2140,3 +2141,43 @@ def test_preview_refuses_a_declared_input_form_the_covers_cannot_give(
     assert reasons == [
         "G2: env/venmo:me declares input bytes, which a tool cover cannot give",
     ], reasons
+
+
+# --- G2: a function that replaces a value it computed from its input under a condition (the F3 lesson) -------
+
+RULE_MOD = MOD.replace('    return apis.venmo.me()["user_id"]\n', RULE_BODY)
+
+
+def test_a_function_that_replaces_a_computed_value_needs_covers_from_two_episodes(
+    world,
+    tmp_path,
+):
+    mem, ev, _ = world
+    ev.index_episode(_ep(episode_id="e2"), "2" * 40)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=lambda eid, i: _lookup("e1", i) if eid in ("e1", "e2") else None,
+    )
+    assert RULE_MOD != MOD
+    parent = mem.head()
+    files = {**FILES, "env/venmo/__init__.py": RULE_MOD}
+    cand = _candidate(mem, files)
+    why = (
+        "G2: env/venmo:me replaces a value it computed from its input under a condition (line 12 of "
+        "env/venmo/__init__.py); a function that encodes such a rule needs covers from at least 2 episodes"
+    )
+    # one episode: refused, with the function and line named and no value
+    res = gate.check(parent, cand, MAN)
+    assert not res.passed and not res.checks["G2"] and why in res.reasons, res.reasons
+    tree = _tree(tmp_path / "tree", files)
+    assert why in gate.preview(parent, tree, MAN)
+    # two episodes: passes
+    two = _man(covers=[["e1", 0], ["e2", 0]])
+    assert gate.preview(parent, tree, two) == []
+    res = gate.check(parent, cand, two)
+    assert res.passed and all(res.checks.values()), res.reasons
+    # an ordinary function needs no second episode
+    res = gate.check(parent, _candidate(mem, FILES), MAN)
+    assert res.passed, res.reasons
