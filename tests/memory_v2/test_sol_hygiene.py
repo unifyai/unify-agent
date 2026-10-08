@@ -15,6 +15,7 @@ import pytest
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import Action
 from unify.memory_v2.evidence import EvidenceStore
+import unify.memory_v2.gate as gate_module
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.sol_pass import SOL_SYSTEM, PassConfig, SolPass
@@ -471,3 +472,336 @@ def test_a_kept_function_takes_over_a_deleted_ones_covers_only_if_its_behaviour_
     short = _candidate(mem, {MODULE: PSF_SHORT + STATE_INLINE, T_RSF: None})
     res = gate.check(parent, short, man)
     assert res.passed, res.reasons
+
+
+# --- the clean-up exemption fails closed (re-review of the C1 fix) -----------------------------------------
+
+
+def test_a_result_that_is_not_json_voids_the_clean_up_exemption(arc):
+    mem, ev, gate, ep, parent = arc
+    as_set = STATE_MERGED.replace('return "solved"', 'return {"solved"}')
+    cand = _candidate(mem, {MODULE: HEAD + READ + as_set})
+    res = gate.check(parent, cand, {"items": [_item(SS, [T_SS], RECORDED[SS])]})
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert (
+        _refused_reason(
+            SS,
+            "its results on 1 recorded covers cannot be compared (not run in time, timed out or not "
+            "JSON): [['a1', 0]]",
+        )
+        in res.reasons
+    ), res.reasons
+
+
+def test_a_cover_that_times_out_voids_the_clean_up_exemption(arc):
+    mem, ev, gate, ep, parent = arc
+    slow = STATE_MERGED.replace(
+        "    parse_submit_feedback(observation)\n",
+        "    parse_submit_feedback(observation)\n"
+        '    if observation["attempts_used"] == 2:\n'
+        "        import time\n\n"
+        "        time.sleep(3)\n",
+    )
+    cand = _candidate(mem, {MODULE: HEAD + READ + slow})
+    res = gate.check(parent, cand, {"items": [_item(SS, [T_SS], RECORDED[SS])]})
+    assert not res.passed and "G3" in res.refused, res.reasons
+    assert (
+        _refused_reason(
+            SS,
+            "its results on 1 recorded covers cannot be compared (not run in time, timed out or not "
+            "JSON): [['a1', 1]]",
+        )
+        in res.reasons
+    ), res.reasons
+
+
+def test_more_than_max_output_covers_voids_the_clean_up_exemption(arc, monkeypatch):
+    mem, ev, gate, ep, parent = arc
+    monkeypatch.setattr(gate_module, "MAX_OUTPUT_COVERS", 2)
+    cand = _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED})
+    res = gate.check(parent, cand, {"items": [_item(SS, [T_SS], RECORDED[SS])]})
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert [r for r in res.reasons if r.startswith("G3:")] == [
+        _refused_reason(SS, "its 3 recorded covers exceed the 2 compared"),
+    ], res.reasons
+
+
+# --- D28: any change in what a stored function returns on recorded inputs needs a red test ------------------
+
+
+def _changed_reason(item, why):
+    return (
+        f"G3: {item} changes behaviour without a test: {why}; any change in what a stored function returns on "
+        "recorded inputs needs a test, listed under it in the manifest, that fails on the parent's library "
+        "and passes on the candidate's"
+    )
+
+
+def _all_listed(**tests):
+    """A skeleton change of the channel: every public function listed, with its parent covers."""
+    return {
+        "items": [
+            _item(PSF, tests.get("psf", [T_PSF]), RECORDED[PSF]),
+            _item(RSF, tests.get("rsf", [T_RSF]), RECORDED[RSF]),
+            _item(SS, tests.get("ss", [T_SS]), RECORDED[SS]),
+        ],
+        "skeleton": [CH],
+    }
+
+
+def test_an_assignment_alias_of_a_deleted_function_is_compared_with_it(arc):
+    mem, ev, gate, ep, parent = arc
+    man = {
+        "items": [
+            _item(PSF, [T_PSF], [0, 1, 3]),
+            _item(SS, [T_SS], RECORDED[SS]),
+        ],
+        "skeleton": [CH],
+        "deleted": [RSF],
+        "deleted_tests": [T_RSF],
+    }
+    # the old name now answers with another function's behaviour
+    wrong = HEAD + STATE_INLINE + "\n\nread_submit_feedback = submit_state\n"
+    res = gate.check(parent, _candidate(mem, {MODULE: wrong, T_RSF: None}), man)
+    assert not res.passed and "G3" in res.refused, res.reasons
+    refusal = [r for r in res.reasons if r.startswith(f"G3: {RSF} ")]
+    assert len(refusal) == 1, res.reasons
+    assert refusal[0].startswith(
+        _changed_reason(
+            RSF,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        ).split("; any change")[0],
+    ), refusal
+    assert "SubmitFeedback" not in refusal[0] and "retry" not in refusal[0]
+    # the same alias of the function that does what it did lands with no new test
+    right = HEAD + STATE_INLINE + "\n\nread_submit_feedback = parse_submit_feedback\n"
+    res = gate.check(parent, _candidate(mem, {MODULE: right, T_RSF: None}), man)
+    assert res.passed, res.reasons
+
+
+def test_an_unchanged_caller_of_an_edited_function_is_compared(arc):
+    mem, ev, gate, ep, _ = arc
+    # an earlier merge left read_submit_feedback as a def alias calling parse_submit_feedback; its old test
+    # does not use its recorded cover, so only the behaviour check can see a change there
+    base = _merged(
+        mem,
+        {
+            MODULE: HEAD + ALIAS + STATE_INLINE,
+            T_RSF: _test("read_submit_feedback", [(SOLVED, SOLVED)], [RETRY2]),
+        },
+    )
+    # a clean-up merges submit_state and twists parse_submit_feedback on the alias's recorded cover only
+    cand = _candidate(mem, {MODULE: PSF_TWISTED + ALIAS + STATE_MERGED})
+    man = {
+        "items": [
+            _item(PSF, [T_PSF], RECORDED[PSF]),
+            _item(SS, [T_SS], RECORDED[SS]),
+        ],
+    }
+    res = gate.check(base, cand, man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert (
+        _changed_reason(
+            RSF,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        )
+        in res.reasons
+    ), res.reasons
+    # the edited function itself is seen on the pass's episode action it now answers differently
+    assert (
+        _refused_reason(
+            PSF,
+            "its results differ from the parent's on 1 recorded actions of this pass's episodes: "
+            "[['a1', 3]]",
+        )
+        in res.reasons
+    ), res.reasons
+
+
+# submit_state's ending in a private helper with a module constant
+STATE_HELPED = STATE_INLINE.replace(
+    '    return "exhausted" if observation["failed"] else "retry"\n',
+    "    return _ending(observation)\n",
+)
+HELPER = """
+
+_LAST_ATTEMPT = 8
+
+
+def _ending(observation):
+    return "exhausted" if observation["failed"] or observation["attempts_used"] >= _LAST_ATTEMPT else "retry"
+"""
+T_LAST = f"{CH}/tests/test_submit_state_last_attempt.py"
+
+
+def _helped(mem, ev):
+    # an earlier pass recorded submit_state on the retry with three attempts, which no old test uses
+    ev.add_cover(SS, "a1", 3)
+    return _merged(mem, {MODULE: HEAD + READ + HELPER + STATE_HELPED})
+
+
+def test_a_skeleton_helper_change_needs_a_red_test(arc):
+    mem, ev, gate, ep, _ = arc
+    base = _helped(mem, ev)
+    helper = HELPER.replace(
+        '"exhausted" if observation["failed"] or observation["attempts_used"] >= _LAST_ATTEMPT else "retry"',
+        '"exhausted" if observation["failed"] or observation["attempts_used"] == 3 else "retry"',
+    )
+    cand = _candidate(mem, {MODULE: HEAD + READ + helper + STATE_HELPED})
+    res = gate.check(base, cand, _all_listed())
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert [r for r in res.reasons if r.startswith("G3:")] == [
+        _changed_reason(
+            SS,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        ),
+    ], res.reasons
+
+
+def test_a_helper_constant_change_needs_a_red_test_and_lands_with_one(arc):
+    mem, ev, gate, ep, _ = arc
+    base = _helped(mem, ev)
+    module = (
+        HEAD
+        + READ
+        + HELPER.replace("_LAST_ATTEMPT = 8", "_LAST_ATTEMPT = 3")
+        + STATE_HELPED
+    )
+    cand = _candidate(mem, {MODULE: module})
+    res = gate.check(base, cand, _all_listed())
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert (
+        _changed_reason(
+            SS,
+            "its results differ from the parent's on 1 recorded covers: [['a1', 3]]",
+        )
+        in res.reasons
+    ), res.reasons
+    # the same change with a test that fails on the parent's library and passes on the candidate's
+    red = (
+        "from env.dialogue_arc import submit_state\n\n\n"
+        "def test_the_third_attempt_is_the_last():\n"
+        f"    assert submit_state({RETRY2!r}) == 'exhausted'\n"
+    )
+    cand = _candidate(mem, {MODULE: module, T_LAST: red})
+    res = gate.check(base, cand, _all_listed(ss=[T_SS, T_LAST]))
+    assert res.passed, res.reasons
+
+
+def test_a_pure_refactor_of_a_helper_needs_no_new_test(arc):
+    mem, ev, gate, ep, _ = arc
+    base = _helped(mem, ev)
+    # the constant inlined: a skeleton change with the same results everywhere
+    refactor = HELPER.replace("\n_LAST_ATTEMPT = 8\n", "").replace(
+        ">= _LAST_ATTEMPT",
+        ">= 8",
+    )
+    cand = _candidate(mem, {MODULE: HEAD + READ + refactor + STATE_HELPED})
+    res = gate.check(base, cand, _all_listed())
+    assert res.passed, res.reasons
+
+
+# submit_state refusing the retry with three attempts, which the environment accepted
+STATE_STRICT = STATE_INLINE.replace(
+    '    if observation["correct"]:\n',
+    '    if observation["attempts_used"] == 3:\n'
+    '        raise MemoryInputError("unexpected attempt count")\n'
+    '    if observation["correct"]:\n',
+)
+T_THIRD = f"{CH}/tests/test_submit_state_third_attempt.py"
+
+
+def test_a_clean_up_repair_off_the_recorded_covers_needs_a_red_test(arc):
+    mem, ev, gate, ep, _ = arc
+    base = _merged(mem, {MODULE: HEAD + READ + STATE_STRICT})
+    # the repair deletes the refusing check: less code, the same results on every recorded cover
+    cand = _candidate(mem, {MODULE: HEAD + READ + STATE_INLINE})
+    man = {"items": [_item(SS, [T_SS], RECORDED[SS])]}
+    res = gate.check(base, cand, man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert [r for r in res.reasons if r.startswith("G3:")] == [
+        _refused_reason(
+            SS,
+            "its results differ from the parent's on 1 recorded actions of this pass's episodes: "
+            "[['a1', 3]]",
+        ),
+    ], res.reasons
+    # with a test that fails on the parent's library the repair lands
+    red = (
+        "from env.dialogue_arc import submit_state\n\n\n"
+        "def test_the_third_attempt_is_a_retry():\n"
+        f"    assert submit_state({RETRY2!r}) == 'retry'\n"
+    )
+    cand = _candidate(mem, {MODULE: HEAD + READ + STATE_INLINE, T_THIRD: red})
+    res = gate.check(base, cand, {"items": [_item(SS, [T_SS, T_THIRD], RECORDED[SS])]})
+    assert res.passed, res.reasons
+
+
+def test_a_red_tested_kept_function_does_not_vouch_for_deleted_covers_unless_listed(
+    arc,
+):
+    mem, ev, gate, ep, parent = arc
+    # an earlier pass recorded parse_submit_feedback on cover 3, which read_submit_feedback also covers
+    ev.add_cover(PSF, "a1", 3)
+    t_new = f"{CH}/tests/test_parse_submit_feedback_third.py"
+    narrowed = HEAD.replace(
+        "    return observation\n",
+        '    if observation["attempts_used"] == 3:\n'
+        '        raise MemoryInputError("unexpected attempt count")\n'
+        "    return observation\n",
+    )
+    refuses = (
+        "import pytest\nfrom env.dialogue_arc import parse_submit_feedback\n\n\n"
+        "def test_the_third_attempt_is_refused():\n"
+        "    with pytest.raises(ValueError):\n"
+        f"        parse_submit_feedback({RETRY2!r})\n"
+    )
+    deleting = {"deleted": [RSF], "deleted_tests": [T_RSF]}
+    # a red test vets the narrowing, but the narrowed function's old cover 3 no longer vouches for the
+    # deleted function's input
+    cand = _candidate(
+        mem,
+        {MODULE: narrowed + STATE_INLINE, T_RSF: None, t_new: refuses},
+    )
+    man = {"items": [_item(PSF, [T_PSF, t_new], RECORDED[PSF])], **deleting}
+    res = gate.check(parent, cand, man)
+    assert not res.passed and res.refused == ["G5"], res.reasons
+    assert [r for r in res.reasons if r.startswith("G5:")] == [
+        f"G5: deleted item {RSF} covered 1 recorded inputs that no remaining item covers "
+        "(list them in a remaining item's covers): [['a1', 3]]",
+    ]
+    # a red-tested change that lists the cover takes it over
+    changes = (
+        "from env.dialogue_arc import parse_submit_feedback\n\n\n"
+        "def test_the_third_attempt_reads_as_invalid():\n"
+        f"    assert parse_submit_feedback({RETRY2!r})['valid'] is False\n"
+    )
+    cand = _candidate(
+        mem,
+        {MODULE: PSF_TWISTED + STATE_INLINE, T_RSF: None, t_new: changes},
+    )
+    man = {"items": [_item(PSF, [T_PSF, t_new], [0, 1, 3])], **deleting}
+    res = gate.check(parent, cand, man)
+    assert res.passed, res.reasons
+
+
+def test_an_exhausted_behaviour_budget_refuses_the_pass(arc, monkeypatch):
+    mem, ev, gate, ep, parent = arc
+    cand = _candidate(mem, {MODULE: HEAD + READ + STATE_MERGED})
+    man = {"items": [_item(SS, [T_SS], RECORDED[SS])]}
+    monkeypatch.setattr(gate_module, "BEHAVIOUR_MAX_CASES", 3)
+    res = gate.check(parent, cand, man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert any(
+        r.startswith("G3: behaviour check not completed:")
+        and "exceed the 3 compared" in r
+        for r in res.reasons
+    ), res.reasons
+    monkeypatch.setattr(gate_module, "BEHAVIOUR_MAX_CASES", 2000)
+    monkeypatch.setattr(gate_module, "BEHAVIOUR_BUDGET_S", 0.0)
+    res = gate.check(parent, cand, man)
+    assert not res.passed and res.refused == ["G3"], res.reasons
+    assert any(
+        r.startswith("G3: behaviour check not completed:") and "budget ran out" in r
+        for r in res.reasons
+    ), res.reasons

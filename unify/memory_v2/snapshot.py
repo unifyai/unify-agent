@@ -5,7 +5,7 @@ blobs and checks nothing else appeared; :func:`item_bodies` keys every memory it
 defines it; :func:`module_skeleton`, :func:`notes_preamble` and :func:`without_listed` give the parts of a
 file that belong to no item, so the gate can pin them; :func:`env_references` reads which library names a
 test file imports and :func:`calls_item` whether it calls one; :func:`code_size` measures a channel
-module's code.
+module's code and :func:`public_bindings` lists the public names it binds.
 """
 
 from __future__ import annotations
@@ -376,6 +376,43 @@ def calls_item(source: bytes, item: str) -> bool:
         ):
             return True
     return False
+
+
+def public_bindings(source: bytes | None) -> dict[str, bool] | None:
+    """The public names a channel module binds at its top level: ``name -> whether it is a function definition``.
+
+    A ``def`` (or ``async def``), an assignment to a plain name (``A = B``, ``A: T = B``) and an import
+    (``import x as A``, ``from x import y as A``; ``import a.b`` binds ``a``) each bind a name; names starting
+    with ``_`` are not public. A name stays a function definition only if every binding of it is a ``def``.
+    A missing module binds nothing; None when it does not parse.
+    """
+    if source is None:
+        return {}
+    try:
+        module = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    out: dict[str, bool] = {}
+
+    def bind(name: str, is_def: bool) -> None:
+        if not name.startswith("_"):
+            out[name] = out.get(name, True) and is_def
+
+    for node in module.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bind(node.name, True)
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    bind(t.id, False)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                bind(node.target.id, False)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                if a.name != "*":
+                    bind(a.asname or a.name.split(".")[0], False)
+    return out
 
 
 def code_size(source: bytes) -> tuple[int, int, int] | None:

@@ -153,7 +153,7 @@ from .manifest import SEMANTIC_TYPES
 from .sandbox_run import SandboxResult, run_confined
 
 MAX_COVERS_PER_ITEM = 8
-# :func:`run_outputs` (the gate's same-results check of an edited function): covers compared, seconds per tree
+# :func:`run_outputs` (the gate's behaviour check, D26/D28): covers compared per function, seconds per tree
 MAX_OUTPUT_COVERS = 128
 OUTPUTS_BUDGET_S = 120.0
 MAX_FIELDS_PER_COVER = 16
@@ -1781,14 +1781,15 @@ def run_outputs(
     python: Path,
     work: Path,
     runner: Callable[..., SandboxResult] = run_confined,
+    timeout_s: float = OUTPUTS_BUDGET_S,
 ) -> dict[tuple[str, int], tuple[str, str, str | None] | None]:
     """What *item* of the memory *tree* does on each case (:func:`output_cases`), run confined, by cover.
 
     ``(outcome, result, calls)``: ``handled`` with the SHA-256 of its return value as canonical JSON
     (sorted keys), ``refused`` (its ``MemoryInputError``) with an empty result, or ``error`` with the
     exception's class; *calls* is the SHA-256 of the environment calls it issued (``env`` form), else
-    None. None when the case cannot be compared: it did not run within :data:`OUTPUTS_BUDGET_S`, timed
-    out, returned a value that is not JSON, or the module could not be loaded. Only digests and class
+    None. None when the case cannot be compared: it did not run within *timeout_s* (at most
+    :data:`OUTPUTS_BUDGET_S`), timed out, returned a value that is not JSON, or the module could not be loaded. Only digests and class
     names leave the box, and the host only compares them.
     """
     out: dict[tuple[str, int], tuple[str, str, str | None] | None] = {
@@ -1803,7 +1804,7 @@ def run_outputs(
         python=python,
         work=work,
         runner=runner,
-        timeout_s=OUTPUTS_BUDGET_S,
+        timeout_s=min(timeout_s, OUTPUTS_BUDGET_S),
         outputs=True,
     )
     if any("fatal" in r for r in rows):

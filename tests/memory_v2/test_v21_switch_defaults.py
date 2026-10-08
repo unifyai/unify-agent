@@ -158,12 +158,15 @@ D26_PARAGRAPH = (
     "the channel may import as a thin alias calling the merged one); delete a function the episodes show is wrong or\n"
     "unused, listing every recorded input it covered in a remaining function's covers; repair a function that refused\n"
     "an input the environment accepted. Test first here as well: every old test keeps passing against the result, or\n"
-    'is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. A repair\n'
-    "changes behaviour, so like any change it needs a test that fails on the parent's library and passes after. Only a\n"
-    "merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks the library (fewer\n"
-    "functions or less code in them; comments and docstrings do not count), an edited function needs no failing test\n"
-    "when an old passing test calls it and it returns exactly what its old version returned on every recorded cover of\n"
-    "it (the gate runs both versions on them).\n\n"
+    'is retired in "deleted_tests" (only a test file of deleted functions) with the reason in the summary. Any change\n'
+    "in what a stored function returns on recorded inputs needs a failing-then-passing test, also when only a helper,\n"
+    "constant or alias changed: the gate runs every function of a channel you change, old and new, on its recorded\n"
+    "covers and on the channel's actions in this pass's episodes, and a function whose results differ must be listed in\n"
+    '"items" with a test that fails on the parent\'s library and passes after. A repair changes behaviour, so it always\n'
+    "needs one. Only a merge, alias or deletion that keeps behaviour is exempt: in a pass that adds nothing and shrinks\n"
+    "the library (fewer functions or less code in them; comments and docstrings do not count), an edited function needs\n"
+    "no failing test when an old passing test calls it and it returns exactly what its old version returned on all\n"
+    "those inputs.\n\n"
 )
 D26_AFTER = "the library must earn its place.\n\n"
 D26_SUMMARY = (

@@ -46,13 +46,19 @@ Manifest rules for consolidators
   the parent's library (or hangs there). Repairing a parent test file that was already red also counts,
   but only as a test-only repair: its parent version fails on the parent, a test it failed passes in
   your version (a file that did not even import counts as a whole), and it imports no function your pass
-  changes. A changed function always needs a test that fails on the parent's library. The one exception
-  is a change that keeps behaviour in a clean-up pass (no item added; fewer function definitions or less
+  changes. A changed function always needs a test that fails on the parent's library. So does any change
+  in what a stored function returns on recorded inputs: for every channel your commit changes (any file
+  under ``env/<channel>/``: a function, a private helper, a constant, an alias, an import), the gate runs
+  every public function the parent's module had, under the same name in yours (a ``def``, ``A = B`` or an
+  import), on both libraries over its recorded covers and the channel's recorded actions in your episodes;
+  a function whose results differ there, or cannot be compared (not JSON, too slow), must be listed in
+  ``items`` with a test that fails on the parent's library and passes on yours. The one exception for a
+  changed function is a change that keeps behaviour in a clean-up pass (no item added; fewer function definitions or less
   code in them, and no more code anywhere in the channel modules; comments and docstrings do not count):
   a merge, an alias or a shortening needs no failing test when a parent test that passed on the parent
   calls the function (importing it is not enough) and the function returns, refuses and calls exactly
-  what its parent version did on every recorded cover of it (the gate runs both versions on them). A
-  repair changes behaviour, so it always needs a failing test. New tests of a clean-up pass need only pass.
+  what its parent version did on every recorded cover of it and on your episodes' recorded actions (the
+  gate runs both versions on them). A repair changes behaviour, so it always needs a failing test. New tests of a clean-up pass need only pass.
 * **Skeleton.** A channel's *skeleton* is its module minus its public functions and a literal
   ``__all__ = [...]``: the docstring, imports, private helpers and any other module-level statement, plus
   the preamble of its ``NOTES.md`` (the text before the first ``## `` heading). Changing it, including
@@ -60,7 +66,8 @@ Manifest rules for consolidators
   A skeleton entry declares the channel's ``__init__.py`` and ``NOTES.md`` files, so a preamble-only edit
   needs nothing else; every function or section you add, change or remove is still listed as an item.
   A changed module skeleton also needs every public function of that module in ``items``, each with valid
-  covers (unchanged functions need no new test; their old tests must keep passing).
+  covers (unchanged functions need no new test unless their results change; their old tests must keep
+  passing).
 * **Tests are never lost.** Every test that passed on the parent must still pass, both in your commit's
   suite and with the parent's own tests and test kit against your library. Do not rename or drop tests.
   Your commit's suite may keep failing only tests that already failed on the parent (no new failures);
