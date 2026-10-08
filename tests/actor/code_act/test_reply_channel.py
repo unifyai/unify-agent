@@ -28,6 +28,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests import cache_discipline_helpers as h
+from tests.actor.code_act.helpers import WORKER_START_BOUND_S
+from tests.actor.code_act.helpers import worker_starts  # noqa: F401
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor import core_surface, notebook_cells
 from unify.actor import prompt_builders as pb
@@ -55,7 +57,8 @@ CELL = (
     "reply(answer)\n"
     "print('not reached')\n"
 )
-# Every session a test drives ends within this.
+# Every session a test drives ends within this, once its sandboxed worker
+# runs; a wait that starts the worker also has WORKER_START_BOUND_S.
 SESSION_BOUND_S = 2.0
 
 
@@ -175,10 +178,15 @@ def test_a_reply_of_a_literal_is_marked(call, literal):
 # ── the cell, in process and in the worker ───────────────────────────────
 
 
-async def _run(ex: SessionExecutor, code: str, **kwargs) -> tuple[str, dict]:
+async def _run(
+    ex: SessionExecutor,
+    code: str,
+    bound: float = SESSION_BOUND_S,
+    **kwargs,
+) -> tuple[str, dict]:
     res = await asyncio.wait_for(
         ex.execute(code=code, state_mode="stateful", session_id=0, **kwargs),
-        SESSION_BOUND_S,
+        bound,
     )
     return parts_to_text(res["stdout"]), res
 
@@ -240,11 +248,11 @@ async def _cell_checks(ex: SessionExecutor) -> None:
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 20)
 async def test_a_cell_replies_in_the_worker(channel, world, monkeypatch):
     ex = SessionExecutor()
     try:
-        await _run(ex, "1")  # starts the worker
+        await _run(ex, "1", SESSION_BOUND_S + WORKER_START_BOUND_S)  # starts it
         started = time.monotonic()
         await _cell_checks(ex)
         assert time.monotonic() - started < SESSION_BOUND_S
@@ -267,8 +275,13 @@ def test_off_the_sandbox_has_no_reply(monkeypatch):
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(30)
-async def test_a_one_shot_act_answers_with_the_cells_reply(channel, world, monkeypatch):
+@pytest.mark.timeout(WORKER_START_BOUND_S + 30)
+async def test_a_one_shot_act_answers_with_the_cells_reply(
+    channel,
+    world,
+    monkeypatch,
+    worker_starts,  # noqa: F811
+):
     from unify.actor.code_act_actor import CodeActActor
 
     # The core surface runs cells in the sandboxed worker.
@@ -286,8 +299,12 @@ async def test_a_one_shot_act_answers_with_the_cells_reply(channel, world, monke
                 can_store=False,
                 clarification_enabled=False,
             )
-            result = await asyncio.wait_for(handle.result(), SESSION_BOUND_S)
-        elapsed = time.monotonic() - started
+            # The cell starts the worker; its start is not the act's time.
+            result = await asyncio.wait_for(
+                handle.result(),
+                SESSION_BOUND_S + WORKER_START_BOUND_S,
+            )
+        elapsed = time.monotonic() - started - worker_starts.seconds(since=started)
         messages = list(handle._client.messages)
         state = handle._runtime_state
     finally:
@@ -464,8 +481,11 @@ def _responses(lines: list[dict]) -> list[dict]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_the_cli_response_line_carries_the_cells_reply(jsonl_session):
+@pytest.mark.timeout(WORKER_START_BOUND_S + 10)
+async def test_the_cli_response_line_carries_the_cells_reply(
+    jsonl_session,
+    worker_starts,  # noqa: F811
+):
     session, lines, send = jsonl_session
     model = _Model()
     started = time.monotonic()
@@ -474,14 +494,19 @@ async def test_the_cli_response_line_carries_the_cells_reply(jsonl_session):
 
         uni_llm._acompletion_with_transient_retry = model
         run = asyncio.create_task(session.run(TASK))
-        await _until(lambda: len(_responses(lines)) == 1)
+        # The first request's cell starts the worker.
+        await _until(
+            lambda: len(_responses(lines)) == 1,
+            SESSION_BOUND_S + WORKER_START_BOUND_S,
+        )
         # The turn ended on the reply: no model call followed it.
         assert len(model.requests) == 1
         send({"message": FOLLOW_UP})
         await _until(lambda: len(_responses(lines)) == 2)
         send({"quit": True})
         code = await asyncio.wait_for(run, SESSION_BOUND_S)
-    assert time.monotonic() - started < 2 * SESSION_BOUND_S
+    steady = time.monotonic() - started - worker_starts.seconds(since=started)
+    assert steady < 2 * SESSION_BOUND_S
 
     assert code == 0
     assert model.extra == 0

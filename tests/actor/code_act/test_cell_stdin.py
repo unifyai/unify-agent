@@ -25,6 +25,7 @@ import time
 
 import pytest
 
+from tests.actor.code_act.helpers import WorkerStarts, worker_starts  # noqa: F401
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import parts_to_text
@@ -62,12 +63,20 @@ def harness_stdin(monkeypatch):
     stdin.close()
 
 
-async def _run(code: str) -> tuple[str, dict, float]:
+async def _run(
+    code: str,
+    starts: WorkerStarts | None = None,
+) -> tuple[str, dict, float]:
+    """Run *code* in a fresh session. The elapsed time leaves out the
+    sandboxed worker's start when *starts* times it."""
     ex = SessionExecutor(environments={}, timeout=None)
     try:
         started = time.monotonic()
         res = await ex.execute(code=code, state_mode="stateful", session_id=0)
-        return parts_to_text(res["stdout"]), res, time.monotonic() - started
+        elapsed = time.monotonic() - started
+        if starts is not None:
+            elapsed -= starts.seconds(since=started)
+        return parts_to_text(res["stdout"]), res, elapsed
     finally:
         await ex.close()
 
@@ -93,13 +102,18 @@ async def test_outside_a_cell_stdin_is_the_processs_own(harness_stdin, monkeypat
 @needs_bwrap
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cell", sorted(CELLS))
-async def test_a_cell_in_the_worker_reads_an_empty_stdin(cell, world, monkeypatch):
+async def test_a_cell_in_the_worker_reads_an_empty_stdin(
+    cell,
+    world,
+    monkeypatch,
+    worker_starts,  # noqa: F811
+):
     """Unchanged: the worker's descriptor 0 was already ``/dev/null``. Under
     the core tool surface (the default) its ``help`` is the worker's own,
     whose page comes from the harness: ``help()`` prints the objects' index
     and reads nothing."""
     code, _error = CELLS[cell]
-    out, res, elapsed = await _run(code)
+    out, res, elapsed = await _run(code, worker_starts)
     assert elapsed < 30
     if cell == "help":
         assert res["error"] is None, res["error"]
@@ -168,13 +182,14 @@ async def test_what_a_cell_starts_reads_end_of_input(
     started,
     driver_channel,
     monkeypatch,
+    worker_starts,  # noqa: F811
 ):
     import asyncio
 
     from unify.cli import _stdin_reader
 
     with _stdin_reader() as reader:
-        out, res, elapsed = await _run(STARTED[started])
+        out, res, elapsed = await _run(STARTED[started], worker_starts)
         assert res["error"] is None, res["error"]
         assert (
             elapsed < WATCHDOG_S

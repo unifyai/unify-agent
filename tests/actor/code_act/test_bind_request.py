@@ -34,6 +34,8 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from tests.actor.code_act.core_world import core_world  # noqa: F401
+from tests.actor.code_act.helpers import WORKER_START_BOUND_S
+from tests.actor.code_act.helpers import worker_starts  # noqa: F401
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor import notebook_cells
 from unify.actor import prompt_builders as pb
@@ -45,7 +47,8 @@ SENTENCE = (
     "The current request is available in cells as `request`: `request.text` "
     "is its text and `request.data` the JSON values it contains, in order."
 )
-# Every session a test drives ends within this.
+# Every session a test drives ends within this, once its sandboxed worker
+# runs; a wait that starts the worker also has WORKER_START_BOUND_S.
 SESSION_BOUND_S = 2.0
 
 FIRST = (
@@ -302,10 +305,14 @@ def test_the_tools_are_unchanged_by_the_switch(monkeypatch):
 # ── the cell, in process and in the worker ───────────────────────────────
 
 
-async def _run(ex: SessionExecutor, code: str) -> tuple[str, dict]:
+async def _run(
+    ex: SessionExecutor,
+    code: str,
+    bound: float = SESSION_BOUND_S,
+) -> tuple[str, dict]:
     res = await asyncio.wait_for(
         ex.execute(code=code, state_mode="stateful", session_id=0),
-        SESSION_BOUND_S,
+        bound,
     )
     return parts_to_text(res["stdout"]), res
 
@@ -383,11 +390,11 @@ async def _cell_checks(ex: SessionExecutor) -> None:
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(20)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 20)
 async def test_a_cell_reads_the_request_in_the_worker(bound, world, monkeypatch):
     ex = SessionExecutor()
     try:
-        await _run(ex, "1")  # starts the worker
+        await _run(ex, "1", SESSION_BOUND_S + WORKER_START_BOUND_S)  # starts it
         started = time.monotonic()
         await _cell_checks(ex)
         assert time.monotonic() - started < SESSION_BOUND_S
@@ -397,7 +404,7 @@ async def test_a_cell_reads_the_request_in_the_worker(bound, world, monkeypatch)
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 10)
 async def test_off_a_cell_has_no_request(monkeypatch):
     from unify.common._async_tool import bound_request
 
@@ -405,7 +412,8 @@ async def test_off_a_cell_has_no_request(monkeypatch):
     assert bound_request.bind(True) is None
     ex = SessionExecutor()
     try:
-        out, _ = await _run(ex, REPORT_CELL)
+        # The first cell starts the worker.
+        out, _ = await _run(ex, REPORT_CELL, SESSION_BOUND_S + WORKER_START_BOUND_S)
         assert _seen(out) == [{"bound": False}]
     finally:
         await ex.close()
@@ -414,8 +422,10 @@ async def test_off_a_cell_has_no_request(monkeypatch):
 # ── one-shot act ─────────────────────────────────────────────────────────
 
 
-async def _act_once(actor) -> tuple[str, list[dict], float]:
-    """One request: a cell that reports what it sees, then a text reply."""
+async def _act_once(actor, starts) -> tuple[str, list[dict], float]:
+    """One request: a cell that reports what it sees, then a text reply.
+
+    The elapsed time leaves out the sandboxed worker's start (*starts*)."""
     replies = [
         h.completion(calls=[("execute_code", {"code": REPORT_CELL})]),
         h.completion(content="12"),
@@ -428,20 +438,24 @@ async def _act_once(actor) -> tuple[str, list[dict], float]:
             can_store=False,
             clarification_enabled=False,
         )
-        result = await asyncio.wait_for(handle.result(), SESSION_BOUND_S)
-    elapsed = time.monotonic() - started
+        result = await asyncio.wait_for(
+            handle.result(),
+            SESSION_BOUND_S + WORKER_START_BOUND_S,
+        )
+    elapsed = time.monotonic() - started - starts.seconds(since=started)
     assert result == "12"
     (tool,) = [m for m in handle._client.messages if m.get("role") == "tool"]
     return str(tool["content"]), provider.requests, elapsed
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 15)
 @pytest.mark.parametrize("projection", ["", "notebook"])
 @pytest.mark.parametrize("switch", ["on", ""])
 async def test_a_one_shot_act_binds_its_request(
     bound,
     monkeypatch,
+    worker_starts,  # noqa: F811
     projection,
     switch,
 ):
@@ -451,7 +465,7 @@ async def test_a_one_shot_act_binds_its_request(
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = CodeActActor()
     try:
-        tool, requests, elapsed = await _act_once(actor)
+        tool, requests, elapsed = await _act_once(actor, worker_starts)
     finally:
         await actor.close()
 
@@ -467,12 +481,13 @@ async def test_a_one_shot_act_binds_its_request(
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 30)
 @pytest.mark.parametrize("projection", ["", "notebook"])
 async def test_a_one_shot_act_binds_its_request_on_the_core_surface(
     bound,
-    core_world,
+    core_world,  # noqa: F811
     monkeypatch,
+    worker_starts,  # noqa: F811
     projection,
 ):
     from tests.actor.code_act.core_world import new_actor
@@ -480,7 +495,7 @@ async def test_a_one_shot_act_binds_its_request_on_the_core_surface(
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     actor = new_actor()
     try:
-        tool, requests, elapsed = await _act_once(actor)
+        tool, requests, elapsed = await _act_once(actor, worker_starts)
     finally:
         await actor.close()
 
@@ -606,8 +621,11 @@ def _responses(lines: list[dict]) -> list[dict]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
-async def test_a_persistent_session_binds_each_request(jsonl_session):
+@pytest.mark.timeout(WORKER_START_BOUND_S + 10)
+async def test_a_persistent_session_binds_each_request(
+    jsonl_session,
+    worker_starts,  # noqa: F811
+):
     session, lines, send = jsonl_session
     model = _Model()
     started = time.monotonic()
@@ -616,12 +634,17 @@ async def test_a_persistent_session_binds_each_request(jsonl_session):
 
         uni_llm._acompletion_with_transient_retry = model
         run = asyncio.create_task(session.run(FIRST))
-        await _until(lambda: len(_responses(lines)) == 1)
+        # The first request's cell starts the worker.
+        await _until(
+            lambda: len(_responses(lines)) == 1,
+            SESSION_BOUND_S + WORKER_START_BOUND_S,
+        )
         send({"message": SECOND})
         await _until(lambda: len(_responses(lines)) == 2)
         send({"quit": True})
         code = await asyncio.wait_for(run, SESSION_BOUND_S)
-    assert time.monotonic() - started < 2 * SESSION_BOUND_S
+    steady = time.monotonic() - started - worker_starts.seconds(since=started)
+    assert steady < 2 * SESSION_BOUND_S
 
     assert code == 0
     assert _responses(lines) == [

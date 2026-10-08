@@ -31,12 +31,15 @@ import pytest
 
 from tests import cache_discipline_helpers as h
 from tests.actor.code_act.core_world import core_world  # noqa: F401
+from tests.actor.code_act.helpers import WORKER_START_BOUND_S
 from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
 from unify.actor import notebook_cells
 from unify.actor.execution.session import SessionExecutor
 from unify.actor.execution.types import ExecutionResult, TextPart
 from unify.settings import SETTINGS
 
+# A cell on a running worker ends within this; a wait that starts a worker
+# also has WORKER_START_BOUND_S.
 SESSION_BOUND_S = 2.0
 LABEL = "[variables] "
 HAS_NUMPY = importlib.util.find_spec("numpy") is not None
@@ -375,7 +378,13 @@ EXPECTED = [
 ]
 
 
-async def _drive(ex: SessionExecutor, bound: float = SESSION_BOUND_S) -> list:
+async def _drive(
+    ex: SessionExecutor,
+    bound: float = SESSION_BOUND_S,
+    start_bound: float = 0.0,
+) -> list:
+    """Run CELLS, each within *bound*; a stateless cell, which may start a
+    worker of its own, has *start_bound* as well."""
     seen = []
     for code, mode in CELLS:
         res = await asyncio.wait_for(
@@ -385,7 +394,7 @@ async def _drive(ex: SessionExecutor, bound: float = SESSION_BOUND_S) -> list:
                 session_id=None if mode == "stateless" else 0,
                 inventory=True,
             ),
-            bound,
+            bound + (start_bound if mode == "stateless" else 0.0),
         )
         seen.append(res.get("inventory"))
     return seen
@@ -393,7 +402,7 @@ async def _drive(ex: SessionExecutor, bound: float = SESSION_BOUND_S) -> list:
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(90)
+@pytest.mark.timeout(2 * WORKER_START_BOUND_S + 30)
 async def test_the_worker_reports_the_same(on, world, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
@@ -405,10 +414,10 @@ async def test_the_worker_reports_the_same(on, world, monkeypatch):
     try:
         await asyncio.wait_for(
             ex.execute(code="1", state_mode="stateful", session_id=0),
-            10,
+            SESSION_BOUND_S + WORKER_START_BOUND_S,
         )  # starts the worker
         # A stateless cell starts a worker of its own.
-        assert await _drive(ex, bound=15) == EXPECTED
+        assert await _drive(ex, bound=15, start_bound=WORKER_START_BOUND_S) == EXPECTED
         assert ex.python_session(session_id=0)._worker is not None
     finally:
         bound_request.unbind(token)
@@ -416,7 +425,7 @@ async def test_the_worker_reports_the_same(on, world, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(10)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 10)
 async def test_nothing_unless_asked(on):
     ex = SessionExecutor()
     try:
@@ -492,7 +501,11 @@ async def _act(actor) -> tuple[list[str], list]:
             can_store=False,
             clarification_enabled=False,
         )
-        result = await asyncio.wait_for(handle.result(), SESSION_BOUND_S * 3)
+        # The first cell starts the worker.
+        result = await asyncio.wait_for(
+            handle.result(),
+            SESSION_BOUND_S * 3 + WORKER_START_BOUND_S,
+        )
     assert result == "10"
     tools = [
         json.dumps(m["content"]) if not isinstance(m["content"], str) else m["content"]
@@ -504,7 +517,7 @@ async def _act(actor) -> tuple[list[str], list]:
 
 @needs_bwrap
 @pytest.mark.asyncio
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(WORKER_START_BOUND_S + 30)
 @pytest.mark.parametrize("projection", ["", "notebook"])
 async def test_an_act_on_the_core_surface_lists_the_workers_variables(
     on,

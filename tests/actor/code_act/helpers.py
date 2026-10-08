@@ -4,18 +4,72 @@ Transcript readers pull tool-call names and ``execute_code`` snippets out of
 a handle's history.  ``StaticActorRunner`` and ``patch_actor_act`` stand in
 for ``primitives.actor`` so a test can exercise handle adoption, output
 capture and context forwarding without spawning a real inner actor.
+``WORKER_START_BOUND_S`` and the ``worker_starts`` fixture keep a sandboxed
+worker's start out of a test's tight steady-state bound.
 """
 
 from __future__ import annotations
 
 import functools
 import json
+import time
 from typing import Any, Awaitable, Callable, Iterator
 
 import pytest
 
 from unify.actor.environments.actor import _ActorRunner
+from unify.actor.execution import worker
 from unify.actor.simulated import _StaticAnswerHandle
+
+#: What starting a sandboxed Python worker may take: the worker's own limit
+#: (``worker.START_TIMEOUT_S``). The start builds the sandbox policy (the
+#: first build scans the interpreter roots for secrets), launches bwrap and
+#: the interpreter and waits for its ready line, so on a loaded host it can
+#: take seconds. A tight bound is for work on a running worker; a wait that
+#: includes a start adds this budget, and a timed region that includes one
+#: subtracts the start's measured time (``worker_starts``).
+WORKER_START_BOUND_S = worker.START_TIMEOUT_S
+
+
+class WorkerStarts:
+    """When sandboxed Python workers were starting, as measured by the test."""
+
+    def __init__(self) -> None:
+        self.spans: list[tuple[float, float]] = []
+
+    @property
+    def count(self) -> int:
+        return len(self.spans)
+
+    def seconds(self, since: float = float("-inf")) -> float:
+        """Wall-clock seconds after *since* (``time.monotonic()``) during which
+        a worker was starting; overlapping starts count once."""
+        total, covered = 0.0, since
+        for began, ended in sorted(self.spans):
+            began = max(began, covered)
+            if ended > began:
+                total += ended - began
+                covered = ended
+        return total
+
+
+@pytest.fixture
+def worker_starts(monkeypatch) -> WorkerStarts:
+    """Time every sandboxed worker start in the test, from the policy build
+    to the worker's ready line (``PythonWorker._start``)."""
+    starts = WorkerStarts()
+    original = worker.PythonWorker._start
+
+    @functools.wraps(original)
+    async def timed(self) -> None:
+        began = time.monotonic()
+        try:
+            await original(self)
+        finally:
+            starts.spans.append((began, time.monotonic()))
+
+    monkeypatch.setattr(worker.PythonWorker, "_start", timed)
+    return starts
 
 
 def _iter_tool_calls(chat_history: list[dict[str, Any]]) -> Iterator[dict]:
