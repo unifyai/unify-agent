@@ -575,6 +575,7 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         action_lookup=lookup.action,
+        docstring_standard=True,  # v2.1: the lean docstring standard and its examples run
     )
     config = PassConfig(
         model=cfg.model,
