@@ -52,8 +52,15 @@ _SECRET_SUFFIXES = ("_api_key", "_apikey")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _SEPARATORS = re.compile(r"[^a-z0-9]+")
 
-# scheme://userinfo@ (a password, or a token as the user name).
-_URL_USERINFO = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*://)[^/\s@]+@")
+# ://userinfo@ (a password, or a token as the user name). The match starts at
+# "://", not at the scheme: a pattern that starts with an unbounded scheme
+# (``[A-Za-z][A-Za-z0-9+.-]*://``) is retried from every letter of a long
+# word and scans to its end each time, which is quadratic in the word's
+# length. The hook runs on the event loop's thread, so a request carrying a
+# long summary (80,000 characters) blocked the loop for seconds. The scheme
+# is kept as it was, so the output is unchanged; text with "://" after
+# something that is not a scheme loses its userinfo too.
+_URL_USERINFO = re.compile(r"://[^/\s@]+@")
 # Provider keys by shape: OpenAI (sk-, sk-proj-), OpenRouter (sk-or-v1-),
 # Anthropic (sk-ant-...), Google (AIza...).
 _KEY_SHAPED = re.compile(
@@ -85,7 +92,7 @@ def _redact_string(text: str, held: list[str]) -> str:
     for value in held:
         if value in text:
             text = text.replace(value, REDACTED)
-    text = _URL_USERINFO.sub(lambda m: f"{m.group(1)}{REDACTED}@", text)
+    text = _URL_USERINFO.sub(f"://{REDACTED}@", text)
     return _KEY_SHAPED.sub(REDACTED, text)
 
 

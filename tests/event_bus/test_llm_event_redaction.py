@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import time
 
 import pytest
 from unillm import LLMEvent
@@ -190,3 +191,78 @@ async def test_the_request_sent_keeps_its_credentials(monkeypatch):
     assert seen["api_base"] == f"https://{REDACTED}@gateway.invalid/v1"
     assert seen["extra_headers"]["Authorization"] == REDACTED
     assert seen["messages"] == snapshot["messages"]
+
+
+# Long words of the shapes a URL scheme, a key or a userinfo is made of. A
+# compaction summary of this size blocked the event loop for seconds when the
+# userinfo pattern started at an unbounded scheme (quadratic in the word).
+LONG = 120_000
+LONG_TEXTS = (
+    "x" * LONG,
+    "a1+.-" * (LONG // 5),
+    "https://" + "u" * LONG,
+    "xsk-" * (LONG // 4),
+    ("word " * (LONG // 5)) + "x" * LONG,
+)
+
+
+@pytest.mark.parametrize("index", range(len(LONG_TEXTS)))
+def test_long_text_is_redacted_in_linear_time(index):
+    text = LONG_TEXTS[index]
+    request = {
+        "model": "openai/gpt-5.6-sol@openrouter",
+        "messages": [{"role": "user", "content": text}] * 3,
+    }
+    started = time.perf_counter()
+    out = redact_llm_request(request)
+    elapsed = time.perf_counter() - started
+    # Linear redaction takes milliseconds; the quadratic one took tens of
+    # seconds on the first of these.
+    assert elapsed < 1.0, elapsed
+    assert out == request
+
+
+@pytest.mark.asyncio
+async def test_the_hook_keeps_a_long_request_whole_and_does_not_block_the_loop():
+    """The step-cap compaction tests send summaries of 40,000 and 80,000
+    characters; the hook redacts them on the loop's thread, so it must
+    return at once and keep every field the event's readers use."""
+    request = {
+        "model": "openai/gpt-5.6-sol@openrouter",
+        "messages": [{"role": "user", "content": "x" * (2 * LONG)}],
+        "max_completion_tokens": 100,
+        "prompt_cache_key": "session-affinity-0001",
+    }
+    async with capture_events("LLM") as captured:
+        started = time.perf_counter()
+        _llm_event_to_eventbus(LLMEvent(request=request))
+        elapsed = time.perf_counter() - started
+        await _published(captured)
+    assert elapsed < 1.0, elapsed
+    assert len(captured) == 1
+    seen = captured[0].payload["request"]
+    assert "redaction_failed" not in seen
+    assert seen == request
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        (
+            f"https://gwuser:{FAKE_PASSWORD}@gateway.invalid/v1",
+            f"https://{REDACTED}@gateway.invalid/v1",
+        ),
+        (
+            f"see git+ssh://{FAKE_BEARER}@host.invalid/repo and more",
+            f"see git+ssh://{REDACTED}@host.invalid/repo and more",
+        ),
+        (
+            f"wordglued{'x' * 100}https://u:{FAKE_PASSWORD}@h.invalid",
+            f"wordglued{'x' * 100}https://{REDACTED}@h.invalid",
+        ),
+        ("https://host.invalid/a@b", "https://host.invalid/a@b"),
+        ("mail me at someone@example.invalid", "mail me at someone@example.invalid"),
+    ],
+)
+def test_url_userinfo_is_redacted_and_the_scheme_kept(text, expected):
+    assert redact_llm_request({"content": text}) == {"content": expected}
