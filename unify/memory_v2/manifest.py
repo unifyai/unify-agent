@@ -131,6 +131,7 @@ NOTES_PATH = re.compile(r"^env/[^/]+/NOTES\.md\Z")
 FORBIDDEN_NAMES = frozenset(
     {
         ".gitattributes",
+        ".gitignore",
         ".gitmodules",
         "conftest.py",
         "pytest.ini",

@@ -97,7 +97,8 @@ class Repo:
         trailers: Mapping[str, str | Sequence[str]],
         allow_empty: bool = False,
     ) -> str:
-        _git(["add", "-A"], cwd=path)
+        # --force: a .gitignore in the tree never hides a file from the commit (the gate refuses .gitignore)
+        _git(["add", "-A", "--force"], cwd=path)
         if not allow_empty and not _git(["status", "--porcelain"], cwd=path).strip():
             return _git(["rev-parse", "HEAD"], cwd=path).strip()
         block = _trailer_block(trailers)
@@ -175,8 +176,15 @@ class Repo:
         return [s for _, s in sorted(shas)]
 
 
-#: Every call: no hooks and no fsmonitor, whatever a repo's own config says.
-_HARD = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+#: Every call: no hooks, no fsmonitor and no user-level excludes file, whatever a repo's own config says.
+_HARD = (
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.excludesFile=/dev/null",
+)
 GIT_TIMEOUT_S = 120
 
 

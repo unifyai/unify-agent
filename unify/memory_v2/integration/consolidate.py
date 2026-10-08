@@ -21,8 +21,9 @@ Each pass sends two events through ``emit`` and appends them to the harness-only
 
 * ``{"type": "consolidation", "phase": "start", "pass_id", "trigger_tokens", "episodes", "sol_model",
   "sol_effort", "cap_usd"}``;
-* ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "seconds",
-  "gate_passed", "items", "index_tokens", "reason_codes"}``.
+* ``{"type": "consolidation", "phase": "end", "pass_id", "usd", "unknown_cost_calls", "calls", "checks",
+  "seconds", "gate_passed", "items", "index_tokens", "reason_codes"}`` (``calls`` counts model calls and
+  Sol's ``check`` calls; ``checks`` is the latter alone).
 
 ``reason_codes`` are codes only, never free text (deduplicated, at most 10): ``G1``..``G6`` for the gate
 checks that refused, ``no_manifest``, ``manifest_invalid``, ``over_quota``, ``deadline``, ``pass_cap``,
@@ -519,7 +520,8 @@ def _end_event(
         "pass_id": pass_id,
         "usd": usd,
         "unknown_cost_calls": unknown,
-        "calls": calls,
+        "calls": calls,  # model calls plus check calls (SolPass counts both against max_calls)
+        "checks": int(outcome.checks) if outcome is not None else 0,
         "seconds": round(max(0.0, float(seconds)), 3),
         "gate_passed": bool(outcome is not None and outcome.passed),
         "items": listed,

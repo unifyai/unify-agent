@@ -1,8 +1,11 @@
 """One consolidation pass: Sol as a sandboxed coding agent, then the gate (spec §7, D9).
 
-The pass copies the memory library's ``main`` into a plain directory and gives Sol two tools:
+The pass copies the memory library's ``main`` into a plain directory, creates an empty ``env/<channel>/``
+folder there for every memory channel of the pass's recorded actions, and gives Sol three tools:
 ``execute_code`` (the code as a read-only file run in :func:`.sandbox_run.run_confined`, with the copy
-read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``) and ``finish``. It ends on
+read-write at ``/memory`` and the pass's inputs read-only at ``/inputs``), ``check`` (the gate's cheap,
+read-only checks of a manifest against the current copy, host-side; :meth:`.gate.Gate.preview`; at most
+:data:`MAX_CHECKS` per pass, each counted as a call) and ``finish``. It ends on
 ``finish``, ``max_calls``, the USD cap, the pass deadline or a breach of the write quota (which refuses the
 pass without a commit). The harness then reads ``/memory/.pass/manifest.json`` without following
 links, mirrors the copy into a git checkout (dropping ``.pass``, nested ``.git`` entries and caches),
@@ -36,7 +39,7 @@ from . import manifest as _manifest
 from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
-from .gate import Gate
+from .gate import Gate, ParentSnapshot
 from .gitio import Repo
 from .index import build_index
 from .redact import KEY_SHAPED
@@ -54,6 +57,13 @@ CELL_FSIZE_BYTES = 2 * QUOTA_FILE_BYTES
 # blob can become a test fixture), all of them at most this much.
 EXPORT_BLOB_BYTES = QUOTA_FILE_BYTES
 EXPORT_TOTAL_BYTES = 32 * 1024**2
+
+# check calls per pass (each also counts against PassConfig.max_calls); a reply lists at most this many reasons
+MAX_CHECKS = 5
+_CHECK_REASONS = 20
+_CHECK_REASON_CHARS = 200
+# A check starts only with at least this much of the pass deadline left (it runs to completion).
+CHECK_FLOOR_S = 60.0
 
 _RULES_HEADING = "Manifest rules for consolidators"
 
@@ -147,7 +157,11 @@ Finish by writing /memory/.pass/manifest.json (never committed):
 `covers` lists the recorded actions on the function's own channel whose observations its tests check: tool calls
 with status "ok" and a response, shell commands with an output tail, worktree reads or writes with a recorded blob,
 dialogue actions with status "ok" and an observation, and any recorded rejection (status "error" with its error, or a
-nonzero exit) that justifies a value check (never covers made only of rejections). Then call finish(summary).
+nonzero exit) that justifies a value check (never covers made only of rejections).
+Before finish, call check(manifest) with the manifest JSON and fix every reason it returns: it runs the gate's
+manifest, provenance, scope, cover-channel, index and safety checks (not the tests) on your current files, changes
+nothing, and counts as a call ({checks} per pass at most). The folders env/<channel>/ for this pass's memory channels
+already exist; put each item in the one its covers' memory_channels name. Then call finish(summary).
 A deterministic gate will check provenance, that each new test fails before your change and passes after, the full
 test suite, an index budget, that the library only grows when it covers new recorded calls, and safety. Its rules
 follow; a pass that breaks one is refused whole.
@@ -157,6 +171,7 @@ SOL_SYSTEM = (
     _PROMPT.replace("{entries}", str(QUOTA_ENTRIES))
     .replace("{file_mib}", str(QUOTA_FILE_BYTES // 1024**2))
     .replace("{total_mib}", str(QUOTA_TOTAL_BYTES // 1024**2))
+    .replace("{checks}", str(MAX_CHECKS))
     .replace("{semantic_types}", _manifest.describe_semantic_types())
     + "\n"
     + _manifest_rules()
@@ -194,6 +209,27 @@ _TOOLS = [
                 "type": "object",
                 "properties": {"code": {"type": "string"}},
                 "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check",
+            "description": (
+                "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
+                "provenance and scope, covers and their channels, index, safety; not the tests). Returns 'ok' "
+                f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "manifest": {
+                        "type": "string",
+                        "description": "The manifest JSON, as you will write it to /memory/.pass/manifest.json.",
+                    },
+                },
+                "required": ["manifest"],
             },
         },
     },
@@ -258,13 +294,14 @@ class PassOutcome:
     passed: bool
     commit: str | None
     usd: str
-    calls: int
+    calls: int  # model calls plus check calls: both count against PassConfig.max_calls
     reasons: list[str] = field(default_factory=list)
     summary: str = ""
     unknown_cost_calls: int = 0
     codes: list[str] = field(
         default_factory=list,
     )  # structured causes (the CODE_* constants)
+    checks: int = 0  # check calls run (included in calls)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -511,6 +548,70 @@ def _mirror(
     return left_out
 
 
+def _exported_channels(episodes: Path) -> list[str]:
+    """The distinct memory channels (non-null ``memory_channels``) of the actions :func:`export_for_sol` wrote.
+
+    Read back from the host's own export before Sol's first cell, so it is exactly what Sol is shown.
+    """
+    out: set[str] = set()
+    for f in sorted(episodes.glob("*.json")) if episodes.is_dir() else []:
+        row = json.loads(f.read_text())
+        out.update(c for c in row.get("memory_channels", []) if isinstance(c, str))
+    return sorted(out)
+
+
+def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
+    """Create an empty ``env/<channel>/`` in *box* for each well-formed channel; never a file, never via a link.
+
+    Git tracks no empty directory, so a folder left empty is neither committed nor seen by the gate.
+    """
+    for ch in channels:
+        if not _manifest.SKELETON_ID.match(f"env/{ch}"):
+            continue
+        try:
+            for d in (box / "env", box / "env" / ch):
+                try:
+                    st = os.lstat(d)
+                except FileNotFoundError:
+                    os.mkdir(d, 0o755)
+                    continue
+                if not stat.S_ISDIR(st.st_mode):
+                    break  # a file or link already holds the name: leave it to the gate
+        except OSError:
+            continue
+
+
+def _check_manifest(raw: object) -> tuple[object, str | None]:
+    """A check call's manifest argument (JSON text, or an object) parsed and bounded, or (None, why)."""
+    if isinstance(raw, str):
+        if len(raw.encode("utf-8", errors="replace")) > _MANIFEST_MAX_BYTES:
+            return None, f"manifest: larger than {_MANIFEST_MAX_BYTES} bytes"
+        try:
+            raw = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
+            return (
+                None,
+                f"manifest: not valid JSON ({type(exc).__name__}: {exc})"[
+                    :_CHECK_REASON_CHARS
+                ],
+            )
+    elif not isinstance(raw, dict):
+        return None, "manifest: pass the manifest JSON as a string"
+    if _depth(raw) > _MANIFEST_MAX_DEPTH:
+        return None, f"manifest: nested deeper than {_MANIFEST_MAX_DEPTH} levels"
+    return raw, None
+
+
+def _check_reply(reasons: list[str]) -> str:
+    """``ok``, or the gate's reasons, one per line, each redacted and at most 200 characters."""
+    if not reasons:
+        return "ok"
+    lines = [_redact(r)[:_CHECK_REASON_CHARS] for r in reasons[:_CHECK_REASONS]]
+    if len(reasons) > _CHECK_REASONS:
+        lines.append(f"(and {len(reasons) - _CHECK_REASONS} more)")
+    return "\n".join(lines)
+
+
 def _clear_checkout(wt: Path) -> None:
     for e in os.scandir(wt):
         if e.name == ".git":
@@ -742,6 +843,34 @@ class SolPass:
             content += f"\n(exit status {r.returncode})"
         return content
 
+    def _check(
+        self,
+        raw: object,
+        box: Path,
+        base: ParentSnapshot | str,
+    ) -> tuple[str, str | None]:
+        """The ``check`` tool: (reply, host-side detail of an error). Runs on the loop's thread.
+
+        :meth:`.gate.Gate.preview` of a manifest against a copy of *box*: the copy is what the commit would
+        hold (:func:`_mirror` without ``.pass``), so the box is only read. Called between cells, when no box
+        runs, after :func:`_measure` made every entry readable. It stays on the event loop's thread, as
+        :meth:`.gate.Gate.merge` does, because the evidence store's connection belongs to that thread. An
+        error is answered with its type only (its text can name host paths) and returned as the detail.
+        """
+        manifest, problem = _check_manifest(raw)
+        if problem is not None:
+            return problem, None
+        try:
+            with tempfile.TemporaryDirectory(prefix="memv2-check-") as tmp:
+                tree = Path(tmp) / "tree"
+                tree.mkdir()
+                _mirror(box, tree, skip_top=frozenset({".pass"}))
+                reasons = self.gate.preview(base, tree, manifest)
+        except Exception as exc:  # a broken check never ends the pass
+            detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
+            return f"check error: {type(exc).__name__}", detail
+        return _check_reply(reasons), None
+
     async def _run_cell(self, *args) -> str:
         """The confined cell on a worker thread; on cancellation, wait for the box before the pass cleans up."""
         fut = asyncio.ensure_future(asyncio.to_thread(self._cell, *args))
@@ -806,7 +935,10 @@ class SolPass:
         cap, max_calls = Decimal(self.cfg.max_usd), int(self.cfg.max_calls)
         reserve = cap / max_calls if max_calls > 0 else cap
         deadline = time.monotonic() + float(self.cfg.deadline_s)
-        calls, summary = 0, ""
+        calls, checks, summary = 0, 0, ""
+        base: ParentSnapshot | str | None = (
+            None  # the parent, taken once for every check
+        )
         notes: list[str] = []
         stop: str | None = None  # why no further cell runs: deadline or quota
         over_quota: str | None = None
@@ -835,6 +967,7 @@ class SolPass:
                 summary,
                 spend.unknown,
                 [CODE_OK] if passed else list(causes),
+                checks,
             )
 
         with (
@@ -848,6 +981,7 @@ class SolPass:
             cells.mkdir()
             _mirror(wt, box)
             self._stage_inputs(req, inputs)
+            _channel_dirs(box, _exported_channels(inputs / "episodes"))
             try:
                 index = build_index(wt)
             except ValueError as exc:  # over budget, or an unreadable notes file
@@ -930,10 +1064,46 @@ class SolPass:
                     elif name == "finish":
                         summary, finished = str(args.get("summary", "")), True
                         content = "ok"
+                    elif name == "check":
+                        if stop is not None:
+                            content = f"not run: {stop}"
+                        elif checks >= MAX_CHECKS:
+                            content = (
+                                f"not run: at most {MAX_CHECKS} check calls per pass"
+                            )
+                        elif calls >= max_calls:
+                            content = "not run: the pass's call cap is reached"
+                        elif remaining() < CHECK_FLOOR_S:
+                            content = (
+                                "not run: too little time left before the pass deadline"
+                            )
+                        else:
+                            checks += 1
+                            calls += 1  # a check is a call against max_calls
+                            if base is None:
+                                try:
+                                    base = self.gate.parent_snapshot(
+                                        parent,
+                                        Path(tmp) / "check-parent",
+                                    )
+                                except (
+                                    Exception
+                                ):  # GitError, OSError: the preview retries
+                                    base = None
+                                base = base or parent
+                            content, detail = self._check(
+                                args.get("manifest"),
+                                box,
+                                base,
+                            )
+                            if detail is not None:
+                                notes.append(detail)
                     elif name != "execute_code":
-                        content = f"unknown tool {name!r}; use execute_code or finish"[
-                            :300
-                        ]
+                        content = (
+                            f"unknown tool {name!r}; use execute_code, check or finish"[
+                                :300
+                            ]
+                        )
                     elif stop is not None:
                         content = f"not run: {stop}"
                     elif ran >= _MAX_CELLS_PER_TURN:
@@ -966,7 +1136,10 @@ class SolPass:
                     )
                 if not tool_calls:
                     messages.append(
-                        {"role": "user", "content": "Use execute_code, or finish."},
+                        {
+                            "role": "user",
+                            "content": "Use execute_code, check, or finish.",
+                        },
                     )
             if (
                 not finished

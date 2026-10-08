@@ -58,3 +58,15 @@ def test_init_bare_accepts_a_relative_path(tmp_path, monkeypatch):
     repo = Repo.init_bare(Path("rel") / "memory.git")
     assert repo.git_dir.is_absolute()
     assert repo.git_dir == tmp_path / "rel" / "memory.git"
+
+
+def test_commit_all_never_lets_a_gitignore_hide_a_file(tmp_path):
+    r = Repo.init_bare(tmp_path / "m.git")
+    with r.temp_checkout() as wt:
+        (wt / ".gitignore").write_text("*\n")  # ignores everything, itself included
+        (wt / "a.py").write_text("x = 1\n")
+        sha = r.commit_all(wt, "a", {})
+    assert sorted(r.run("ls-tree", "-r", "--name-only", sha).split()) == [
+        ".gitignore",
+        "a.py",
+    ]

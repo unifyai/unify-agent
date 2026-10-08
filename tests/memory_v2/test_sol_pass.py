@@ -147,7 +147,11 @@ def test_scripted_pass_merges_through_gate(tmp_path, per_call, usd, unknown):
         " 0",
     )
     assert script.first[0] == {"role": "system", "content": SOL_SYSTEM}
-    assert {t["function"]["name"] for t in script.tools} == {"execute_code", "finish"}
+    assert {t["function"]["name"] for t in script.tools} == {
+        "execute_code",
+        "check",
+        "finish",
+    }
     assert out.passed, out.reasons
     assert out.calls == 9 and out.usd == usd and out.unknown_cost_calls == unknown
     notes = [f"note: {unknown} unpriced calls"] if unknown else []
@@ -861,3 +865,296 @@ def test_pass_notes_reach_the_recorded_row_on_the_gate_path(tmp_path):
     ]
     assert out.reasons == row
     assert out.unknown_cost_calls == 2 and out.usd == "0"
+
+
+# --- the check tool and the pre-created channel folders ----------------------------------------------------
+
+# Outcome-like text in the episode: it must never reach Sol through check (ruling R10).
+MARK = "CHECKER-VERDICT-ZX81: the amount paid to Bob was wrong"
+_SLACK = Action(
+    0,
+    "slack",
+    "post",
+    [],
+    {"text": "hi"},
+    {"ok": True, "note": MARK},
+    "ok",
+    "write",
+)
+
+
+def _dialogue(channel):
+    return Action(
+        cell=0,
+        channel=channel,
+        method="say",
+        args=["x"],
+        kwargs={},
+        response="o",
+        status="ok",
+        kind="dialogue",
+    )
+
+
+def _marked(actions):
+    ep = _ep(
+        episode_id="e1",
+        request=[f"Pay Bob back. {MARK}"],
+        cells=[Cell(0, "print(apis.venmo.me())", f"{{'user_id': 'u-1'}} {MARK}")],
+        actions=actions,
+    )
+    ep.outcome = MARK
+    return ep
+
+
+def _checks(cid, manifests):
+    """One assistant message carrying a check call per manifest (ids <cid>1, <cid>2, ...)."""
+    return {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": f"{cid}{n}",
+                "type": "function",
+                "function": {"name": "check", "arguments": json.dumps({"manifest": m})},
+            }
+            for n, m in enumerate(manifests, 1)
+        ],
+    }
+
+
+@needs_bwrap
+def test_channel_folders_exist_for_exactly_the_pass_channels_and_hold_no_file(tmp_path):
+    # tool venmo and slack, dialogue on a bare key (env) and a qualified one (dialogue_user), and an
+    # action whose qualifier names another kind (no memory channel: no folder)
+    ep = _marked(
+        [
+            _ME,
+            _SLACK,
+            _dialogue("env"),
+            _dialogue("dialogue:user"),
+            _dialogue("shell:git"),
+        ],
+    )
+    listing = (
+        "import json, os\n"
+        "print(json.dumps(sorted([d, sorted(os.listdir('/memory/env/' + d))] "
+        "for d in os.listdir('/memory/env'))))\n"
+    )
+    model = Turns([_call("ls", "execute_code", {"code": listing})])
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    sol = SolPass(
+        mem,
+        Gate(mem, ev, BlobStore(tmp_path / "b")),
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(max_calls=5),
+    )
+    parent = mem.head()
+    out = asyncio.run(sol.run(PassRequest("incremental", "venmo", ["e1"], False), "pf"))
+    assert json.loads(model.outputs["ls"]) == [
+        ["dialogue_user", []],
+        ["env", []],
+        ["slack", []],
+        ["venmo", []],
+    ], model.outputs["ls"]
+    assert out.reasons == ["no manifest"] and mem.head() == parent
+
+
+def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_path):
+    model = Turns([_checks("k", ["{", "{}", "{}", "{}", "{}", "{}"])])
+    mem, ev, sol = _sol(tmp_path, model, max_calls=20)
+    out = _run(sol)
+    assert model.outputs["k1"].startswith("manifest: not valid JSON"), model.outputs[
+        "k1"
+    ]
+    assert [model.outputs[f"k{n}"] for n in range(2, 6)] == ["ok"] * 4
+    assert model.outputs["k6"] == "not run: at most 5 check calls per pass"
+    assert out.calls == 2 + 5 and out.reasons == ["no manifest"]
+    # a check is a call: the cap stops checks too
+    model = Turns([_checks("c", ["{}"] * 4)])
+    mem, ev, sol = _sol(tmp_path / "capped", model, max_calls=3)
+    out = _run(sol, "py")
+    assert [model.outputs[f"c{n}"] for n in (1, 2)] == ["ok", "ok"]
+    assert (
+        model.outputs["c3"]
+        == model.outputs["c4"]
+        == ("not run: the pass's call cap is reached")
+    )
+    assert out.calls == 3 and not out.passed
+
+
+DIGEST = (
+    "import hashlib, os\n"
+    "h = hashlib.sha256()\n"
+    "for d, ds, fs in sorted(os.walk('/memory')):\n"
+    "    for n in sorted(ds + fs):\n"
+    "        p = os.path.join(d, n)\n"
+    "        st = os.lstat(p)\n"
+    "        h.update(f'{p} {st.st_mode} {st.st_size}'.encode())\n"
+    "        if os.path.isfile(p) and not os.path.islink(p):\n"
+    "            h.update(open(p, 'rb').read())\n"
+    "print('DIGEST', h.hexdigest())\n"
+)
+
+
+@needs_bwrap
+def test_sol_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ep = _marked([_ME, _SLACK])
+    ev.index_episode(ep, "1" * 40)
+    lookup = lambda eid, i: (
+        ep.actions[i] if eid == "e1" and 0 <= i < len(ep.actions) else None
+    )
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    # the function covers the venmo call, but Sol first puts it in the slack folder
+    misplaced = {
+        **MAN,
+        "items": [
+            {**ITEM, "item": "env/slack:me", "tests": ["env/slack/tests/test_me.py"]},
+        ],
+    }
+    placed = {**MAN, "items": [ITEM], "summary": "s"}
+    write_misplaced = "\n".join(
+        [
+            _write("/memory/unify_memory_testkit.py", KIT),
+            _write("/memory/env/slack/__init__.py", MOD),
+            _write(
+                "/memory/env/slack/tests/test_me.py",
+                TEST.replace("env.venmo", "env.slack"),
+            ),
+        ],
+    )
+    move = "\n".join(
+        [
+            "import os, shutil",
+            "os.unlink('/memory/env/slack/__init__.py')",
+            "shutil.rmtree('/memory/env/slack/tests')",  # env/slack stays, empty
+            _write("/memory/env/venmo/__init__.py", MOD),
+            _write("/memory/env/venmo/tests/test_me.py", TEST),
+        ],
+    )
+    model = Turns(
+        [
+            _call("w", "execute_code", {"code": write_misplaced}),
+            _call("d1", "execute_code", {"code": DIGEST}),
+            _checks("bad", [json.dumps(misplaced)]),
+            _call("d2", "execute_code", {"code": DIGEST}),
+            _call("mv", "execute_code", {"code": move}),
+            _checks("good", [json.dumps(placed)]),
+            _call(
+                "m",
+                "execute_code",
+                {"code": _write("/memory/.pass/manifest.json", json.dumps(placed))},
+            ),
+        ],
+    )
+    sol = SolPass(
+        mem,
+        gate,
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(max_calls=20),
+    )
+    parent = mem.head()
+    out = asyncio.run(sol.run(PassRequest("incremental", "venmo", ["e1"], False), "pc"))
+    bad = model.outputs["bad1"]
+    assert (
+        "G2: env/slack:me covers (e1,0), a tool action on venmo" in bad.splitlines()
+    ), bad
+    # the reasons carry ids and indices only: no episode content, no outcome text
+    assert MARK not in bad and "u-1" not in bad and "Bob" not in bad
+    assert all(len(line) <= 200 for line in bad.splitlines())
+    # check never changes the tree
+    assert (
+        model.outputs["d1"].startswith("DIGEST")
+        and model.outputs["d1"] == model.outputs["d2"]
+    )
+    assert model.outputs["good1"] == "ok"
+    assert out.passed, out.reasons
+    assert out.calls == 8 + 2 and mem.head() == out.commit != parent
+    tree = mem.run("ls-tree", "-r", "--name-only", out.commit).split()
+    # the folder left empty is no commit noise
+    assert sorted(tree) == [
+        "env/venmo/__init__.py",
+        "env/venmo/tests/test_me.py",
+        "unify_memory_testkit.py",
+    ]
+
+
+def test_sol_system_tells_sol_to_check_before_finish():
+    assert "call check(manifest)" in SOL_SYSTEM
+    assert "fix every reason it returns" in SOL_SYSTEM
+
+
+def _store_backed(tmp_path, model, **cfg):
+    """A pass over e1 (venmo and slack actions) whose lookups read the evidence store, as production's do."""
+    mem = Repo.init_bare(tmp_path / "mem.git")
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ep = _marked([_ME, _SLACK])
+    ev.index_episode(ep, "1" * 40)
+
+    def lookup(eid, i):  # the store's connection belongs to the thread that opened it
+        ok = ev.episode_exists(eid) and 0 <= i < len(ep.actions)
+        return ep.actions[i] if ok else None
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
+    cfg.setdefault("max_calls", 10)
+    sol = SolPass(
+        mem,
+        gate,
+        ev,
+        load=lambda eid: ep,
+        model_turn=model,
+        config=PassConfig(**cfg),
+    )
+    return mem, ev, sol
+
+
+_MISPLACED = {
+    **MAN,
+    "items": [
+        {**ITEM, "item": "env/slack:me", "tests": ["env/slack/tests/test_me.py"]},
+    ],
+}
+
+
+def test_check_with_an_item_returns_the_gates_reasons_on_the_stores_thread(tmp_path):
+    model = Turns([_checks("k", [json.dumps(_MISPLACED)])])
+    mem, ev, sol = _store_backed(tmp_path, model)
+    out = asyncio.run(sol.run(PassRequest("incremental", "venmo", ["e1"], False), "pt"))
+    reply = model.outputs["k1"]
+    assert "check error" not in reply, reply
+    assert (
+        "G2: env/slack:me covers (e1,0), a tool action on venmo" in reply.splitlines()
+    )
+    assert out.checks == 1 and out.calls == 3
+
+
+def test_check_is_refused_when_too_little_of_the_deadline_is_left(tmp_path):
+    model = Turns([_checks("k", ["{}"])])
+    mem, ev, sol = _sol(tmp_path, model, deadline_s=30.0)
+    out = _run(sol)
+    assert (
+        model.outputs["k1"] == "not run: too little time left before the pass deadline"
+    )
+    assert out.checks == 0 and out.calls == 2
+
+
+def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
+    tmp_path,
+    monkeypatch,
+):
+    model = Turns([_checks("k", ["{}"])])
+    mem, ev, sol = _sol(tmp_path, model)
+
+    def broken(*a, **kw):
+        raise OSError("cannot read /tmp/memv2-check-host/tree/x")
+
+    monkeypatch.setattr(sol.gate, "preview", broken)
+    out = _run(sol)
+    assert model.outputs["k1"] == "check error: OSError"
+    assert any("/tmp/memv2-check-host" in r for r in out.reasons), out.reasons

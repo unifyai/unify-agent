@@ -1,3 +1,5 @@
+import hashlib
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -9,7 +11,7 @@ from unify.memory_v2.episodes import Action
 from unify.memory_v2.evidence import EvidenceStore
 from unify.memory_v2.gate import Gate
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.snapshot import listing, materialise
+from unify.memory_v2.snapshot import blob_id, listing, materialise, tree_listing
 from unify.memory_v2.sandbox_run import PytestOutcome
 from unify.memory_v2.signals import Signal
 from tests.memory_v2.test_episodes import _ep
@@ -1922,3 +1924,129 @@ def test_r5_notes_follow_every_failure_reason_including_the_merge(r2):
     kinds = ["note" if r.startswith("note:") else "reason" for r in res.reasons]
     assert "note" in kinds and any(r.startswith("merge:") for r in res.reasons)
     assert kinds == sorted(kinds, key=lambda k: k == "note"), res.reasons
+
+
+# --- preview: the cheap, read-only checks on an uncommitted tree (Sol's check tool) ------------------------
+
+
+def _tree(root, files):
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    return root
+
+
+def _objects(mem):
+    return sorted(
+        p.relative_to(mem.git_dir) for p in (mem.git_dir / "objects").rglob("*")
+    )
+
+
+def test_preview_judges_an_uncommitted_tree_without_tests_held_out_runs_or_writes(
+    world,
+    tmp_path,
+    monkeypatch,
+):
+    mem, ev, _ = world
+
+    def boom(*a, **kw):
+        raise AssertionError("preview must not run tests or held-out values")
+
+    monkeypatch.setattr("unify.memory_v2.gate.run_plan", boom)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=_lookup,
+        pytest_runner=boom,
+    )
+    tree = _tree(tmp_path / "tree", FILES)
+    (tree / "env" / "empty" / "tests").mkdir(
+        parents=True,
+    )  # git tracks no empty directory
+    before, parent = _objects(mem), mem.head()
+    assert gate.preview(parent, tree, MAN) == []
+    # the cover names a slack action, but the item lives in env/venmo: the channel mismatch
+    wrong = gate.preview(parent, tree, _man(covers=[["e1", 2]]))
+    assert "G2: env/venmo:me covers (e1,2), a tool action on slack" in wrong, wrong
+    assert all(len(r) <= 300 and not r.endswith("not evaluated") for r in wrong)
+    malformed = gate.preview(parent, tree, {"items": 3})
+    assert malformed == ["G1: malformed manifest: items must be a list"]
+    # nothing is written: no git object, no pass row, no evidence
+    assert _objects(mem) == before and mem.head() == parent
+    assert ev.db.execute("SELECT COUNT(*) FROM passes").fetchone() == (0,)
+    assert ev.covered() == set()
+
+
+def test_preview_refuses_links_and_executables_as_the_committed_listing_would(
+    world,
+    tmp_path,
+):
+    mem, ev, gate = world
+    tree = _tree(tmp_path / "tree", FILES)
+    (tree / "env" / "venmo" / "tests" / "data.txt").symlink_to("/etc/hostname")
+    os.chmod(tree / "unify_memory_testkit.py", 0o755)
+    reasons = gate.preview(mem.head(), tree, MAN)
+    assert "G6: the candidate holds symlink env/venmo/tests/data.txt" in reasons
+    assert "G6: the candidate holds executable file unify_memory_testkit.py" in reasons
+
+
+def test_preview_refuses_a_gitignore_as_the_gate_does(world, tmp_path):
+    mem, ev, gate = world
+    tree = _tree(tmp_path / "tree", {**FILES, "env/venmo/tests/.gitignore": "test_*\n"})
+    reasons = gate.preview(mem.head(), tree, MAN)
+    assert "G6: forbidden file env/venmo/tests/.gitignore" in reasons, reasons
+
+
+def test_preview_bounds_the_covers_it_looks_up_and_looks_each_up_once(world, tmp_path):
+    mem, ev, _ = world
+    asked: list[tuple[str, int]] = []
+
+    def counting(eid, i):
+        asked.append((eid, i))
+        return _lookup(eid, i)
+
+    gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=counting)
+    tree = _tree(tmp_path / "tree", FILES)
+    too_many = gate.preview(mem.head(), tree, _man(covers=[["e1", 0]] * 501))
+    assert any("at most 500 covers" in r for r in too_many) and asked == []
+    episodes = [[f"e{n}", 0] for n in range(33)]
+    assert any(
+        "at most 500 covers over 32 episodes" in r
+        for r in gate.preview(mem.head(), tree, _man(covers=episodes))
+    )
+    assert asked == []
+    assert gate.preview(mem.head(), tree, _man(covers=[["e1", 0]] * 3)) == []
+    assert asked == [("e1", 0)]
+
+
+def test_preview_reuses_a_parent_snapshot_without_git(world, tmp_path, monkeypatch):
+    mem, ev, gate = world
+    base = gate.parent_snapshot(mem.head(), tmp_path / "parent")
+    tree = _tree(tmp_path / "tree", FILES)
+
+    def no_git(*a, **kw):
+        raise AssertionError("a preview from a snapshot runs no git")
+
+    monkeypatch.setattr("unify.memory_v2.snapshot._git_bytes", no_git)
+    monkeypatch.setattr(mem, "run", no_git)
+    assert gate.preview(base, tree, MAN) == []
+    assert base.tree.is_dir()  # the owner removes it
+
+
+def test_tree_listing_hashes_in_python_and_refuses_names_git_would_not_take(tmp_path):
+    assert blob_id(b"") == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    assert blob_id(b"ab", "sha256") == hashlib.sha256(b"blob 2\0ab").hexdigest()
+    root = tmp_path / "t"
+    (root / "env" / "venmo" / ".git").mkdir(parents=True)
+    (root / "env" / "venmo" / ".git" / "config").write_text("x")
+    (root / "a").write_text("one")
+    (root / "a\r").write_text("two")
+    with open(os.path.join(os.fsencode(root), b"bad\xff"), "wb") as f:
+        f.write(b"x")
+    files, refused = tree_listing(root)
+    assert files == {
+        "a": ("100644", blob_id(b"one")),
+        "a\r": ("100644", blob_id(b"two")),
+    }
+    assert len(refused) == 1 and refused[0].startswith("unsafe path"), refused
