@@ -13,6 +13,7 @@ shell is involved.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import platform
 import posixpath
@@ -493,8 +494,10 @@ class PytestOutcome:
     Untrusted when model code runs in the tested process: that code shares pytest's process and can
     rewrite the junit report or the exit status. ``valid`` is False when the report is missing, a link or
     another non-regular file, too large, malformed, or contradicts pytest's exit status (0 needs no failure, 1
-    at least one, 5 no test or only modules skipped at collection; any other status is invalid); a gate must
-    then treat the run as failed. A skip for a missing import is a failure (:data:`MODULE_SKIPPED`).
+    at least one, 5 no test; any other status is invalid); a gate must then treat the run as failed. With
+    ``import_skips_fail`` (:func:`run_pytest`) a skip caused by a failed import is a failure, 5 is also valid
+    when every collected entry is a module skipped for an import (:data:`MODULE_SKIPPED`), and a report the
+    marking plugin did not write is invalid.
     """
 
     passed: set[str] = field(default_factory=set)
@@ -527,8 +530,8 @@ def _case_id(case: ET.Element, rootdir: str, tests_dir: str) -> str:
     return "::".join([file, *classes, name])
 
 
-def _read_junit(junit_dir: Path) -> list[ET.Element] | None:
-    """The testcases of ``r.xml`` in the junit directory, or None when it cannot be trusted as a report.
+def _read_junit(junit_dir: Path) -> ET.Element | None:
+    """The root element of ``r.xml`` in the junit directory, or None when it cannot be trusted as a report.
 
     The box can replace ``r.xml`` with anything, so the host never follows it: it is opened with
     O_NOFOLLOW (a link is refused, not read) and O_NONBLOCK (a FIFO cannot stall the harness); the raw
@@ -559,20 +562,125 @@ def _read_junit(junit_dir: Path) -> list[ET.Element] | None:
             size += len(chunk)
         if size > JUNIT_MAX_BYTES:
             return None
-        return list(ET.fromstring(b"".join(chunks)).iter("testcase"))
+        return ET.fromstring(b"".join(chunks))
     except (ET.ParseError, OSError, ValueError):
         return None
     finally:
         os.close(fd)
 
 
-# A skip for a missing import counts as a failure in the gate's runs: a test whose import is missing in one
-# place it runs must not pass there silently. pytest's junit writes "collection skipped" for a module skipped
-# at collection (``pytest.importorskip`` or ``pytest.skip(allow_module_level=True)`` at module level), reported
-# as ``<file>::test module skipped``, and "could not import ..." for ``pytest.importorskip`` in a test.
-_MODULE_SKIP = "collection skipped"
-_IMPORT_SKIP = "could not import "
+# --- skips caused by a failed import (opt-in) ----------------------------------------------------------------
+#
+# A test whose import is missing in one place it runs must not pass there silently; the gate counts such a skip
+# as a failure when it asks to (``import_skips_fail``: a stage-5 switch is on or the library's tests use the
+# test kit). The signal is structural, never pytest's message text: a plugin loaded into the box's pytest marks
+# a skip whose exception came from ``pytest.importorskip`` or was raised while an ImportError was being
+# handled (its ``__cause__``/``__context__`` chain), with the junit property SKIP_PROPERTY: value "test" on a
+# test's entry, "collect" on the entry of a module or package skipped at collection. It also writes the
+# suite property SKIPMARK_LOADED, and a report without it is invalid (the plugin did not run). The plugin
+# reaches pytest's junit writer through its stash key (``_pytest.junitxml.xml_key``); a pytest without it is a
+# usage error, so the run is invalid, never silently unmarked. Model code shares pytest's process and could
+# forge the properties, as it could the report (R16: careless, not malicious).
+SKIP_PROPERTY = "memv2_import_skip"
+SKIPMARK_LOADED = "memv2_skipmark"
+SKIPMARK_MODULE = "_memv2_skipmark"
+SKIPMARK_DIR = "/memv2-skipmark"  # the plugin's read-only directory in the box (on PYTHONPATH, last)
 MODULE_SKIPPED = "test module skipped"
+# The plugin, written into a fresh host directory per run; the host never imports it (importing it patches
+# pytest.importorskip in that process).
+SKIPMARK_SOURCE = r'''"""Mark skips caused by a failed import in the junit report (the memory gate's runs; see sandbox_run)."""
+import unittest
+
+import pytest
+from _pytest import outcomes as _outcomes
+from _pytest.junitxml import xml_key
+
+PROPERTY = "memv2_import_skip"
+LOADED = "memv2_skipmark"
+_MARK = "_memv2_import_skip"
+_SKIPS = (_outcomes.Skipped, unittest.SkipTest)
+_importorskip = _outcomes.importorskip
+
+
+def importorskip(*args, **kwargs):
+    __tracebackhide__ = True
+    try:
+        return _importorskip(*args, **kwargs)
+    except _outcomes.Skipped as exc:
+        setattr(exc, _MARK, True)  # the module is missing (or older than minversion)
+        raise
+
+
+pytest.importorskip = importorskip
+_outcomes.importorskip = importorskip
+
+
+def _from_import(exc):
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if getattr(exc, _MARK, False) or isinstance(exc, ImportError):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _writer(config):
+    xml = config.stash.get(xml_key, None)
+    if xml is None or not hasattr(xml, "node_reporter") or not hasattr(xml, "add_global_property"):
+        raise pytest.UsageError("_memv2_skipmark needs pytest's junit writer (--junitxml)")
+    return xml
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    _writer(config).add_global_property(LOADED, "1")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    rep = yield
+    exc = call.excinfo.value if call.excinfo is not None else None
+    if (
+        rep.skipped
+        and not hasattr(rep, "wasxfail")
+        and isinstance(exc, _SKIPS)
+        and _from_import(exc)
+        and (PROPERTY, "test") not in item.user_properties
+    ):
+        item.user_properties.append((PROPERTY, "test"))  # junit writes them with the teardown report
+    return rep
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    rep = yield
+    if rep.skipped:
+        call = rep.__dict__.get("call")  # pytest keeps the collection's CallInfo here until it is reported
+        exc = call.excinfo.value if call is not None and call.excinfo is not None else None
+        if exc is None or _from_import(exc):  # unreachable exception: counted, never silently a skip
+            _writer(collector.config).node_reporter(rep).add_property(PROPERTY, "collect")
+    return rep
+'''
+
+
+def _skip_mark(case: ET.Element) -> str | None:
+    """The plugin's mark on a junit entry: ``"test"``, ``"collect"`` or None."""
+    props = case.find("properties")
+    for p in props.iter("property") if props is not None else ():
+        if p.get("name") == SKIP_PROPERTY and p.get("value") in ("test", "collect"):
+            return p.get("value")
+    return None
+
+
+def _skipmark_loaded(root: ET.Element) -> bool:
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    for suite in suites:
+        props = suite.find("properties")
+        for p in props.iter("property") if props is not None else ():
+            if p.get("name") == SKIPMARK_LOADED:
+                return True
+    return False
 
 
 def run_pytest(
@@ -584,11 +692,31 @@ def run_pytest(
     cwd: str,
     timeout_s: float = 300.0,
     env: dict[str, str] | None = None,
+    import_skips_fail: bool = False,
 ) -> PytestOutcome:
-    """Run pytest on *tests_dir_in_box* in the box; see :class:`PytestOutcome` for ids and validity."""
-    with tempfile.TemporaryDirectory(prefix="memv2-junit-") as tmp:
+    """Run pytest on *tests_dir_in_box* in the box; see :class:`PytestOutcome` for ids and validity.
+
+    *import_skips_fail* (default off: a skip is a skip): load the skip-marking plugin and count a skip caused
+    by a failed import as a failure, ``<file>::test module skipped`` for a module skipped at collection and
+    the test's id for a test.
+    """
+    with contextlib.ExitStack() as stack:
+        tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="memv2-junit-"))
         rw2 = dict(rw)
         rw2[Path(tmp)] = "/junit"
+        ro2, env2, plugin = ro, env, []
+        if import_skips_fail:
+            plug = Path(
+                stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="memv2-skipmark-"),
+                ),
+            )
+            (plug / f"{SKIPMARK_MODULE}.py").write_text(SKIPMARK_SOURCE)
+            ro2 = {**ro, plug: SKIPMARK_DIR}
+            env2 = dict(env or {})
+            path = env2.get("PYTHONPATH")
+            env2["PYTHONPATH"] = f"{path}:{SKIPMARK_DIR}" if path else SKIPMARK_DIR
+            plugin = ["-p", SKIPMARK_MODULE]
         r = run_confined(
             [
                 str(python),
@@ -598,6 +726,7 @@ def run_pytest(
                 "-q",
                 "-p",
                 "no:cacheprovider",
+                *plugin,
                 "--rootdir",
                 cwd,
                 "--junitxml",
@@ -607,11 +736,11 @@ def run_pytest(
                 "-o",
                 "junit_family=xunit1",
             ],
-            ro=ro,
+            ro=ro2,
             rw=rw2,
             cwd=cwd,
             timeout_s=timeout_s,
-            env=env,
+            env=env2,
         )
         out = PytestOutcome(
             returncode=r.returncode,
@@ -621,13 +750,13 @@ def run_pytest(
         if r.timed_out:
             out.valid = False
             return out
-        cases = _read_junit(Path(tmp))
-        if cases is None:
+        root = _read_junit(Path(tmp))
+        if root is None:
             out.valid = False
             return out
-        missing: set[str] = (
-            set()
-        )  # skipped for a missing import: failures, as an ImportError would be
+        cases = list(root.iter("testcase"))
+        # skipped for a failed import: failures, as an ImportError would be
+        missing: set[str] = set()
         module_skips = 0
         for case in cases:
             name = _case_id(case, cwd, tests_dir_in_box)
@@ -635,13 +764,11 @@ def run_pytest(
             if tags & {"failure", "error"}:
                 out.failed.add(name)
             elif "skipped" in tags:
-                why = (
-                    case.find("skipped").get("message") or ""
-                )  # pytest's own text; never reported
-                if why == _MODULE_SKIP:
+                mark = _skip_mark(case) if import_skips_fail else None
+                if mark == "collect":
                     module_skips += 1
                     missing.add(name.split("::", 1)[0] + "::" + MODULE_SKIPPED)
-                elif why.startswith(_IMPORT_SKIP):
+                elif mark == "test":
                     missing.add(name)
                 else:
                     out.skipped.add(name)
@@ -653,8 +780,10 @@ def run_pytest(
         out.valid = (
             (rc == 0 and not out.failed and bool(cases))
             or (rc == 1 and bool(out.failed))
-            # pytest exits 5 when every module was skipped at collection (no test collected)
+            # pytest exits 5 when no test was collected: no entry, or (marked) only modules skipped for an import
             or (rc == 5 and len(cases) == module_skips)
         )
+        if import_skips_fail and not _skipmark_loaded(root):
+            out.valid = False
         out.failed |= missing
         return out

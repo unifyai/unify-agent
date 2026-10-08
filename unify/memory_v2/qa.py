@@ -795,6 +795,7 @@ class QAChecks:
             cwd="/memory",
             timeout_s=timeout_s,
             env=dict(env if env is not None else qa_env.env),
+            import_skips_fail=True,  # as every run with the kit mounted (Gate._pytest)
         )
 
     def _edited(self) -> list[Any]:

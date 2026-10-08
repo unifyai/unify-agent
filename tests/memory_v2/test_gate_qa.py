@@ -448,8 +448,22 @@ class FakePytest:
 
     def __init__(self, module="env/dialogue_crafter/__init__.py", second=None):
         self.module, self.second, self.calls, self.seen = module, second, [], set()
+        # per call: whether import skips were asked to fail
+        self.import_skips_fail: list[bool] = []
 
-    def __call__(self, target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
+    def __call__(
+        self,
+        target,
+        *,
+        python,
+        ro,
+        rw,
+        cwd,
+        timeout_s=300.0,
+        env=None,
+        import_skips_fail=False,
+    ):
+        self.import_skips_fail.append(import_skips_fail)
         self.calls.append(
             (
                 target,
@@ -559,6 +573,8 @@ def test_every_switch_off_is_the_gate_as_before(tmp_path, variant):
     for n, kw in enumerate(({}, {"qa": QAConfig()})):
         runner = FakePytest()
         res = _check(tmp_path / str(n), CRAFTER, files, man, pytest_runner=runner, **kw)
+        # run_pytest's default: a skip stays a skip (import skips fail only with the kit mounted)
+        assert runner.import_skips_fail and not any(runner.import_skips_fail)
         results.append(
             (
                 res.passed,
@@ -1287,6 +1303,8 @@ def test_a_library_whose_tests_use_the_kit_is_checked_the_same_under_every_switc
         res = _check(tmp_path / str(n), PHONE, files, man, pytest_runner=runner, **kw)
         assert res.passed, res.reasons
         runs.append(list(runner.calls))
+        # the kit is mounted, so every run counts a skip for a failed import as a failure
+        assert runner.import_skips_fail and all(runner.import_skips_fail)
     assert runs[0] == runs[1]
     assert all(c[1] == ["/inputs", "/memory"] for c in runs[0])
     assert all(

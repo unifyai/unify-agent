@@ -562,9 +562,9 @@ class Gate:
         target: str,
         qa_env: QAEnv | None = None,
     ) -> PytestOutcome:
-        if (
-            qa_env is not None
-        ):  # a stage-5 switch is on: memlab and the referenced blobs at /inputs
+        if qa_env is not None:
+            # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced blobs
+            # at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
             return self.pytest(
                 target,
                 python=self.python,
@@ -573,6 +573,7 @@ class Gate:
                 cwd="/memory",
                 timeout_s=_TIMEOUT_S,
                 env=dict(qa_env.env),
+                import_skips_fail=True,
             )
         return self.pytest(
             target,
