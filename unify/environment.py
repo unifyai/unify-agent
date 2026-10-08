@@ -253,9 +253,11 @@ def _strip_userinfo(env: Dict[str, str]) -> Dict[str, str]:
 def installer_env() -> Dict[str, str]:
     """The environment ``uv`` runs with: :data:`_INSTALLER_ENV`, never the
     harness's (which holds the provider credentials), with no userinfo in
-    its URLs (:func:`_strip_userinfo`)."""
-    return _strip_userinfo(
-        sandbox.scrubbed_env(
+    its URLs (:func:`_strip_userinfo`). The userinfo goes first, so a proxy
+    or index URL keeps its host; :func:`unify.sandbox.scrubbed_env` then
+    drops whatever still holds a credential."""
+    return sandbox.scrubbed_env(
+        _strip_userinfo(
             {name: os.environ[name] for name in _INSTALLER_ENV if name in os.environ},
         ),
     )
