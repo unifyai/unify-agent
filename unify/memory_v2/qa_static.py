@@ -15,6 +15,9 @@ kit ``unify_memory_testkit``, to a depth of :data:`MAX_DEPTH`):
   ``unittest.mock`` or ``types.SimpleNamespace``;
 * ``unknown``: anything else (a parameter of a helper, an attribute, a subscript). Never refused.
 
+A call inside ``with pytest.raises(...)`` is a negative test (the function must refuse what it is given) and is
+never refused, whatever it passes.
+
 Symbols are resolved through the files' own imports and definitions, never by the words in their names.
 
 **Cuts** (:func:`cuts`, :func:`asserts_on_cut`). A recording the recorder truncated carries its marker: a tool
@@ -265,9 +268,21 @@ def stand_ins(
     tree = ast.parse(test_source)
     out: list[tuple[int, str]] = []
 
+    # calls inside ``with pytest.raises(...)``: negative tests, never a stand-in for the environment
+    negative: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)) and any(
+            isinstance(w.context_expr, ast.Call)
+            and resolver.origin(w.context_expr.func, test)[0]
+            in ("pytest.raises", "_pytest.python_api.raises")
+            for w in node.items
+        ):
+            for stmt in node.body:
+                negative.update(id(n) for n in ast.walk(stmt))
+
     def visit(root: ast.AST, fn, fixtures: bool) -> None:
         for node in ast.walk(root):
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or id(node) in negative:
                 continue
             origin, _ = resolver.origin(node.func, test)
             item = _item_of(origin)

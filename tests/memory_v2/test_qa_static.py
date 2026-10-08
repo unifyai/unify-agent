@@ -368,3 +368,15 @@ def test_blob_refs_are_64_hex_tokens_in_first_seen_order():
     src = f'BLOB = "{a}"\nOTHER = ["{b}", "{a}"]\nNOT = "{a}0"\n'.encode()
     assert blob_refs([src, f'"{b}"'.encode()]) == [a, b]
     assert blob_refs([b"deadbeef"]) == []
+
+
+def test_a_negative_test_inside_pytest_raises_is_never_refused():
+    src = """import pytest
+from env.phone import MemoryInputError, current_datetime
+
+def test_refuses_a_non_environment():
+    with pytest.raises(MemoryInputError):
+        current_datetime({})
+    current_datetime({})
+"""
+    assert _lines(src) == [7]  # the call outside the negative test still is
