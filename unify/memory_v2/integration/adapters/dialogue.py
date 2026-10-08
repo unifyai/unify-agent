@@ -10,9 +10,21 @@ Everything here is structural:
 - the counterpart (the channel key) is supplied by the harness, the source it serves; it is never read
   from content and never keyed on a task;
 - the payload is the reply's trailing JSON object when one parses, else its final non-empty line; no
-  word in the reply is ever matched;
-- the observation fingerprint (``response["shape"]``) keeps line-count buckets, whether the text ends in a ``(… k/N)`` counter,
-  and its JSON kind and key shape, never a value.
+  word in the reply is ever matched. An object payload names its method by structure: the value of its
+  first member whose value is an identifier-like string (``[A-Za-z][A-Za-z0-9_]*``, at most 64
+  characters) is the method, and the other members are its arguments (none: no arguments; one: its
+  value is ``args[0]``; more: they are ``kwargs`` by name). A payload without such a member, and a
+  plain-text payload, is method ``act`` with the payload as ``args[0]``. So ``{"action": "submit",
+  "grid": g}`` is ``submit(g)`` and ``{"action": "request_demos"}`` is ``request_demos()``, the shapes
+  the offline ARC import records, and a typed command ``move_left`` is ``act("move_left")``, as the
+  offline Crafter and ScienceWorld imports record;
+- the observation (the action's ``response``) is the counterpart's message itself, redacted: the parsed
+  value when the whole message is one JSON object or array (a structured counterpart), else its text,
+  capped at ``max_observation_chars`` (head and tail kept). The episode writer moves a large response
+  into the blob store whole (``EpisodeWriter._capped``), so a capped observation is only one over the
+  adapter's bound;
+- the observation fingerprint (:func:`response_shape`) keeps line-count buckets, whether the text ends
+  in a ``(… k/N)`` counter, and its JSON kind and key shape, never a value.
 
 Assistant messages that carry tool calls (``execute_code`` cells) are not dialogue; the tool, shell and
 worktree adapters record those. Loop-authored user messages (``_loop_authored``: progress notices,
@@ -20,7 +32,8 @@ context headers) are harness text, not the counterpart's, and are skipped when l
 observation. Only ``type == "message"`` lines are read, so ``message_update``, ``system_prompt``,
 ``session_start``, ``compaction`` and outcome lines never become actions or observations.
 
-Not wired into the actor yet.
+Wired into the actor by ``UNIFY_MEMORY_V2_DIALOGUE`` (:mod:`..switch`): ``RequestRun`` appends these
+actions to the request's episode when it is set (``env``: the channel ``env``, memory channel ``env``).
 """
 
 from __future__ import annotations
@@ -34,7 +47,10 @@ from ...fingerprint import shape
 from ...redact import Redactor
 
 METHOD = "act"
-DEFAULT_OBSERVATION_CAP = 4000
+# An observation is kept whole up to this many characters: a Continual-ARC message with a 30x30 demo pair
+# and a 30x30 test input is about 6,000; a longer one keeps its head and tail (the episode writer stores
+# any response over its own inline cap as a blob, so nothing is lost below this bound).
+DEFAULT_OBSERVATION_CAP = 65536
 DEFAULT_PAYLOAD_CAP = 16000
 # The memory repo's channel naming: a lowercase identifier with no "." (``Generations`` splits the
 # channel off at the first ".") and no ":" (kind-qualified channels).
@@ -46,6 +62,8 @@ _SCAN_CHARS = 65536
 _SCAN_TRIES = 256
 _MAX_DEPTH = 64
 _SHAPE_CHARS = 200
+# A method named by an object payload: an identifier-like string, at most 64 characters.
+_VERB = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
 _FENCE = "```"
 # "(step 12/2000)", "(12/2000)": a parenthesised k/N counter at the very end; the label is any letters.
 _TRAILING_COUNTER = re.compile(r"\(\s*[^\W\d_]*\s*\d+\s*/\s*\d+\s*\)\s*$")
@@ -157,6 +175,63 @@ def cap_text(text: str, cap: int) -> str:
     return text[:head] + marker + (text[-tail:] if tail else "")
 
 
+def split_action(payload: Any) -> tuple[str, list, dict]:
+    """``(method, args, kwargs)`` of a reply's payload (see the module docstring); never raises.
+
+    An object payload's first member whose value is an identifier-like string names the method, and
+    the other members, in their order, are the arguments: none gives ``[]``; one gives its value as
+    ``args[0]``; more give them as ``kwargs`` by name. Anything else is ``act`` with the payload as
+    ``args[0]``. Member names are never matched, only the shape of their values.
+    """
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if isinstance(value, str) and _VERB.fullmatch(value):
+                rest = {k: v for k, v in payload.items() if k != key}
+                if not rest:
+                    return value, [], {}
+                if len(rest) == 1:
+                    return value, [next(iter(rest.values()))], {}
+                return value, [], rest
+    return METHOD, [payload], {}
+
+
+def _bounded(value: Any, cap: int) -> Any:
+    """*value*, or its capped text (JSON for a non-string) when its text is longer than *cap*."""
+    if isinstance(value, str):
+        return cap_text(value, cap)
+    serialised = json.dumps(value, sort_keys=True, ensure_ascii=False)
+    return cap_text(serialised, cap) if len(serialised) > cap else value
+
+
+def observation_value(text: str, cap: int = DEFAULT_OBSERVATION_CAP) -> Any:
+    """An (already redacted) observation as recorded: the parsed object or array when the whole text is
+    one JSON object or array of bounded depth and at most *cap* characters, else the text capped at *cap*.
+    """
+    if len(text) <= cap:
+        stripped = text.strip()
+        if stripped[:1] in ("{", "["):
+            try:
+                parsed = json.loads(stripped)
+            except (json.JSONDecodeError, RecursionError, ValueError):
+                parsed = None
+            if isinstance(parsed, (dict, list)) and _shallow(parsed):
+                return parsed
+    return cap_text(text, cap)
+
+
+def response_shape(response: Any) -> str | None:
+    """The fingerprint shape of a recorded observation (:func:`observation_shape` of its text; a
+    structured observation is shaped as its one-line JSON), or None when there is no observation.
+    """
+    if response is None:
+        return None
+    if isinstance(response, str):
+        return observation_shape(response)
+    if isinstance(response, (dict, list)) and _shallow(response):
+        return observation_shape(json.dumps(response, ensure_ascii=False))
+    return "lines=1;counter=n;json=deep"
+
+
 def dialogue_actions(
     transcript_lines: Iterable[dict],
     counterpart: str,
@@ -168,11 +243,13 @@ def dialogue_actions(
     """One ``kind="dialogue"`` action per turn-ending reply, in transcript order.
 
     ``counterpart`` is the source the harness serves (it becomes the channel key verbatim) and must
-    match ``COUNTERPART_RE``. The observation is the next non-loop-authored user message before the
-    next assistant message; a reply with none is ``unrecorded`` with no response. Payload and
-    observation are redacted, then capped: the observation at ``max_observation_chars``, the payload
-    at ``max_payload_chars`` (an object payload whose JSON is longer becomes its capped JSON text).
-    ``response["shape"]`` is the observation's shape taken before the cap.
+    match ``COUNTERPART_RE``. The method and arguments come from the reply's payload
+    (:func:`split_action`). The observation is the next non-loop-authored user message before the next
+    assistant message; a reply with none is ``unrecorded`` with no response. Payload and observation
+    are redacted before anything else (one pass over each text, so a secret is never cut in two), then
+    bounded: the observation by :func:`observation_value` at ``max_observation_chars``, the arguments
+    at ``max_payload_chars`` (arguments whose JSON is longer become their capped JSON text, as
+    ``args[0]``). Time is linear in the transcript's size.
     """
     if not isinstance(counterpart, str) or not COUNTERPART_RE.match(counterpart):
         raise ValueError(
@@ -181,42 +258,41 @@ def dialogue_actions(
         )
     red = redactor if redactor is not None else Redactor()
     msgs = _messages(transcript_lines)
+    # the observation that answers a reply at i: the first counterpart message after i, unless an
+    # assistant message comes first (one backward pass)
+    answer: list[int | None] = [None] * len(msgs)
+    following: int | None = None
+    for j in range(len(msgs) - 1, -1, -1):
+        answer[j] = following
+        if msgs[j].get("role") == "assistant":
+            following = None
+        elif _is_observation(msgs[j]):
+            following = j
     actions: list[Action] = []
     for i, msg in enumerate(msgs):
         if not _is_reply(msg):
             continue
-        reply = _text(msg.get("content"))
-        # redact before capping, so no secret is cut in two
-        payload = red.obj(action_payload(reply))
-        if isinstance(payload, str):
-            payload = cap_text(payload, max_payload_chars)
-        else:
-            serialised = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        payload = red.obj(action_payload(_text(msg.get("content"))))
+        method, args, kwargs = split_action(payload)
+        if kwargs:
+            serialised = json.dumps(kwargs, sort_keys=True, ensure_ascii=False)
             if len(serialised) > max_payload_chars:
-                payload = cap_text(serialised, max_payload_chars)
-        observation = None
-        for nxt in msgs[i + 1 :]:
-            if nxt.get("role") == "assistant":
-                break
-            if _is_observation(nxt):
-                observation = _text(nxt.get("content"))
-                break
-        if observation is None:
+                args, kwargs = [cap_text(serialised, max_payload_chars)], {}
+        else:
+            args = [_bounded(a, max_payload_chars) for a in args]
+        j = answer[i]
+        if j is None:
             response, status = None, "unrecorded"
         else:
-            redacted = red.text(observation)
-            response = {
-                "observation": cap_text(redacted, max_observation_chars),
-                "shape": observation_shape(redacted),
-            }
-            status = "ok"
+            redacted = red.text(_text(msgs[j].get("content")))
+            response, status = observation_value(redacted, max_observation_chars), "ok"
         actions.append(
             Action(
                 cell=-1,
                 channel=counterpart,
-                method=METHOD,
-                args=[payload],
-                kwargs={},
+                method=method,
+                args=args,
+                kwargs=kwargs,
                 response=response,
                 status=status,
                 effect="unknown",
@@ -270,19 +346,15 @@ def observation_fingerprint(
     """Observation shapes per ``<channel>.<method>``, in the format ``fingerprint.Generations`` reads.
 
     Only recorded dialogue actions count; ``errors`` is always empty (an observation is never an
-    error). The shape stored at recording time (taken before the cap) is used when present.
+    error). Each shape is :func:`response_shape` of the recorded response, so a counterpart whose
+    messages change shape (lines, a trailing counter, JSON kind or keys) shows a new shape.
     """
     out: dict[str, set[str]] = {}
     for a in actions:
-        if a.kind != "dialogue" or a.status != "ok" or not isinstance(a.response, dict):
+        if a.kind != "dialogue" or a.status != "ok":
             continue
-        stored = a.response.get("shape")
-        obs = a.response.get("observation")
-        if isinstance(stored, str):
-            got = stored
-        elif isinstance(obs, str):
-            got = observation_shape(obs)
-        else:
+        got = response_shape(a.response)
+        if got is None:
             continue
         out.setdefault(f"{a.channel}.{a.method}", set()).add(got)
     return {k: {"shapes": sorted(v), "errors": []} for k, v in out.items()}
