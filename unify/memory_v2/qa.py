@@ -38,6 +38,12 @@ First the tests run on the module re-printed unchanged (the control): if that is
 before each test). Each new or changed test file green in G3 runs once more; different outcomes refuse it as
 flaky. A second run that times out is noted, not judged.
 
+**The test kit** (:mod:`.testkit`). Every gate pytest run mounts the kit (``memlab``, the pin plugin, the
+blobs the tests name) read-only at ``/inputs`` when a switch is on **or** the library's tests use it, so a
+stored library never depends on a switch setting; the same kit is in Sol's box and the actor's export. New
+or changed library code that uses it, and tests importing what it does not provide or naming ``/inputs``,
+are refused (``[qa:kit]``).
+
 **Replay fidelity** (``UNIFY_MEMORY_V2_QA_REPLAY``). A new or changed test that passes an environment-taking
 function a stand-in of its own instead of ``memlab.replay.RecordedEnv``, while the function has recorded
 calls, is refused (:func:`.qa_static.stand_ins`, structural).
@@ -52,13 +58,13 @@ brief says to reference rather than copy. Truncated recordings carry the recorde
 lists them in ``truncated``); a test asserting on text at the cut is refused (:func:`.qa_static.asserts_on_cut`).
 
 Every stage-5 run is confined (:func:`.sandbox_run.run_confined`, bubblewrap with a cleared environment) with
-the tree read-only at ``/memory``, the gate's own read-only copy of ``memlab`` (replay, inputs; no git, no
-evidence store) and the referenced blobs at ``/inputs``, the drawn inputs read-only at ``/qa``, and only a
-fresh output directory writable. No credential is in any argument, environment entry or file. All dynamic
-checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the check with a note naming what
-was not judged, never a silent pass and never an exception. Reasons and notes carry item ids, test paths,
-counts, operator kinds, line numbers, byte sizes and builtin exception names, never a recorded value (R10).
-All reasons are filed under G3 with a ``[qa:<check>]`` tag.
+the tree read-only at ``/memory``, the library test kit read-only at ``/inputs`` (:mod:`.testkit`: ``memlab``
+with no git and no evidence store, the pin plugin, the referenced blobs), the drawn inputs read-only at
+``/qa``, and only a fresh output directory writable. No credential is in any argument, environment entry or
+file. All dynamic checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the check with a
+note naming what was not judged, never a silent pass and never an exception. Reasons and notes carry item ids,
+test paths, counts, operator kinds, line numbers, byte sizes and builtin exception names, never a recorded
+value (R10). All reasons are filed under G3 with a ``[qa:<check>]`` tag.
 
 Rejected alternatives: rewriting the consolidator's fixtures to the drawn inputs (expected values would no
 longer match, so only property tests survive); a pytest plugin wrapping library functions to watch their
@@ -85,7 +91,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
-from . import mutation, qa_static
+from . import mutation, qa_static, testkit
 from .admission import is_rejection
 from .analysis import shapes as _shapes
 from .episodes import Action
@@ -118,27 +124,10 @@ RESPONSE_BLOB_BYTES = 4096  # exported responses at least this large also become
 MAX_CONTEXT = 64  # recorded calls an ``env`` input's replay answers
 MAX_ROW_BYTES = 1024**2
 MAX_SAMPLES_BYTES = 16 * 1024**2
-MAX_INPUT_FILE_BYTES = 16 * 1024**2
-MAX_REF_BLOBS = 1000
-MAX_REF_BYTES = 64 * 1024**2
-MAX_SCAN_FILES = 2000
-MAX_SCAN_BYTES = 2 * 1024**2
-PIN_MODULE = "_memv2_pin"
+MAX_INPUT_FILE_BYTES = testkit.MAX_INPUT_FILE_BYTES
+PIN_MODULE = testkit.PIN_MODULE
 PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
 _NAMED = 5
-_MEMLAB = ("replay.py", "episodes.py", "blobs.py", "redact.py", "inputs.py")
-_GITIO_STUB = '''\
-"""memlab has no git inside the gate's runs; this stands in for the names episodes.py imports."""
-
-
-class GitError(RuntimeError):
-    pass
-
-
-class Repo:
-    def __init__(self, *args, **kwargs):
-        raise GitError("git is not available here")
-'''
 
 
 # --- configuration -------------------------------------------------------------------------------------------
@@ -202,7 +191,7 @@ def seed_of(candidate: str) -> bytes:
 
 
 def pytest_env(cfg: QAConfig) -> dict[str, str]:
-    """The environment of every gate pytest run while a stage-5 switch is on."""
+    """The environment of every gate pytest run while the kit is mounted (a switch on, or the tests use it)."""
     env = {
         "PYTHONPATH": "/memory:/inputs",
         "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
@@ -229,36 +218,14 @@ def stage_inputs(
     blob_size: Callable[[str], int],
     refs: list[str],
 ) -> tuple[QAEnv, list[str]]:
-    """Write ``memlab`` (replay and inputs, no git), the pin plugin and the referenced blobs under *dest*."""
-    src = Path(__file__).parent
-    lab = dest / "memlab"
-    lab.mkdir(parents=True)
-    for name in _MEMLAB:
-        shutil.copyfile(src / name, lab / name)
-    (lab / "__init__.py").write_text(
-        '"""memlab, the gate\'s copy: replay and recorded inputs for library tests."""\n',
+    """The library test kit (:mod:`.testkit`: ``memlab``, the pin plugin, the referenced blobs) under *dest*."""
+    notes = testkit.stage(
+        dest,
+        refs,
+        has_blob=has_blob,
+        read_blob=read_blob,
+        blob_size=blob_size,
     )
-    (lab / "gitio.py").write_text(_GITIO_STUB)
-    shutil.copyfile(src / "pin.py", dest / f"{PIN_MODULE}.py")
-    bdir = dest / "blobs"
-    bdir.mkdir()
-    used = skipped = 0
-    for sha in refs[:MAX_REF_BLOBS]:
-        if not has_blob(sha):
-            continue  # a 64-hex token that names no recorded blob
-        size = blob_size(sha)
-        if size > MAX_INPUT_FILE_BYTES or used + size > MAX_REF_BYTES:
-            skipped += 1
-            continue
-        (bdir / sha).write_bytes(read_blob(sha))
-        used += size
-    notes = []
-    over = max(0, len(refs) - MAX_REF_BLOBS)
-    if skipped or over:
-        notes.append(
-            f"[qa:blobs] {skipped + over} referenced blob(s) not mounted at /inputs/blobs (over "
-            f"{MAX_REF_BLOBS} blobs, {MAX_INPUT_FILE_BYTES} bytes each or {MAX_REF_BYTES} in all)",
-        )
     return QAEnv(dest, pytest_env(cfg)), notes
 
 
@@ -730,27 +697,76 @@ class QAChecks:
         return p.read_bytes() if TESTKIT in self.run.c_files else None
 
     # -- before G3: the /inputs mount ---------------------------------------------------------------------
-    def prepare(self) -> None:
+    def prepare(self) -> bool:
+        """Mount the library test kit (:mod:`.testkit`) for every pytest run of this check when a switch is
+        on or a test-side file of the parent or the candidate uses it; whether it is mounted.
+
+        A library whose tests never use the kit, checked with every switch off, gets exactly the screen
+        build's calls (nothing is mounted). One that does is checked the same way under every switch setting.
+        """
         run = self.run
-        sources: list[bytes] = []
-        for files, tree in ((run.p_files, run.p_tree), (run.c_files, run.c_tree)):
-            for rel in sorted(files):
-                if len(sources) >= MAX_SCAN_FILES:
-                    break
-                if TESTS_DIR.match(rel) or rel == TESTKIT:
-                    with open(tree / rel, "rb") as fh:
-                        sources.append(fh.read(MAX_SCAN_BYTES))
+        sources, refs = self._scan()
         blobs = self.gate.blobs
+        if not (self.cfg.on or testkit.uses_kit(sources, blobs.has, refs)):
+            return False
         run.qa_env, notes = stage_inputs(
             run.tmp / "qa-inputs",
             self.cfg,
             blobs.has,
             blobs.get,
             blobs.size,
-            qa_static.blob_refs(sources),
+            refs,
         )
         for n in notes:
             run.note(n)
+        return True
+
+    def _scan(self) -> tuple[list[bytes], list[str]]:
+        """The test-side files of the parent and the candidate (bounded), and the blob ids they name."""
+        run = self.run
+        sources: list[bytes] = []
+        for tree, files in ((run.p_tree, run.p_files), (run.c_tree, run.c_files)):
+            if files:
+                sources += testkit.read_sources(tree, files).values()
+        return sources, qa_static.blob_refs(sources)
+
+    def uses_kit(self) -> bool:
+        """Whether the parent's or the candidate's tests use the test kit (:func:`.testkit.uses_kit`)."""
+        sources, refs = self._scan()
+        return testkit.uses_kit(sources, self.gate.blobs.has, refs)
+
+    # -- the kit stays a test-side tool ---------------------------------------------------------------------
+    def kit(self) -> None:
+        """Refuse new or changed library code that uses the kit, test imports the kit does not provide, and
+        tests that name the ``/inputs`` path (each would work in one place a library's tests run, not all).
+
+        Run wherever the kit is mounted (a switch on, or the library's tests use it); static, no test runs.
+        """
+        run = self.run
+        for p in sorted(set(run.changed) & set(run.c_files)):
+            if not p.endswith(".py"):
+                continue
+            source = (run.c_tree / p).read_bytes()
+            if not testkit.is_test_side(p):
+                for line in testkit.library_uses(source):
+                    self._fail(
+                        "kit",
+                        f"{p} line {line} uses the test kit (memlab, the pin plugin or /inputs) outside a "
+                        "test; the working model imports the library without it",
+                    )
+                continue
+            for line, what in testkit.unresolved(source):
+                self._fail(
+                    "kit",
+                    f"{p} line {line} imports {what}, which the test kit (version "
+                    f"{testkit.KIT_VERSION}) does not provide",
+                )
+            for line in testkit.names_inputs_path(source):
+                self._fail(
+                    "kit",
+                    f"{p} line {line} names a path under /inputs; read recorded blobs through "
+                    "memlab.inputs.blob(<id>), which works wherever the library's tests run",
+                )
 
     # -- static: fixture size, replay fidelity, cuts ------------------------------------------------------
     def static(self, lookup: Callable[[str, int], Action | None]) -> None:
@@ -822,6 +838,8 @@ class QAChecks:
                 "skipped",
                 "dynamic stage-5 checks not run: the candidate is already refused",
             )
+            return
+        if run.qa_env is None:  # prepare mounts the kit whenever a switch is on
             return
         try:
             self._dynamic()
@@ -1177,7 +1195,10 @@ def brief(cfg: QAConfig) -> str:
         return ""
     lines = [
         "The gate also checks test quality. Run tests with PYTHONPATH=/memory:/inputs (memlab importable), as "
-        "the gate then does; tests may import memlab.replay and memlab.inputs, which the gate provides.",
+        "the gate then does; tests may import memlab.replay and memlab.inputs, which the gate provides (the "
+        "same test kit wherever the library's tests run). Read a recorded blob with memlab.inputs.blob(<id>), "
+        "never by its /inputs path. Library code outside tests never imports memlab: the working model "
+        "imports the library without it.",
     ]
     if cfg.fixtures:
         strict = (

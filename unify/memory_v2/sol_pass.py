@@ -43,6 +43,7 @@ from .gate import Gate, ParentSnapshot
 from .gitio import Repo
 from .index import build_index
 from . import qa as _qa
+from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import KEY_SHAPED
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
@@ -183,15 +184,10 @@ SOL_SYSTEM = (
     + "\n"
 )
 
-# The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner.
-_MEMLAB_FILES = (
-    "analysis",
-    "replay.py",
-    "episodes.py",
-    "fingerprint.py",
-    "blobs.py",
-    "redact.py",
-)
+# The toolkit copied into /inputs/memlab. Not gitio (git), the gate or the sandbox runner. When a stage-5 switch
+# is on or the library's tests use it, the whole test kit (:mod:`.testkit`: these, memlab.inputs, the pin
+# plugin, the blobs the tests name) is staged instead, the same kit the gate mounts.
+_MEMLAB_FILES = _testkit.BASE_MODULES
 _GITIO_STUB = '''\
 """memlab has no git inside the consolidation sandbox; this stands in for the names episodes.py imports."""
 
@@ -821,7 +817,13 @@ class SolPass:
         cfg = getattr(self.gate, "qa", None)
         return cfg if isinstance(cfg, _qa.QAConfig) else _qa.QAConfig()
 
-    def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
+    def _stage_inputs(
+        self,
+        req: PassRequest,
+        inputs: Path,
+        tree: Path | None = None,
+    ) -> None:
+        """The pass's read-only ``/inputs``; *tree* is the parent library (its tests decide the test kit)."""
         inputs.mkdir()
         store = getattr(self.gate, "blobs", None)
         export_for_sol(
@@ -850,14 +852,29 @@ class SolPass:
                 },
             ),
         )
-        _stage_memlab(inputs / "memlab")
-        if (
-            self._qa.on
-        ):  # stage 5: recorded inputs for tests, as the gate's runs have them
-            shutil.copyfile(
-                Path(__file__).parent / "inputs.py",
-                inputs / "memlab" / "inputs.py",
+        # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
+        # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
+        staged = tree is not None and isinstance(store, BlobStore)
+        if staged:
+            staged = _testkit.stage_for_tree(
+                tree,
+                inputs,
+                has_blob=store.has,
+                read_blob=store.get,
+                blob_size=store.size,
+                force=self._qa.on,
             )
+        elif self._qa.on:
+            _testkit.stage(
+                inputs,
+                [],
+                has_blob=lambda s: False,
+                read_blob=lambda s: b"",
+                blob_size=lambda s: 0,
+            )
+            staged = True
+        if not staged:
+            _stage_memlab(inputs / "memlab")
 
     def _cell(
         self,
@@ -1032,7 +1049,7 @@ class SolPass:
             box.mkdir()
             cells.mkdir()
             _mirror(wt, box)
-            self._stage_inputs(req, inputs)
+            self._stage_inputs(req, inputs, wt)
             _channel_dirs(box, _exported_channels(inputs / "episodes"))
             try:
                 index = build_index(wt)

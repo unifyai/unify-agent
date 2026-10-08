@@ -85,9 +85,13 @@ uncommitted tree, for the consolidator's ``check`` tool; it never decides or rec
 Stage-5 test checks (memory v2.1, :mod:`.qa`) extend G3 when a :class:`.qa.QAConfig` switch is on: seeded
 random draws of recorded inputs, mutation testing, pinned determinism, replay fidelity and fixture size. Their
 reasons are G3 reasons tagged ``[qa:<check>]``; the static ones (fixture size, replay fidelity, cuts of
-truncated recordings) also run in :meth:`Gate.preview`. Every gate test run then also mounts the gate's own
-``memlab`` and the blobs the tests name read-only at ``/inputs`` (``PYTHONPATH=/memory:/inputs``). With every
-switch off (the default) the gate is exactly as described above.
+truncated recordings) also run in :meth:`Gate.preview`. Every gate test run also mounts the library test kit
+(:mod:`.testkit`: ``memlab``, the pin plugin, the blobs the tests name) read-only at ``/inputs``
+(``PYTHONPATH=/memory:/inputs``) when a switch is on **or** a test-side file of the parent or the candidate
+uses the kit, so a stored library is checked the same way under every switch setting; library code that uses
+the kit is then refused (``[qa:kit]``). With every switch off (the default) and a library whose tests never
+use the kit, the gate is exactly as described above. The dynamic stage-5 checks run last, after G4 to G6, so
+they are spent only on a candidate the rest of the gate accepts.
 """
 
 from __future__ import annotations
@@ -312,8 +316,8 @@ class _Run:
     pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
         default_factory=dict,
     )
-    # stage 5 (:mod:`.qa`): the /inputs mount of the gate's runs (None: every switch off), and G3's first
-    # candidate run of each new or changed test file
+    # stage 5 (:mod:`.qa`): the /inputs mount of the gate's runs (None: every switch off and the library's
+    # tests do not use the test kit), and G3's first candidate run of each new or changed test file
     qa_env: QAEnv | None = None
     qa_first: dict[str, PytestOutcome] = field(default_factory=dict)
 
@@ -467,9 +471,12 @@ class Gate:
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
+            qa = QAChecks(self, run)
+            if self.qa.on or qa.uses_kit():
+                qa.kit()  # library code never uses the test kit (static)
             if self.qa.on and bounded:
                 # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
-                QAChecks(self, run).static(lookup)
+                qa.static(lookup)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return list(res.reasons)
@@ -623,16 +630,18 @@ class Gate:
             if self._prepare(run):
                 self._g1(run)
                 self._g2(run)
-                qa = QAChecks(self, run) if self.qa.on else None
-                if qa is not None:
-                    qa.prepare()
-                    qa.static(self.lookup)
+                # stage 5: the test kit when a switch is on or the library's tests use it (else nothing)
+                qa = QAChecks(self, run)
+                if qa.prepare():
+                    qa.kit()
+                    if self.qa.on:
+                        qa.static(self.lookup)
                 self._g3(run)
-                if qa is not None:
-                    qa.dynamic()
                 self._g4(run)
                 self._g5(run)
                 self._g6(run)
+                if self.qa.on:
+                    qa.dynamic()  # last: only a candidate the rest of the gate accepts
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return res, (run.covers if res.passed else set()), run.notes

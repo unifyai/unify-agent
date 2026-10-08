@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from unify.memory_v2 import qa as qa_mod
+from unify.memory_v2 import testkit
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import Action
 from unify.memory_v2.evidence import EvidenceStore
@@ -316,6 +317,11 @@ def test_reads_the_clock():
     apis = SimpleNamespace(phone=SimpleNamespace(get_current_date_and_time=lambda **kw: CLOCK))
     assert current_datetime(apis) == CLOCK
 """
+# library code that imports the test kit (the working model imports the library without it)
+CLOCK_MOD_KIT = CLOCK_MOD.replace(
+    "from datetime import datetime\n",
+    "from datetime import datetime\n\nimport memlab.replay\n",
+)
 
 
 def _item(item, tests, covers, form, eid):
@@ -370,8 +376,8 @@ def _hp(test=HEALTH_TEST):
     return files, _manifest(HP_ITEM, HP_TEST, [["c1", 0], ["c1", 1]], "text", "c1")
 
 
-def _cl(test=CLOCK_REPLAY_TEST):
-    files = {"env/phone/__init__.py": CLOCK_MOD, CL_TEST: test}
+def _cl(test=CLOCK_REPLAY_TEST, module=CLOCK_MOD):
+    files = {"env/phone/__init__.py": module, CL_TEST: test}
     return files, _manifest(CL_ITEM, CL_TEST, [["p1", 0]], "env", "p1")
 
 
@@ -1017,7 +1023,10 @@ def test_stage_inputs_mounts_memlab_the_pin_and_only_referenced_recorded_blobs(
         "-p _memv2_pin" not in env.env["PYTEST_ADDOPTS"]
         and "PYTHONHASHSEED" not in env.env
     )
-    monkeypatch.setattr(qa_mod, "MAX_REF_BLOBS", 1)
+    assert (
+        tmp_path / "in" / "memlab" / "analysis"
+    ).is_dir()  # the same kit as Sol's box
+    monkeypatch.setattr(testkit, "MAX_REF_BLOBS", 1)
     _, notes = stage_inputs(
         tmp_path / "in2",
         QAConfig(replay=True),
@@ -1179,8 +1188,85 @@ def test_the_recorded_replay_runs_in_the_gate_and_a_stand_in_is_refused(tmp_path
     files, man = _cl(CLOCK_REPLAY_TEST)
     res = _check(tmp_path / "replay", PHONE, files, man, qa=QAConfig(replay=True))
     assert res.passed, res.reasons  # memlab imports in the gate's runs
+    # every switch off: a library whose tests import memlab is checked with the kit all the same (B2)
+    replay_off = _check(tmp_path / "replay-off", PHONE, files, man)
+    assert replay_off.passed, replay_off.reasons
     files, man = _cl(CLOCK_FAKE_TEST)
     fake = _check(tmp_path / "fake", PHONE, files, man, qa=QAConfig(replay=True))
     assert not fake.passed and any("[qa:replay]" in r for r in fake.reasons)
     off = _check(tmp_path / "off", PHONE, files, man)
     assert off.passed, off.reasons  # switch off: the stand-in passes as before
+
+
+# --- the test kit: a property of the library, not of the switches (B2) ---------------------------------------
+
+
+def test_a_library_whose_tests_use_the_kit_is_checked_the_same_under_every_switch_setting(
+    tmp_path,
+):
+    """Every switch off, a library whose tests import memlab gets the kit mounted exactly as with a switch
+    on: same runs, mounts and environment, so turning the switches off later never freezes it.
+    """
+    files, man = _cl(CLOCK_REPLAY_TEST)
+    runs = []
+    for n, kw in enumerate(({}, {"qa": QAConfig(replay=True)})):
+        runner = FakePytest(module="env/phone/__init__.py")
+        res = _check(tmp_path / str(n), PHONE, files, man, pytest_runner=runner, **kw)
+        assert res.passed, res.reasons
+        runs.append(list(runner.calls))
+    assert runs[0] == runs[1]
+    assert all(c[1] == ["/inputs", "/memory"] for c in runs[0])
+    assert all(
+        c[5]
+        == {
+            "PYTHONPATH": "/memory:/inputs",
+            "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
+        }
+        for c in runs[0]
+    )
+
+
+def _kit_preview(tmp_path, test, module=CLOCK_MOD, qa=None):
+    files, man = _cl(test, module=module)
+    reasons = _preview(
+        tmp_path,
+        PHONE,
+        files,
+        man,
+        qa if qa is not None else QAConfig(),
+    )
+    return [r for r in reasons if "[qa:kit]" in r]
+
+
+def test_library_code_must_not_use_the_kit(tmp_path):
+    (reason,) = _kit_preview(tmp_path / "off", CLOCK_REPLAY_TEST, module=CLOCK_MOD_KIT)
+    assert reason.startswith(
+        "G3: [qa:kit] env/phone/__init__.py line 5 uses the test kit",
+    )  # every switch off, but the library's tests use the kit
+    assert _kit_preview(
+        tmp_path / "on",
+        CLOCK_FAKE_TEST,
+        module=CLOCK_MOD_KIT,
+        qa=QAConfig(replay=True),
+    )
+    # every switch off and no test uses the kit: nothing is checked, as before
+    assert _kit_preview(tmp_path / "plain", CLOCK_FAKE_TEST, module=CLOCK_MOD_KIT) == []
+    assert _kit_preview(tmp_path / "clean", CLOCK_REPLAY_TEST) == []
+
+
+def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path):
+    missing = CLOCK_REPLAY_TEST.replace(
+        "from memlab.replay import RecordedEnv\n",
+        "from memlab.replay import RecordedEnv, Replayer\n",
+    )
+    (reason,) = _kit_preview(tmp_path / "a", missing)
+    assert reason == (
+        f"G3: [qa:kit] {CL_TEST} line 2 imports memlab.replay.Replayer, which the test kit "
+        f"(version {testkit.KIT_VERSION}) does not provide"
+    )
+    by_path = CLOCK_REPLAY_TEST + '\nSCREENS = "/inputs/blobs"\n'
+    line = by_path.count("\n")
+    (reason,) = _kit_preview(tmp_path / "b", by_path)
+    assert reason.startswith(
+        f"G3: [qa:kit] {CL_TEST} line {line} names a path under /inputs",
+    )

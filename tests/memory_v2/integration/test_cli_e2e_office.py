@@ -126,8 +126,8 @@ def _install_fake_sol(monkeypatch) -> _FakeSol:
     monkeypatch.setattr(consolidate, "unillm_turn", fake.factory)
     original = sol_pass.SolPass._stage_inputs
 
-    def staging(self, req, inputs):
-        original(self, req, inputs)
+    def staging(self, req, inputs, *tree):
+        original(self, req, inputs, *tree)
         for path in sorted(Path(inputs).rglob("*")):
             if path.is_file() and not path.is_symlink():
                 fake.staged.append(path.read_bytes())

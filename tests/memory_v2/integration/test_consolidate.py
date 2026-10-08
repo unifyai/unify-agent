@@ -538,8 +538,8 @@ def test_checker_text_reaches_no_event_note_evidence_row_or_sol_input(
     staged = tmp_path / "staged"
     stage = sol_pass.SolPass._stage_inputs
 
-    def keep(self, req, inputs):
-        stage(self, req, inputs)
+    def keep(self, req, inputs, *tree):
+        stage(self, req, inputs, *tree)
         shutil.copytree(inputs, staged)  # what Sol's box would see at /inputs
 
     monkeypatch.setattr(sol_pass.SolPass, "_stage_inputs", keep)

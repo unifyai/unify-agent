@@ -83,9 +83,15 @@ def _checkout() -> Path | None:
 
 
 def worker_paths() -> list[str]:
-    """Import paths the worker puts first: the run's memory export."""
+    """Import paths the worker puts first: the run's memory export, then the library test kit beside it when
+    the export holds one (:mod:`..testkit`; ``memlab`` for the library's tests)."""
+    from ..testkit import EXPORT_DIR
+
     path = _checkout()
-    return [] if path is None else [str(path)]
+    if path is None:
+        return []
+    kit = path / EXPORT_DIR
+    return [str(path)] + ([str(kit)] if kit.is_dir() else [])
 
 
 def worker_mounts() -> list[Path]:

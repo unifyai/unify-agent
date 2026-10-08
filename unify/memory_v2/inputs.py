@@ -19,8 +19,10 @@ and every sampled input a test case reads (:meth:`RecordedInput.value`, ``.respo
 the function's own tests actually exercised.
 
 Recorded payloads are referenced by blob id instead of being copied into fixtures: :func:`blob` reads
-``/inputs/blobs/<id>`` (a work-tree file's ``blob_before``/``blob_after``, or an exported ``response_blobs`` entry),
-in the sandbox and in the gate alike; :func:`from_blob` makes a file input of one.
+``blobs/<id>`` beside the kit (a work-tree file's ``blob_before``/``blob_after``, or an exported
+``response_blobs`` entry): ``/inputs/blobs`` in Sol's box and in the gate, ``<export>/.memlab/blobs`` in the
+actor's export. A test reads a blob through :func:`blob` (never by its path), so it reads it the same way
+wherever the library's tests run; :func:`from_blob` makes a file input of one.
 
 Standard library and memlab only. Nothing here reads the clock or the network, and nothing is recorded outside
 the gate's sample run.
@@ -39,7 +41,9 @@ from typing import Any, Iterable
 from .episodes import Action
 from .replay import RecordedEnv
 
-INPUTS = Path("/inputs")
+_KIT = Path(__file__).resolve().parent
+# the kit's root (``blobs/`` lives there): the directory holding the ``memlab`` package, else /inputs
+INPUTS = _KIT.parent if _KIT.name == "memlab" else Path("/inputs")
 SAMPLES = Path("/qa/samples.json")
 READS = Path("/qa-out/reads.jsonl")
 FORMS = ("env", "observation", "text", "path", "bytes")
@@ -72,7 +76,7 @@ def _action(row: dict) -> Action:
 
 
 def blob_path(sha: str) -> str:
-    """The path of a recorded blob in this box (``/inputs/blobs/<id>``)."""
+    """The path of a recorded blob in this box (``blobs/<id>`` beside the kit)."""
     if not isinstance(sha, str) or not _BLOB_ID.match(sha):
         raise ValueError("a blob id is 64 lowercase hex digits")
     return str(INPUTS / "blobs" / sha)
