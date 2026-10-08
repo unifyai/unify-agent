@@ -259,10 +259,16 @@ async def test_masked_paths_read_as_a_notice_naming_the_rule(world):
         assert out.split()[-1] == sandbox.MASK_NOTICE_NAME
         out, _ = await bash(ex, f"cat {home}/.ssh/{sandbox.MASK_NOTICE_NAME}")
         assert "rule mask-credentials" in out
-        out, _ = await bash(ex, f"cat {home}/.env {home}/project/.env")
-        assert ENV_SECRET not in out and out.count("rule mask-env-file") == 2
-        out, _ = await bash(ex, f"cat {home}/plain.txt {home}/project/notes.txt")
-        assert "readable outside the workspace" in out and "needle one" in out
+        # Outside the allowlisted root nothing of the home exists: not its
+        # .env files, not its plain files.
+        out, _ = await bash(ex, f"cat {home}/.env {home}/project/.env 2>&1")
+        assert ENV_SECRET not in out and out.count("No such file") == 2
+        out, _ = await bash(
+            ex,
+            f"cat {home}/plain.txt {home}/project/notes.txt 2>&1",
+        )
+        assert "readable outside the workspace" not in out
+        assert "needle one" not in out and out.count("No such file") == 2
         out, _ = await bash(ex, f"cat {state}/logs/unify.log 2>&1")
         assert STATE_SECRET not in out
         out, _ = await bash(ex, f"ls -A {state}")
@@ -360,7 +366,8 @@ direct = os.environ.get('FAKE_SERVICE_TOKEN')
         assert code_rc != 0 and "Read-only file system" in stderr
         assert not escape.exists()
         assert shell_out.startswith("[]") and SSH_SECRET not in shell_out
-        assert ENV_SECRET not in env_out and "mask-env-file" in env_out
+        # The home's .env is outside the allowlisted root: absent.
+        assert ENV_SECRET not in env_out and env_out == ""
         assert status == 0 and (world["workspace"] / "inside-workspace.txt").exists()
         # The cell itself runs in the sandboxed worker (the default), whose
         # environment is scrubbed: the in-process gap is closed.
@@ -447,4 +454,6 @@ def test_the_harness_installs_packages_under_its_own_wrapping(
     # the installer wrapped in bubblewrap; neither under the cell's policy.
     assert confinement_seen == [None, None]
     assert commands[0][0] == "uv"
-    assert os.path.basename(commands[1][0]) == "bwrap"
+    # /bin/sh opens the seccomp program for bwrap, then execs it.
+    assert commands[1][0] == "/bin/sh"
+    assert os.path.basename(commands[1][4]) == "bwrap"

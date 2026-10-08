@@ -114,8 +114,12 @@ GREET = (
 
 @pytest.fixture
 def offline_wheel(library, monkeypatch):
-    """The package as a local wheel, the installer offline."""
-    directory = library["home"] / "wheels"
+    """The package as a local wheel, the installer offline.
+
+    In the workspace: the installer runs in the sandbox, whose root shows
+    nothing of the home directory (a file:// requirement there is absent).
+    """
+    directory = library["workspace"] / "wheels"
     directory.mkdir()
     wheel = _wheel(directory)
     monkeypatch.setenv("UV_OFFLINE", "1")

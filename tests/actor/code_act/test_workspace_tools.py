@@ -70,8 +70,11 @@ def test_read_file_reads_numbered_ranges_and_refuses_hidden_paths(world):
     out = file_tools.read_file("data.txt", 3, 4, policy=policy)
     assert out["content"] == "     3\tline 3\n     4\tline 4\n"
     assert out["total_lines"] == 10 and out["end"] == 4
-    out = file_tools.read_file(str(home / "plain.txt"), policy=policy)
-    assert "readable outside" in out["content"]
+    # Outside the allowlisted root: the sandbox does not show it, so neither
+    # does the harness's own file tool.
+    with pytest.raises(sandbox.SandboxRefusal) as refused:
+        file_tools.read_file(str(home / "plain.txt"), policy=policy)
+    assert refused.value.rule == "root-allowlist"
     out = file_tools.read_file(str(state / "transcripts" / "s.jsonl"), policy=policy)
     assert '"seq": 0' in out["content"]
     (world["workspace"] / "link").symlink_to(home / ".ssh" / "id_rsa")
@@ -106,15 +109,23 @@ async def test_grep_never_searches_hidden_paths(world, monkeypatch, engine):
         pytest.skip("ripgrep is not installed")
     policy = sandbox.build_policy(fresh=True)
     home = world["home"]
-    (home / "project" / "more.txt").write_text(f"needle two {SSH_SECRET}\n")
-    out = await file_tools.grep("needle", str(home), policy=policy)
+    # The home is outside the allowlisted root: not searchable at all.
+    with pytest.raises(sandbox.SandboxRefusal) as refused:
+        await file_tools.grep("needle", str(home), policy=policy)
+    assert refused.value.rule == "root-allowlist"
+    # Inside the workspace (what a cell may read anyway) it searches as before.
+    project = world["workspace"] / "project"
+    project.mkdir()
+    (project / "notes.txt").write_text("alpha\nneedle one\nbeta\n")
+    (project / "more.txt").write_text(f"needle two {SSH_SECRET}\n")
+    out = await file_tools.grep("needle", str(project), policy=policy)
     assert out["engine"] == engine
     assert sorted(h.split(":", 2)[2] for h in out["hits"]) == [
         "needle one",
         f"needle two {SSH_SECRET}",
     ]
     for secret in (ENV_SECRET, "PRIVATE-KEY"):
-        found = await file_tools.grep(secret, str(home), policy=policy)
+        found = await file_tools.grep(secret, str(project), policy=policy)
         assert all("more.txt" in h for h in found["hits"]), found
     out = await file_tools.grep("line", "data.txt", max_hits=3, policy=policy)
     assert len(out["hits"]) == 3 and out["truncated"]

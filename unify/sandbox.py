@@ -3,8 +3,23 @@
 With ``UNIFY_WORKSPACE=sandboxed`` every shell cell, and every subprocess a
 Python cell starts, runs inside bubblewrap (Linux) under one policy:
 
-* ``/`` is mounted read-only; the workspace (``<UNIFY_HOME>/workspace`` or
-  ``UNIFY_LOCAL_ROOT``) and a private ``/tmp`` are the only writable places.
+* The root is an allowlist, read-only (:data:`_ROOT_ALLOWLIST`): the system
+  directories (``/usr``, ``/bin``, ``/lib*``, ``/sbin``), a few files of
+  ``/etc`` named one by one, the interpreter (its venv and base install,
+  followed through their links), the Unify package and the editable installs
+  the venv's ``.pth`` files add, and the files ``LD_PRELOAD`` names when the
+  harness itself runs with them. Nothing else of the host exists: no
+  ``/home`` beyond those paths, ``/root``, ``/var``, ``/opt``, ``/mnt``,
+  ``/workspaces``, ``/srv``, ``/media``, ``/run``. Never ``/`` itself, and
+  never a whole home directory (rule ``root-allowlist``).
+* The workspace (``<UNIFY_HOME>/workspace`` or ``UNIFY_LOCAL_ROOT``) and a
+  private ``/tmp`` are the only writable places.
+* A seccomp filter (:func:`seccomp_program`) lets ``socket`` and
+  ``socketpair`` create only AF_UNIX, AF_INET and AF_INET6 sockets (on WSL2
+  AF_VSOCK reaches the Windows host whatever the network namespace), refuses
+  new user namespaces and io_uring, and kills a process that enters the
+  kernel through another architecture's system calls (rule
+  ``socket-families``).
 * The Unify state directory (``UNIFY_HOME``) is hidden behind an empty tmpfs,
   except read-only views of the transcripts directory, the store file and the
   package venv, and the writable workspace. The harness's internal
@@ -15,9 +30,11 @@ Python cell starts, runs inside bubblewrap (Linux) under one policy:
   request and reply, ``UNILLM_OTEL_LOG_DIR``, ``UNIFY_LOG_DIR`` and
   ``UNIFY_OTEL_LOG_DIR``, wherever they are configured) are hidden too.
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
-  a few other well-known ones) are hidden, and so is every ``.env`` file found
-  in the working directory and its parents, the home directory and its
-  non-hidden subdirectories two levels down, and the Unify checkout.
+  a few other well-known ones) are hidden behind a notice, and so is every
+  ``.env`` file found in the working directory and its parents, the home
+  directory and its non-hidden subdirectories two levels down, the Unify
+  checkout and the editable installs, where a mount would show it (outside
+  every mount it does not exist at all).
 * The environment loses every variable whose name contains KEY, TOKEN, SECRET,
   PASSWORD or CREDENTIAL.
 * The network namespace is private: nothing but a loopback of its own, unless
@@ -85,6 +102,16 @@ RULES: dict[str, str] = {
         "only the workspace and a private /tmp are writable; everything else is "
         "mounted read-only"
     ),
+    "root-allowlist": (
+        "only the system directories, a few /etc files, the interpreter, the "
+        "Unify package and the paths the policy names exist; the rest of the "
+        "host (other home directories' contents, /root, /var, /mnt, /opt, "
+        "/workspaces) does not"
+    ),
+    "socket-families": (
+        "only AF_UNIX, AF_INET and AF_INET6 sockets can be created; new user "
+        "namespaces and io_uring are refused"
+    ),
     "mask-unify-state": (
         "the Unify state directory is hidden, except read-only views of the "
         "transcripts, the store file and the package venv, and the workspace"
@@ -148,6 +175,59 @@ _POLICY_TTL_S = 300.0
 MASK_NOTICE_NAME = "UNIFY_SANDBOX_MASKED"
 _PROXY_MOUNT = "/tmp/.unify-proxy"
 
+# The host paths every sandboxed command sees besides those derived at start
+# (_derived_roots: the interpreter, the Unify package, editable installs, the
+# trusted LD_PRELOAD) and those the policy mounts (workspace, state views,
+# proxy). Each is mounted read-only where it exists; a symlink whose target
+# is itself visible stays a symlink, any other is mounted from its target
+# (WSL's /etc/resolv.conf links into /mnt/wsl). The root they sit on is an
+# empty tmpfs, remounted read-only once everything is in place. /etc is never
+# mounted whole: it holds the host's configuration, some of it secret
+# (shadow, ssh host keys, pip.conf index credentials, docker).
+_ROOT_ALLOWLIST: tuple[tuple[str, str], ...] = (
+    ("/usr", "programs, shared libraries, Python's system packages, zoneinfo"),
+    ("/bin", "the shells and core utilities (a link to usr/bin when merged)"),
+    ("/sbin", "system programs some tools call by path (a link when merged)"),
+    ("/lib", "shared libraries and the dynamic loader (a link when merged)"),
+    ("/lib64", "the x86_64 dynamic loader's path (a link when merged)"),
+    ("/lib32", "32-bit libraries, where installed (a link when merged)"),
+    ("/libx32", "x32 libraries, where installed (a link when merged)"),
+    ("/etc/ld.so.cache", "the dynamic loader's library cache"),
+    ("/etc/ld.so.conf", "the dynamic loader's search path"),
+    ("/etc/ld.so.conf.d", "the dynamic loader's search path, per package"),
+    ("/etc/alternatives", "the links Debian's update-alternatives makes"),
+    ("/etc/nsswitch.conf", "which databases name lookups use"),
+    ("/etc/hosts", "localhost's name"),
+    ("/etc/host.conf", "the resolver's options"),
+    ("/etc/gai.conf", "address ordering for getaddrinfo"),
+    ("/etc/resolv.conf", "DNS for the installer's network (its real target)"),
+    ("/etc/protocols", "protocol names (getprotobyname)"),
+    ("/etc/services", "service names (getservbyname)"),
+    ("/etc/ssl/certs", "CA certificates for TLS"),
+    ("/etc/ssl/openssl.cnf", "OpenSSL's configuration"),
+    ("/etc/ca-certificates", "the CA bundle's local configuration"),
+    ("/etc/pki/tls/certs", "CA certificates on Red Hat systems"),
+    ("/etc/pki/ca-trust", "CA certificates on Red Hat systems"),
+    ("/etc/localtime", "the host's time zone"),
+    ("/etc/timezone", "the host's time zone name"),
+    ("/etc/os-release", "the distribution's name and version"),
+    ("/etc/mime.types", "file types for Python's mimetypes"),
+    ("/etc/fonts", "fontconfig's configuration (plots)"),
+    ("/etc/passwd", "generated: root, this account and nobody, never the host's"),
+    ("/etc/group", "generated: root, this account's group and nogroup"),
+)
+
+# Generated, never bound from the host: the other accounts are not the cell's
+# business.
+_GENERATED_ETC = ("/etc/passwd", "/etc/group")
+
+_SYSTEM_DIRS = tuple(p for p, _ in _ROOT_ALLOWLIST if not p.startswith("/etc/"))
+
+# Environment variables a sandboxed command gets only from the harness's own
+# environment (set by the trusted runner, e.g. the office benchmark's fake
+# clock), never from what a cell passes to a subprocess.
+TRUSTED_ENV = ("LD_PRELOAD", "FAKETIME", "FAKETIME_SHARED", "TZ")
+
 
 class SandboxRefusal(ToolInputError):
     """An action the workspace sandbox refuses; ``rule`` names the rule."""
@@ -203,6 +283,10 @@ class SandboxPolicy:
     network: str = ""  # "" (off) or "proxy"
     proxy_port: int = 0
     notices_dir: Optional[Path] = None
+    # The allowlisted root (_root_mounts): bubblewrap arguments, and the host
+    # paths (resolved) they show, which the harness's own file tools check.
+    root_args: list[str] = field(default_factory=list)
+    root_visible: list[Path] = field(default_factory=list)
     created: float = field(default_factory=time.monotonic)
 
     # -- path checks ---------------------------------------------------------
@@ -236,6 +320,11 @@ class SandboxPolicy:
             return "mask-env-file", f"{resolved} is a .env file"
         if _within(resolved, Path("/tmp")):
             return "private-tmp", f"{resolved} is in the host's /tmp"
+        if not any(_within(resolved, r) for r in self.root_visible):
+            return (
+                "root-allowlist",
+                f"{resolved} is outside every path the sandbox mounts",
+            )
         return None
 
 
@@ -285,12 +374,52 @@ def _find_env_files(roots: Sequence[tuple[Path, int]], skip: Sequence[Path]):
 
 
 def _write_notices(directory: Path) -> Path:
+    """The notice files, the generated /etc files and the seccomp program.
+
+    Under a private ``mkdtemp`` directory of the host's /tmp, which no
+    sandboxed command sees (its /tmp is its own).
+    """
     directory.mkdir(parents=True, exist_ok=True)
     for rule, text in RULES.items():
         (directory / rule).write_text(
             f"Hidden by the Unify workspace sandbox (rule {rule}: {text}).\n",
         )
+    etc = directory / "etc"
+    etc.mkdir(exist_ok=True)
+    passwd, group = _account_files()
+    (etc / "passwd").write_text(passwd)
+    (etc / "group").write_text(group)
+    (directory / "seccomp.bpf").write_bytes(seccomp_program())
     return directory
+
+
+def _account_files() -> tuple[str, str]:
+    """Minimal ``/etc/passwd`` and ``/etc/group``: root, this account, nobody.
+
+    Enough for ``id``, ``whoami``, ``getpass.getuser()`` and tools that look
+    up their own user; the host's other accounts (and their home
+    directories) are not listed. No real names (the GECOS field is empty).
+    """
+    import grp
+    import pwd
+
+    users: list[str] = []
+    for uid in dict.fromkeys((0, os.getuid(), 65534)):
+        try:
+            e = pwd.getpwuid(uid)
+        except KeyError:
+            continue
+        users.append(
+            f"{e.pw_name}:x:{e.pw_uid}:{e.pw_gid}::{e.pw_dir}:{e.pw_shell}\n",
+        )
+    groups: list[str] = []
+    for gid in dict.fromkeys((0, os.getgid(), 65534)):
+        try:
+            g = grp.getgrgid(gid)
+        except KeyError:
+            continue
+        groups.append(f"{g.gr_name}:x:{g.gr_gid}:\n")
+    return "".join(users), "".join(groups)
 
 
 _NOTICES_DIR: Optional[Path] = None
@@ -300,7 +429,7 @@ _POLICY_LOCK = threading.Lock()
 
 def _notices_dir() -> Path:
     global _NOTICES_DIR
-    if _NOTICES_DIR is None or not _NOTICES_DIR.is_dir():
+    if _NOTICES_DIR is None or not (_NOTICES_DIR / "seccomp.bpf").is_file():
         _NOTICES_DIR = _write_notices(
             Path(tempfile.mkdtemp(prefix="unify-sandbox-notices-")),
         )
@@ -382,6 +511,212 @@ def _log_dirs() -> list[Path]:
     return dirs
 
 
+def _homes() -> list[Path]:
+    """``/home``, the account's home and ``$HOME``, resolved: never mounted whole.
+
+    The account's home comes from the password database, since ``$HOME`` may
+    point elsewhere (the tests move it). A home under ``/tmp`` is the
+    sandbox's private /tmp inside, so it is not counted.
+    """
+    import pwd
+
+    raw = [Path("/home"), Path(pwd.getpwuid(os.getuid()).pw_dir), Path.home()]
+    out: list[Path] = []
+    for path in raw:
+        real = Path(os.path.realpath(path))
+        if not _within(real, Path("/tmp")) and real not in out:
+            out.append(real)
+    return out
+
+
+def _too_broad(path: Path, homes: Sequence[Path]) -> bool:
+    """Whether a mount of *path* would show ``/`` or a whole home directory."""
+    for p in (Path(os.path.abspath(path)), Path(os.path.realpath(path))):
+        if p == Path("/") or any(_within(home, p) for home in homes):
+            return True
+    return False
+
+
+def _is_python_install(root: Path) -> bool:
+    """A venv or a Python installation (not, say, ``~/.local`` above a link)."""
+    return (root / "pyvenv.cfg").is_file() or any(
+        (root / "lib").glob("python3*"),
+    )
+
+
+def _interpreter_roots() -> list[Path]:
+    """The interpreter's venv and base install, by every name it is reached through.
+
+    A uv venv's ``bin/python`` links to the base install by its minor-version
+    name (``cpython-3.12-...``), itself a link to the patch release
+    (``cpython-3.12.11-...``), and ``pyvenv.cfg`` names the former. Each name
+    is listed (and mounted from its real target), so the chain resolves inside
+    the sandbox although the home directory above it does not exist there.
+    """
+    roots = [
+        Path(p)
+        for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
+    ]
+    link = Path(os.path.abspath(sys.executable))
+    for _ in range(40):
+        roots.append(link.parent.parent)
+        if not link.is_symlink():
+            break
+        link = Path(os.path.normpath(link.parent / os.readlink(link)))
+    roots.append(Path(os.path.realpath(sys.executable)).parent.parent)
+    cfg = Path(sys.prefix) / "pyvenv.cfg"
+    try:
+        lines = cfg.read_text().splitlines() if cfg.is_file() else []
+    except OSError:
+        lines = []
+    for line in lines:
+        key, _, value = line.partition("=")
+        if key.strip() == "home" and value.strip():
+            roots.append(Path(os.path.abspath(value.strip())).parent)
+    return [r for r in roots if _is_python_install(r)]
+
+
+def _editable_roots() -> list[Path]:
+    """The ``sys.path`` entries the venv's ``.pth`` files add: editable installs.
+
+    That is how unillm (and any package installed with ``pip install -e``)
+    reaches the harness's, and so the worker's, ``sys.path``. Entries a
+    script directory or the working directory put there are not mounted;
+    ``PYTHONPATH``'s are (:func:`_pythonpath_roots`).
+    """
+    import site
+
+    on_path = {os.path.abspath(p) for p in sys.path if p}
+    sites = {os.path.abspath(p) for p in site.getsitepackages()}
+    sites |= {p for p in on_path if p.endswith(("site-packages", "dist-packages"))}
+    out: list[Path] = []
+    for directory in sorted(sites):
+        try:
+            names = sorted(n for n in os.listdir(directory) if n.endswith(".pth"))
+        except OSError:
+            continue
+        for name in names:
+            try:
+                lines = (Path(directory) / name).read_text().splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for line in lines:
+                line = line.strip()
+                if not line or line.startswith(("#", "import ", "import\t")):
+                    continue
+                path = os.path.abspath(os.path.join(directory, line))
+                if path in on_path and os.path.exists(path):
+                    out.append(Path(path))
+    return out
+
+
+def _pythonpath_roots() -> list[Path]:
+    """The harness's own ``PYTHONPATH`` entries that are on ``sys.path``.
+
+    Set by the trusted runner: the benchmark adapters put their relay
+    client's directory there (``<attempt>/system/<bench>-client``, files
+    read-only), and the worker reuses the harness's ``sys.path``.
+    """
+    on_path = {os.path.abspath(p) for p in sys.path if p}
+    return [
+        Path(os.path.abspath(p))
+        for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if p and os.path.abspath(p) in on_path and os.path.exists(p)
+    ]
+
+
+def _preload_files() -> list[Path]:
+    """The libraries the harness's own ``LD_PRELOAD`` names (the fake clock).
+
+    Only what the trusted parent runs with; a cell never adds to it
+    (:data:`TRUSTED_ENV`).
+    """
+    raw = os.environ.get("LD_PRELOAD", "")
+    return [
+        Path(p)
+        for p in raw.replace(":", " ").split()
+        if os.path.isabs(p) and os.path.isfile(p)
+    ]
+
+
+def _derived_roots() -> list[tuple[Path, str]]:
+    """The read-only roots taken from this process at policy time, with reasons."""
+    out: list[tuple[Path, str]] = []
+    out += [
+        (p, "the interpreter (venv and base install)") for p in _interpreter_roots()
+    ]
+    # The worker runs worker_child.py from the package by path.
+    out.append((Path(__file__).resolve().parent, "the Unify package (the worker)"))
+    out += [(p, "an editable install on sys.path (.pth)") for p in _editable_roots()]
+    out += [(p, "the harness's PYTHONPATH (relay client)") for p in _pythonpath_roots()]
+    out += [(p, "LD_PRELOAD of the harness (fake clock)") for p in _preload_files()]
+    return out
+
+
+def _is_system(path: Path) -> bool:
+    return any(
+        _within(path, Path(os.path.realpath(d)))
+        for d in _SYSTEM_DIRS
+        if os.path.isdir(d)
+    )
+
+
+def _root_mounts(notices: Path) -> tuple[list[str], list[Path]]:
+    """The allowlisted root: bubblewrap arguments, and the host paths they show.
+
+    :data:`_ROOT_ALLOWLIST` first, then :func:`_derived_roots`, each by its
+    own name and its resolved one, outer paths before inner ones. A derived
+    root that would show ``/`` or a whole home directory is left out, with a
+    warning; nothing of it is then visible.
+    """
+    import logging
+
+    homes = _homes()
+    args: list[str] = []
+    visible: list[Path] = []
+    for path, _reason in _ROOT_ALLOWLIST:
+        if path in _GENERATED_ETC:
+            args += ["--ro-bind", str(notices / "etc" / Path(path).name), path]
+            continue
+        if not os.path.lexists(path):
+            continue
+        real = Path(os.path.realpath(path))
+        if os.path.islink(path) and (
+            path in _SYSTEM_DIRS or (real.exists() and _is_system(real))
+        ):
+            # A link stays a link; its target is visible through /usr.
+            args += ["--symlink", os.readlink(path), path]
+        elif real.exists():
+            args += ["--ro-bind", str(real), path]
+            visible.append(real)
+    wanted: list[Path] = []
+    for root, reason in _derived_roots():
+        for p in (Path(os.path.abspath(root)), Path(os.path.realpath(root))):
+            if not p.exists() or _is_system(Path(os.path.realpath(p))):
+                continue
+            if _too_broad(p, homes):
+                logging.getLogger(__name__).warning(
+                    "workspace sandbox: not mounting %s (%s): it would show / "
+                    "or a whole home directory",
+                    p,
+                    reason,
+                )
+                continue
+            if p not in wanted:
+                wanted.append(p)
+    # Outer before inner; an inner path under an outer one is already shown
+    # (its resolved name is listed too, so links inside resolve).
+    kept: list[Path] = []
+    for p in sorted(wanted, key=lambda q: (len(q.parts), str(q))):
+        if any(_within(p, k) for k in kept):
+            continue
+        kept.append(p)
+        real = Path(os.path.realpath(p))
+        args += ["--ro-bind", str(real), str(p)]
+        visible.append(real)
+    return args, visible
+
+
 def build_policy(*, fresh: bool = False) -> SandboxPolicy:
     """The policy for the current settings and filesystem.
 
@@ -408,6 +743,10 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             getattr(SETTINGS, "UNIFY_AGENTS", ""),
             str(_current_run_records() or ""),
             tuple(_log_dir_settings()),
+            sys.prefix,
+            tuple(sys.path),
+            os.environ.get("LD_PRELOAD", ""),
+            os.environ.get("PYTHONPATH", ""),
         )
         if (
             not fresh
@@ -453,6 +792,8 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         roots: list[tuple[Path, int]] = [(home, _ENV_SCAN_DEPTH)]
         roots += [(d, 0) for d in (cwd, *cwd.parents)]
         roots.append((Path(__file__).resolve().parents[1], 1))
+        # The editable installs the root mounts (unillm's checkout).
+        roots += [(p, 1) for p in _editable_roots()]
         skip = [state_dir, workspace, *(d for d, _ in masked_dirs)]
         for env_file in _find_env_files(roots, skip):
             masked_files.append((Path(os.path.realpath(env_file)), "mask-env-file"))
@@ -461,6 +802,8 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
         from unify.transcripts import INTERNAL_DIRNAME
 
+        notices = _notices_dir()
+        root_args, root_visible = _root_mounts(notices)
         policy = SandboxPolicy(
             workspace=workspace,
             state_dir=state_dir,
@@ -473,7 +816,9 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             ],
             network=network,
             proxy_port=port,
-            notices_dir=_notices_dir(),
+            notices_dir=notices,
+            root_args=root_args,
+            root_visible=root_visible,
         )
         policy._key = key  # type: ignore[attr-defined]
         _POLICY_CACHE = policy
@@ -516,27 +861,208 @@ def require_bwrap() -> str:
     return path
 
 
+# ---------------------------------------------------------------------------
+# seccomp: socket families, user namespaces, io_uring
+# ---------------------------------------------------------------------------
+
+# Pattern from the memory-v2 runner (unify/memory_v2/sandbox_run.py at
+# 6ec1e9821), extended to aarch64.
+_SECCOMP_FD = 9
+_SECCOMP_EXEC = 'exec "$@" 9<"$0"'
+
+# Per architecture: its AUDIT_ARCH value, whether x32 system call numbers
+# (bit 30) must be refused, and the numbers of the calls the filter looks at.
+_SECCOMP_ARCHES: dict[str, tuple[int, bool, dict[str, int]]] = {
+    "x86_64": (
+        0xC000003E,
+        True,
+        {
+            "socket": 41,
+            "socketpair": 53,
+            "clone": 56,
+            "unshare": 272,
+            "io_uring_setup": 425,
+            "io_uring_enter": 426,
+            "io_uring_register": 427,
+            "clone3": 435,
+        },
+    ),
+    "aarch64": (
+        0xC00000B7,
+        False,
+        {
+            "socket": 198,
+            "socketpair": 199,
+            "clone": 220,
+            "unshare": 97,
+            "io_uring_setup": 425,
+            "io_uring_enter": 426,
+            "io_uring_register": 427,
+            "clone3": 435,
+        },
+    ),
+}
+_MACHINE_ARCH = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "aarch64": "aarch64",
+    "arm64": "aarch64",
+}
+ALLOWED_SOCKET_FAMILIES = (1, 2, 10)  # AF_UNIX, AF_INET, AF_INET6
+_X32_SYSCALL_BIT = 0x40000000
+_CLONE_NEWUSER = 0x10000000
+_EPERM, _ENOSYS, _EAFNOSUPPORT = 1, 38, 97
+_RET_ALLOW = 0x7FFF0000
+_RET_KILL_PROCESS = 0x80000000
+
+
+def _ret_errno(errno: int) -> int:
+    return 0x00050000 | errno
+
+
+def seccomp_arch(machine: Optional[str] = None) -> str:
+    """The filter's architecture for *machine* (default: this one), or refuse."""
+    import platform
+
+    machine = machine or platform.machine()
+    arch = _MACHINE_ARCH.get(machine.lower())
+    if arch is None:
+        raise SandboxRefusal(
+            "sandbox-required",
+            f"the socket-family filter is built for x86_64 and aarch64, not "
+            f"{machine}, so the command was not run",
+        )
+    return arch
+
+
+def seccomp_program(arch: Optional[str] = None) -> bytes:
+    """A classic-BPF seccomp filter (``struct sock_filter`` array), assembled here.
+
+    * a system call made through another architecture's entry (i386's
+      ``int 0x80`` on x86_64, 32-bit ARM on aarch64) kills the process, and
+      on x86_64 x32 system call numbers get ENOSYS;
+    * ``socket`` / ``socketpair`` with a family other than AF_UNIX, AF_INET
+      or AF_INET6 get EAFNOSUPPORT (AF_VSOCK, AF_NETLINK, AF_PACKET, ...);
+    * ``clone`` / ``unshare`` with CLONE_NEWUSER get EPERM; ``clone3``
+      (flags in memory, which a filter cannot read) gets ENOSYS, so the C
+      library falls back to ``clone``;
+    * io_uring, which can open sockets without the ``socket`` call, gets
+      ENOSYS.
+
+    Network reach is unchanged: AF_INET follows the network namespace
+    (``--unshare-net`` or ``--share-net``) and the proxy mode as before.
+    """
+    import struct
+
+    audit_arch, x32, nr = _SECCOMP_ARCHES[arch or seccomp_arch()]
+    ld_w_abs, jeq, jge, jset, ret = 0x20, 0x15, 0x35, 0x45, 0x06
+    # struct seccomp_data: nr at 0, arch at 4, args[0]'s low word at 16 (both
+    # architectures are little endian; the kernel reads these as int).
+    nr_off, arch_off, arg0_off = 0, 4, 16
+    prog: list[tuple] = [
+        ("ld", arch_off),
+        ("jeq", audit_arch, "nr", "kill"),
+        ("label", "nr"),
+        ("ld", nr_off),
+        *([("jge", _X32_SYSCALL_BIT, "enosys", None)] if x32 else []),
+        ("jeq", nr["socket"], "family", None),
+        ("jeq", nr["socketpair"], "family", None),
+        ("jeq", nr["clone"], "newuser", None),
+        ("jeq", nr["unshare"], "newuser", None),
+        ("jeq", nr["clone3"], "enosys", None),
+        ("jeq", nr["io_uring_setup"], "enosys", None),
+        ("jeq", nr["io_uring_enter"], "enosys", None),
+        ("jeq", nr["io_uring_register"], "enosys", None),
+        ("ret", _RET_ALLOW),
+        ("label", "family"),
+        ("ld", arg0_off),
+        *[("jeq", fam, "allow", None) for fam in ALLOWED_SOCKET_FAMILIES],
+        ("ret", _ret_errno(_EAFNOSUPPORT)),
+        ("label", "newuser"),
+        ("ld", arg0_off),
+        ("jset", _CLONE_NEWUSER, "eperm", "allow"),
+        ("label", "allow"),
+        ("ret", _RET_ALLOW),
+        ("label", "eperm"),
+        ("ret", _ret_errno(_EPERM)),
+        ("label", "enosys"),
+        ("ret", _ret_errno(_ENOSYS)),
+        ("label", "kill"),
+        ("ret", _RET_KILL_PROCESS),
+    ]
+    labels: dict[str, int] = {}
+    count = 0
+    for ins in prog:
+        if ins[0] == "label":
+            labels[ins[1]] = count
+        else:
+            count += 1
+    codes = {"jeq": jeq, "jge": jge, "jset": jset}
+    out = b""
+    index = 0
+    for ins in prog:
+        op = ins[0]
+        if op == "label":
+            continue
+        if op == "ld":
+            out += struct.pack("=HBBI", ld_w_abs, 0, 0, ins[1])
+        elif op == "ret":
+            out += struct.pack("=HBBI", ret, 0, 0, ins[1])
+        else:
+            _, k, jt, jf = ins
+            offsets = [0 if t is None else labels[t] - (index + 1) for t in (jt, jf)]
+            if not all(0 <= o < 256 for o in offsets):
+                raise ValueError("seccomp jump out of range")
+            out += struct.pack("=HBBI", codes[op], offsets[0], offsets[1], k)
+        index += 1
+    return out
+
+
 def wrap_argv(
     argv: Sequence[str],
     policy: SandboxPolicy,
     *,
     cwd: Optional[str] = None,
     writable: Sequence[Path] = (),
+    readonly: Sequence[Path] = (),
     share_network: bool = False,
 ) -> list[str]:
     """*argv* as a bubblewrap command line under *policy*.
 
-    *writable* paths are bound read-write after everything else, and
-    *share_network* keeps the host's network instead of the policy's; only
-    the harness's package installer asks for either (unify/environment.py).
+    *writable* paths are bound read-write after everything else, *readonly*
+    ones (a program the harness runs from outside the allowlisted root: the
+    installer's ``uv``) read-only on the root, and *share_network* keeps the
+    host's network instead of the policy's; only the harness's package
+    installer asks for these (unify/environment.py).
+
+    The command line starts ``/bin/sh -c 'exec "$@" 9<"$0"' <seccomp.bpf>``:
+    the shell opens the seccomp program on descriptor 9 for bubblewrap
+    (``--seccomp 9``), which reads and closes it, and replaces itself with
+    bubblewrap (same process, same process group).
     """
     bwrap = require_bwrap()
-    notices = policy.notices_dir or _notices_dir()
-    args: list[str] = [
-        bwrap,
-        "--ro-bind",
-        "/",
-        "/",
+    notices = policy.notices_dir
+    root_args = policy.root_args
+    if notices is None or not (notices / "seccomp.bpf").is_file() or not root_args:
+        notices = _notices_dir()
+        root_args = _root_mounts(notices)[0]
+    homes = _homes()
+    args: list[str] = [bwrap, *root_args]
+    for path in readonly:
+        for p in dict.fromkeys(
+            (Path(os.path.abspath(path)), Path(os.path.realpath(path))),
+        ):
+            if p.exists():
+                args += ["--ro-bind", str(Path(os.path.realpath(p))), str(p)]
+    # $HOME exists (empty, read-only) unless something mounted shows it.
+    home = Path(os.path.abspath(os.environ.get("HOME", "") or "/"))
+    if home != Path("/") and not any(
+        _within(home, Path(args[i + 2]))
+        for i in range(1, len(args) - 2)
+        if args[i] in _BIND_OPTIONS
+    ):
+        args += ["--dir", str(home)]
+    args += [
         "--dev",
         "/dev",
         "--proc",
@@ -546,6 +1072,8 @@ def wrap_argv(
         "--unshare-all",
         "--die-with-parent",
         "--new-session",
+        "--seccomp",
+        str(_SECCOMP_FD),
     ]
     extra = [Path(os.path.realpath(p)) for p in writable]
     shown = (*policy.readonly_state, policy.workspace, *extra)
@@ -568,8 +1096,12 @@ def wrap_argv(
     args += ["--ro-bind", str(notices / "mask-unify-state"), _notice(policy.state_dir)]
     for path, rule in policy.masked_dirs:
         args += ["--tmpfs", str(path), "--ro-bind", str(notices / rule), _notice(path)]
+    # A hidden file outside everything mounted does not exist in the sandbox
+    # at all; a notice there would only reveal its directory's name.
+    mounted = (*policy.root_visible, *shown)
     for path, rule in policy.masked_files:
-        args += ["--ro-bind", str(notices / rule), str(path)]
+        if any(_within(path, m) for m in mounted):
+            args += ["--ro-bind", str(notices / rule), str(path)]
     # A harness-only directory outside the state directory and outside every
     # mount below is masked with the others; what is seen inside it is put
     # back below.
@@ -613,8 +1145,43 @@ def wrap_argv(
         not bound and policy.readable_violation(Path(workdir)) is not None
     ) or not os.path.isdir(workdir):
         workdir = str(policy.workspace)
-    args += ["--chdir", workdir, "--"]
-    return args + command
+    # Every mount point on the root's tmpfs exists now; nothing more is
+    # written there.
+    args += ["--remount-ro", "/", "--chdir", workdir, "--"]
+    _refuse_broad_binds(args, homes)
+    return [
+        "/bin/sh",
+        "-c",
+        _SECCOMP_EXEC,
+        str(notices / "seccomp.bpf"),
+        *args,
+        *command,
+    ]
+
+
+_BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
+
+
+def _refuse_broad_binds(args: Sequence[str], homes: Sequence[Path]) -> None:
+    """Refuse a command line that would mount ``/`` or a whole home directory.
+
+    Raised for the policy's own mounts (a workspace configured as the home
+    directory); derived roots that would are already left out.
+    """
+    end = args.index("--") if "--" in args else len(args)
+    for i in range(end - 2):
+        if args[i] in _BIND_OPTIONS:
+            for p in (args[i + 1], args[i + 2]):
+                if _too_broad(Path(p), homes):
+                    raise SandboxRefusal(
+                        "root-allowlist",
+                        f"{p} would be mounted ({args[i]}), which would show / "
+                        "or a whole home directory",
+                        suggestion=(
+                            "Point UNIFY_LOCAL_ROOT (or UNIFY_HOME) at a "
+                            "directory of its own, not a home directory."
+                        ),
+                    )
 
 
 def _notice(directory: Path) -> str:
@@ -627,6 +1194,11 @@ def sandbox_env(
 ) -> dict[str, str]:
     """The environment a sandboxed command gets."""
     out = scrubbed_env(env)
+    # The fake clock's variables come from the harness only, as it has them.
+    for name in TRUSTED_ENV:
+        out.pop(name, None)
+        if name in os.environ:
+            out[name] = os.environ[name]
     out["TMPDIR"] = "/tmp"
     if policy.network == "proxy":
         url = f"http://127.0.0.1:{policy.proxy_port}"

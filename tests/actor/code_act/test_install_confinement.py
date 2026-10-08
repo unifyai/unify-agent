@@ -106,7 +106,8 @@ def test_the_installer_gets_no_credentials_and_runs_in_the_sandbox(
     argv, env, _ = _install_call(launched)
     venv = str(environment.environment_dir())
     policy = sandbox.build_policy()
-    assert Path(argv[0]).name == "bwrap", argv[:3]
+    # /bin/sh opens the seccomp program for bwrap, then execs it.
+    assert argv[0] == "/bin/sh" and Path(argv[4]).name == "bwrap", argv[:5]
     command = argv[argv.index("--") + 1 :]
     assert command == [
         "uv",

@@ -34,6 +34,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -181,6 +182,9 @@ def _installer(argv: List[str]) -> Tuple[List[str], Dict[str, str], Optional[str
         policy,
         cwd=str(venv),
         writable=[venv, cache],
+        # uv itself, wherever PATH finds it (~/.local/bin is outside the
+        # sandbox's root).
+        readonly=[Path(p) for p in (shutil.which(argv[0]),) if p],
         share_network=True,
     )
     return wrapped, env, str(venv)
