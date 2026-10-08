@@ -534,10 +534,7 @@ class PythonWorker:
 
     def _manifest(self, shadow: Dict[str, Any]) -> dict:
         want: Dict[str, dict] = {}
-        record = (
-            _function_library(shadow.get("functions")) is not None
-            or _helper_recorder() is not None
-        )
+        record = _function_library(shadow.get("functions")) is not None
         for name, value in list(shadow.items()):
             if not isinstance(name, str) or name in _SKIP:
                 continue
