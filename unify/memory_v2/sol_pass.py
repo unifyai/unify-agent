@@ -16,7 +16,9 @@ The box never sees the git checkout itself: a ``.git`` file the model could rewr
 ``git add`` at a repository (and configuration) of its choosing.
 
 Sol sees only what :func:`export_for_sol` and :func:`export_blobs` write (ruling R10): request, cells,
-actions, and the file blobs worktree actions recorded. Nothing about outcomes, signals or checkers reaches it.
+actions, and the file blobs worktree actions recorded; its first message adds the index and a table of
+how requests used each function (:func:`.usage.usage_table`, harness counts). Nothing about outcomes,
+signals or checkers reaches it.
 """
 
 from __future__ import annotations
@@ -789,6 +791,23 @@ class SolPass:
         self.mem, self.gate, self.ev = memory, gate, evidence
         self.load, self.turn, self.cfg = load, model_turn, config
 
+    def _usage(self, req: PassRequest, tree: Path) -> str:
+        """The library-use table over the pass's requests (:func:`.usage.usage_table`) for the functions
+        of memory ``main`` at *tree*: harness counts only, nothing of a checker (ruling R10).
+        """
+        from .memory_repo import items as memory_items
+        from .usage import usage_table
+
+        try:
+            ids = [
+                it.item_id
+                for it in memory_items(tree).items
+                if it.kind == "env_function"
+            ]
+            return usage_table(self.ev, list(req.episodes), ids)
+        except Exception as exc:  # noqa: BLE001 - a measurement never stops a pass
+            return f"(library use not available: {type(exc).__name__})\n"
+
     def _stage_inputs(self, req: PassRequest, inputs: Path) -> None:
         inputs.mkdir()
         export_for_sol(self.load, list(req.episodes), inputs / "episodes")
@@ -989,11 +1008,13 @@ class SolPass:
                 index = build_index(wt)
             except ValueError as exc:  # over budget, or an unreadable notes file
                 index = f"(index not built: {exc})"
+            usage = self._usage(req, wt)
             messages: list[dict] = [
                 {"role": "system", "content": SOL_SYSTEM},
                 {
                     "role": "user",
-                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}",
+                    "content": f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
+                    f"\n\n{usage}",
                 },
             ]
             finished = False
