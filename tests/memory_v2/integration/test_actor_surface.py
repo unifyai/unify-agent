@@ -309,6 +309,50 @@ def test_a_large_library_leaves_the_prompt_as_it_is(tmp_path):
     assert "- `env.spotify`: 300 functions\n" in _helper(tmp_path / "co").catalog()
 
 
+# ── a suspect channel's refusal (UNIFY_MEMORY_V2_SURFACING=catalogue) ───────
+
+REFUSAL = (
+    "Traceback (most recent call last):\n"
+    '  File "<string>", line 2, in <module>\n'
+    "env.spotify.MemoryInputError: expected a playlist id, got an empty string\n"
+)
+
+
+def test_a_suspect_channels_refusal_says_so_only_under_catalogue(monkeypatch, tmp_path):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
+
+    def run(surfacing: str, suspect: set) -> SimpleNamespace:
+        return SimpleNamespace(
+            index="",
+            paths=Paths.under(tmp_path),
+            surfacing=SurfacingOptions(surfacing=surfacing),
+            state=SimpleNamespace(suspect=suspect),
+        )
+
+    monkeypatch.setattr(request_mod, "_CURRENT", run("catalogue", {"spotify", "venmo"}))
+    noted = hooks.cell_error(REFUSAL)
+    assert noted.startswith(REFUSAL)
+    assert noted[len(REFUSAL) :] == (
+        "memory: env.spotify is suspect: the environment changed since its functions were built, so "
+        "this refusal may come from that change; do the work directly.\n"
+    )
+    nested = REFUSAL.replace("env.spotify.", "env.spotify.parsers.")
+    assert "env.spotify is suspect" in hooks.cell_error(nested)
+    for text in (
+        REFUSAL.replace("spotify", "slack"),  # a channel that is not suspect
+        REFUSAL.replace("MemoryInputError", "KeyError"),  # not a refusal
+        "ValueError: env.spotify.MemoryInputError mentioned mid-line\n",
+    ):
+        assert hooks.cell_error(text) == text
+    monkeypatch.setattr(request_mod, "_CURRENT", run("index", {"spotify"}))
+    assert hooks.cell_error(REFUSAL) == REFUSAL  # the v2 screen build's text
+    monkeypatch.setattr(request_mod, "_CURRENT", None)
+    assert hooks.cell_error(REFUSAL) == REFUSAL
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "")
+    monkeypatch.setattr(request_mod, "_CURRENT", run("catalogue", {"spotify"}))
+    assert hooks.cell_error(REFUSAL) == REFUSAL
+
+
 # ── the v2 index (UNIFY_MEMORY_V2_SURFACING=index, the default) ─────────────
 
 

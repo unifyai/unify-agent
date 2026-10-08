@@ -885,7 +885,8 @@ class PythonWorker:
                 and done.get("error_type") == "ControlledInterruption"
             ):
                 raise ControlledInterruption(str(done.get("message") or "steered"))
-            raise WorkerCellError(str(done["error"]))
+            # UNIFY_MEMORY_V2_SURFACING=catalogue: a suspect channel's refusal says so.
+            raise WorkerCellError(_mv2.cell_error(str(done["error"])))
         return self.decode(done.get("result"), shadow)
 
     @staticmethod
