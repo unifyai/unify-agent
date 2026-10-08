@@ -10,8 +10,10 @@ Perturbations come from types alone, never from task ids, stream positions, benc
 
 **A field with one value is identity or format, never perturbed.** The gate reads the recorded observations
 of the item's families from the whole evidence store (:func:`pool_actions`: the episodes the manifest names
-and the most recent :data:`MAX_POOL_EPISODES` episodes touching each covered channel, at most
-:data:`MAX_POOL_ACTIONS` actions), not only the covers the pass chose. A family is a tool call's
+and the most recent :data:`MAX_POOL_EPISODES` episodes touching each covered channel, read in the store's
+order before the manifest's own, at most :data:`MAX_POOL_ACTIONS` actions), not only the covers the pass
+chose. When a read cap stops the pool, or the file parse cap leaves a family's file unread, no field (of
+that family) is kept: an unread observation could vary it. A family is a tool call's
 ``channel.method`` (its keywords, or its ``ok`` responses for an item taking observations), a dialogue
 ``channel.method``, or a work-tree channel and path family (at most :data:`MAX_HOST_PARSES` files parsed).
 Among the observations of a cover's family *with the same set of field names* (key paths, columns, keyword
@@ -1048,6 +1050,7 @@ def plan(
     field_types: dict[str, str] | None = None,
     input_kind: str | None = None,
     pool: list[tuple[str, Action]] | None = None,
+    pool_capped: bool = False,
 ) -> Plan:
     """The cases that check *item* on its covered observations (see the module docstring).
 
@@ -1055,7 +1058,8 @@ def plan(
     *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21);
     *input_kind* its declared input form (None: each kind's convention); *pool* the recorded observations
     (episode id, action) a field's constancy is judged on, holding the covers (None: the covers, plus
-    *seen* under an unknown episode id ``""``, which never counts toward the episodes).
+    *seen* under an unknown episode id ``""``, which never counts toward the episodes); *pool_capped*
+    whether a read cap stopped the pool, in which case no field is kept as constant (fail safe).
     """
     out = Plan()
     field_types = dict(field_types or {})
@@ -1130,7 +1134,8 @@ def plan(
                 ranged(rfam, d)
     # constancy: the pool's observations by family and field-name set, each field's values per observation
     shapes: dict[tuple, list[tuple[str, dict[str, set[str]]]]] = {}
-    parses, parse_capped = 0, False
+    parses = 0
+    parse_capped: set[tuple] = set()  # families with a file the parse cap left unread
     for eid, a in pool:
         kind = getattr(a, "kind", "tool")
         if kind == "shell":
@@ -1154,7 +1159,7 @@ def plan(
                 continue
             if kind == "worktree":
                 if parses >= MAX_HOST_PARSES:
-                    parse_capped = True
+                    parse_capped.add(fam)
                     continue
                 parses += 1
             d = _doc(a, blob, input_kind)
@@ -1164,13 +1169,20 @@ def plan(
         shapes.setdefault((fam, frozenset(fields)), []).append(
             (eid, {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()}),
         )
+    if pool_capped:
+        out.notes.append(
+            "the recorded-observation pool stopped at its read cap; no field is kept as identity or "
+            "format",
+        )
     if parse_capped:
         out.notes.append(
-            f"constancy read {MAX_HOST_PARSES} recorded files of the item's families; the rest count "
-            "as unseen",
+            f"constancy parsed its cap of {MAX_HOST_PARSES} recorded files; no field of a family with "
+            "unread files is kept as identity or format",
         )
 
     def constant(fam: tuple, shape: frozenset, name: str) -> bool:
+        if pool_capped or fam in parse_capped:
+            return False  # an unread observation could vary the field: fail safe
         obs = shapes.get((fam, shape), [])
         values: set[str] = set()
         for _, by_name in obs:

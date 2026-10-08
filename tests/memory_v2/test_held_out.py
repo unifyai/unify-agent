@@ -922,6 +922,80 @@ def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
     assert {c.field for c in default.cases if c.field} == {"room", "steps"}
 
 
+def _expenses(rows):
+    return b"id,amount,currency\n" + b"".join(
+        b"X-%d,%d.00,USD\n" % (i, amount) for i, amount in enumerate(rows)
+    )
+
+
+def test_a_capped_pool_keeps_no_field_constant(recorded, monkeypatch):
+    """N1: an unread observation could vary a field, so a cap makes constancy fail safe."""
+    import unify.memory_v2.held_out as held_out
+
+    store, _ = recorded
+    msgs, pool = _arc_pool()
+    capped = plan(
+        "env/dialogue_user:parse_feedback",
+        [("a1", 0, msgs[0])],
+        seen=msgs,
+        blob=store.get,
+        pool=pool,
+        pool_capped=True,
+    )
+    assert {"type", "version", "attempt"} <= {c.field for c in capped.cases}
+    assert any("stopped at its read cap" in n for n in capped.notes)
+    # three distinct expense files from two episodes: currency is USD in all of them
+    reads = [
+        (eid, _wt_read(i, f"exp/2026/e{i}.csv", store.put(_expenses(rows)), 1))
+        for i, (eid, rows) in enumerate(
+            [("c1", [5, 7]), ("c2", [9, 11]), ("c2", [13, 15])],
+        )
+    ]
+    covers = [(reads[0][0], 0, reads[0][1])]
+    kept = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" not in {c.field for c in kept.cases}
+    assert any("currency" in n and "not perturbed" in n for n in kept.notes)
+    # the file parse cap leaves a file of the family unread: currency is perturbed again
+    monkeypatch.setattr(held_out, "MAX_HOST_PARSES", 2)
+    cut = plan("env/worktree_workspace:r", covers, seen=[], blob=store.get, pool=reads)
+    assert "currency" in {c.field for c in cut.cases}
+    assert any("parsed its cap of 2 recorded files" in n for n in cut.notes)
+
+
+def test_the_gate_reads_the_stores_episodes_first_in_store_order(tmp_path, monkeypatch):
+    """N1: the manifest's episodes cannot use up the read cap before the store's are read."""
+    from types import SimpleNamespace
+
+    import unify.memory_v2.held_out as held_out
+
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    recorded_eps = {
+        eid: [_dl(0, {"room": eid}), _dl(1, {"room": eid + "x"})]
+        for eid in ("s2", "s1", "n1")
+    }
+    for eid in ("s1", "s2"):  # store order: s1 before s2
+        ev.index_episode(_ep(episode_id=eid, actions=recorded_eps[eid]), "1" * 40)
+    lookup = lambda eid, i: (
+        recorded_eps[eid][i]
+        if eid in recorded_eps and i < len(recorded_eps[eid])
+        else None
+    )
+    gate = Gate(
+        Repo.init_bare(tmp_path / "m.git"),
+        ev,
+        BlobStore(tmp_path / "b"),
+        action_lookup=lookup,
+    )
+    named = SimpleNamespace(source_episodes=["n1"], covers=[("n1", 0)])
+    run = SimpleNamespace(pools={}, man=SimpleNamespace(items=[named]))
+    cover = [("n1", 0, recorded_eps["n1"][0])]
+    pool, capped = gate._pool(run, cover)
+    assert [e for e, _ in pool] == ["s1", "s1", "s2", "s2", "n1", "n1"] and not capped
+    monkeypatch.setattr(held_out, "MAX_POOL_ACTIONS", 3)
+    pool, capped = gate._pool(SimpleNamespace(pools={}, man=run.man), cover)
+    assert [e for e, _ in pool] == ["s1", "s1"] and capped
+
+
 def test_a_tool_keyword_is_constant_only_across_every_recorded_call_in_the_pool(
     recorded,
 ):

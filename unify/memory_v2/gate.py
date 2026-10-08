@@ -95,7 +95,6 @@ from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
 from .held_out import (
-    MAX_POOL_ACTIONS,
     MAX_POOL_EPISODES,
     plan,
     pool_actions,
@@ -737,16 +736,17 @@ class Gate:
         run: _Run,
         covers: list[tuple[str, int, Action]],
     ) -> tuple[list[tuple[str, Action]], bool]:
-        """The recorded observations on the covered channels: the manifest's episodes and, per channel, the
-        evidence store's most recent :data:`.held_out.MAX_POOL_EPISODES` episodes touching it (bounded).
+        """The recorded observations on the covered channels: per channel, the evidence store's most recent
+        :data:`.held_out.MAX_POOL_EPISODES` episodes touching it, in the store's order (independent of the
+        pass), then the manifest's other episodes (bounded; whether a cap stopped the read).
         """
         channels = tuple(sorted({a.channel for _, _, a in covers}))
         if channels not in run.pools:
-            eids = list(self._named_episodes(run))
+            stored: set[str] = set()
             for ch in channels:
-                for eid in self.ev.episode_ids_since(ch, 0)[-MAX_POOL_EPISODES:]:
-                    if eid not in eids:
-                        eids.append(eid)
+                stored.update(self.ev.episode_ids_since(ch, 0)[-MAX_POOL_EPISODES:])
+            eids = sorted(stored, key=self.ev.seq_of)
+            eids += [e for e in self._named_episodes(run) if e not in stored]
             run.pools[channels] = pool_actions(eids, self.lookup, set(channels))
         return run.pools[channels]
 
@@ -784,12 +784,8 @@ class Gate:
             field_types=field_types,
             input_kind=input_kind,
             pool=None if pool is None else pool[0],
+            pool_capped=pool is not None and pool[1],
         )
-        if pool is not None and pool[1]:
-            run.note(
-                f"G2 held-out values: {item} the recorded-observation pool stopped at "
-                f"{MAX_POOL_ACTIONS} actions",
-            )
         verdict = run_plan(item, p, tree=run.c_tree, python=self.python, work=work)
         for f in verdict.refused[:5]:
             run.fail("G2", f"{item} held-out value refused: {f[:80]}")
