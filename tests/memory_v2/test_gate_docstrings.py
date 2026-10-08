@@ -825,3 +825,72 @@ def test_a_headed_fixture_for_a_headerless_recorded_table_is_refused(tmp_path):
     assert (
         f"G3: the examples of {item} read no fixture shaped like an input it covers ({fixture_path})"
     ) in res.reasons, res.reasons
+
+
+# --- a fixture holding a collection of recorded inputs (validation of 394bd9afd, 8 Oct) ----------------------
+# Sol's natural fixture is a JSON list of the recorded observations (or records by name), and an example picks
+# one; the whole file is not shaped like one input, so the check also shapes the collection's elements.
+
+_PICKS = {
+    "list": ("[{0}, {1}]", '[0]'),
+    "records": ('{{"first": {0}, "second": {1}}}', '["first"]'),
+    "wrapped": ('{{"rows": [{0}, {1}]}}', '["rows"][0]'),
+}
+
+
+@pytest.mark.parametrize("layout", sorted(_PICKS))
+def test_an_example_fixture_may_be_a_collection_of_recorded_inputs(lab, layout):
+    mem, _, gate = lab
+    template, pick = _PICKS[layout]
+    other = dict(FEEDBACK, score=5)
+    fixture = template.format(json.dumps(FEEDBACK), json.dumps(other))
+    module = DLG_MOD.replace(
+        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")))',
+        f'>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")){pick})',
+    )
+    assert module != DLG_MOD
+    res = gate.merge(
+        mem.head(),
+        _candidate(mem, _dlg_files(module=module, fixture=fixture)),
+        DLG_MAN,
+        f"p-collection-{layout}",
+        "incremental",
+        "dialogue_user",
+        "0.01",
+    )
+    assert not any("read no fixture shaped" in r for r in res.reasons), res.reasons
+    assert res.passed, res.reasons
+
+
+def test_a_collection_of_wrongly_shaped_elements_is_still_refused(lab):
+    mem, _, gate = lab
+    module = DLG_MOD.replace(
+        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json")))',
+        '>>> parse_feedback(json.load(open("env/dialogue_user/tests/feedback.json"))[0])',
+    )
+    res = gate.merge(
+        mem.head(),
+        _candidate(mem, _dlg_files(module=module, fixture='[[1, 2], [3, 4]]')),
+        DLG_MAN,
+        "p-collection-wrong",
+        "incremental",
+        "dialogue_user",
+        "0.01",
+    )
+    assert not res.passed
+    assert (
+        "G3: the examples of env/dialogue_user:parse_feedback read no fixture shaped like an input it "
+        "covers (env/dialogue_user/tests/feedback.json)"
+    ) in res.reasons, res.reasons
+
+
+def test_fixture_elements_are_bounded_and_value_free():
+    from unify.memory_v2.gate import FIXTURE_ELEMENTS, _fixture_elements
+
+    big = json.dumps([{"score": i} for i in range(1000)]).encode()
+    assert len(_fixture_elements(big)) == FIXTURE_ELEMENTS
+    lines = b"\n".join(json.dumps({"score": i}).encode() for i in range(50))
+    assert len(_fixture_elements(lines)) == FIXTURE_ELEMENTS
+    assert _fixture_elements(b"\xff\xfe") == [] and _fixture_elements(b"3") == []
+    nested = json.dumps({"a": [{"x": 1}] * 40, "b": [{"x": 2}] * 40}).encode()
+    assert len(_fixture_elements(nested)) <= 2 * FIXTURE_ELEMENTS

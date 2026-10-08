@@ -483,6 +483,47 @@ def _run(module, name):
 """
 
 
+#: At most this many elements of a collection fixture are shaped (:func:`_fixture_elements`).
+FIXTURE_ELEMENTS = 16
+
+
+def _fixture_elements(data: bytes) -> list:
+    """The first :data:`FIXTURE_ELEMENTS` elements of a fixture holding a collection of recorded inputs: the
+    items of a JSON list, the values of a JSON object of records, the same one level down (``{"rows": [...]}``),
+    or the lines of a JSON-lines file; ``[]`` for anything else. Bounded and value-free."""
+    try:
+        text = bytes(data).decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    try:
+        top = json.loads(text)
+    except (ValueError, RecursionError):
+        out = []
+        for line in text.splitlines():
+            if len(out) >= FIXTURE_ELEMENTS:
+                break
+            if line.strip():
+                try:
+                    out.append(json.loads(line))
+                except (ValueError, RecursionError):
+                    return []
+        return out
+
+    def members(v):
+        if isinstance(v, list):
+            return v[:FIXTURE_ELEMENTS]
+        if isinstance(v, dict):
+            return list(v.values())[:FIXTURE_ELEMENTS]
+        return []
+
+    out = list(members(top))
+    for v in members(top):
+        if len(out) >= 2 * FIXTURE_ELEMENTS:
+            break
+        out += members(v)[: 2 * FIXTURE_ELEMENTS - len(out)]
+    return out
+
+
 def fixture_fits(mine: dict, recorded: dict) -> bool:
     """Whether a fixture's descriptor fits a recorded input's: the same exact shape, or a structural match
     of keyed shapes (see :meth:`Gate._fixture_shape`)."""
@@ -1985,6 +2026,9 @@ class Gate:
             mine = [
                 d for d in (file_shape(path, data), value_shape(data)) if d is not None
             ]
+            # a fixture is also a collection of recorded inputs (a JSON list, records by name, one level of
+            # wrapping, or JSON lines) whose examples pick one: each element is shaped on its own
+            mine += [d for d in map(value_shape, _fixture_elements(data)) if d is not None]
             if any(fixture_fits(d, r) for d in mine for r in recorded):
                 return
         if paths:
