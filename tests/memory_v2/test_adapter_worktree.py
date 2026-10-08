@@ -59,7 +59,7 @@ def test_reads_get_shapes_and_blobs_from_the_before_snapshot(tmp_path):
     rows = rec.record_cell(0, audit)
     assert len(rows) == 4
     assert all(
-        r.kind == "worktree" and r.channel == "worktree" and r.kwargs == {}
+        r.kind == "worktree" and r.channel == "worktree:workspace" and r.kwargs == {}
         for r in rows
     )
 
@@ -171,6 +171,51 @@ def test_snapshot_skips_large_files_symlinks_and_nested_git(tmp_path):
     )
     assert row.response["blob"] is None and row.response["shape"]["format"] == "binary"
     assert row.response["source"] == "disk"
+
+
+def test_channel_is_kind_qualified():
+    from unify.memory_v2.episodes import env_channel
+    from unify.memory_v2.integration.adapters.worktree import CHANNEL
+
+    assert CHANNEL == "worktree:workspace"
+    assert env_channel("worktree", CHANNEL) == "worktree_workspace"
+
+
+def test_paths_hidden_from_cells_are_never_snapshotted_read_or_listed(tmp_path):
+    hide = {"secret.env", "vault"}
+
+    def hidden(rel):
+        if rel == "boom":
+            raise RuntimeError("predicate failed")  # unknown counts as hidden
+        return rel.split("/")[0] in hide
+
+    wt, repo, rec = _setup(tmp_path, hidden=hidden)
+    (wt / "secret.env").write_text("TOKEN=HIDDEN-VALUE-1\n")
+    (wt / "vault").mkdir()
+    (wt / "vault" / "k.txt").write_text("HIDDEN-VALUE-2\n")
+    (wt / "boom").write_text("HIDDEN-VALUE-3\n")
+    sha = rec.begin()
+    files = tree_files(repo, sha)
+    assert "secret.env" not in files and "boom" not in files
+    assert not any(p.startswith("vault") for p in files)
+    assert rec.skip_counts["worktree_before: hidden from cells"] == 3
+    rows = rec.record_cell(
+        0,
+        [
+            {"event": "open", "path": str(wt / "secret.env"), "mode": "r"},
+            {"event": "open", "path": str(wt / "vault" / "k.txt"), "mode": "r"},
+            {"event": "os.listdir", "path": str(wt / "vault")},
+            {"event": "open", "path": str(wt / "boom"), "mode": "w"},
+            {"event": "open", "path": str(wt / "pay.csv"), "mode": "r"},
+        ],
+    )
+    assert [(r.method, r.args) for r in rows] == [("read", ["pay.csv"])]
+    (wt / "secret.env").write_text("TOKEN=HIDDEN-VALUE-4\n")
+    assert rec.finish() == []
+    assert rec.diff() == ""
+    for needle in (b"HIDDEN-VALUE-1", b"HIDDEN-VALUE-2", b"HIDDEN-VALUE-4"):
+        assert not _blob_store_holds(tmp_path, needle)
+        assert not _snapshot_holds(repo, rec.after, needle)
 
 
 def test_snapshot_dir_inside_work_tree_is_refused(tmp_path):

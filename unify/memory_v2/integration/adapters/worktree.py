@@ -24,6 +24,11 @@ are refused with a counted note, as is a read of the work-tree root itself and a
 clipped. A record that still fails is counted and skipped; it never aborts the cell. Snapshots have a
 per-file cap and a total byte and file budget.
 
+What the sandbox hides from cells inside the work tree (secret-named files, the store, a state directory
+under it) is never snapshotted, read or listed: the caller passes ``hidden``, a predicate over the
+work-tree-relative path (the sandbox policy's ``readable_violation``), and every such path is skipped with
+a counted note. A predicate that raises counts as hidden.
+
 Shapes: no file format is parsed in this process
 ------------------------------------------------
 Every parser has its own blow-up on hostile input (PyYAML's base-60 ints are quadratic; a zip lies about
@@ -78,7 +83,8 @@ Git runs with a minimal environment (``PATH``, a scratch ``HOME``, ``GIT_CONFIG_
 tree and a bounded timeout. Blobs are written as loose objects from the bytes read here, so no git
 command ever opens a work-tree path and no ``.gitattributes`` filter can run.
 
-This module is standalone: nothing in the actor calls it yet. ``file_shape`` (and
+``integration/worktree_capture.py`` wires it into a request (snapshots at begin and finish, the worker's
+audit records per cell). ``file_shape`` (and
 :mod:`worktree_shapes`) must be unified with the parallel ``unify/memory_v2/analysis/shapes.py`` at
 merge.
 """
@@ -102,7 +108,7 @@ import time
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ...blobs import BlobStore
 from ...episodes import Action
@@ -120,7 +126,8 @@ from .worktree_shapes import (
     plain_text_shape,
 )
 
-CHANNEL = "worktree"
+#: Kind-qualified (env_channel maps it to ``worktree_workspace``), so it never collides with a tool namespace.
+CHANNEL = "worktree:workspace"
 BLOB_CAP = 2 * 1024 * 1024  # bytes stored per file in the blob store
 SNAPSHOT_CAP = 16 * 1024 * 1024  # files larger than this are left out of snapshots
 SNAPSHOT_BUDGET_BYTES = 512 * 1024 * 1024  # total bytes per snapshot
@@ -641,6 +648,16 @@ class _Notes:
             self.notes.append(f"{reason}: {safe[:200]!r}")
 
 
+def _hidden_by(hidden: Callable[[str], bool] | None, rel: str) -> bool:
+    """Whether *hidden* hides *rel*; a predicate that raises hides it (fail closed)."""
+    if hidden is None:
+        return False
+    try:
+        return bool(hidden(rel))
+    except Exception:  # noqa: BLE001 - unknown means hidden
+        return True
+
+
 def snapshot(
     repo: Repo,
     work_tree: Path,
@@ -649,8 +666,12 @@ def snapshot(
     cap: int = SNAPSHOT_CAP,
     budget_bytes: int = SNAPSHOT_BUDGET_BYTES,
     budget_files: int = SNAPSHOT_BUDGET_FILES,
+    hidden: Callable[[str], bool] | None = None,
 ) -> Snapshot:
-    """Commit the work tree onto ``main`` of *repo*, reading every file through a checked fd."""
+    """Commit the work tree onto ``main`` of *repo*, reading every file through a checked fd.
+
+    A file or directory for which *hidden* (work-tree-relative path) is true is left out, unread.
+    """
     notes = _Notes()
     if _git_raw(repo, ["rev-parse", "--show-object-format"]).decode().strip() != "sha1":
         raise GitError("the work-tree snapshot repo must use sha1 objects")
@@ -676,6 +697,9 @@ def snapshot(
                     bad = _bad_name(name)
                     if bad:
                         notes.add(bad, rel)
+                        continue
+                    if _hidden_by(hidden, rel):
+                        notes.add("hidden from cells", rel)
                         continue
                     try:
                         st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
@@ -955,6 +979,7 @@ class WorkTreeRecorder:
         budget_files: int = SNAPSHOT_BUDGET_FILES,
         shape_budget: int = SHAPE_BUDGET,
         parse_seconds: float = PARSE_BUDGET_S,
+        hidden: Callable[[str], bool] | None = None,
     ) -> None:
         self.work_tree = Path(work_tree).resolve()
         git_dir = Path(snapshot_repo.git_dir).resolve()
@@ -969,6 +994,7 @@ class WorkTreeRecorder:
         self.snapshot_cap = snapshot_cap
         self.budget_bytes = budget_bytes
         self.budget_files = budget_files
+        self.hidden = hidden  # work-tree-relative paths the sandbox hides from cells
         self._shape_left = shape_budget  # bytes still to be parsed for shapes
         self._parse_left = (
             parse_seconds  # wall-clock seconds still to be spent on shapes
@@ -1005,6 +1031,7 @@ class WorkTreeRecorder:
             cap=self.snapshot_cap,
             budget_bytes=self.budget_bytes,
             budget_files=self.budget_files,
+            hidden=self.hidden,
         )
         for reason, n in snap.counts.items():
             self._notes.counts[f"{message}: {reason}"] += n
@@ -1138,6 +1165,10 @@ class WorkTreeRecorder:
             if parts is None:
                 continue
             rel = "/".join(parts) or "."
+            if parts and _hidden_by(self.hidden, rel):
+                # hidden from the cell by the sandbox: never read, listed or attributed here
+                self._notes.add("hidden from cells", rel)
+                continue
             if method in ("write",) or method in _WRITE_EVENTS:
                 self._written.setdefault(rel, [])
                 if cell not in self._written[rel]:
