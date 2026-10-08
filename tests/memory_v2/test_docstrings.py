@@ -147,3 +147,74 @@ def test_the_standard_text_is_generated_from_the_constants():
     for name in docstrings.REQUIRED_SECTIONS + docstrings.OPTIONAL_SECTIONS:
         assert f"`{name}:`" in text
     assert str(docstrings.MIN_REFUSAL_CHARS) in text and "MemoryInputError" in text
+
+
+def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():
+    """I2: a real example calls the function itself with an argument, shows a result and reads a fixture."""
+    split = docstrings.problems(
+        FULL,
+        ["path", "strict"],
+        "path",
+        name="read_ledger",
+        channel="w",
+    )
+    assert len(split) == 1 and split[0].startswith(
+        "Example: no example calls `read_ledger(...)` with an argument and shows its result",
+    )  # the call's result is only shown by a later example
+    one = FULL.replace(
+        '>>> rows = read_ledger("env/w/tests/data/ledger.csv")\n    >>> rows[0]["vendor_id"]',
+        '>>> read_ledger("env/w/tests/data/ledger.csv")[0]["vendor_id"]',
+    )
+    assert one != FULL
+    assert (
+        docstrings.problems(
+            one,
+            ["path", "strict"],
+            "path",
+            name="read_ledger",
+            channel="w",
+        )
+        == []
+    )
+    assert docstrings.fixture_paths(docstrings.parse(one), "w") == [
+        "env/w/tests/data/ledger.csv",
+    ]
+    skipped = one.replace('["vendor_id"]', '["vendor_id"]  # doctest: +SKIP')
+    assert docstrings.problems(
+        skipped,
+        ["path", "strict"],
+        "path",
+        name="read_ledger",
+        channel="w",
+    ) == [
+        "Example: an example is skipped (`+SKIP`); every example must run",
+    ]
+    no_fixture = one.replace('"env/w/tests/data/ledger.csv"', "path")
+    assert docstrings.problems(
+        no_fixture,
+        ["path", "strict"],
+        "path",
+        name="read_ledger",
+        channel="w",
+    ) == [
+        "Example: no example reads a recorded input from a fixture under env/w/tests/",
+    ]
+    elsewhere = one.replace("env/w/tests/", "env/other/tests/")
+    assert docstrings.fixture_paths(docstrings.parse(elsewhere), "w") == []
+    ellipsis = one.replace("    'V-17'", "    ...")
+    assert docstrings.problems(
+        ellipsis,
+        ["path", "strict"],
+        "path",
+        name="read_ledger",
+        channel="w",
+    )
+
+
+def test_section_aliases_and_unmeasurable_fstrings():
+    d = docstrings.parse(
+        "Read.\n\nParameters:\n    path: a path.\n\nReturn:\n    Rows.\n",
+    )
+    assert d.args == [("path", "a path.")] and d.sections["Returns"] == "Rows."
+    only_vars = _fn("def f(path):\n    raise MemoryInputError(f'{path}')\n")
+    assert docstrings.refusal_problems(only_vars) == []  # unmeasurable, as documented

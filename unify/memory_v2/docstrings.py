@@ -17,8 +17,7 @@ function (the gate checks it under G1 and runs the examples under G3)::
         MemoryInputError: when the file is not a CSV with the ledger's columns.
 
     Example:
-        >>> rows = read_ledger("env/worktree_workspace/tests/data/ledger.csv")
-        >>> rows[0]["vendor_id"]
+        >>> read_ledger("env/worktree_workspace/tests/data/ledger.csv")[0]["vendor_id"]
         'V-17'
 
     Use when: ...                                         <- optional
@@ -29,9 +28,17 @@ function (the gate checks it under G1 and runs the examples under G3)::
     Input: path
 
 A section starts at a line ``<Name>:`` with no indentation (text may follow on the same line); its body is
-the indented lines after it. ``Examples:`` is accepted for ``Example:``. Every ``>>>`` example runs as a
-doctest with the library root as the working directory and the function's module as its globals, so a
-recorded input copied under ``env/<channel>/tests/`` is reached by its path from the root.
+the indented lines after it. ``Examples:`` is accepted for ``Example:`` (and ``Arguments:``/``Parameters:``
+for ``Args:``, ``Return:`` for ``Returns:``). Every ``>>>`` example runs as a doctest with the library root as
+the working directory and the function's module as its globals, so a recorded input copied under
+``env/<channel>/tests/`` is reached by its path from the root.
+
+The examples must be real (:func:`example_problems`): the section parses as doctest examples, none is
+skipped (``+SKIP``), at least one example calls the function itself with an argument and shows a result that
+is more than ``...``, and the examples read at least one fixture under ``env/<channel>/tests/`` (a string
+constant naming the path). The gate also checks that the fixture exists, that it has the shape of an input
+the function was admitted on (:mod:`.memory_helper`), and, when the examples run, that at least one example
+ran and the function was called.
 
 Refusals explain themselves: each ``raise MemoryInputError(...)`` in the function passes a message whose
 literal text (string constants and the constant parts of f-strings, concatenations and ``format``
@@ -43,6 +50,7 @@ function's own code, so it covers every refusal path, not only the ones its test
 from __future__ import annotations
 
 import ast
+import doctest
 import re
 import textwrap
 from dataclasses import dataclass, field
@@ -63,7 +71,13 @@ SECTION_KEYS = {
     "Don't use when": "dont_use_when",
     "Notes": "notes",
 }
-_ALIASES = {"Examples": "Example", "Don’t use when": "Don't use when"}
+_ALIASES = {
+    "Examples": "Example",
+    "Don’t use when": "Don't use when",
+    "Arguments": "Args",
+    "Parameters": "Args",
+    "Return": "Returns",
+}
 _NAMES = sorted(
     set(REQUIRED_SECTIONS) | set(OPTIONAL_SECTIONS) | set(LINE_FIELDS) | set(_ALIASES),
     key=len,
@@ -141,15 +155,96 @@ def params(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return names
 
 
+def examples(d: Docstring) -> list[doctest.Example]:
+    """The doctest examples of the Example section, as doctest itself parses them (``[]`` if none)."""
+    try:
+        return doctest.DocTestParser().get_examples(d.sections.get("Example", ""))
+    except ValueError:  # malformed (an inconsistent indentation, say)
+        return []
+
+
 def has_example(d: Docstring) -> bool:
-    return ">>>" in d.sections.get("Example", "")
+    return bool(examples(d))
 
 
-def problems(doc: str, names: list[str], input_form: str | None) -> list[str]:
+def _tree(source: str) -> ast.AST | None:
+    try:
+        return ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _calls(source: str, name: str) -> bool:
+    """Whether *source* calls *name* (by name or as an attribute) with at least one argument."""
+    tree = _tree(source)
+    return tree is not None and any(
+        isinstance(n, ast.Call)
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == name)
+            or (isinstance(n.func, ast.Attribute) and n.func.attr == name)
+        )
+        and (n.args or n.keywords)
+        for n in ast.walk(tree)
+    )
+
+
+def _shows_result(want: str) -> bool:
+    return bool(want.strip().replace("...", "").strip())
+
+
+def fixture_paths(d: Docstring, channel: str) -> list[str]:
+    """The paths under ``env/<channel>/tests/`` the examples name as string constants, sorted."""
+    prefix = f"env/{channel}/tests/"
+    out: set[str] = set()
+    for e in examples(d):
+        tree = _tree(e.source)
+        for n in ast.walk(tree) if tree is not None else ():
+            if (
+                isinstance(n, ast.Constant)
+                and isinstance(n.value, str)
+                and n.value.startswith(prefix)
+                and ".." not in n.value.split("/")
+                and "\n" not in n.value
+            ):
+                out.add(n.value)
+    return sorted(out)
+
+
+def example_problems(d: Docstring, name: str | None, channel: str | None) -> list[str]:
+    """Why the Example section is not a real example of *name* on a fixture of *channel* (``[]``: it is)."""
+    found = examples(d)
+    if not found:
+        return ["has no Example: section with a `>>>` example"]
+    out: list[str] = []
+    if any(e.options.get(doctest.SKIP) for e in found):
+        out.append("Example: an example is skipped (`+SKIP`); every example must run")
+    if name is not None and not any(
+        _calls(e.source, name) and _shows_result(e.want) for e in found
+    ):
+        out.append(
+            f"Example: no example calls `{name}(...)` with an argument and shows its result (an "
+            "expected output that is more than `...`)",
+        )
+    if channel is not None and not fixture_paths(d, channel):
+        out.append(
+            f"Example: no example reads a recorded input from a fixture under env/{channel}/tests/",
+        )
+    return out
+
+
+def problems(
+    doc: str,
+    names: list[str],
+    input_form: str | None,
+    *,
+    name: str | None = None,
+    channel: str | None = None,
+) -> list[str]:
     """What the docstring lacks of the standard, as reason fragments (``[]`` when it complies).
 
     *names* are the function's parameters; *input_form* its declared form (None: not declared, which G1
-    refuses on its own).
+    refuses on its own); *name* and *channel* (the gate gives both) turn on the example's call and
+    fixture checks.
     """
     d = parse(doc)
     out: list[str] = []
@@ -181,8 +276,7 @@ def problems(doc: str, names: list[str], input_form: str | None) -> list[str]:
         out.append(f"has no Raises: section naming {ERROR_NAME} and when it is raised")
     elif ERROR_NAME not in d.sections["Raises"]:
         out.append(f"Raises: does not name {ERROR_NAME} and when it is raised")
-    if not has_example(d):
-        out.append("has no Example: section with a `>>>` example")
+    out += example_problems(d, name, channel)
     return out
 
 
@@ -197,11 +291,12 @@ def _literal(node: ast.expr) -> str | None:
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
     if isinstance(node, ast.JoinedStr):
-        return "".join(
+        parts = [
             v.value
             for v in node.values
             if isinstance(v, ast.Constant) and isinstance(v.value, str)
-        )
+        ]
+        return "".join(parts) if parts else None  # only variables: unmeasurable
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
         parts = [_literal(node.left), _literal(node.right)]
         if all(p is None for p in parts):
@@ -264,10 +359,15 @@ def describe_standard() -> str:
         f"the one-line summary, then the sections {required}, each a line `<Name>:` without "
         "indentation followed by indented text. Args: has one `name: description` line per parameter, "
         "and the first parameter's line names its input form. Raises: names "
-        f"{ERROR_NAME} and when it is raised. Example: holds at least one `>>>` doctest example that "
-        "runs on a recorded input copied as a test fixture under env/<channel>/tests/ (the gate runs "
-        "every example as a doctest, read-only, with /memory as the working directory and the "
-        "module's names in scope; a failing example refuses the function). Optional sections: "
+        f"{ERROR_NAME} and when it is raised. Example: holds `>>>` doctest examples, none skipped, "
+        "that read a recorded input copied as a test fixture under env/<channel>/tests/ (named by its "
+        "path as a string) and at least one of which calls the function itself on it and shows the "
+        "result (more than `...`); the fixture must have the shape of an input the function covers. "
+        "The gate runs every example as a doctest, read-only, with /memory as the working directory, "
+        "the module's names in scope and PYTHONHASHSEED=0; a failing example, or one that never calls "
+        "the function, refuses it. Check yours the same way: `python -c 'import doctest, "
+        "env.<channel> as m; doctest.run_docstring_examples(m.<function>, vars(m))'` in /memory "
+        "prints nothing when they pass. Optional sections: "
         f"{optional}. Each `raise {ERROR_NAME}(...)` passes a message of at least "
         f"{MIN_REFUSAL_CHARS} characters saying what was expected and what to do instead"
     )
