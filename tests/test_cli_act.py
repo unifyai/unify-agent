@@ -62,8 +62,56 @@ def test_act_flags_parse():
     assert args.request == "count the rows"
     assert args.persist and args.no_store and args.json
     assert args.timeout == 12.0
-    assert args.no_compose is False
-    assert not hasattr(args, "no_clarify")
+    assert args.no_clarify is False
+    assert not hasattr(args, "no_compose")
+
+
+def test_no_clarify_parses_and_turns_clarification_off(monkeypatch):
+    """``--no-clarify`` (passed by unattended launchers): even at a terminal,
+    nobody reads the record's @user posts, so the actor is started with
+    clarification off."""
+    args = _parse_args(["act", "--no-clarify", "--quiet", "hi"])
+    assert args.no_clarify is True
+
+    seen: dict = {}
+
+    class _Actor:
+        async def act(self, request, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError("stop here")
+
+    class _Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    session = Act(args)
+
+    async def _start() -> None:
+        session._actor = _Actor()
+
+    monkeypatch.setattr(session, "start", _start)
+    with pytest.raises(RuntimeError, match="stop here"):
+        asyncio.run(session._run("hi"))
+    assert seen["clarification_enabled"] is False
+
+
+def test_chat_says_it_is_unsupported_and_exits_zero(capsys, monkeypatch):
+    """``unify chat`` prints that it is legacy and unsupported, exits 0, and
+    never boots conversation_manager (nothing from unify.legacy is imported)."""
+    import unify.cli as cli
+
+    for name in [
+        m for m in sys.modules if m == "unify.legacy" or m.startswith("unify.legacy.")
+    ]:
+        monkeypatch.delitem(sys.modules, name)
+    assert asyncio.run(cli._run_chat(_parse_args(["chat"]))) == 0
+    err = capsys.readouterr().err
+    assert "unify chat is legacy and unsupported" in err
+    assert "Use `unify act`" in err
+    assert not any(
+        m == "unify.legacy" or m.startswith("unify.legacy.") for m in sys.modules
+    )
 
 
 class _FakeHandle:

@@ -588,7 +588,7 @@ def jsonl_session(monkeypatch, bound):
             persist=True,
             jsonl=True,
             quiet=True,
-            no_compose=False,
+            no_clarify=False,
             no_store=False,
             timeout=None,
         ),

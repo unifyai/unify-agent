@@ -7,10 +7,7 @@ post it addresses to ``@user`` is shown and answered from the terminal, and
 the result is printed. This is the unit to compare against single-loop
 harnesses, and the shape a benchmark runner wants.
 
-``unify chat`` is legacy and unsupported: the old conversation_manager product
-(``unify/legacy/``), which starts the slow brain in-process and wires the
-terminal to the in-app chat. It is kept for reference and is not expected to
-run after the loop trim.
+``unify chat`` is legacy and unsupported: it only says so and exits.
 
 Runtime logs go to ``<UNIFY_HOME>/logs`` and stay off the terminal unless
 ``--debug`` is given.
@@ -24,18 +21,14 @@ import json
 import asyncio
 import os
 import select
-import shutil
 import signal
 import sys
 import threading
-import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-BOOT_TIMEOUT_SECONDS = 300.0
 # A cancelled request whose response has not come this long after the cancel
 # line was read, while model code holds the event loop's thread (a cell
 # running time.sleep, say), has that code interrupted; tried this many times.
@@ -48,30 +41,19 @@ class CellInterrupted(Exception):
     """Raised in a cell that held the event loop past a host's cancel."""
 
 
-HELP = """\
-Type a message and press Enter. The assistant keeps working on anything you
-asked for while you keep typing; follow-up messages steer it.
-
-  /attach <path>   attach a file to your next message
-  /attach          list queued attachments
-  /detach          clear queued attachments
-  /help            show this help
-  /quit            exit (Ctrl-D and Ctrl-C work too)
-"""
-
-
 ACT_HELP = """\
 Drive one actor directly. `unify` with no subcommand runs this command.
 
 The request is taken from the command line, or from stdin when omitted or
 given as "-". Progress lines stream to stderr while the actor works; the
-result goes to stdout. When the actor asks a question, type the answer and
-press Enter. With --persist the actor stays alive after answering: each
+result goes to stdout. A post the actor addresses to @user is shown; type
+the reply and press Enter (with --no-clarify, or when stdin is not a
+terminal, nobody reads @user posts). With --persist the actor stays alive after answering: each
 further line is a follow-up in the same sandbox, /quit ends the session.
 With --jsonl the session speaks newline-delimited JSON instead, for a
 program driving the actor: each stdin line is {"message": "..."} (a
 follow-up, which may span lines), {"cancel": true} or {"quit": true}; each
-stdout line is {"type": "result" | "response" | "question" | "storage" |
+stdout line is {"type": "result" | "response" | "record" | "storage" |
 "ended", ...}. With --persist every turn ends in one "response" line as the
 actor starts waiting, its content empty when the turn produced no text.
 {"cancel": true} ends the running turn at once and keeps the session: the
@@ -127,7 +109,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="legacy, unsupported: the old conversation_manager product; "
         "use `unify act`",
         description="Legacy, unsupported: the old conversation_manager product "
-        "(unify/legacy/), not expected to run after the loop trim. Use "
+        "(unify/legacy/). It only prints that it is unsupported. Use "
         "`unify act`.",
     )
     _add_common_options(chat, subcommand=True)
@@ -155,9 +137,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="skip the storage review that distils the run into functions and guidance",
     )
     act.add_argument(
-        "--no-compose",
+        "--no-clarify",
         action="store_true",
-        help="forbid execute_code: the actor may only call stored functions",
+        help="no one answers questions: the record's @user posts get no reply "
+        "(for unattended runs)",
     )
     act.add_argument(
         "--timeout",
@@ -208,176 +191,6 @@ def _configure_environment(args: argparse.Namespace) -> Path:
     return home
 
 
-def _stage_attachment(source: Path) -> str:
-    """Copy a local file into the workspace and return its workspace path."""
-    from unify.workspace import get_local_root
-
-    attachments_dir = Path(get_local_root()) / "Attachments"
-    attachments_dir.mkdir(parents=True, exist_ok=True)
-    target_name = f"{uuid.uuid4().hex[:8]}_{source.name}"
-    shutil.copy2(source, attachments_dir / target_name)
-    return f"Attachments/{target_name}"
-
-
-def _assistant_name() -> str:
-    from unify.session_details import PLACEHOLDER_ASSISTANT_FIRST_NAME, SESSION_DETAILS
-
-    return SESSION_DETAILS.assistant.first_name or PLACEHOLDER_ASSISTANT_FIRST_NAME
-
-
-class Chat:
-    """One terminal session over a running ConversationManager."""
-
-    def __init__(self) -> None:
-        self._cm = None
-        self._ready = asyncio.Event()
-        self._closing = asyncio.Event()
-        self._pending_attachments: list[Path] = []
-
-    # ── lifecycle ────────────────────────────────────────────────────────
-
-    async def start(self) -> None:
-        from unify import db
-        from unify.legacy.conversation_manager.main import run_conversation_manager
-        from unify.session_details import SESSION_DETAILS
-
-        SESSION_DETAILS.populate_from_env()
-        db.connect()
-
-        self._cm = await run_conversation_manager()
-        self._listener = asyncio.create_task(self._listen())
-
-    async def close(self) -> None:
-        self._closing.set()
-        if self._cm is not None:
-            self._cm.stop.set()
-            try:
-                await asyncio.wait_for(self._cm.cleanup(), timeout=15.0)
-            except asyncio.TimeoutError:
-                pass
-        self._listener.cancel()
-
-    # ── outbound ─────────────────────────────────────────────────────────
-
-    async def _listen(self) -> None:
-        from unify.legacy.conversation_manager.events import (
-            ActorClarificationRequest,
-            ActorNotification,
-            ActorResult,
-            DirectMessageEvent,
-            Error,
-            Event,
-            InitializationComplete,
-            UnifyMessageSent,
-        )
-
-        async with self._cm.event_broker.pubsub() as pubsub:
-            await pubsub.psubscribe("app:comms:*", "app:actor:*")
-            while not self._closing.is_set():
-                msg = await pubsub.get_message(
-                    timeout=1.0,
-                    ignore_subscribe_messages=True,
-                )
-                if not msg:
-                    continue
-                event = Event.from_json(msg["data"])
-                if isinstance(event, InitializationComplete):
-                    self._ready.set()
-                elif isinstance(event, (UnifyMessageSent, DirectMessageEvent)):
-                    self._say(_assistant_name(), event.content)
-                    for attachment in getattr(event, "attachments", []):
-                        self._status(f"attached {attachment}")
-                elif isinstance(event, ActorNotification):
-                    prefix = "done" if event.completed else "working"
-                    self._status(f"{prefix}: {event.response}")
-                elif isinstance(event, ActorResult):
-                    if not event.success:
-                        self._status(f"action failed: {event.error}")
-                elif isinstance(event, ActorClarificationRequest):
-                    self._status(f"the assistant is asking: {event.query}")
-                elif isinstance(event, Error):
-                    self._status(f"error: {event.message}")
-
-    def _say(self, who: str, text: str) -> None:
-        print(f"\n{who}> {text}\n", flush=True)
-
-    def _status(self, text: str) -> None:
-        print(f"  · {text}", flush=True)
-
-    # ── inbound ──────────────────────────────────────────────────────────
-
-    async def send(self, text: str) -> None:
-        from unify.legacy.conversation_manager.events import UnifyMessageReceived
-
-        attachments = [_stage_attachment(p) for p in self._pending_attachments]
-        self._pending_attachments.clear()
-        event = UnifyMessageReceived(content=text, attachments=attachments)
-        await self._cm.event_broker.publish(UnifyMessageReceived.topic, event.to_json())
-
-    def attach(self, raw_path: str) -> str:
-        path = Path(raw_path).expanduser()
-        if not path.is_file():
-            return f"no such file: {raw_path}"
-        if path.stat().st_size > MAX_ATTACHMENT_BYTES:
-            return f"too large to attach (limit 25MB): {raw_path}"
-        self._pending_attachments.append(path)
-        return f"queued {path.name} for your next message"
-
-    def queued_attachments(self) -> str:
-        if not self._pending_attachments:
-            return "no attachments queued"
-        return "queued: " + ", ".join(p.name for p in self._pending_attachments)
-
-    def detach(self) -> str:
-        count = len(self._pending_attachments)
-        self._pending_attachments.clear()
-        return f"cleared {count} queued attachment(s)"
-
-    # ── loop ─────────────────────────────────────────────────────────────
-
-    async def run(self) -> None:
-        print("starting the assistant ...", flush=True)
-        await self.start()
-        try:
-            await asyncio.wait_for(self._ready.wait(), timeout=BOOT_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
-            print("the assistant did not finish starting; check the logs", flush=True)
-            return
-        print("ready. /help for commands, /quit to exit.\n", flush=True)
-        while True:
-            try:
-                raw = await asyncio.to_thread(input, "> ")
-            except (EOFError, KeyboardInterrupt):
-                print()
-                return
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith("/"):
-                if await self._command(line):
-                    return
-                continue
-            await self.send(line)
-
-    async def _command(self, line: str) -> bool:
-        """Run a slash command; return True when the session should end."""
-        name, _, arg = line[1:].partition(" ")
-        name = name.lower()
-        arg = arg.strip()
-        if name in {"quit", "exit", "q"}:
-            return True
-        if name in {"help", "h", "?"}:
-            print(HELP)
-        elif name == "attach":
-            print(self.attach(arg) if arg else self.queued_attachments())
-        elif name == "detach":
-            print(self.detach())
-        else:
-            print(f"unknown command: /{name} (try /help)")
-        return False
-
-
-@contextlib.contextmanager
 def _channel_pump(
     loop: asyncio.AbstractEventLoop,
     fd: int,
@@ -802,13 +615,14 @@ class Act:
         # Someone can answer only at a terminal: there the actor's posts to
         # @user are read and answered; otherwise the record says nobody reads
         # them.
-        clarify = interactive
+        clarify = interactive and not args.no_clarify
         if not interactive:
             self._progress("stdin is not a terminal; the actor cannot ask questions")
+        elif not clarify:
+            self._progress("--no-clarify: nobody reads the actor's @user posts")
         self._handle = await self._actor.act(
             request,
             persist=args.persist,
-            can_compose=not args.no_compose,
             can_store=not args.no_store,
             clarification_enabled=clarify,
         )
@@ -888,6 +702,8 @@ class Act:
 def _read_request(args: argparse.Namespace) -> str:
     if args.request and args.request != "-":
         return args.request
+    if sys.stdin.isatty():
+        print("type the request; end with Ctrl-D", file=sys.stderr, flush=True)
     text = sys.stdin.read().strip()
     if not text:
         raise SystemExit(
@@ -896,12 +712,15 @@ def _read_request(args: argparse.Namespace) -> str:
     return text
 
 
+CHAT_UNSUPPORTED = (
+    "unify chat is legacy and unsupported: conversation_manager's steering was "
+    "removed in the harness-learning freeze. Use `unify act`."
+)
+
+
 async def _run_chat(args: argparse.Namespace) -> int:
-    chat = Chat()
-    try:
-        await chat.run()
-    finally:
-        await chat.close()
+    """Say that chat is unsupported; nothing from unify.legacy is imported."""
+    print(CHAT_UNSUPPORTED, file=sys.stderr, flush=True)
     return 0
 
 
