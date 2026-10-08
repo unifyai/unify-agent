@@ -254,6 +254,11 @@ class PythonWorker:
             "globals": specs,
         }
         msg["help"] = True
+        # UNIFY_MEMORY_V2=on, while the request's work tree is captured: the
+        # child installs the audit hook (spec §3a); otherwise no key at all.
+        audit = _mv2.worker_audit()
+        if audit is not None:
+            msg["audit"] = audit
         return msg
 
     async def _start(self) -> None:
@@ -311,6 +316,8 @@ class PythonWorker:
                 "sandboxed Python worker could not build base globals: %s",
                 ready["missing"],
             )
+        if ready.get("audit", "on") != "on":
+            logger.warning("memory v2: no audit hook in the worker: %r", ready["audit"])
 
     async def _drain_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr is not None
@@ -851,6 +858,10 @@ class PythonWorker:
                 "variables, imports and definitions are reset.",
             ) from None
 
+        from unify.memory_v2.integration import hooks as _mv2
+
+        # UNIFY_MEMORY_V2=on: the cell's audit records, stamped on this clock.
+        _mv2.worker_cell_done(done.get("audit"))
         listed = done.get("inventory")
         self.inventory = listed if isinstance(listed, str) else None
         self._collect_parts(done.get("stdout") or [], stdout, display, TextPart)

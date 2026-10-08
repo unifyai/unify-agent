@@ -24,6 +24,18 @@ are refused with a counted note, as is a read of the work-tree root itself and a
 clipped. A record that still fails is counted and skipped; it never aborts the cell. Snapshots have a
 per-file cap and a total byte and file budget.
 
+What the sandbox hides from cells inside the work tree (secret-named files, the store, a state directory
+under it) is never snapshotted, read, entered or attributed: the caller passes ``hidden``, a predicate over
+the work-tree-relative path (the sandbox policy's ``readable_violation``), and every such path is skipped
+with a counted note. A predicate that raises counts as hidden. A listing of a visible directory still
+shows a hidden entry's *name*, as the cell's own listing does (the sandbox masks content, not names).
+
+Blob reads go through one ``git cat-file --batch`` process per recorder (:class:`_BlobReader`), not one
+process per file. ``record_cell`` and ``finish`` take an optional ``deadline`` (``time.monotonic()``): each
+git call gets only the time left, records and changed paths left when it lapses are counted
+(``deadline: …`` notes) and get no row, and a snapshot that runs past it raises :class:`GitTimeout` and
+commits nothing.
+
 Shapes: no file format is parsed in this process
 ------------------------------------------------
 Every parser has its own blow-up on hostile input (PyYAML's base-60 ints are quadratic; a zip lies about
@@ -78,7 +90,8 @@ Git runs with a minimal environment (``PATH``, a scratch ``HOME``, ``GIT_CONFIG_
 tree and a bounded timeout. Blobs are written as loose objects from the bytes read here, so no git
 command ever opens a work-tree path and no ``.gitattributes`` filter can run.
 
-This module is standalone: nothing in the actor calls it yet. ``file_shape`` (and
+``integration/worktree_capture.py`` wires it into a request (snapshots at begin and finish, the worker's
+audit records per cell). ``file_shape`` (and
 :mod:`worktree_shapes`) must be unified with the parallel ``unify/memory_v2/analysis/shapes.py`` at
 merge.
 """
@@ -92,6 +105,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -102,7 +116,7 @@ import time
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from ...blobs import BlobStore
 from ...episodes import Action
@@ -120,7 +134,8 @@ from .worktree_shapes import (
     plain_text_shape,
 )
 
-CHANNEL = "worktree"
+#: Kind-qualified (env_channel maps it to ``worktree_workspace``), so it never collides with a tool namespace.
+CHANNEL = "worktree:workspace"
 BLOB_CAP = 2 * 1024 * 1024  # bytes stored per file in the blob store
 SNAPSHOT_CAP = 16 * 1024 * 1024  # files larger than this are left out of snapshots
 SNAPSHOT_BUDGET_BYTES = 512 * 1024 * 1024  # total bytes per snapshot
@@ -510,25 +525,13 @@ class GitTimeout(GitError):
 
 
 # -- git plumbing (spec §E5) -------------------------------------------------------------------------
-def _git_raw(
+def _git_setup(
     repo: Repo,
     args: list[str],
-    *,
-    input: bytes | None = None,
-    scratch: Path | None = None,
+    scratch: Path,
     index: Path | None = None,
-    timeout: float = GIT_TIMEOUT,
-) -> bytes:
-    if scratch is None:
-        with tempfile.TemporaryDirectory(prefix="memv2-git-") as tmp:
-            return _git_raw(
-                repo,
-                args,
-                input=input,
-                scratch=Path(tmp),
-                index=index,
-                timeout=timeout,
-            )
+) -> tuple[list[str], dict, Path]:
+    """The argv, environment and working directory of every git call on a snapshot repo."""
     home, empty = scratch / "home", scratch / "empty"
     home.mkdir(exist_ok=True)
     empty.mkdir(exist_ok=True)
@@ -553,6 +556,36 @@ def _git_raw(
         str(empty),
         *args,
     ]
+    return argv, env, empty
+
+
+def _left(deadline: float | None) -> float:
+    """The timeout of a git call: ``GIT_TIMEOUT``, or the time left before *deadline* (at least 0.1 s)."""
+    if deadline is None:
+        return GIT_TIMEOUT
+    return min(GIT_TIMEOUT, max(deadline - time.monotonic(), 0.1))
+
+
+def _git_raw(
+    repo: Repo,
+    args: list[str],
+    *,
+    input: bytes | None = None,
+    scratch: Path | None = None,
+    index: Path | None = None,
+    timeout: float = GIT_TIMEOUT,
+) -> bytes:
+    if scratch is None:
+        with tempfile.TemporaryDirectory(prefix="memv2-git-") as tmp:
+            return _git_raw(
+                repo,
+                args,
+                input=input,
+                scratch=Path(tmp),
+                index=index,
+                timeout=timeout,
+            )
+    argv, env, empty = _git_setup(repo, args, scratch, index)
     try:
         proc = subprocess.run(
             argv,
@@ -569,6 +602,104 @@ def _git_raw(
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args[:2])}… failed: {proc.stderr[:400]!r}")
     return proc.stdout
+
+
+_OID = re.compile(r"\A[0-9a-f]{40}\Z")
+
+
+class _BlobReader:
+    """A recorder's blob reads through one ``git cat-file --batch`` process (set up like :func:`_git_raw`:
+    minimal environment, no hooks, an empty scratch work tree), started on first use. Each read is bounded
+    by a deadline; a read that runs past it kills the process (the next read starts a fresh one) and
+    raises :class:`GitTimeout`."""
+
+    def __init__(self, repo: Repo) -> None:
+        self.repo = repo
+        self._proc: subprocess.Popen | None = None
+        self._tmp: tempfile.TemporaryDirectory | None = None
+        self._sel: selectors.BaseSelector | None = None
+        self._buf = bytearray()
+
+    def _start(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="memv2-cat-")
+        argv, env, empty = _git_setup(
+            self.repo,
+            ["cat-file", "--batch"],
+            Path(self._tmp.name),
+        )
+        self._proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            cwd=str(empty),
+            start_new_session=True,
+        )
+        self._sel = selectors.DefaultSelector()
+        self._sel.register(self._proc.stdout.fileno(), selectors.EVENT_READ)
+        self._buf = bytearray()
+
+    def _more(self, deadline: float) -> None:
+        left = deadline - time.monotonic()
+        if left <= 0 or not self._sel.select(left):
+            self.close()
+            raise GitTimeout("git cat-file --batch… timed out")
+        chunk = os.read(self._proc.stdout.fileno(), 1 << 20)
+        if not chunk:
+            self.close()
+            raise GitError("git cat-file --batch… ended")
+        self._buf += chunk
+
+    def read(self, oid: str, deadline: float) -> bytes:
+        if not isinstance(oid, str) or not _OID.match(oid):
+            raise GitError("not a sha1 object id")
+        if self._proc is None:
+            self._start()
+        try:
+            self._proc.stdin.write(oid.encode("ascii") + b"\n")
+            self._proc.stdin.flush()
+        except OSError as exc:
+            self.close()
+            raise GitError("git cat-file --batch… is gone") from exc
+        while b"\n" not in self._buf:
+            self._more(deadline)
+        header, _, rest = bytes(self._buf).partition(b"\n")
+        self._buf = bytearray(rest)
+        parts = header.split(b" ")
+        if len(parts) == 2 and parts[1] == b"missing":
+            raise GitError(f"object {oid} missing")
+        if len(parts) != 3 or parts[1] != b"blob" or not parts[2].isdigit():
+            self.close()
+            raise GitError("git cat-file --batch… answered out of protocol")
+        size = int(parts[2])
+        while len(self._buf) < size + 1:
+            self._more(deadline)
+        data = bytes(self._buf[:size])
+        del self._buf[: size + 1]
+        return data
+
+    def close(self) -> None:
+        """Kill and reap the process and remove its scratch directory; idempotent, never raises."""
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            for pipe in (proc.stdin, proc.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+            try:
+                proc.kill()
+                proc.wait(timeout=CHILD_KILL_GRACE_S)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if self._sel is not None:
+            self._sel.close()
+            self._sel = None
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
+        self._buf = bytearray()
 
 
 def _write_loose(git_dir: Path, data: bytes) -> str:
@@ -641,6 +772,16 @@ class _Notes:
             self.notes.append(f"{reason}: {safe[:200]!r}")
 
 
+def _hidden_by(hidden: Callable[[str], bool] | None, rel: str) -> bool:
+    """Whether *hidden* hides *rel*; a predicate that raises hides it (fail closed)."""
+    if hidden is None:
+        return False
+    try:
+        return bool(hidden(rel))
+    except Exception:  # noqa: BLE001 - unknown means hidden
+        return True
+
+
 def snapshot(
     repo: Repo,
     work_tree: Path,
@@ -649,10 +790,22 @@ def snapshot(
     cap: int = SNAPSHOT_CAP,
     budget_bytes: int = SNAPSHOT_BUDGET_BYTES,
     budget_files: int = SNAPSHOT_BUDGET_FILES,
+    hidden: Callable[[str], bool] | None = None,
+    deadline: float | None = None,
 ) -> Snapshot:
-    """Commit the work tree onto ``main`` of *repo*, reading every file through a checked fd."""
+    """Commit the work tree onto ``main`` of *repo*, reading every file through a checked fd.
+
+    A file or directory for which *hidden* (work-tree-relative path) is true is left out, unread. With a
+    *deadline* (``time.monotonic()``), each git call gets only the time left, and a walk still running at
+    the deadline raises :class:`GitTimeout` before anything is committed.
+    """
     notes = _Notes()
-    if _git_raw(repo, ["rev-parse", "--show-object-format"]).decode().strip() != "sha1":
+    if (
+        _git_raw(repo, ["rev-parse", "--show-object-format"], timeout=_left(deadline))
+        .decode()
+        .strip()
+        != "sha1"
+    ):
         raise GitError("the work-tree snapshot repo must use sha1 objects")
     files: dict[str, str] = {}
     modes: dict[str, str] = {}
@@ -663,6 +816,8 @@ def snapshot(
         while pending:
             parts = pending.pop()
             prefix = "/".join(parts)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise GitTimeout("the work-tree snapshot ran past its deadline")
             try:
                 dfd = _open_dir(root_fd, parts)
             except OSError:
@@ -676,6 +831,9 @@ def snapshot(
                     bad = _bad_name(name)
                     if bad:
                         notes.add(bad, rel)
+                        continue
+                    if _hidden_by(hidden, rel):
+                        notes.add("hidden from cells", rel)
                         continue
                     try:
                         st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
@@ -694,6 +852,8 @@ def snapshot(
                     if st.st_size > cap:
                         notes.add("over the per-file cap", rel)
                         continue
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise GitTimeout("the work-tree snapshot ran past its deadline")
                     if len(files) >= budget_files or total + st.st_size > budget_bytes:
                         notes.add("over the snapshot budget", rel)
                         continue
@@ -729,9 +889,16 @@ def snapshot(
             input=info,
             scratch=scratch,
             index=index,
+            timeout=_left(deadline),
         )
         tree = (
-            _git_raw(repo, ["write-tree"], scratch=scratch, index=index)
+            _git_raw(
+                repo,
+                ["write-tree"],
+                scratch=scratch,
+                index=index,
+                timeout=_left(deadline),
+            )
             .decode()
             .strip()
         )
@@ -741,18 +908,26 @@ def snapshot(
                     repo,
                     ["rev-parse", "--verify", "-q", "refs/heads/main"],
                     scratch=scratch,
+                    timeout=_left(deadline),
                 )
                 .decode()
                 .strip()
             )
+        except GitTimeout:
+            raise
         except GitError:
             parent = ""
         args = ["commit-tree", tree, "-m", message] + (["-p", parent] if parent else [])
-        sha = _git_raw(repo, args, scratch=scratch).decode().strip()
+        sha = (
+            _git_raw(repo, args, scratch=scratch, timeout=_left(deadline))
+            .decode()
+            .strip()
+        )
         _git_raw(
             repo,
             ["update-ref", "refs/heads/main", sha] + ([parent] if parent else []),
             scratch=scratch,
+            timeout=_left(deadline),
         )
     return Snapshot(sha, files, notes.notes, notes.counts)
 
@@ -955,6 +1130,7 @@ class WorkTreeRecorder:
         budget_files: int = SNAPSHOT_BUDGET_FILES,
         shape_budget: int = SHAPE_BUDGET,
         parse_seconds: float = PARSE_BUDGET_S,
+        hidden: Callable[[str], bool] | None = None,
     ) -> None:
         self.work_tree = Path(work_tree).resolve()
         git_dir = Path(snapshot_repo.git_dir).resolve()
@@ -969,6 +1145,7 @@ class WorkTreeRecorder:
         self.snapshot_cap = snapshot_cap
         self.budget_bytes = budget_bytes
         self.budget_files = budget_files
+        self.hidden = hidden  # work-tree-relative paths the sandbox hides from cells
         self._shape_left = shape_budget  # bytes still to be parsed for shapes
         self._parse_left = (
             parse_seconds  # wall-clock seconds still to be spent on shapes
@@ -985,6 +1162,12 @@ class WorkTreeRecorder:
         )  # (directory, cell) of rmtree / rmdir / rename
         self._seen: set[tuple[int, str, str]] = set()
         self._stored: dict[tuple[str, str], _Stored] = {}  # (oid, ext) -> row data
+        self._reader = _BlobReader(
+            snapshot_repo,
+        )  # one cat-file --batch process for every blob read
+        self._deadline: float | None = (
+            None  # of the record_cell / finish call in progress
+        )
         self.actions: list[Action] = []
 
     @property
@@ -997,7 +1180,11 @@ class WorkTreeRecorder:
         """Every refused or skipped entry, counted by reason."""
         return self._notes.counts
 
-    def _snapshot(self, message: str) -> Snapshot:
+    def close(self) -> None:
+        """End the blob-reading process; idempotent, never raises."""
+        self._reader.close()
+
+    def _snapshot(self, message: str, deadline: float | None = None) -> Snapshot:
         snap = snapshot(
             self.repo,
             self.work_tree,
@@ -1005,6 +1192,8 @@ class WorkTreeRecorder:
             cap=self.snapshot_cap,
             budget_bytes=self.budget_bytes,
             budget_files=self.budget_files,
+            hidden=self.hidden,
+            deadline=deadline,
         )
         for reason, n in snap.counts.items():
             self._notes.counts[f"{message}: {reason}"] += n
@@ -1018,11 +1207,27 @@ class WorkTreeRecorder:
         self.before, self._before_files = snap.sha, snap.files
         return snap.sha
 
-    def finish(self, message: str = "worktree_after") -> list[Action]:
-        """Snapshot after the request; one ``write`` row per (writing cell, changed or write-opened path)."""
+    def finish(
+        self,
+        message: str = "worktree_after",
+        *,
+        deadline: float | None = None,
+    ) -> list[Action]:
+        """Snapshot after the request; one ``write`` row per (writing cell, changed or write-opened path).
+
+        With a *deadline*, a snapshot that runs past it raises :class:`GitTimeout` (no after snapshot), and
+        changed paths left when it lapses are counted (``deadline: write rows not recorded``) and get no row.
+        """
         if self.before is None:
             raise RuntimeError("finish() before begin()")
-        snap = self._snapshot(message)
+        self._deadline = deadline
+        try:
+            return self._finish(message, deadline)
+        finally:
+            self._deadline = None
+
+    def _finish(self, message: str, deadline: float | None) -> list[Action]:
+        snap = self._snapshot(message, deadline)
         self.after, after_files = snap.sha, snap.files
         changed = {
             p
@@ -1030,7 +1235,13 @@ class WorkTreeRecorder:
             if self._before_files.get(p) != after_files.get(p)
         }
         rows = []
-        for path in sorted(changed | set(self._written)):
+        pending = sorted(changed | set(self._written))
+        for i, path in enumerate(pending):
+            if deadline is not None and time.monotonic() >= deadline:
+                self._notes.counts["deadline: write rows not recorded"] += (
+                    len(pending) - i
+                )
+                break
             before_oid = self._before_files.get(path)
             after_oid = after_files.get(path)
             try:
@@ -1101,16 +1312,38 @@ class WorkTreeRecorder:
         return list(dict.fromkeys(cells)) or [REQUEST_END_CELL]
 
     # -- per cell ------------------------------------------------------------------------------------
-    def record_cell(self, cell: int, audit: Iterable[dict]) -> list[Action]:
-        """Rows for one cell's audit records; write opens are remembered for :meth:`finish`."""
+    def record_cell(
+        self,
+        cell: int,
+        audit: Iterable[dict],
+        *,
+        deadline: float | None = None,
+    ) -> list[Action]:
+        """Rows for one cell's audit records; write opens are remembered for :meth:`finish`. Records left
+        when *deadline* lapses are counted (``deadline: audit records not recorded``) and get no row.
+        """
         if self.before is None:
             raise RuntimeError("record_cell() before begin()")
         rows: list[Action] = []
-        for rec in audit:
-            try:
-                self._record(cell, rec, rows)
-            except Exception as exc:  # noqa: BLE001 - one record never aborts the cell
-                self._notes.add("audit record failed", type(exc).__name__)
+        records = list(audit)
+        self._deadline = deadline
+        try:
+            for i, rec in enumerate(records):
+                if deadline is not None and time.monotonic() >= deadline:
+                    self._notes.counts["deadline: audit records not recorded"] += (
+                        len(records) - i
+                    )
+                    break
+                try:
+                    self._record(cell, rec, rows)
+                except GitTimeout:  # cut off by the deadline
+                    self._notes.counts["deadline: audit records not recorded"] += 1
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - one record never aborts the cell
+                    self._notes.add("audit record failed", type(exc).__name__)
+        finally:
+            self._deadline = None
         self.actions.extend(rows)
         return rows
 
@@ -1138,6 +1371,10 @@ class WorkTreeRecorder:
             if parts is None:
                 continue
             rel = "/".join(parts) or "."
+            if parts and _hidden_by(self.hidden, rel):
+                # hidden from the cell by the sandbox: never read, listed or attributed here
+                self._notes.add("hidden from cells", rel)
+                continue
             if method in ("write",) or method in _WRITE_EVENTS:
                 self._written.setdefault(rel, [])
                 if cell not in self._written[rel]:
@@ -1271,11 +1508,10 @@ class WorkTreeRecorder:
         key = (oid, Path(rel).suffix.lower())
         hit = self._stored.get(key)
         if hit is None or (shape and hit.shape is None):
-            hit = self._store(
-                rel,
-                _git_raw(self.repo, ["cat-file", "blob", oid]),
-                shape=shape,
-            )
+            deadline = self._deadline
+            if deadline is None:
+                deadline = time.monotonic() + GIT_TIMEOUT
+            hit = self._store(rel, self._reader.read(oid, deadline), shape=shape)
             self._stored[key] = hit
         return hit
 

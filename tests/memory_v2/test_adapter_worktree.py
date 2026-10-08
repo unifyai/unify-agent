@@ -59,7 +59,7 @@ def test_reads_get_shapes_and_blobs_from_the_before_snapshot(tmp_path):
     rows = rec.record_cell(0, audit)
     assert len(rows) == 4
     assert all(
-        r.kind == "worktree" and r.channel == "worktree" and r.kwargs == {}
+        r.kind == "worktree" and r.channel == "worktree:workspace" and r.kwargs == {}
         for r in rows
     )
 
@@ -171,6 +171,51 @@ def test_snapshot_skips_large_files_symlinks_and_nested_git(tmp_path):
     )
     assert row.response["blob"] is None and row.response["shape"]["format"] == "binary"
     assert row.response["source"] == "disk"
+
+
+def test_channel_is_kind_qualified():
+    from unify.memory_v2.episodes import env_channel
+    from unify.memory_v2.integration.adapters.worktree import CHANNEL
+
+    assert CHANNEL == "worktree:workspace"
+    assert env_channel("worktree", CHANNEL) == "worktree_workspace"
+
+
+def test_paths_hidden_from_cells_are_never_snapshotted_read_or_listed(tmp_path):
+    hide = {"secret.env", "vault"}
+
+    def hidden(rel):
+        if rel == "boom":
+            raise RuntimeError("predicate failed")  # unknown counts as hidden
+        return rel.split("/")[0] in hide
+
+    wt, repo, rec = _setup(tmp_path, hidden=hidden)
+    (wt / "secret.env").write_text("TOKEN=HIDDEN-VALUE-1\n")
+    (wt / "vault").mkdir()
+    (wt / "vault" / "k.txt").write_text("HIDDEN-VALUE-2\n")
+    (wt / "boom").write_text("HIDDEN-VALUE-3\n")
+    sha = rec.begin()
+    files = tree_files(repo, sha)
+    assert "secret.env" not in files and "boom" not in files
+    assert not any(p.startswith("vault") for p in files)
+    assert rec.skip_counts["worktree_before: hidden from cells"] == 3
+    rows = rec.record_cell(
+        0,
+        [
+            {"event": "open", "path": str(wt / "secret.env"), "mode": "r"},
+            {"event": "open", "path": str(wt / "vault" / "k.txt"), "mode": "r"},
+            {"event": "os.listdir", "path": str(wt / "vault")},
+            {"event": "open", "path": str(wt / "boom"), "mode": "w"},
+            {"event": "open", "path": str(wt / "pay.csv"), "mode": "r"},
+        ],
+    )
+    assert [(r.method, r.args) for r in rows] == [("read", ["pay.csv"])]
+    (wt / "secret.env").write_text("TOKEN=HIDDEN-VALUE-4\n")
+    assert rec.finish() == []
+    assert rec.diff() == ""
+    for needle in (b"HIDDEN-VALUE-1", b"HIDDEN-VALUE-2", b"HIDDEN-VALUE-4"):
+        assert not _blob_store_holds(tmp_path, needle)
+        assert not _snapshot_holds(repo, rec.after, needle)
 
 
 def test_snapshot_dir_inside_work_tree_is_refused(tmp_path):
@@ -1895,3 +1940,107 @@ def test_no_exported_hash_or_id_is_of_raw_text_that_was_redacted(tmp_path, monke
     red = hashlib.sha256(b"token=<redacted:key-shaped>\n").hexdigest()
     assert f"text tok.txt: changed; content redacted, sha256 {red} -> {red}," in diff
     assert "text big.txt: sha256 " in diff
+
+
+# -- review fix round (online Track A, I2): one blob process and deadlines ------------------------------
+
+
+def _many(tmp_path, n=30):
+    wt, repo, rec = _setup(tmp_path)
+    for i in range(n):
+        (wt / f"f{i:02d}.txt").write_text(f"file {i}\n")
+    return wt, repo, rec
+
+
+def test_blob_reads_share_one_cat_file_batch_process(tmp_path, monkeypatch):
+    import unify.memory_v2.integration.adapters.worktree as mod
+
+    wt, repo, rec = _many(tmp_path)
+    rec.begin()
+    started, real_popen = [], mod.subprocess.Popen
+    raw_cats, real_raw = [], mod._git_raw
+
+    def popen(argv, **kw):
+        started.append(list(argv))
+        return real_popen(argv, **kw)
+
+    def raw(repo_, args, **kw):
+        if args[:1] == ["cat-file"]:
+            raw_cats.append(args)
+        return real_raw(repo_, args, **kw)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", popen)
+    monkeypatch.setattr(mod, "_git_raw", raw)
+    for i in range(30):
+        (wt / f"f{i:02d}.txt").write_text(f"changed {i}\n")
+    rows = rec.record_cell(
+        0,
+        [{"event": "open", "path": f"f{i:02d}.txt", "mode": "r"} for i in range(30)],
+    )
+    assert len(rows) == 30 and all(r.status == "ok" for r in rows)
+    assert rec.blobs.get(rows[3].response["blob"]) == b"file 3\n"  # the before snapshot
+    writes = rec.finish()
+    assert len(writes) == 30
+    assert rec.blobs.get(writes[0].response["blob_after"]) == b"changed 0\n"
+    batches = [a for a in started if "cat-file" in a]
+    assert len(batches) == 1 and batches[0][-2:] == ["cat-file", "--batch"]
+    assert "core.hooksPath=/dev/null" in batches[0]
+    assert raw_cats == []
+    rec.close()
+    rec.close()  # idempotent
+
+
+def test_records_past_the_deadline_are_counted_and_get_no_row(tmp_path):
+    import time
+
+    wt, repo, rec = _many(tmp_path, 5)
+    rec.begin()
+    recs = [{"event": "open", "path": f"f{i:02d}.txt", "mode": "r"} for i in range(5)]
+    assert rec.record_cell(0, recs, deadline=time.monotonic() - 1) == []
+    assert rec.skip_counts["deadline: audit records not recorded"] == 5
+    assert len(rec.record_cell(1, recs, deadline=time.monotonic() + 60)) == 5
+    rec.close()
+
+
+def test_write_rows_past_the_deadline_are_counted(tmp_path, monkeypatch):
+    import time
+
+    wt, repo, rec = _many(tmp_path, 30)
+    rec.begin()
+    for i in range(30):
+        (wt / f"f{i:02d}.txt").write_text(f"changed {i}\n")
+    real = rec._write_response
+
+    def slow(*a, **kw):
+        time.sleep(0.1)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(rec, "_write_response", slow)
+    start = time.monotonic()
+    rows = rec.finish(deadline=start + 1.5)
+    took = time.monotonic() - start
+    cut = rec.skip_counts["deadline: write rows not recorded"]
+    assert rec.after and cut > 0 and len(rows) + cut == 30
+    assert took < 3.0
+    rec.close()
+
+
+def test_a_snapshot_past_its_deadline_raises_and_commits_nothing(tmp_path):
+    import time
+
+    from unify.memory_v2.integration.adapters.worktree import GitTimeout
+
+    wt, repo, rec = _many(tmp_path, 5)
+    before = rec.begin()
+    try:
+        rec.finish(deadline=time.monotonic() - 1)
+    except GitTimeout:
+        pass
+    else:
+        raise AssertionError("expected GitTimeout")
+    assert rec.after is None
+    from unify.memory_v2.integration.adapters.worktree import _git_raw
+
+    head = _git_raw(repo, ["rev-parse", "refs/heads/main"]).decode().strip()
+    assert head == before
+    rec.close()
