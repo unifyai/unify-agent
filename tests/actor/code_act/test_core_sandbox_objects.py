@@ -509,11 +509,10 @@ async def test_a_case_functions_run_recorded_refuses_a_change_of_behaviour(
     )
 
 
-@pytest.mark.parametrize("surface", ["", "core"])
-def test_environment_texts_name_the_search_the_session_has(music, monkeypatch, surface):
-    """The namespaces section, the delegation section and the store check's
-    hint name `functions.search` and no `execute_function` under core; as
-    shipped they name the JSON tools."""
+def test_environment_texts_name_the_search_the_session_has(music, monkeypatch):
+    """The namespaces section and the store check's hint name
+    `functions.search`, and the delegation section names no
+    `execute_function`: core is the only surface."""
     from unify.actor.environments import ActorEnvironment
     from unify.actor.environments.environment_namespaces import (
         EnvironmentNamespacesEnvironment,
@@ -523,12 +522,7 @@ def test_environment_texts_name_the_search_the_session_has(music, monkeypatch, s
     namespaces = EnvironmentNamespacesEnvironment().get_prompt_context()
     delegation = ActorEnvironment().get_prompt_context()
     hint = _methods_text("music", [f"m{i}" for i in range(13)])
-    if surface:
-        assert "`await functions.search(...)`" in namespaces
-        assert "FunctionManager_" not in namespaces + hint
-        assert "execute_function" not in delegation
-        assert "functions.search or help(primitives.music)" in hint
-    else:
-        assert "`FunctionManager_search_functions`" in namespaces
-        assert "(or call it via `execute_function`)" in delegation
-        assert "FunctionManager_search_functions or help" in hint
+    assert "execute_function" not in delegation
+    assert "`await functions.search(...)`" in namespaces
+    assert "FunctionManager_" not in namespaces + hint
+    assert "functions.search or help(primitives.music)" in hint
