@@ -88,6 +88,13 @@ The three long-horizon switches share the step-limit reply path.
 - **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. The trigger is size-based and batched (the spec's F1): one pass becomes due once the experience recorded since the last pass reaches E tokens, and it covers every channel with new evidence. E times the allowance is one pass's USD cap. The passes run on the Sol model at the actor's reasoning effort for the run (there is no effort switch). With a run guard set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
 - **Evidence:** E and the allowance follow the offline cadence replay and the memory-v2 preregistrations (continual-harness-research); the guard is a runaway stop, not the expected cutoff.
 
+## UNIFY_MEMORY_V2_SOL_BASE_URL and UNIFY_MEMORY_V2_SOL_TOKEN
+
+- **Values:** both empty, or both set: `UNIFY_MEMORY_V2_SOL_BASE_URL` an http(s) URL with a host and no user, password, query or fragment; `UNIFY_MEMORY_V2_SOL_TOKEN` printable ASCII without spaces (a secret).
+- **Defaults:** empty (Sol's calls go as shipped).
+- **What they do:** They apply only with `UNIFY_MEMORY_V2=on`. Set, Sol's model calls go to that OpenAI-compatible base URL with that token, and carry `X-Unify-Call-Kind: memory_v2.sol`: a proxy listener of Sol's own, so the actor's route (and its allow-list) never carries Sol's model. Exactly one set, or a value in a wrong form, starts no pass (the request stays due); no error quotes either value. The token is read into the controller's settings only and removed from its environment; cells and Sol's box never receive either name.
+- **Evidence:** a deployment route for the paired memory-v2 screens, not a behaviour under test.
+
 ## UNIFY_CLOCK_PLACEMENT
 
 - **Values:** empty (the same as `system`) or `first_message`.

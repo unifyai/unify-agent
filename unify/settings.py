@@ -8,10 +8,11 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
+import os
 from typing import Any, Optional
 
 import unillm
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from unify.actor.settings import ActorSettings
@@ -333,12 +334,18 @@ class ProductionSettings(BaseSettings):
     # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
     # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
     # stops further passes once the run's Sol USD plus the next cap would
-    # exceed it.
+    # exceed it. ``_SOL_BASE_URL`` and ``_SOL_TOKEN`` (both or neither) send
+    # Sol's calls to a route of their own (a proxy listener with its own
+    # token); empty, they go as shipped. They are checked when a pass starts
+    # (a settings error would print the value), the token is a SecretStr and
+    # leaves this process's environment once read (below).
     UNIFY_MEMORY_V2: str = ""
     UNIFY_MEMORY_V2_E: int = 150000
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
     UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
+    UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
+    UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -532,6 +539,8 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_MODEL",
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SOL_BASE_URL",
+        "UNIFY_MEMORY_V2_SOL_TOKEN",
         mode="before",
     )
     @classmethod
@@ -667,3 +676,7 @@ class ProductionSettings(BaseSettings):
 
 # Singleton instance for production code
 SETTINGS = ProductionSettings()
+# UNIFY_MEMORY_V2_SOL_TOKEN lives in SETTINGS (this, the controller process)
+# only: removed from the environment once read, so no subprocess inherits it,
+# whatever its environment is built from. Unset, nothing changes.
+os.environ.pop("UNIFY_MEMORY_V2_SOL_TOKEN", None)
