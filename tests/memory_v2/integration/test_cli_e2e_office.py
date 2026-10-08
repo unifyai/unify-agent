@@ -59,7 +59,8 @@ from unify.memory_v2.integration.prompt import export_line
 from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
-EFFORT = "medium"  # the actor's reasoning effort for the run; Sol inherits it
+EFFORT = "medium"  # the actor's reasoning effort for the run
+SOL_EFFORT = EFFORT  # Sol's matches the actor's by default (the lead, 8 Oct)
 SOL_USD = "0.0000005"  # what the fake Sol turn reports per call
 CHANNEL = "worktree:workspace"
 STRAY = "env/stray_note.py"
@@ -265,9 +266,9 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
     assert end["gate_passed"] is False and end["calls"] == 1
     assert isinstance(end["usd"], str) and PLAIN_DECIMAL.match(end["usd"]), end
     assert Decimal(end["usd"]) == Decimal(SOL_USD)
-    # Sol's effort is the actor's: the setting, the run, the turn Sol was given and the actor's own request
-    assert start["sol_effort"] == EFFORT
-    assert fake.efforts == [EFFORT] and len(fake.sent) == 1
+    # Sol's effort matches the actor's: the event and the turn Sol was given
+    assert start["sol_effort"] == SOL_EFFORT
+    assert fake.efforts == [SOL_EFFORT] and len(fake.sent) == 1
     assert fake.models == [start["sol_model"]]
     actor_calls = model.of("actor")
     assert actor_calls[0].request.get("reasoning_effort") in (None, EFFORT)
@@ -344,7 +345,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
     assert "no manifest" in passes[0][2]
     costs = [json.loads(x) for x in episodes.notes(sha, ref="costs")]
     assert [(c["purpose"], c["usd"], c["sol_effort"]) for c in costs] == [
-        ("sol", SOL_USD, EFFORT),
+        ("sol", SOL_USD, SOL_EFFORT),
     ]
     events = [json.loads(x) for x in paths.events.read_text().splitlines() if x.strip()]
     assert events == [start, end]

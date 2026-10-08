@@ -199,7 +199,7 @@ def test_hooks_open_the_run_under_the_switch(mv2):
         _abort(mv2, run)
 
 
-# ── the actor's effort is Sol's ──────────────────────────────────────────────
+# ── Sol's effort matches the actor's unless a mismatch ablation fixes it ────
 
 
 @pytest.mark.parametrize(
@@ -216,6 +216,7 @@ def test_the_effort_is_the_actors(mv2, monkeypatch, effort, want):
     _transcript(run)
     _finish(mv2, run)
     _, kw = mv2.fakes.of("run_due_passes")
+    # Sol's effort matches the actor's by default (the lead, 8 Oct)
     assert run.effort == want and kw["effort"] == want
 
 
@@ -568,3 +569,29 @@ def test_cli_with_the_switch_off_is_as_shipped(monkeypatch):
     assert out[0]["type"] == "outcome" and out[0]["accepted"] is False
     assert "takes no outcome" in out[0]["reason"]
     assert [o["type"] for o in out] == ["outcome", "result", "ended"]
+
+
+@pytest.mark.parametrize("actor_effort", ["low", "medium", "high"])
+@pytest.mark.parametrize("sol_effort", ["actor", "low", "medium"])
+def test_a_fixed_sol_effort_overrides_the_actors_only_when_declared(mv2, monkeypatch, actor_effort, sol_effort):
+    from unify.session_details import SESSION_DETAILS
+
+    monkeypatch.setattr(SESSION_DETAILS.assistant, "default_model", "")
+    monkeypatch.setattr(SETTINGS, "UNIFY_REASONING_EFFORT", actor_effort)
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", sol_effort)
+    run = _begin(mv2, "hi")
+    _transcript(run)
+    _finish(mv2, run)
+    _, kw = mv2.fakes.of("run_due_passes")
+    want = actor_effort if sol_effort == "actor" else sol_effort
+    assert kw["effort"] == want and run.effort == actor_effort
+
+
+def test_the_sol_effort_setting_is_validated():
+    from unify.memory_v2.integration import switch
+
+    assert switch.parse_sol_effort("") == "actor"
+    assert switch.parse_sol_effort("low") == "low"
+    assert switch.parse_sol_effort(" Medium ") == "medium"
+    with pytest.raises(ValueError):
+        switch.parse_sol_effort("xhigh")

@@ -58,10 +58,23 @@ def actor_model() -> str:
     return resolve_default_model()[0]
 
 
+def sol_effort(actor: str) -> str:
+    """Sol's reasoning effort for this run: ``UNIFY_MEMORY_V2_SOL_EFFORT`` when it fixes one (a declared mismatch
+    ablation), else the actor's (*actor*; the default ``actor``)."""
+    from unify.settings import SETTINGS
+
+    value = (
+        str(getattr(SETTINGS, "UNIFY_MEMORY_V2_SOL_EFFORT", "") or "actor")
+        .strip()
+        .lower()
+    )
+    return actor if value == "actor" else value
+
+
 def actor_effort() -> str:
     """The actor's reasoning effort for this run, read from the setting the actor's client reads.
 
-    Sol's passes run at this effort (D23): effort is a fixed condition of a run, never a lever.
+    Sol's passes run at this effort too unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (:func:`sol_effort`).
     """
     from unify.common.llm_client import resolve_default_model
 
@@ -374,7 +387,8 @@ class RequestRun:
                 eid,
                 sha,
                 self.state,
-                effort=self.effort,
+                # Sol's effort matches the actor's unless a mismatch ablation fixes it (the lead, 8 Oct)
+                effort=sol_effort(self.effort),
                 settings=SETTINGS,
                 emit=self._emitter(emit),
                 clock=time.monotonic,

@@ -374,6 +374,7 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
     UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
     UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
+    UNIFY_MEMORY_V2_SOL_EFFORT: str = "actor"
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -577,6 +578,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOL_BASE_URL",
         "UNIFY_MEMORY_V2_SOL_TOKEN",
         "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+        "UNIFY_MEMORY_V2_SOL_EFFORT",
         mode="before",
     )
     @classmethod

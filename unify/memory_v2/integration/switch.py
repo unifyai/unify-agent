@@ -58,10 +58,16 @@ SOL_RUN_GUARD = "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD"
 SOL_BASE_URL = "UNIFY_MEMORY_V2_SOL_BASE_URL"
 SOL_TOKEN = "UNIFY_MEMORY_V2_SOL_TOKEN"
 SOL_TOKEN_FD = "UNIFY_MEMORY_V2_SOL_TOKEN_FD"
+SOL_EFFORT = "UNIFY_MEMORY_V2_SOL_EFFORT"
 
 EXPERIENCE_BUDGET_DEFAULT = 150000
 SOL_MODEL_DEFAULT = "openai/gpt-6-sol"
 SOL_ALLOWANCE_DEFAULT = "0.00000073"
+#: Sol's reasoning effort. ``actor`` (the default) matches the actor's effort for the run (the lead, 8 Oct ~15:4xZ:
+#: "match the agent doing the task's effort with the agent that writes the stored memory"); ``low``, ``medium`` or
+#: ``high`` fixes it, for a declared mismatch ablation only (e.g. a HIGH actor with a LOW storer).
+SOL_EFFORT_DEFAULT = "actor"
+SOL_EFFORTS = ("actor", "low", "medium", "high")
 
 #: A plain decimal: digits, optionally a point and more digits. No sign, exponent, separator or name.
 _PLAIN_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
@@ -407,6 +413,17 @@ def settle_sol_route_env(
     return _ENV_REFUSAL
 
 
+def parse_sol_effort(v: Any) -> str:
+    """Sol's reasoning effort: ``actor`` (the default: the actor's effort for the run), or a fixed ``low``,
+    ``medium`` or ``high`` for a declared mismatch ablation."""
+    value = _stripped(v).lower() or SOL_EFFORT_DEFAULT
+    if value not in SOL_EFFORTS:
+        raise ValueError(
+            f"{SOL_EFFORT} must be one of {', '.join(SOL_EFFORTS)}, not {v!r}",
+        )
+    return value
+
+
 #: The validator for each setting (unify/settings.py ``parse_memory_v2``).
 PARSERS = {
     SWITCH: parse_switch,
@@ -418,4 +435,5 @@ PARSERS = {
     SOL_BASE_URL: sol_base_url_setting,
     SOL_TOKEN: sol_token_setting,
     SOL_TOKEN_FD: sol_token_fd_setting,
+    SOL_EFFORT: parse_sol_effort,
 }
