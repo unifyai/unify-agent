@@ -131,6 +131,27 @@ class Generations:
         self._seen: dict[str, dict[str, set[str]]] = {}
         self._gen: dict[str, int] = {}
 
+    def to_json(self) -> dict:
+        """A JSON-safe, deterministic form (sorted lists), for the harness's state file."""
+        return {
+            "seen": {
+                key: {"shapes": sorted(v["shapes"]), "errors": sorted(v["errors"])}
+                for key, v in sorted(self._seen.items())
+            },
+            "generations": dict(sorted(self._gen.items())),
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> "Generations":
+        g = cls()
+        for key, v in (data.get("seen") or {}).items():
+            g._seen[str(key)] = {
+                "shapes": set(v.get("shapes") or []),
+                "errors": set(v.get("errors") or []),
+            }
+        g._gen = {str(k): int(n) for k, n in (data.get("generations") or {}).items()}
+        return g
+
     def generation(self, channel: str) -> int:
         return self._gen.get(channel, 0)
 

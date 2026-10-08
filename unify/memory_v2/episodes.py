@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .blobs import BlobStore
-from .gitio import Repo
+from .gitio import GitError, Repo
 from .redact import Redactor
 
 
@@ -18,6 +18,7 @@ class Cell:
     code: str
     output: str
     error: str | None = None
+    language: str = "python"  # the cell's language: python | bash | ...
 
 
 ACTION_KINDS = frozenset({"tool", "shell", "worktree", "dialogue"})
@@ -97,6 +98,9 @@ class Episode:
     worktree_diff: str = ""
     costs: list[CostRow] = field(default_factory=list)
     fingerprints: dict = field(default_factory=dict)
+    # Assistant replies in order. ``request`` holds every user message in order: the first is
+    # the request, the rest are observations.
+    replies: list[str] = field(default_factory=list)
 
 
 def episode_dir(ep: Episode) -> str:
@@ -153,6 +157,7 @@ class EpisodeWriter:
         files = {
             "meta.json": json.dumps(r.obj(meta), sort_keys=True, indent=1) + "\n",
             "request.json": json.dumps(r.obj(ep.request), indent=1) + "\n",
+            "replies.json": json.dumps(r.obj(ep.replies), indent=1) + "\n",
             "transcript.jsonl": _jsonl(r.obj(ep.transcript)),
             "cells.jsonl": _jsonl([r.obj(asdict(c)) for c in ep.cells]),
             "actions.jsonl": _jsonl(actions),
@@ -193,6 +198,10 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
     def lines(name: str) -> list[Any]:
         return [json.loads(ln) for ln in read(name).splitlines() if ln.strip()]
 
+    try:  # absent from episodes recorded before replies were kept
+        replies = json.loads(read("replies.json"))
+    except GitError:
+        replies = []
     actions = []
     for row in lines("actions.jsonl"):
         row["response"] = _uncap(row["response"], blobs)
@@ -206,4 +215,5 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
         memory_diff=read("memory.diff"),
         worktree_diff=read("worktree.diff"),
         costs=[CostRow(**c) for c in lines("cost.jsonl")],
+        replies=replies,
     )

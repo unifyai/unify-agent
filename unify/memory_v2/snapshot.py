@@ -14,7 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .gitio import _ENV, GitError, Repo
+from .gitio import _ENV, _HARD, GIT_TIMEOUT_S, GitError, Repo
 from .manifest import ManifestError, safe_rel
 from .memory_repo import _all_names, _front_matter, _sections, _slug
 
@@ -22,12 +22,16 @@ from .memory_repo import _all_names, _front_matter, _sections, _slug
 def _git_bytes(repo: Repo, args: list[str], input: bytes | None = None) -> bytes:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(_ENV)
-    proc = subprocess.run(
-        ["git", "--git-dir", str(repo.git_dir), *args],
-        input=input,
-        env=env,
-        capture_output=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", *_HARD, "--git-dir", str(repo.git_dir), *args],
+            input=input,
+            env=env,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args[:2])}… timed out") from exc
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args[:2])}… failed: {proc.stderr[:400]!r}")
     return proc.stdout

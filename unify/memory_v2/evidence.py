@@ -70,6 +70,16 @@ class EvidenceStore:
             raise KeyError(eid)
         return int(row[0])
 
+    def episode_ref(self, eid: str) -> tuple[str, str]:
+        """``(commit_sha, started_at)`` of an indexed episode; ``KeyError`` when absent."""
+        row = self.db.execute(
+            "SELECT commit_sha, started_at FROM episodes WHERE episode_id=?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(eid)
+        return str(row[0]), str(row[1])
+
     def regime_of(self, eid: str) -> str:
         row = self.db.execute(
             "SELECT regime FROM episodes WHERE episode_id=?",

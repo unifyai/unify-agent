@@ -18,6 +18,7 @@ class GitError(RuntimeError):
 _ENV = {
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",  # no user config: hooks, fsmonitor, filters
     "GIT_AUTHOR_NAME": "unify-memory",
     "GIT_AUTHOR_EMAIL": "memory@unify.invalid",
     "GIT_COMMITTER_NAME": "unify-memory",
@@ -174,17 +175,26 @@ class Repo:
         return [s for _, s in sorted(shas)]
 
 
+#: Every call: no hooks and no fsmonitor, whatever a repo's own config says.
+_HARD = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+GIT_TIMEOUT_S = 120
+
+
 def _git(args: list[str], input: str | None = None, cwd: Path | None = None) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(_ENV)
-    proc = subprocess.run(
-        ["git", *args],
-        input=input,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", *_HARD, *args],
+            input=input,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args[:3])}… timed out") from exc
     if proc.returncode != 0:
         raise GitError(f"git {' '.join(args[:3])}… failed: {proc.stderr.strip()[:400]}")
     return proc.stdout
