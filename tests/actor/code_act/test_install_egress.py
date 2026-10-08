@@ -26,6 +26,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import types
@@ -392,6 +393,36 @@ def _stub_uv(world, monkeypatch, listener, targets) -> Path:
     uv.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return environment.environment_dir() / "uv-report.json"
+
+
+@needs_bwrap
+@pytest.mark.timeout(60)
+def test_a_proxy_socket_the_sandbox_would_show_is_refused(world, monkeypatch):
+    """The proxy's socket is reachable in the sandbox only where the
+    forwarder finds it: a ``TMPDIR`` inside the workspace (or a socket inside
+    one of the command's binds) would let any cell connect to it, so the
+    command line is refused; the default, the host's /tmp, is private."""
+    policy = sandbox.build_policy(fresh=True)
+    with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as egress:
+        assert policy.readable_violation(egress.directory) is not None
+        sandbox.wrap_argv(["true"], policy, egress=egress)
+        with pytest.raises(sandbox.SandboxRefusal) as raised:
+            sandbox.wrap_argv(
+                ["true"],
+                policy,
+                writable=[egress.directory],
+                egress=egress,
+            )
+    assert raised.value.rule == "installer-index-only"
+    shown = world["workspace"] / "tmp"
+    shown.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(shown))
+    with sandbox.egress_proxy(environment.DEFAULT_INDEX_HOSTS) as egress:
+        assert sandbox._within(egress.directory, shown)
+        with pytest.raises(sandbox.SandboxRefusal) as raised:
+            sandbox.wrap_argv(["true"], policy, egress=egress)
+    assert raised.value.rule == "installer-index-only"
+    assert "TMPDIR" in str(raised.value)
 
 
 @needs_bwrap

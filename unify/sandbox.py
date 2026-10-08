@@ -2173,6 +2173,12 @@ def wrap_argv(
     if egress is not None:
         # The installer: the same forwarder as the proxy mode, relaying to the
         # harness's allow-listing proxy instead of the operator's.
+        _refuse_shown_socket(
+            egress.directory,
+            policy,
+            (*extra, *readonly),
+            "installer-index-only",
+        )
         args += ["--ro-bind", str(egress.directory), _PROXY_MOUNT]
         command = [
             sys.executable,
@@ -2186,6 +2192,12 @@ def wrap_argv(
         ]
     elif policy.network == "proxy":
         bridge = _proxy_bridge(policy.proxy_port)
+        _refuse_shown_socket(
+            bridge.directory,
+            policy,
+            (*extra, *readonly),
+            "network-proxy-only",
+        )
         args += ["--ro-bind", str(bridge.directory), _PROXY_MOUNT]
         command = [
             sys.executable,
@@ -2223,6 +2235,31 @@ def wrap_argv(
 
 
 _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
+
+
+def _refuse_shown_socket(
+    directory: Path,
+    policy: SandboxPolicy,
+    bound: Sequence[Path],
+    rule: str,
+) -> None:
+    """Refuse when a proxy socket's *directory* is visible in the sandbox
+    anywhere but :data:`_PROXY_MOUNT`: under the workspace, a mounted view
+    or one of the command's own binds (*bound*), a cell could connect to the
+    socket directly or replace it. It lives in the harness's temporary
+    directory, which the sandbox replaces with its own (rule
+    ``private-tmp``), unless ``TMPDIR`` points somewhere the sandbox shows.
+    """
+    real = Path(os.path.realpath(directory))
+    if policy.readable_violation(real) is None or any(
+        _within(real, Path(os.path.realpath(p))) for p in bound
+    ):
+        raise SandboxRefusal(
+            rule,
+            f"the proxy's socket directory {real} would be visible inside the "
+            "sandbox; point TMPDIR at a directory the sandbox does not show "
+            "(the default, /tmp, is private to it)",
+        )
 
 
 def _refuse_broad_binds(
