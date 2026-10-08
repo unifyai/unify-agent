@@ -185,8 +185,6 @@ _URL_VARIABLES = frozenset(
         "http_proxy",
         "https_proxy",
         "all_proxy",
-        "PIP_INDEX_URL",
-        "PIP_EXTRA_INDEX_URL",
     }
     | {name for name in _INSTALLER_ENV if name.startswith("UV_INDEX")}
     | {name for name in _INSTALLER_ENV if name.endswith("_INDEX_URL")}
@@ -195,7 +193,12 @@ _URL_VARIABLES = frozenset(
 
 
 def _without_userinfo(url: str) -> str:
-    """*url* without ``user:password@``; scheme, host, port, path, query kept."""
+    """*url* without ``user:password@``; scheme, host, port, path, query kept.
+
+    An item that still holds ``@`` after that (no scheme, or a ``/``, ``?``
+    or ``#`` left unencoded in the password, which ends the authority early)
+    is dropped whole (``""``): a credential is never passed on by mistake.
+    """
     prefix = ""
     if "=" in url.split("://", 1)[0]:
         prefix, url = url.split("=", 1)
@@ -203,19 +206,19 @@ def _without_userinfo(url: str) -> str:
     try:
         parts = urlsplit(url)
     except ValueError:
-        return prefix + url
-    if "@" not in parts.netloc:
-        return prefix + url
-    return prefix + parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]).geturl()
+        return ""
+    if "@" in parts.netloc:
+        url = parts._replace(netloc=parts.netloc.rsplit("@", 1)[1]).geturl()
+    return "" if "@" in url else prefix + url
 
 
 def _strip_userinfo(env: Dict[str, str]) -> Dict[str, str]:
     """*env* with the userinfo removed from every URL variable's URLs.
 
     Index and proxy credentials never reach the installer (or anything it
-    starts): authenticated indexes go through the allow-listing index proxy
-    (:class:`unify.sandbox.EgressProxy`), never through credentials in a
-    URL.
+    starts). Authenticated indexes are not supported: the allow-listing index
+    proxy (:class:`unify.sandbox.EgressProxy`) only opens CONNECT tunnels and
+    adds no credentials, so a mirror that needs them fails.
     Only the variable's name is logged, never its value.
     """
     import logging
@@ -224,7 +227,9 @@ def _strip_userinfo(env: Dict[str, str]) -> Dict[str, str]:
     for name, value in env.items():
         if name not in _URL_VARIABLES or "@" not in value:
             continue
-        stripped = " ".join(_without_userinfo(item) for item in value.split())
+        stripped = " ".join(
+            kept for kept in (_without_userinfo(item) for item in value.split()) if kept
+        )
         if stripped != " ".join(value.split()):
             out[name] = stripped
             logging.getLogger(__name__).warning("userinfo removed from %s", name)
@@ -262,10 +267,10 @@ def index_hosts(
                 item = item.split("=", 1)[1]
             try:
                 parts = urlsplit(item)
-                port = parts.port or 443
+                port = 443 if parts.port is None else parts.port
             except ValueError:
                 continue
-            if parts.scheme != "https" or not parts.hostname:
+            if parts.scheme != "https" or not parts.hostname or not 0 < port < 65536:
                 continue
             pair = (parts.hostname.lower().rstrip("."), port)
             if pair not in hosts:
@@ -276,14 +281,16 @@ def index_hosts(
 def _installer(
     argv: List[str],
     egress: sandbox.EgressProxy,
+    env: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[str], Dict[str, str], Optional[str]]:
     """``(argv, env, cwd)`` for running the installer command *argv*.
 
     *argv* runs inside bubblewrap under the workspace policy, with this
     environment and the installer's cache bound writable, and no network
-    but one loopback port forwarded to *egress*.
+    but one loopback port forwarded to *egress*. *env* is
+    :func:`installer_env`'s result when the caller already has it.
     """
-    env = installer_env()
+    env = dict(installer_env() if env is None else env)
     venv = environment_dir()
     cache = installer_cache()
     for path in (venv, cache):
@@ -369,7 +376,9 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
     specifiers = list(specifiers)
     _check_specifiers(specifiers)
     _create()
-    with sandbox.egress_proxy(index_hosts()) as egress:
+    # One environment per install: the hosts and the command read the same.
+    base_env = installer_env()
+    with sandbox.egress_proxy(index_hosts(base_env)) as egress:
         argv, env, cwd = _installer(
             [
                 "uv",
@@ -383,6 +392,7 @@ def install(specifiers: List[str], *, timeout: float = 300) -> Dict[str, Any]:
                 *specifiers,
             ],
             egress,
+            base_env,
         )
         # Never wrapped by a cell's subprocess confinement: the command is the
         # harness's, and already wrapped.
