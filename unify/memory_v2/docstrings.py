@@ -34,9 +34,11 @@ the working directory and the function's module as its globals, so a recorded in
 ``env/<channel>/tests/`` is reached by its path from the root.
 
 The examples must be real (:func:`example_problems`): the section parses as doctest examples, none is
-skipped (``+SKIP``), at least one example calls the function itself with an argument and shows a result that
-is more than ``...``, and the examples read at least one fixture under ``env/<channel>/tests/`` (a string
-constant naming the path). The gate also checks that the fixture exists, that it has the shape of an input
+skipped (``+SKIP``), at least one example is a call of the function itself with an argument, made once, whose
+value (or an item, attribute or method of it) is the shown output, and that output has a letter or digit
+beyond ``...`` (so ``fn(x) == fn(x)``, ``(fn(x), 3)[1]``, ``isinstance(fn(x), list)`` and ``[...]`` do not
+count); the examples read at least one fixture under ``env/<channel>/tests/`` (a string constant naming the
+path), and that call's arguments hold the fixture's path or a name an earlier example bound to it. The gate also checks that the fixture exists, that it has the shape of an input
 the function was admitted on (:mod:`.memory_helper`), and, when the examples run, that at least one example
 ran and the function was called.
 
@@ -174,22 +176,103 @@ def _tree(source: str) -> ast.AST | None:
         return None
 
 
-def _calls(source: str, name: str) -> bool:
-    """Whether *source* calls *name* (by name or as an attribute) with at least one argument."""
-    tree = _tree(source)
-    return tree is not None and any(
-        isinstance(n, ast.Call)
-        and (
-            (isinstance(n.func, ast.Name) and n.func.id == name)
-            or (isinstance(n.func, ast.Attribute) and n.func.attr == name)
-        )
-        and (n.args or n.keywords)
-        for n in ast.walk(tree)
+def _names_fn(node: ast.AST, name: str) -> bool:
+    """Whether *node* is a call of *name* (by name or as an attribute, ``env.c.name``)."""
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Name) and node.func.id == name)
+        or (isinstance(node.func, ast.Attribute) and node.func.attr == name)
     )
 
 
+def _chain_root(node: ast.AST, name: str) -> ast.AST:
+    """The root of a chain of items, attributes and method calls (``fn(x)[0].total``, ``fn(x).keys()``)."""
+    while True:
+        if _names_fn(node, name):
+            return node
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            node = node.func.value
+        else:
+            return node
+
+
+def _shown_call(source: str, name: str) -> ast.Call | None:
+    """The call of *name* whose value the example shows: the example is one expression, the call itself or
+    an item, attribute or method of its result, holding exactly one call of *name*, with an argument.
+    None for an assignment, a comparison (``fn(x) == fn(x)``), a discarded result (``(fn(x), 3)[1]``),
+    a wrapped one (``isinstance(fn(x), list)``) or a call without arguments."""
+    tree = _tree(source)
+    if tree is None or len(tree.body) != 1 or not isinstance(tree.body[0], ast.Expr):
+        return None
+    expr = tree.body[0].value
+    root = _chain_root(expr, name)
+    if not _names_fn(root, name) or not (root.args or root.keywords):
+        return None
+    if sum(1 for n in ast.walk(expr) if _names_fn(n, name)) != 1:
+        return None
+    return root
+
+
 def _shows_result(want: str) -> bool:
-    return bool(want.strip().replace("...", "").strip())
+    """An expected output that shows something: a letter or digit once ``...`` is removed (not ``...``,
+    ``[...]``, ``{...}`` or ``'...'``)."""
+    return any(c.isalnum() for c in want.replace("...", ""))
+
+
+def _fixture_names(
+    found: list[doctest.Example],
+    prefix: str,
+) -> tuple[set[str], list[ast.AST]]:
+    """The names bound (by an earlier example's assignment) to a value built from a fixture path under
+    *prefix*, and each example's parsed source."""
+    tainted: set[str] = set()
+    trees: list[ast.AST] = []
+
+    def reaches(node: ast.AST) -> bool:
+        return any(
+            (
+                isinstance(n, ast.Constant)
+                and isinstance(n.value, str)
+                and n.value.startswith(prefix)
+            )
+            or (isinstance(n, ast.Name) and n.id in tainted)
+            for n in ast.walk(node)
+        )
+
+    for e in found:
+        tree = _tree(e.source)
+        trees.append(tree)
+        for n in ast.walk(tree) if tree is not None else ():
+            value = getattr(n, "value", None)
+            if (
+                isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+                and value is not None
+            ):
+                if reaches(value):
+                    targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+                    tainted |= {
+                        t.id
+                        for tg in targets
+                        for t in ast.walk(tg)
+                        if isinstance(t, ast.Name)
+                    }
+    return tainted, trees
+
+
+def _passes_fixture(call: ast.Call, prefix: str, tainted: set[str]) -> bool:
+    """Whether the call's arguments hold a fixture path under *prefix* or a name bound to one."""
+    parts = [*call.args, *(k.value for k in call.keywords)]
+    return any(
+        (
+            isinstance(n, ast.Constant)
+            and isinstance(n.value, str)
+            and n.value.startswith(prefix)
+        )
+        or (isinstance(n, ast.Name) and n.id in tainted)
+        for part in parts
+        for n in ast.walk(part)
+    )
 
 
 def fixture_paths(d: Docstring, channel: str) -> list[str]:
@@ -218,17 +301,36 @@ def example_problems(d: Docstring, name: str | None, channel: str | None) -> lis
     out: list[str] = []
     if any(e.options.get(doctest.SKIP) for e in found):
         out.append("Example: an example is skipped (`+SKIP`); every example must run")
-    if name is not None and not any(
-        _calls(e.source, name) and _shows_result(e.want) for e in found
-    ):
+    shown = (
+        [
+            (i, call)
+            for i, e in enumerate(found)
+            if e.exc_msg is None  # a refusal shows no result
+            and _shows_result(e.want)
+            and (call := _shown_call(e.source, name)) is not None
+        ]
+        if name is not None
+        else []
+    )
+    if name is not None and not shown:
         out.append(
             f"Example: no example calls `{name}(...)` with an argument and shows its result (an "
-            "expected output that is more than `...`)",
+            "expected output with a letter or digit, not only `...`; the example is the call itself, or "
+            "an item or attribute of its result, made once)",
         )
-    if channel is not None and not fixture_paths(d, channel):
+    paths = fixture_paths(d, channel) if channel is not None else []
+    if channel is not None and not paths:
         out.append(
             f"Example: no example reads a recorded input from a fixture under env/{channel}/tests/",
         )
+    if name is not None and shown and paths:
+        prefix = f"env/{channel}/tests/"
+        tainted, _ = _fixture_names(found, prefix)
+        if not any(_passes_fixture(call, prefix, tainted) for _, call in shown):
+            out.append(
+                f"Example: the example showing `{name}(...)`'s result does not pass it the recorded "
+                "fixture (name the fixture's path, or a name bound to it, in the call's arguments)",
+            )
     return out
 
 
@@ -361,8 +463,10 @@ def describe_standard() -> str:
         "and the first parameter's line names its input form. Raises: names "
         f"{ERROR_NAME} and when it is raised. Example: holds `>>>` doctest examples, none skipped, "
         "that read a recorded input copied as a test fixture under env/<channel>/tests/ (named by its "
-        "path as a string) and at least one of which calls the function itself on it and shows the "
-        "result (more than `...`); the fixture must have the shape of an input the function covers. "
+        "path as a string) and at least one of which is a call of the function itself, made once, on "
+        "that fixture (its path, or a name bound to it, in the arguments) whose value, or an item or "
+        "attribute of it, is the shown output (with a letter or digit, not only `...`); the fixture must "
+        "have the shape of an input the function covers. "
         "The gate runs every example as a doctest, read-only, with /memory as the working directory, "
         "the module's names in scope and PYTHONHASHSEED=0; a failing example, or one that never calls "
         "the function, refuses it. Check yours the same way: `python -c 'import doctest, "

@@ -413,15 +413,55 @@ def test_an_example_must_read_a_fixture_the_commit_holds(lab):
 
 
 def test_the_runner_requires_the_function_to_be_called(lab):
-    """An example that names the call but never makes it passes G1's static check and fails G3."""
+    """An example that shows the call but never makes it (its name is rebound first) passes G1's static
+    check and fails G3: the counter never fires."""
     mem, _, gate = lab
     dodge = DOC_MOD.replace(
         CALL,
-        '        >>> me(env_from([("venmo", "me", {}, rec)])) if False else "u-1"\n        \'u-1\'\n',
+        '        >>> me = lambda apis: "u-1"\n' + CALL,
     )
+    assert dodge != DOC_MOD
     res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": dodge}, DOC_MAN)
     assert res.checks["G1"] and not res.checks["G3"], res.reasons
     assert any("fails as a doctest" in r for r in res.reasons), res.reasons
+
+
+@pytest.mark.parametrize(
+    "example",
+    [
+        '        >>> me(env_from([("venmo", "me", {}, rec)])) if False else "u-1"\n        \'u-1\'\n',
+        '        >>> me(env_from([("venmo", "me", {}, rec)])) == me(env_from([("venmo", "me", {}, rec)]))\n'
+        "        True\n",
+        '        >>> (me(env_from([("venmo", "me", {}, rec)])), 3)[1]\n        3\n',
+        '        >>> isinstance(me(env_from([("venmo", "me", {}, rec)])), str)\n        True\n',
+        '        >>> [me(env_from([("venmo", "me", {}, rec)]))]\n        [...]\n',
+    ],
+    ids=["conditional", "self-comparison", "discarded", "wrapped", "bracket-ellipsis"],
+)
+def test_a_vacuous_example_is_refused_before_any_run(lab, example):
+    """Minor (re-review I2): the shown output must be the call's own value, made once, with content."""
+    mem, _, gate = lab
+    module = DOC_MOD.replace(CALL, example)
+    assert module != DOC_MOD
+    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": module}, DOC_MAN)
+    assert not res.checks["G1"]
+    assert any(
+        r.startswith("G1: env/venmo:me docstring Example: no example calls `me(...)`")
+        for r in res.reasons
+    ), res.reasons
+
+
+def test_an_example_must_pass_the_fixture_to_the_call(lab):
+    mem, _, gate = lab
+    ignored = DOC_MOD.replace(
+        CALL,
+        '        >>> me(env_from([("venmo", "me", {}, {"user_id": "u-1"})]))\n        \'u-1\'\n',
+    )
+    res = _gate(mem, gate, {**DOC_FILES, "env/venmo/__init__.py": ignored}, DOC_MAN)
+    assert (
+        "G1: env/venmo:me docstring Example: the example showing `me(...)`'s result does not pass it "
+        "the recorded fixture (name the fixture's path, or a name bound to it, in the call's arguments)"
+    ) in res.reasons, res.reasons
 
 
 def test_examples_run_with_a_fixed_hash_seed(lab):

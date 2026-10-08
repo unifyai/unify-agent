@@ -2,6 +2,8 @@
 
 import ast
 
+import pytest
+
 from unify.memory_v2 import docstrings
 
 FULL = """Read the ledger into rows.
@@ -218,3 +220,62 @@ def test_section_aliases_and_unmeasurable_fstrings():
     assert d.args == [("path", "a path.")] and d.sections["Returns"] == "Rows."
     only_vars = _fn("def f(path):\n    raise MemoryInputError(f'{path}')\n")
     assert docstrings.refusal_problems(only_vars) == []  # unmeasurable, as documented
+
+
+FN = "read_ledger"
+FIXTURE = '"env/w/tests/data/ledger.csv"'
+
+
+def _example(body: str) -> docstrings.Docstring:
+    return docstrings.parse(
+        "Read.\n\nExample:\n" + "\n".join("    " + ln for ln in body.splitlines()),
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "want"),
+    [
+        (f">>> read_ledger({FIXTURE})[0]['a']\n'x'", []),
+        (f">>> read_ledger({FIXTURE}).keys()\ndict_keys(['a'])", []),
+        (
+            f">>> import json\n>>> rec = json.load(open({FIXTURE}))\n>>> read_ledger(rec)\n[1]",
+            [],
+        ),
+        (f">>> env.w.read_ledger({FIXTURE})\n[1]", []),
+        (f">>> read_ledger({FIXTURE}) == read_ledger({FIXTURE})\nTrue", ["calls"]),
+        (f">>> (read_ledger({FIXTURE}), 3)[1]\n3", ["calls"]),
+        (f">>> isinstance(read_ledger({FIXTURE}), list)\nTrue", ["calls"]),
+        (f">>> read_ledger({FIXTURE})\n[...]", ["calls"]),
+        (f">>> read_ledger({FIXTURE})\n{{...}}", ["calls"]),
+        (f">>> read_ledger({FIXTURE}).index(read_ledger({FIXTURE}))\n0", ["calls"]),
+        (f">>> rows = read_ledger({FIXTURE})\n>>> rows[0]\n1", ["calls"]),
+        (
+            f">>> read_ledger({FIXTURE})\nTraceback (most recent call last):\nMemoryInputError: x",
+            ["calls"],
+        ),
+        (f">>> _ = {FIXTURE}\n>>> read_ledger([{{'a': 1}}])[0]['a']\n1", ["fixture"]),
+    ],
+    ids=[
+        "item",
+        "method",
+        "bound-name",
+        "module-attribute",
+        "self-comparison",
+        "discarded",
+        "wrapped",
+        "bracket-ellipsis",
+        "brace-ellipsis",
+        "twice",
+        "assigned",
+        "refusal-only",
+        "fixture-ignored",
+    ],
+)
+def test_only_a_shown_call_on_the_fixture_counts(body, want):
+    """Minor (re-review I2): the shown output is the call's own value, made once on the fixture."""
+    got = docstrings.example_problems(_example(body), FN, "w")
+    kinds = [
+        "calls" if p.startswith(f"Example: no example calls `{FN}(...)`") else "fixture"
+        for p in got
+    ]
+    assert kinds == want, got
