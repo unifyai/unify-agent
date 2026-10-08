@@ -8,13 +8,22 @@ item if it then refuses an input it accepted unchanged.
 
 Perturbations come from types alone, never from task ids, stream positions, benchmark names or words.
 
-**A field with one value is identity or format, never perturbed.** A field (a key path, a column, a keyword
-path) whose recorded value is the same across every covered input of the item (up to
-:data:`MAX_CONSTANCY_COVERS` covers, plus, for a tool keyword or response field, every recorded call of the
-same ``channel.method``) is identity or format: a message-kind tag (``"type": "SubmitFeedback"``), a schema
-version, a constant currency. Perturbing it would perturb what the input is, not a value within an observed
-range, so it is kept, for strings, numbers and booleans alike, and a note names the field (never a value).
-A field with two or more distinct recorded values is perturbed:
+**A field with one value is identity or format, never perturbed.** The gate reads the recorded observations
+of the item's families from the whole evidence store (:func:`pool_actions`: the episodes the manifest names
+and the most recent :data:`MAX_POOL_EPISODES` episodes touching each covered channel, at most
+:data:`MAX_POOL_ACTIONS` actions), not only the covers the pass chose. A family is a tool call's
+``channel.method`` (its keywords, or its ``ok`` responses for an item taking observations), a dialogue
+``channel.method``, or a work-tree channel and path family (at most :data:`MAX_HOST_PARSES` files parsed).
+Among the observations of a cover's family *with the same set of field names* (key paths, columns, keyword
+paths), a field is identity or format when it holds one value across at least
+:data:`MIN_CONSTANT_OBSERVATIONS` observations from at least :data:`MIN_CONSTANT_EPISODES` episodes: a
+message-kind tag (``"type": "SubmitFeedback"`` in every message of that shape), a schema version, a constant
+currency. Perturbing it would perturb what the input is, so it is kept, for strings, numbers and booleans
+alike, and a note names the field (never a value). With less support, or two or more values, the field is
+perturbed. Matching field-name sets keep a tag that separates message shapes constant within each shape,
+while a value field that varies among same-shape observations elsewhere in the store is still perturbed, so
+choosing few or similar covers does not hide a whitelist. Tool keywords count calls of every status, so a
+value only a rejected call used makes the field vary (the conservative side); responses count ``ok`` calls:
 
 * a string keeps its literal format parts and varies the rest within its character classes. The literal
   parts are the longest common prefix and suffix of the field's distinct observed values, cut back to
@@ -23,7 +32,7 @@ A field with two or more distinct recorded values is perturbed:
   varies. In the varying part letters stay letters of
   the same case and digits stay digits (hex-like parts stay hex); every other character is kept, so a
   value's non-alphanumeric skeleton never changes. The result differs from the original and is absent
-  from every recorded value the gate sees (the episodes the manifest names and the covered files);
+  from every recorded value the gate sees (the episodes the manifest names, the pool and the covered files);
 * an integer, or a decimal string, goes beyond the field's observed range in its own direction: a
   non-negative value past the maximum of the field's non-negative values (``2·max + span + k``), a negative
   one past the minimum of its negative values (``2·min − span − k``). The value's sign is kept, so a sign
@@ -141,9 +150,14 @@ RESULTS_MAX_BYTES = 4 * 1024**2
 _MAX_DEPTH = 8
 _MAX_LEAVES = 5000
 _ATTEMPTS = 32
-MAX_CONSTANCY_COVERS = (
-    256  # covers read to tell a constant field (identity or format) from a varying one
+# The pool of recorded observations a field's constancy is judged on (see the module docstring).
+MAX_POOL_EPISODES = (
+    64  # the most recent episodes per covered channel, besides the manifest's
 )
+MAX_POOL_ACTIONS = 20_000  # actions read for the pool
+MAX_HOST_PARSES = 256  # recorded files parsed on the host for the pool
+MIN_CONSTANT_OBSERVATIONS = 3
+MIN_CONSTANT_EPISODES = 2
 
 # The input forms each kind of cover can give (:data:`.manifest.INPUT_KINDS`), and each kind's convention
 # for an item that declares none. Shell covers are not checked at all.
@@ -1001,6 +1015,30 @@ def _unfit_reason(a: Action, input_kind: str | None) -> str | None:
     return None
 
 
+def pool_actions(
+    episode_ids: list[str],
+    lookup: Callable[[str, int], Action | None],
+    channels: set[str],
+) -> tuple[list[tuple[str, Action]], bool]:
+    """(episode id, action) of *episode_ids* on *channels*, reading at most :data:`MAX_POOL_ACTIONS` actions.
+
+    The second value is True when the cap stopped the read.
+    """
+    out: list[tuple[str, Action]] = []
+    read = 0
+    for eid in episode_ids:
+        for i in range(MAX_ACTIONS_PER_EPISODE):
+            if read >= MAX_POOL_ACTIONS:
+                return out, True
+            a = lookup(eid, i)
+            read += 1
+            if a is None:
+                break
+            if a.channel in channels:
+                out.append((eid, a))
+    return out, False
+
+
 def plan(
     item: str,
     covers: list[tuple[str, int, Action]],
@@ -1009,12 +1047,15 @@ def plan(
     blob: Callable[[str], bytes],
     field_types: dict[str, str] | None = None,
     input_kind: str | None = None,
+    pool: list[tuple[str, Action]] | None = None,
 ) -> Plan:
     """The cases that check *item* on its covered observations (see the module docstring).
 
     *covers* are the item's validated covers; *seen* every recorded action of the episodes the gate sees;
     *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21);
-    *input_kind* its declared input form (None: each kind's convention).
+    *input_kind* its declared input form (None: each kind's convention); *pool* the recorded observations
+    (episode id, action) a field's constancy is judged on, holding the covers (None: the covers, plus
+    *seen* under an unknown episode id ``""``, which never counts toward the episodes).
     """
     out = Plan()
     field_types = dict(field_types or {})
@@ -1056,46 +1097,90 @@ def plan(
     _exemptions(out, covers, chosen, seen, blob)
 
     strings: set[str] = set()
-    for a in seen:
+    if (
+        pool is None
+    ):  # the covers, and the seen actions under an unknown episode (never counted as one)
+        pool = [(eid, a) for eid, _, a in covers]
+        pool += [("", a) for a in seen if not any(a is b for _, _, b in covers)]
+    pool = list(pool)
+    for a in seen + [a for _, a in pool]:
         for part in (a.args, a.kwargs, a.response, a.error):
             _strings(part, strings)
     stats: dict[tuple, list] = {}
-    # every distinct recorded value of each field: one alone makes the field identity or format
-    distinct: dict[tuple, set[str]] = {}
-
-    def observe(fam: tuple, d: Any, ranged: bool) -> None:
-        for name, (_, _, values) in d.fields().items():
-            if ranged:
-                stats.setdefault((fam, name), []).extend(values)
-            distinct.setdefault((fam, name), set()).update(_key(v) for v in values)
-
     for c, d in docs.items():
-        observe(dfam[c], d, True)
-        for _, (_, _, values) in d.fields().items():
+        for name, (_, _, values) in d.fields().items():
+            stats.setdefault((dfam[c], name), []).extend(values)
             _strings(values, strings)
-    for c in ranked[
-        :MAX_CONSTANCY_COVERS
-    ]:  # covers beyond the checked ones still show a field varying
-        if c not in docs:
-            d = _doc(chosen[c], blob, input_kind)
-            if d is not None:
-                observe(_doc_family(chosen[c], input_kind), d, False)
     families = set(dfam.values())
-    for (
-        a
-    ) in (
-        seen
-    ):  # a tool field's range is every recorded call (or response) of the same method
+
+    def ranged(fam: tuple, d: Any) -> None:
+        for name, (_, _, values) in d.fields().items():
+            stats.setdefault((fam, name), []).extend(values)
+
+    # a tool field's range is every recorded call (or ok response) of the same method: named episodes and pool
+    for a in seen:
         if getattr(a, "kind", "tool") != "tool":
             continue
         if isinstance(a.kwargs, dict) and family(a) in families:
-            observe(family(a), _Json(a.kwargs, lambda o: o), True)
+            ranged(family(a), _Json(a.kwargs, lambda o: o))
         rfam = ("tool_response", a.channel, a.method)
         if rfam in families and a.status == "ok":
             d = _observation_doc(a.response)
             if d is not None:
-                observe(rfam, d, True)
-    constant = {k for k, v in distinct.items() if len(v) == 1}
+                ranged(rfam, d)
+    # constancy: the pool's observations by family and field-name set, each field's values per observation
+    shapes: dict[tuple, list[tuple[str, dict[str, set[str]]]]] = {}
+    parses, parse_capped = 0, False
+    for eid, a in pool:
+        kind = getattr(a, "kind", "tool")
+        if kind == "shell":
+            continue
+        if kind == "tool" and _form(a, input_kind) == "env":
+            fam = family(a)
+            if fam not in families or not isinstance(a.kwargs, dict):
+                continue
+            d = _Json(dict(a.kwargs), lambda o: o)
+            ranged(fam, d)
+        elif kind == "tool":
+            fam = ("tool_response", a.channel, a.method)
+            if fam not in families or a.status != "ok":
+                continue
+            d = _observation_doc(a.response)
+            if d is not None:
+                ranged(fam, d)
+        else:
+            fam = family(a)
+            if fam not in families or a.status != "ok" or is_rejection(a):
+                continue
+            if kind == "worktree":
+                if parses >= MAX_HOST_PARSES:
+                    parse_capped = True
+                    continue
+                parses += 1
+            d = _doc(a, blob, input_kind)
+        if d is None:
+            continue
+        fields = d.fields()
+        shapes.setdefault((fam, frozenset(fields)), []).append(
+            (eid, {n: {_key(v) for v in vals} for n, (_, _, vals) in fields.items()}),
+        )
+    if parse_capped:
+        out.notes.append(
+            f"constancy read {MAX_HOST_PARSES} recorded files of the item's families; the rest count "
+            "as unseen",
+        )
+
+    def constant(fam: tuple, shape: frozenset, name: str) -> bool:
+        obs = shapes.get((fam, shape), [])
+        values: set[str] = set()
+        for _, by_name in obs:
+            values |= by_name.get(name, set())
+        return (
+            len(obs) >= MIN_CONSTANT_OBSERVATIONS
+            and len({eid for eid, _ in obs if eid}) >= MIN_CONSTANT_EPISODES
+            and len(values) == 1
+        )
+
     kept: list[str] = []  # fields kept as identity or format, for the note
     if any(isinstance(d, _Yaml) for d in docs.values()):
         strings |= _YAML_LITERALS
@@ -1105,6 +1190,7 @@ def plan(
         kind, fam, form = getattr(a, "kind", "tool"), dfam[c], _form(a, input_kind)
         perturbed: list[tuple] = []
         fields = list(d.fields().items())
+        shape = frozenset(name for name, _ in fields)
         typed: set[str] = set()
         # declared fields first, outside the field limit
         for name, (loc, value, _) in fields:
@@ -1136,7 +1222,7 @@ def plan(
         for name, (loc, value, _) in fields:
             if name in typed:
                 continue
-            if (fam, name) in constant:
+            if constant(fam, shape, name):
                 if name not in kept:
                     kept.append(name)
                 continue
@@ -1196,7 +1282,8 @@ def plan(
             out.cases.append(case)
     if kept:
         out.notes.append(
-            "fields with one value across every covered input, kept as identity or format and "
+            "fields with one value across the recorded observations of their shape, kept as identity "
+            "or format and "
             "not perturbed: " + ", ".join(k[:80] for k in kept[:_NAMED]) + _more(kept),
         )
     unwritten = {n: t for n, t in unwritten.items() if n not in typed_any}

@@ -626,20 +626,10 @@ def test_a_bad_currency_code_is_one_upper_casing_cannot_fix(recorded):
 
 def test_declared_fields_come_first_within_the_field_limit(recorded):
     store, acts = recorded
-    # two covers, so the untagged fields vary across them (a field with one value is not perturbed)
-    p = plan(
-        "env/dialogue_user:r",
-        _covers(acts, 21, 27),
-        seen=acts,
-        blob=store.get,
-        field_types={"zmonth": "month"},
-    )
-    sides = {c.side for c in p.cases if c.field == "zmonth" and c.cover == ("h1", 21)}
-    assert sides == {"in", "out"}
+    p, by = _declared(acts, store, 21, {"zmonth": "month"}, "env/dialogue_user:r")
+    assert ("zmonth", "in") in by and ("zmonth", "out") in by
     assert not any("zmonth" in n and "not in any covered input" in n for n in p.notes)
-    untagged = {
-        c.field for c in p.cases if c.field and c.side is None and c.cover == ("h1", 21)
-    }
+    untagged = {c.field for c in p.cases if c.field and c.side is None}
     assert len(untagged) == MAX_FIELDS_PER_COVER
 
 
@@ -839,63 +829,128 @@ def test_a_perturbed_date_moves_the_other_dates_of_its_record_by_the_same_offset
 
 def test_dialogue_perturbs_json_leaves_and_keeps_structure(recorded):
     store, acts = recorded
-    p = plan(
-        "env/dialogue_user:parse",
-        _covers(acts, 5, 28),
-        seen=acts,
-        blob=store.get,
-    )
-    fields = {
-        c.field: c.payload["observation"]
-        for c in p.cases
-        if c.field and c.cover == ("h1", 5)
-    }
+    p = plan("env/dialogue_user:parse", _covers(acts, 5), seen=acts, blob=store.get)
+    fields = {c.field: c.payload["observation"] for c in p.cases if c.field}
+    # one observation from one episode is no support for constancy: every field varies
     assert set(fields) == {"room", "items[]", "steps"}
     for obs in fields.values():
         assert set(obs) == {"room", "items", "steps"} and len(obs["items"]) == 2
-    assert fields["steps"]["steps"] > 5
-    assert fields["room"]["room"] not in {"hall", "yard"}
-    # on one cover alone, room and steps hold one value each: identity or format, not perturbed
-    one = plan("env/dialogue_user:parse", _covers(acts, 5), seen=acts, blob=store.get)
-    assert {c.field for c in one.cases if c.field} == {"items[]"}
-    assert any(
-        "room, steps" in n and "not perturbed" in n for n in one.notes
-    ), one.notes
+    assert fields["steps"]["steps"] > 3
+    assert fields["room"]["room"] not in {"hall"}
+    assert not any("not perturbed" in n for n in p.notes)
 
 
-def test_a_field_constant_across_every_covered_input_is_identity_not_perturbed(
-    recorded,
-):
-    """A message-kind tag ("type") and a constant number are identity or format; varying fields vary."""
-    store, acts = recorded
+SUBMIT = [
+    {"type": "SubmitFeedback", "version": 3, "attempt": n, "ok": n % 2 == 0}
+    for n in range(1, 5)
+]
+DEMOS = [
+    {"type": "DemosFeedback", "version": 3, "demos": n, "shown": [n, n + 1]}
+    for n in range(1, 4)
+]
+
+
+def _arc_pool():
+    """ARC-like feedback: Submit and Demos messages on one channel, across three episodes."""
+    msgs = [_dl(i, m) for i, m in enumerate(SUBMIT + DEMOS)]
+    eids = ["a1", "a2", "a3", "a1", "a2", "a3", "a1"]
+    return msgs, list(zip(eids, msgs))
+
+
+def test_a_tag_constant_within_its_message_shape_across_the_store_is_identity():
+    """Submit and Demos messages share a channel; type is constant within each field-name set."""
+    msgs, pool = _arc_pool()
     p = plan(
         "env/dialogue_user:parse_feedback",
-        _covers(acts, 24, 25),
-        seen=acts,
-        blob=store.get,
+        [("a1", 0, msgs[0]), ("a2", 1, msgs[1])],
+        seen=msgs,
+        blob=lambda sha: b"",
+        pool=pool,
     )
-    perturbed = {c.field for c in p.cases if c.field}
-    assert perturbed == {"attempt"}  # ok is a boolean: never perturbed
+    assert {c.field for c in p.cases if c.field} == {"attempt"}  # ok: a boolean
     (note,) = [n for n in p.notes if "not perturbed" in n]
     assert "type" in note and "version" in note
-    # the note names fields, never values
-    assert "SubmitFeedback" not in note and "3" not in note
+    assert (
+        "SubmitFeedback" not in note and "3" not in note
+    )  # names fields, never values
+    d = plan(
+        "env/dialogue_user:parse_demos",
+        [("a1", 4, msgs[4])],
+        seen=msgs,
+        blob=lambda sha: b"",
+        pool=pool,
+    )
+    assert {c.field for c in d.cases if c.field} == {"demos", "shown[]"}
+    # without the field-name split, type would hold two values: both shapes' types are kept here
+    assert all(c.field != "type" for c in p.cases + d.cases)
+
+
+def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
+    def room(i, r):
+        return _dl(i, {"room": r, "steps": 3})
+
+    covers = [("b1", 0, room(0, "kitchen")), ("b2", 1, room(1, "kitchen"))]
+    # the covers agree, but a same-shape observation elsewhere in the store differs: room varies
+    wider = [(e, a) for e, _, a in covers] + [("b3", room(2, "hall"))]
+    p = plan(
+        "env/dialogue_user:r",
+        covers,
+        seen=[],
+        blob=lambda sha: b"",
+        pool=wider,
+    )
+    fields = {c.field for c in p.cases if c.field}
+    assert (
+        "room" in fields and "steps" not in fields
+    )  # steps: 3 observations, 3 episodes, one value
+    # three observations from one episode: no support, every field varies
+    one_ep = [("b1", room(i, "kitchen")) for i in range(3)]
+    q = plan(
+        "env/dialogue_user:r",
+        covers[:1],
+        seen=[],
+        blob=lambda sha: b"",
+        pool=one_ep,
+    )
+    assert {c.field for c in q.cases if c.field} == {"room", "steps"}
+    # two observations from two episodes: below the minimum, every field varies
+    two = [(e, a) for e, _, a in covers]
+    r = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"", pool=two)
+    assert {c.field for c in r.cases if c.field} == {"room", "steps"}
+    # the default pool is the covers (and seen actions, here none)
+    default = plan("env/dialogue_user:r", covers, seen=[], blob=lambda sha: b"")
+    assert {c.field for c in default.cases if c.field} == {"room", "steps"}
+
+
+def test_a_tool_keyword_is_constant_only_across_every_recorded_call_in_the_pool(
+    recorded,
+):
+    store, acts = recorded
     # an enumeration of prefixes (three distinct ticket ids) still varies
     t = plan("env/worktree_workspace:r", _covers(acts, 7), seen=acts, blob=store.get)
     assert "ticket_id" in {c.field for c in t.cases}
-    # a field with two observed values (red and blue) is still perturbed: a whitelist over it is caught
-    s = plan("env/shop:search", _covers(acts, 0, 1), seen=acts, blob=store.get)
-    assert {"colour", "limit"} <= {c.field for c in s.cases}
-    # a tool keyword is constant only when every recorded call of the method agrees
-    calls = [_search("red", 5), _search("blue", 5)]
+    calls = [_search("red", 5), _search("blue", 5), _search("green", 5)]
+    pool = list(zip(["k1", "k2", "k3"], calls))
     k = plan(
         "env/shop:search",
-        [("h1", i, a) for i, a in enumerate(calls)],
-        seen=calls,
+        [("k1", 0, calls[0])],
+        seen=calls[:1],
         blob=store.get,
+        pool=pool,
     )
     assert {c.field for c in k.cases if c.field} == {"colour"}
     assert any("limit" in n and "not perturbed" in n for n in k.notes)
+    # one more recorded call elsewhere with another limit: limit varies, and its range spans that call
+    pool2 = pool + [("k4", _search("red", 50))]
+    k2 = plan(
+        "env/shop:search",
+        [("k1", 0, calls[0])],
+        seen=calls[:1],
+        blob=store.get,
+        pool=pool2,
+    )
+    lim = next(c for c in k2.cases if c.field == "limit")
+    assert lim.payload["kwargs"]["limit"] > 50
 
 
 def test_the_declared_input_decides_the_first_argument_form(recorded):
@@ -954,12 +1009,18 @@ def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(record
             response={"items": [{"sku": "B-2", "qty": 9}], "kind": "page"},
         ),
     ]
+    third = _search(
+        "green",
+        5,
+        response={"items": [{"sku": "C-3", "qty": 1}], "kind": "page"},
+    )
     p = plan(
         "env/shop:parse_page",
         [("h1", i, a) for i, a in enumerate(calls)],
         seen=calls,
         blob=store.get,
         input_kind="observation",
+        pool=[("h1", calls[0]), ("h1", calls[1]), ("h2", third)],
     )
     assert {c.field for c in p.cases if c.field} == {"items[].sku", "items[].qty"}
     for c in p.cases:
@@ -970,7 +1031,9 @@ def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(record
         )
     sku = next(c for c in p.cases if c.field == "items[].sku" and c.cover == ("h1", 0))
     assert sku.payload["observation"]["items"][0]["sku"] not in ("A-1", "B-2")
-    assert sku.payload["observation"]["kind"] == "page"  # the constant tag is kept
+    assert (
+        sku.payload["observation"]["kind"] == "page"
+    )  # constant in 3 responses, 2 episodes
     # a rejection of the call exempts keywords, never response fields
     assert all(c.family[0] == "tool_response" for c in p.cases)
 
@@ -1484,13 +1547,12 @@ def test_a_dialogue_item_is_checked_and_reasons_are_capped_at_five(shop):
     body = f"""    if obs != {SEVEN!r}:
         raise MemoryInputError("not the recorded observation")
     return obs"""
-    # two covers, so every field varies across them (on one cover each field holds one value)
     res = _check(
         mem,
         gate,
         "dialogue_user",
         _module("parse", "obs", body, doc="Parse the counts."),
-        [10, 26],
+        [10],
         "parse",
     )
     refused = [r for r in res.reasons if "held-out value refused" in r]
@@ -1738,7 +1800,24 @@ def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
     body,
     refused,
 ):
+    """The tag is constant in every same-shape message of the store (4 messages, 3 episodes)."""
     mem, gate = shop
+    extra = {
+        "h2": [
+            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 3, "ok": True}),
+        ],
+        "h3": [
+            _dl(0, {"type": "SubmitFeedback", "version": 3, "attempt": 4, "ok": False}),
+        ],
+    }
+    for eid, recorded_actions in extra.items():
+        gate.ev.index_episode(_ep(episode_id=eid, actions=recorded_actions), "1" * 40)
+    base = gate.lookup
+    gate.lookup = lambda eid, i: (
+        extra[eid][i]
+        if eid in extra and 0 <= i < len(extra[eid])
+        else None if eid in extra else base(eid, i)
+    )
     mod = _module("parse_feedback", "obs", body, doc="Parse submit feedback.")
     res = _check(mem, gate, "dialogue_user", mod, [24, 25], "parse_feedback")
     got = [r for r in res.reasons if "held-out value refused" in r]
@@ -1770,6 +1849,11 @@ def test_a_declared_form_the_covers_cannot_give_fails_g2(shop):
         "G2: env/dialogue_user:parse declares input path, which a dialogue cover cannot give"
         in res.reasons
     ), res.reasons
+    # declared as an observation, the whitelist is caught on its one cover
+    ok = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="observation")
+    assert [r for r in ok.reasons if "held-out value refused" in r] == [
+        "G2: env/dialogue_user:parse held-out value refused: room",
+    ], ok.reasons
 
 
 STOCK_TEXT_HEAD = """    if not isinstance(data, str):

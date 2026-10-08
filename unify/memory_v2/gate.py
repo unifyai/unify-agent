@@ -39,8 +39,9 @@ The checks:
   error), never alone. Scope is shape, not observed values (spec F3a): run confined on each covered
   input, passed in its declared ``input`` form (the docstring's ``Input:`` line for an unchanged function
   without one; else the kind's convention), with one value at a time replaced by an unseen value of its
-  type (a field with one value across every covered input is identity or format and is kept, with a
-  note) (:mod:`.held_out`), the item
+  type (a field with one value across at least 3 recorded observations of its family and field-name set,
+  from at least 2 episodes of the whole evidence store, is identity or format and is kept, with a note)
+  (:mod:`.held_out`); a declared form a covered input cannot be given in fails; the item
   must not raise its ``MemoryInputError`` before any environment call unless one of its covers is a
   recorded rejection of the same family that varied that field (each such allowance is noted); the reason
   names the field only. A field declared with a semantic type (``field_types``, D21) is checked two-sided:
@@ -93,7 +94,14 @@ from .blobs import BlobStore
 from .episodes import Action
 from .evidence import EvidenceStore
 from .gitio import GitError, Repo
-from .held_out import plan, run_plan, seen_actions
+from .held_out import (
+    MAX_POOL_ACTIONS,
+    MAX_POOL_EPISODES,
+    plan,
+    pool_actions,
+    run_plan,
+    seen_actions,
+)
 from .index import IndexOverBudget, build_index
 from .manifest import (
     MODULE_PATH,
@@ -247,6 +255,10 @@ class _Run:
         default_factory=set,
     )  # validated covers that are recorded rejections, never new coverage for G5
     notes: list[str] = field(default_factory=list)  # informational; never fail the gate
+    # covered channels -> (the recorded observations pool of :mod:`.held_out`, whether the cap stopped it)
+    pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
+        default_factory=dict,
+    )
 
     def fail(self, check: str, reason: str) -> None:
         # reasons are stored in the evidence store; test output in them is model-controlled
@@ -703,6 +715,7 @@ class Gate:
                         run.tmp / f"held-out-{n}",
                         it.field_types,
                         it.input or (declared if declared in INPUT_KINDS else None),
+                        self._pool(run, valid),
                     )
             elif it.kind == "workflow":
                 status = job_item_status(
@@ -719,6 +732,24 @@ class Gate:
         eids |= {e for it in run.man.items for e, _ in it.covers}
         return sorted(eids)
 
+    def _pool(
+        self,
+        run: _Run,
+        covers: list[tuple[str, int, Action]],
+    ) -> tuple[list[tuple[str, Action]], bool]:
+        """The recorded observations on the covered channels: the manifest's episodes and, per channel, the
+        evidence store's most recent :data:`.held_out.MAX_POOL_EPISODES` episodes touching it (bounded).
+        """
+        channels = tuple(sorted({a.channel for _, _, a in covers}))
+        if channels not in run.pools:
+            eids = list(self._named_episodes(run))
+            for ch in channels:
+                for eid in self.ev.episode_ids_since(ch, 0)[-MAX_POOL_EPISODES:]:
+                    if eid not in eids:
+                        eids.append(eid)
+            run.pools[channels] = pool_actions(eids, self.lookup, set(channels))
+        return run.pools[channels]
+
     def _held_out(
         self,
         run: _Run,
@@ -728,10 +759,13 @@ class Gate:
         work: Path,
         field_types: dict[str, str],
         input_kind: str | None = None,
+        pool: tuple[list[tuple[str, Action]], bool] | None = None,
     ) -> None:
         """Scope is shape (spec F3a): the item must not refuse unseen values of its covered inputs' types.
 
-        Each covered input reaches the item in its declared *input_kind* (None: the kind's convention).
+        Each covered input reaches the item in its declared *input_kind* (None: the kind's convention). A
+        field's constancy (identity or format) is judged on *pool*, the recorded observations of the covered
+        channels across the evidence store, with whether its read cap was hit.
 
         A field declared with a semantic type (D21) is checked two-sided instead: unseen in-domain values
         accepted, an out-of-domain value refused before any environment call.
@@ -749,7 +783,13 @@ class Gate:
             blob=blob,
             field_types=field_types,
             input_kind=input_kind,
+            pool=None if pool is None else pool[0],
         )
+        if pool is not None and pool[1]:
+            run.note(
+                f"G2 held-out values: {item} the recorded-observation pool stopped at "
+                f"{MAX_POOL_ACTIONS} actions",
+            )
         verdict = run_plan(item, p, tree=run.c_tree, python=self.python, work=work)
         for f in verdict.refused[:5]:
             run.fail("G2", f"{item} held-out value refused: {f[:80]}")
