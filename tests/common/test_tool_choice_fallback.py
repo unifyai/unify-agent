@@ -399,34 +399,6 @@ async def test_on_through_the_tool_loop_dispatch_the_transcript_stays_clean(
     assert len(p.requests) == 2
 
 
-def test_the_discovery_mutator_completes_a_fallback_turn():
-    """The discovery-first mutator adds the missing family on a forced turn sent as auto."""
-    from unillm.clients.completion_mutator import CompletionMutatorContext
-
-    from unify.actor.code_act_actor import _build_discovery_parallel_mutator
-
-    mutator = _build_discovery_parallel_mutator()
-    ctx = CompletionMutatorContext(
-        provider="openrouter",
-        original_tool_choice="auto",
-        request_kw={"tools": TOOLS},
-    )
-    partial = completion(calls=[("FunctionManager_search_functions", {"query": "q"})])
-    untouched = mutator(copy.deepcopy(partial), ctx)
-    assert len(untouched.choices[0].message.tool_calls) == 1
-
-    token = tcf._FORCED_TOOL_CHOICE.set("required")
-    try:
-        filled = mutator(copy.deepcopy(partial), ctx)
-    finally:
-        tcf._FORCED_TOOL_CHOICE.reset(token)
-    names = [
-        (tc["function"]["name"] if isinstance(tc, dict) else tc.function.name)
-        for tc in filled.choices[0].message.tool_calls
-    ]
-    assert names == ["FunctionManager_search_functions", "GuidanceManager_search"]
-
-
 # ── end to end: the discovery-first shape of the failed TravelPlanner cells ──
 
 

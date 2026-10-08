@@ -1,8 +1,8 @@
 """Symbolic: the library entries closest to a task are listed in its first message.
 
-With the discovery gate off (``UNIFY_DISCOVERY_GATE=0``) the model searches
-the libraries only when it chooses to, and optional-only access is known to
-be under-used. With the switch on, the harness ranks the stored functions and
+Without a discovery gate the model searches the libraries only when it
+chooses to, and optional-only access is known to be under-used. So the
+harness ranks the stored functions and
 guidance entries against the request by embedding similarity (no model call)
 and lists the closest five, one line each, in the first user message; the
 model decides whether to read, call or search. Nothing is forced, nothing is
@@ -21,23 +21,11 @@ from tests import cache_discipline_helpers as h
 from unify.actor import code_act_actor as caa
 from unify.actor import library_shortlist as ls
 from unify.agents.binding import PROMPT_SECTION
-from unify.settings import SETTINGS
 
 TASK = "List the files in the workspace."
 HEADER = ls._HEADER
 # The shared agent record's section, which the first message carries.
 RECORD = PROMPT_SECTION
-
-
-@pytest.fixture
-def switches(monkeypatch):
-    def set_(
-        *,
-        gate: bool = False,
-    ):
-        monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", gate)
-
-    return set_
 
 
 def _answer_at_once():
@@ -95,8 +83,7 @@ def _shortlist(text: str) -> str | None:
 @pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_first_message_lists_the_closest_function_and_guidance(switches):
-    switches()
+async def test_on_the_first_message_lists_the_closest_function_and_guidance():
     on, actor = await _act(seed=_seed)
     first = _first_user(on[0])
     block = _shortlist(first)
@@ -118,8 +105,7 @@ async def test_on_the_first_message_lists_the_closest_function_and_guidance(swit
 @pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_list_is_written_once_and_never_repeated(switches):
-    switches()
+async def test_on_the_list_is_written_once_and_never_repeated():
     on, _ = await _act(
         [
             lambda: h.completion(calls=[("execute_code", {"code": "print(1)"})]),
@@ -140,8 +126,7 @@ async def test_on_the_list_is_written_once_and_never_repeated(switches):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_an_empty_library_adds_nothing(switches):
-    switches()
+async def test_on_an_empty_library_adds_nothing():
     on, _ = await _act()
     assert _first_user(on[0]) == (
         "Library at task start: 0 stored functions, 0 guidance entries.\n\n"
@@ -151,8 +136,7 @@ async def test_on_an_empty_library_adds_nothing(switches):
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
-async def test_on_the_ranking_counts_no_search_hit(switches):
-    switches()
+async def test_on_the_ranking_counts_no_search_hit():
 
     def seed(actor):
         _add_function(actor)

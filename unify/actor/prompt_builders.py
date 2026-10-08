@@ -81,31 +81,9 @@ _FUNCTION_AND_GUIDANCE_LIBRARY = textwrap.dedent("""
     | **read_only** | `await func.read_only(...)` | Sees current state, changes discarded |
 """).strip()
 
-_DISCOVERY_FIRST_POLICY = textwrap.dedent("""
-    ### Discovery-First Policy (Active) — HARD REQUIREMENT
-
-    A tool policy gates the full toolkit until each present library family
-    has been discovered: until then **only** FM / GM discovery tools
-    are available; the full tool set unlocks automatically once every
-    present gate has been called.
-
-    The CORRECT procedure:
-    1. Your **first tool-calling assistant message** includes every present
-       discovery family as parallel tool_calls in that same message:
-       `FunctionManager_search_functions` (with a non-empty `query`) and
-       `GuidanceManager_search` — omitting only families whose tools are
-       absent. Do not answer in plain text
-       first, do not serialize families across turns, and call only tools
-       that appear in the current tool list.
-    2. Then choose the minimal correct execution path:
-       if one exact function or primitive call is enough, use execute_function;
-       use execute_code only when the task genuinely needs multi-step
-       composition, branching, iteration, or combining intermediate results.
-""").strip()
-
-# UNIFY_DISCOVERY_GATE off: no discovery-first gate, so the library section's
-# search-first paragraph gives way to one sentence that leaves the searches to
-# the model; what it says about using a result is kept.
+# No discovery-first gate: the library section's search-first paragraph gives
+# way to one sentence that leaves the searches to the model; what it says
+# about using a result is kept.
 _ALWAYS_SEARCH_FIRST = (
     "Always search **FunctionManager and GuidanceManager**\n"
     "(`FunctionManager_search_functions`, `GuidanceManager_search`) before\n"
@@ -1173,7 +1151,6 @@ def build_code_act_prompt(
     tools: Optional[Dict[str, Callable]] = None,
     can_store: bool = False,
     guidelines: Optional[str] = None,
-    discovery_first_policy: bool = False,
     search_when_useful: bool = False,
     persist: bool = False,
     library_read_only: bool = False,
@@ -1192,11 +1169,8 @@ def build_code_act_prompt(
 
     Parameters
     ----------
-    discovery_first_policy:
-        When ``True``, appends guidance explaining the discovery-first tool
-        policy (FM and GM must be called before other tools unlock).
     search_when_useful:
-        When ``True`` (``UNIFY_DISCOVERY_GATE`` off), the library section's
+        When ``True`` (the default tool policy), the library section's
         search-first paragraph ("Always search ... A no-hit is not
         permission ...") is replaced by one sentence saying the library
         exists and can be searched with the listed tools when useful,
@@ -1301,8 +1275,6 @@ def build_code_act_prompt(
             parts.append(
                 _library_section(search_when_useful),
             )
-            if discovery_first_policy:
-                parts.append(_DISCOVERY_FIRST_POLICY)
 
         if library_read_only and (has_fm_tools or has_gm_tools):
             parts.append(_LIBRARY_READ_ONLY_NOTICE)
@@ -1351,8 +1323,6 @@ def build_code_act_prompt(
             parts.append(
                 _library_section(search_when_useful),
             )
-            if discovery_first_policy:
-                parts.append(_DISCOVERY_FIRST_POLICY)
 
         parts.append(
             "### Procedure\n\n"

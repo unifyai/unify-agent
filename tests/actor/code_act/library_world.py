@@ -178,7 +178,6 @@ CORE_ENV = {
     "UNIFY_WORKSPACE": "sandboxed",
     "UNIFY_WORKSPACE_PYTHON": "worker",
     "UNIFY_TOOL_SURFACE": "core",
-    "UNIFY_DISCOVERY_GATE": "false",
     "UNIFY_VALIDATE_LLM_PROVIDERS": "false",
     "UNIFY_FUNCTION_CASES": "true",
 }

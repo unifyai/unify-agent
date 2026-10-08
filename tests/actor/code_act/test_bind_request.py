@@ -84,7 +84,6 @@ def _flat(text: str) -> str:
 def bound(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_BIND_REQUEST", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
     # In-process cells are the JSON tools' (the core surface needs the
     # worker); its tests use core_world.

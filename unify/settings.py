@@ -376,25 +376,6 @@ class ProductionSettings(BaseSettings):
     # is lost when the cell ends (a later cell gets NameError), as shipped.
     # Read per cell; in-process and worker cells alike.
     UNIFY_CELL_SCOPE_FIX: bool = True
-    # Off: the actor's library searches are the model's choice. As shipped the
-    # default tool policy opens every task with a discovery-first gate: until
-    # each present library family (FunctionManager, GuidanceManager) has been
-    # searched, the model is offered only their search tools with
-    # tool_choice "required", and the system prompt tells it to search both
-    # before deciding how to execute. Off, no turn is gated or forced: every
-    # turn offers the actor's full (statically filtered) tool list with
-    # tool_choice "auto", the completion mutator that adds a missing search
-    # family is not installed, the gate's refusal rule under
-    # UNIFY_CACHE_DISCIPLINE never applies, and the prompt's discovery-first
-    # section and its library section's search-first paragraph ("Always
-    # search ...", "A no-hit is not permission ...") give way to one sentence
-    # saying the library exists and can be searched with the listed tools
-    # when useful (what the paragraph says about using a result is kept).
-    # The library tools, their schemas and stored functions are unchanged,
-    # as is UNIFY_LIBRARY_SNAPSHOT's line (without its note on skipping an
-    # empty library's search, which describes the gate). A caller's own
-    # tool_policy is unaffected. On: as shipped.
-    UNIFY_DISCOVERY_GATE: bool = False
 
     # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
@@ -563,7 +544,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
-        "UNIFY_DISCOVERY_GATE",
         "UNIFY_CORE_BIND_LISTED",
         "UNIFY_CORE_CALL_EXAMPLE",
         "UNIFY_GUIDANCE_LINKED_NAMES",

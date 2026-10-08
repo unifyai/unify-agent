@@ -48,30 +48,7 @@ def _first_user(request: dict) -> str:
     return next(m["content"] for m in request["messages"] if m["role"] == "user")
 
 
-# ── the gate ─────────────────────────────────────────────────────────────
-
-
-def test_the_gate_reads_the_counts_each_time_it_is_evaluated():
-    counts = [(0, 0)]
-    tools = {
-        "FunctionManager_search_functions": object(),
-        "GuidanceManager_search": object(),
-        "execute_code": object(),
-    }
-    policy = caa._default_tool_policy(
-        True,
-        True,
-        dict,
-        library_counts=lambda: counts[0],
-    )
-    assert policy(0, tools, []) == ("auto", tools)
-    counts[0] = (2, 0)
-    mode, gated, _opts = policy(1, tools, [])
-    assert mode == "required" and list(gated) == ["FunctionManager_search_functions"]
-    # An unknown count keeps the gate as shipped.
-    counts[0] = (None, None)
-    mode, gated, _opts = policy(2, tools, [])
-    assert mode == "required" and set(gated) == set(tools) - {"execute_code"}
+# ── the counts ───────────────────────────────────────────────────────────
 
 
 def test_builtin_guidance_is_not_counted():

@@ -81,15 +81,7 @@ def require_prerequisites(*, can_compose: bool) -> None:
     """
     from unify import sandbox
     from unify.actor.execution import worker
-    from unify.settings import SETTINGS
 
-    if SETTINGS.UNIFY_DISCOVERY_GATE:
-        raise ToolSurfaceError(
-            "UNIFY_TOOL_SURFACE=core needs UNIFY_DISCOVERY_GATE=0: the "
-            "discovery gate offers and forces the library's JSON search tools, "
-            "which this surface replaces with the sandbox's `functions` and "
-            "`guidance` objects.",
-        )
     if not worker.enabled():
         raise ToolSurfaceError(
             "UNIFY_TOOL_SURFACE=core needs UNIFY_WORKSPACE=sandboxed and "

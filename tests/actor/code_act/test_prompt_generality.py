@@ -266,7 +266,6 @@ def _session_texts(tools: dict) -> dict[str, str]:
             (3, 0),
             has_fm_tools=True,
             has_gm_tools=True,
-            discovery_gate=False,
         ),
         # UNIFY_LOOP_STOP: the notice before the last word, and the reply.
         "loop stop notice": loop_stop.Stop(k=10, last_word=True).notice,

@@ -34,7 +34,6 @@ from unify.actor.grants import (
 )
 from unify.common.asyncio_compat import run_coro_sync
 from unify.common.sql_filters import UnsafeClauseError
-from unify.settings import SETTINGS
 
 FULL = ActorGrants(can_compose=True, can_store=True, can_spawn_sub_agents=True)
 NO_STORE = ActorGrants(can_compose=True, can_store=False, can_spawn_sub_agents=True)
@@ -447,11 +446,6 @@ async def _act(actor, replies) -> list[dict]:
 
 
 @pytest.fixture
-def no_gate(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
-
-
-@pytest.fixture
 def inner_actors(monkeypatch):
     """Record each sub-actor built; it answers at once without a model."""
     built: list[dict] = []
@@ -482,7 +476,6 @@ def inner_actors(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_an_actor_without_store_writes_cannot_start_a_child_with_them(
-    no_gate,
     inner_actors,
 ):
     built, real = inner_actors
@@ -503,7 +496,6 @@ async def test_an_actor_without_store_writes_cannot_start_a_child_with_them(
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_an_actor_with_store_writes_starts_a_child_as_before(
-    no_gate,
     inner_actors,
 ):
     built, real = inner_actors

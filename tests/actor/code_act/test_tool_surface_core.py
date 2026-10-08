@@ -170,7 +170,6 @@ async def test_the_only_json_tool_is_execute_code(
 @pytest.mark.asyncio
 @_handle_project
 async def test_with_the_switch_off_the_session_keeps_every_json_tool(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     actor = _actor(can_store=False)
     try:
         _result, requests = await _act(actor, (lambda: h.completion(content="done"),))
@@ -216,20 +215,14 @@ async def test_no_steering_tools_even_with_sub_actors(core_world):
 @needs_bwrap
 @pytest.mark.asyncio
 @_handle_project
-async def test_the_actor_refuses_to_start_without_confinement_or_with_the_gate(
+async def test_the_actor_refuses_to_start_without_confinement(
     world,  # noqa: F811
     monkeypatch,
 ):
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", "core")
     actor = _actor(can_store=False)
     try:
-        # The discovery gate can only force JSON tools.
-        monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-        monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", True)
-        with pytest.raises(core_surface.ToolSurfaceError, match="DISCOVERY_GATE=0"):
-            await actor.act("Do the task.")
         # Cells in this process would hold the real store.
-        monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
         monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
         with pytest.raises(core_surface.ToolSurfaceError, match="PYTHON=worker"):
             await actor.act("Do the task.")

@@ -445,7 +445,6 @@ async def test_parent_chat_context_reaches_a_sub_agent_as_before(
     from unify.actor.execution.session import _PARENT_CHAT_CONTEXT
     from unify.actor.simulated import _StaticAnswerHandle
 
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_CODE_PROJECTION", projection)
     seen: list = []
 

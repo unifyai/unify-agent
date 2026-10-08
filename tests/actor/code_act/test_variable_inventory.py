@@ -67,7 +67,6 @@ def _cell_ns(source: str, ns: dict | None = None) -> tuple[dict, dict]:
 def on(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_VARIABLE_INVENTORY", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
 
 
 # ── the switch ───────────────────────────────────────────────────────────

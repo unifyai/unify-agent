@@ -91,7 +91,6 @@ async def _run(scripts, monkeypatch, tmp_path):
         "UNIFY_AGENTS": "record",
         "UNIFY_WORKSPACE": "sandboxed",
         "UNIFY_WORKSPACE_PYTHON": "worker",
-        "UNIFY_DISCOVERY_GATE": False,
     }.items():
         monkeypatch.setattr(SETTINGS, key, value)
     monkeypatch.setattr(binding, "records_dir", lambda: tmp_path / "records")

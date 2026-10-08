@@ -50,7 +50,6 @@ def _actor_system_prompt() -> str:
         environments={"primitives": ActorEnvironment()},
         tools=dict(_simulated_actor().get_tools("act")),
         can_store=True,
-        discovery_first_policy=True,
     )
 
 

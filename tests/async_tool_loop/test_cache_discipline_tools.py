@@ -206,27 +206,6 @@ def test_turn_available_tools_is_unset_outside_a_dispatch():
     assert cd.turn_available_tools() is None
 
 
-def test_actor_gate_names_the_rule_only_with_the_switch_on(discipline):
-    from unify.actor.code_act_actor import _default_tool_policy
-
-    tools = {
-        "FunctionManager_search_functions": object(),
-        "GuidanceManager_search": object(),
-        "execute_code": object(),
-    }
-    policy = _default_tool_policy(True, True, lambda t: t)
-    discipline(False)
-    assert policy(0, tools, [])[2] == {"eager": True}
-    discipline(True)
-    opts = policy(0, tools, [])[2]
-    assert opts["eager"] is True
-    assert opts["mask_rule"] == (
-        "the libraries are searched first -- call "
-        "`FunctionManager_search_functions`, `GuidanceManager_search` before "
-        "any other tool"
-    )
-
-
 def test_admission_rules_wrap_two_and_three_argument_policies():
     from unify.actor.code_act_actor import _ADMISSION_MASK_RULE, _with_mask_rules
 
@@ -245,49 +224,3 @@ def test_admission_rules_wrap_two_and_three_argument_policies():
     assert mode == "required" and opts["eager"] is True
     assert opts["mask_rules"] == {"x": "own rule", **rules}
     assert "read-only during this task" in _ADMISSION_MASK_RULE
-
-
-def test_discovery_mutator_reads_the_turns_allowed_tools(discipline):
-    """With every tool in the request, the allowed set says it is a gate turn."""
-    from unillm.clients.completion_mutator import CompletionMutatorContext
-
-    from unify.actor.code_act_actor import _build_discovery_parallel_mutator
-    from unify.common._async_tool import cache_discipline as cd
-
-    every_tool = [
-        {"type": "function", "function": {"name": n, "parameters": {}}}
-        for n in (
-            "FunctionManager_search_functions",
-            "GuidanceManager_search",
-            "execute_code",
-            "compress_context",
-        )
-    ]
-    context = CompletionMutatorContext(
-        provider="openrouter",
-        original_tool_choice="required",
-        request_kw={"tools": every_tool},
-    )
-    mutator = _build_discovery_parallel_mutator()
-
-    def called(turn) -> list[str]:
-        return [
-            (c["function"]["name"] if isinstance(c, dict) else c.function.name)
-            for c in turn.choices[0].message.tool_calls
-        ]
-
-    one_search = lambda: h.completion(  # noqa: E731
-        calls=[("GuidanceManager_search", {"k": 1})],
-    )
-    # Outside a dispatch the full list is not a gate schema: nothing appended.
-    assert called(mutator(one_search(), context)) == ["GuidanceManager_search"]
-    token = cd.set_turn_available_tools(
-        ["FunctionManager_search_functions", "GuidanceManager_search"],
-    )
-    try:
-        assert called(mutator(one_search(), context)) == [
-            "GuidanceManager_search",
-            "FunctionManager_search_functions",
-        ]
-    finally:
-        cd.reset_turn_available_tools(token)

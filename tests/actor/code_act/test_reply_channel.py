@@ -66,7 +66,6 @@ def _flat(text: str) -> str:
 def channel(monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_REPLY_CHANNEL", "code+text")
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "")
 
 

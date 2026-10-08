@@ -242,27 +242,6 @@ def test_code_act_prompt_does_not_make_reason_mandatory_for_every_loop():
 
 
 @pytest.mark.timeout(30)
-def test_discovery_first_examples_no_longer_model_execute_code_as_default_fallback():
-    """Discovery-first examples should not teach no-hit => write custom code."""
-    actor = CodeActActor()
-    prompt = build_code_act_prompt(
-        environments=_real_envs_mixed(),
-        tools=dict(actor.get_tools("act")),
-        discovery_first_policy=True,
-    )
-
-    assert (
-        "If no function exists, THEN fall back to composing with primitives directly in Python."
-        not in prompt
-    )
-    assert (
-        "FunctionManager-discovered functions are available in all execute_code calls"
-        not in prompt
-    )
-    assert "Use `execute_code` for *everything* (Python + shell)" not in prompt
-
-
-@pytest.mark.timeout(30)
 def test_python_first_principle_absent_without_execute_code():
     """The principle is absent when execute_code is not available."""
     actor = CodeActActor()

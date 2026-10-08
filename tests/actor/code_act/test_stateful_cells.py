@@ -230,7 +230,6 @@ async def test_a_cell_keeps_what_the_last_one_computed_in_the_sandboxed_worker(
         (world["state"] / "store.sqlite").unlink()
         db.reset_store()
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-    monkeypatch.setattr(SETTINGS, "UNIFY_DISCOVERY_GATE", False)
     monkeypatch.setattr(SETTINGS, "UNIFY_PROMPT_PROFILE", "lean")
     monkeypatch.setattr(SETTINGS, "UNIFY_TOOL_SURFACE", surface)
     monkeypatch.setattr(SETTINGS, "UNIFY_STATEFUL_CELLS", True)

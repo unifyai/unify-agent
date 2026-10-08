@@ -92,27 +92,7 @@ to request immediate follow-up LLM turns while the policy remains eager
 """
 
 _USE_DEFAULT: object = object()
-"""Sentinel indicating 'use the built-in discovery-first tool policy'."""
-
-# Tools visible while discovery-first gates are still open. Write/mutate tools
-# stay hidden until every present library family has been touched once.
-_DISCOVERY_GATE_TOOLS: frozenset[str] = frozenset(
-    {
-        "FunctionManager_search_functions",
-        "FunctionManager_filter_functions",
-        "FunctionManager_list_functions",
-        "GuidanceManager_search",
-        "GuidanceManager_filter",
-        "GuidanceManager_get_guidance",
-    },
-)
-
-# Prefer one search discovery tool per family while the gate is open
-# so hard tool_choice=required + eager follow-up turns map onto a small set.
-_DISCOVERY_PREFERRED_TOOLS: dict[str, str] = {
-    "FunctionManager_": "FunctionManager_search_functions",
-    "GuidanceManager_": "GuidanceManager_search",
-}
+"""Sentinel indicating 'use the default tool policy' (the static filters only)."""
 
 _UNSET: object = object()
 """Sentinel indicating 'parameter was not explicitly provided'."""
@@ -137,165 +117,6 @@ class _ActiveWorkNotificationQueue:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._target, name)
-
-
-def _discovery_tools_for_prefix(
-    filtered: Dict[str, Any],
-    prefix: str,
-) -> Dict[str, Any]:
-    """Return the preferred discovery tool for *prefix*, with family fallback."""
-    family = {
-        k: v
-        for k, v in filtered.items()
-        if k in _DISCOVERY_GATE_TOOLS and k.startswith(prefix)
-    }
-    preferred = _DISCOVERY_PREFERRED_TOOLS.get(prefix)
-    if preferred is not None and preferred in family:
-        return {preferred: family[preferred]}
-    return family
-
-
-# Keys must be the tool's own parameter names: the tool loop refuses a call
-# carrying an argument its tool does not take, so a misnamed one fails the
-# appended search instead of running it.
-_DISCOVERY_PREFERRED_ARGS: dict[str, dict[str, Any]] = {
-    "FunctionManager_search_functions": {"query": "relevant functions", "n": 5},
-    "GuidanceManager_search": {"references": {"content": "relevant guidance"}, "k": 5},
-}
-
-
-def _tool_names_from_openai_tools(tools: Any) -> list[str]:
-    names: list[str] = []
-    for tool in tools or []:
-        if not isinstance(tool, dict) or tool.get("type") != "function":
-            continue
-        function = tool.get("function") or {}
-        name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(name, str) and name:
-            names.append(name)
-    return names
-
-
-def _is_discovery_gate_schema(tool_names: list[str]) -> bool:
-    """True when the visible schema is only discovery-read tools (+ loop extras).
-
-    The loop extras are ``compress_context`` and ``check_status_*`` only, so
-    the actor's gate request, which also lists the loop's own tools, is never
-    recognised and the mutator never fires.
-    """
-    if not tool_names:
-        return False
-    names = set(tool_names)
-    extras = {"compress_context"}
-    core = {n for n in names if n not in extras and not n.startswith("check_status_")}
-    if not core or not core.issubset(_DISCOVERY_GATE_TOOLS):
-        return False
-    families = sum(
-        1
-        for prefix in _DISCOVERY_PREFERRED_TOOLS
-        if any(n.startswith(prefix) for n in core)
-    )
-    return families >= 2
-
-
-def _discovery_preferred_for_schema(tool_names: list[str]) -> list[tuple[str, dict]]:
-    """Return [(tool_name, args), ...] for each family present in *tool_names*."""
-    preferred_calls: list[tuple[str, dict]] = []
-    for prefix, preferred in _DISCOVERY_PREFERRED_TOOLS.items():
-        family = [n for n in tool_names if n.startswith(prefix)]
-        if not family:
-            continue
-        tool_name = preferred if preferred in family else family[0]
-        args = dict(_DISCOVERY_PREFERRED_ARGS.get(tool_name, {}))
-        preferred_calls.append((tool_name, args))
-    return preferred_calls
-
-
-def _build_discovery_parallel_mutator() -> Any:
-    """Complete partial discovery-gate turns with missing family tool calls.
-
-    Hard OpenRouter hosts still sometimes serialize discovery families under
-    ``tool_choice="required"`` even with ``parallel_tool_calls=True``. This
-    Unify-local mutator appends the missing preferred discovery calls so the
-    first tool-calling turn covers every present family in parallel.
-    """
-    from unillm.clients.completion_mutator import CompletionMutatorContext
-
-    def _mutator(completion: Any, context: CompletionMutatorContext) -> Any:
-        if context.original_tool_choice != "required":
-            # A forced turn sent as "auto" by UNIFY_TOOL_CHOICE_FALLBACK still
-            # gets its missing discovery families.
-            from unify.common.tool_choice_fallback import (
-                forced_tool_choice_in_fallback,
-            )
-
-            if forced_tool_choice_in_fallback() != "required":
-                return completion
-        # UNIFY_CACHE_DISCIPLINE sends the session's whole tool list on every
-        # turn; the tools the turn allows then say whether it is a gate turn.
-        from unify.common._async_tool.cache_discipline import turn_available_tools
-
-        available = turn_available_tools()
-        tool_names = (
-            sorted(available)
-            if available is not None
-            else _tool_names_from_openai_tools(context.request_kw.get("tools"))
-        )
-        if not _is_discovery_gate_schema(tool_names):
-            return completion
-
-        msg = completion.choices[0].message
-        existing = list(msg.tool_calls or [])
-        if not existing:
-            return completion
-
-        called_names: list[str] = []
-        for tc in existing:
-            if isinstance(tc, dict):
-                fn = tc.get("function") or {}
-                name = fn.get("name") if isinstance(fn, dict) else None
-            else:
-                fn = getattr(tc, "function", None)
-                name = getattr(fn, "name", None) if fn is not None else None
-            if isinstance(name, str) and name:
-                called_names.append(name)
-
-        missing: list[tuple[str, dict]] = []
-        for tool_name, args in _discovery_preferred_for_schema(tool_names):
-            prefix = next(
-                (p for p in _DISCOVERY_PREFERRED_TOOLS if tool_name.startswith(p)),
-                None,
-            )
-            if prefix is None:
-                continue
-            if any(n.startswith(prefix) for n in called_names):
-                continue
-            missing.append((tool_name, args))
-        if not missing:
-            return completion
-
-        from openai.types.chat.chat_completion_message_tool_call import (
-            ChatCompletionMessageToolCall,
-            Function,
-        )
-
-        for index, (tool_name, args) in enumerate(missing):
-            existing.append(
-                ChatCompletionMessageToolCall(
-                    id=f"call_discovery_{index}",
-                    type="function",
-                    function=Function(
-                        name=tool_name,
-                        arguments=json.dumps(args),
-                    ),
-                ).model_dump(warnings=False),
-            )
-        msg.tool_calls = existing
-        msg.content = None
-        completion.choices[0].finish_reason = "tool_calls"
-        return completion
-
-    return _mutator
 
 
 def _library_counts(
@@ -327,7 +148,6 @@ def _library_snapshot_line(
     *,
     has_fm_tools: bool,
     has_gm_tools: bool,
-    discovery_gate: bool,
 ) -> Optional[str]:
     """``UNIFY_LIBRARY_SNAPSHOT``: one line giving the library's size at task start."""
     functions, guidance = counts
@@ -338,101 +158,7 @@ def _library_snapshot_line(
         parts.append(f"{guidance} guidance entr{'y' if guidance == 1 else 'ies'}")
     if not parts:
         return None
-    line = f"Library at task start: {', '.join(parts)}."
-    if discovery_gate and 0 in (
-        functions if has_fm_tools else None,
-        guidance if has_gm_tools else None,
-    ):
-        line += " An empty library is not searched first."
-    return line
-
-
-def _default_tool_policy(
-    has_fm_tools: bool,
-    has_gm_tools: bool,
-    filter_tools: Callable[[Dict[str, Any]], Dict[str, Any]],
-    library_counts: Optional[Callable[[], tuple[Optional[int], Optional[int]]]] = None,
-) -> ToolPolicyFn:
-    """Build the default *discovery-first* tool policy.
-
-    Until each present gate among ``FunctionManager_*`` and
-    ``GuidanceManager_*`` has been called at least once, the LLM is
-    restricted to only those families' discovery/read tools (with
-    ``tool_choice="required"``). Write tools and non-library tools such as
-    ``execute_code`` stay hidden. Once all present gates are satisfied the
-    full (statically-filtered) tool set is returned with ``"auto"`` mode.
-
-    While gates remain open the policy also sets ``eager=True``, so the async
-    tool loop grants another LLM turn immediately after each partial discovery
-    call is scheduled (without waiting for that call's result).  That way a
-    model that only fires one of the required discovery tools on the first
-    turn is prompted for the missing family right away, overlapping the
-    in-flight search.
-
-    When only a subset of the manager tool families is present, those families
-    act as the gates.  When none are present the policy is a no-op pass-through.
-
-    Parameters
-    ----------
-    has_fm_tools:
-        Whether the base tool set contains any ``FunctionManager_*`` tools.
-    has_gm_tools:
-        Whether the base tool set contains any ``GuidanceManager_*`` tools.
-    filter_tools:
-        The static-filter callable (``_filter_tools``) that enforces
-        ``can_compose`` / ``can_store``.
-    library_counts:
-        Under ``UNIFY_LIBRARY_SNAPSHOT``, returns the stored function and
-        guidance counts (``None`` where unknown); it is read each time the
-        policy is evaluated, and a family whose library holds nothing is a
-        gate already satisfied, since a search of it can return nothing.
-    """
-
-    def _policy(
-        step: int,
-        tools: Dict[str, Any],
-        called_tools: list[str],
-    ) -> tuple[str, Dict[str, Any]] | tuple[str, Dict[str, Any], dict]:
-        filtered = filter_tools(tools)
-
-        fm_satisfied = (not has_fm_tools) or any(
-            t.startswith("FunctionManager_") for t in called_tools
-        )
-        gm_satisfied = (not has_gm_tools) or any(
-            t.startswith("GuidanceManager_") for t in called_tools
-        )
-
-        if library_counts is not None and not (fm_satisfied and gm_satisfied):
-            functions, guidance = library_counts()
-            fm_satisfied = fm_satisfied or functions == 0
-            gm_satisfied = gm_satisfied or guidance == 0
-
-        if fm_satisfied and gm_satisfied:
-            return "auto", filtered
-
-        # Expose one preferred discovery tool per unsatisfied gate family.
-        gated: Dict[str, Any] = {}
-        if not fm_satisfied:
-            gated.update(_discovery_tools_for_prefix(filtered, "FunctionManager_"))
-        if not gm_satisfied:
-            gated.update(_discovery_tools_for_prefix(filtered, "GuidanceManager_"))
-
-        if gated:
-            from unify.common._async_tool import cache_discipline
-
-            opts: dict = {"eager": True}
-            # Under UNIFY_CACHE_DISCIPLINE the other tools stay in the request
-            # and a call to one is refused with this rule.
-            if cache_discipline.enabled():
-                required = ", ".join(f"`{name}`" for name in gated)
-                opts["mask_rule"] = (
-                    f"the libraries are searched first -- call {required} "
-                    "before any other tool"
-                )
-            return "required", gated, opts
-        return "auto", filtered
-
-    return _policy
+    return f"Library at task start: {', '.join(parts)}."
 
 
 _ADMISSION_MASK_RULE = (
@@ -3260,9 +2986,8 @@ class CodeActActor(BaseCodeActActor):
                 appended after these, so the constructor value acts as a baseline
                 and ``act()`` adds task-specific refinements on top.
             tool_policy: Controls per-turn dynamic tool filtering and tool-choice mode.
-                - ``_USE_DEFAULT`` (default): uses the built-in "discovery-first"
-                  policy that requires both a FunctionManager and a GuidanceManager
-                  discovery call before unlocking the full tool set.
+                - ``_USE_DEFAULT`` (default): no dynamic policy, as ``None``; the
+                  library searches are the model's choice.
                 - A custom ``ToolPolicyFn`` callable: receives ``(step, tools)`` and
                   returns ``(mode, filtered_tools)``.  Static filters (``can_compose``,
                   ``can_store``, etc.) are always applied before the custom policy sees
@@ -4563,10 +4288,9 @@ class CodeActActor(BaseCodeActActor):
         from unify.common._async_tool import cache_discipline
         from unify.settings import SETTINGS
 
-        # The default policy's discovery-first gate; UNIFY_DISCOVERY_GATE off
-        # leaves the library searches to the model (no gated or forced turn).
+        # The default policy leaves the library searches to the model (no
+        # gated or forced turn).
         default_policy = self.tool_policy is _USE_DEFAULT
-        discovery_gate = default_policy and SETTINGS.UNIFY_DISCOVERY_GATE
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
         prompt_kwargs: Dict[str, Any] = dict(
             environments=sandbox_envs,
@@ -4575,13 +4299,8 @@ class CodeActActor(BaseCodeActActor):
             # describe; it is told the libraries are read-only instead.
             can_store=effective_can_store and not admission_gated,
             guidelines=effective_guidelines,
-            discovery_first_policy=discovery_gate,
             persist=bool(persist),
-            **(
-                {"search_when_useful": True}
-                if default_policy and not discovery_gate
-                else {}
-            ),
+            **({"search_when_useful": True} if default_policy else {}),
             # The schedule the storage handle below is given.
             turn_reviews=bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS),
             can_clarify=bool(clarification_enabled),
@@ -4606,33 +4325,12 @@ class CodeActActor(BaseCodeActActor):
         # Tool policy controls which tools are visible per turn, and whether a
         # tool call is required.  The static _filter_tools (can_compose,
         # can_store) is always applied regardless of the dynamic policy.
-        if self.tool_policy is None or (default_policy and not discovery_gate):
-            # No dynamic policy (or the default one with UNIFY_DISCOVERY_GATE
-            # off) -- only static filtering on every turn.
+        if self.tool_policy is None or default_policy:
+            # No dynamic policy -- only static filtering on every turn.
             def _static_only_policy(step: int, tools: Dict[str, Any]):
                 return "auto", _filter_tools(tools)
 
             tool_policy: Optional[ToolPolicyFn] = _static_only_policy
-        elif self.tool_policy is _USE_DEFAULT:
-            # Default discovery-first policy (FM + GM gates).
-            _has_fm_tools = any(
-                isinstance(k, str) and k.startswith("FunctionManager_")
-                for k in base_tools.keys()
-            )
-            _has_gm_tools = any(
-                isinstance(k, str) and k.startswith("GuidanceManager_")
-                for k in base_tools.keys()
-            )
-            tool_policy = _default_tool_policy(
-                _has_fm_tools,
-                _has_gm_tools,
-                _filter_tools,
-                library_counts=functools.partial(
-                    _library_counts,
-                    self.function_manager,
-                    self.guidance_manager,
-                ),
-            )
         else:
             # Custom caller-provided policy.  Wrap it so that _filter_tools
             # is always applied first (static filters are never bypassed).
@@ -4663,23 +4361,9 @@ class CodeActActor(BaseCodeActActor):
             or (core_session is not None and core_session.prompt.functions),
             has_gm_tools=any(str(k).startswith("GuidanceManager_") for k in base_tools)
             or (core_session is not None and core_session.prompt.guidance),
-            discovery_gate=discovery_gate,
         )
         if snapshot:
             first_message_parts.append(snapshot)
-
-        # Soft/partial discovery hosts often serialize families under
-        # tool_choice=required. Inject a Unify-local completion mutator that
-        # appends missing preferred discovery calls for the gated schema.
-        if discovery_gate:
-            _discovery_mutator = _build_discovery_parallel_mutator()
-            _orig_generate = client.generate
-
-            def _generate_with_discovery_mutator(*args: Any, **kwargs: Any) -> Any:
-                kwargs.setdefault("completion_mutator", _discovery_mutator)
-                return _orig_generate(*args, **kwargs)
-
-            client.generate = _generate_with_discovery_mutator  # type: ignore[method-assign]
 
         tools = dict(base_tools)
 
