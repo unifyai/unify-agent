@@ -1,4 +1,4 @@
-"""Symbolic: ``UNIFY_TRANSCRIPTS`` keeps an append-only transcript of every session.
+"""Symbolic: the harness keeps an append-only transcript of every session.
 
 The loops here are real ``start_async_tool_loop`` runs on real ``unillm``
 clients whose transport is replaced by a script (as in
@@ -25,13 +25,12 @@ import unillm
 from openai.types.chat import ChatCompletion
 
 from unify import transcripts
-from unify.common._async_tool import context_compression as cc
 from unify.common._async_tool.event_bus_util import to_event_bus
 from unify.common._async_tool.loop_config import LoopConfig
 from unify.common._async_tool.message_dispatcher import LoopMessageDispatcher
 from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
-from unify.settings import ProductionSettings, SETTINGS
+from unify.settings import SETTINGS
 
 MODEL = "openai/gpt-5.6-sol@openrouter"
 ROOT_PROMPT = "You are the root agent."
@@ -184,55 +183,11 @@ async def run_delegation(provider) -> Provider:
     return p
 
 
-# ── off: exactly as shipped ─────────────────────────────────────────────────
-
-
-def test_setting_defaults_on_and_parses_on():
-    # On by default since the code freeze (lean-all).
-    assert ProductionSettings().UNIFY_TRANSCRIPTS is True
-    assert ProductionSettings(UNIFY_TRANSCRIPTS="on").UNIFY_TRANSCRIPTS is True
-
-
-@pytest.mark.asyncio
-async def test_off_writes_nothing_and_the_model_sees_the_same_requests(
-    monkeypatch,
-    provider,
-):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", False)
-    off = await run_delegation(provider)
-    end_all_sessions()
-    assert not (home() / "transcripts").exists()
-
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
-    on = await run_delegation(provider)
-    end_all_sessions()
-    assert (home() / "transcripts").exists()
-    # Recording never changes what reaches the model.
-    assert on.requests == off.requests
-
-
-def test_off_attach_touches_nothing(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", False)
-
-    class Client:
-        messages: list = []
-        system_message = "s"
-
-    client = Client()
-    cfg = LoopConfig("x", None, [])
-    assert isolated(transcripts.attach, client, cfg) is None
-    assert not hasattr(client, "_unify_transcript")
-    assert not hasattr(cfg, "_unify_transcript")
-    assert transcripts.session_for_messages(client.messages) is None
-    assert not (home() / "transcripts").exists()
-
-
 # ── on: one file per session, linked through the index ──────────────────────
 
 
 @pytest.mark.asyncio
 async def test_every_session_gets_its_own_file_and_index_line(monkeypatch, provider):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     monkeypatch.setenv("FAKE_SERVICE_TOKEN", FAKE_TOKEN)
     await run_delegation(provider)
     end_all_sessions()
@@ -282,7 +237,6 @@ async def test_every_session_gets_its_own_file_and_index_line(monkeypatch, provi
 
 def test_lines_are_only_ever_appended(monkeypatch):
     """A placeholder filled in place becomes a new line; earlier bytes never change."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
 
     class Client:
         system_message = "sys"
@@ -360,7 +314,6 @@ async def test_compaction_is_recorded_and_the_new_context_points_at_the_file(
     monkeypatch,
     provider,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     p = provider(
         {
             # The compressor keeps every entry as it is.
@@ -429,7 +382,6 @@ async def test_a_compression_fork_is_recorded_and_its_summary_points_at_the_file
     """Under ``UNIFY_CACHE_DISCIPLINE`` the summary comes from a fork of the
     conversation instead of the compactor, and the transcript still gets the
     history before it, a compaction line and the pointer."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     monkeypatch.setattr(SETTINGS, "UNIFY_CACHE_DISCIPLINE", True)
     p = provider(
         {
@@ -486,27 +438,6 @@ async def test_a_compression_fork_is_recorded_and_its_summary_points_at_the_file
     assert not [ln for ln in index.values() if ln["origin"] == "compress_messages"]
 
 
-@pytest.mark.asyncio
-async def test_compaction_without_the_switch_adds_no_pointer(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", False)
-
-    async def keep(messages, endpoint, **kw):
-        return cc.CompressedMessages(
-            messages=[
-                cc.CompressedMessage(content=json.dumps(m))
-                for m in (kw.get("prior_entries") or []) + messages
-            ],
-        )
-
-    monkeypatch.setattr(cc, "compress_messages", keep)
-    msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
-    result = await cc.compress_and_rebuild(cc.CompressionState(), msgs, MODEL, {})
-    content = result.system_msgs[-1]["content"]
-    assert "full history of this session" not in content
-    assert content.endswith("retrieve a range of consecutive messages.")
-    assert not (home() / "transcripts").exists()
-
-
 # ── restarts ─────────────────────────────────────────────────────────────────
 
 _PROCESS = textwrap.dedent(
@@ -517,8 +448,6 @@ _PROCESS = textwrap.dedent(
     from unify.common._async_tool.loop_config import LoopConfig
     from unify.common._async_tool.message_dispatcher import LoopMessageDispatcher
     from unify.settings import SETTINGS
-
-    SETTINGS.UNIFY_TRANSCRIPTS = True
 
     class Timer:
         def reset(self):
@@ -588,7 +517,6 @@ def test_a_new_process_appends_only_to_the_session_it_names():
 
 
 def test_two_live_roots_never_share_a_requested_id(monkeypatch):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
 
     class Client:
         system_message = None

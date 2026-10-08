@@ -1,4 +1,4 @@
-"""Append-only session transcripts on disk (``UNIFY_TRANSCRIPTS``).
+"""Append-only session transcripts on disk.
 
 Every agent conversation -- the actor's loop, a sub-agent's, the storage
 review's, the context compressor's -- is one *session*, keyed by the LLM client
@@ -52,7 +52,6 @@ __all__ = [
     "TranscriptSession",
     "attach",
     "close",
-    "enabled",
     "internal_transcripts_dir",
     "mark_internal",
     "observe",
@@ -91,13 +90,6 @@ _BY_LABEL: "weakref.WeakValueDictionary[str, TranscriptSession]" = (
 )
 _REGISTRY_LOCK = threading.Lock()
 _INDEX_LOCK = threading.Lock()
-
-
-def enabled() -> bool:
-    """Whether ``UNIFY_TRANSCRIPTS`` is on."""
-    from unify.settings import SETTINGS
-
-    return bool(getattr(SETTINGS, "UNIFY_TRANSCRIPTS", False))
 
 
 def transcripts_dir() -> Path:
@@ -493,10 +485,10 @@ def attach(client: Any, loop_cfg: Any) -> Optional[TranscriptSession]:
 
     Called once per loop run, from inside the loop's task. The first loop on a
     client opens its session; a later loop on the same client (a restart after
-    compression) joins it. Returns ``None``, touching nothing, when the switch
-    is off.
+    compression) joins it. Returns ``None``, touching nothing, without a
+    client.
     """
-    if not enabled() or client is None:
+    if client is None:
         return None
     try:
         session = getattr(client, "_unify_transcript", None)
@@ -584,7 +576,7 @@ def observe(messages: Any, loop_cfg: Any) -> None:
 
 def session_for_messages(messages: Any) -> Optional[TranscriptSession]:
     """The live session whose client currently holds *messages* (by identity)."""
-    if not enabled() or not isinstance(messages, list):
+    if not isinstance(messages, list):
         return None
     with _REGISTRY_LOCK:
         live = list(_LIVE)

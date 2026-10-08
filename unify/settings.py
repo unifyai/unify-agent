@@ -408,19 +408,6 @@ class ProductionSettings(BaseSettings):
     UNIFY_LIBRARY_SHORTLIST: bool = True
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Session Transcripts
-    # ─────────────────────────────────────────────────────────────────────────
-    # Append every agent conversation (actor, sub-agents, storage review,
-    # compressor) as JSON lines to ``<UNIFY_HOME>/transcripts/<session>.jsonl``
-    # and one line per ended session to ``transcripts/index.jsonl``; after a
-    # context compression the compressed context points at the file
-    # (unify/transcripts.py). Harness-internal sessions (the storage review,
-    # its fork, the review gate) go to ``internal-transcripts/`` instead,
-    # which cells never see, and no line carries an outcome section the
-    # harness rendered. Off: nothing is written.
-    UNIFY_TRANSCRIPTS: bool = True
-
-    # ─────────────────────────────────────────────────────────────────────────
     # Workspace Sandbox
     # ─────────────────────────────────────────────────────────────────────────
     # ``sandboxed``: execute_code also takes ``language="bash"`` (a persistent
@@ -587,7 +574,6 @@ class ProductionSettings(BaseSettings):
         "UNIFY_CACHE_DISCIPLINE",
         "UNIFY_REVIEW_FORK",
         "UNIFY_REVIEW_FORK_CORE",
-        "UNIFY_TRANSCRIPTS",
         "UNIFY_DISCOVERY_GATE",
         "UNIFY_LIBRARY_SHORTLIST",
         "UNIFY_CORE_BIND_LISTED",

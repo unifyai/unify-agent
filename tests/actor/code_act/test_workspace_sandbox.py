@@ -232,11 +232,10 @@ async def test_transcripts_written_after_the_session_started_are_searchable(
     world,
     monkeypatch,
 ):
-    """The pointer a compaction leaves (UNIFY_TRANSCRIPTS) resolves inside the sandbox."""
+    """The pointer a compaction leaves (a session transcript) resolves inside the sandbox."""
     import shutil
 
     shutil.rmtree(world["state"] / "transcripts")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     ex = SessionExecutor()
     try:
         await bash(ex, "true")

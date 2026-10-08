@@ -116,7 +116,6 @@ def outcome_world(world, monkeypatch):  # noqa: F811
     (world["state"] / "store.sqlite").unlink()
     db.reset_store()
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     yield world
     db.reset_store()
 
@@ -285,7 +284,6 @@ async def test_the_internal_transcripts_keep_the_review_session(
     monkeypatch,
     review,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     await _task_one(monkeypatch, review)
     internal, readable = unify_home / "internal-transcripts", unify_home / "transcripts"
     assert transcripts.internal_transcripts_dir() == internal
@@ -333,7 +331,6 @@ def test_the_policy_mounts_nothing_that_holds_internal_transcripts_or_logs(
     from unify import environment
 
     monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE", "sandboxed")
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     home = Path(os.path.realpath(unify_home))
     internal = home / "internal-transcripts"
     for local_root in ("", str(home)):
@@ -371,7 +368,6 @@ def test_every_transcript_line_drops_the_outcome_section_the_harness_built(
     monkeypatch,
 ):
     """Keyed on the note the harness rendered, never on words in model text."""
-    monkeypatch.setattr(SETTINGS, "UNIFY_TRANSCRIPTS", True)
     note = outcome_mod.render(outcome_mod.normalize(OUTCOME))
     client = h.new_client("system")
     cfg = type("Cfg", (), {"label": "probe", "loop_id": "probe"})()

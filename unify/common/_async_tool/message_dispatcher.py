@@ -22,8 +22,7 @@ class LoopMessageDispatcher:
         self._cfg = cfg
         self._timer = timer
         # One dispatcher per loop run, created inside the loop's task: the
-        # point at which the loop is bound to its client's transcript session
-        # (a no-op unless UNIFY_TRANSCRIPTS is on).
+        # point at which the loop is bound to its client's transcript session.
         transcripts.attach(client, cfg)
 
     async def append_msgs(

@@ -760,9 +760,8 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         workspace = Path(os.path.realpath(get_local_root()))
         workspace.mkdir(parents=True, exist_ok=True)
         store = Path(os.path.realpath(store_path()))
-        if getattr(SETTINGS, "UNIFY_TRANSCRIPTS", False):
-            # Mounted only if present, and sessions pointed at it must find it.
-            (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
+        # Mounted only if present, and sessions pointed at it must find it.
+        (state_dir / "transcripts").mkdir(parents=True, exist_ok=True)
         # UNIFY_AGENTS=record: cells may read (grep, tail) their own run's record,
         # as transcripts; never another run's, and only the harness writes it.
         records = _current_run_records() if SETTINGS.UNIFY_AGENTS == "record" else None
