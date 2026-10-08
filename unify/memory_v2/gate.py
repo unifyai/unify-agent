@@ -10,7 +10,8 @@ The gate guards against a careless or mistaken consolidator, not a malicious one
 the runtime confinement of every run (:mod:`.sandbox_run`). Its rules are structural: they pin what a pass
 may touch and keep every old test passing against the new library. Documented limits:
 
-* **Test adequacy** is not judged: a weak test that is red on the parent and green on the candidate passes.
+* **Test adequacy** is not judged: a weak test that is red on the parent and green on the candidate passes
+  (unless a stage-5 switch of :mod:`.qa` is on: drawn inputs, mutants, determinism, replay, fixture size).
 * **Effect: lines** are checked for presence, not truthfulness.
 * **Covers** prove that a real recorded observation of the right kind on the item's channel exists (a
   successful tool call, a shell output tail, a file blob, a dialogue observation; :mod:`.admission`), not
@@ -80,6 +81,13 @@ The checks:
 
 :meth:`Gate.preview` runs the cheap, read-only part (the manifest, G1, G2's covers, G4 to G6) on an
 uncommitted tree, for the consolidator's ``check`` tool; it never decides or records a merge.
+
+Stage-5 test checks (memory v2.1, :mod:`.qa`) extend G3 when a :class:`.qa.QAConfig` switch is on: seeded
+random draws of recorded inputs, mutation testing, pinned determinism, replay fidelity and fixture size. Their
+reasons are G3 reasons tagged ``[qa:<check>]``; the static ones (fixture size, replay fidelity, cuts of
+truncated recordings) also run in :meth:`Gate.preview`. Every gate test run then also mounts the gate's own
+``memlab`` and the blobs the tests name read-only at ``/inputs`` (``PYTHONPATH=/memory:/inputs``). With every
+switch off (the default) the gate is exactly as described above.
 """
 
 from __future__ import annotations
@@ -118,6 +126,7 @@ from .manifest import (
     parse_manifest,
 )
 from .memory_repo import ItemsReport, items
+from .qa import QAChecks, QAConfig, QAEnv
 from .redact import KEY_SHAPED
 from .sandbox_run import PYTHON, PytestOutcome, run_pytest
 from .signals import job_item_status
@@ -303,6 +312,10 @@ class _Run:
     pools: dict[tuple[str, ...], tuple[list[tuple[str, Action]], bool]] = field(
         default_factory=dict,
     )
+    # stage 5 (:mod:`.qa`): the /inputs mount of the gate's runs (None: every switch off), and G3's first
+    # candidate run of each new or changed test file
+    qa_env: QAEnv | None = None
+    qa_first: dict[str, PytestOutcome] = field(default_factory=dict)
 
     def fail(self, check: str, reason: str) -> None:
         # reasons are stored in the evidence store; test output in them is model-controlled
@@ -337,6 +350,7 @@ class Gate:
         reader_promotes: bool = False,
         action_lookup: Callable[[str, int], Action | None] | None = None,
         pytest_runner: Callable[..., PytestOutcome] = run_pytest,
+        qa: QAConfig | None = None,
     ) -> None:
         self.mem, self.ev, self.blobs = memory, evidence, blobs
         self.python, self.budget, self.reader_promotes = (
@@ -347,6 +361,8 @@ class Gate:
         # Fail closed: without an episodes reader no covered call can be confirmed.
         self.lookup = action_lookup or (lambda eid, i: None)
         self.pytest = pytest_runner
+        # stage-5 test checks (memory v2.1); the default runs none of them
+        self.qa = qa if qa is not None else QAConfig()
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(self, parent: str, candidate: str, manifest: dict) -> GateResult:
@@ -429,24 +445,31 @@ class Gate:
                 for c in it.covers
             ]
             episodes = {eid for eid, _ in covers}
-            if len(covers) > PREVIEW_MAX_COVERS or len(episodes) > PREVIEW_MAX_EPISODES:
+            bounded = (
+                len(covers) <= PREVIEW_MAX_COVERS
+                and len(episodes) <= PREVIEW_MAX_EPISODES
+            )
+            memo: dict[tuple[str, int], Action | None] = {}
+
+            def lookup(eid: str, idx: int) -> Action | None:
+                if (eid, idx) not in memo:
+                    memo[(eid, idx)] = self.lookup(eid, idx)
+                return memo[(eid, idx)]
+
+            if not bounded:
                 run.fail(
                     "G2",
                     f"the manifest names {len(covers)} covers over {len(episodes)} episodes; a check "
                     f"examines at most {PREVIEW_MAX_COVERS} covers over {PREVIEW_MAX_EPISODES} episodes",
                 )
             else:
-                memo: dict[tuple[str, int], Action | None] = {}
-
-                def lookup(eid: str, idx: int) -> Action | None:
-                    if (eid, idx) not in memo:
-                        memo[(eid, idx)] = self.lookup(eid, idx)
-                    return memo[(eid, idx)]
-
                 self._g2(run, preview=True, lookup=lookup)
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
+            if self.qa.on and bounded:
+                # stage 5's static checks: fixture size, replay fidelity, cuts (no test runs)
+                QAChecks(self, run).static(lookup)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return list(res.reasons)
@@ -526,7 +549,24 @@ class Gate:
             return None
         return sha if _SHA.match(sha) else None
 
-    def _pytest(self, tree: Path, target: str) -> PytestOutcome:
+    def _pytest(
+        self,
+        tree: Path,
+        target: str,
+        qa_env: QAEnv | None = None,
+    ) -> PytestOutcome:
+        if (
+            qa_env is not None
+        ):  # a stage-5 switch is on: memlab and the referenced blobs at /inputs
+            return self.pytest(
+                target,
+                python=self.python,
+                ro={tree: "/memory", qa_env.inputs: "/inputs"},
+                rw={},
+                cwd="/memory",
+                timeout_s=_TIMEOUT_S,
+                env=dict(qa_env.env),
+            )
         return self.pytest(
             target,
             python=self.python,
@@ -583,7 +623,13 @@ class Gate:
             if self._prepare(run):
                 self._g1(run)
                 self._g2(run)
+                qa = QAChecks(self, run) if self.qa.on else None
+                if qa is not None:
+                    qa.prepare()
+                    qa.static(self.lookup)
                 self._g3(run)
+                if qa is not None:
+                    qa.dynamic()
                 self._g4(run)
                 self._g5(run)
                 self._g6(run)
@@ -993,8 +1039,9 @@ class Gate:
                     (red_tree / rel).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(run.c_tree / rel, red_tree / rel)
             for t in runnable:
-                on_parent = self._pytest(red_tree, t)
-                on_cand = self._pytest(run.c_tree, t)
+                on_parent = self._pytest(red_tree, t, run.qa_env)
+                on_cand = self._pytest(run.c_tree, t, run.qa_env)
+                run.qa_first[t] = on_cand
                 # a parent library that hangs on the test is red once the candidate's run is green
                 if _red(on_parent) or (on_parent.timed_out and _green(on_cand)):
                     classic.add(t)
@@ -1056,7 +1103,7 @@ class Gate:
         """
         if test not in run.p_files:
             return False
-        old = self._pytest(run.p_tree, test)
+        old = self._pytest(run.p_tree, test, run.qa_env)
         if not _red(old):
             return False
         return not old.valid or bool(old.failed & on_cand.passed)
@@ -1126,7 +1173,7 @@ class Gate:
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read
             if (run.p_tree / rel).is_dir():
-                base = self._pytest(run.p_tree, rel)
+                base = self._pytest(run.p_tree, rel, run.qa_env)
                 if base.timed_out or not base.valid:
                     broken = _describe(base)
                     run.note(
@@ -1137,7 +1184,7 @@ class Gate:
                     before, known_red = kept(base.passed), kept(base.failed)
             after: set[str] = set()
             if (run.c_tree / rel).is_dir():
-                suite = self._pytest(run.c_tree, rel)
+                suite = self._pytest(run.c_tree, rel, run.qa_env)
                 readable = suite.valid and not suite.timed_out
                 new_red = sorted(suite.failed - known_red)
                 if (
@@ -1172,7 +1219,7 @@ class Gate:
                     f"the candidate's suite {rel} no longer passes the parent's tests {lost[:5]}",
                 )
             if regression is not None and before:
-                reg = self._pytest(regression, rel)
+                reg = self._pytest(regression, rel, run.qa_env)
                 if reg.timed_out or not reg.valid:
                     run.fail(
                         "G3",

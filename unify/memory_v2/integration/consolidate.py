@@ -66,6 +66,7 @@ from ..gate import Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
+from ..qa import QAConfig
 from ..redact import KEY_SHAPED
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
@@ -575,6 +576,7 @@ async def run_due_passes(
         stores.evidence,
         stores.blobs,
         action_lookup=lookup.action,
+        qa=QAConfig.from_settings(settings),  # stage-5 test checks; all off by default
     )
     config = PassConfig(
         model=cfg.model,

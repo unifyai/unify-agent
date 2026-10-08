@@ -1,0 +1,1236 @@
+"""QA-level test checks in the consolidation gate (memory v2.1 stage 5; plan "Stage 5", spec G3).
+
+G3 asks that each new or changed environment function has a test that is red on the parent and green on the
+candidate. It does not judge whether the test is any good: one fixture read many times, a stand-in environment
+that ignores its arguments, an assertion that would hold whatever the function did. These checks judge test
+quality, each behind its own switch (all off by default; :class:`QAConfig`). With every switch off, ``on`` is
+False, the gate makes exactly the calls it made before, and nothing here runs.
+
+**Seeded random fixtures** (``UNIFY_MEMORY_V2_QA_FIXTURES``: ``on`` or ``strict``). Inputs are drawn, never
+chosen by the consolidator. For each new or changed function, :func:`draw` takes up to :data:`SAMPLE_K`
+recorded inputs of the function's family (the family G2's held-out check uses: a tool call's
+``channel.method``, a work-tree path family, a dialogue ``channel.method``) from the store-wide pool G2 read
+(:meth:`.gate.Gate._pool`), leaving out the function's covers, rejections, truncated recordings and inputs its
+declared form cannot take. Distinct inputs (by content) are ranked by SHA-256 of the seed and their content;
+the seed is SHA-256 of the candidate commit (:func:`seed_of`), so a rerun draws the same sample and the
+consolidator cannot know it before the harness commits. Then:
+
+* the **probe** (:data:`PROBE`, one confined process per function and tree) calls the function on every drawn
+  input in its declared form (``env``: a :class:`~.replay.RecordedEnv` over the input's episode's recorded
+  calls on its channels, the drawn call first). On an input the environment accepted, the function must
+  return, or raise its ``MemoryInputError`` when the input's fields differ from every cover's (a precondition).
+  Raising anything else, or refusing an input shaped like its covers, refuses the pass. A replay miss (the
+  function made a call that episode did not record) is inconclusive and noted;
+* the **sample run**: each of the function's new or changed test files that imports ``memlab.inputs`` runs
+  again with ``/qa/samples.json`` mounted, so a test parametrised over :func:`.inputs.inputs` also runs its own
+  assertions on every drawn input, and must stay green. :mod:`.inputs` records which drawn input each test case
+  read; a drawn input no test of the function read is a note, and with ``strict`` a refusal.
+
+**Mutation testing** (``UNIFY_MEMORY_V2_QA_MUTATION``; ``UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL``, default 0.5).
+Up to :data:`MAX_MUTANTS` mutants per function (:mod:`.mutation`, chosen by the seed) each run the function's
+new or changed tests, confined, at most :data:`MUTANT_S` each. A mutant is killed when a test is not green. A
+surviving mutant whose probe outputs equal the original's on every drawn input and cover is likely equivalent
+and leaves the count. A kill share below the threshold refuses the pass, naming operator kinds and lines.
+First the tests run on the module re-printed unchanged (the control): if that is not green, nothing is judged.
+
+**Determinism** (``UNIFY_MEMORY_V2_QA_DETERMINISM``). Every gate pytest run gets ``PYTHONHASHSEED=0``,
+``TZ=UTC`` and the plugin :mod:`.pin` (``-p _memv2_pin``: a stepping clock from a fixed epoch, ``random`` seeded
+before each test). Each new or changed test file green in G3 runs once more; different outcomes refuse it as
+flaky. A second run that times out is noted, not judged.
+
+**Replay fidelity** (``UNIFY_MEMORY_V2_QA_REPLAY``). A new or changed test that passes an environment-taking
+function a stand-in of its own instead of ``memlab.replay.RecordedEnv``, while the function has recorded
+calls, is refused (:func:`.qa_static.stand_ins`, structural).
+
+**Fixture size** (``UNIFY_MEMORY_V2_QA_FIXTURE_SIZE``). A new or changed file under ``env/<channel>/tests/``, the
+test kit or a support file larger than :data:`FIXTURE_MAX_BYTES` is refused: recorded payloads are referenced
+by blob id (:func:`.inputs.blob`). The cause of the 1.1 MB Crafter fixture (offline sweep, 300k) was a brief
+that asked for every recorded observation pair to be copied into a data file under the 1 MiB quota; with this
+switch the export also writes every response over :data:`RESPONSE_BLOB_BYTES` as a blob (``response_blobs`` in
+each exported episode), the gate mounts every blob id a test-side file names at ``/inputs/blobs``, and the
+brief says to reference rather than copy. Truncated recordings carry the recorder's marker (and the export
+lists them in ``truncated``); a test asserting on text at the cut is refused (:func:`.qa_static.asserts_on_cut`).
+
+Every stage-5 run is confined (:func:`.sandbox_run.run_confined`, bubblewrap with a cleared environment) with
+the tree read-only at ``/memory``, the gate's own read-only copy of ``memlab`` (replay, inputs; no git, no
+evidence store) and the referenced blobs at ``/inputs``, the drawn inputs read-only at ``/qa``, and only a
+fresh output directory writable. No credential is in any argument, environment entry or file. All dynamic
+checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the check with a note naming what
+was not judged, never a silent pass and never an exception. Reasons and notes carry item ids, test paths,
+counts, operator kinds, line numbers, byte sizes and builtin exception names, never a recorded value (R10).
+All reasons are filed under G3 with a ``[qa:<check>]`` tag.
+
+Rejected alternatives: rewriting the consolidator's fixtures to the drawn inputs (expected values would no
+longer match, so only property tests survive); a pytest plugin wrapping library functions to watch their
+arguments (it changes the code under test); ``sitecustomize`` for the pins (shadowed by any in the venv);
+mutating by text substitution (cannot be kept syntactically valid). Known limits: an input's "shape" is its
+field-name set, so a refusal of a same-named but differently typed value counts as a false refusal; the stand-in
+check resolves only literal data flow (an environment built behind a helper's parameter or an attribute is
+``unknown``, never refused); the truncation check sees only ``assert`` statements of the test source (an
+expected value kept in a data file is not seen); module code under test shares the probe's process (ruling
+R16: careless, not malicious).
+"""
+
+from __future__ import annotations
+
+import ast
+import builtins
+import hashlib
+import json
+import shutil
+import tempfile
+import time
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Any, Callable
+
+from . import mutation, qa_static
+from .admission import is_rejection
+from .analysis import shapes as _shapes
+from .episodes import Action
+from .held_out import (
+    _FORMS,
+    _blob_sha,
+    _doc,
+    _doc_family,
+    _file_name,
+    _form,
+    _key,
+    _read_results,
+    _unfit_reason,
+)
+from .integration import switch
+from .manifest import INPUT_KINDS, TESTKIT, TESTS_DIR, item_path
+from .sandbox_run import SandboxResult, run_confined
+
+SAMPLE_K = 8  # drawn inputs per function
+MAX_COVERS = 8  # covers per function the probe also runs (for mutant equivalence)
+MAX_MUTANTS = 8  # mutants per function
+RUN_S = 120.0  # one stage-5 pytest run or probe
+MUTANT_S = 60.0  # one mutant's test run
+BUDGET_S = 900.0  # every dynamic stage-5 check of one gate run together
+FLOOR_S = 5.0  # no run starts with less of the budget left
+PROBE_CASE_S = 2  # one call in the probe
+FIXTURE_MAX_BYTES = 64 * 1024
+MIN_KILL = Decimal("0.5")
+RESPONSE_BLOB_BYTES = 4096  # exported responses at least this large also become blobs (fixture-size switch)
+MAX_CONTEXT = 64  # recorded calls an ``env`` input's replay answers
+MAX_ROW_BYTES = 1024**2
+MAX_SAMPLES_BYTES = 16 * 1024**2
+MAX_INPUT_FILE_BYTES = 16 * 1024**2
+MAX_REF_BLOBS = 1000
+MAX_REF_BYTES = 64 * 1024**2
+MAX_SCAN_FILES = 2000
+MAX_SCAN_BYTES = 2 * 1024**2
+PIN_MODULE = "_memv2_pin"
+PINNED_ENV = {"PYTHONHASHSEED": "0", "TZ": "UTC"}
+_NAMED = 5
+_MEMLAB = ("replay.py", "episodes.py", "blobs.py", "redact.py", "inputs.py")
+_GITIO_STUB = '''\
+"""memlab has no git inside the gate's runs; this stands in for the names episodes.py imports."""
+
+
+class GitError(RuntimeError):
+    pass
+
+
+class Repo:
+    def __init__(self, *args, **kwargs):
+        raise GitError("git is not available here")
+'''
+
+
+# --- configuration -------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QAConfig:
+    """Which stage-5 checks run, and their bounds. The default runs none of them."""
+
+    fixtures: str = ""  # "", "on" or "strict"
+    mutation: bool = False
+    min_kill: Decimal = MIN_KILL
+    determinism: bool = False
+    replay: bool = False
+    fixture_size: bool = False
+    sample_k: int = SAMPLE_K
+    max_mutants: int = MAX_MUTANTS
+    run_s: float = RUN_S
+    mutant_s: float = MUTANT_S
+    budget_s: float = BUDGET_S
+    fixture_max_bytes: int = FIXTURE_MAX_BYTES
+    clock: Callable[[], float] = field(default=time.monotonic, compare=False)
+    runner: Callable[..., SandboxResult] = field(default=run_confined, compare=False)
+
+    @property
+    def on(self) -> bool:
+        return bool(
+            self.fixtures
+            or self.mutation
+            or self.determinism
+            or self.replay
+            or self.fixture_size,
+        )
+
+    @property
+    def draws(self) -> bool:
+        """Whether inputs are drawn and probed (the fixture check, or the mutants' equivalence)."""
+        return bool(self.fixtures or self.mutation)
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> "QAConfig":
+        """The switches as the run's settings hold them (validated again; unset means off)."""
+
+        def get(name: str) -> Any:
+            return getattr(settings, name, "")
+
+        return cls(
+            fixtures=switch.parse_qa_fixtures(get(switch.QA_FIXTURES)),
+            mutation=switch.parse_qa_mutation(get(switch.QA_MUTATION)) == "on",
+            min_kill=Decimal(switch.parse_qa_min_kill(get(switch.QA_MIN_KILL))),
+            determinism=switch.parse_qa_determinism(get(switch.QA_DETERMINISM)) == "on",
+            replay=switch.parse_qa_replay(get(switch.QA_REPLAY)) == "on",
+            fixture_size=switch.parse_qa_fixture_size(get(switch.QA_FIXTURE_SIZE))
+            == "on",
+        )
+
+
+def seed_of(candidate: str) -> bytes:
+    """The stage-5 seed: SHA-256 of the candidate commit (reproducible, unknown before the commit)."""
+    return hashlib.sha256(f"memory-v2-qa\0{candidate}".encode()).digest()
+
+
+def pytest_env(cfg: QAConfig) -> dict[str, str]:
+    """The environment of every gate pytest run while a stage-5 switch is on."""
+    env = {
+        "PYTHONPATH": "/memory:/inputs",
+        "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
+    }
+    if cfg.determinism:
+        env["PYTEST_ADDOPTS"] += f" -p {PIN_MODULE}"
+        env.update(PINNED_ENV)
+    return env
+
+
+@dataclass
+class QAEnv:
+    """The read-only directory mounted at ``/inputs`` in the gate's runs and their environment."""
+
+    inputs: Path
+    env: dict[str, str]
+
+
+def stage_inputs(
+    dest: Path,
+    cfg: QAConfig,
+    has_blob: Callable[[str], bool],
+    read_blob: Callable[[str], bytes],
+    blob_size: Callable[[str], int],
+    refs: list[str],
+) -> tuple[QAEnv, list[str]]:
+    """Write ``memlab`` (replay and inputs, no git), the pin plugin and the referenced blobs under *dest*."""
+    src = Path(__file__).parent
+    lab = dest / "memlab"
+    lab.mkdir(parents=True)
+    for name in _MEMLAB:
+        shutil.copyfile(src / name, lab / name)
+    (lab / "__init__.py").write_text(
+        '"""memlab, the gate\'s copy: replay and recorded inputs for library tests."""\n',
+    )
+    (lab / "gitio.py").write_text(_GITIO_STUB)
+    shutil.copyfile(src / "pin.py", dest / f"{PIN_MODULE}.py")
+    bdir = dest / "blobs"
+    bdir.mkdir()
+    used = skipped = 0
+    for sha in refs[:MAX_REF_BLOBS]:
+        if not has_blob(sha):
+            continue  # a 64-hex token that names no recorded blob
+        size = blob_size(sha)
+        if size > MAX_INPUT_FILE_BYTES or used + size > MAX_REF_BYTES:
+            skipped += 1
+            continue
+        (bdir / sha).write_bytes(read_blob(sha))
+        used += size
+    notes = []
+    over = max(0, len(refs) - MAX_REF_BLOBS)
+    if skipped or over:
+        notes.append(
+            f"[qa:blobs] {skipped + over} referenced blob(s) not mounted at /inputs/blobs (over "
+            f"{MAX_REF_BLOBS} blobs, {MAX_INPUT_FILE_BYTES} bytes each or {MAX_REF_BYTES} in all)",
+        )
+    return QAEnv(dest, pytest_env(cfg)), notes
+
+
+# --- drawn inputs --------------------------------------------------------------------------------------------
+
+
+@dataclass
+class Row:
+    """One input the probe (and the sample run) feeds a function."""
+
+    role: str  # "cover" or "sample"
+    action: Action
+    context: list[Action]
+    covered_shape: bool
+    form: str
+    file: tuple[str, bytes] | None = None
+    text: str | None = None
+
+
+def _content(a: Action, form: str | None) -> str:
+    """What makes two recorded inputs the same input (as G2's constancy counts observations)."""
+    kind = getattr(a, "kind", "tool")
+    if kind == "worktree":
+        return "blob:" + str(_blob_sha(a))
+    if kind == "tool" and _form(a, form) == "env":
+        return "call:" + _key([a.method, a.kwargs, a.response])
+    return "response:" + _key(a.response)
+
+
+def _usable(a: Action | None, form: str | None) -> bool:
+    if a is None:
+        return False
+    kind = getattr(a, "kind", "tool")
+    return (
+        kind != "shell"
+        and a.status == "ok"
+        and not is_rejection(a)
+        and _form(a, form) in _FORMS.get(kind, ())
+        and _unfit_reason(a, form) is None
+    )
+
+
+def _rank(seed: bytes, *parts: str) -> bytes:
+    return hashlib.sha256(seed + "\0".join(parts).encode()).digest()
+
+
+def draw(
+    item: str,
+    covers: list[tuple[str, int, Action]],
+    pool: list[tuple[str, Action]],
+    *,
+    form: str | None,
+    blob: Callable[[str], bytes],
+    seed: bytes,
+    k: int = SAMPLE_K,
+) -> tuple[list[Row], list[str]]:
+    """The covers (at most :data:`MAX_COVERS`) and up to *k* drawn inputs of *item*'s family, with notes.
+
+    *pool* is G2's store-wide pool of recorded observations on the covered channels (episode id, action);
+    *form* the item's declared input form (None: each kind's convention).
+    """
+    notes: list[str] = []
+    usable = [(eid, idx, a) for eid, idx, a in covers if _usable(a, form)]
+    usable.sort(key=lambda c: _rank(seed, item, c[0], str(c[1])))
+    usable = usable[:MAX_COVERS]
+    if not usable:
+        notes.append(
+            "no cover it can be called on (a shell cover, or none in its form); nothing drawn",
+        )
+        return [], notes
+
+    def shape(a: Action) -> frozenset | None:
+        try:
+            d = _doc(a, blob, form)
+        except (OSError, ValueError, KeyError):
+            return None
+        return None if d is None else frozenset(d.fields())
+
+    families = {_doc_family(a, form) for _, _, a in usable}
+    shapes = {shape(a) for _, _, a in usable} - {None}
+    taken = {_content(a, form) for _, _, a in usable}
+    by_eid: dict[str, list[Action]] = {}
+    for eid, a in pool:
+        by_eid.setdefault(eid, []).append(a)
+    found: dict[str, tuple[str, Action]] = {}
+    cut = 0
+    for eid, a in pool:
+        if not _usable(a, form) or _doc_family(a, form) not in families:
+            continue
+        if qa_static.truncated(a):
+            cut += 1
+            continue
+        key = _content(a, form)
+        if key not in taken and key not in found:
+            found[key] = (eid, a)
+    ranked = sorted(found, key=lambda key: _rank(seed, item, key))
+
+    def row(role: str, eid: str, a: Action, n: int) -> Row | None:
+        f = _form(a, form) or "observation"
+        context: list[Action] = []
+        if getattr(a, "kind", "tool") == "tool" and f == "env":
+            others = [
+                b
+                for b in by_eid.get(eid, [])
+                if b is not a
+                and getattr(b, "kind", "tool") == "tool"
+                and b.status in ("ok", "error")
+            ]
+            context = [a] + others[: MAX_CONTEXT - 1]  # the drawn call answers first
+        r = Row(role, a, context, role == "cover" or shape(a) in shapes, f)
+        if getattr(a, "kind", "tool") == "worktree":
+            sha = _blob_sha(a)
+            try:
+                data = blob(sha) if sha is not None else None
+            except (OSError, KeyError, ValueError):
+                data = None
+            if data is None or len(data) > MAX_INPUT_FILE_BYTES:
+                return None
+            r.file = (_file_name(a, n), data)
+            if f == "text":
+                r.text = _shapes.decode(data)[1]
+        return r
+
+    rows: list[Row] = []
+    for eid, _, a in usable:
+        r = row("cover", eid, a, len(rows))
+        if r is not None:
+            rows.append(r)
+    drawn = 0
+    for key in ranked:
+        if drawn >= k:
+            break
+        eid, a = found[key]
+        r = row("sample", eid, a, len(rows))
+        if r is not None:
+            rows.append(r)
+            drawn += 1
+    if cut:
+        notes.append(f"{cut} truncated recording(s) of its family left out of the draw")
+    if not drawn:
+        notes.append("no recorded input of its family beyond its covers to draw")
+    return rows, notes
+
+
+def _action_dict(a: Action) -> dict:
+    return {
+        "cell": a.cell,
+        "channel": a.channel,
+        "method": a.method,
+        "args": list(a.args),
+        "kwargs": dict(a.kwargs or {}),
+        "response": a.response,
+        "status": a.status,
+        "effect": a.effect,
+        "error": a.error,
+        "kind": getattr(a, "kind", "tool"),
+    }
+
+
+def write_samples(
+    dest: Path,
+    items: dict[str, list[Row]],
+) -> tuple[dict[str, list[dict]], int]:
+    """``dest/samples.json``, ``dest/files/<n>/<name>`` and ``dest/probe.py``; the rows written, the dropped count."""
+    (dest / "files").mkdir(parents=True)
+    data: dict = {"items": {}}
+    total = dropped = n = 0
+    written: dict[str, list[dict]] = {}
+    for item, rows in items.items():
+        out: list[dict] = []
+        for r in rows:
+            row: dict = {
+                "id": n,
+                "role": r.role,
+                "form": r.form,
+                "covered_shape": r.covered_shape,
+                "action": _action_dict(r.action),
+            }
+            if r.context:
+                row["context"] = [_action_dict(c) for c in r.context]
+            if r.text is not None:
+                row["text"] = r.text
+            size = len(json.dumps(row, default=str))
+            if size > MAX_ROW_BYTES or total + size > MAX_SAMPLES_BYTES:
+                dropped += 1
+                continue
+            if r.file is not None:
+                name, payload = r.file
+                (dest / "files" / str(n)).mkdir()
+                (dest / "files" / str(n) / name).write_bytes(payload)
+                row["file"] = f"/qa/files/{n}/{name}"
+            out.append(row)
+            total += size
+            n += 1
+        written[item] = out
+        data["items"][item] = {"rows": out}
+    (dest / "samples.json").write_text(json.dumps(data, default=str))
+    (dest / "probe.py").write_text(PROBE)
+    return written, dropped
+
+
+# --- the probe -----------------------------------------------------------------------------------------------
+
+# Runs inside the box: /memory (the tree), /inputs (memlab, the pin), /qa (samples.json, files/), /out.
+PROBE = r"""
+import hashlib, importlib, inspect, json, signal, sys
+sys.path[:0] = ["/memory", "/inputs"]
+sys.dont_write_bytecode = True
+import _memv2_pin as pin
+pin.install()
+from memlab.inputs import RecordedInput
+from memlab.replay import RecordedError, ReplayMiss
+
+class Timeout(BaseException): pass
+state = {"timed_out": False}
+def _alarm(*_):
+    state["timed_out"] = True
+    signal.alarm(1)  # re-armed: a function that catches the timeout is stopped again
+    raise Timeout()
+signal.signal(signal.SIGALRM, _alarm)
+
+item, per_case = sys.argv[1], int(sys.argv[2])
+out = open("/out/results.jsonl", "w")
+try:
+    rows = json.load(open("/qa/samples.json"))["items"][item]["rows"]
+    module, _, function = item.partition(":")
+    fn = getattr(importlib.import_module(module.replace("/", ".")), function)
+    params = list(inspect.signature(fn).parameters.values())
+except BaseException as exc:
+    out.write(json.dumps({"fatal": type(exc).__name__}) + "\n"); sys.exit(0)
+for row in rows:
+    res = {"id": row["id"]}
+    pin.reset()
+    try:
+        first = RecordedInput(row).value(row.get("form"))
+    except BaseException:
+        res["outcome"] = "unbuilt"
+        out.write(json.dumps(res) + "\n"); out.flush(); continue
+    action = row["action"]
+    recorded = (action.get("kwargs") or {}) if action.get("kind", "tool") == "tool" else {}
+    kwargs = {}
+    for p in params[1:]:
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD): continue
+        if p.name in recorded: kwargs[p.name] = recorded[p.name]
+        elif p.default is not p.empty: continue
+        else: kwargs[p.name] = ""
+    state["timed_out"] = False
+    signal.alarm(per_case)
+    try:
+        try:
+            result = fn(first, **kwargs)
+        finally:
+            signal.alarm(0)
+        res["outcome"] = "handled"
+        try:
+            text = json.dumps(result, sort_keys=True, default=repr)
+        except BaseException:
+            text = "unserialisable:" + type(result).__name__
+        res["digest"] = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:32]
+    except Timeout:
+        res["outcome"] = "timeout"
+    except BaseException as exc:
+        names = [c.__name__ for c in type(exc).__mro__]
+        if "MemoryInputError" in names: res["outcome"] = "refused"
+        elif isinstance(exc, ReplayMiss): res["outcome"] = "miss"
+        elif isinstance(exc, RecordedError): res["outcome"] = "recorded_error"
+        else:
+            res["outcome"] = "error"
+            res["raised"] = type(exc).__name__
+    signal.alarm(0)
+    if state["timed_out"]:
+        res["outcome"] = "timeout"
+    out.write(json.dumps(res) + "\n"); out.flush()
+"""
+
+_OUTCOMES = frozenset(
+    {"handled", "refused", "miss", "recorded_error", "error", "timeout", "unbuilt"},
+)
+
+
+def builtin_error(name: object) -> str | None:
+    """*name* if it names a builtin exception class (so no text the function controls reaches a reason)."""
+    if isinstance(name, str) and name.isidentifier() and len(name) <= 64:
+        cls = getattr(builtins, name, None)
+        if isinstance(cls, type) and issubclass(cls, BaseException):
+            return name
+    return None
+
+
+def probe(
+    item: str,
+    tree: Path,
+    qa_env: QAEnv,
+    samples: Path,
+    *,
+    python: Path,
+    work: Path,
+    timeout_s: float,
+    runner: Callable[..., SandboxResult] = run_confined,
+) -> dict[int, dict] | None:
+    """The probe's result row per drawn-input id, or None when the function could not be loaded."""
+    out = work / "out"
+    out.mkdir(parents=True)
+    runner(
+        [str(python), "-s", "/qa/probe.py", item, str(PROBE_CASE_S)],
+        ro={tree: "/memory", qa_env.inputs: "/inputs", samples: "/qa"},
+        rw={out: "/out"},
+        cwd="/memory",
+        timeout_s=timeout_s,
+        env=dict(PINNED_ENV),
+    )
+    rows = _read_results(out / "results.jsonl")
+    if any("fatal" in r for r in rows):
+        return None
+    return {
+        r["id"]: r
+        for r in rows
+        if isinstance(r.get("id"), int) and r.get("outcome") in _OUTCOMES
+    }
+
+
+def _signature(r: dict) -> tuple:
+    return (
+        r.get("outcome"),
+        r.get("digest") if r.get("outcome") == "handled" else None,
+        builtin_error(r.get("raised")),
+    )
+
+
+def same_outputs(base: dict[int, dict] | None, other: dict[int, dict] | None) -> bool:
+    """Whether a mutant's probe rows equal the original's on every input both ran (and on at least one)."""
+    if not base or other is None:
+        return False
+    judged = [
+        i for i, r in base.items() if r.get("outcome") not in ("timeout", "unbuilt")
+    ]
+    if not judged:
+        return False
+    return all(
+        i in other and _signature(base[i]) == _signature(other[i]) for i in judged
+    )
+
+
+# --- the checks ----------------------------------------------------------------------------------------------
+
+
+def _names(items: list[str]) -> str:
+    more = f" and {len(items) - _NAMED} more" if len(items) > _NAMED else ""
+    return ", ".join(items[:_NAMED]) + more
+
+
+def _imports_inputs(source: bytes, kit: bytes | None) -> bool:
+    """Whether a test file (or the test kit it imports) imports ``memlab.inputs``."""
+
+    def direct(src: bytes | None) -> tuple[bool, bool]:
+        if src is None:
+            return False, False
+        try:
+            tree = ast.parse(src)
+        except (SyntaxError, ValueError, RecursionError):
+            return False, False
+        found = kit_used = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                if node.module == "memlab.inputs" or (
+                    node.module == "memlab"
+                    and any(a.name == "inputs" for a in node.names)
+                ):
+                    found = True
+                if node.module.split(".")[0] == TESTKIT[:-3]:
+                    kit_used = True
+            elif isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name == "memlab.inputs":
+                        found = True
+                    if a.name.split(".")[0] == TESTKIT[:-3]:
+                        kit_used = True
+        return found, kit_used
+
+    found, kit_used = direct(source)
+    return found or (kit_used and direct(kit)[0])
+
+
+class _BudgetSpent(Exception):
+    """The stage-5 time budget ran out (noted once; the remaining dynamic checks are not judged)."""
+
+
+class QAChecks:
+    """The stage-5 checks of one gate run (*run* is the gate's :class:`~.gate._Run`)."""
+
+    def __init__(self, gate: Any, run: Any) -> None:
+        self.gate, self.run, self.cfg = gate, run, gate.qa
+        self.seed = seed_of(run.candidate)
+        self.started: float | None = None
+
+    # -- shared -------------------------------------------------------------------------------------------
+    def _fail(self, tag: str, reason: str) -> None:
+        self.run.fail("G3", f"[qa:{tag}] {reason}")
+
+    def _note(self, tag: str, reason: str) -> None:
+        self.run.note(f"[qa:{tag}] {reason}")
+
+    def _timeout(self, cap: float, what: str) -> float:
+        """The timeout for the next run (at most *cap*); :class:`_BudgetSpent` once the budget is spent."""
+        if self.started is None:
+            self.started = self.cfg.clock()
+        left = self.cfg.budget_s - (self.cfg.clock() - self.started)
+        if left < FLOOR_S:
+            self._note(
+                "budget",
+                f"the {self.cfg.budget_s:.0f} s stage-5 budget ran out at {what}: it and the stage-5 "
+                "checks after it were not judged",
+            )
+            raise _BudgetSpent(what)
+        return min(cap, left)
+
+    def _pytest(
+        self,
+        tree: Path,
+        target: str,
+        timeout_s: float,
+        ro: dict[Path, str] | None = None,
+        rw: dict[Path, str] | None = None,
+    ):
+        qa_env = self.run.qa_env
+        return self.gate.pytest(
+            target,
+            python=self.gate.python,
+            ro={tree: "/memory", qa_env.inputs: "/inputs", **(ro or {})},
+            rw=dict(rw or {}),
+            cwd="/memory",
+            timeout_s=timeout_s,
+            env=dict(qa_env.env),
+        )
+
+    def _edited(self) -> list[Any]:
+        run = self.run
+        return [
+            it
+            for it in run.man.items
+            if it.kind == "env_function"
+            and run.p_bodies.get(it.item, ("", ""))[:2]
+            != run.c_bodies.get(it.item, ("", ""))[:2]
+        ]
+
+    def _tests(self, it: Any) -> list[str]:
+        changed = set(self.run.changed)
+        return sorted(t for t in it.tests if t in changed and t in self.run.c_files)
+
+    def _form(self, it: Any) -> str | None:
+        declared = self.gate._doc_inputs(self.run).get(it.item, "")
+        return it.input or (declared if declared in INPUT_KINDS else None)
+
+    def _covers(
+        self,
+        item: str,
+        lookup: Callable[[str, int], Action | None],
+    ) -> list[tuple[str, int, Action]]:
+        out = []
+        for i, eid, idx in sorted(self.run.covers):
+            if i == item:
+                a = lookup(eid, idx)
+                if a is not None:
+                    out.append((eid, idx, a))
+        return out
+
+    def _kit(self) -> bytes | None:
+        p = self.run.c_tree / TESTKIT
+        return p.read_bytes() if TESTKIT in self.run.c_files else None
+
+    # -- before G3: the /inputs mount ---------------------------------------------------------------------
+    def prepare(self) -> None:
+        run = self.run
+        sources: list[bytes] = []
+        for files, tree in ((run.p_files, run.p_tree), (run.c_files, run.c_tree)):
+            for rel in sorted(files):
+                if len(sources) >= MAX_SCAN_FILES:
+                    break
+                if TESTS_DIR.match(rel) or rel == TESTKIT:
+                    with open(tree / rel, "rb") as fh:
+                        sources.append(fh.read(MAX_SCAN_BYTES))
+        blobs = self.gate.blobs
+        run.qa_env, notes = stage_inputs(
+            run.tmp / "qa-inputs",
+            self.cfg,
+            blobs.has,
+            blobs.get,
+            blobs.size,
+            qa_static.blob_refs(sources),
+        )
+        for n in notes:
+            run.note(n)
+
+    # -- static: fixture size, replay fidelity, cuts ------------------------------------------------------
+    def static(self, lookup: Callable[[str, int], Action | None]) -> None:
+        run, cfg = self.run, self.cfg
+        if cfg.fixture_size:
+            support = set(run.man.support)
+            for p in sorted(set(run.changed) & set(run.c_files)):
+                if not (TESTS_DIR.match(p) or p == TESTKIT or p in support):
+                    continue
+                size = (run.c_tree / p).stat().st_size
+                if size > cfg.fixture_max_bytes:
+                    self._fail(
+                        "fixture-size",
+                        f"{p} has {size} bytes, over the {cfg.fixture_max_bytes}-byte bound for test "
+                        "files: reference recorded payloads by blob id (memlab.inputs.blob) instead of "
+                        "copying them",
+                    )
+        items = [it for it in run.man.items if it.kind == "env_function"]
+        if cfg.replay:
+            env_items: dict[str, str] = {}
+            for it in items:
+                covers = self._covers(it.item, lookup)
+                tool_calls = any(
+                    getattr(a, "kind", "tool") == "tool" and a.status == "ok"
+                    for _, _, a in covers
+                )
+                form = self._form(it) or ("env" if tool_calls else None)
+                first = _first_param(run.c_tree, it.item)
+                if form == "env" and tool_calls and first is not None:
+                    env_items[it.item] = first
+            if env_items:
+                kit = self._kit()
+                for t in sorted({t for it in items for t in self._tests(it)}):
+                    for line, item in qa_static.stand_ins(
+                        (run.c_tree / t).read_bytes(),
+                        kit,
+                        env_items,
+                    ):
+                        self._fail(
+                            "replay",
+                            f"{t} line {line} passes {item} an environment the tests make (a class, "
+                            "function or literal of their own); test it through memlab.replay.RecordedEnv "
+                            "over its recorded calls",
+                        )
+        if cfg.fixture_size:
+            for it in items:
+                actions = [a for _, _, a in self._covers(it.item, lookup)]
+                if not any(qa_static.truncated(a) for a in actions):
+                    continue
+                for t in self._tests(it):
+                    for line in qa_static.asserts_on_cut(
+                        (run.c_tree / t).read_bytes(),
+                        actions,
+                    ):
+                        self._fail(
+                            "truncation",
+                            f"{t} line {line} asserts on text at the recorder's cut of a truncated "
+                            "recording; assert on what the environment returned, not on the cut",
+                        )
+
+    # -- after G3: determinism, drawn inputs, mutants -----------------------------------------------------
+    def dynamic(self) -> None:
+        """Determinism, drawn inputs and mutants, in that order, within one time budget."""
+        run, cfg = self.run, self.cfg
+        if not (cfg.determinism or cfg.draws):
+            return
+        if not run.res.passed:
+            self._note(
+                "skipped",
+                "dynamic stage-5 checks not run: the candidate is already refused",
+            )
+            return
+        try:
+            self._dynamic()
+        except _BudgetSpent:
+            pass  # noted by _timeout
+
+    def _dynamic(self) -> None:
+        run, cfg = self.run, self.cfg
+        if cfg.determinism:
+            self._determinism()
+        edited = self._edited()
+        if not cfg.draws or not edited:
+            return
+        rows: dict[str, list[Row]] = {}
+        for it in edited:
+            covers = self._covers(it.item, self.gate.lookup)
+            if not covers:
+                continue
+            pool, _ = self.gate._pool(run, covers)
+
+            def blob(sha: str) -> bytes:
+                if not self.gate.blobs.has(sha):
+                    raise KeyError(sha)
+                return self.gate.blobs.get(sha)
+
+            got, notes = draw(
+                it.item,
+                covers,
+                pool,
+                form=self._form(it),
+                blob=blob,
+                seed=self.seed,
+                k=cfg.sample_k,
+            )
+            for n in notes:
+                self._note("fixtures", f"{it.item}: {n}")
+            if got:
+                rows[it.item] = got
+        samples = run.tmp / "qa-samples"
+        written, dropped = write_samples(samples, rows)
+        if dropped:
+            self._note(
+                "fixtures",
+                f"{dropped} drawn input(s) over the size bounds left out",
+            )
+        base: dict[str, dict[int, dict] | None] = {}
+        for it in edited:
+            if written.get(it.item):
+                base[it.item] = self._probe(it.item, run.c_tree, samples)
+        if cfg.fixtures:
+            for it in edited:
+                if written.get(it.item):
+                    self._fixtures(it, written[it.item], base.get(it.item), samples)
+        if cfg.mutation:
+            for it in edited:
+                self._mutants(
+                    it,
+                    samples if written.get(it.item) else None,
+                    base.get(it.item),
+                )
+
+    def _probe(self, item: str, tree: Path, samples: Path) -> dict[int, dict] | None:
+        to = self._timeout(self.cfg.run_s, f"the probe of {item}")
+        work = Path(tempfile.mkdtemp(prefix="qa-probe-", dir=self.run.tmp))
+        return probe(
+            item,
+            tree,
+            self.run.qa_env,
+            samples,
+            python=self.gate.python,
+            work=work,
+            timeout_s=to,
+            runner=self.cfg.runner,
+        )
+
+    def _determinism(self) -> None:
+        from .gate import _green
+
+        run = self.run
+        for t in sorted(run.qa_first):
+            first = run.qa_first[t]
+            if not _green(first):
+                continue
+            to = self._timeout(self.cfg.run_s, f"the determinism rerun of {t}")
+            second = self._pytest(run.c_tree, t, to)
+            if second.timed_out:
+                self._note("determinism", f"the rerun of {t} timed out; not judged")
+                continue
+            differ = (first.passed ^ second.passed) | (first.failed ^ second.failed)
+            if differ or (first.valid, first.returncode) != (
+                second.valid,
+                second.returncode,
+            ):
+                self._fail(
+                    "determinism",
+                    f"{t} gives different outcomes on two runs with the clock, hash seed and random "
+                    f"pinned ({len(differ)} test(s) differ): flaky",
+                )
+
+    def _fixtures(
+        self,
+        it: Any,
+        rows: list[dict],
+        base: dict[int, dict] | None,
+        samples: Path,
+    ) -> None:
+        from .gate import _green
+
+        drawn = [r for r in rows if r["role"] == "sample"]
+        if not drawn:
+            return
+        item = it.item
+        if base is None:
+            self._note(
+                "fixtures",
+                f"{item} could not be loaded for the probe; drawn inputs not judged",
+            )
+        else:
+            refused = crashed = inconclusive = allowed = timeouts = 0
+            raised: dict[str, int] = {}
+            for r in drawn:
+                got = base.get(r["id"])
+                outcome = got.get("outcome") if got else None
+                if outcome == "refused":
+                    if r["covered_shape"]:
+                        refused += 1
+                    else:
+                        allowed += 1
+                elif outcome == "error":
+                    crashed += 1
+                    name = builtin_error(got.get("raised")) or "another exception"
+                    raised[name] = raised.get(name, 0) + 1
+                elif outcome == "timeout":
+                    timeouts += 1
+                elif outcome != "handled":
+                    inconclusive += 1
+            n = len(drawn)
+            if crashed:
+                kinds = ", ".join(f"{k} ({v})" for k, v in sorted(raised.items()))
+                self._fail(
+                    "fixtures",
+                    f"{item} raises on {crashed} of {n} drawn recorded inputs of its family ({kinds}); it "
+                    "must return or raise MemoryInputError",
+                )
+            if refused:
+                self._fail(
+                    "fixtures",
+                    f"{item} refuses {refused} of {n} drawn recorded inputs shaped like its covers, which "
+                    "the environment accepted",
+                )
+            if allowed:
+                self._note(
+                    "fixtures",
+                    f"{item} refuses {allowed} of {n} drawn inputs whose fields differ from its covers' "
+                    "(a precondition)",
+                )
+            if inconclusive or timeouts:
+                self._note(
+                    "fixtures",
+                    f"{item}: {inconclusive} drawn input(s) inconclusive (a call the replay did not record, "
+                    f"or no input in its form) and {timeouts} past the {PROBE_CASE_S} s limit",
+                )
+        # the function's own tests on the drawn inputs
+        kit = self._kit()
+        tests = [
+            t
+            for t in self._tests(it)
+            if _imports_inputs((self.run.c_tree / t).read_bytes(), kit)
+        ]
+        read: set[int] = set()
+        for t in tests:
+            to = self._timeout(self.cfg.run_s, f"the sample run of {t}")
+            reads = Path(tempfile.mkdtemp(prefix="qa-reads-", dir=self.run.tmp))
+            outcome = self._pytest(
+                self.run.c_tree,
+                t,
+                to,
+                ro={samples: "/qa"},
+                rw={reads: "/qa-out"},
+            )
+            if not _green(outcome):
+                self._fail(
+                    "fixtures",
+                    f"{t} is not green with the drawn inputs appended ({len(outcome.failed)} test "
+                    f"case(s) fail, timed_out={outcome.timed_out})",
+                )
+            for row in _read_results(reads / "reads.jsonl"):
+                node = row.get("test")
+                if (
+                    row.get("item") == item
+                    and isinstance(row.get("sample"), int)
+                    and isinstance(node, str)
+                    and node.split("::", 1)[0] in self._tests(it)
+                ):
+                    read.add(row["sample"])
+        unread = [r["id"] for r in drawn if r["id"] not in read]
+        if unread:
+            text = (
+                f"{item}'s own tests read {len(drawn) - len(unread)} of {len(drawn)} drawn inputs (a test "
+                "parametrised over memlab.inputs.inputs reads them)"
+            )
+            if self.cfg.fixtures == "strict":
+                self._fail("fixtures", text + "; every drawn input must be exercised")
+            else:
+                self._note("fixtures", text)
+
+    def _mutants(
+        self,
+        it: Any,
+        samples: Path | None,
+        base: dict[int, dict] | None,
+    ) -> None:
+        from .gate import _green
+
+        run, cfg, item = self.run, self.cfg, it.item
+        tests = self._tests(it)
+        if not tests or not all(
+            t in run.qa_first and _green(run.qa_first[t]) for t in tests
+        ):
+            return
+        rel = item_path(item)
+        function = item.split(":", 1)[1]
+        source = (run.c_tree / rel).read_text(encoding="utf-8", errors="replace")
+        chosen = mutation.choose(
+            mutation.sites(source, function),
+            self.seed,
+            item,
+            cfg.max_mutants,
+        )
+        if not chosen:
+            self._note("mutation", f"{item} has no mutation site")
+            return
+        tree = run.tmp / "qa-mutant"
+        if not tree.exists():
+            shutil.copytree(run.c_tree, tree)
+        target = tree / rel
+        original = target.read_bytes()
+
+        def tests_green(text: str) -> bool:
+            target.write_text(text, encoding="utf-8")
+            for t in tests:
+                to = self._timeout(cfg.mutant_s, f"the mutants of {item}")
+                if not _green(self._pytest(tree, t, to)):
+                    return False
+            return True
+
+        try:
+            control = mutation.reprint(source)
+            ok = tests_green(control) if control is not None else False
+            if not ok:
+                self._note(
+                    "mutation",
+                    f"{item}'s tests are not green on its module re-printed unchanged; mutants not judged",
+                )
+                return
+            killed: list[mutation.Site] = []
+            survived: list[tuple[mutation.Site, str]] = []
+            for site in chosen:
+                text = mutation.apply(source, function, site)
+                if text is None or text == control:
+                    continue
+                if tests_green(text):
+                    survived.append((site, text))
+                else:
+                    killed.append(site)
+            equivalent: list[mutation.Site] = []
+            if survived and samples is not None and base:
+                for site, text in survived:
+                    target.write_text(text, encoding="utf-8")
+                    other = self._probe(item, tree, samples)
+                    if same_outputs(base, other):
+                        equivalent.append(site)
+            judged = len(killed) + len(survived) - len(equivalent)
+            if judged <= 0:
+                self._note(
+                    "mutation",
+                    f"{item}: no mutant changed its outputs on the recorded inputs; not judged",
+                )
+                return
+            lost = [s for s, _ in survived if s not in equivalent]
+            if Decimal(len(killed)) < cfg.min_kill * judged:
+                where = _names([f"{s.op} at line {s.line}" for s in lost])
+                self._fail(
+                    "mutation",
+                    f"{item}'s tests kill {len(killed)} of {judged} mutants that change its outputs "
+                    f"(threshold {cfg.min_kill}; {len(equivalent)} likely equivalent left out); "
+                    f"surviving: {where}",
+                )
+            else:
+                self._note(
+                    "mutation",
+                    f"{item}'s tests kill {len(killed)} of {judged} mutants ({len(equivalent)} likely "
+                    "equivalent left out)",
+                )
+        finally:
+            target.write_bytes(original)
+
+
+def _first_param(tree: Path, item: str) -> str | None:
+    """The name of *item*'s first parameter in the candidate tree, or None."""
+    path = tree / item_path(item)
+    try:
+        module = ast.parse(path.read_bytes())
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return None
+    name = item.split(":", 1)[1]
+    fn = None
+    for node in module.body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
+            fn = node
+    if fn is None:
+        return None
+    params = fn.args.posonlyargs + fn.args.args
+    return params[0].arg if params else None
+
+
+# --- the consolidator's brief --------------------------------------------------------------------------------
+
+# Sentences of the base brief that the stage-5 switches change: (switch test, old text, new text). A test keeps
+# every old text present in :data:`.sol_pass.SOL_SYSTEM`, so the brief cannot drift from these rewrites.
+REWRITES: tuple[tuple[str, str, str], ...] = (
+    (
+        "on",
+        'env={"PYTHONPATH": "/memory", "PYTHONDONTWRITEBYTECODE": "1"})',
+        'env={"PYTHONPATH": "/memory:/inputs", "PYTHONDONTWRITEBYTECODE": "1"})',
+    ),
+    (
+        "replay",
+        "may build the fake environment",
+        "may hold shared helpers; build environments with memlab.replay.RecordedEnv",
+    ),
+    (
+        "fixture_size",
+        "or every\nrecorded (action, next observation) pair in its scope",
+        "or a handful of\nrecorded (action, next observation) pairs in its scope",
+    ),
+    (
+        "on",
+        "The gate mounts only /memory, so copy the fixtures a test\nneeds into data files under "
+        "env/<channel>/tests/ (never memlab)",
+        "The gate mounts /memory, and memlab and the recorded blobs your tests name at /inputs; copy the small "
+        "fixtures a test\nneeds into data files under env/<channel>/tests/",
+    ),
+)
+
+
+def brief(cfg: QAConfig) -> str:
+    """The paragraph Sol's brief gains for the stage-5 checks that are on ("" when none is)."""
+    if not cfg.on:
+        return ""
+    lines = [
+        "The gate also checks test quality. Run tests with PYTHONPATH=/memory:/inputs (memlab importable), as "
+        "the gate then does; tests may import memlab.replay and memlab.inputs, which the gate provides.",
+    ]
+    if cfg.fixtures:
+        strict = (
+            " Every drawn input must be read by the function's own tests."
+            if cfg.fixtures == "strict"
+            else ""
+        )
+        lines.append(
+            "- Drawn inputs: after you finish, the gate draws a seeded random sample of recorded inputs of each "
+            "new or changed function's family (beyond its covers) and calls the function on each in its declared "
+            "form. It must return, or raise MemoryInputError only for inputs whose fields differ from its covers'; "
+            "any other exception, or refusing an input shaped like its covers, refuses the pass. Parametrise "
+            'tests over memlab.inputs.inputs("env/<channel>:<function>", fixtures) (fixtures from '
+            "memlab.inputs.from_action(<exported action>, form=...) or from_blob(<blob id>, <file name>, "
+            "form=...)); the gate appends its drawn inputs, x.value() gives the input in the function's form and "
+            "x.response / x.kwargs the recorded call. Assert what holds for every recorded input (the result "
+            "agrees with x.response), not copied values." + strict,
+        )
+    if cfg.mutation:
+        lines.append(
+            "- Mutants: the gate makes small changes to each new or changed function (a comparison flipped, a "
+            "condition negated, a raise dropped, a constant off by one, and/or swapped, a return replaced by "
+            f"None); its tests must fail on at least {cfg.min_kill} of the changes that alter its outputs. Test "
+            "the values it returns and that it refuses inputs of another shape.",
+        )
+    if cfg.determinism:
+        lines.append(
+            "- Determinism: tests run twice with the clock, the hash seed and random pinned; a test whose "
+            "outcome differs between the runs is refused as flaky.",
+        )
+    if cfg.replay:
+        lines.append(
+            "- Replay: test a function that takes the environment through memlab.replay.RecordedEnv(<recorded "
+            "actions>) (exact-call replay); a class, lambda, function or literal of your own standing in for "
+            "the environment is refused.",
+        )
+    if cfg.fixture_size:
+        lines.append(
+            f"- Fixture size: a test or data file over {cfg.fixture_max_bytes} bytes is refused. Reference "
+            "recorded payloads by id instead of copying them: memlab.inputs.blob(<id>) reads a recorded file "
+            "(blob_before/blob_after) or a recorded response (the episode's response_blobs[i]). Do not copy "
+            "every observation; test a handful and let the gate draw more. A truncated recording is marked "
+            "(the episode's truncated[i]); never assert on text at the cut.",
+        )
+    return "\n".join(lines)
+
+
+def system(base: str, cfg: QAConfig) -> str:
+    """Sol's system prompt with the stage-5 rewrites and paragraph (*base* unchanged when no switch is on)."""
+    if not cfg.on:
+        return base
+    text = base
+    for when, old, new in REWRITES:
+        if (cfg.on if when == "on" else bool(getattr(cfg, when))) and old in text:
+            text = text.replace(old, new)
+    return text + "\n" + brief(cfg) + "\n"
