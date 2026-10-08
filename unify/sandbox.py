@@ -6,13 +6,20 @@ Python worker run inside bubblewrap (Linux) under one policy (the
 
 * The root is an allowlist, read-only (:data:`_ROOT_ALLOWLIST`): the system
   directories (``/usr``, ``/bin``, ``/lib*``, ``/sbin``), a few files of
-  ``/etc`` named one by one, the interpreter (its venv and base install,
-  followed through their links), the Unify package and the editable installs
-  the venv's ``.pth`` files add, and the files ``LD_PRELOAD`` names when the
-  harness itself runs with them. Nothing else of the host exists: no
-  ``/home`` beyond those paths, ``/root``, ``/var``, ``/opt``, ``/mnt``,
-  ``/workspaces``, ``/srv``, ``/media``, ``/run``. Never ``/`` itself, and
-  never a whole home directory (rule ``root-allowlist``).
+  ``/etc`` named one by one, and the roots taken from the harness process,
+  each of an enumerated kind (:func:`_derived_candidates`): the interpreter's
+  prefixes (its venv and base install, and the link names between them), the
+  Unify package, the packages (never the checkout) of the editable installs
+  the venv's ``.pth`` files add, the harness's ``PYTHONPATH`` entries, and
+  the ``*.so`` files ``LD_PRELOAD`` names when the harness itself runs with
+  them. Each is bound once, from its resolved path; a name that reaches it
+  through a link is the same link inside. Nothing else of the host exists:
+  no ``/home`` beyond those paths, ``/root``, ``/var``, ``/opt``, ``/mnt``,
+  ``/workspaces``, ``/srv``, ``/media``, ``/run``. Never ``/``, a top-level
+  directory, a whole home or its ``.local`` / ``.config`` / ``.cache``, nor
+  the state or log directories (:func:`_root_refusal`, rule
+  ``root-allowlist``). ``python -I -m unify.sandbox --print-roots`` lists
+  what would be mounted and what is refused, with reasons.
 * The workspace (``<UNIFY_HOME>/workspace`` or ``UNIFY_LOCAL_ROOT``) and a
   private ``/tmp`` are the only writable places.
 * A seccomp filter (:func:`seccomp_program`) lets ``socket`` and
@@ -34,11 +41,13 @@ Python worker run inside bubblewrap (Linux) under one policy (the
 * Credential locations (``~/.ssh``, ``~/.config``, ``~/.aws``, ``~/.gnupg`` and
   a few other well-known ones) are hidden behind a notice, and so is every
   ``.env`` file found in the working directory and its parents, the home
-  directory and its non-hidden subdirectories two levels down, the Unify
-  checkout and the editable installs, where a mount would show it (outside
-  every mount it does not exist at all).
+  directory and its non-hidden subdirectories two levels down and the Unify
+  checkout, where a mount would show it (outside every mount it does not
+  exist at all). Inside every derived root, at every depth, so are ``.env*``,
+  ``*.pem`` (but public CA bundles), ``*key*.json`` and the credential names.
 * The environment loses every variable whose name contains KEY, TOKEN, SECRET,
-  PASSWORD or CREDENTIAL.
+  PASSWORD or CREDENTIAL, or the word PAT, AUTH, PASSWD or PASS, and every
+  value holding a URL with a password.
 * The network namespace is private: nothing but a loopback of its own, unless
   ``UNIFY_WORKSPACE_NETWORK=proxy``, in which case one port on that loopback
   forwards to the proxy at ``127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT`` on the
@@ -66,6 +75,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -128,7 +138,8 @@ RULES: dict[str, str] = {
     "regular-files-only": "only regular files can be read",
     "env-scrub": (
         "environment variables whose names contain KEY, TOKEN, SECRET, PASSWORD "
-        "or CREDENTIAL are removed"
+        "or CREDENTIAL, or the word PAT, AUTH, PASSWD or PASS, and values "
+        "holding a URL with a password, are removed"
     ),
     "network-off": "the sandbox has no network, only a loopback of its own",
     "network-proxy-only": (
@@ -251,10 +262,33 @@ def is_secret_name(name: str) -> bool:
     return any(marker in upper for marker in SECRET_ENV_MARKERS)
 
 
+# Whole words of a variable's name (split at anything but letters and digits)
+# that name a credential, beside SECRET_ENV_MARKERS' substrings: GITHUB_PAT,
+# NPM_AUTH, MYSQL_PASSWD, REDIS_PASS. Words, so PATH and AUTHOR stay.
+_SECRET_ENV_WORDS = frozenset({"PAT", "AUTH", "PASSWD", "PASS"})
+# A URL with a password in it (a database URL with user and password, an
+# index URL with a token as its password).
+_URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
+
+
+def _is_secret_env(name: str, value: str) -> bool:
+    if is_secret_name(name):
+        return True
+    words = re.split(r"[^A-Z0-9]+", name.upper())
+    if any(w in _SECRET_ENV_WORDS for w in words):
+        return True
+    return bool(_URL_CREDENTIALS.search(value or ""))
+
+
 def scrubbed_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-    """*env* (default: this process's) without credential-named variables."""
+    """*env* (default: this process's) without credential variables.
+
+    Removed: names containing a :data:`SECRET_ENV_MARKERS` marker or one of
+    :data:`_SECRET_ENV_WORDS` as a word, and any value holding a URL with a
+    password (a ``DATABASE_URL`` with a user and password).
+    """
     source = os.environ if env is None else env
-    return {k: v for k, v in source.items() if not is_secret_name(k)}
+    return {k: v for k, v in source.items() if not _is_secret_env(k, v)}
 
 
 # ---------------------------------------------------------------------------
@@ -331,9 +365,102 @@ def _within(path: Path, root: Path) -> bool:
 
 
 def _is_env_file(name: str) -> bool:
-    return (name == ".env" or name.startswith(".env.")) and (
-        name not in _ENV_FILE_ALLOWED
-    )
+    """``.env``, ``.env.local``, ``.envrc``, ...: every ``.env*`` but the templates."""
+    return name.startswith(".env") and name not in _ENV_FILE_ALLOWED
+
+
+# Public CA bundles: certificates only, and TLS needs them (certifi, grpc).
+_PUBLIC_PEM = {"cacert.pem", "roots.pem", "ca-bundle.pem", "ca-certificates.pem"}
+_CREDENTIAL_NAMES = {Path(p).name for p in CREDENTIAL_PATHS}
+
+
+def _secret_rule(name: str) -> Optional[str]:
+    """The mask rule for a file or directory named *name* in a mounted root."""
+    if _is_env_file(name):
+        return "mask-env-file"
+    lower = name.lower()
+    if name in _CREDENTIAL_NAMES:
+        return "mask-credentials"
+    if lower.endswith(".pem") and lower not in _PUBLIC_PEM:
+        return "mask-credentials"
+    if lower.endswith(".json") and "key" in lower:
+        return "mask-credentials"
+    return None
+
+
+_SECRET_SCAN_CACHE: dict[Path, tuple[tuple, list, list]] = {}
+
+
+def _scan_stamp(root: Path) -> tuple:
+    """What changes when a package is installed into an interpreter root."""
+    stamps = []
+    for p in (root, *sorted(root.glob("lib/python3*/site-packages"))):
+        try:
+            stamps.append((str(p), p.stat().st_mtime_ns))
+        except OSError:
+            continue
+    return tuple(stamps)
+
+
+def _find_secret_files(
+    roots: Sequence[Path],
+    skip: Sequence[Path],
+    *,
+    cached: Sequence[Path] = (),
+) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+    """``(files, dirs)`` to mask, with rules, anywhere under each mounted root.
+
+    Every depth, hidden directories included: ``.env*`` files, ``*.pem``
+    other than public CA bundles, ``*key*.json`` and the names of
+    :data:`CREDENTIAL_PATHS` (a directory of those names is masked whole and
+    not entered). A link of such a name masks its target. The scan of a root
+    in *cached* (the interpreter's, about 60k entries) is reused until the
+    root or its site-packages changes.
+    """
+    files: list[tuple[Path, str]] = []
+    dirs: list[tuple[Path, str]] = []
+    for root in roots:
+        stamp = _scan_stamp(root) if root in cached else None
+        hit = _SECRET_SCAN_CACHE.get(root)
+        if stamp is not None and hit is not None and hit[0] == stamp:
+            files += hit[1]
+            dirs += hit[2]
+            continue
+        f_out: list[tuple[Path, str]] = []
+        d_out: list[tuple[Path, str]] = []
+        stack = [root]
+        while stack:
+            directory = stack.pop()
+            if any(_within(directory, s) for s in skip):
+                continue
+            try:
+                entries = list(os.scandir(directory))
+            except OSError:
+                continue
+            for entry in entries:
+                rule = _secret_rule(entry.name)
+                try:
+                    if entry.is_symlink():
+                        if rule is not None:
+                            target = Path(os.path.realpath(entry.path))
+                            if target.is_file():
+                                f_out.append((target, rule))
+                            elif target.is_dir():
+                                d_out.append((target, rule))
+                    elif entry.is_dir():
+                        if rule is not None and not _is_env_file(entry.name):
+                            d_out.append((Path(entry.path), rule))
+                        else:
+                            stack.append(Path(entry.path))
+                    elif rule is not None and entry.is_file():
+                        f_out.append((Path(entry.path), rule))
+                except OSError:
+                    continue
+        if stamp is not None:
+            _SECRET_SCAN_CACHE[root] = (stamp, f_out, d_out)
+        files += f_out
+        dirs += d_out
+    return files, dirs
 
 
 def _find_env_files(roots: Sequence[tuple[Path, int]], skip: Sequence[Path]):
@@ -501,18 +628,26 @@ def _log_dirs() -> list[Path]:
     return dirs
 
 
-def _homes() -> list[Path]:
-    """``/home``, the account's home and ``$HOME``, resolved: never mounted whole.
+def _pwd_home() -> Path:
+    """The account's home from the password database, never ``$HOME``.
 
-    The account's home comes from the password database, since ``$HOME`` may
-    point elsewhere (the tests move it). A home under ``/tmp`` is the
-    sandbox's private /tmp inside, so it is not counted.
+    ``$HOME`` may point elsewhere (the tests move it); both count as homes
+    (:func:`_homes`), but the ``/home`` rule of :func:`_root_refusal` keys on
+    this one.
     """
     import pwd
 
-    raw = [Path("/home"), Path(pwd.getpwuid(os.getuid()).pw_dir), Path.home()]
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
+def _homes() -> list[Path]:
+    """The account's home and ``$HOME``, resolved: never mounted whole.
+
+    A home under ``/tmp`` is the sandbox's private /tmp inside, so it is not
+    counted.
+    """
     out: list[Path] = []
-    for path in raw:
+    for path in (_pwd_home(), Path.home()):
         real = Path(os.path.realpath(path))
         if not _within(real, Path("/tmp")) and real not in out:
             out.append(real)
@@ -520,28 +655,110 @@ def _homes() -> list[Path]:
 
 
 def _too_broad(path: Path, homes: Sequence[Path]) -> bool:
-    """Whether a mount of *path* would show ``/`` or a whole home directory."""
+    """Whether a mount of *path* would show ``/``, ``/home`` or a whole home."""
     for p in (Path(os.path.abspath(path)), Path(os.path.realpath(path))):
-        if p == Path("/") or any(_within(home, p) for home in homes):
+        if p == Path("/") or any(_within(h, p) for h in (*homes, Path("/home"))):
             return True
     return False
 
 
-def _is_python_install(root: Path) -> bool:
-    """A venv or a Python installation (not, say, ``~/.local`` above a link)."""
-    return (root / "pyvenv.cfg").is_file() or any(
-        (root / "lib").glob("python3*"),
-    )
+# Host directories no derived root or policy mount may be, or contain: the
+# rest of the machine (other users, mounted drives, the system's state and
+# configuration, devices).
+_DENIED_ANCESTORS = (
+    "/workspaces",
+    "/mnt",
+    "/home",
+    "/root",
+    "/opt",
+    "/var",
+    "/srv",
+    "/media",
+    "/run",
+    "/etc",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/boot",
+)
+# Under each home: where keyrings, tool credentials (uv, gh, gcloud), other
+# programs' data and caches live. A mount may sit inside them (the uv Python
+# under ``~/.local/share/uv/python``), never be or contain them.
+_HOME_PRIVATE = (".local", ".local/share", ".config", ".cache")
 
 
-def _interpreter_roots() -> list[Path]:
+def _root_refusal(path: Path, guarded: Sequence[Path] = ()) -> Optional[str]:
+    """Why a mount of *path* (by its own name or its resolved one) is refused.
+
+    ``None`` when it may be mounted. Refused: ``/`` and every top-level
+    directory; anything that is or contains a home, ``/home``, the other
+    directories of :data:`_DENIED_ANCESTORS` or a home's
+    :data:`_HOME_PRIVATE` directories; anything in ``/home`` outside the
+    account's own home; and anything that is or contains one of *guarded*
+    (the state directory, the log directories).
+    """
+    homes = _homes()
+    account = Path(os.path.realpath(_pwd_home()))
+    for p in dict.fromkeys((Path(os.path.abspath(path)), Path(os.path.realpath(path)))):
+        if p == Path("/"):
+            return "it is /"
+        if len(p.parts) == 2:
+            return f"{p} is a top-level directory"
+        if len(p.parts) == 3 and p.parts[1] in ("mnt", "media"):
+            return f"{p} is a mounted drive's root"
+        for home in homes:
+            if _within(home, p):
+                return f"it would show the whole home directory {home}"
+            for rel in _HOME_PRIVATE:
+                if _within(home / rel, p):
+                    return f"it would show all of {home / rel}"
+        for d in _DENIED_ANCESTORS:
+            if _within(Path(d), p):
+                return f"it would show all of {d}"
+        if _within(p, Path("/home")) and not _within(p, account):
+            return f"{p} is in /home outside this account's home"
+        for g in guarded:
+            if _within(g, p):
+                return f"it would show the harness's {g}"
+    return None
+
+
+@dataclass(frozen=True)
+class DerivedRoot:
+    """A candidate for the allowlisted root taken from this process.
+
+    ``kind`` is one of: ``interpreter`` (the venv, the base install and the
+    names of the link chain between them), ``unify-package``,
+    ``editable-root`` (a ``.pth`` entry: an empty directory, so ``sys.path``
+    resolves), ``editable-package`` (a package or module at an editable
+    root's top level), ``pythonpath`` and ``preload``. ``refusal`` says why
+    it is left out, ``None`` when it is mounted.
+    """
+
+    path: Path
+    kind: str
+    reason: str
+    refusal: Optional[str] = None
+
+
+_REASONS = {
+    "interpreter": "the interpreter (venv, base install, the link chain between)",
+    "unify-package": "the Unify package (the worker runs worker_child.py by path)",
+    "editable-root": "an editable install's sys.path entry (.pth), directory only",
+    "editable-package": "a package or module of an editable install (.pth)",
+    "pythonpath": "the harness's PYTHONPATH (relay client)",
+    "preload": "LD_PRELOAD of the harness (fake clock)",
+}
+
+
+def _interpreter_candidates() -> list[Path]:
     """The interpreter's venv and base install, by every name it is reached through.
 
     A uv venv's ``bin/python`` links to the base install by its minor-version
     name (``cpython-3.12-...``), itself a link to the patch release
     (``cpython-3.12.11-...``), and ``pyvenv.cfg`` names the former. Each name
-    is listed (and mounted from its real target), so the chain resolves inside
-    the sandbox although the home directory above it does not exist there.
+    is a candidate; :func:`_derived_candidates` keeps only the interpreter's
+    prefixes and paths under them.
     """
     roots = [
         Path(p)
@@ -563,7 +780,17 @@ def _interpreter_roots() -> list[Path]:
         key, _, value = line.partition("=")
         if key.strip() == "home" and value.strip():
             roots.append(Path(os.path.abspath(value.strip())).parent)
-    return [r for r in roots if _is_python_install(r)]
+    return list(dict.fromkeys(Path(os.path.abspath(r)) for r in roots))
+
+
+def _interpreter_prefixes() -> list[Path]:
+    """``sys.prefix``, ``sys.base_prefix`` (and the exec ones), each name resolved too."""
+    out: list[Path] = []
+    for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        for q in (Path(os.path.abspath(p)), Path(os.path.realpath(p))):
+            if q not in out:
+                out.append(q)
+    return out
 
 
 def _editable_roots() -> list[Path]:
@@ -571,8 +798,8 @@ def _editable_roots() -> list[Path]:
 
     That is how unillm (and any package installed with ``pip install -e``)
     reaches the harness's, and so the worker's, ``sys.path``. Entries a
-    script directory or the working directory put there are not mounted;
-    ``PYTHONPATH``'s are (:func:`_pythonpath_roots`).
+    script directory or the working directory put there are not counted;
+    ``PYTHONPATH``'s are counted in :func:`_derived_candidates`.
     """
     import site
 
@@ -595,52 +822,157 @@ def _editable_roots() -> list[Path]:
                 if not line or line.startswith(("#", "import ", "import\t")):
                     continue
                 path = os.path.abspath(os.path.join(directory, line))
-                if path in on_path and os.path.exists(path):
+                if path in on_path and os.path.exists(path) and Path(path) not in out:
                     out.append(Path(path))
     return out
 
 
-def _pythonpath_roots() -> list[Path]:
-    """The harness's own ``PYTHONPATH`` entries that are on ``sys.path``.
+# Never bound from an editable root even when importable: a checkout's own
+# tests and build scripts are not what the installed package imports.
+_EDITABLE_SKIP = {"tests", "test", "setup.py", "conftest.py", "noxfile.py"}
 
-    Set by the trusted runner: the benchmark adapters put their relay
-    client's directory there (``<attempt>/system/<bench>-client``, files
-    read-only), and the worker reuses the harness's ``sys.path``.
+
+def _editable_packages(root: Path) -> list[Path]:
+    """What an editable root's ``sys.path`` entry imports: its packages and modules.
+
+    Each directory with an ``__init__.py`` and each ``*.py`` file at the
+    root's top level whose name is an identifier; nothing else there (a
+    checkout's ``.env``, ``.git``, tests, logs). Namespace packages (no
+    ``__init__.py``) are not found.
     """
-    on_path = {os.path.abspath(p) for p in sys.path if p}
-    return [
-        Path(os.path.abspath(p))
-        for p in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-        if p and os.path.abspath(p) in on_path and os.path.exists(p)
-    ]
+    try:
+        entries = sorted(os.scandir(root), key=lambda e: e.name)
+    except OSError:
+        return []
+    out: list[Path] = []
+    for entry in entries:
+        name = entry.name
+        if name.startswith(".") or name in _EDITABLE_SKIP:
+            continue
+        try:
+            if (
+                entry.is_dir(follow_symlinks=False)
+                and name.isidentifier()
+                and (Path(entry.path) / "__init__.py").is_file()
+            ):
+                out.append(Path(entry.path))
+            elif (
+                entry.is_file(follow_symlinks=False)
+                and name.endswith(".py")
+                and name[:-3].isidentifier()
+            ):
+                out.append(Path(entry.path))
+        except OSError:
+            continue
+    return out
+
+
+def _is_shared_library(name: str) -> bool:
+    return name.endswith(".so") or ".so." in name
 
 
 def _preload_files() -> list[Path]:
     """The libraries the harness's own ``LD_PRELOAD`` names (the fake clock).
 
     Only what the trusted parent runs with; a cell never adds to it
-    (:data:`TRUSTED_ENV`).
+    (:data:`TRUSTED_ENV`). Only absolute paths of regular files named
+    ``*.so`` or ``*.so.*``; :func:`_derived_candidates` refuses the rest.
     """
     raw = os.environ.get("LD_PRELOAD", "")
-    return [
-        Path(p)
-        for p in raw.replace(":", " ").split()
-        if os.path.isabs(p) and os.path.isfile(p)
-    ]
+    return [Path(p) for p in raw.replace(":", " ").split() if os.path.isabs(p)]
+
+
+def _guarded_dirs() -> list[Path]:
+    """The state directory and the log directories: never inside a derived root."""
+    from unify.db import store_home
+
+    return [Path(os.path.realpath(store_home())), *_log_dirs()]
+
+
+def _derived_candidates(guarded: Optional[Sequence[Path]] = None) -> list[DerivedRoot]:
+    """Every candidate for the root taken from this process, accepted or refused.
+
+    A candidate is accepted only as one of the enumerated kinds (see
+    :class:`DerivedRoot`), and only if :func:`_root_refusal` does not refuse
+    it:
+
+    * ``interpreter``: exactly ``sys.prefix``, ``sys.base_prefix`` (and the
+      exec ones, each by its own and its resolved name) or a link-chain name
+      under one of them; never a parent (``~/.local`` above a
+      ``~/.local/bin/python3`` link, or ``pyvenv.cfg``'s ``home``);
+    * ``unify-package``: the package directory itself;
+    * ``editable-root`` / ``editable-package``: a ``.pth`` entry on
+      ``sys.path`` is an empty directory; only its packages and modules
+      (:func:`_editable_packages`) are bound;
+    * ``pythonpath``: a ``PYTHONPATH`` entry on ``sys.path``, exactly;
+    * ``preload``: a ``*.so`` file ``LD_PRELOAD`` names, exactly.
+    """
+    if guarded is None:
+        guarded = _guarded_dirs()
+    out: list[DerivedRoot] = []
+
+    def add(path: Path, kind: str, refusal: Optional[str] = None) -> bool:
+        if refusal is None:
+            refusal = _root_refusal(path, guarded)
+        out.append(DerivedRoot(path, kind, _REASONS[kind], refusal))
+        return refusal is None
+
+    prefixes = _interpreter_prefixes()
+    for path in _interpreter_candidates():
+        under = any(
+            _within(q, p)
+            for q in (path, Path(os.path.realpath(path)))
+            for p in prefixes
+        )
+        add(
+            path,
+            "interpreter",
+            None if under else "not the interpreter's prefix or a path under it",
+        )
+    package = Path(__file__).resolve().parent
+    add(
+        package,
+        "unify-package",
+        None if (package / "__init__.py").is_file() else "not a package directory",
+    )
+    for root in _editable_roots():
+        if not os.path.isdir(root):
+            add(root, "editable-root", "not a directory")
+            continue
+        packages = _editable_packages(root)
+        if not add(
+            root,
+            "editable-root",
+            None if packages else "no package or module at its top level",
+        ):
+            continue
+        for p in packages:
+            add(p, "editable-package")
+    on_path = {os.path.abspath(p) for p in sys.path if p}
+    for raw in dict.fromkeys(os.environ.get("PYTHONPATH", "").split(os.pathsep)):
+        if not raw:
+            continue
+        path = Path(os.path.abspath(raw))
+        if str(path) not in on_path:
+            # Under ``python -I`` (the dry run) PYTHONPATH is not on sys.path.
+            add(path, "pythonpath", "not on sys.path")
+        elif not path.exists():
+            add(path, "pythonpath", "does not exist")
+        else:
+            add(path, "pythonpath")
+    for path in _preload_files():
+        if not _is_shared_library(path.name):
+            add(path, "preload", "not a shared library (*.so, *.so.*)")
+        elif not os.path.isfile(path):
+            add(path, "preload", "not a regular file")
+        else:
+            add(path, "preload")
+    return out
 
 
 def _derived_roots() -> list[tuple[Path, str]]:
-    """The read-only roots taken from this process at policy time, with reasons."""
-    out: list[tuple[Path, str]] = []
-    out += [
-        (p, "the interpreter (venv and base install)") for p in _interpreter_roots()
-    ]
-    # The worker runs worker_child.py from the package by path.
-    out.append((Path(__file__).resolve().parent, "the Unify package (the worker)"))
-    out += [(p, "an editable install on sys.path (.pth)") for p in _editable_roots()]
-    out += [(p, "the harness's PYTHONPATH (relay client)") for p in _pythonpath_roots()]
-    out += [(p, "LD_PRELOAD of the harness (fake clock)") for p in _preload_files()]
-    return out
+    """The accepted read-only roots taken from this process, with reasons."""
+    return [(d.path, d.reason) for d in _derived_candidates() if d.refusal is None]
 
 
 def _is_system(path: Path) -> bool:
@@ -651,17 +983,62 @@ def _is_system(path: Path) -> bool:
     )
 
 
-def _root_mounts(notices: Path) -> tuple[list[str], list[Path]]:
+def _link_args(
+    name: Path,
+    kept: Sequence[Path],
+    made: dict[Path, Path],
+) -> list[str]:
+    """``--symlink`` arguments that make *name* resolve, inside, as on the host.
+
+    Each linked component of *name* (itself or a parent: ``<worktree>/.venv``
+    linking to another worktree's venv) becomes the same link to its resolved
+    target, so a path through the link reaches the one mount of the target,
+    and the masks there. Never one inside a mount (the link is there already)
+    or a system directory (the allowlist keeps those links).
+    """
+    args: list[str] = []
+    path = Path(os.path.abspath(name))
+    for _ in range(40):
+        if Path(os.path.realpath(path)) == path:
+            break
+        link: Optional[Path] = None
+        current = Path(path.parts[0])
+        for part in path.parts[1:]:
+            current = current / part
+            if os.path.islink(current):
+                link = current
+                break
+        if link is None:
+            break
+        target = Path(os.path.realpath(link))
+        inside = any(_within(link, k) for k in kept) or any(
+            _within(link, Path(p)) for p in _SYSTEM_DIRS
+        )
+        if not inside and link not in made:
+            made[link] = target
+            args += ["--symlink", str(target), str(link)]
+        path = target.joinpath(*path.parts[len(link.parts) :])
+    return args
+
+
+def _root_mounts(
+    notices: Path,
+    derived: Optional[Sequence[DerivedRoot]] = None,
+) -> tuple[list[str], list[Path]]:
     """The allowlisted root: bubblewrap arguments, and the host paths they show.
 
-    :data:`_ROOT_ALLOWLIST` first, then :func:`_derived_roots`, each by its
-    own name and its resolved one, outer paths before inner ones. A derived
-    root that would show ``/`` or a whole home directory is left out, with a
-    warning; nothing of it is then visible.
+    :data:`_ROOT_ALLOWLIST` first, then the accepted
+    :func:`_derived_candidates`: each bound once, from its resolved path,
+    outer paths before inner ones; an editable root is only a directory. A
+    name that reaches one through a link gets the same link
+    (:func:`_link_args`), so masks on the resolved path hold whatever name a
+    cell uses. A refused candidate is left out with a warning; nothing of it
+    is then visible.
     """
     import logging
 
-    homes = _homes()
+    if derived is None:
+        derived = _derived_candidates()
     args: list[str] = []
     visible: list[Path] = []
     for path, _reason in _ROOT_ALLOWLIST:
@@ -680,30 +1057,38 @@ def _root_mounts(notices: Path) -> tuple[list[str], list[Path]]:
             args += ["--ro-bind", str(real), path]
             visible.append(real)
     wanted: list[Path] = []
-    for root, reason in _derived_roots():
-        for p in (Path(os.path.abspath(root)), Path(os.path.realpath(root))):
-            if not p.exists() or _is_system(Path(os.path.realpath(p))):
-                continue
-            if _too_broad(p, homes):
-                logging.getLogger(__name__).warning(
-                    "workspace sandbox: not mounting %s (%s): it would show / "
-                    "or a whole home directory",
-                    p,
-                    reason,
-                )
-                continue
-            if p not in wanted:
-                wanted.append(p)
-    # Outer before inner; an inner path under an outer one is already shown
-    # (its resolved name is listed too, so links inside resolve).
+    dirs_only: list[Path] = []
+    names: list[Path] = []
+    for d in derived:
+        if d.refusal is not None:
+            logging.getLogger(__name__).warning(
+                "workspace sandbox: not mounting %s (%s): %s",
+                d.path,
+                d.kind,
+                d.refusal,
+            )
+            continue
+        real = Path(os.path.realpath(d.path))
+        if not real.exists() or _is_system(real):
+            continue
+        names.append(Path(os.path.abspath(d.path)))
+        target = dirs_only if d.kind == "editable-root" else wanted
+        if real not in target:
+            target.append(real)
+    # Outer before inner; an inner path under an outer one is already shown.
     kept: list[Path] = []
     for p in sorted(wanted, key=lambda q: (len(q.parts), str(q))):
         if any(_within(p, k) for k in kept):
             continue
         kept.append(p)
-        real = Path(os.path.realpath(p))
-        args += ["--ro-bind", str(real), str(p)]
-        visible.append(real)
+        args += ["--ro-bind", str(p), str(p)]
+        visible.append(p)
+    for p in dirs_only:
+        if not any(_within(p, k) for k in kept):
+            args += ["--dir", str(p)]
+    made: dict[Path, Path] = {}
+    for name in names:
+        args += _link_args(name, kept, made)
     return args, visible
 
 
@@ -787,18 +1172,43 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         roots: list[tuple[Path, int]] = [(home, _ENV_SCAN_DEPTH)]
         roots += [(d, 0) for d in (cwd, *cwd.parents)]
         roots.append((Path(__file__).resolve().parents[1], 1))
-        # The editable installs the root mounts (unillm's checkout).
-        roots += [(p, 1) for p in _editable_roots()]
         skip = [state_dir, workspace, *(d for d, _ in masked_dirs)]
         for env_file in _find_env_files(roots, skip):
             masked_files.append((Path(os.path.realpath(env_file)), "mask-env-file"))
+        # Every directory the root mounts from this process, at every depth.
+        log_dirs = _log_dirs()
+        derived = _derived_candidates([state_dir, *log_dirs])
+        bound = sorted(
+            {
+                Path(os.path.realpath(d.path))
+                for d in derived
+                if d.refusal is None
+                and d.kind != "editable-root"
+                and os.path.isdir(d.path)
+            },
+        )
+        found_files, found_dirs = _find_secret_files(
+            bound,
+            skip,
+            cached=[
+                Path(os.path.realpath(d.path))
+                for d in derived
+                if d.kind == "interpreter"
+            ],
+        )
+        for path, rule in found_dirs:
+            if all(path != d for d, _ in masked_dirs):
+                masked_dirs.append((path, rule))
+        for path, rule in found_files:
+            if all(path != f for f, _ in masked_files):
+                masked_files.append((path, rule))
 
         network = str(getattr(SETTINGS, "UNIFY_WORKSPACE_NETWORK", "") or "")
         port = int(getattr(SETTINGS, "UNIFY_WORKSPACE_PROXY_PORT", 0) or 0)
         from unify.transcripts import INTERNAL_DIRNAME
 
         notices = _notices_dir()
-        root_args, root_visible = _root_mounts(notices)
+        root_args, root_visible = _root_mounts(notices, derived)
         policy = SandboxPolicy(
             workspace=workspace,
             state_dir=state_dir,
@@ -807,7 +1217,7 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
             masked_files=masked_files,
             hidden=[
                 (state_dir / INTERNAL_DIRNAME, "mask-unify-state"),
-                *((d, "mask-harness-logs") for d in _log_dirs()),
+                *((d, "mask-harness-logs") for d in log_dirs),
             ],
             network=network,
             proxy_port=port,
@@ -1161,14 +1571,22 @@ def _refuse_broad_binds(args: Sequence[str], homes: Sequence[Path]) -> None:
     directory); derived roots that would are already left out.
     """
     end = args.index("--") if "--" in args else len(args)
+    allowlisted = {p for p, _ in _ROOT_ALLOWLIST}
     for i in range(end - 2):
         if args[i] in _BIND_OPTIONS:
             for p in (args[i + 1], args[i + 2]):
+                why = None
                 if _too_broad(Path(p), homes):
+                    why = "it would show / or a whole home directory"
+                elif args[i + 2] not in allowlisted:
+                    # The allowlist's own entries (/usr, ...) are top-level
+                    # on purpose; every other mount gets the derived roots'
+                    # rule.
+                    why = _root_refusal(Path(p))
+                if why is not None:
                     raise SandboxRefusal(
                         "root-allowlist",
-                        f"{p} would be mounted ({args[i]}), which would show / "
-                        "or a whole home directory",
+                        f"{p} would be mounted ({args[i]}): {why}",
                         suggestion=(
                             "Point UNIFY_LOCAL_ROOT (or UNIFY_HOME) at a "
                             "directory of its own, not a home directory."
@@ -1426,3 +1844,43 @@ def _proxy_bridge(port: int) -> _ProxyBridge:
         if bridge is None or not bridge.path.exists():
             bridge = _BRIDGES[port] = _ProxyBridge(port)
         return bridge
+
+
+# ---------------------------------------------------------------------------
+# Dry run: python -m unify.sandbox --print-roots
+# ---------------------------------------------------------------------------
+
+
+def print_roots(out=None) -> None:
+    """Each derived root candidate: accepted or refused, its kind, path, reason.
+
+    Paths and fixed reasons only: no environment values, no file contents.
+    """
+    out = out or sys.stdout
+    for d in _derived_candidates():
+        state = "accepted" if d.refusal is None else "refused"
+        print(f"{state}\t{d.kind}\t{d.path}\t{d.refusal or d.reason}", file=out)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m unify.sandbox")
+    parser.add_argument(
+        "--print-roots",
+        action="store_true",
+        help="print the derived roots the sandbox would mount or refuse, and exit",
+    )
+    args = parser.parse_args(argv)
+    if args.print_roots:
+        print_roots()
+        return 0
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    # The package's own module, not a second copy run as __main__.
+    from unify import sandbox as _sandbox
+
+    raise SystemExit(_sandbox.main())
