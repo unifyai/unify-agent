@@ -48,12 +48,18 @@ _USE_COUNTS = (
     "exposure_record",
     "exposure_legacy_text",
     "exposure_unknown",
+    "outcome_unknown",
 )
 # Where a record's shown lists came from (``analysis.use``'s ``exposure_source``); a record without one
 # (from before the field) counts as ``unknown``.
 _EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
 # The item_use columns that hold one value per request (the same on each of its rows).
-_REQUEST_FLAGS = ("exposure_record", "exposure_legacy_text", "exposure_unknown")
+_REQUEST_FLAGS = (
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
+    "outcome_unknown",
+)
 _IN_CHUNK = 500
 
 
@@ -74,7 +80,9 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
     channel's files (its refusals and errors are then in the ``_modified`` columns only);
     ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
-    what the prompt showed, the legacy reading of the prompt's text, or unknown).
+    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``outcome_unknown`` is
+    1 unless the record says every cell's outcome was known (``outcomes_known``; a record from before
+    the field counts as unknown), and the refusal and error columns are then lower bounds.
     """
 
     def listed(key: str) -> set[str]:
@@ -98,6 +106,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
     source = use.get("exposure_source")
     source = source if source in _EXPOSURE_SOURCES else "unknown"
     exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
+    outcome_unknown = int(use.get("outcomes_known") is not True)
 
     def n(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -124,6 +133,7 @@ def _use_rows(eid: str, use: dict) -> list[tuple]:
                 n(r.get("refused_modified")),
                 n(r.get("errored_modified")),
                 *exposure,
+                outcome_unknown,
             ),
         )
     return out

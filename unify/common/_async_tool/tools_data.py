@@ -743,6 +743,12 @@ class ToolsData:
 
         try:
             raw = task.result()
+            # UNIFY_MEMORY_V2=on: a code cell's structured result, by call id, for the
+            # request's use record; inert otherwise, and never fails the call.
+            with suppress(Exception):
+                from unify.memory_v2.integration import hooks as _mv2
+
+                _mv2.tool_result(name, call_id, raw)
             # The loop adopts no handle a call returns, so one still running
             # would have no owner once the call has ended: it is stopped.
             await self._stop_returned_handles(raw, name)

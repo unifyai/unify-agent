@@ -7,13 +7,19 @@ recorded actions, its ``memory.diff``, the export's root and the library's impor
 and the offline funnel analyser recomputes it from an exported episode directory
 (:func:`use_from_episode_dir`); both run the same code on the same bytes.
 
-Everything is structural. Imports and calls come from each cell's syntax tree; errors come from the
-frames of the traceback in the executor's metadata block of the cell's result (its ``error`` field,
-never the cell's printed output), by file path and function name. Text is read only for its structure:
-the traceback's header, frame and chaining lines and the exception's type token, the diff's file headers
-and, for legacy recordings only, the index's channel headings and item lines. An exception message is
-never read for meaning; a message deliberately written to imitate CPython's chain line, header and frame
-lines could still forge a block. Nothing is keyed on a task.
+Everything is structural. Imports and calls come from each cell's syntax tree. Errors come only from
+the runtime's structured result of the cell (``ExecutionResult.error``, ``session_id`` and
+``session_created``), which the harness notes by tool call id as the result comes back
+(``hooks.tool_result``, :func:`runtime_status`) and the record keeps, reduced to names, as
+``cell_status``; frames are read by file path and function name. The rendered tool message is never read
+for a status, so nothing a cell prints can stand in for one, in either code projection. A cell with no
+structured status (a recording from before the field, a tool call that failed outright) is ``unknown``:
+it is counted in ``cells_without_metadata`` (an error too long to read in ``cells_error_unread``),
+``outcomes_known`` is then false, and the request's refusals and errors are unknown, never 0. Text is
+read only for its structure: the traceback's header, frame and chaining lines and the exception's type
+token, the diff's file headers and, for legacy recordings only, the index's channel headings and item
+lines. An exception message is never read for meaning; a message deliberately written to imitate
+CPython's chain line, header and frame lines could still forge a block. Nothing is keyed on a task.
 
 Per memory item (``env/<channel>:<name>``, a public function of ``env/<channel>/__init__.py``):
 
@@ -42,8 +48,9 @@ Calls the syntax tree cannot resolve to one item (``getattr(module, name)(...)``
 are channels of the pin, ``*``, or ``?`` for a name the pin has no channel for (no text from cell code is
 kept beyond item ids and channel names).
 
-Names bound by a cell persist into later cells of the same execution session (the result metadata's
-``session_id``) and are dropped when a result reports a new session (``session_created``).
+Names bound by a cell persist into later cells of the same execution session (the structured result's
+``session_id``; a cell without a status stays in the previous cell's session) and are dropped when a
+result reports a new session (``session_created``).
 
 What the prompt showed is a structured record, not a reading of the prompt's text: whatever renders the
 memory section calls :func:`record_shown` with the channel and item names it rendered and the exact text
@@ -81,13 +88,14 @@ __all__ = [
     "record_shown",
     "request_use",
     "roots_of",
+    "runtime_status",
     "section_digest",
     "shown_in",
     "transcript_cells",
     "use_from_episode_dir",
 ]
 
-VERSION = 3
+VERSION = 4
 SHOWN_VERSION = 1
 
 #: The start of the v2 index's header (``unify.memory_v2.index.HEADER``); a test keeps the two in step.
@@ -95,6 +103,9 @@ SHOWN_VERSION = 1
 HEADER_PREFIX = "Memory library: candidates to check, not authority."
 
 EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
+#: A cell's status: its structured result had no error, had one, had one too large to read, or there
+#: was no structured result for it.
+CELL_STATUSES = ("ok", "error", "unread", "unknown")
 
 REFUSAL_TYPE = "MemoryInputError"
 
@@ -114,6 +125,8 @@ MAX_ROOTS = 4
 MAX_REEXPORT_HOPS = 8
 MAX_DIFF_CHARS = 2_000_000
 MAX_RENDERER_CHARS = 64
+MAX_EXITS = 50
+MAX_NAME_CHARS = 200
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
@@ -382,36 +395,13 @@ def _arguments(fn: dict) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _result_meta(content: Any) -> dict:
-    """The executor's metadata block of an ``execute_code`` result, or ``{}``.
-
-    ``ExecutionResult.to_llm_content`` writes it as the result's first part, a JSON object that always
-    carries an integer ``duration_ms``. Only that part is read (of a string result, only the JSON object
-    it starts with), so what a cell prints, which comes after it, never stands in for it.
-    """
-    try:
-        if isinstance(content, list):
-            first = content[0] if content else None
-            raw = first.get("text") if isinstance(first, dict) else None
-            meta = json.loads(raw) if isinstance(raw, str) else None
-        elif isinstance(content, str) and content.startswith("{"):
-            meta, _ = json.JSONDecoder().raw_decode(content)
-        else:
-            meta = None
-    except _SAFE_LOAD:
-        return {}
-    if not isinstance(meta, dict):
-        return {}
-    ms = meta.get("duration_ms")
-    if isinstance(ms, bool) or not isinstance(ms, int):
-        return {}
-    return meta
-
-
 def transcript_cells(lines: Iterable[Any]) -> list[dict]:
     """Every ``execute_code`` cell with a result, in result order (the episode's cell indices):
-    ``{"index", "code", "language", "error", "session", "fresh"}``; ``error`` is the traceback in the
-    result's metadata block, ``session`` its ``session_id`` and ``fresh`` its ``session_created``.
+    ``{"index", "call", "code", "language"}``, ``call`` being the tool call's id.
+
+    The rendered result is not read: what it shows depends on the code projection (the legacy one
+    starts with a metadata block, the notebook one with what the cell printed), so nothing in it can be
+    told apart from a cell's own output. A cell's status comes from :func:`runtime_status` instead.
     """
     pending: dict[Any, tuple[str, str]] = {}
     cells: list[dict] = []
@@ -428,26 +418,110 @@ def transcript_cells(lines: Iterable[Any]) -> list[dict]:
             lang = args.get("language") or args.get("_language") or "python"
             pending[tc.get("id")] = ("" if code is None else str(code), str(lang))
         if msg.get("role") == "tool" and msg.get("tool_call_id") in pending:
-            code, lang = pending.pop(msg["tool_call_id"])
-            meta = _result_meta(msg.get("content"))
-            err = meta.get("error")
-            session = meta.get("session_id")
+            call = msg["tool_call_id"]
+            code, lang = pending.pop(call)
             cells.append(
                 {
                     "index": len(cells),
+                    "call": str(call),
                     "code": code,
                     "language": lang,
-                    "error": err if isinstance(err, str) and err else None,
-                    "session": (
-                        session
-                        if isinstance(session, (int, str))
-                        and not isinstance(session, bool)
-                        else None
-                    ),
-                    "fresh": meta.get("session_created") is True,
                 },
             )
     return cells
+
+
+def _session_of(value: Any) -> int | str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    return value if not isinstance(value, str) else value[:MAX_NAME_CHARS]
+
+
+def runtime_status(
+    error: Any,
+    session_id: Any = None,
+    session_created: Any = None,
+    *,
+    items: Iterable[str] | _Items,
+    roots: Iterable[str] = (),
+) -> dict:
+    """One cell's status from the runtime's structured result, as the use record keeps it.
+
+    *error*, *session_id* and *session_created* are the fields of the ``ExecutionResult`` the code tool
+    returned (the harness's own values, whatever the cell printed and whichever projection rendered
+    it); *items* are the ids at the pin and *roots* the export's roots (:func:`roots_of`). The traceback
+    is reduced at once to its exits from memory modules, so the result holds names only:
+    ``{"status", "exits", "session", "fresh"}``, where ``status`` is ``ok``, ``error`` or ``unread`` (an
+    error longer than :data:`MAX_TRACEBACK_CHARS`, whose outcome is then unknown) and each exit is
+    ``[kind, channel, function]`` (``kind`` ``refused`` or ``errored``; see :func:`attribute_errors`).
+    """
+    its = items if isinstance(items, _Items) else _Items(items)
+    exits: list[list[str]] = []
+    if not isinstance(error, str) or not error:
+        status = "ok"
+    elif len(error) > MAX_TRACEBACK_CHARS:
+        status = "unread"
+    else:
+        status = "error"
+        exits = [list(e) for e in _exits(error, its, tuple(_roots(roots)))]
+    return {
+        "status": status,
+        "exits": exits,
+        "session": _session_of(session_id),
+        "fresh": session_created is True,
+    }
+
+
+def _kept_status(entry: Any, its: _Items) -> dict | None:
+    """A status read back (from :func:`runtime_status` or a recorded ``cell_status`` entry), or None."""
+    if not isinstance(entry, dict) or entry.get("status") not in CELL_STATUSES:
+        return None
+    exits: list[list[str]] = []
+    raw = entry.get("exits")
+    for e in raw if isinstance(raw, list) else []:
+        if (
+            isinstance(e, (list, tuple))
+            and len(e) == 3
+            and e[0] in ("refused", "errored")
+            and e[1] in its.by_channel
+            and isinstance(e[2], str)
+            and 0 < len(e[2]) <= MAX_NAME_CHARS
+            and len(exits) < MAX_EXITS
+        ):
+            exits.append([e[0], e[1], e[2]])
+    return {
+        "status": entry["status"],
+        "exits": exits if entry["status"] == "error" else [],
+        "session": _session_of(entry.get("session")),
+        "fresh": entry.get("fresh") is True,
+    }
+
+
+def _statuses(cells: list[dict], cell_status: Any, its: _Items) -> list[dict]:
+    """Each cell's status, in cell order, from *cell_status* (by call id: a mapping, or a list of entries
+    with ``call``); ``unknown`` where it has none, staying in the previous cell's session.
+    """
+    by_call: dict[str, Any] = {}
+    if isinstance(cell_status, dict):
+        by_call = {str(k): v for k, v in cell_status.items()}
+    elif isinstance(cell_status, list):
+        for e in cell_status:
+            if isinstance(e, dict) and isinstance(e.get("call"), str):
+                by_call.setdefault(e["call"], e)
+    out: list[dict] = []
+    session: int | str | None = None
+    for cell in cells:
+        kept = _kept_status(by_call.get(cell["call"]), its)
+        if kept is None or kept["status"] == "unknown":
+            kept = {
+                "status": "unknown",
+                "exits": [],
+                "session": session,
+                "fresh": False,
+            }
+        session = kept["session"]
+        out.append({"call": cell["call"], **kept})
+    return out
 
 
 def _system_prompts(lines: Iterable[Any]) -> list[str]:
@@ -1162,6 +1236,56 @@ def _module_channel(path: str, items: _Items, roots: tuple[str, ...]) -> str | N
     return None
 
 
+def _exits(
+    text: str,
+    its: _Items,
+    roots: tuple[str, ...],
+) -> list[tuple[str, str, str]]:
+    """``(kind, channel, function)`` per exception of a traceback that left a memory module (see
+    :func:`attribute_errors`), at most :data:`MAX_EXITS`."""
+    out: list[tuple[str, str, str]] = []
+    left_groups: set[int] = set()
+    for block in parse_traceback(text):
+        if block.get("member_of") in left_groups:
+            continue
+        frames = block["frames"]
+        if not frames or _module_channel(frames[0][0], its, roots) is not None:
+            continue
+        for path, func in frames[1:]:
+            channel = _module_channel(path, its, roots)
+            if channel is None:
+                continue
+            kind = (block["type"] or "").rsplit(".", 1)[-1]
+            out.append(
+                (
+                    "refused" if kind == REFUSAL_TYPE else "errored",
+                    channel,
+                    func[:MAX_NAME_CHARS],
+                ),
+            )
+            if "group" in block:
+                left_groups.add(block["group"])
+            break
+        if len(out) >= MAX_EXITS:
+            break
+    return out
+
+
+def _outcomes(
+    exits: Iterable[Iterable[str]],
+    its: _Items,
+    changed: frozenset[str],
+) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for kind, channel, func in exits:
+        iid = f"env/{channel}:{func}"
+        if iid not in its.known:
+            out.append(("unattributed", channel))
+        else:
+            out.append((kind + ("_modified" if channel in changed else ""), iid))
+    return out
+
+
 def attribute_errors(
     text: str | None,
     items: Iterable[str] | _Items,
@@ -1180,35 +1304,13 @@ def attribute_errors(
     ``unattributed`` (with the channel) when that frame is not a public item.
     """
     its = items if isinstance(items, _Items) else _Items(items)
-    root_list = tuple(_roots(roots))
-    changed = frozenset(modified)
     if not text:
         return []
-    out: list[tuple[str, str]] = []
-    left_groups: set[int] = set()
-    for block in parse_traceback(text):
-        if block.get("member_of") in left_groups:
-            continue
-        frames = block["frames"]
-        if not frames or _module_channel(frames[0][0], its, root_list) is not None:
-            continue
-        for path, func in frames[1:]:
-            channel = _module_channel(path, its, root_list)
-            if channel is None:
-                continue
-            iid = f"env/{channel}:{func}"
-            if iid not in its.known:
-                out.append(("unattributed", channel))
-            else:
-                kind = (block["type"] or "").rsplit(".", 1)[-1]
-                outcome = "refused" if kind == REFUSAL_TYPE else "errored"
-                if channel in changed:
-                    outcome += "_modified"
-                out.append((outcome, iid))
-            if "group" in block:
-                left_groups.add(block["group"])
-            break
-    return out
+    return _outcomes(
+        _exits(text, its, tuple(_roots(roots))),
+        its,
+        frozenset(modified),
+    )
 
 
 # --- the record ------------------------------------------------------------------------------------------
@@ -1241,14 +1343,18 @@ def request_use(
     export_roots: Iterable[str] = (),
     surface: Any = None,
     shown: Any = None,
+    cell_status: Any = None,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
     *lines* are the request's transcript lines, *items* the item ids at its pin, *actions* its recorded
     actions (dicts or objects with ``cell``, ``kind``, ``channel`` and ``status``), *memory_diff* what it
     wrote into its export, *export_roots* the export's path(s) as the cells import it (:func:`roots_of`),
-    *surface* the library's import surface at the pin (:func:`library_surface`) and *shown* what the
-    memory-section renderer recorded (:func:`record_shown`; None for a legacy recording).
+    *surface* the library's import surface at the pin (:func:`library_surface`), *shown* what the
+    memory-section renderer recorded (:func:`record_shown`; None for a legacy recording) and
+    *cell_status* each cell's status from the runtime's structured result (:func:`runtime_status`), by
+    tool call id: a mapping, or the record's own ``cell_status`` list. A cell it does not cover is
+    ``unknown``: counted in ``cells_without_metadata``, with ``outcomes_known`` false.
     """
     lines = list(lines)
     its = _Items(items, surface)
@@ -1257,13 +1363,14 @@ def request_use(
     tally = _Tally()
     sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
+    statuses = _statuses(cells[:MAX_CELLS], cell_status, its)
     unparsed = 0
     refusals: list[tuple[int, str]] = []
-    for cell in cells[:MAX_CELLS]:
+    for cell, status in zip(cells[:MAX_CELLS], statuses):
         idx = cell["index"]
-        if cell["fresh"]:
-            sessions.pop(cell["session"], None)
-        bindings = sessions.setdefault(cell["session"], {})
+        if status["fresh"]:
+            sessions.pop(status["session"], None)
+        bindings = sessions.setdefault(status["session"], {})
         if str(cell["language"]).lower() in ("python", "py", "python3"):
             code = cell["code"]
             try:
@@ -1280,12 +1387,7 @@ def request_use(
                         visitor.visit(stmt)
                 except RecursionError:
                     unparsed += 1
-        for outcome, what in attribute_errors(
-            cell["error"],
-            its,
-            roots=roots,
-            modified=changed,
-        ):
+        for outcome, what in _outcomes(status["exits"], its, frozenset(changed)):
             if outcome == "unattributed":
                 tally.add(tally.unattributed, what)
             else:
@@ -1312,6 +1414,8 @@ def request_use(
         or len(cells) > MAX_CELLS
     )
     star = its.star or {}
+    without = sum(s["status"] == "unknown" for s in statuses)
+    unread = sum(s["status"] == "unread" for s in statuses)
     return {
         "version": VERSION,
         "export_roots": roots,
@@ -1330,6 +1434,10 @@ def request_use(
         "memory_diff_truncated": diff_truncated,
         "cells": len(cells),
         "unparsed_cells": unparsed,
+        "cell_status": statuses,
+        "cells_without_metadata": without,
+        "cells_error_unread": unread,
+        "outcomes_known": without == 0 and unread == 0 and len(cells) <= MAX_CELLS,
         "items": dict(list(rows.items())[:MAX_ITEM_ROWS]),
         "module_imports": dict(sorted(tally.module_imports.items())),
         "unknown_calls": dict(sorted(tally.unknown.items())),
@@ -1356,8 +1464,8 @@ def _jsonl(path: Path) -> list[dict]:
 
 def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -> dict:
     """:func:`request_use` over an exported episode directory (``transcript.jsonl``, ``actions.jsonl``,
-    ``memory.diff``), with the export roots, import surface and shown record its ``memory_use.json``
-    recorded.
+    ``memory.diff``), with the export roots, import surface, shown record and cell statuses its
+    ``memory_use.json`` recorded.
 
     *items* default to the ``items_at_pin`` recorded there (empty without one).
     """
@@ -1383,4 +1491,5 @@ def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -
         export_roots=roots if isinstance(roots, list) else (),
         surface=recorded.get("surface"),
         shown=recorded.get("shown_record"),
+        cell_status=recorded.get("cell_status"),
     )

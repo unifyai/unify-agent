@@ -445,6 +445,12 @@ def test_finish_records_how_the_request_used_the_library(mv2):
         "env.spotify.MemoryInputError: ada\n"
     )
     _transcript(run, *_cell_lines(code, f"core\n\n{run.index}", error))
+    # the code tool's structured result, as the tool loop hands it over (hooks.tool_result); the
+    # rendered metadata block above is never read for it
+    from unify.actor.execution.types import ExecutionResult
+
+    hooks.tool_result("execute_code", "c0", ExecutionResult(error=error, duration_ms=1))
+    assert run.cell_status["c0"]["exits"] == [["refused", "spotify", "hello"]]
     _finish(mv2, run)
     rel = episode_dir(run)
     raw = Repo(mv2.paths.episodes).show("main", f"{rel}/memory_use.json")
@@ -456,6 +462,8 @@ def test_finish_records_how_the_request_used_the_library(mv2):
     hello = rec["items"]["env/spotify:hello"]
     assert (hello["imported"], hello["called"]) == (1, 1)
     assert (hello["refused"], hello["refused_modified"]) == (0, 1)
+    assert rec["outcomes_known"] and rec["cells_without_metadata"] == 0
+    assert [c["status"] for c in rec["cell_status"]] == ["error"]
     assert hello["modified_in_request"] is True
     shown = rec["memory_section_shown"]
     assert shown["shown"]

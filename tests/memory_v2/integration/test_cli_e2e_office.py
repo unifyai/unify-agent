@@ -325,6 +325,10 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch):
     )  # the export is not the work tree
     assert len(ep.cells) == 1
     assert ep.cells[0].code == _code(paths.checkout)
+    # the cell's structured result reached the use record through the tool loop (hooks.tool_result)
+    assert ep.memory_use["cells"] == 1 and ep.memory_use["cells_without_metadata"] == 0
+    assert [c["status"] for c in ep.memory_use["cell_status"]] == ["ok"]
+    assert ep.memory_use["outcomes_known"] is True
     assert "3 claims" in ep.cells[0].output
     assert ep.replies[-1] == FINAL
     assert ep.worktree_before and ep.worktree_after

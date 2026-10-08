@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 from tests.memory_v2.test_episodes import _ep
+from unify.actor.execution.types import ExecutionResult, TextPart
+from unify.actor.notebook_cells import NotebookCellResult
 from unify.memory_v2.analysis import use
 from unify.memory_v2.blobs import BlobStore
 from unify.memory_v2.episodes import (
@@ -31,7 +33,8 @@ from unify.memory_v2.evidence import _USE_COUNTS, EvidenceStore, _use_rows
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.index import HEADER, build_index, index_with_names
 from unify.memory_v2.integration.prompt import render_index, render_memory
-from unify.memory_v2.integration.request import memory_use
+from unify.memory_v2.integration import hooks
+from unify.memory_v2.integration.request import RequestRun, memory_use
 from unify.memory_v2.redact import Redactor
 
 MODULE = '''
@@ -112,14 +115,36 @@ def _session(codes: list[str]) -> list[tuple[str, str | None]]:
     return out
 
 
+PROJECTIONS = {"legacy": ExecutionResult, "notebook": NotebookCellResult}
+
+
+def _result(
+    err: str | None,
+    meta: dict | None = None,
+    printed: str = "printed\n",
+    projection: str = "legacy",
+) -> ExecutionResult:
+    """The code tool's result for one cell, in either projection (``UNIFY_CODE_PROJECTION``)."""
+    meta = meta or {}
+    return PROJECTIONS[projection](
+        stdout=[TextPart(text=printed)] if printed else [],
+        error=err,
+        duration_ms=3,
+        session_id=meta.get("session_id"),
+        session_created=meta.get("session_created"),
+    )
+
+
 def _lines(
     cells: list[tuple[str, str | None]],
     system: str = "core prompt",
     metas: list[dict] | None = None,
+    projection: str = "legacy",
+    printed: list[str] | None = None,
 ) -> list[dict]:
-    """Transcript lines in the line format of ``unify.transcripts``: each cell's result starts with the
-    JSON metadata block that holds its ``error``, as ``ExecutionResult.to_llm_content`` writes it.
-    """
+    """Transcript lines in the line format of ``unify.transcripts``, each cell's result rendered as the
+    runtime renders it in *projection* (the legacy one starts with a metadata block, the notebook one with
+    what the cell printed and ends with its traceback)."""
     out: list[dict] = [{"seq": 0, "type": "system_prompt", "content": system}]
     for i, (code, err) in enumerate(cells):
         out.append(
@@ -142,11 +167,12 @@ def _lines(
                 },
             },
         )
-        meta = {
-            "duration_ms": 3,
-            **({"error": err} if err else {}),
-            **(metas[i] if metas else {}),
-        }
+        result = _result(
+            err,
+            metas[i] if metas else None,
+            printed[i] if printed else "printed\n",
+            projection,
+        )
         out.append(
             {
                 "seq": len(out),
@@ -155,19 +181,36 @@ def _lines(
                     "role": "tool",
                     "tool_call_id": f"c{i}",
                     "name": "execute_code",
-                    "content": [
-                        {"type": "text", "text": json.dumps(meta, indent=2)},
-                        {"type": "text", "text": "\n--- stdout ---\n"},
-                        {"type": "text", "text": "printed\n"},
-                    ],
+                    "content": result.to_llm_content(),
                 },
             },
         )
     return out
 
 
+def _status(
+    cells: list[tuple[str, str | None]],
+    metas: list[dict] | None = None,
+    *,
+    items=ITEMS,
+    roots=(),
+    projection: str = "legacy",
+    skip: tuple[int, ...] = (),
+) -> dict:
+    """Each cell's status as the harness notes it (``RequestRun.note_result``), by call id; cells in
+    *skip* have none (a recording without it, or a tool call that failed outright)."""
+    run = RequestRun("r", None)
+    run.item_ids, run.export_roots = list(items), list(roots)
+    for i, (_, err) in enumerate(cells):
+        if i not in skip:
+            meta = metas[i] if metas else None
+            run.note_result(f"c{i}", _result(err, meta, projection=projection))
+    return run.cell_status
+
+
 def _use(codes: list[str], actions=()) -> dict:
-    return use.request_use(_lines(_session(codes)), ITEMS, actions)
+    cells = _session(codes)
+    return use.request_use(_lines(cells), ITEMS, actions, cell_status=_status(cells))
 
 
 # --- imports and calls -----------------------------------------------------------------------------------
@@ -266,8 +309,18 @@ def test_a_memory_input_error_from_the_item_counts_as_refused_by_its_frames(lib)
     ((_, err),) = _session(["from env.x import parse\nparse(3)\n"])
     assert "MemoryInputError" in err.splitlines()[-1]
     assert use.attribute_errors(err, ITEMS) == [("refused", "env/x:parse")]
-    rec = use.request_use(_lines([("from env.x import parse\nparse(3)\n", err)]), ITEMS)
+    cells = [("from env.x import parse\nparse(3)\n", err)]
+    rec = use.request_use(_lines(cells), ITEMS, cell_status=_status(cells))
     assert rec["items"]["env/x:parse"]["refused"] == 1
+    assert rec["cell_status"] == [
+        {
+            "call": "c0",
+            "status": "error",
+            "exits": [["refused", "x", "parse"]],
+            "session": None,
+            "fresh": False,
+        },
+    ]
 
 
 def test_the_message_is_never_read(lib):
@@ -416,9 +469,13 @@ def test_the_record_is_written_with_the_episode_and_recomputed_from_its_director
         surface=use.library_surface(lib),
         shown=shown,
         shown_text=text,
+        cell_status=_status(cells, roots=use.roots_of(lib)),
     )
     assert ep.memory_use["export_roots"][0] == str(lib)
     assert ep.memory_use["exposure_source"] == "record"
+    assert (
+        ep.memory_use["outcomes_known"] and ep.memory_use["cells_without_metadata"] == 0
+    )
     assert ep.memory_use["shown_items"] == ITEMS
     assert ep.memory_use["items"]["env/x:parse"]["refused_then_accepted"] == 1
     repo, blobs = Repo.init_bare(tmp_path / "episodes.git"), BlobStore(tmp_path / "b")
@@ -470,6 +527,7 @@ def _record(
     channels=(),
     modified=(),
     source="record",
+    known=True,
 ) -> dict:
     base = dict.fromkeys(
         (
@@ -492,6 +550,7 @@ def _record(
         "shown_channels": list(channels),
         "modified_channels": list(modified),
         **({"exposure_source": source} if source is not None else {}),
+        **({"outcomes_known": known} if known is not None else {}),
     }
 
 
@@ -569,6 +628,7 @@ def test_the_evidence_counts_where_each_requests_shown_lists_came_from(tmp_path)
         "exposure_record": 2,
         "exposure_legacy_text": 1,
         "exposure_unknown": 2,
+        "outcome_unknown": 0,
     }
     assert ev.request_flags(["e1", "e3"])["exposure_legacy_text"] == 1
     assert ev.request_flags([]) == dict.fromkeys(ev.request_flags(), 0)
@@ -788,9 +848,10 @@ def test_errors_from_an_edited_channel_are_not_charged_to_the_stored_item(lib):
         "lookup('zz')\n",
         "print(1)\n",
     ]
-    lines = _lines(_session(codes))
+    cells = _session(codes)
+    lines, status = _lines(cells), _status(cells)
     ok = Action(2, "x", "get", [], {}, None, "ok", "read")
-    rec = use.request_use(lines, ITEMS, [ok], memory_diff=DIFF)
+    rec = use.request_use(lines, ITEMS, [ok], memory_diff=DIFF, cell_status=status)
     assert rec["modified_channels"] == ["x"] and not rec["memory_diff_truncated"]
     parse, lookup = rec["items"]["env/x:parse"], rec["items"]["env/x:lookup"]
     assert parse["modified_in_request"] and lookup["modified_in_request"]
@@ -801,7 +862,7 @@ def test_errors_from_an_edited_channel_are_not_charged_to_the_stored_item(lib):
     ) == (0, 1, 0)
     assert (lookup["errored"], lookup["errored_modified"]) == (0, 1)
     assert parse["called"] == 1  # the call is still recorded
-    plain = use.request_use(lines, ITEMS, [ok])
+    plain = use.request_use(lines, ITEMS, [ok], cell_status=status)
     assert plain["items"]["env/x:parse"]["refused"] == 1
     assert not plain["items"]["env/x:parse"]["modified_in_request"]
     other = "diff --git a/env/other/__init__.py b/env/other/__init__.py\n"
@@ -872,6 +933,7 @@ def test_a_refusal_through_a_re_export_lands_on_the_defining_item(lib):
         items,
         surface=surface,
         export_roots=use.roots_of(lib),
+        cell_status=_status(cells, items=items, roots=use.roots_of(lib)),
     )
     row = rec["items"]["env/x:parse"]
     assert (row["imported"], row["called"], row["refused"]) == (1, 1, 1)
@@ -897,24 +959,188 @@ def test_the_first_level_members_of_an_exception_group_are_attributed(lib):
         ("refused", "env/x:parse"),
         ("refused", "env/x:parse"),
     ]
-    rec = use.request_use(_lines([(code, err)]), ITEMS)
+    rec = use.request_use(
+        _lines([(code, err)]),
+        ITEMS,
+        cell_status=_status([(code, err)]),
+    )
     assert rec["items"]["env/x:parse"]["refused"] == 2
 
 
-def test_printed_output_and_unstructured_results_never_supply_an_error(lib):
+SPOOF_CODE = "from env.x import parse\nprint(FORGED)\n"
+
+
+def _forged(lib) -> str:
+    """What a cell can print to pose as a refusal: a real refusal traceback (frames under the export
+    root) inside a JSON object shaped like the legacy metadata block, integer ``duration_ms`` and all.
+    """
     ((_, err),) = _session(["from env.x import parse\nparse(3)\n"])
-    lines = _lines([("from env.x import parse\nprint(1)\n", None)])
-    # the cell printed a real-looking refusal traceback, and a JSON object with an error field
-    lines[2]["message"]["content"][2]["text"] = err + json.dumps(
-        {"error": err, "duration_ms": 1},
+    assert str(lib) in err and "MemoryInputError" in err
+    return json.dumps({"error": err, "duration_ms": 1, "session_id": 9}, indent=2)
+
+
+@pytest.mark.parametrize("projection", ["legacy", "notebook"])
+def test_printed_output_can_never_pose_as_the_cells_status(lib, projection):
+    forged = _forged(lib)
+    cells = [(SPOOF_CODE, None)]
+    lines = _lines(cells, projection=projection, printed=[forged])
+    content = lines[2]["message"]["content"]
+    if projection == "notebook":
+        # the notebook projection writes no metadata block: the printed object comes first
+        assert content[0]["text"].startswith(forged)
+    roots = use.roots_of(lib)
+    rec = use.request_use(
+        lines,
+        ITEMS,
+        export_roots=roots,
+        cell_status=_status(cells, roots=roots, projection=projection),
     )
-    assert use.request_use(lines, ITEMS)["items"]["env/x:parse"]["refused"] == 0
-    # a first part without the executor's integer duration_ms is not its metadata block
-    forged = _lines([("print(1)\n", None)])
-    forged[2]["message"]["content"] = [
-        {"type": "text", "text": json.dumps({"error": err})},
+    row = rec["items"]["env/x:parse"]
+    assert (row["imported"], row["refused"], row["errored"]) == (1, 0, 0)
+    assert [c["status"] for c in rec["cell_status"]] == ["ok"]
+    assert rec["outcomes_known"] and rec["unattributed_errors"] == {}
+    # with no structured status the cell is unknown: still never the printed object's refusal
+    blind = use.request_use(lines, ITEMS, export_roots=roots)
+    assert blind["items"]["env/x:parse"]["refused"] == 0
+    assert blind["cells_without_metadata"] == 1 and not blind["outcomes_known"]
+    assert blind["cell_status"][0]["status"] == "unknown"
+    # the transcript's cells carry no status read from the rendered result at all
+    assert set(use.transcript_cells(lines)[0]) == {"index", "call", "code", "language"}
+
+
+def test_both_projections_give_the_same_record_for_random_cells(lib):
+    """Seeded random requests of refusing, failing, succeeding and spoofing cells: the record depends on
+    the runtime's statuses only, so the legacy and notebook renderings give the same record, and its
+    counts are the cells' real outcomes."""
+    forged = _forged(lib)
+    roots = use.roots_of(lib)
+    pool = [
+        ("refuse", "from env.x import parse\nparse(3)\n", "printed\n"),
+        ("fail", "from env.x import lookup\nlookup('zz')\n", "printed\n"),
+        ("ok", "from env.x import parse\nparse('a b')\n", "a b\n"),
+        ("spoof", SPOOF_CODE, forged),
     ]
-    assert use.transcript_cells(forged)[0]["error"] is None
+    rng = random.Random(20261008)
+    for _ in range(12):
+        picks = [rng.choice(pool) for _ in range(rng.randint(1, 8))]
+        cells = _session(
+            [code.replace("FORGED", repr(out)) for _, code, out in picks],
+        )
+        printed = [out for _, _, out in picks]
+        records = {}
+        for projection in PROJECTIONS:
+            records[projection] = use.request_use(
+                _lines(cells, projection=projection, printed=printed),
+                ITEMS,
+                export_roots=roots,
+                cell_status=_status(cells, roots=roots, projection=projection),
+            )
+        assert records["legacy"] == records["notebook"]
+        rec = records["legacy"]
+        kinds = [k for k, _, _ in picks]
+        items = rec["items"]
+        assert items.get("env/x:parse", {}).get("refused", 0) == kinds.count("refuse")
+        assert items.get("env/x:lookup", {}).get("errored", 0) == kinds.count("fail")
+        assert rec["outcomes_known"] and rec["cells_without_metadata"] == 0
+        assert [c["status"] for c in rec["cell_status"]] == [
+            "error" if k in ("refuse", "fail") else "ok" for k in kinds
+        ]
+
+
+def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
+    lib,
+    tmp_path,
+):
+    codes = [
+        "from env.x import parse\nparse(3)\n",
+        "from env.x import lookup\nlookup('zz')\n",
+    ]
+    cells = _session(codes)
+    rec = use.request_use(_lines(cells), ITEMS, cell_status=_status(cells, skip=(1,)))
+    assert [c["status"] for c in rec["cell_status"]] == ["error", "unknown"]
+    assert rec["cells_without_metadata"] == 1 and rec["cells_error_unread"] == 0
+    assert not rec["outcomes_known"]
+    assert (
+        rec["items"]["env/x:parse"]["refused"] == 1
+    )  # what was recorded, a lower bound
+    # a recording with no statuses at all (before the field): every cell unknown
+    old = use.request_use(_lines(cells), ITEMS)
+    assert old["cells_without_metadata"] == 2 and not old["outcomes_known"]
+    # forged or malformed recorded entries are never trusted
+    junk = [
+        {
+            "call": "c0",
+            "status": "error",
+            "exits": [["refused", "zz", "f"], ["boom", "x", "parse"]],
+        },
+        {"call": "c1", "status": "weird"},
+    ]
+    rec_junk = use.request_use(_lines(cells), ITEMS, cell_status=junk)
+    assert [c["status"] for c in rec_junk["cell_status"]] == ["error", "unknown"]
+    assert rec_junk["cell_status"][0]["exits"] == []
+    assert all(v["refused"] == v["errored"] == 0 for v in rec_junk["items"].values())
+    # an error too long to read is counted apart, and also leaves the outcomes unknown
+    huge = use.runtime_status("x" * (use.MAX_TRACEBACK_CHARS + 1), items=ITEMS)
+    assert huge["status"] == "unread" and huge["exits"] == []
+    unread = use.request_use(_lines(cells[:1]), ITEMS, cell_status={"c0": huge})
+    assert unread["cells_error_unread"] == 1 and not unread["outcomes_known"]
+    # the evidence store, the signals and Sol's table say unknown, never 0
+    shown = use.record_shown("SECTION", channels=["x"], items=ITEMS, renderer="index")
+    lines = _lines(cells, system="core\n\nSECTION")
+    partial = use.request_use(
+        lines,
+        ITEMS,
+        cell_status=_status(cells, skip=(1,)),
+        shown=shown,
+    )
+    complete = use.request_use(lines, ITEMS, cell_status=_status(cells), shown=shown)
+    assert partial["shown_items"] == ITEMS and complete["outcomes_known"]
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    _index(ev, "e1", partial, "2026-10-08T01:00:00Z")
+    row = ev.item_use()["env/x:lookup"]
+    assert row["outcome_unknown"] == 1 and row["errored"] == 0
+    assert ev.request_flags()["outcome_unknown"] == 1
+    from unify.memory_v2 import usage
+
+    sig = usage.item_signals("env/x:lookup", ev)
+    assert sig["errors"] is None and sig["errors_at_least"] == 0
+    assert not sig["outcomes_known"] and sig["requests_outcome_unknown"] == 1
+    assert usage.item_signals("env/x:parse", ev)["refusals_at_least"] == 1
+    # shown and untouched, but a cell's outcome is unknown: not "never used"
+    assert not usage.item_signals("env/x:strict", ev)["never_used"]
+    known = EvidenceStore(tmp_path / "known.sqlite")
+    _index(known, "e1", complete, "2026-10-08T01:00:00Z")
+    assert usage.item_signals("env/x:strict", known)["never_used"]
+    assert usage.item_signals("env/x:lookup", known)["errors"] == 1
+    table = usage.usage_table(ev, ["e1"], ITEMS)
+    assert " | 1+? | 0+? | 0+? | " in table  # parse: refused 1, at least
+    assert "(+?: 1 of these requests did not record every cell's outcome" in table
+
+
+def test_the_tool_result_hook_notes_only_code_results_of_the_current_run(monkeypatch):
+    run = RequestRun("r", None)
+    run.item_ids = list(ITEMS)
+    monkeypatch.setattr(hooks, "_run", lambda: None)
+    hooks.tool_result("execute_code", "c0", _result(None))
+    assert run.cell_status == {}  # no run: inert
+    monkeypatch.setattr(hooks, "_run", lambda: run)
+    hooks.tool_result("execute_code", "c0", _result(None, {"session_id": 4}))
+    hooks.tool_result("execute_code", "c1", _result(None, projection="notebook"))
+    hooks.tool_result("other_tool", "c2", {"error": "Traceback"})  # not a code result
+    hooks.tool_result("execute_code", "c3", "a plain string")
+    assert sorted(run.cell_status) == ["c0", "c1"]
+    assert run.cell_status["c0"] == {
+        "status": "ok",
+        "exits": [],
+        "session": 4,
+        "fresh": False,
+    }
+
+    def broken(call_id, result):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(run, "note_result", broken)
+    hooks.tool_result("execute_code", "c4", _result(None))  # never raises
 
 
 def test_bindings_follow_the_execution_session(lib):
@@ -930,8 +1156,27 @@ def test_bindings_follow_the_execution_session(lib):
         {"session_id": 2},
         {"session_id": 1, "session_created": True},
     ]
-    rec = use.request_use(_lines(cells, metas=metas), ITEMS)
+    rec = use.request_use(
+        _lines(cells, metas=metas),
+        ITEMS,
+        cell_status=_status(cells, metas),
+    )
     assert rec["items"]["env/x:parse"]["called"] == 1
+    assert [c["session"] for c in rec["cell_status"]] == [1, 1, 2, 1]
+    # a cell without a status stays in the previous cell's session
+    gap = use.request_use(
+        _lines(cells[:2], metas=metas[:2]),
+        ITEMS,
+        cell_status=_status(cells[:2], metas[:2], skip=(1,)),
+    )
+    assert gap["items"]["env/x:parse"]["called"] == 1
+    assert gap["cell_status"][1] == {
+        "call": "c1",
+        "status": "unknown",
+        "exits": [],
+        "session": 1,
+        "fresh": False,
+    }
 
 
 def test_a_deep_syntax_tree_is_counted_unparsed_and_the_rest_still_counts(lib):

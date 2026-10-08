@@ -120,6 +120,29 @@ def worker_audit() -> dict | None:
         return None
 
 
+def tool_result(name: str, call_id: Any, raw: Any) -> None:
+    """Note a finished tool call's structured result for the request's use record (``memory_use``).
+
+    Only a code cell's ``ExecutionResult`` (either projection) is kept, by *call_id*, as names: its
+    status, the memory items its traceback left, its session (``analysis.use.runtime_status``). The use
+    record reads this, never the rendered tool message, so a cell's printed output cannot pose as its
+    status. Inert while off or with no run; never raises; *name* is the tool's name, unused.
+    """
+    run = _run()
+    if run is None:
+        return
+    try:
+        from unify.actor.execution.types import ExecutionResult
+
+        if isinstance(raw, ExecutionResult):
+            run.note_result(call_id, raw)
+    except Exception as exc:  # noqa: BLE001 - recording never fails a tool call
+        logger.warning(
+            "memory v2: a cell's result was not noted (%s)",
+            type(exc).__name__,
+        )
+
+
 def worker_cell_done(events: Any) -> None:
     """Hand one cell's drained audit records (the ``done`` message's ``audit``) to the request's work-tree
     capture, stamped now on the harness clock; worker-side times are never used. Inert while off, with no

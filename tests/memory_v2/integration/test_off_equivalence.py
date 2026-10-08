@@ -139,6 +139,7 @@ def _identity_hooks() -> types.ModuleType:
     hooks.begin_request = lambda request: None
     hooks.worker_audit = lambda: None
     hooks.worker_cell_done = lambda events: None
+    hooks.tool_result = lambda name, call_id, raw: None
 
     def __getattr__(name: str):  # a new call site must be added here, deliberately
         raise AttributeError(

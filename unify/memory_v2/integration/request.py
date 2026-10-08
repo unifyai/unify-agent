@@ -39,6 +39,8 @@ _CURRENT: Any = None
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
 CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
+#: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
+MAX_STATUSES = 10_000
 _ERROR_CHARS = 2000
 
 
@@ -143,15 +145,17 @@ def memory_use(
     surface: dict | None = None,
     shown: dict | None = None,
     shown_text: str = "",
+    cell_status: dict | None = None,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`).
 
     It reads the transcript, actions and ``memory.diff`` as the episode writes them (through *redactor*,
     so the offline analyser recomputes the same record from the written episode), against the items at
-    the pin, the export's roots and the library's import surface taken before the actor ran, and *shown*,
-    what the memory-section renderer recorded; its digest is taken again over *shown_text* (the section
-    as rendered) through *redactor*, as the transcript's copy of the prompt is. A failure is recorded as
-    its exception type, with the items at the pin; it never stops the episode.
+    the pin, the export's roots and the library's import surface taken before the actor ran, *shown*,
+    what the memory-section renderer recorded (its digest is taken again over *shown_text*, the section
+    as rendered, through *redactor*, as the transcript's copy of the prompt is), and *cell_status*, each
+    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). A
+    failure is recorded as its exception type, with the items at the pin; it never stops the episode.
     """
     from ..analysis import use
 
@@ -183,6 +187,7 @@ def memory_use(
             export_roots=export_roots,
             surface=surface,
             shown=shown,
+            cell_status=cell_status,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -216,6 +221,8 @@ class RequestRun:
         self.item_ids: list[str] = []
         self.surface: dict | None = None
         self.export_roots: list[str] = []
+        # Each code cell's status from the runtime's structured result, by tool call id (note_result).
+        self.cell_status: dict[str, dict] = {}
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -304,6 +311,25 @@ class RequestRun:
         from ..redact import Redactor
 
         return Redactor.from_environ(os.environ)
+
+    # -- cell results -----------------------------------------------------------------------------
+
+    def note_result(self, call_id: Any, result: Any) -> None:
+        """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
+        to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
+        sessions. At most ``MAX_STATUSES`` calls are kept; later ones are then unknown.
+        """
+        from ..analysis import use
+
+        if call_id is None or len(self.cell_status) >= MAX_STATUSES:
+            return
+        self.cell_status[str(call_id)] = use.runtime_status(
+            getattr(result, "error", None),
+            getattr(result, "session_id", None),
+            getattr(result, "session_created", None),
+            items=self.item_ids,
+            roots=self.export_roots,
+        )
 
     # -- the outcome ------------------------------------------------------------------------------
 
@@ -428,6 +454,7 @@ class RequestRun:
             surface=self.surface,
             shown=self.shown,
             shown_text=self.index,
+            cell_status=self.cell_status,
         )
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)
