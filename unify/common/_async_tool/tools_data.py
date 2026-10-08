@@ -36,6 +36,11 @@ if TYPE_CHECKING:  # TODO: remove once dependencies are fixed
     from .time_context import TimeContext
 
 
+# How long the stop of a handle a finished call returned may take before
+# the loop goes on without it.
+_RETURNED_STOP_GRACE_S = 2.0
+
+
 def _failure_text(exc: BaseException) -> str:
     """The text a caller reads for *exc*.
 
@@ -372,6 +377,56 @@ class ToolsData:
                 prefix="⚠️",
             )
         return abandoned
+
+    async def _stop_returned_handles(self, value: Any, tool_name: str) -> None:
+        """Stop every handle *value* holds that is still running.
+
+        Each stop runs as its own task, so a stop that fails or raises
+        ``CancelledError`` neither stops the others nor reaches the loop.
+        """
+        live = []
+        for handle in _returned_handles_for_cleanup(value):
+            try:
+                done = handle.done()
+                if inspect.isawaitable(done):
+                    done = await done
+            except Exception:
+                done = False
+            if not done:
+                live.append(handle)
+        if not live:
+            return
+
+        async def stop(handle):
+            outcome = handle.stop(f"the {tool_name} call that returned it ended")
+            if inspect.isawaitable(outcome):
+                await outcome
+
+        self._logger.info(
+            f"{tool_name} returned {len(live)} running handle(s); stopping them",
+            prefix="⚠️",
+        )
+        stops = [asyncio.create_task(stop(handle)) for handle in live]
+        # A stop that hangs is left to finish on its own after a grace, held
+        # (like an abandoned call) so it is not garbage-collected meanwhile.
+        done, hanging = await asyncio.wait(stops, timeout=_RETURNED_STOP_GRACE_S)
+        for task in hanging:
+            self._abandoned.add(task)
+            task.add_done_callback(self._abandoned.discard)
+        for task in done:
+            outcome = task.exception() if not task.cancelled() else None
+            if task.cancelled() or outcome is not None:
+                self._logger.error(
+                    "Returned handle stop failed: "
+                    + (type(outcome).__name__ if outcome else "CancelledError"),
+                    prefix="⚠️",
+                )
+        if hanging:
+            self._logger.error(
+                f"{len(hanging)} returned handle stop(s) still running after "
+                f"{_RETURNED_STOP_GRACE_S:g}s were left to finish",
+                prefix="⚠️",
+            )
 
     async def cancel_pending_tasks_with_reply(
         self,
@@ -730,6 +785,9 @@ class ToolsData:
 
         try:
             raw = task.result()
+            # The loop adopts no handle a call returns, so one still running
+            # would have no owner once the call has ended: it is stopped.
+            await self._stop_returned_handles(raw, name)
             result = serialize_tool_content(tool_name=name, payload=raw, is_final=True)
 
             if self._time_ctx is not None and not info.is_dynamic:

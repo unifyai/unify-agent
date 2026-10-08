@@ -53,12 +53,11 @@ if TYPE_CHECKING:
     from .worker import PythonWorker
 
 # Handles spawned by manager primitives during an in-process sandbox
-# ``execute`` call.  When the LLM fire-and-forgets a steerable handle
-# (awaits the call that *returns* the handle but never ``await
-# handle.result()`` and does not return the handle as the last
-# expression), the outer loop never adopts it and the mutation is
-# cancelled when ``execute_code`` returns.  Draining this bucket at the
-# end of ``execute`` awaits those orphans so side effects land.
+# ``execute`` call.  When the LLM fire-and-forgets a handle (awaits the
+# call that *returns* the handle but never ``await handle.result()``),
+# nothing owns it once ``execute_code`` returns, returned as the last
+# expression or not: the loop adopts no handle.  Draining this bucket at
+# the end of ``execute`` awaits them so side effects land.
 _SANDBOX_SPAWNED_HANDLES: contextvars.ContextVar[list[Any] | None] = (
     contextvars.ContextVar("_SANDBOX_SPAWNED_HANDLES", default=None)
 )
@@ -71,54 +70,16 @@ def register_sandbox_spawned_handle(handle: Any) -> None:
         bucket.append(handle)
 
 
-def _collect_handles(obj: Any) -> list[Any]:
-    """Collect ``SteerableToolHandle`` instances reachable from *obj*."""
-    from unify.common.async_tool_loop import SteerableToolHandle
+async def _await_orphan_sandbox_handles(*, spawned: list[Any]) -> None:
+    """Await the handles a cell spawned in-sandbox, returned or not.
 
-    found: list[Any] = []
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, SteerableToolHandle):
-            found.append(node)
-            return
-        if isinstance(node, dict):
-            for v in node.values():
-                _walk(v)
-            return
-        if isinstance(node, (list, tuple, set)):
-            for v in node:
-                _walk(v)
-            return
-        try:
-            from pydantic import BaseModel
-
-            if isinstance(node, BaseModel):
-                for field_name in node.model_fields:
-                    _walk(getattr(node, field_name))
-        except Exception:
-            return
-
-    _walk(obj)
-    return found
-
-
-async def _await_orphan_sandbox_handles(
-    *,
-    spawned: list[Any],
-    result: Any,
-) -> None:
-    """Await steerable handles spawned in-sandbox that were not returned.
-
-    Membership is by object identity: spawned handles need not be hashable
-    (logging wrappers and test doubles often are not), and ``in`` on a set
-    would raise ``TypeError`` for those.
+    The loop adopts no handle a cell returns (a turn's calls run to
+    completion), so one left running would have no owner: the cell's call
+    ends only once every handle it started has finished.
     """
     if not spawned:
         return
-    returned_ids = {id(h) for h in _collect_handles(result)}
     for handle in spawned:
-        if id(handle) in returned_ids:
-            continue
         try:
             done = handle.done()
             if asyncio.iscoroutine(done) or asyncio.isfuture(done):
@@ -916,10 +877,7 @@ class PythonExecutionSession:
                             _run_once,
                             session=steering,
                         )
-                    await _await_orphan_sandbox_handles(
-                        spawned=spawned_handles,
-                        result=result,
-                    )
+                    await _await_orphan_sandbox_handles(spawned=spawned_handles)
                 finally:
                     if before is not None:
                         listed = self._list_variables(before)
