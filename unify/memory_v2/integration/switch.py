@@ -14,8 +14,8 @@ The contract (online build, spec §F1 and D23):
 - ``UNIFY_MEMORY_V2_SOL_BASE_URL`` and ``UNIFY_MEMORY_V2_SOL_TOKEN``: Sol's own route, both or neither. Set,
   Sol's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of Sol's own,
   so the actor's route never carries Sol's model); empty, they go as shipped. The URL is http(s) with a
-  host and no user, password, query or fragment; plain http only to a loopback or private-network address
-  (the token travels in a header). The token is a secret: a bearer token (RFC 6750 ``b64token`` characters,
+  host and no user, password, query or fragment; plain http only to exactly ``127.0.0.1`` (the launcher's
+  loopback bridge; the token travels in a header). The token is a secret: a bearer token (RFC 6750 ``b64token`` characters,
   at least 16 of them), held as a ``SecretStr`` and registered with every value-based redactor
   (:func:`unify.process_secrets.register_secret`). Settings only normalise the two (a settings error would
   print its input), and :func:`sol_route` checks them when a pass is about to start; its errors never quote
@@ -29,7 +29,6 @@ read the same way by every consumer.
 
 from __future__ import annotations
 
-import ipaddress
 import re
 from decimal import Decimal
 from typing import Any, MutableMapping
@@ -162,37 +161,14 @@ def parse_sol_base_url(v: Any) -> str:
         raise ValueError(f"{refusal}: it has a query")
     if parts.fragment or "#" in text:
         raise ValueError(f"{refusal}: it has a fragment")
-    if parts.scheme.lower() == "http" and not _on_private_network(parts.hostname):
-        raise ValueError(
-            f"{refusal}: plain http is allowed only to a loopback or private-network address",
-        )
+    if parts.scheme.lower() == "http" and parts.hostname != HTTP_HOST:
+        raise ValueError(f"{refusal}: plain http is allowed only to {HTTP_HOST}")
     return text.rstrip("/")
 
 
-def _on_private_network(host: str) -> bool:
-    """``localhost``, or a loopback or private IP literal: IPv4 127/8, 10/8, 172.16/12, 192.168/16; IPv6 ::1
-    and fc00::/7. A pure parse (no DNS lookup): any other name may resolve anywhere, so it needs https.
-    """
-    if host.lower() == "localhost":
-        return True
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return any(addr in net for net in _PRIVATE_NETWORKS)
-
-
-_PRIVATE_NETWORKS = tuple(
-    ipaddress.ip_network(n)
-    for n in (
-        "127.0.0.0/8",
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "::1/128",
-        "fc00::/7",
-    )
-)
+#: The one host plain http may name: the launcher's loopback bridge to Sol's proxy listener (the token travels
+#: in a header, in clear). Exactly this IPv4 literal, compared as text: no other name, address or DNS lookup.
+HTTP_HOST = "127.0.0.1"
 
 
 def parse_sol_token(v: Any) -> SecretStr:

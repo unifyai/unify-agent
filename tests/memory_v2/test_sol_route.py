@@ -330,14 +330,16 @@ def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, miss
         "http://proxy internal/v1",
         "http://proxy.internal/v\n1",
         "http://proxy.internal/\x00v1",
-        # plain http off a loopback or private-network address: the token would travel in clear
+        # plain http to any host but exactly 127.0.0.1: the token would travel in clear
         "http://proxy.internal/v1",
+        "http://localhost:18081/sol/v1",
+        "http://127.0.0.2:18081/sol/v1",
+        "http://10.0.0.1:18081/sol/v1",
+        "http://192.168.4.5/sol/v1",
+        "http://[::1]:18081/sol/v1",
         "http://8.8.8.8/v1",
         "http://169.254.169.254/v1",
         "http://0.0.0.0:8080/v1",
-        "http://100.64.0.1/v1",
-        "http://172.32.0.1/v1",
-        "http://[2001:db8::1]/v1",
     ],
 )
 def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
@@ -360,12 +362,10 @@ def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
         (SOL_BASE + "/", SOL_BASE),
         ("https://proxy.internal", "https://proxy.internal"),
         ("HTTPS://proxy.internal:8443/api/v1", "HTTPS://proxy.internal:8443/api/v1"),
-        ("http://localhost:18081/sol/v1", "http://localhost:18081/sol/v1"),
-        ("http://10.1.2.3:8080/sol/v1/", "http://10.1.2.3:8080/sol/v1"),
-        ("http://172.16.0.9/sol/v1", "http://172.16.0.9/sol/v1"),
-        ("http://192.168.4.5:9/sol/v1", "http://192.168.4.5:9/sol/v1"),
-        ("http://[::1]:18081/sol/v1", "http://[::1]:18081/sol/v1"),
-        ("http://[fd00::7]:18081/sol/v1", "http://[fd00::7]:18081/sol/v1"),
+        ("http://127.0.0.1:18081/sol/v1", "http://127.0.0.1:18081/sol/v1"),
+        ("http://127.0.0.1:18081/sol/v1/", "http://127.0.0.1:18081/sol/v1"),
+        ("https://localhost:8443/sol/v1", "https://localhost:8443/sol/v1"),
+        ("https://10.0.0.1/sol/v1", "https://10.0.0.1/sol/v1"),
     ],
 )
 def test_the_base_url_validator_accepts_http_urls(raw, want):
