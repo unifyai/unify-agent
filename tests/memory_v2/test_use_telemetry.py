@@ -1148,8 +1148,11 @@ def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
         "env/x:parse | 1 | 1 | 1 | 1 | 1 | 1 of 1 known (+0 unknown) | 0 | "
         "0 of 1 known (+0 unknown) | 0 | " in table
     )
+    # "requests calling" and "calls" are static call sites in cell code, known whatever the cell's
+    # outcome: the unknown cell's lookup('zz') is a call site; only refusals, errors and "then accepted"
+    # depend on the outcome and read unknown
     assert (
-        "env/x:lookup | 1 | 1 | 1 | 0 | 1 | 0 of 0 known (+1 unknown) | 0+? | "
+        "env/x:lookup | 1 | 1 | 1 | 1 | 1 | 0 of 0 known (+1 unknown) | 0+? | "
         "0 of 0 known (+1 unknown) | 0 | " in table
     )
     assert (
