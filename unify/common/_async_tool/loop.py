@@ -662,8 +662,6 @@ async def async_tool_loop_inner(
 
     stop_event = stop_event or asyncio.Event()
 
-    _initial_user_message = copy.deepcopy(message)
-
     # Normalize response_format once. LLM-supplied nested tool args may pass a
     # JSON Schema dict / JSON string rather than a Pydantic class; accept those
     # so final_response can be injected. Unsupported values disable structured
@@ -1023,7 +1021,7 @@ async def async_tool_loop_inner(
         Terminate gracefully when *timeout* or *max_steps* is exceeded and
         `raise_on_limit` is *False*: append a short assistant notice,
         followed by *draft* when one is given. Every call has been answered
-        by then (``_run_turn_calls`` answers the ones a limit interrupts).
+        by then (``_interrupt_turn`` answers the ones a limit interrupts).
 
         With *last_word* (UNIFY_STEP_CAP_REPLY=last_word at max_steps) the
         pending calls are answered as cancelled, the model is given one
