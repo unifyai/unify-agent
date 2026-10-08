@@ -9,6 +9,9 @@ from unify.memory_v2.integration.adapters.dialogue import (
     dialogue_actions,
     observation_fingerprint,
     observation_shape,
+    observation_value,
+    response_shape,
+    split_action,
 )
 from unify.memory_v2.redact import Redactor
 
@@ -63,11 +66,10 @@ def test_crafter_typed_actions_pair_with_the_next_observation():
     assert all(a.kind == "dialogue" and a.channel == "crafter" for a in acts)
     assert all(a.method == "act" and a.kwargs == {} and a.cell == -1 for a in acts)
     assert [a.status for a in acts] == ["ok", "ok"]
-    assert acts[0].response == {
-        "observation": _crafter_obs(2),
-        "shape": "lines=4-7;counter=y;json=none",
-    }
-    assert acts[1].response["observation"] == _crafter_obs(3)
+    # the observation is the counterpart's message itself, as the offline Crafter import records it
+    assert acts[0].response == _crafter_obs(2)
+    assert response_shape(acts[0].response) == "lines=4-7;counter=y;json=none"
+    assert acts[1].response == _crafter_obs(3)
 
 
 def test_arc_json_submit_and_request_demos_with_feedback():
@@ -95,16 +97,15 @@ def test_arc_json_submit_and_request_demos_with_feedback():
         ),
     ]
     acts = dialogue_actions(lines, "arc")
-    assert [a.args[0] for a in acts] == [
-        {"action": "request_demos"},
-        submit,
-        {"action": "submit", "grid": [[1]]},
+    # the method is the object's first identifier-valued member; the rest are its arguments
+    assert [(a.method, a.args, a.kwargs) for a in acts] == [
+        ("request_demos", [], {}),
+        ("submit", [[[0, 1], [1, 0]]], {}),
+        ("submit", [[[1]]], {}),
     ]
-    assert acts[0].response["observation"].startswith("Demonstrations:")
-    assert json.loads(acts[1].response["observation"]) == {
-        "correct": False,
-        "attempts_left": 1,
-    }
+    assert acts[0].response.startswith("Demonstrations:")
+    # a counterpart message that is one JSON object is recorded structured
+    assert acts[1].response == {"correct": False, "attempts_left": 1}
     assert [a.status for a in acts] == ["ok", "ok", "unrecorded"]
     assert acts[2].response is None
 
@@ -155,7 +156,7 @@ def test_mixed_transcript_ignores_tool_call_turns_and_non_message_lines():
     acts = dialogue_actions(lines, "crafter")
     assert len(acts) == 1
     assert acts[0].args == ["noop"]
-    assert acts[0].response["observation"] == _crafter_obs(2, "empty")
+    assert acts[0].response == _crafter_obs(2, "empty")
 
 
 def test_reply_followed_by_assistant_before_any_user_message_is_unrecorded():
@@ -197,7 +198,7 @@ def test_observation_is_capped_keeping_head_and_tail():
         _line(2, "user", big),
     ]
     (act,) = dialogue_actions(lines, "crafter", max_observation_chars=500)
-    obs = act.response["observation"]
+    obs = act.response
     assert len(obs) <= 500
     assert obs.startswith("row\n") and obs.endswith("(step 9/2000)")
     assert "elided" in obs
@@ -218,10 +219,10 @@ def test_observation_and_payload_are_redacted():
         _line(2, "user", f"welcome; your key is {key}"),
     ]
     (act,) = dialogue_actions(lines, "app", redactor=red)
-    dumped = json.dumps([act.args, act.response])
+    dumped = json.dumps([act.args, act.kwargs, act.response])
     assert "hunter2-very-secret" not in dumped and key not in dumped
-    assert act.args[0]["pw"] == "<secret:APP_PASSWORD>"
-    assert "<redacted:key-shaped>" in act.response["observation"]
+    assert act.method == "login" and act.args == ["<secret:APP_PASSWORD>"]
+    assert "<redacted:key-shaped>" in act.response
     # the default redactor still removes key-shaped strings
     (act2,) = dialogue_actions(lines, "app")
     assert key not in json.dumps(act2.response)
@@ -268,7 +269,7 @@ def test_multimodal_content_parts_are_read_as_text():
         ),
     ]
     (act,) = dialogue_actions(lines, "crafter")
-    assert act.args == ["move_right"] and act.response["observation"] == "obs"
+    assert act.args == ["move_right"] and act.response == "obs"
 
 
 def test_observation_shape_has_no_values():
@@ -325,7 +326,9 @@ def test_deeply_nested_reply_never_raises():
     ]
     acts = dialogue_actions(lines, "arc", max_payload_chars=200000)
     assert [a.status for a in acts] == ["ok", "ok"]
-    assert acts[1].response["shape"] == "lines=1;counter=n;json=deep"
+    # too deep to keep parsed: kept as text, shaped as deep JSON
+    assert acts[1].response == nested
+    assert response_shape(acts[1].response) == "lines=1;counter=n;json=deep"
     assert observation_fingerprint(acts)  # shapes computed without recursion errors
 
 
@@ -350,32 +353,76 @@ def test_object_payload_is_redacted_then_capped():
     lines = [_line(0, "user", "go"), _line(1, "assistant", reply)]
     red = Redactor({"APP_PASSWORD": planted})
     (small,) = dialogue_actions(lines, "arc", redactor=red, max_payload_chars=300)
+    assert small.method == "submit" and small.kwargs == {}
     assert isinstance(small.args[0], str) and len(small.args[0]) <= 300
     assert planted not in small.args[0]
-    assert small.args[0].startswith('{"action": "submit", "grid"')
+    assert small.args[0].startswith('{"grid": [[7, 7')
     (full,) = dialogue_actions(lines, "arc", redactor=red)
-    assert (
-        full.args[0]["grid"] == grid and full.args[0]["pw"] == "<secret:APP_PASSWORD>"
-    )
+    assert full.method == "submit" and full.args == []
+    assert full.kwargs == {"pw": "<secret:APP_PASSWORD>", "grid": grid}
 
 
-def test_shape_is_taken_before_the_cap():
+def test_observation_is_kept_whole_under_the_cap_and_shaped_from_what_is_recorded():
     obs = "\n".join(f"row {i}" for i in range(40)) + "\n(step 9/2000)"
     lines = [
         _line(0, "user", "go"),
         _line(1, "assistant", "noop"),
         _line(2, "user", obs),
     ]
-    (act,) = dialogue_actions(lines, "crafter", max_observation_chars=120)
+    (act,) = dialogue_actions(lines, "crafter")
+    assert act.response == obs
     assert (
-        act.response["shape"]
+        response_shape(act.response)
         == observation_shape(obs)
         == "lines=32-63;counter=y;json=none"
     )
-    assert observation_shape(act.response["observation"]) != act.response["shape"]
     assert observation_fingerprint([act]) == {
         "crafter.act": {"shapes": ["lines=32-63;counter=y;json=none"], "errors": []},
     }
+    # over the adapter's bound, the head and tail are what is recorded and shaped
+    (small,) = dialogue_actions(lines, "crafter", max_observation_chars=120)
+    assert len(small.response) <= 120 and small.response.endswith("(step 9/2000)")
+    assert observation_fingerprint([small])["crafter.act"]["shapes"] == [
+        observation_shape(small.response),
+    ]
+
+
+def test_split_action_reads_structure_never_member_names():
+    assert split_action({"action": "submit", "grid": [[1]]}) == ("submit", [[[1]]], {})
+    assert split_action({"grid": [[1]], "action": "submit"}) == ("submit", [[[1]]], {})
+    assert split_action({"type": "request_demos"}) == ("request_demos", [], {})
+    assert split_action({"op": "move", "dx": 1, "dy": -1}) == (
+        "move",
+        [],
+        {"dx": 1, "dy": -1},
+    )
+    # a free-text value is no method; the first identifier-valued member is
+    assert split_action({"why": "two words", "do": "noop"}) == (
+        "noop",
+        ["two words"],
+        {},
+    )
+    # no identifier-valued member, or not an object: act(payload)
+    assert split_action({"grid": [[1]]}) == ("act", [{"grid": [[1]]}], {})
+    assert split_action({"n": "42"}) == ("act", [{"n": "42"}], {})
+    assert split_action("move_left") == ("act", ["move_left"], {})
+    assert split_action({"x": "a" * 65}) == ("act", [{"x": "a" * 65}], {})
+
+
+def test_observation_value_parses_only_a_whole_json_message():
+    assert observation_value('{"correct": true}') == {"correct": True}
+    assert observation_value(" [1, 2] ") == [1, 2]
+    assert (
+        observation_value('Feedback\n{"correct": true}')
+        == 'Feedback\n{"correct": true}'
+    )
+    assert observation_value('"just a string"') == '"just a string"'
+    assert observation_value("{broken") == "{broken"
+    big = json.dumps({"rows": ["x" * 100] * 10})
+    assert observation_value(big, cap=50) == cap_text(
+        big,
+        50,
+    )  # over the bound: capped text
 
 
 def test_reply_followed_by_a_tool_call_turn_is_unrecorded():

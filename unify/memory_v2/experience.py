@@ -11,7 +11,10 @@
 * every cell's code (the tool-call arguments), printed output and error;
 * every action's observation: a tool call's response or error, a shell command's output tail, a file's
   recorded shape (never its body), a dialogue action's observation, unless that observation is a
-  request message already counted (a dialogue observation is the next user message).
+  request message already counted (a dialogue observation is the next user message): a text
+  observation matches a request message equal to it, a structured one (a parsed JSON object or array)
+  a request message that is the same JSON. Each request message absorbs at most one observation.
+  An observation the adapter changed (redacted or capped) no longer matches and is counted again.
 
 Provider usage is never consulted. Tokens are counted with tiktoken's ``o200k_base`` when it imports,
 else as ``ceil(utf-8 bytes / 4)``; :data:`COUNTER` names which, and every result carries it.
@@ -129,10 +132,33 @@ def _observation(a: Any) -> Any:
     return r
 
 
+def _canonical(value: Any) -> str | None:
+    """A structured observation's canonical JSON (sorted keys), or None when it has none."""
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+def _parsed_request(text: str) -> str | None:
+    """The canonical JSON of a request message that is one JSON object or array, else None."""
+    stripped = text.strip()
+    if stripped[:1] not in ("{", "["):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return None
+    return _canonical(parsed) if isinstance(parsed, (dict, list)) else None
+
+
 def experience_pieces(ep: Episode) -> list[str]:
     """The texts :func:`experience_tokens` counts, in a fixed order."""
     pieces: list[str] = [m for m in ep.request if isinstance(m, str)]
     requests = Counter(pieces)
+    by_json: dict[str, list[str]] | None = (
+        None  # built at the first structured observation
+    )
     replies = list(getattr(ep, "replies", None) or []) or transcript_replies(
         ep.transcript,
     )
@@ -141,15 +167,25 @@ def experience_pieces(ep: Episode) -> list[str]:
         pieces += [c.code or "", c.output or "", c.error or ""]
     for a in ep.actions:
         obs = _observation(a)
-        if (
-            getattr(a, "kind", "tool") == "dialogue"
-            and isinstance(obs, str)
-            and requests[obs] > 0
-        ):
-            requests[
-                obs
-            ] -= 1  # the next user message, already counted as a request message
-            continue
+        if getattr(a, "kind", "tool") == "dialogue":
+            # the next user message, already counted as a request message: by text, or (a structured
+            # observation) by canonical JSON
+            seen: str | None = None
+            if isinstance(obs, str):
+                seen = obs if requests[obs] > 0 else None
+            elif isinstance(obs, (dict, list)):
+                if by_json is None:
+                    by_json = {}
+                    for m in requests:
+                        key = _parsed_request(m)
+                        if key is not None:
+                            by_json.setdefault(key, []).append(m)
+                key = _canonical(obs)
+                same = by_json.get(key, []) if key is not None else []
+                seen = next((m for m in same if requests[m] > 0), None)
+            if seen is not None:
+                requests[seen] -= 1
+                continue
         pieces.append(_text(obs))
     return [p for p in pieces if p]
 

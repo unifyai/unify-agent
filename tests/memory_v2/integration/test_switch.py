@@ -3,7 +3,8 @@
 The contract: ``UNIFY_MEMORY_V2`` (``on`` / ``off`` / empty), ``UNIFY_MEMORY_V2_E`` (a positive int,
 150000), ``UNIFY_MEMORY_V2_SOL_MODEL`` (``openai/gpt-6-sol``),
 ``UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string, ``0.00000073``, no exponent) and
-``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD`` (a decimal string, or empty for no guard). Each value is loaded
+``UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD`` (a decimal string, or empty for no guard) and
+``UNIFY_MEMORY_V2_DIALOGUE`` (``off`` / empty, or ``env``). Each value is loaded
 through ``ProductionSettings`` from the environment, as a run sets it.
 """
 
@@ -27,6 +28,7 @@ _NAMES = (
     "UNIFY_MEMORY_V2_QA_DETERMINISM",
     "UNIFY_MEMORY_V2_QA_REPLAY",
     "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+    "UNIFY_MEMORY_V2_DIALOGUE",
     # retired by the online contract; a stale one in the environment must change nothing
     "UNIFY_MEMORY_V2_TRIGGER",
     "UNIFY_MEMORY_V2_SOL_BUDGET_USD",
@@ -56,6 +58,7 @@ def test_defaults():
     assert s.UNIFY_MEMORY_V2_DOCSTRINGS == "off"
     assert s.UNIFY_MEMORY_V2_SOFT_BUDGET == "off"
     assert s.UNIFY_MEMORY_V2_SOL_USAGE == ""
+    assert s.UNIFY_MEMORY_V2_DIALOGUE == ""
 
 
 def test_the_retired_switches_are_gone(monkeypatch):
@@ -83,6 +86,14 @@ def test_switch_values(raw, want, monkeypatch):
 )
 def test_sol_usage_values(raw, want, monkeypatch):
     assert _load(monkeypatch, "UNIFY_MEMORY_V2_SOL_USAGE", raw) == want
+
+
+@pytest.mark.parametrize(
+    "raw,want",
+    [("", ""), ("off", ""), (" OFF ", ""), ("env", "env"), (" Env ", "env")],
+)
+def test_dialogue_values(raw, want, monkeypatch):
+    assert _load(monkeypatch, "UNIFY_MEMORY_V2_DIALOGUE", raw) == want
 
 
 @pytest.mark.parametrize(
@@ -170,6 +181,10 @@ def test_run_guard_values(raw, want, monkeypatch):
         ("UNIFY_MEMORY_V2_SOL_USAGE", "yes"),
         ("UNIFY_MEMORY_V2_SOL_USAGE", "1"),
         ("UNIFY_MEMORY_V2_SOL_USAGE", "true"),
+        ("UNIFY_MEMORY_V2_DIALOGUE", "on"),
+        ("UNIFY_MEMORY_V2_DIALOGUE", "user"),
+        ("UNIFY_MEMORY_V2_DIALOGUE", "env/env"),
+        ("UNIFY_MEMORY_V2_DIALOGUE", "dialogue:env"),
     ],
 )
 def test_refuses_other_values(name, raw, monkeypatch):

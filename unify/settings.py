@@ -345,6 +345,13 @@ class ProductionSettings(BaseSettings):
     # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
+    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY_V2 on;
+    # parsed by unify/memory_v2/integration/switch.py): ``env`` also records
+    # each request's dialogue actions (every turn-ending reply's action with
+    # the counterpart's next message) on the channel ``env``, so a benchmark
+    # whose actions are text in the replies (Continual-ARC) leaves coverable
+    # actions. Empty (also ``off``): episodes as shipped.
+    UNIFY_MEMORY_V2_DIALOGUE: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
     # ``on`` replaces the storage review, the ``functions``/``guidance``
     # objects and the library shortlist with a per-request export of the
@@ -638,6 +645,13 @@ class ProductionSettings(BaseSettings):
                 f"not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_MEMORY_V2_DIALOGUE", mode="before")
+    @classmethod
+    def parse_memory_v2_dialogue(cls, v: Any) -> str:
+        from unify.memory_v2.integration import switch
+
+        return switch.parse_dialogue(v)
 
     @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
     @classmethod

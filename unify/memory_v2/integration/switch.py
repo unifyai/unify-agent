@@ -33,6 +33,10 @@ The contract (online build, spec §F1 and D23):
 - ``UNIFY_MEMORY_V2_SOL_USAGE``: ``on``, ``off`` or empty (empty and ``off`` mean off). When on, each pass's
   first message ends with the table of how requests used each library function (``usage.usage_table``);
   off, that message is as before. The use record itself is kept either way.
+- ``UNIFY_MEMORY_V2_DIALOGUE``: ``off`` (or empty; the default) or ``env``. With ``env``, each request's
+  episode also records the dialogue actions of its transcript (each turn-ending reply's action, paired with
+  the counterpart's next message; :mod:`.adapters.dialogue`) on the channel ``env``, which is the memory
+  channel ``env`` (``env/env/``). Off, the episode is recorded exactly as without the setting.
 
 The v2.1 surfacing switches (lane S1). Each default restores the behaviour of the v2 screen build
 (``9deefbfd1``) exactly, so a paired v2 vs v2.1 comparison runs on one build:
@@ -106,6 +110,7 @@ SURFACING = "UNIFY_MEMORY_V2_SURFACING"
 DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
 SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
+DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
 
 QA_FIXTURES = "UNIFY_MEMORY_V2_QA_FIXTURES"
 QA_MUTATION = "UNIFY_MEMORY_V2_QA_MUTATION"
@@ -627,3 +632,21 @@ PARSERS = {
     QA_REPLAY: parse_qa_replay,
     QA_FIXTURE_SIZE: parse_qa_fixture_size,
 }
+
+
+#: The counterparts ``UNIFY_MEMORY_V2_DIALOGUE`` may name: the channel key of the recorded dialogue
+#: actions. ``env`` is the counterpart a benchmark runner serves (the offline imports' name).
+DIALOGUE_COUNTERPARTS = ("env",)
+
+
+def parse_dialogue(v: Any) -> str:
+    """The dialogue counterpart, or ``""`` for off (empty or ``off``)."""
+    value = _stripped(v).lower()
+    if value in ("", "off"):
+        return ""
+    if value not in DIALOGUE_COUNTERPARTS:
+        raise ValueError(f"{DIALOGUE} must be empty, 'off' or 'env', not {v!r}")
+    return value
+
+
+PARSERS[DIALOGUE] = parse_dialogue
