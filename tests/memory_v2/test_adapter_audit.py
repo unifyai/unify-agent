@@ -399,3 +399,28 @@ def test_other_threads_are_marked(tmp_path):
         (".", True),
     ]
     assert recs[0]["tid"] != recs[1]["tid"]
+
+
+def test_a_clip_drops_a_cut_token_in_linear_time():
+    # the old trailing-token regex search was quadratic on a long run of token characters
+    import time
+
+    for text in ("a" * 200_000 + "!", "x " + "Ab0_-+/=.:~" * 20_000, "sk-" + "z" * 100_000):
+        start = time.perf_counter()
+        out = audit_mod._drop_trailing_token(text)
+        assert time.perf_counter() - start < 0.5
+        assert not out or out[-1] not in audit_mod._TOKEN_CHARS
+    assert audit_mod._drop_trailing_token("path/to/file name-with.token") == "path/to/file "
+    assert audit_mod._drop_trailing_token("") == ""
+    assert audit_mod._drop_trailing_token("a b-c\n") == "a \n"  # as the old search: before one final newline
+
+
+def test_the_linear_clip_equals_the_old_trailing_token_search():
+    import random
+    import re
+
+    old = re.compile(r"[A-Za-z0-9_\-+/=.:~]+$")
+    rng = random.Random(0)
+    for _ in range(20_000):
+        text = "".join(rng.choice("ab=/ \n!~.") for _ in range(rng.randrange(12)))
+        assert audit_mod._drop_trailing_token(text) == old.sub("", text)
