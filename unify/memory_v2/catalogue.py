@@ -11,15 +11,14 @@ harness writes, beside the committed files and never into a commit:
   :mod:`.analysis.shapes`, copied byte for byte, so the cell's ``memory.find`` computes shapes with the
   same functions the gate recorded them with.
 
-Everything except ``input_shapes`` is a pure function of the exported tree, so the same commit gives the
-same bytes. **Where the shapes come from.** When the gate merges a pass it computes, for each environment
-function it admitted, the input-shape descriptors of its validated covers (:func:`.memory_helper.file_shape`
-of each covered file's recorded blob, :func:`.memory_helper.value_shape` of each covered observation) and
-stores them in the evidence store keyed by the item id and the digest of the function's body
-(:func:`body_digest`). An export looks them up by the same key, so a function's shapes follow exactly the
-body the gate checked, rows are written only by a merge (which moves ``main``), and an export of one commit
-reads the same rows every time. Functions merged before the shapes were recorded have none (the field is
-left out).
+Everything except ``input_shapes`` is a pure function of the exported tree. **Where the shapes come from.**
+The input-shape descriptors of each function's validated covers (:func:`.memory_helper.file_shape` of each
+covered file's recorded blob, :func:`.memory_helper.value_shape` of each covered observation) are kept as a
+snapshot per memory commit, written once (:mod:`.shape_rows`): a landed merge writes its commit's, and an
+export of a commit without one (a commit from before snapshots, or a hide commit) derives it and freezes it.
+A row is used only while its body digest (:func:`body_digest`) matches the exported function, so the same
+commit gives the same bytes on every export, an old one re-exported included. Shapes derived from the
+covers table for a function no merge recorded shapes for are marked ``input_shapes_backfilled``.
 
 Sol never edits these files: the gate refuses any commit that touches a :func:`reserved` path, and Sol's
 copy of the library never holds them.
@@ -37,7 +36,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from . import docstrings
-from .manifest import INPUT_KINDS
+from .manifest import INPUT_KINDS, compiled_extension, shadows_import
 from .memory_repo import items
 from .snapshot import item_bodies
 
@@ -53,12 +52,17 @@ SOFT_BUDGET_TOKENS = 4000
 _MODULE_SUMMARY_CHARS = 120
 _HERE = Path(__file__).resolve().parent
 
-ShapeLookup = Callable[[str, str], "list[dict] | None"]
+# (item id, body digest) -> (input shapes, whether they were backfilled from covers), or None
+ShapeLookup = Callable[[str, str], "tuple[list[dict], bool] | None"]
 
 
 def reserved(path: str) -> bool:
-    """Whether *path* (relative, POSIX) is one the harness generates in every export."""
-    return path in (README, HELPER) or path == ".memory" or path.startswith(".memory/")
+    """Whether *path* (relative, POSIX) is one the harness generates in every export, or a root entry that
+    could shadow ``import memory`` or ``import env`` (any ``memory.*`` or ``env.*``, ``memory/``) or a
+    compiled extension at the root."""
+    if path in (README, HELPER) or path == ".memory" or path.startswith(".memory/"):
+        return True
+    return shadows_import(path) or ("/" not in path and compiled_extension(path))
 
 
 def body_digest(body: str) -> str:
@@ -120,8 +124,10 @@ def functions(tree: Path, shapes: ShapeLookup | None = None) -> list[dict]:
         }
         if shapes is not None and it.item_id in bodies:
             found = shapes(it.item_id, body_digest(bodies[it.item_id][1]))
-            if found:
-                entry["input_shapes"] = found
+            if found and found[0]:
+                entry["input_shapes"] = found[0]
+                if found[1]:
+                    entry["input_shapes_backfilled"] = True
         out.append(entry)
     out.sort(key=lambda e: e["channel"])  # stable: module order within a channel
     return out

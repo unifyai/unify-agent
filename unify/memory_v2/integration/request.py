@@ -194,7 +194,8 @@ class RequestRun:
         return run
 
     def _open(self, sandbox: Any, transcripts: Any) -> None:
-        from ..catalogue import write_generated
+        from ..catalogue import GENERATED, write_generated
+        from ..shape_rows import lookup_from
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .prompt import render_memory_section
@@ -210,7 +211,7 @@ class RequestRun:
         try:
             self.generated = write_generated(
                 paths.checkout,
-                shapes=getattr(self.stores.evidence, "input_shapes", None),
+                shapes=lookup_from(self._shape_rows(consolidate)),
             )
         except (
             Exception
@@ -219,6 +220,14 @@ class RequestRun:
                 "memory v2: the export's catalogue was not written (%s)",
                 type(exc).__name__,
             )
+            for (
+                rel
+            ) in (
+                GENERATED
+            ):  # a partial write must not reach memory.diff as the request's
+                target = paths.checkout / rel
+                if target.is_file() and not target.is_symlink():
+                    target.unlink()
         self.index = render_memory_section(paths.checkout, self.state.suspect)
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
@@ -235,6 +244,23 @@ class RequestRun:
         self.costs = cost.install()
         self.costs.activate()
         self._scope.callback(self.costs.deactivate)
+
+    def _shape_rows(self, consolidate: Any) -> dict:
+        """The pinned commit's input-shape rows, frozen on first export (:func:`..shape_rows.shapes_at`);
+        functions without recorded shapes are backfilled from the evidence store's covers.
+        """
+        from ..shape_rows import shapes_at
+
+        episodes = getattr(consolidate, "EpisodeLookup", None)
+        return shapes_at(
+            self.stores.memory,
+            self.stores.evidence,
+            self.pin,
+            self.paths.checkout,
+            lookup=episodes(self.stores).action if episodes is not None else None,
+            blobs=self.stores.blobs,
+            freeze=True,
+        )
 
     def redactor(self) -> Any:
         """The run's redactor as far as it is known before the episode is assembled: the environment's

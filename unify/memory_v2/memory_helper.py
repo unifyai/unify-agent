@@ -11,12 +11,17 @@ In a cell::
 or a string holding JSON). *fn* is an imported function, or its name (``"env.<channel>.<function>"`` or the
 bare function name when only one channel has it).
 
-Matching is by data shape only, never by words: a file's format, delimiter, header and columns, or the key
-tree of a JSON value, against the shapes of the inputs each function was built and checked on (the harness
-records them when the function is admitted). ``exact`` means the same shape, column types included;
-``structure`` means the same columns or keys with other value types (a column that is empty here, say;
-a list of scalars or an empty list counts as any such list).
-A plain text or a binary file has no shape to match and finds nothing.
+Matching is by data shape only, never by words. A shape's **signature** is its named key paths (a JSON
+value's or file's keys, ``a.b``, ``items[].id``; a table's header columns, ``[].column``) with the type
+of each leaf: int, float, bool, str, null, a CSV column's type, ``list`` or ``object``. Only a value whose
+signature has at least one named key can match (a dict with a key, a list of records, a table with a
+header); ``[]``, ``{}``, scalars, lists of scalars and headerless tables find nothing, because their shape
+says almost nothing about what they are. A recorded shape matches when no shared key path has another type
+(null and empty columns fit any type) and the shared named keys are at least half of both signatures' named
+keys. ``exact`` means the same signature, list length classes (0, 1, 2–9, 10–99, 100+) and file format;
+``structure`` means a match with some keys or types differing. Results are ranked by level, then by the
+share of named keys matched, then by how many recorded shapes match, then by name, at most
+:data:`MAX_RESULTS`, each with the keys or columns that matched.
 
 The helper reads only the catalogue the harness wrote beside it (``.memory/catalog.json``, rendered from
 the library's commit) and the README; it makes no network call and no call to the harness, and it imports
@@ -35,6 +40,11 @@ SHAPES_FILE = ".memory/shapes.py"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MAX_PATH_CHARS = 4096
 _STRUCTURELESS = frozenset({"text", "binary", "xlsx-unparsed"})
+MAX_RESULTS = 5
+MIN_SHARE = 0.5  # shared named keys over the union of both signatures' named keys
+_ANY = frozenset({"null", "empty"})  # leaf types that fit any other
+_MAX_DEPTH = 8
+_MAX_ELEMENTS = 50  # list elements walked for length classes
 
 
 def _load_shapes() -> Any:
@@ -88,46 +98,123 @@ def _parsed(value: Any) -> Any:
     return None
 
 
+def _length_class(n: int) -> str:
+    return (
+        "0"
+        if n == 0
+        else "1" if n == 1 else "2-9" if n < 10 else "10-99" if n < 100 else "100+"
+    )
+
+
+def _lengths(value: Any, path: str, out: dict[str, str], depth: int = 0) -> None:
+    """The length class of each list in *value*, by its key path (the first list seen at a path wins)."""
+    if depth > _MAX_DEPTH:
+        return
+    if isinstance(value, dict):
+        for k in sorted(value, key=str):
+            _lengths(value[k], f"{path}.{k}" if path else str(k), out, depth + 1)
+    elif isinstance(value, (list, tuple)):
+        out.setdefault(path, _length_class(len(value)))
+        for v in list(value)[:_MAX_ELEMENTS]:
+            _lengths(v, path + "[]", out, depth + 1)
+
+
 def value_shape(value: Any) -> dict | None:
     """The input shape of a parsed value (a dict or list, or a string holding one), or None."""
     parsed = _parsed(value)
     if parsed is None:
         return None
     try:
-        return {"kind": "value", "tree": json.loads(_canon(_shapes.tree(parsed)))}
+        lengths: dict[str, str] = {}
+        _lengths(parsed, "", lengths)
+        tree = json.loads(_canon(_shapes.tree(parsed)))
     except (TypeError, ValueError, RecursionError):
         return None
+    return {"kind": "value", "tree": tree, "lengths": lengths}
 
 
-def _skeleton(tree: Any) -> Any:
-    """A key tree without leaf types: keys kept, scalars alike, a list of records keeps its records' keys."""
+def _walk(tree: Any, path: str, out: dict[str, str]) -> None:
+    """Flatten a key tree (:func:`.analysis.shapes.tree`) into key paths and leaf types."""
     if isinstance(tree, dict):
-        return {k: _skeleton(v) for k, v in tree.items()}
-    if isinstance(tree, list):
-        records = sorted({_canon(_skeleton(t)) for t in tree if isinstance(t, dict)})
-        return ["list", records] if records else "list"
-    return "scalar"
+        for k in sorted(tree):
+            p = f"{path}.{k}" if path else str(k)
+            sub = tree[k]
+            if isinstance(sub, dict):
+                out[p] = "object"
+                _walk(sub, p, out)
+            elif isinstance(sub, list):
+                out[p] = "list"
+                _walk(sub, p, out)
+            else:
+                out[p] = str(sub)
+    elif isinstance(tree, list):  # the distinct shapes of a list's elements
+        p = path + "[]"
+        scalars = sorted({str(t) for t in tree if not isinstance(t, (dict, list))})
+        if scalars:
+            out[p] = "|".join(scalars)
+        for t in tree:
+            if isinstance(t, dict):
+                _walk(t, p, out)
+            elif isinstance(t, list):
+                out.setdefault(p, "list")
+                _walk(t, p, out)
 
 
-def keys(desc: dict) -> tuple[str | None, str | None]:
-    """(exact key, structure key) of a descriptor: equal keys mean the same shape at that level."""
+def signature(desc: dict) -> dict[str, str]:
+    """A descriptor's key paths and leaf types (see the module docstring); ``{}`` when it has none."""
+    out: dict[str, str] = {}
     if desc.get("kind") == "value":
-        tree = desc.get("tree")
-        return _canon(["tree", tree]), _canon(["tree", _skeleton(tree)])
+        _walk(desc.get("tree"), "", out)
+        return out
     s = desc.get("shape") or {}
     fmt = s.get("format")
-    exact = _canon(["file", s])
-    if fmt == "csv":
-        cols = s.get("columns") if s.get("header") else len(s.get("types") or [])
-        return exact, _canon(["table", s.get("delimiter"), bool(s.get("header")), cols])
-    if fmt in ("json", "yaml"):
-        return exact, _canon(["tree", _skeleton(s.get("tree"))])
-    if fmt == "jsonl":
-        lines = sorted({_canon(_skeleton(t)) for t in s.get("tree") or []})
-        return exact, _canon(["lines", lines])
-    if fmt == "xlsx":
-        return exact, _canon(["sheets", s.get("sheets")])
-    return exact, None
+    if fmt == "csv" and s.get("header") and s.get("columns"):
+        types = list(s.get("types") or [])
+        for i, col in enumerate(s["columns"]):
+            out[f"[].{col}"] = types[i] if i < len(types) else "empty"
+    elif fmt in ("json", "yaml"):
+        _walk(s.get("tree"), "", out)
+    elif fmt == "jsonl":
+        _walk(list(s.get("tree") or []), "", out)
+    elif fmt == "xlsx":
+        for sheet in s.get("sheets") or []:
+            for col in sheet.get("header") or []:
+                out[f"{sheet.get('name')}[].{col}"] = "cell"
+    return out
+
+
+def _named(path: str) -> bool:
+    return bool(path) and not path.endswith("[]")
+
+
+def _fits(a: str, b: str) -> bool:
+    return a == b or a in _ANY or b in _ANY
+
+
+def _format(desc: dict) -> Any:
+    if desc.get("kind") == "value":
+        return ["value", desc.get("lengths")]
+    s = desc.get("shape") or {}
+    return ["file", s.get("format"), s.get("delimiter"), s.get("encoding")]
+
+
+def compare(mine: dict, recorded: dict) -> tuple[int, float, list[str]] | None:
+    """How descriptor *mine* matches *recorded*: (2 exact or 1 structure, share of named keys matched,
+    the matched named keys), or None. Structural only: key paths and leaf types, never words.
+    """
+    a, b = signature(mine), signature(recorded)
+    named_a = {p for p in a if _named(p)}
+    named_b = {p for p in b if _named(p)}
+    if not named_a or not named_b:
+        return None  # too little information to tell what the value is
+    if any(not _fits(a[p], b[p]) for p in a.keys() & b.keys()):
+        return None
+    matched = sorted(named_a & named_b)
+    share = len(matched) / len(named_a | named_b)
+    if not matched or share < MIN_SHARE:
+        return None
+    exact = a == b and _format(mine) == _format(recorded)
+    return (2 if exact else 1), share, matched
 
 
 # --- the catalogue -----------------------------------------------------------------------------------------
@@ -162,6 +249,7 @@ class Found(NamedTuple):
     )
     match: str  # exact | structure
     summary: str
+    reason: str  # the keys or columns that matched
 
 
 def _value_candidates(value: Any, exts: list[str]) -> list[dict]:
@@ -199,8 +287,9 @@ def _value_candidates(value: Any, exts: list[str]) -> list[dict]:
 def find(value: Any) -> list[Found]:
     """The functions whose recorded inputs have the shape of *value*, best match first.
 
-    Ranked by match level (``exact`` before ``structure``), then by how many recorded input shapes
-    match, then by name. An empty list means no stored function was built on data of this shape.
+    Ranked by match level (``exact`` before ``structure``), then by the share of named keys matched, then
+    by how many recorded input shapes match, then by name; at most :data:`MAX_RESULTS`. An empty list
+    means no stored function was built on data of this shape, or the value has too little structure.
     """
     entries = _catalog().get("functions", [])
     exts = sorted(
@@ -211,30 +300,40 @@ def find(value: Any) -> list[Found]:
             if d.get("kind") == "file"
         },
     )
-    mine = [keys(d) for d in _value_candidates(value, exts)]
-    exact = {k for k, _ in mine if k is not None}
-    structure = {k for _, k in mine if k is not None}
-    ranked: list[tuple[int, int, str, Found]] = []
+    mine = _value_candidates(value, exts)
+    ranked: list[tuple[int, float, int, str, Found]] = []
     for e in entries:
-        hits = {2: 0, 1: 0}
+        best: tuple[int, float, list[str]] | None = None
+        count = 0
         for d in e.get("input_shapes", []):
-            k_exact, k_structure = keys(d)
-            if k_exact in exact:
-                hits[2] += 1
-            elif k_structure is not None and k_structure in structure:
-                hits[1] += 1
-        level = 2 if hits[2] else 1 if hits[1] else 0
-        if level:
-            name = f"{e['module']}.{e['name']}"
-            found = Found(
-                name,
-                e.get("signature", ""),
-                e.get("input", ""),
-                "exact" if level == 2 else "structure",
-                e.get("summary", ""),
-            )
-            ranked.append((-level, -hits[level], name, found))
-    return [f for *_, f in sorted(ranked)]
+            hits = [m for m in (compare(v, d) for v in mine) if m is not None]
+            if not hits:
+                continue
+            top = max(hits, key=lambda m: (m[0], m[1]))
+            if best is None or top[:2] > best[:2]:
+                best, count = top, 1
+            elif top[:2] == best[:2]:
+                count += 1
+        if best is None:
+            continue
+        name = f"{e['module']}.{e['name']}"
+        level, share, matched = best
+        shown = [p[3:] if p.startswith("[].") else p for p in matched]
+        reason = (
+            "matched "
+            + ", ".join(shown[:8])
+            + (f" and {len(shown) - 8} more" if len(shown) > 8 else "")
+        )
+        found = Found(
+            name,
+            e.get("signature", ""),
+            e.get("input", ""),
+            "exact" if level == 2 else "structure",
+            e.get("summary", ""),
+            reason,
+        )
+        ranked.append((-level, -share, -count, name, found))
+    return [f for *_, f in sorted(ranked, key=lambda r: r[:4])][:MAX_RESULTS]
 
 
 def _entry(fn_or_name: Any) -> dict:

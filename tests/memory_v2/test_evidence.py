@@ -42,19 +42,26 @@ def test_add_pass_notes_appends_to_the_recorded_reasons(tmp_path):
         ev.add_pass_notes("missing", ["x"])
 
 
-def test_input_shapes_are_kept_per_item_body_as_a_sorted_union(tmp_path):
-    from unify.memory_v2.evidence import MAX_INPUT_SHAPES
-
+def test_shape_snapshots_are_frozen_per_commit(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
-    assert ev.input_shapes("env/w:read", "b1") is None
-    a = {"kind": "value", "tree": {"a": "int"}}
-    b = {"kind": "value", "tree": {"b": "str"}}
-    ev.add_input_shapes("env/w:read", "b1", [b])
-    ev.add_input_shapes("env/w:read", "b1", [a, b])
-    assert ev.input_shapes("env/w:read", "b1") == [a, b]
-    assert ev.input_shapes("env/w:read", "b2") is None  # another body has none
-    ev.add_input_shapes("env/w:read", "b2", [])
-    assert ev.input_shapes("env/w:read", "b2") is None
-    many = [{"kind": "value", "tree": {f"k{i:02d}": "int"}} for i in range(40)]
-    ev.add_input_shapes("env/w:other", "b1", many)
-    assert ev.input_shapes("env/w:other", "b1") == many[:MAX_INPUT_SHAPES]
+    assert ev.commit_shapes("c1") is None
+    a = {"kind": "value", "tree": {"a": "int"}, "lengths": {}}
+    rows = {"env/w:read": {"body": "b1", "shapes": [a], "backfilled": False}}
+    assert ev.write_commit_shapes("c1", rows)
+    assert ev.commit_shapes("c1") == rows
+    # written once: a second write of the same commit changes nothing
+    assert not ev.write_commit_shapes(
+        "c1",
+        {"env/w:read": {"body": "b2", "shapes": [], "backfilled": True}},
+    )
+    assert ev.commit_shapes("c1") == rows
+    # a commit with no rows still has a (frozen, empty) snapshot
+    assert ev.write_commit_shapes("c2", {}) and ev.commit_shapes("c2") == {}
+
+
+def test_covers_of_an_item_are_sorted(tmp_path):
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    ev.add_cover("env/w:read", "e2", 0)
+    ev.add_cover("env/w:read", "e1", 3)
+    ev.add_cover("env/w:other", "e1", 0)
+    assert ev.covers_of("env/w:read") == [("e1", 3), ("e2", 0)]
