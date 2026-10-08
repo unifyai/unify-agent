@@ -26,6 +26,37 @@ _ENV = {
 }
 
 
+#: Never handed to a git child, by exact name: memory v2's route for Sol's calls
+#: (``unify.sandbox.HARNESS_ONLY_ENV``), kept here too for when ``unify.sandbox`` cannot be imported.
+_HARNESS_ONLY = frozenset(
+    {
+        "UNIFY_MEMORY_V2_SOL_BASE_URL",
+        "UNIFY_MEMORY_V2_SOL_TOKEN",
+        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+    },
+)
+
+
+def git_child_env(extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The environment of every git child memory v2 starts: this process's without credentials and
+    the harness-only Sol route (``unify.sandbox.scrubbed_env``), without inherited ``GIT_*``, then
+    *extra* (the call's own git settings). Git needs none of what is dropped; a git child is a process
+    the token audit sees, so it holds nothing only the controller may hold."""
+    try:
+        from unify.sandbox import scrubbed_env
+
+        base = scrubbed_env()
+    except ImportError:  # outside the harness package: drop the route by name at least
+        base = dict(os.environ)
+    env = {
+        k: v
+        for k, v in base.items()
+        if not k.startswith("GIT_") and k.upper() not in _HARNESS_ONLY
+    }
+    env.update(extra or {})
+    return env
+
+
 def _trailer_block(trailers: Mapping[str, str | Sequence[str]]) -> str:
     lines = []
     for key, val in trailers.items():
@@ -204,8 +235,7 @@ GIT_TIMEOUT_S = 120
 
 
 def _git(args: list[str], input: str | None = None, cwd: Path | None = None) -> str:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(_ENV)
+    env = git_child_env(_ENV)
     try:
         proc = subprocess.run(
             ["git", *_HARD, *args],

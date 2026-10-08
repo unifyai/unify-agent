@@ -94,11 +94,14 @@ def actor_effort() -> str:
 def build_id() -> str:
     """The harness checkout's commit, or ``unknown`` when it is not a git checkout."""
     root = Path(__file__).resolve().parents[3]
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(
-        GIT_CONFIG_NOSYSTEM="1",
-        GIT_CONFIG_GLOBAL="/dev/null",
-        GIT_TERMINAL_PROMPT="0",
+    from ..gitio import git_child_env
+
+    env = git_child_env(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_TERMINAL_PROMPT": "0",
+        },
     )
     try:
         out = subprocess.run(
