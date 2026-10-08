@@ -30,6 +30,7 @@ from tests.scripted_model import Always, ScriptedModel, reply, scripted
 from unify.common._async_tool import cache_discipline as cd
 from unify.common._async_tool.context_compression import (
     _COMPRESSED_HEADER,
+    REQUEST_START_KEY,
     RESTART_NOTICE,
     current_request_messages,
     kept_prefix,
@@ -209,6 +210,76 @@ def test_requester_messages_that_arrived_together_are_one_request():
     ]
     assert current_request_messages(history) == [a, b]
     assert kept_prefix(history)[1] == [first, a, b]
+
+
+def test_a_marked_request_keeps_the_requesters_additions():
+    """A persistent session marks the requester message that started a
+    request; the request then holds every requester message after it, an
+    addition sent while it ran included, not only the latest one."""
+    first = _requester("First")
+    start = _requester("Look again", _interjection=True, **{REQUEST_START_KEY: True})
+    addition = _requester("Also check the second source", _interjection=True)
+    history = [
+        {"role": "system", "content": SYSTEM},
+        first,
+        _assistant("first done"),
+        start,
+        _assistant(calls=[{"id": "c1"}]),
+        {"role": "tool", "tool_call_id": "c1", "content": "x"},
+        addition,
+        _assistant(calls=[{"id": "c2"}]),
+        {"role": "tool", "tool_call_id": "c2", "content": "y"},
+        loop_user_notice("a notice"),
+    ]
+    assert current_request_messages(history) == [start, addition]
+    assert kept_prefix(history)[1] == [first, start, addition]
+    # Unmarked, the same history keeps only the latest run, as before.
+    del start[REQUEST_START_KEY]
+    assert current_request_messages(history) == [addition]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", ["on", "off"])
+async def test_only_the_switch_marks_where_a_request_starts(keep_prefix, value):
+    """With the switch on, each requester message that arrived while the
+    session waited for its next request is marked; off, no message is."""
+    keep_prefix(value)
+    model = _model(
+        actor=[reply("first done"), reply("second done"), reply("third done")],
+    )
+    client, _, answers = await _session(model)
+    assert answers == ["first done", "second done", "third done"]
+    marked = [m["content"] for m in client.messages if m.get(REQUEST_START_KEY)]
+    assert marked == (["Second", "Third"] if value == "on" else [])
+
+
+@pytest.mark.parametrize("provider", ["openai", "anthropic"])
+def test_the_request_start_mark_changes_no_cache_key(provider):
+    """unillm strips underscore keys while it preprocesses a request, before
+    its response cache builds the key, so a recorded cache replays whether
+    the mark is there or not."""
+    import copy
+
+    from unillm.caching._caching import _cache_key_kwargs
+    from unillm.caching.base_cache import BaseCache
+    from unillm.clients.provider_preprocessing import apply_provider_preprocessing
+
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": "First"},
+        {"role": "assistant", "content": "first done"},
+        {"role": "user", "_interjection": True, "content": "Second"},
+    ]
+    marked = copy.deepcopy(messages)
+    marked[-1][REQUEST_START_KEY] = True
+
+    def key(msgs):
+        kw = {"model": "gpt-5", "messages": copy.deepcopy(msgs)}
+        apply_provider_preprocessing(kw, provider)
+        return BaseCache.serialize_object(_cache_key_kwargs(kw))
+
+    assert REQUEST_START_KEY not in key(marked)
+    assert key(marked) == key(messages)
 
 
 def test_the_first_message_is_not_kept_twice():
