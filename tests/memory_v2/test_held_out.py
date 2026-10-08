@@ -918,10 +918,10 @@ def test_the_declared_input_decides_the_first_argument_form(recorded):
     assert raw.payload["path"].startswith("/cases/files/")
     # the same fields are perturbed whatever the form
     assert {c.field for c in by["text"].cases} == {c.field for c in by["path"].cases}
-    # a form a cover's kind cannot give is noted, and that cover checks nothing
+    # a form a cover's kind cannot give fails the item (C1)
     env = plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind="env")
     assert env.cases == []
-    assert any("cannot be given the declared input env" in n for n in env.notes)
+    assert env.unfit == ["declares input env, which a worktree cover cannot give"]
     # a dialogue observation declared as an observation is passed as before
     d = plan(
         "env/dialogue_user:p",
@@ -973,6 +973,63 @@ def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(record
     assert sku.payload["observation"]["kind"] == "page"  # the constant tag is kept
     # a rejection of the call exempts keywords, never response fields
     assert all(c.family[0] == "tool_response" for c in p.cases)
+
+
+def test_a_declared_form_a_cover_cannot_give_fails_the_item(recorded):
+    """C1: a declared form that no covered input can be given in would check nothing."""
+    store, acts = recorded
+
+    def unfit(cover_idx, kind, covers=None):
+        return plan(
+            "env/x:f",
+            covers or _covers(acts, *cover_idx),
+            seen=acts,
+            blob=store.get,
+            input_kind=kind,
+        ).unfit
+
+    assert unfit([5], "path") == [
+        "declares input path, which a dialogue cover cannot give",
+    ]
+    assert unfit([4], "env") == [
+        "declares input env, which a worktree cover cannot give",
+    ]
+    assert unfit([0], "bytes") == [
+        "declares input bytes, which a tool cover cannot give",
+    ]
+    assert unfit([5], "text") == [
+        "declares input text, which a dialogue cover with a non-text observation cannot give",
+    ]
+    plain = _search("red", 5, response="3 results")
+    assert unfit(None, "observation", [("h1", 0, plain)]) == [
+        "declares input observation, which a tool cover without a JSON response cannot give",
+    ]
+    # forms the covers can give pass; a plain-text observation gives nothing to perturb: a note
+    assert (
+        unfit([4], "text") == []
+        and unfit([0], "env") == []
+        and unfit([5], "observation") == []
+    )
+    text_obs = _dl(0, "Inventory: wood 1")
+    p = plan(
+        "env/x:f",
+        [("h1", 0, text_obs)],
+        seen=[],
+        blob=store.get,
+        input_kind="observation",
+    )
+    assert p.unfit == [] and p.cases == []
+    assert any("give nothing to perturb as observation" in n for n in p.notes)
+    # a failing form is reported by run_plan as a failure, before anything runs
+    v = run_plan(
+        "env/x:f",
+        plan("env/x:f", _covers(acts, 5), seen=acts, blob=store.get, input_kind="path"),
+        tree=Path("/nonexistent"),
+        python=Path("/x"),
+        work=Path("/nonexistent/w"),
+        runner=_rows_runner([]),
+    )
+    assert v.failures == ["declares input path, which a dialogue cover cannot give"]
 
 
 def test_shell_covers_are_skipped_with_a_note(recorded):
@@ -1693,6 +1750,25 @@ def test_a_constant_tag_is_identity_and_a_varying_whitelist_is_still_flagged(
     assert any(
         r.startswith("note:") and "not perturbed: type, version" in r
         for r in res.reasons
+    ), res.reasons
+
+
+ROOM_WHITELIST = """    if obs["room"] != "hall":
+        raise MemoryInputError("not the recorded room")
+    return obs"""
+
+
+@needs_bwrap
+def test_a_declared_form_the_covers_cannot_give_fails_g2(shop):
+    """C1: a dialogue whitelist declared as taking a path would otherwise check nothing."""
+    mem, gate = shop
+    mod = _module("parse", "obs", ROOM_WHITELIST, doc="Parse a room.")
+    res = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="path")
+    assert res.checks["G1"], res.reasons
+    assert not res.checks["G2"]
+    assert (
+        "G2: env/dialogue_user:parse declares input path, which a dialogue cover cannot give"
+        in res.reasons
     ), res.reasons
 
 

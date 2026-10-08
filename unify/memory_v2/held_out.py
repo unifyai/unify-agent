@@ -60,7 +60,11 @@ from before declarations), each kind's convention, as ``memory_v2_offline/later_
 worktree ``path``, dialogue ``observation``. A later parameter takes the
 recorded call's keyword of the same name (tool), else its default, else ``""``. A field case whose keyword
 the function does not take is not run, and is noted. Each covered input is also run unperturbed, through
-the same serialisation (the baseline); a cover whose baseline is refused checks nothing and is noted. A
+the same serialisation (the baseline); a cover whose baseline is refused checks nothing and is noted.
+A declared form that a cover cannot give fails G2 (it would check nothing and tell the working model a
+wrong form): a form the cover's kind lacks (a dialogue item declared ``path``), ``text`` for a dialogue
+observation that is not a string, ``observation`` for a tool response that is not JSON. A cover that gives
+its form but nothing to perturb (a plain-text observation, a file of another format) is noted. A
 baseline that fails otherwise (any other error) still lets its perturbed cases be judged: a refusal there
 means the changed value turned the run into a refusal.
 
@@ -776,6 +780,8 @@ class Case:
 class Plan:
     cases: list[Case] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # declared input forms a cover cannot give, as reason text (G2 fails on each)
+    unfit: list[str] = field(default_factory=list)
     # family -> the fields a covered rejection of that family varied (see the module docstring)
     exempt: dict[tuple[str, str, str], set[str]] = field(default_factory=dict)
     # declared fields whose recorded values are not of their declared type: field -> type
@@ -977,6 +983,24 @@ def _exemptions(
         out.exempt.setdefault(fam, set()).update(varied)
 
 
+def _unfit_reason(a: Action, input_kind: str | None) -> str | None:
+    """Why *a*'s covered input cannot be given in the declared form, or None (also when none is declared)."""
+    if input_kind is None:
+        return None
+    kind = getattr(a, "kind", "tool")
+    if input_kind not in _FORMS.get(kind, ()):
+        return f"declares input {input_kind}, which a {kind} cover cannot give"
+    if kind == "dialogue" and input_kind == "text" and not isinstance(a.response, str):
+        return "declares input text, which a dialogue cover with a non-text observation cannot give"
+    if (
+        kind == "tool"
+        and input_kind == "observation"
+        and _observation_doc(a.response) is None
+    ):
+        return "declares input observation, which a tool cover without a JSON response cannot give"
+    return None
+
+
 def plan(
     item: str,
     covers: list[tuple[str, int, Action]],
@@ -1009,23 +1033,24 @@ def plan(
         if kind != "shell" and a.status == "ok" and not is_rejection(a):
             chosen.setdefault((eid, idx), a)
     fit: list[tuple[str, int]] = []
-    unfit: dict[str, int] = {}  # covers of a kind that cannot give the declared form
     for c, a in chosen.items():
-        kind = getattr(a, "kind", "tool")
-        if _form(a, input_kind) in _FORMS.get(kind, ()):
+        why = _unfit_reason(a, input_kind)
+        if why is None:
             fit.append(c)
-        else:
-            unfit[kind] = unfit.get(kind, 0) + 1
-    for kind, n in sorted(unfit.items()):
-        out.notes.append(
-            f"{n} {kind} cover(s) cannot be given the declared input {input_kind}; not checked",
-        )
+        elif why not in out.unfit:
+            out.unfit.append(why)
     ranked = sorted(
         fit,
         key=lambda c: hashlib.sha256(f"{item}\0{c[0]}\0{c[1]}".encode()).digest(),
     )
     order = ranked[:MAX_COVERS_PER_ITEM]
     docs = {c: _doc(chosen[c], blob, input_kind) for c in order}
+    empty = sum(1 for d in docs.values() if d is None)
+    if empty and input_kind is not None:
+        out.notes.append(
+            f"{empty} cover(s) give nothing to perturb as {input_kind} (not JSON, or a file of "
+            "another format); not checked",
+        )
     docs = {c: d for c, d in docs.items() if d is not None}
     dfam = {c: _doc_family(chosen[c], input_kind) for c in docs}
     _exemptions(out, covers, chosen, seen, blob)
@@ -1359,7 +1384,7 @@ def run_plan(
     runner: Callable[..., SandboxResult] = run_confined,
 ) -> Verdict:
     """Run *p*'s cases on *item* of the memory *tree* in one confined process and judge them."""
-    verdict = Verdict(notes=list(p.notes))
+    verdict = Verdict(notes=list(p.notes), failures=list(p.unfit))
     for name, sem in p.mismatched.items():
         verdict.failures.append(
             f"declared {sem} field {name[:80]} does not match its recorded values",
