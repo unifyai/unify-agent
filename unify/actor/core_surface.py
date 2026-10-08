@@ -1363,28 +1363,15 @@ _SINGLE_CALL_RULE = re.compile(
 _SESSION_TOOLS = re.compile(
     r";?\s*choose via\s*``list_sessions\(\)`` / ``inspect_state\(\)``\.",
 )
-_STEERING_DOC = re.compile(
-    r"\n[ \t]*Steering while the block runs\n[ \t]*-+\n.*?(?=\n[ \t]*\n[ \t]*\S[^\n]*\n[ \t]*-{3,}|\Z)",
-    re.DOTALL,
-)
 
 
 def execute_code_doc(doc: str, *, steering: bool) -> str:
     """``execute_code``'s description for the core surface: no
     ``execute_function`` to prefer, no session tools to choose a session
-    with, and the steering section only where the steering tools exist."""
+    with."""
     doc = _SINGLE_CALL_RULE.sub("\n", doc, count=1)
     doc = _SESSION_TOOLS.sub(".", doc, count=1)
     doc = doc.replace("FunctionManager-discovered", "library", 1)
-    if not steering:
-        doc = _STEERING_DOC.sub("", doc, count=1)
-    else:
-        # The stop_* tools this names were replaced by ``steer``.
-        doc = doc.replace(
-            "``stop_execute_code_<call_id>`` abandons",
-            '``steer(call_id=<id>, action="stop")`` abandons',
-            1,
-        )
     return doc.rstrip() + "\n"
 
 
