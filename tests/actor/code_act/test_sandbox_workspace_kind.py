@@ -2,8 +2,10 @@
 
 The workspace (``UNIFY_LOCAL_ROOT``, or ``<UNIFY_HOME>/workspace``) is where
 the work is, so a top-level directory such as ``/data`` is allowed; only ``/``,
-a home itself, ``UNIFY_HOME`` itself, a system directory and a directory that
-is or holds a configuration, cache or credential directory are refused.
+a home itself, ``UNIFY_HOME`` itself, a system directory, a directory that
+is or holds a configuration, cache or credential directory, and one that is,
+holds or (but for an editable checkout's root) is inside the harness's own
+code are refused.
 Inside it, secret files are masked (by an incremental, bounded scan), and a
 state directory or log directory it holds stays hidden (the store,
 ``internal-transcripts/``, the logs) while ``transcripts/`` stays readable. Each test checks access only, on files it
@@ -120,6 +122,72 @@ def test_home_state_and_ancestors_of_a_fake_config_or_cache_are_refused(
     assert sandbox._workspace_refusal(state) is not None
     assert sandbox._workspace_refusal(project) is None
     assert sandbox._workspace_refusal(state / "workspace") is None
+
+
+def test_a_workspace_that_is_or_holds_the_harness_code_is_refused(tmp_path):
+    """The workspace is bound read-write after every mount: holding the
+    package, a prefix or an editable root would make that code writable, and
+    one above the package would let a cell plant the CLI's ``.env``."""
+    package = tmp_path / "repo" / "unify"
+    venv = tmp_path / "repo" / ".venv"
+    editable = tmp_path / "libs" / "unillm"
+    code = [
+        (package, True),
+        (venv, True),
+        (editable, False),
+        (editable / "unillm", True),
+    ]
+
+    def refusal(path: Path):
+        return sandbox._workspace_refusal(path, homes=[], guarded=[], code=code)
+
+    for path in (
+        package,
+        package.parent,
+        tmp_path,
+        package / "sub",
+        venv,
+        venv / "lib" / "site-packages",
+        editable,
+        editable / "unillm" / "clients",
+    ):
+        assert refusal(path) is not None, path
+    # Beside the code, or in an editable checkout's other directories.
+    for path in (
+        tmp_path / "repo" / "work",
+        tmp_path / "libs" / "other",
+        editable / "data",
+    ):
+        assert refusal(path) is None, path
+
+
+def test_the_real_package_and_interpreter_are_in_the_code_roots():
+    import sys
+
+    package = Path(sandbox.__file__).resolve().parent
+    code = dict(sandbox._workspace_code_roots())
+    assert code[package] is True
+    assert code[Path(os.path.realpath(sys.prefix))] is True
+    for path in (package, package.parent, Path(sys.prefix), Path(sys.prefix) / "lib"):
+        assert sandbox._workspace_refusal(path) is not None, path
+
+
+@needs_bwrap
+def test_a_workspace_above_the_package_is_refused_by_wrap_argv(world, monkeypatch):
+    # A stand-in package in the test's own tree: a policy over the real
+    # checkout would scan it.
+    project = world["home"].parent / "project"
+    package = project / "unify"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    monkeypatch.setattr(sandbox, "_workspace_code_roots", lambda: [(package, True)])
+    monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_ROOT", str(project))
+    monkeypatch.setattr(sandbox, "_POLICY_CACHE", None)
+    policy = sandbox.build_policy(fresh=True)
+    with pytest.raises(sandbox.SandboxRefusal) as raised:
+        sandbox.wrap_argv(["true"], policy)
+    assert raised.value.rule == "root-allowlist"
+    assert "harness's code" in str(raised.value)
 
 
 # ── secrets inside the workspace ────────────────────────────────────────────
