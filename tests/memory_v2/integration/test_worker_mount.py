@@ -60,7 +60,6 @@ async def test_the_worker_imports_and_writes_the_export_and_sees_nothing_else(
     world,  # noqa: F811
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
     paths, hidden = _home(world)
     monkeypatch.setattr(
@@ -95,7 +94,6 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
     world,  # noqa: F811
     monkeypatch,
 ):
-    monkeypatch.setattr(SETTINGS, "UNIFY_WORKSPACE_PYTHON", "worker")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "")
     paths, hidden = _home(world)
     monkeypatch.setattr(
