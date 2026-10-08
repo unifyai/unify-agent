@@ -344,6 +344,25 @@ class ProductionSettings(BaseSettings):
     # process, so with Python in the sandboxed worker it is refused and
     # start-up stops. Empty stores without the check.
     UNIFY_STORE_VERIFY: str = ""
+    # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
+    # ``on`` replaces the storage review, the ``functions``/``guidance``
+    # objects and the library shortlist with a per-request export of the
+    # memory repo (``<UNIFY_HOME>/memory``) on the worker's import path and
+    # its index at the end of the system prompt (unify/memory_v2/integration).
+    # Needs the sandboxed worker and the core tool surface. Empty or ``off``:
+    # as shipped. The companions (parsed by unify/memory_v2/integration/
+    # switch.py) apply only when it is on: ``_E`` is the experience budget in
+    # tokens at which a batched consolidation pass becomes due; ``_SOL_MODEL``
+    # runs the passes, at the actor's reasoning effort for the run;
+    # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
+    # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
+    # stops further passes once the run's Sol USD plus the next cap would
+    # exceed it.
+    UNIFY_MEMORY_V2: str = ""
+    UNIFY_MEMORY_V2_E: int = 150000
+    UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
+    UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
+    UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
     # When a provider refuses a forced tool choice ("required", "any" or one
     # named tool) with HTTP 400 because the model does not support it, retry
     # that call once with tool_choice "auto" and an instruction to make the
@@ -537,6 +556,20 @@ class ProductionSettings(BaseSettings):
                 f"not {v!r}",
             )
         return value
+
+    @field_validator(
+        "UNIFY_MEMORY_V2",
+        "UNIFY_MEMORY_V2_E",
+        "UNIFY_MEMORY_V2_SOL_MODEL",
+        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        mode="before",
+    )
+    @classmethod
+    def parse_memory_v2(cls, v: Any, info: Any) -> Any:
+        from unify.memory_v2.integration import switch
+
+        return switch.PARSERS[info.field_name](v)
 
     @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
     @classmethod
