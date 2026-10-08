@@ -30,8 +30,9 @@ The contract (online build, spec §F1 and D23):
   (above 2) of a descriptor the launcher passes the controller, holding the token (one trailing newline
   allowed). Settings only normalise it. When settings are first settled it is parsed and the descriptor read
   once (at most :data:`TOKEN_FD_MAX_BYTES` bytes and :data:`TOKEN_FD_TIMEOUT_S` seconds), then closed, so no
-  later child inherits it; the token never enters ``os.environ`` (which carries only the number) and is
-  registered with the redactors. A bad number, or a descriptor not open, not inherited, not a pipe or file,
+  later child inherits it; the token never enters ``os.environ``, the number leaves it (every letter case;
+  held internally for the stray check) so no later child sees the name, and the token is registered with
+  the redactors. A bad number, or a descriptor not open, not inherited, not a pipe or file,
   empty, oversize, slow or not holding a bearer token: every pass is refused, naming the rule, never a value.
 - ``UNIFY_MEMORY_V2_SOL_USAGE``: ``on``, ``off`` or empty (empty and ``off`` mean off). When on, each pass's
   first message ends with the table of how requests used each library function (``usage.usage_table``);
@@ -362,6 +363,8 @@ TOKEN_FD_TIMEOUT_S = 5.0
 #: Sol's token as read from ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` (once per process; never in ``os.environ``).
 _FD_TOKEN: SecretStr | None = None
 _FD_TRIED = False
+#: The descriptor number the first settle read (settings' value), kept once it has left ``os.environ``.
+_FD_HELD = ""
 
 
 def _read_token_fd(fd: int) -> str:
@@ -435,7 +438,9 @@ def settle_sol_route_env(
     Called once the settings are built (``unify/settings.py``), again after the CLI loads ``.env`` and whenever
     a pass is about to start. The first call with ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` set reads the token from that
     descriptor and closes it (:func:`_read_token_fd`); a failed read, or both that and
-    ``UNIFY_MEMORY_V2_SOL_TOKEN`` set, refuses every pass. Every
+    ``UNIFY_MEMORY_V2_SOL_TOKEN`` set, refuses every pass. Every case variant of
+    ``UNIFY_MEMORY_V2_SOL_TOKEN_FD`` then leaves *environ* (the number is held here for the stray check, and
+    no later call reads a descriptor again), so no child spawned afterwards sees the name. Every
     case variant of ``UNIFY_MEMORY_V2_SOL_TOKEN`` is removed from *environ* and its value registered for
     redaction (pydantic-settings matches names in any case). A token or base URL found in *environ* that the
     settings do not hold (one that arrived after they were built, from ``.env`` say, or two case variants
@@ -443,7 +448,7 @@ def settle_sol_route_env(
     :func:`sol_route` refuses every pass with the returned message. The message names settings, never
     values. Returns ``None`` when they agree.
     """
-    global _ENV_REFUSAL, _FD_TOKEN, _FD_TRIED
+    global _ENV_REFUSAL, _FD_TOKEN, _FD_TRIED, _FD_HELD
     raw = getattr(settings, SOL_TOKEN, "")
     held_token = _stripped(
         raw.get_secret_value() if isinstance(raw, SecretStr) else raw,
@@ -454,6 +459,7 @@ def settle_sol_route_env(
     fd_refusal = None
     if held_fd and not _FD_TRIED:
         _FD_TRIED = True
+        _FD_HELD = held_fd
         try:  # a SolRouteRefused is a ValueError; neither quotes a value
             fd = parse_sol_token_fd(held_fd)
             _FD_TOKEN = SecretStr(_read_token_fd(int(fd or 0)))
@@ -474,7 +480,8 @@ def settle_sol_route_env(
         if _stripped(environ.get(name)) != held_base:
             stray.append(SOL_BASE_URL)
     for name in [k for k in environ if k.upper() == SOL_TOKEN_FD]:
-        if _stripped(environ.get(name)) != held_fd:
+        # removed once read, so no later child sees the name; compared with the number held
+        if _stripped(environ.pop(name, "")) != (held_fd or _FD_HELD):
             stray.append(SOL_TOKEN_FD)
     if fd_refusal and _ENV_REFUSAL is None:
         _ENV_REFUSAL = fd_refusal

@@ -1346,6 +1346,7 @@ def fd_route(monkeypatch):
     monkeypatch.setattr(switch, "_ENV_REFUSAL", None)
     monkeypatch.setattr(switch, "_FD_TOKEN", None)
     monkeypatch.setattr(switch, "_FD_TRIED", False)
+    monkeypatch.setattr(switch, "_FD_HELD", "")
     for name in [k for k in os.environ if k.upper() in _FD_NAMES]:
         monkeypatch.delenv(name)
     opened: list[tuple[int, int, int]] = []
@@ -1407,7 +1408,8 @@ def test_the_token_is_read_from_its_descriptor_which_is_then_closed(
     kind,
 ):
     """Settled once, the token comes from the inherited descriptor (one trailing newline stripped), the
-    descriptor is closed, the environment holds only its number, and the redactors hold the token.
+    descriptor is closed, the environment holds neither the token nor the number, and the redactors hold
+    the token.
     """
     from unify.settings import ProductionSettings
 
@@ -1433,7 +1435,7 @@ def test_the_token_is_read_from_its_descriptor_which_is_then_closed(
         cfg.route.token.get_secret_value(),
     ) == _digest(token)
     assert refusal is None and closed and used
-    assert not in_env and os.environ[_FD] == str(fd)
+    assert not in_env and not [k for k in os.environ if k.upper() == _FD]
     assert _registered(token)
     assert s.UNIFY_MEMORY_V2_SOL_TOKEN.get_secret_value() == ""
 
@@ -1471,6 +1473,109 @@ def test_a_child_spawned_after_the_read_does_not_inherit_the_descriptor(fd_route
     refusal = switch.settle_sol_route_env({}, _fd_settings(fd))
     after = child_sees_it()
     assert before and refusal is None and not after
+
+
+def test_the_descriptor_name_leaves_the_environment_and_is_never_read_again(
+    monkeypatch,
+    fd_route,
+):
+    """Once settled, no letter case of the name is left in the environment; a later settle reads no
+    descriptor again and does not refuse, while a different number arriving later is refused as stray.
+    """
+    fd = _token_fd(fd_route, secrets.token_urlsafe(32).encode() + b"\n")
+    monkeypatch.setenv(_FD, str(fd))
+    monkeypatch.setenv(_FD.lower(), str(fd))
+    settings = _fd_settings(fd)
+    first = switch.settle_sol_route_env(os.environ, settings)
+    left = [k for k in os.environ if k.upper() == _FD]
+    assert first is None and left == [] and not _is_open(fd)
+    reads: list[int] = []
+    monkeypatch.setattr(switch, "_read_token_fd", lambda n: reads.append(n) or "")
+    again = switch.settle_sol_route_env(os.environ, settings)
+    same_back = switch.settle_sol_route_env({_FD: str(fd)}, settings)
+    assert again is None and same_back is None and reads == []
+    held = switch.sol_token(settings)
+    assert held is switch._FD_TOKEN and held.get_secret_value()
+    late = {_FD.lower(): str(fd + 1)}
+    refusal = switch.settle_sol_route_env(late, settings)
+    assert refusal is not None and _FD in refusal and late == {} and reads == []
+
+
+def test_a_child_spawned_after_settings_sees_neither_the_name_nor_the_descriptor(
+    tmp_path,
+):
+    """A fresh controller given the descriptor (``pass_fds``, as the launcher passes it) imports the
+    settings, which read it; a child it then spawns with its inherited environment and default
+    ``close_fds`` finds no letter case of the name in its environment and the number not open. The
+    processes print booleans only.
+    """
+    import unify
+
+    token = secrets.token_urlsafe(32)
+    r, w = os.pipe()
+    try:
+        os.write(w, token.encode() + b"\n")
+    finally:
+        os.close(w)
+    ino = os.fstat(r).st_ino
+    root = Path(unify.__file__).resolve().parents[1]
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _FD_NAMES}
+    env.update(
+        {
+            "UNIFY_MEMORY_V2_SOL_BASE_URL": SOL_BASE,
+            _FD: str(r),
+            "PYTHONPATH": os.pathsep.join(
+                [str(root), *filter(None, [env.get("PYTHONPATH", "")])],
+            ),
+        },
+    )
+    # the pipe is looked for by identity (a FIFO with its inode), since its number may be reused
+    grandchild = (
+        "import json, os, stat\n"
+        "def is_pipe(n):\n"
+        "    try:\n"
+        "        st = os.fstat(n)\n"
+        "    except OSError:\n"
+        "        return False\n"
+        f"    return stat.S_ISFIFO(st.st_mode) and st.st_ino == {ino}\n"
+        f"fd_open = is_pipe({r})\n"
+        "listed = any(is_pipe(int(n)) for n in os.listdir('/proc/self/fd'))\n"
+        f"named = any(k.upper() == {_FD!r} for k in os.environ)\n"
+        "print(json.dumps({'named': named, 'fd_open': fd_open, 'listed': listed}))\n"
+    )
+    code = (
+        "import json, os, subprocess, sys\n"
+        "import unify.settings\n"
+        "from unify.memory_v2.integration import switch\n"
+        f"named = any(k.upper() == {_FD!r} for k in os.environ)\n"
+        f"proc = subprocess.run([sys.executable, '-c', {grandchild!r}], capture_output=True,"
+        " text=True, timeout=120)\n"
+        "child = json.loads(proc.stdout.strip().splitlines()[-1])\n"
+        "print(json.dumps({'refused': switch._ENV_REFUSAL is not None, 'named': named,"
+        " 'read': switch._FD_TOKEN is not None, 'child': child}))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=tmp_path,
+            pass_fds=(r,),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    finally:
+        os.close(r)
+    shown = token in proc.stdout or token in proc.stderr
+    assert not shown
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    out = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert out == {
+        "refused": False,
+        "named": False,
+        "read": True,
+        "child": {"named": False, "fd_open": False, "listed": False},
+    }
 
 
 def test_both_token_settings_refuse_every_pass(fd_route):
