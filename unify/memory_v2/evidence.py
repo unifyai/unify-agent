@@ -26,7 +26,56 @@ CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel T
   passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT);
 CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
 CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
+CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, imported INTEGER, called INTEGER, refused INTEGER,
+  errored INTEGER, refused_accepted INTEGER, referenced INTEGER, guarded INTEGER, unknown_calls INTEGER,
+  PRIMARY KEY(item, episode_id));
 """
+
+_USE_COUNTS = (
+    "imported",
+    "called",
+    "refused",
+    "errored",
+    "refused_accepted",
+    "referenced",
+    "guarded",
+    "unknown_calls",
+)
+_IN_CHUNK = 500
+
+
+def _use_rows(eid: str, use: dict) -> list[tuple]:
+    """One ``item_use`` row per item at the episode's pin (an exposure, zeros included) and per item the
+    record counts; ``unknown_calls`` is the dynamic calls on the item's channel plus on ``env`` itself.
+    """
+    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
+    pinned = [i for i in use.get("items_at_pin") or [] if isinstance(i, str)]
+    unknown = (
+        use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
+    )
+
+    def n(value: object) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    out = []
+    for item in sorted(set(pinned) | {k for k in rows if isinstance(k, str)}):
+        r = rows.get(item) if isinstance(rows.get(item), dict) else {}
+        channel = item.split(":", 1)[0].removeprefix("env/")
+        out.append(
+            (
+                item,
+                eid,
+                n(r.get("imported")),
+                n(r.get("called")),
+                n(r.get("refused")),
+                n(r.get("errored")),
+                n(r.get("refused_then_accepted")),
+                n(r.get("referenced")),
+                n(r.get("guarded")),
+                n(unknown.get(channel)) + n(unknown.get("*")),
+            ),
+        )
+    return out
 
 
 class EvidenceStore:
@@ -59,7 +108,70 @@ class EvidenceStore:
                 "INSERT INTO experience VALUES(?,?,?)",
                 (ep.episode_id, tokens, how),
             )
+            use = getattr(ep, "memory_use", None)
+            if isinstance(use, dict):
+                self.db.executemany(
+                    "INSERT OR REPLACE INTO item_use VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    _use_rows(ep.episode_id, use),
+                )
             return int(cur.lastrowid)
+
+    # -- item use (memory v2.1 telemetry) --------------------------------------------------------------
+
+    def item_use(self, eids: list[str] | None = None) -> dict[str, dict]:
+        """Per item, the summed ``item_use`` counts over *eids* (every indexed episode when None).
+
+        Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
+        with a call site), and the sums of :data:`_USE_COUNTS`. Items are in id order.
+        """
+        cols = ", ".join(f"SUM({c})" for c in _USE_COUNTS)
+        base = (
+            f"SELECT item, COUNT(*), SUM(CASE WHEN called > 0 THEN 1 ELSE 0 END), {cols} "
+            "FROM item_use"
+        )
+        out: dict[str, dict] = {}
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            if chunk is None:
+                rows = self.db.execute(f"{base} GROUP BY item").fetchall()
+            else:
+                marks = ",".join("?" * len(chunk))
+                rows = self.db.execute(
+                    f"{base} WHERE episode_id IN ({marks}) GROUP BY item",
+                    chunk,
+                ).fetchall()
+            for r in rows:
+                cur = out.setdefault(
+                    r[0],
+                    {
+                        "requests": 0,
+                        "used_requests": 0,
+                        **dict.fromkeys(_USE_COUNTS, 0),
+                    },
+                )
+                cur["requests"] += int(r[1] or 0)
+                cur["used_requests"] += int(r[2] or 0)
+                for c, v in zip(_USE_COUNTS, r[3:]):
+                    cur[c] += int(v or 0)
+        return dict(sorted(out.items()))
+
+    def last_call_seq(self, item: str) -> int | None:
+        """The ``seq`` of the latest indexed episode with a call site of *item*, or None."""
+        row = self.db.execute(
+            "SELECT MAX(e.seq) FROM item_use u JOIN episodes e ON e.episode_id=u.episode_id "
+            "WHERE u.item=? AND u.called > 0",
+            (item,),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    def latest_seq(self) -> int:
+        """The ``seq`` of the latest indexed episode (0 when none)."""
+        row = self.db.execute("SELECT MAX(seq) FROM episodes").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
 
     def seq_of(self, eid: str) -> int:
         row = self.db.execute(

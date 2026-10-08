@@ -383,6 +383,74 @@ def test_abort_after_finish_changes_nothing(mv2):
     _left_nothing(mv2.paths)
 
 
+def _cell_lines(code: str, system: str) -> list[dict]:
+    meta = {"duration_ms": 1}
+    return [
+        {"seq": 0, "type": "system_prompt", "content": system},
+        {
+            "seq": 1,
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_code",
+                            "arguments": json.dumps({"code": code}),
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            "seq": 2,
+            "type": "message",
+            "message": {
+                "role": "tool",
+                "tool_call_id": "c0",
+                "content": [{"type": "text", "text": json.dumps(meta)}],
+            },
+        },
+    ]
+
+
+def test_finish_records_how_the_request_used_the_library(mv2):
+    """The record is computed at finish from the transcript against the items at the pin, written as the
+    episode's ``memory_use.json`` and indexed per item."""
+    import hashlib
+
+    from unify.memory_v2.episodes import episode_dir
+    from unify.memory_v2.evidence import EvidenceStore
+    from unify.memory_v2.gitio import Repo
+
+    run = _begin(mv2, "Say hi to ada.")
+    assert run.item_ids == ["env/spotify:hello"]
+    # a function the cell writes into its scratch copy is not a memory item
+    (mv2.paths.checkout / "env/spotify/__init__.py").write_text(
+        "def hello(apis, name):\n    return name\n\ndef extra():\n    return 1\n",
+    )
+    code = "from env.spotify import hello as hi, extra\nhi(None, 'ada')\nextra()\n"
+    _transcript(run, *_cell_lines(code, f"core\n\n{run.index}"))
+    _finish(mv2, run)
+    rel = episode_dir(run)
+    raw = Repo(mv2.paths.episodes).show("main", f"{rel}/memory_use.json")
+    rec = json.loads(raw)
+    assert rec["items_at_pin"] == ["env/spotify:hello"]
+    assert set(rec["items"]) == {"env/spotify:hello"}
+    hello = rec["items"]["env/spotify:hello"]
+    assert (hello["imported"], hello["called"], hello["refused"]) == (1, 1, 0)
+    shown = rec["memory_section_shown"]
+    assert shown["shown"]
+    assert shown["sha256"] == hashlib.sha256(run.index.encode()).hexdigest()
+    totals = EvidenceStore(mv2.paths.evidence).item_use()
+    assert totals["env/spotify:hello"]["called"] == 1
+    assert not mv2.paths.errors.exists()
+    _left_nothing(mv2.paths)
+
+
 # ── the outcome: pass/fail only ──────────────────────────────────────────────
 
 

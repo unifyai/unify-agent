@@ -1,10 +1,12 @@
 """The memory run of the request in progress (one request per CLI process; integration Task 25).
 
 ``RequestRun.begin`` opens a run under ``UNIFY_MEMORY_V2=on``: it takes the request lock, exports memory
-``main`` into the scratch export the worker mounts, renders the index the system prompt ends with, takes
+``main`` into the scratch export the worker mounts, notes its memory functions (for the use record),
+renders the index the system prompt ends with, takes
 the work tree's before snapshot, and opens the scope the actor runs in (its transcript continues the
 episode id and model costs are recorded). ``finish`` records the request as
-one episode and runs the consolidation passes that are due, blocking; it never raises. The passes'
+one episode, with how it used the library (``memory_use.json``, indexed in the evidence store's
+``item_use`` table), and runs the consolidation passes that are due, blocking; it never raises. The passes'
 start and end events go to the CLI's ``--jsonl`` output when it has one; the consolidation driver
 appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
 and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
@@ -122,6 +124,39 @@ def check_hidden(paths: Any, policy: Any) -> None:
         )
 
 
+def pinned_items(checkout: Path) -> list[str]:
+    """The ids of the memory functions in the export at *checkout* (listed or not), in id order."""
+    from ..memory_repo import items
+
+    return sorted(
+        it.item_id for it in items(Path(checkout)).items if it.kind == "env_function"
+    )
+
+
+def memory_use(ep: Any, item_ids: list[str]) -> dict:
+    """The request's use record (:func:`..analysis.use.request_use` over its transcript, the items at its
+    pin and its actions). A failure is recorded as its exception type; it never stops the episode.
+    """
+    from ..analysis import use
+
+    try:
+        return use.request_use(
+            ep.transcript,
+            item_ids,
+            [
+                {
+                    "cell": a.cell,
+                    "kind": getattr(a, "kind", "tool"),
+                    "channel": a.channel,
+                    "status": a.status,
+                }
+                for a in ep.actions
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
+        return {"version": use.VERSION, "error": type(exc).__name__}
+
+
 def _plain(value: Any) -> Any:
     """*value* with every Decimal as a plain decimal string (never exponent notation)."""
     if isinstance(value, Decimal):
@@ -140,6 +175,8 @@ class RequestRun:
         self.request = request
         self.paths = paths
         self.index = ""
+        # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
+        self.item_ids: list[str] = []
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -200,6 +237,7 @@ class RequestRun:
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
         export_checkout(paths.memory, self.pin, paths.checkout)
+        self.item_ids = pinned_items(paths.checkout)
         self.index = render_index(paths.checkout, self.state.suspect)
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
@@ -340,6 +378,7 @@ class RequestRun:
             worktree_after=wt.after,
             worktree_diff=wt.diff,
         )
+        ep.memory_use = memory_use(ep, self.item_ids)
         sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
         stores.evidence.index_episode(ep, sha)
         consolidate.post_checker(
