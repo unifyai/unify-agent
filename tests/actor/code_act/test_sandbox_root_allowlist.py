@@ -220,6 +220,10 @@ def test_the_interpreter_chain_is_mounted_from_sys_prefix(world):
     policy = sandbox.build_policy(fresh=True)
     argv = sandbox.wrap_argv(["true"], policy)
     dests = [Path(dst) for _, _, dst in _binds(argv)]
+    # A linked name (a venv linked from another worktree, uv's minor-version
+    # name) is the same link inside, to its one mount.
+    end = argv.index("--")
+    dests += [Path(argv[i + 2]) for i in range(end - 2) if argv[i] == "--symlink"]
 
     def shown(p: Path) -> bool:
         return any(p == d or p.is_relative_to(d) for d in dests) or any(

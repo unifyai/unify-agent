@@ -101,7 +101,7 @@ def test_the_deny_set_refuses_broad_and_private_paths(world):
     # Inside the private directories, and inside the account's home: fine.
     for path in (
         account / ".local" / "share" / "uv" / "python",
-        account / "unify-agent-worktrees",
+        Path(sandbox.__file__).resolve().parent,
         state / "transcripts",
     ):
         assert sandbox._root_refusal(path, [Path("/nonexistent")]) is None, path
