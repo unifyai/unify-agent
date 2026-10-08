@@ -51,7 +51,10 @@ def _policy() -> sandbox.SandboxPolicy:
 
 
 def _generated() -> set[str]:
-    return {"TMPDIR"} | ({"USER", "LOGNAME"} if sandbox._account_name() else set())
+    # PWD: set by the sandbox to the command's own working directory.
+    return {"TMPDIR", "PWD"} | (
+        {"USER", "LOGNAME"} if sandbox._account_name() else set()
+    )
 
 
 def _on_the_list(name: str) -> bool:
@@ -206,7 +209,7 @@ dump = {
 }
 for pid in pids:
     dump[f"/proc/{pid}/environ"] = read(f"/proc/{pid}/environ")
-(pids, dump, sorted(os.environ), read("/proc/1/cmdline").split("\0")[0], os.getppid())
+(pids, dump, sorted(os.environ), read("/proc/1/cmdline").split("\0")[0], os.getppid(), os.environ.get("PWD"), os.getcwd())
 """
 
 
@@ -222,7 +225,9 @@ async def test_no_environment_a_cell_can_read_holds_the_harnesss_key(
     try:
         res = await ex.execute(code=PROBE, state_mode="stateless", session_id=None)
         assert res["error"] is None, res["error"]
-        pids, dump, names, pid1, ppid = res["result"]
+        pids, dump, names, pid1, ppid, pwd, cwd = res["result"]
+        # PWD is the cell's own directory, never the harness's.
+        assert pwd == cwd, (pwd, cwd)
         assert FAKE_KEY not in repr(res)
         for where, text in dump.items():
             assert FAKE_KEY not in text, where
