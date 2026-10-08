@@ -22,6 +22,8 @@ WIP_SWITCHES_MD = Path(__file__).resolve().parents[1] / "WIP_SWITCHES.md"
 CONFIGURATION = frozenset(
     {
         "UNIFY_BUILTINS_PROJECT",
+        # Deployment policy: which LLM endpoints cell code may name.
+        "UNIFY_CELL_LLM_MODELS",
         "UNIFY_EMBED_URL",
         "UNIFY_ENV_NAMESPACES",
         "UNIFY_GUIDANCE_EMPTY_QUERY",

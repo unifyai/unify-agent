@@ -109,6 +109,14 @@ class ProductionSettings(BaseSettings):
     # Reasoning effort paired with UNIFY_MODEL when no per-assistant default is
     # set. Empty leaves per-call-site effort levels untouched.
     UNIFY_REASONING_EFFORT: str = "high"
+    # The LLM endpoints model-written code may name (the ``query_llm``,
+    # ``list_llms`` and ``unillm`` globals of a cell, unify/common/cell_models.py).
+    # Empty: only the session's configured model (the act profile's model, or
+    # what ``model=None`` resolves to). ``any``: every endpoint, as before.
+    # Otherwise a comma list of ``model@provider`` endpoints allowed besides
+    # the session's model. Harness calls (the actor's loop, reviews,
+    # compression) never read it.
+    UNIFY_CELL_LLM_MODELS: str = ""
     # Ceiling on output tokens for one actor turn. Unset, the provider ceiling
     # applies (128k on current OpenAI models), so a turn that degenerates into
     # repetition bills and blocks for the full window — observed at eight
@@ -590,6 +598,22 @@ class ProductionSettings(BaseSettings):
                 f"not {v!r}",
             )
         return value
+
+    @field_validator("UNIFY_CELL_LLM_MODELS", mode="before")
+    @classmethod
+    def parse_cell_llm_models(cls, v: Any) -> str:
+        text = str(v or "").strip()
+        if text.lower() == "any":
+            return "any"
+        endpoints = [part.strip() for part in text.split(",") if part.strip()]
+        for endpoint in endpoints:
+            model, _, provider = endpoint.rpartition("@")
+            if endpoint.lower() == "any" or not model or not provider:
+                raise ValueError(
+                    "UNIFY_CELL_LLM_MODELS must be empty, 'any' or a comma list "
+                    f"of 'model@provider' endpoints, not {v!r}",
+                )
+        return ",".join(endpoints)
 
     @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
     @classmethod
