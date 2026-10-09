@@ -407,6 +407,11 @@ class ProductionSettings(BaseSettings):
     # (default; empty means it) or ``on``. On: the writer reads a batch
     # map and bounded views, and finish waits for coverage. Off: v2 as built.
     UNIFY_MEMORY_V21: str = "off"
+    # Memory v2.1 P7: E (D43: 100k recorded tokens), one pass's wall-clock bound (s), and the Sol route
+    # proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
+    UNIFY_MEMORY_V21_E: int = 100000
+    UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
+    UNIFY_MEMORY_V2_SOL_JOURNAL: str = ""
     # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
     # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
@@ -632,6 +637,9 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
         "UNIFY_MEMORY_V2_SOL_USAGE",
         "UNIFY_MEMORY_V21",
+        "UNIFY_MEMORY_V21_E",
+        "UNIFY_MEMORY_V21_PASS_WALL_S",
+        "UNIFY_MEMORY_V2_SOL_JOURNAL",
         "UNIFY_MEMORY_V2_QA_FIXTURES",
         "UNIFY_MEMORY_V2_QA_MUTATION",
         "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",

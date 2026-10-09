@@ -339,17 +339,24 @@ def sol_settings(settings: Any) -> SolSettings:
     """
     settle_sol_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
-    raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
-    if isinstance(raw_e, bool):
-        raise ValueError(f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}")
-    try:
-        e = int(str(raw_e).strip())
-    except ValueError:
-        e = 0
-    if e <= 0:
-        raise ValueError(
-            f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
-        )
+    from .switch import v21_enabled, v21_experience_budget
+
+    if v21_enabled(settings):
+        e = v21_experience_budget(settings)  # D43: E = 100k recorded tokens under v2.1
+    else:
+        raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
+        if isinstance(raw_e, bool):
+            raise ValueError(
+                f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}",
+            )
+        try:
+            e = int(str(raw_e).strip())
+        except ValueError:
+            e = 0
+        if e <= 0:
+            raise ValueError(
+                f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
+            )
     a_tok = _decimal(
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
