@@ -20,6 +20,7 @@ an item); a note is its path, ``notes/<topic>/<slug>.md``. Links are written in 
 from __future__ import annotations
 
 import ast
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,8 +52,16 @@ ACTOR_KINDS = frozenset({"module", "package_init", "note"})
 
 def classify(path: str) -> str | None:
     """What *path* (relative, POSIX) is in the v2.1 layout: ``module``, ``package_init``, ``test``,
-    ``test_helper``, ``fixture``, ``note`` or ``generated``; None when the layout has no place for it.
+    ``test_helper``, ``fixture``, ``note`` or ``generated``; None when the layout has no place for it, and
+    always for a path with an empty, ``.`` or ``..`` component, a backslash or a NUL (Sol writes manifest paths).
     """
+    if (
+        not path
+        or "\\" in path
+        or "\x00" in path
+        or any(c in ("", ".", "..") for c in path.split("/"))
+    ):
+        return None
     if (
         path in GENERATED_ROOT_FILES
         or path == DATA_DIR
@@ -265,13 +274,34 @@ def _public_defs(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunction
     ]
 
 
-def _library_files(tree: Path) -> list[tuple[str, str]]:
-    """(relative path, kind) of every module and package init of *tree*, in path order."""
+#: Why a file of the layout is not read: it is a link, or it resolves outside the library.
+_REFUSED_LINK = "refused: a link or a path outside the library"
+
+
+def _confined(tree: Path, p: Path) -> bool:
+    """Whether *p* is a regular path of *tree*: not a link itself, and resolving inside *tree* (a linked
+    directory on the way resolves outside). The harness never reads through a link Sol could commit.
+    """
+    root = os.path.realpath(tree)
+    real = os.path.realpath(p)
+    return not p.is_symlink() and (real == root or real.startswith(root + os.sep))
+
+
+def _library_files(
+    tree: Path,
+    errors: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    """(relative path, kind) of every module and package init of *tree*, in path order. A link, or a path
+    resolving outside *tree*, is skipped (and named in *errors* when given)."""
     out = []
     for p in sorted(Path(tree).glob("memory/*/*.py")):
         rel = p.relative_to(tree).as_posix()
         kind = classify(rel)
         if kind in ("module", "package_init"):
+            if not _confined(Path(tree), p):
+                if errors is not None:
+                    errors.append(f"{rel}: {_REFUSED_LINK}")
+                continue
             out.append((rel, kind))
     return out
 
@@ -280,7 +310,7 @@ def discover(tree: Path) -> Library:
     """Every item of the library at *tree*, from the files alone (AST; nothing is imported or run)."""
     tree = Path(tree)
     lib = Library()
-    for rel, kind in _library_files(tree):
+    for rel, kind in _library_files(tree, lib.errors):
         parsed = _parse(tree / rel)
         if isinstance(parsed, str):
             lib.errors.append(f"{rel}: {parsed}")
@@ -313,6 +343,9 @@ def discover(tree: Path) -> Library:
     for p in sorted(tree.glob("notes/*/*.md")):
         rel = p.relative_to(tree).as_posix()
         if classify(rel) != "note":
+            continue
+        if not _confined(tree, p):
+            lib.errors.append(f"{rel}: {_REFUSED_LINK}")
             continue
         try:
             meta = parse_front_matter(p.read_bytes().decode("utf-8"))

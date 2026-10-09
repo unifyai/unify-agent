@@ -274,3 +274,56 @@ def test_import_graph_resolves_absolute_relative_and_package_imports(tmp_path):
     assert layout.imports(b"def x(:\n", "memory.text", set()) is None
     merged = layout.merge_graphs({"a": {"b"}}, {"a": {"c"}, "d": set()})
     assert merged == {"a": {"b", "c"}, "d": set()}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "memory/text/tests/data/../../x.py",
+        "memory/text/tests/data/./x.json",
+        "memory/text/tests/data//x.json",
+        "memory//text/x.py",
+        "memory/text/../web/fetch.py",
+        "notes/text/../dates.md",
+        "memory\\text\\dates.py",
+        "memory/text/da\x00tes.py",
+        "./memory/text/dates.py",
+    ],
+)
+def test_classify_refuses_dot_empty_backslash_and_nul_components(path):
+    assert layout.classify(path) is None
+
+
+def test_discovery_never_reads_through_a_link_or_outside_the_tree(tmp_path):
+    root = _tree(tmp_path / "lib")
+    outside = tmp_path / "outside"
+    (outside / "pkg").mkdir(parents=True)
+    (outside / "evil.py").write_text(
+        'def leaked():\n    """Outside the library."""\n    return 1\n',
+    )
+    (outside / "pkg" / "x.py").write_text(
+        'def also():\n    """Outside too."""\n    return 2\n',
+    )
+    (outside / "note.md").write_text(
+        "---\ntitle: Leak\ndescription: Outside.\n---\nbody\n",
+    )
+    (root / "memory/text/evil.py").symlink_to(outside / "evil.py")
+    (root / "memory/linked").symlink_to(outside / "pkg")
+    (root / "notes/text/leak.md").symlink_to(outside / "note.md")
+    lib = layout.discover(root)
+    assert [f.item_id for f in lib.functions] == FUNCTIONS
+    assert [n.item_id for n in lib.notes] == ["notes/text/dates.md"]
+    for rel in ("memory/text/evil.py", "memory/linked/x.py", "notes/text/leak.md"):
+        assert f"{rel}: refused: a link or a path outside the library" in lib.errors
+    assert sorted(layout.function_bodies(root)) == FUNCTIONS
+    assert (
+        set(layout.import_graph(root))
+        == set(layout.library_modules(root))
+        == {
+            "memory.text",
+            "memory.text.dates",
+            "memory.text.parse",
+            "memory.text.report",
+            "memory.web.fetch",
+        }
+    )
