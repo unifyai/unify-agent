@@ -309,6 +309,38 @@ def _plain(value: Any) -> Any:
     return value
 
 
+async def wait_after_finish(
+    paths: Any,
+    settings: Any,
+    progress: Callable[[str], None] | None = None,
+    wait: Callable[..., dict] | None = None,
+    relay: Callable[[dict], None] | None = None,
+    events_from: int = 0,
+) -> dict | None:
+    """``UNIFY_MEMORY_V21_WAIT_SLOT=on`` (MAIN, 10 Oct): before the CLI exits, wait for the pass slot this request
+    spawned (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with it does
+    not kill the worker. Off: returns None at once, as built. Never raises."""
+    import asyncio
+
+    from .switch import v21_pass_wall_s, v21_wait_slot
+
+    try:
+        if not v21_wait_slot(settings):
+            return None
+        if wait is None:
+            from .async_pass import wait_slot as wait
+        return await asyncio.to_thread(
+            wait,
+            paths,
+            float(v21_pass_wall_s(settings)),
+            relay=relay,
+            events_from=events_from,
+        )
+    except Exception as exc:  # noqa: BLE001 - the request's end never fails on the wait
+        logger.warning("memory v2.1: waiting for the pass slot failed: %s", exc)
+        return None
+
+
 class RequestRun:
     """One request's memory run; create it with :meth:`begin`."""
 
@@ -784,6 +816,17 @@ class RequestRun:
                 raise
         finally:
             self._cleanup()
+        if getattr(self, "_spawned", False):
+            from unify.settings import SETTINGS
+
+            # after the lock is released: the waiting CLI holds nothing a later request needs
+            await wait_after_finish(
+                self.paths,
+                SETTINGS,
+                progress,
+                relay=getattr(self, "_relay", None),
+                events_from=getattr(self, "_events_from", 0),
+            )
 
     def _record_episode(self) -> tuple[str, str]:
         from unify import transcripts
@@ -904,8 +947,13 @@ class RequestRun:
             self._report_landed(progress, emit)
             try:
                 from .async_pass import maybe_spawn
+                from .consolidate import events_path
 
-                maybe_spawn(
+                # WAIT_SLOT's relay starts at the events written from here on (the slot's own rows)
+                ev_file = events_path(self.paths)
+                self._events_from = ev_file.stat().st_size if ev_file.exists() else 0
+                self._relay = self._emitter(emit)
+                spawned = maybe_spawn(
                     self.stores,
                     eid,
                     sha,
@@ -913,6 +961,7 @@ class RequestRun:
                     settings=SETTINGS,
                     emit=self._emitter(emit),
                 )
+                self._spawned = spawned.get("phase") == "spawned"
             except Exception as exc:  # noqa: BLE001
                 self._error("passes", exc, progress)
             try:

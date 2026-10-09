@@ -231,3 +231,128 @@ def test_a_record_without_a_start_time_owns_nothing():
         "e1",
     )
     assert ap.owns(live)
+
+
+# --- UNIFY_MEMORY_V21_WAIT_SLOT (MAIN, 10 Oct: hosts whose sandbox ends the controller's processes with it) ---
+
+
+def _spawn(tmp_path, seconds):
+    paths = Paths.under(tmp_path)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    rec = ap.spawn(
+        paths,
+        "e1",
+        "1" * 40,
+        "low",
+        wall_s=60,
+        argv_prefix=[
+            sys.executable,
+            "-c",
+            f"import time; time.sleep({seconds})",
+        ],
+    )
+    assert rec is not None and ap.owns(rec)
+    return paths, rec
+
+
+def _stop(rec):
+    if ap.owns(rec):
+        os.killpg(rec.pgid, signal.SIGKILL)
+
+
+def test_wait_slot_on_returns_only_after_the_worker_ends(tmp_path):
+    import asyncio
+
+    from unify.memory_v2.integration.request import wait_after_finish
+
+    paths, rec = _spawn(tmp_path, 1)
+    try:
+        started = time.monotonic()
+        out = asyncio.run(
+            wait_after_finish(
+                paths,
+                SimpleNamespace(**vars(SETTINGS), UNIFY_MEMORY_V21_WAIT_SLOT="on"),
+            ),
+        )
+        assert out == {"waited": True, "ended": "worker_ended"} and not ap.owns(rec)
+        assert time.monotonic() - started >= 0.5
+    finally:
+        _stop(rec)
+
+
+def test_wait_slot_respects_its_bound_then_drains(tmp_path):
+    paths, rec = _spawn(tmp_path, 30)
+    drained = []
+    try:
+        started = time.monotonic()
+        out = ap.wait_slot(
+            paths,
+            60,
+            budget_s=1.0,
+            drain_fn=lambda p, wait_s: drained.append(wait_s) or {"x": 1},
+        )
+        assert out == {
+            "waited": True,
+            "ended": "drained",
+            "drain": {"x": 1},
+        } and drained == [0]
+        assert time.monotonic() - started < 10
+    finally:
+        _stop(rec)
+
+
+def test_wait_slot_off_returns_at_once(tmp_path):
+    import asyncio
+
+    from unify.memory_v2.integration.request import wait_after_finish
+
+    def never(*a, **k):
+        raise AssertionError("waited with the switch off")
+
+    assert (
+        asyncio.run(wait_after_finish(Paths.under(tmp_path), SETTINGS, wait=never))
+        is None
+    )
+
+
+def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
+    import json as _json
+
+    from unify.memory_v2.integration.consolidate import events_path
+
+    paths, rec = _spawn(tmp_path, 1.5)
+    ev = events_path(paths)
+    ev.parent.mkdir(parents=True, exist_ok=True)
+    ev.write_text(
+        _json.dumps({"type": "consolidation", "phase": "end", "pass_id": "e0.p0"})
+        + "\n",
+    )
+    offset = ev.stat().st_size
+    rows = [
+        {
+            "type": "consolidation",
+            "phase": "start",
+            "pass_id": "e1.p0",
+            "effort": "low",
+            "cap_usd": "1",
+        },
+        {"type": "consolidation", "phase": "end", "pass_id": "e1.p0", "usd": "0.01"},
+        {"type": "consolidation", "phase": "records", "passes": ["e1.p0"]},
+        {
+            "type": "consolidation",
+            "phase": "start",
+            "pass_id": "e1.p1",
+            "effort": "low",
+            "curate": ["x"],
+        },
+        {"type": "consolidation", "phase": "end", "pass_id": "e1.p1", "usd": "0"},
+        {"type": "consolidation", "phase": "published", "served": "s"},
+    ]
+    with open(ev, "a") as fh:
+        fh.writelines(_json.dumps(r, sort_keys=True) + "\n" for r in rows)
+    seen = []
+    try:
+        ap.wait_slot(paths, 60, relay=seen.append, events_from=offset)
+    finally:
+        _stop(rec)
+    assert seen == [r for r in rows if r["phase"] in ("start", "end")]

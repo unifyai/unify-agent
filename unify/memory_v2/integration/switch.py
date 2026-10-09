@@ -631,6 +631,9 @@ def v21_conflicts(settings: Any) -> list[str]:
 V21_E = "UNIFY_MEMORY_V21_E"
 #: The v2.1 writer's reader calls per pass (PassConfig.max_reads), settable for the replay and the reruns.
 V21_MAX_READS = "UNIFY_MEMORY_V21_MAX_READS"
+#: Opt-in (MAIN, 10 Oct): the CLI waits for the pass slot it spawned before it exits, for hosts whose sandbox ends
+#: every process of the controller with it (a PID namespace); off: the request returns at once, as built.
+V21_WAIT_SLOT = "UNIFY_MEMORY_V21_WAIT_SLOT"
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -700,6 +703,15 @@ def v21_sol_usd_per_token(settings: Any) -> Decimal:
 def parse_v21_max_reads(v: Any) -> int:
     """``UNIFY_MEMORY_V21_MAX_READS``: a pass's reader calls under v2.1, positive digits (empty: 400)."""
     return _positive_whole(V21_MAX_READS, V21_MAX_READS_DEFAULT, v)
+
+
+def parse_v21_wait_slot(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_WAIT_SLOT``: ``off`` (also for empty) or ``on``."""
+    return _on_off(V21_WAIT_SLOT, v)
+
+
+def v21_wait_slot(settings: Any) -> bool:
+    return parse_v21_wait_slot(getattr(settings, V21_WAIT_SLOT, "") or "") == "on"
 
 
 def v21_max_reads(settings: Any) -> int:
@@ -848,6 +860,7 @@ PARSERS = {
     QA_FIXTURE_SIZE: parse_qa_fixture_size,
     V21_E: parse_v21_e,
     V21_MAX_READS: parse_v21_max_reads,
+    V21_WAIT_SLOT: parse_v21_wait_slot,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

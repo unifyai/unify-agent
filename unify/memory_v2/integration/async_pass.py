@@ -549,6 +549,93 @@ def _group_alive(pgid: int) -> bool | None:
     return False
 
 
+def wait_slot(
+    paths: Any,
+    wall_s: float,
+    *,
+    budget_s: float | None = None,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], Any] = time.sleep,
+    drain_fn: Callable[..., dict] | None = None,
+    relay: Callable[[dict], None] | None = None,
+    events_from: int = 0,
+) -> dict:
+    """``UNIFY_MEMORY_V21_WAIT_SLOT=on``: wait for the in-flight worker until it ends, at most its slot's failsafe
+    (:func:`failsafe_s` of :data:`WORKER_PASSES` passes, their bisects and reconciliations) plus a margin from its
+    start (*budget_s* replaces that bound). A worker still alive then goes through :func:`drain` at once: SIGTERM,
+    the grace, a verified end; its late result is reported as not counted. Nothing in flight: returns at once.
+
+    *relay* (MAIN, 10 Oct): the slot's pass events (``start``, ``end`` and ``held`` rows of its passes, WRITE and
+    CURATE) appended to ``events.jsonl`` after byte *events_from* are handed to it once each, in order, exactly as
+    the synchronous v2 path emitted them (the same dicts :func:`.consolidate._deliver` wrote).
+    """
+    rec = read_inflight(paths)
+    if rec is None or not owns(rec):
+        return {"waited": False}
+    bound = (
+        failsafe_s(wall_s, passes=WORKER_PASSES) + FAILSAFE_EXTRA_S
+        if budget_s is None
+        else float(budget_s)
+    )
+    deadline = rec.started_at + bound
+    tail = (
+        _EventTail(paths, events_from, f"{rec.after_episode}.p")
+        if relay is not None
+        else None
+    )
+    while owns(rec) and clock() < deadline:
+        if tail is not None:
+            tail.relay(relay)
+        sleep(0.5)
+    out: dict = {"waited": True, "ended": "worker_ended"}
+    if owns(rec) or _group_alive(rec.pgid) is True:
+        out = {
+            "waited": True,
+            "ended": "drained",
+            "drain": (drain_fn or drain)(paths, wait_s=0),
+        }
+    if tail is not None:
+        tail.relay(relay)  # the rows written as the worker ended (or was drained)
+    return out
+
+
+_RELAYED = ("start", "end", "held")
+
+
+class _EventTail:
+    """Complete ``events.jsonl`` lines after a byte offset; the slot's pass rows, each relayed once."""
+
+    def __init__(self, paths: Any, offset: int, prefix: str) -> None:
+        from .consolidate import events_path
+
+        self.path, self.offset, self.prefix = events_path(paths), int(offset), prefix
+
+    def relay(self, out: Callable[[dict], None]) -> None:
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self.offset)
+                data = fh.read()
+        except OSError:
+            return
+        end = data.rfind(b"\n") + 1  # a line still being written waits
+        self.offset += end
+        for line in data[:end].splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                isinstance(row, dict)
+                and row.get("type") == "consolidation"
+                and row.get("phase") in _RELAYED
+                and str(row.get("pass_id") or "").startswith(self.prefix)
+            ):
+                try:
+                    out(row)
+                except Exception:  # noqa: BLE001 - reporting never stops the wait
+                    pass
+
+
 def drain(
     paths: Any,
     *,
