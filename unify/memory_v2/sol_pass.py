@@ -1384,6 +1384,8 @@ class SolPass:
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
         self.messages: list[dict] = []
+        # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
+        self._drafts: list[dict] = []
 
     def transcript(self, pass_id: str) -> list[str]:
         """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`)."""
@@ -1413,9 +1415,12 @@ class SolPass:
         adds each function's recorded cover ids to ``library.json`` (D26).
         """
         channels = _exported_channels(inputs / "episodes")
-        (inputs / "previous_gate.json").write_text(
-            json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
-        )
+        if not _v21_on(
+            self,
+        ):  # v2.1 gives drafts and full gate results instead (spec §9.3)
+            (inputs / "previous_gate.json").write_text(
+                json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
+            )
         summary = library_summary(
             tree,
             channels,
@@ -1552,6 +1557,14 @@ class SolPass:
             staged = True
         if not staged:
             _stage_memlab(inputs / "memlab")
+        self._drafts = []
+        if _v21_on(self):
+            from .drafts import stage_drafts
+
+            if isinstance(store, BlobStore):
+                self._drafts = stage_drafts(self.ev, store, inputs)
+            else:
+                (inputs / "gate").mkdir(exist_ok=True)
 
     def _cell(
         self,
@@ -1989,6 +2002,13 @@ class SolPass:
             )
             if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
+            if self.cfg.v21:
+                from .drafts import drafts_message
+
+                first += "\n\n" + drafts_message(
+                    self._drafts,
+                    (inputs / "gate" / "previous.md").is_file(),
+                )
             messages: list[dict] = [
                 # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each
                 # unchanged while its switches are off)

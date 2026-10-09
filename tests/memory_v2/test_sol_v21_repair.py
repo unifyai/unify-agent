@@ -16,6 +16,7 @@ from tests.memory_v2.test_sol_pass import (
     _call,
     _e1,
     _ME,
+    _never,
     _run,
     _sol,
     _write,
@@ -335,3 +336,78 @@ def test_a_long_check_result_is_a_file_read_can_page(tmp_path):
     assert (
         "THE-END" not in reply and "THE-END" in model.outputs["r0"]
     )  # the rest is reachable by read
+
+
+def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
+    first = Turns(
+        [
+            _call("w", "execute_code", {"code": FILES_CODE}),
+            _call("f", "finish", {"summary": "s"}),
+        ],
+        usd="0.30",
+    )
+    mem, ev, sol = _sol(tmp_path, first, v21=True, max_usd=Decimal("0.70"))
+    assert not _run(sol, "p1").passed  # refused at the one merge: a draft
+    probe = (
+        "import json, os\n"
+        "print(json.dumps([sorted(os.listdir('/inputs')), sorted(os.listdir('/inputs/drafts/p1')),\n"
+        "    open('/inputs/drafts/p1/patch.diff').read().startswith('diff --git')]))\n"
+    )
+    second = Turns(
+        [
+            _call("ls", "execute_code", {"code": probe}),
+            _call("g", "read", {"path": "/inputs/drafts/p1/gate.md"}),
+            _call("pv", "read", {"path": "/inputs/gate/previous.md"}),
+        ],
+    )
+    sol2 = SolPass(
+        mem,
+        sol.gate,
+        ev,
+        load=_never,
+        model_turn=second,
+        config=PassConfig(max_calls=10, v21=True),
+    )
+    _run(sol2, "p2")
+    top, draft, is_patch = json.loads(second.outputs["ls"])
+    # previous_gate.json (200-character lines through the notes filter) is replaced by drafts and full results
+    assert "previous_gate.json" not in top and "drafts" in top and "gate" in top
+    assert draft == ["gate.md", "patch.diff"] and is_patch
+    assert second.outputs["g"].startswith(
+        "# Gate result: pass p1, round 0, final (merge)",
+    )
+    assert second.outputs["pv"] == second.outputs["g"]  # p1 was the last pass
+    first_message = second.seen[1]["content"]
+    assert "Open drafts" in first_message and "- p1: env/venmo:me" in first_message
+
+
+@needs_bwrap
+def test_v21_off_is_v2s_single_gate(tmp_path):
+    probe = "import os\nprint(sorted(os.listdir('/inputs')))\n"
+    model = Turns(
+        [
+            _call("ls", "execute_code", {"code": probe}),
+            _call("w", "execute_code", {"code": FILES_CODE}),
+            _call("f", "finish", {"summary": "s"}),
+        ],
+    )
+    mem, ev, sol = _sol(tmp_path, model)  # PassConfig's default: v21 off
+    calls = _count(sol.gate)
+    out = _run(sol)
+    assert calls == {"check": 0, "merge": 1}
+    assert not out.passed and out.rounds == 0 and out.round_results == []
+    listing = model.outputs["ls"]
+    assert "'previous_gate.json'" in listing
+    assert (
+        "'drafts'" not in listing
+        and "'gate'" not in listing
+        and "batch_map.json" not in listing
+    )
+    # no repair message: the only user message is the first one, and the transcript ends at the one finish
+    assert [m["role"] for m in model.seen].count("user") == 1
+    assert not any(r.startswith("repair:") for r in out.reasons)
+    assert "Open drafts" not in model.seen[1]["content"]
+    assert (
+        ev.db.execute("SELECT 1 FROM sqlite_master WHERE name='pass_rounds'").fetchone()
+        is None
+    )
