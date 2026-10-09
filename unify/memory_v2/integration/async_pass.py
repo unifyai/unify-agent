@@ -347,7 +347,9 @@ def spawn(
             proc.pid,
             proc_start(proc.pid) or "",
             now,
-            now + float(wall_s),
+            now
+            + WORKER_PASSES
+            * float(wall_s),  # the slot: WRITE, then the CURATE it made due
             eid,
         )
         write_inflight(paths, rec)

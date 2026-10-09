@@ -677,6 +677,12 @@ def consolidate_records(
                 for e in records[i]["status_evidence"]
             },
         )
-        noted = MemoryRepo(mem).status_commit(changes, evidence)
+        from .memory_writer import ensure_served, main_lock
+
+        with main_lock(
+            mem,
+        ):  # P7 Amendment A: the one writer of main; served exists before main moves
+            ensure_served(mem)
+            noted = MemoryRepo(mem).status_commit(changes, evidence)
         write_records(mem, noted, records)
     return {"head": head, "noted": noted, "changes": changes, "bisected": bisected}
