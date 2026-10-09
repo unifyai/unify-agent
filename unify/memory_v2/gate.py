@@ -329,6 +329,9 @@ class GateResult:
     # memory v2.1 (gate_v21): the item verification records (spec §4.4) and whether CURATE is due (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
+    # memory v2.1 CURATE (P6): the aliases, retirements and dropped aliases of the checked candidate; a landed
+    # merge records them (EvidenceStore.record_curations)
+    curations: list[dict] = field(default_factory=list)
     # Memory v2.1 (spec §9.2): each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
     # row, whose reasons keep v2's 300-character tail.
@@ -709,6 +712,8 @@ class _Run:
     # memory v2.1: per item, what the checks measured (gate_v21, qa); whether the index is over its view (G4)
     verification: dict[str, dict] = field(default_factory=dict)
     curate_due: bool = False
+    # memory v2.1 CURATE (P6): what V21Checks.curate found the candidate does to aliases and retirements
+    curations: list[dict] = field(default_factory=list)
     # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
     outputs: dict[str, str] = field(default_factory=dict)
     # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same
@@ -1094,6 +1099,9 @@ class Gate:
                     + json.dumps(res.verification, sort_keys=True, default=str),
                 ],
             )
+        if self.v21 is not None and res.passed and res.curations:
+            # CURATE's aliases, retirements and dropped aliases (spec §10.4), for P5's records (alias_of, deprecated)
+            self.ev.record_curations(pass_id, res.merged, res.curations)
         return res
 
     # -- helpers ------------------------------------------------------------------------------------------
@@ -1252,6 +1260,7 @@ class Gate:
                 if v is not None:
                     v.g3()
                     v.g4()
+                    v.curate()
                 else:
                     self._g4(run)
                 self._g5(run)
@@ -1274,6 +1283,7 @@ class Gate:
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
         res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
         res.curate_due = run.curate_due
+        res.curations = [dict(r) for r in run.curations]
         res.outputs = dict(run.outputs)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
@@ -2442,7 +2452,16 @@ class Gate:
         return after[:2] != before[:2] and all(a <= b for a, b in zip(after, before))
 
     def _cleanup(self, run: _Run) -> bool:
-        """A clean-up pass (D26): it adds no item and the library shrinks."""
+        """A clean-up pass (D26): it adds no item and the library shrinks.
+
+        Memory v2.1 (D36): a CURATE pass is the clean-up pass, by its role, and a WRITE pass never is. D26's size
+        measure reads v2's channel modules only; under v2.1, D28's strict comparison on the import-graph scope is
+        what proves each exempted edit keeps behaviour, and CURATE's growth rule (:meth:`.gate_v21.V21Checks.curate`)
+        bounds the library.
+        """
+        role = getattr(getattr(self, "v21", None), "role", None)
+        if role is not None:
+            return role == "curate"
         added = any(it.item not in run.p_bodies for it in run.man.items)
         return not added and self._shrinks(run)
 
@@ -2450,8 +2469,24 @@ class Gate:
     def _held(run: _Run, item: str, protected: set[str]) -> bool:
         """A parent test file that passed on the parent, and still passes, calls *item*.
 
-        A call, not an import: :func:`.snapshot.calls_item`.
+        A call, not an import: :func:`.snapshot.calls_item`, or :func:`.aliases.calls_function` for a v2.1 id.
         """
+        try:
+            from . import layout
+        except ImportError:  # a build without P3's layout has no v2.1 ids
+            layout = None
+        if layout is not None and layout.FUNCTION_ID.match(item):
+            from .aliases import calls_function
+
+            return any(
+                rel in run.p_files
+                and calls_function(
+                    (run.p_tree / rel).read_bytes(),
+                    item,
+                    layout.package_of_path(rel),
+                )
+                for rel in sorted(protected)
+            )
         return any(
             rel in run.p_files and calls_item((run.p_tree / rel).read_bytes(), item)
             for rel in sorted(protected)
@@ -2671,16 +2706,33 @@ class Gate:
         held = {(e, i) for _, e, i in run.covers}
 
         changed = self._changed_channels(run)
+        scope: set[str] | None = None
+        if self.v21 is not None and self.v21.layout and run.same is not None:
+            # v2.1 (D42): the modules this pass changed, and every module that imports one of them
+            from . import layout
+
+            graph = getattr(run, "graph", None)
+            if graph is None:
+                graph = layout.merge_graphs(
+                    layout.import_graph(run.p_tree),
+                    layout.import_graph(run.c_tree),
+                )
+            scope = layout.dependants(
+                graph,
+                {m for p in run.changed if (m := layout.module_of(p)) is not None},
+            )
 
         def keeps(it: str) -> bool:
-            """A kept item still does on its recorded covers what it did (I1, D28): its channel is unchanged,
-            or G3's behaviour check showed it doing the same. A function changed under a red test holds only
-            the covers this manifest lists for it (already in ``held``)."""
+            """A kept item still does on its recorded covers what it did (I1, D28): its channel (v2.1: its module's
+            import-graph scope) is unchanged and so is its body, or G3's behaviour check showed it doing the same. A
+            function changed under a red test holds only the covers this manifest lists for it (already in
+            ``held``)."""
             if it in deleted or it not in run.c_bodies:
                 return False
             if run.same is None:  # a preview runs no G3
                 return True
-            if it.split(":", 1)[0] not in changed:
+            where = it.split(":", 1)[0]
+            if where not in (scope if scope is not None else changed):
                 return run.p_bodies.get(it, ("", ""))[:2] == run.c_bodies[it][:2]
             return it in run.same
 

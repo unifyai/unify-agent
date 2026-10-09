@@ -56,6 +56,8 @@ from .held_out import (
     run_outputs,
 )
 from .catalogue import estimate_tokens
+from . import layout
+from .aliases import forwards, uses_name
 from .layout import classify, discover
 from .library_index import INDEX_VIEW_TOKENS, build_links, render_index
 from .procedures import (
@@ -205,10 +207,19 @@ class V21Checks:
 
     def _edited(self) -> list[Any]:
         run = self.run
+        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+        declared = raw.get("aliases")
+        # P6: a CURATE pass's declared aliases are forwarding stubs that D28 compares strictly, not new code to test
+        forwarding = (
+            set(declared)
+            if self.cfg.role == "curate" and isinstance(declared, dict)
+            else set()
+        )
         return [
             it
             for it in self._functions()
-            if it.item in run.c_bodies
+            if it.item not in forwarding
+            and it.item in run.c_bodies
             and run.p_bodies.get(it.item, ("", ""))[:2] != run.c_bodies[it.item][:2]
         ]
 
@@ -252,6 +263,7 @@ class V21Checks:
         self.g1()
         self._plain()
         self._test_changes()
+        self.curate()
 
     # -- G1 -------------------------------------------------------------------------------------------------
     def g1(self) -> None:
@@ -634,6 +646,186 @@ class V21Checks:
             )
 
     # -- Amendment C: procedures in the behaviour check and in deletion ---------------------------------------
+    # -- CURATE (P6; spec §10.4, §9.1) --------------------------------------------------------------------------
+    def curate(self) -> None:
+        """CURATE's own rules (spec §10.4), static: they read the manifest and both trees and run nothing.
+
+        A WRITE pass may not declare aliases or retirements (removals and merges belong to CURATE, §9.1). A
+        CURATE pass:
+        - states why in one line (the ``Why:`` trailer);
+        - forwards each declared alias, an item of the parent, to a function of the candidate that is not itself an
+          alias (:func:`.aliases.forwards`);
+        - gives every deleted item a reason: an alias, or a one-line ``retired`` reason;
+        - lists an old name's tests under its alias's target, which they keep testing through the alias (§9.1);
+        - keeps a live alias for one more pass: one added by the pass that made the parent stays;
+        - does not grow the library: the items that are not aliases do not increase.
+        The aliases, retirements and dropped aliases go to ``run.curations``; :meth:`.gate.Gate.merge` records them
+        for a landed pass.
+        """
+        run = self.run
+        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+        aliases, retired = raw.get("aliases") or {}, raw.get("retired") or {}
+        if self.cfg.role != "curate":
+            if aliases or retired:
+                run.fail(
+                    "G1",
+                    "aliases and retirements belong to CURATE; a WRITE pass may not declare them",
+                )
+            return
+        if not all(
+            isinstance(d, dict)
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in d.items())
+            for d in (aliases, retired)
+        ):
+            run.fail("G1", "aliases and retired map item ids to strings")
+            return
+        why = raw.get("why")
+        if not isinstance(why, str) or not why.strip() or "\n" in why.strip():
+            run.fail("G1", "a CURATE pass states why in one line (the manifest's why)")
+            why = ""
+        why = why.strip()
+        p_lib, c_lib = layout.discover(run.p_tree), layout.discover(run.c_tree)
+        p_ids = {f.item_id for f in p_lib.functions}
+        c_ids = {f.item_id for f in c_lib.functions}
+        p_mods, c_mods = layout.library_modules(run.p_tree), layout.library_modules(
+            run.c_tree,
+        )
+        listed = {it.item: it for it in run.man.items}
+        live = dict(self.gate.ev.aliases())
+        rows: list[dict] = []
+        for alias, target in sorted(aliases.items()):
+            problem = self._alias_problem(
+                alias,
+                target,
+                set(aliases) | set(live),
+                p_ids | set(live),
+                c_ids,
+                c_mods,
+            )
+            if problem is not None:
+                run.fail("G1", problem, target if target in listed else None)
+                continue
+            rows.append(
+                {"item": alias, "action": "alias", "target": target, "reason": why},
+            )
+            self._alias_tests(alias, target, listed, p_mods)
+        deleted = set(run.man.deleted)
+        for item in sorted(deleted - set(aliases)):
+            if not retired.get(item, "").strip():
+                run.fail(
+                    "G5",
+                    f"deleted item {item} needs a reason: keep its name as an alias (aliases) or retire it with a "
+                    "one-line reason (retired)",
+                )
+        for item, reason in sorted(retired.items()):
+            if item not in deleted:
+                run.fail("G1", f"retired {item} is not in deleted")
+            elif reason.strip():
+                rows.append(
+                    {
+                        "item": item,
+                        "action": "retire",
+                        "target": None,
+                        "reason": " ".join(reason.split())[:300],
+                    },
+                )
+        for alias, row in sorted(live.items()):
+            if (
+                alias in aliases
+                or self._forwards(run.c_tree, alias, c_mods) is not None
+            ):
+                continue  # still forwarded, or declared again
+            if row.get("commit") == run.parent:
+                run.fail(
+                    "G5",
+                    f"alias {alias} was added by the pass that made the parent ({run.parent[:12]}); it stays for "
+                    "one more pass",
+                )
+            else:
+                rows.append(
+                    {
+                        "item": alias,
+                        "action": "drop_alias",
+                        "target": row.get("target"),
+                        "reason": why,
+                    },
+                )
+        aliased = set(aliases) | set(live)
+        n_p = len((p_ids | {n.item_id for n in p_lib.notes}) - aliased)
+        n_c = len((c_ids | {n.item_id for n in c_lib.notes}) - aliased)
+        if n_c > n_p:
+            run.fail(
+                "G5",
+                f"a CURATE pass may not grow the library ({n_p} to {n_c} items that are not aliases); add a function "
+                "only as the target that old names become aliases of",
+            )
+        run.curations = rows
+
+    def _alias_problem(
+        self,
+        alias: str,
+        target: str,
+        aliases: set[str],
+        known: set[str],
+        c_ids: set[str],
+        c_mods: set[str],
+    ) -> str | None:
+        if not (layout.FUNCTION_ID.match(alias) and layout.FUNCTION_ID.match(target)):
+            return f"alias {alias} -> {target}: both must be function ids (memory.<package>.<module>:<name>)"
+        if target == alias or target in aliases:
+            return f"alias {alias} -> {target}: an alias forwards to an item that is not itself an alias"
+        if target not in c_ids:
+            return (
+                f"alias {alias} -> {target}: the candidate holds no function {target}"
+            )
+        if alias not in known:
+            return f"alias {alias}: the parent has no item {alias} to keep working"
+        if self._forwards(self.run.c_tree, alias, c_mods) != target:
+            name, callee = alias.split(":", 1)[1], target.split(":", 1)[1]
+            return (
+                f"alias {alias}: its module does not forward {name} to {target} (bind it to the function, import it "
+                f"under that name, or make it a one-line wrapper that returns {callee}(...))"
+            )
+        return None
+
+    def _alias_tests(
+        self,
+        alias: str,
+        target: str,
+        listed: dict,
+        p_mods: set[str],
+    ) -> None:
+        """Spec §9.1: the parent's tests of *alias* that the candidate keeps are collected through the alias, so they
+        are listed under *target* (they test it, and a failure in them belongs to it).
+        """
+        run = self.run
+        tests = set(listed[target].tests) if target in listed else set()
+        for p in sorted(run.p_files):
+            if layout.classify(p) != "test" or p not in run.c_files or p in tests:
+                continue
+            if uses_name(
+                (run.p_tree / p).read_bytes(),
+                layout.package_of_path(p),
+                alias,
+                p_mods,
+            ):
+                run.fail(
+                    "G3",
+                    f"the tests of {alias} ({p}) keep testing it through its alias: list them under {target} in items",
+                    target if target in listed else None,
+                )
+
+    @staticmethod
+    def _forwards(tree: Path, item: str, modules: set[str]) -> str | None:
+        """What the candidate's module of *item* forwards *item*'s name to (None: not forwarded, or no module)."""
+        module, name = item.split(":", 1)
+        try:
+            source = (Path(tree) / layout.module_path(module)).read_bytes()
+        except OSError:
+            return None
+        found = forwards(source, module, modules)
+        return None if found is None else found.get(name)
+
     def _stored_typed(self) -> dict[str, list[Any]]:
         """The typed covers recorded at merge, by item (unreadable rows are skipped)."""
         out: dict[str, list[Any]] = {}
@@ -728,7 +920,14 @@ class V21Checks:
                 )
 
     def g5(self) -> None:
-        """Amendment C, D26: a deleted function's typed ``episode`` covers stay covered by a remaining item."""
+        """Amendment C, D26: a deleted function's typed ``episode`` covers stay covered by a remaining item.
+
+        P6 Amendment B (D28, as P4 Amendment C): a remaining item vouches for a deleted item's procedure only when
+        :func:`.procedures.run_procedure` gives on the candidate's library the same outcome (``ok``) as the deleted
+        item gave on the parent's. The holders tried are the remaining items that list or store the same cover and,
+        for a deleted item that is an alias (declared by this CURATE pass, or live), its target: an alias forwarding a
+        procedure is held by that re-run. Bounded like the behaviour check, never silently.
+        """
         run = self.run
         deleted = set(run.man.deleted)
         if not deleted:
@@ -741,31 +940,126 @@ class V21Checks:
             )
 
         stored = self._stored_typed()
-        held = {
-            key(c)
-            for it in self._functions()
-            for c in getattr(it, "typed_covers", [])
-            if c.type == "episode"
-        }
-        held |= {
-            key(c)
-            for item, covers in stored.items()
-            if item not in deleted and item in run.c_bodies
-            for c in covers
-            if c.type == "episode"
-        }
+        holders: dict[str, list[str]] = {}
+        for it in self._functions():
+            if it.item in deleted:
+                continue
+            for c in getattr(it, "typed_covers", []):
+                if c.type == "episode":
+                    holders.setdefault(key(c), []).append(it.item)
+        for item, covers in stored.items():
+            if item in deleted or item not in run.c_bodies:
+                continue
+            for c in covers:
+                if c.type == "episode":
+                    holders.setdefault(key(c), []).append(item)
+        targets = self._alias_targets()
+        started = time.monotonic()
+        tried = 0
         for item in sorted(deleted & set(stored)):
-            lost = sorted(
-                {
-                    c.episode
-                    for c in stored[item]
-                    if c.type == "episode" and key(c) not in held
-                },
-            )
+            lost = []
+            for c in stored[item]:
+                if c.type != "episode":
+                    continue
+                cands = [targets[item]] if item in targets else []
+                cands += [
+                    h for h in sorted(set(holders.get(key(c), []))) if h not in cands
+                ]
+                cands = [h for h in cands if h in run.c_bodies and h not in deleted]
+                if not cands:
+                    lost.append(c.episode)
+                    continue
+                tried += 1
+                if tried > BEHAVIOUR_MAX_PROCEDURES:
+                    run.fail(
+                        "G5",
+                        f"take-over check not completed: more than {BEHAVIOUR_MAX_PROCEDURES} deleted procedures "
+                        "to re-run in one pass; delete fewer items",
+                    )
+                    return
+                verdict = self._reproduced(item, c, cands, started, tried)
+                if verdict is None:
+                    return  # the budget ran out (already refused)
+                if not verdict:
+                    lost.append(c.episode)
             if lost:
                 run.fail(
                     "G5",
-                    f"{item} is deleted, but its procedures on {', '.join(lost[:5])} are covered by no remaining "
-                    "item; a kept function must take over each recorded job",
+                    f"{item} is deleted, but its procedures on {', '.join(sorted(set(lost))[:5])} are reproduced by "
+                    "no remaining item; a kept function must take over each recorded job with the same outcome",
                     item,
                 )
+
+    def _alias_targets(self) -> dict[str, str]:
+        """Deleted name -> the function it forwards to: this CURATE pass's declared aliases and the live ones."""
+        out: dict[str, str] = {}
+        try:
+            live = dict(self.gate.ev.aliases())
+        except AttributeError:
+            live = {}
+        for a, row in live.items():
+            if isinstance(row, dict) and isinstance(row.get("target"), str):
+                out[a] = row["target"]
+        raw = self.run.manifest_raw if isinstance(self.run.manifest_raw, dict) else {}
+        declared = raw.get("aliases")
+        if self.cfg.role == "curate" and isinstance(declared, dict):
+            out.update(
+                {
+                    a: t
+                    for a, t in declared.items()
+                    if isinstance(a, str) and isinstance(t, str)
+                },
+            )
+        return out
+
+    def _reproduced(
+        self,
+        item: str,
+        cover: Any,
+        cands: list[str],
+        started: float,
+        n: int,
+    ) -> bool | None:
+        """Whether one of *cands* gives on the candidate the outcome *item* gave on the parent for *cover*
+        (P6 Amendment B). None when the budget ran out (refused)."""
+        run = self.run
+        ep = self.ep(cover.episode)
+        if ep is None:
+            run.note(
+                f"G5 take-over check: {item}'s procedure on {cover.episode} cannot be read; not reproduced",
+            )
+            return False
+
+        def outcome(who: str, tree: Path, side: str) -> Any:
+            left = OUTPUTS_BUDGET_S - (time.monotonic() - started)
+            if left <= 1:
+                run.fail(
+                    "G5",
+                    f"take-over check not completed: its {OUTPUTS_BUDGET_S:g} s procedure budget ran out at {item}",
+                )
+                return None
+            return run_procedure(
+                who,
+                cover,
+                ep=ep,
+                tree=tree,
+                python=self.gate.python,
+                work=run.tmp / f"procedure-takeover-{n}-{side}",
+                blob=self.gate._blob,
+                worktree_files=self.cfg.worktree_files,
+                signals=self.gate.ev.signals_for,
+                runner=self.cfg.runner,
+                timeout_s=min(PROCEDURE_S, left),
+                checker_visible=self.cfg.checker_visible,
+            )
+
+        before = outcome(item, run.p_tree, "parent")
+        if before is None:
+            return None
+        for k, who in enumerate(cands):
+            after = outcome(who, run.c_tree, f"candidate-{k}")
+            if after is None:
+                return None
+            if bool(after.ok) == bool(before.ok):
+                return True
+        return False
