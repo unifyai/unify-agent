@@ -326,6 +326,9 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
+    # memory v2.1 (gate_v21): the item verification records (spec §4.4) and whether CURATE is due (G4)
+    verification: dict[str, dict] = field(default_factory=dict)
+    curate_due: bool = False
     # Memory v2.1 (spec §9.2): each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
     # row, whose reasons keep v2's 300-character tail.
@@ -695,6 +698,9 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
+    # memory v2.1: per item, what the checks measured (gate_v21, qa); whether the index is over its view (G4)
+    verification: dict[str, dict] = field(default_factory=dict)
+    curate_due: bool = False
     # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
     outputs: dict[str, str] = field(default_factory=dict)
     # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same

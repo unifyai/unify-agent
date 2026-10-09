@@ -131,6 +131,13 @@ FLOOR_S = 5.0  # no run starts with less of the budget left
 PROBE_CASE_S = 2  # one call in the probe
 FIXTURE_MAX_BYTES = 64 * 1024
 MIN_KILL = Decimal("0.5")
+# memory v2.1 (spec §13.4, the test-quality study): the mutation kill share is gated per changed function at
+# MUTATION_MIN (0.7 after the first replay). Guard coverage, the kill rate of dropped-guard (``drop_raise``) mutants,
+# is measured and recorded only; GUARD_MIN_V211 is the gate it gets from v2.1.1. MAX_GUARD_MUTANTS bounds the
+# extra dropped-guard mutants run to measure it.
+MUTATION_MIN = Decimal("0.6")
+GUARD_MIN_V211 = Decimal("0.5")
+MAX_GUARD_MUTANTS = 8
 # Under the fixture-size switch, an exported response at least 1/RESPONSE_BLOB_SHARE of the fixture bound also
 # becomes a blob (1024 bytes at the default 64 KiB bound): a test file then holds at least 64 inline copies of
 # responses under the threshold, and the brief's "handful" (8 or so) takes at most 1/8 of the bound. Dialogue
@@ -173,6 +180,10 @@ class QAConfig:
     mutant_s: float = MUTANT_S
     budget_s: float = BUDGET_S
     fixture_max_bytes: int = FIXTURE_MAX_BYTES
+    v21: bool = (
+        False  # memory v2.1: plain recorded-inputs files, recorded measures, guard coverage
+    )
+    guard_mutants: int = MAX_GUARD_MUTANTS
     clock: Callable[[], float] = field(default=time.monotonic, compare=False)
     runner: Callable[..., SandboxResult] = field(default=run_confined, compare=False)
 
@@ -241,6 +252,40 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
         env["TZ"] = PIN_TZ[variant]
         env[PIN_VARIANT_ENV] = str(variant)
     return env
+
+
+def v21_config(base: QAConfig) -> QAConfig:
+    """The stage-5 checks memory v2.1 gates (spec §13.4): drawn inputs ``strict``, mutation at MUTATION_MIN."""
+    return dataclasses.replace(
+        base,
+        fixtures="strict",
+        mutation=True,
+        min_kill=MUTATION_MIN,
+        v21=True,
+    )
+
+
+def drawn_value(row: dict, samples: Path, data_dir: Path) -> Any:
+    """A drawn input (a :func:`write_samples` row) as one line of a recorded-inputs file holds it.
+
+    A work-tree file is copied beside the fixtures, under ``_drawn/<id>/``, and given as that path relative to
+    ``tests/data/`` (``path`` and ``bytes`` forms; ``text`` gets the decoded text). An ``env`` input is its recorded
+    calls (the drawn call first); an observation is the recorded response.
+    """
+    form, action = row.get("form"), row.get("action") or {}
+    if "file" in row:
+        src = samples / str(row["file"])[len("/qa/") :]
+        rel = f"_drawn/{int(row['id'])}/{src.name}"
+        (data_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, data_dir / rel)
+        if form == "text" and "text" in row:
+            return row["text"]
+        return rel
+    if form == "text":
+        return row.get("text", action.get("response"))
+    if form == "env":
+        return row.get("context") or [action]
+    return action.get("response")
 
 
 @dataclass
@@ -817,11 +862,18 @@ class QAChecks:
         return [
             it
             for it in run.man.items
-            if it.kind == "env_function"
+            if it.kind in ("env_function", "function")
             and it.item not in run.item_fail
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         ]
+
+    def _item_path(self, item: str) -> str:
+        if self.cfg.v21:
+            from .fixtures import module_path
+
+            return module_path(item)
+        return item_path(item)
 
     def _tests(self, it: Any) -> list[str]:
         changed = set(self.run.changed)
@@ -1194,6 +1246,9 @@ class QAChecks:
                     "an argument no recording names, or no input in its form) and "
                     f"{timeouts} past the {PROBE_CASE_S} s limit",
                 )
+        if self.cfg.v21:
+            self._appended(it, drawn, samples)
+            return
         # the function's own tests on the drawn inputs
         kit = self._kit()
         tests = [
@@ -1243,6 +1298,73 @@ class QAChecks:
             else:
                 self._note("fixtures", text)
 
+    def _appended(self, it: Any, drawn: list[dict], samples: Path) -> None:
+        """memory v2.1 (spec §9.1, §13.4): the drawn inputs are appended to a copy of the function's
+        recorded-inputs file (:func:`.fixtures.inputs_file`), a plain JSON-lines file its tests read without the
+        test kit. Its own tests must pass on them, and in ``strict`` must exercise every one: the passing test
+        cases must grow by at least the number appended (each line is one more parametrised case).
+        """
+        from .fixtures import inputs_file
+        from .gate import _green
+
+        run, item = self.run, it.item
+        rel = inputs_file(item)
+        record = run.verification.setdefault(item, {})
+        record["drawn_inputs"], record["drawn_inputs_read"] = len(drawn), 0
+        if rel not in run.c_files:
+            self._fail(
+                "fixtures",
+                f"{item} has no recorded-inputs file {rel}; its tests cannot read the {len(drawn)} drawn inputs",
+                item,
+            )
+            return
+        tree = run.tmp / f"qa-appended-{hashlib.sha256(item.encode()).hexdigest()[:12]}"
+        shutil.copytree(run.c_tree, tree)
+        data_dir = tree / rel.rsplit("/", 1)[0]
+        lines = [
+            json.dumps(
+                {
+                    "input": drawn_value(r, samples, data_dir),
+                    "source": {"drawn": r["id"]},
+                },
+                sort_keys=True,
+                default=str,
+            )
+            for r in drawn
+        ]
+        target = tree / rel
+        old = target.read_bytes()
+        sep = b"" if not old or old.endswith(b"\n") else b"\n"
+        target.write_bytes(old + sep + ("\n".join(lines) + "\n").encode("utf-8"))
+        new_cases: set[str] = set()
+        for t in self._tests(it):
+            to = self._timeout(self.cfg.run_s, f"the drawn-inputs run of {t}")
+            outcome = self._pytest(tree, t, to)
+            if not _green(outcome):
+                self._fail(
+                    "fixtures",
+                    f"{t} is not green with the drawn inputs appended to {rel} ({len(outcome.failed)} test "
+                    f"case(s) fail, timed_out={outcome.timed_out})",
+                    item,
+                )
+            first = run.qa_first.get(t)
+            if first is not None:
+                new_cases |= outcome.passed - first.passed
+        record["drawn_inputs_read"] = min(len(drawn), len(new_cases))
+        if len(new_cases) < len(drawn):
+            text = (
+                f"{item}'s own tests ran {len(new_cases)} new case(s) for the {len(drawn)} drawn inputs appended "
+                f"to {rel} (a test parametrised over that file reads them)"
+            )
+            if self.cfg.strict:
+                self._fail(
+                    "fixtures",
+                    text + "; every drawn input must be exercised",
+                    item,
+                )
+            else:
+                self._note("fixtures", text)
+
     def _mutants(
         self,
         it: Any,
@@ -1252,6 +1374,8 @@ class QAChecks:
         from .gate import _green
 
         run, cfg, item = self.run, self.cfg, it.item
+        record = run.verification.setdefault(item, {}) if cfg.v21 else {}  # v2.1
+        record["mutation"], record["guard"] = None, None
         tests = self._tests(it)
         if not tests:
             return  # G3 refuses a new or changed function without a new or changed test
@@ -1261,15 +1385,19 @@ class QAChecks:
                 f"{item}'s new or changed tests are not all green in G3; mutants not judged",
             )
             return
-        rel = item_path(item)
+        rel = self._item_path(item)  # v2.1
         function = item.split(":", 1)[1]
         source = (run.c_tree / rel).read_text(encoding="utf-8", errors="replace")
-        chosen = mutation.choose(
-            mutation.sites(source, function),
-            self.seed,
-            item,
-            cfg.max_mutants,
-        )
+        all_sites = mutation.sites(source, function)
+        chosen = mutation.choose(all_sites, self.seed, item, cfg.max_mutants)
+        extra: list[mutation.Site] = []
+        if (
+            cfg.v21
+        ):  # guard coverage (spec §13.4): every dropped-guard mutant up to the bound, measured only
+            have = sum(1 for s in chosen if s.op == "drop_raise")
+            extra = [s for s in all_sites if s.op == "drop_raise" and s not in chosen][
+                : max(0, cfg.guard_mutants - have)
+            ]
         if not chosen:
             self._note("mutation", f"{item} has no mutation site")
             return
@@ -1298,19 +1426,26 @@ class QAChecks:
                 return
             killed: list[mutation.Site] = []
             survived: list[tuple[mutation.Site, str]] = []
-            for site in chosen:
+            guard_killed = guard_total = 0
+            for site in chosen + extra:
                 text = mutation.apply(source, function, site)
                 if text is None or text == control:
                     continue
-                if tests_green(text):
+                green = tests_green(text)
+                if site.op == "drop_raise":
+                    guard_total += 1
+                    guard_killed += 0 if green else 1
+                if site in extra:
+                    continue  # measured for guard coverage only
+                if green:
                     survived.append((site, text))
                 else:
                     killed.append(site)
+            if cfg.v21 and guard_total:
+                record["guard"] = {"killed": guard_killed, "total": guard_total}
             equivalent: list[mutation.Site] = []
             if survived and samples is not None and base:
                 if not informative(base):
-                    # every probe row missed the replay, or could not be built or bound: equivalence cannot
-                    # be judged, so neither can the kill share (never a pass on the survivors' behalf)
                     why = (
                         f"{item}: mutation not judged: {len(survived)} of {len(killed) + len(survived)} "
                         "mutants survive and the probe got no output of the function on any recorded or "
@@ -1330,6 +1465,12 @@ class QAChecks:
                     f"{item}: no mutant changed its outputs on the recorded inputs; not judged",
                 )
                 return
+            if cfg.v21:
+                record["mutation"] = {
+                    "killed": len(killed),
+                    "total": judged,
+                    "equivalent": len(equivalent),
+                }
             lost = [s for s, _ in survived if s not in equivalent]
             if Decimal(len(killed)) < cfg.min_kill * judged:
                 where = _names([f"{s.op} at line {s.line}" for s in lost])
