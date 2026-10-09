@@ -180,6 +180,17 @@ def test_an_archive_carries_the_notes_and_the_served_head(mem, tmp_path):
     assert restored.head("served") == c1
 
 
+def test_served_lag_counts_the_first_parent_commits_served_is_behind(mem):
+    base = mem.head()
+    assert mw.served_lag(mem) == 0  # no served yet: requests pin main itself
+    c1 = mw.land(mem, _candidate_on(mem, base, EXTRA), base)
+    assert mw.served_lag(mem) == 1
+    _status(mem, {ITEM: "suspect"})
+    assert mw.served_lag(mem) == 2
+    mw.publish(mem, has_records=lambda c: c == c1)
+    assert mw.served_lag(mem) == 1
+
+
 # --- with P5's records and status commits, and P4's v2.1 gate (run once integrated) -------------------------
 
 

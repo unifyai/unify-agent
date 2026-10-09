@@ -11,6 +11,8 @@
   newest first-parent commit of ``main`` that carries its own item-records map on ``refs/notes/items`` (P5), so no
   request pins a commit whose statuses are still to be written, and every request on one pin sees the same
   statuses (cache rule). It is created at ``main``'s head by the first v2.1 write, before ``main`` moves.
+* **Lag is visible** (Amendment C): :func:`served_lag` counts the first-parent commits ``served`` is behind
+  ``main``; the driver reports it on every v2.1 end event and warns when it is above 0 after publishing.
 * **Copies carry the notes.** A plain ``git clone`` does not fetch ``refs/notes/items``. :func:`archive` writes a
   bundle of every ref and checks that ``main``, ``served`` and the notes are in it; restore with
   ``git clone --mirror <bundle>``.
@@ -195,6 +197,22 @@ def publish(
                 repo.run("update-ref", f"refs/heads/{SERVED}", c, served)
                 return c
         return served
+
+
+def served_lag(repo: Repo) -> int:
+    """How many first-parent commits ``served`` is behind ``main`` (P7 Amendment C; 0 while there is no
+    ``served``). Above 0 after :func:`publish`: commits whose item records were not written, which no request
+    can pin yet."""
+    if not _has_ref(repo, f"refs/heads/{SERVED}"):
+        return 0
+    return int(
+        repo.run(
+            "rev-list",
+            "--first-parent",
+            "--count",
+            f"refs/heads/{SERVED}..main",
+        ).strip(),
+    )
 
 
 def archive(repo: Repo, dest: Path) -> dict:

@@ -840,10 +840,9 @@ async def run_due_passes(
             if supervise is not None:
                 try:
                     recon = await supervise.reconcile()
-                except (
-                    Exception
-                ) as exc:  # noqa: BLE001 - unreconciled: the whole cap stays committed
-                    _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    # unreconciled: no settle line, so the whole cap stays committed
+                    _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
                     recon = unavailable_reconcile()
             _note_costs(stores, sha, eid, pass_id, rows, effort)
             _note_transcript(stores, sha, pass_id, sol)
@@ -869,6 +868,9 @@ async def run_due_passes(
                 clock() - started,
                 failure_code,
             )
+            if v21_enabled(settings):
+                # Amendment C: the lag when the pass ended, before publishing
+                event["served_lag_commits"] = _served_lag(stores)
             if supervise is not None:
                 read = recon["journal"] == "read"
                 event["usd"] = recon["usd"] if read else UNKNOWN
@@ -898,17 +900,44 @@ async def run_due_passes(
 
         try:
             served = publish(stores.memory)
-        except (
-            Exception
-        ) as exc:  # noqa: BLE001 - served stays where it was: requests keep a recorded pin
+        except Exception as exc:  # noqa: BLE001
+            # served stays where it was: requests keep a recorded pin
             _error(stores, f"publish: {type(exc).__name__}")
-        else:
+            served = None
+        lag = _served_lag(stores)
+        if served is not None:
             _deliver(
                 stores,
                 emit,
-                {"type": "consolidation", "phase": "published", "served": served},
+                {
+                    "type": "consolidation",
+                    "phase": "published",
+                    "served": served,
+                    "served_lag_commits": lag,
+                },
+            )
+        if lag:
+            # Amendment C: commits without their item records, which no request can pin yet
+            _deliver(
+                stores,
+                emit,
+                {
+                    "type": "consolidation",
+                    "phase": "served_lag",
+                    "served_lag_commits": lag,
+                },
             )
     return outcomes
+
+
+def _served_lag(stores: Stores) -> int | None:
+    """``served``'s first-parent lag behind memory ``main`` (P7 Amendment C), or None when it cannot be read."""
+    from ..memory_writer import served_lag
+
+    try:
+        return served_lag(stores.memory)
+    except Exception:  # noqa: BLE001 - an unreadable lag is unknown, never 0
+        return None
 
 
 #: Pass end codes after which a model call may still be in flight at Sol's proxy.
