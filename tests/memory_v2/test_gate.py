@@ -2258,3 +2258,148 @@ def test_a_function_that_replaces_a_computed_value_needs_covers_from_two_episode
     # an ordinary function needs no second episode
     res = gate.check(parent, _candidate(mem, FILES), MAN)
     assert res.passed, res.reasons
+
+
+# --- memory v2.1 P2: the whole output of each failing run, and one stage-5 seed per pass -------------------
+
+
+def test_check_keeps_each_failing_runs_whole_output_beside_the_reasons(tmp_path, world):
+    mem, ev, _ = world
+    long = "E   " + "x" * 3000 + "\nE   KeyError: 'user_id'\n" + KEY
+    failing = PytestOutcome(failed={"t::a"}, returncode=1, output=long)
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b2"),
+        action_lookup=_lookup,
+        pytest_runner=_fake_runner(RED, failing),
+    )
+    parent = mem.head()
+    res = gate.check(parent, _candidate(mem, FILES), MAN)
+    assert not res.passed
+    whole = res.outputs["env/venmo/tests/test_me.py (candidate)"]
+    assert whole.startswith("E   " + "x" * 3000) and "KeyError: 'user_id'" in whole
+    assert KEY not in whole and whole.endswith("<redacted:key-shaped>")
+    # the candidate's suite run failed the same way and is kept under its own label
+    assert res.outputs["suite env/venmo/tests (candidate)"] == whole
+    # the reasons keep v2's 300-character tail, so the pass row is unchanged
+    line = next(r for r in res.reasons if "is not green on the candidate" in r)
+    assert "x" * 400 not in line
+    merged = gate.merge(
+        parent,
+        _candidate(mem, FILES),
+        MAN,
+        "p9",
+        "incremental",
+        "venmo",
+        "0",
+    )
+    (stored,) = ev.db.execute(
+        "SELECT reasons FROM passes WHERE pass_id='p9'",
+    ).fetchone()
+    assert not merged.passed and "x" * 400 not in stored and "outputs" not in stored
+
+
+def test_the_stage5_seed_is_the_passes_when_given():
+    from types import SimpleNamespace
+
+    from unify.memory_v2.qa import QAChecks, QAConfig, seed_of
+
+    gate = SimpleNamespace(qa=QAConfig())
+    run = SimpleNamespace(candidate="c" * 40, seed=None)
+    assert QAChecks(gate, run).seed == seed_of("c" * 40)  # v2: drawn by the candidate
+    run.seed = seed_of("a" * 40)
+    assert QAChecks(gate, run).seed == seed_of(
+        "a" * 40,
+    )  # v2.1: every round and the merge alike
+    assert QAChecks(gate, SimpleNamespace(candidate="c" * 40)).seed == seed_of("c" * 40)
+
+
+def test_check_and_merge_thread_one_seed_to_every_gate_run(
+    tmp_path,
+    world,
+    monkeypatch,
+):
+    mem, ev, _ = world
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b2"),
+        action_lookup=_lookup,
+        pytest_runner=_fake_runner(RED, GREEN),
+    )
+    seen: list = []
+    real = Gate._check
+
+    def spy(self, *a, **k):
+        seen.append(k.get("seed"))
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Gate, "_check", spy)
+    parent = mem.head()
+    pass_seed = b"s" * 32
+    gate.check(parent, _candidate(mem, FILES), MAN, seed=pass_seed)
+    gate.merge(
+        parent,
+        _candidate(mem, FILES),
+        MAN,
+        "p10",
+        "incremental",
+        "venmo",
+        "0",
+        seed=pass_seed,
+    )
+    assert seen and all(s == pass_seed for s in seen)
+    seen.clear()
+    gate.check(
+        parent,
+        _candidate(mem, FILES),
+        MAN,
+    )  # v2: no seed given, drawn by the candidate
+    assert seen == [None]
+
+
+def test_outputs_keep_the_runs_whole_output_not_the_4000_character_tail(
+    tmp_path,
+    world,
+):
+    """P2T1-1: a failing run's 10,000-character output is kept whole; the reason still quotes the same
+    300-character tail of the runner's 4,000-character ``output``."""
+    mem, ev, _ = world
+    whole = "".join(f"line {i:05d} " + "y" * 40 + "\n" for i in range(200))[:10000]
+    assert len(whole) == 10000
+    failing = PytestOutcome(
+        failed={"t::a"},
+        returncode=1,
+        output=whole[-4000:],
+        full_output=whole,
+    )
+    gate = Gate(
+        mem,
+        ev,
+        BlobStore(tmp_path / "b2"),
+        action_lookup=_lookup,
+        pytest_runner=_fake_runner(RED, failing),
+    )
+    res = gate.check(mem.head(), _candidate(mem, FILES), MAN)
+    kept = res.outputs["env/venmo/tests/test_me.py (candidate)"]
+    assert kept == whole and kept.startswith("line 00000 ")
+    line = next(r for r in res.reasons if "is not green on the candidate" in r)
+    assert line.endswith(whole[-300:]) and "line 00000 " not in line
+
+
+def test_run_pytest_keeps_the_uncut_output_beside_the_tail(tmp_path, monkeypatch):
+    """The runner's ``output`` stays the 4,000-character tail (v2's reasons); ``full_output`` is uncut."""
+    from unify.memory_v2 import sandbox_run as sr
+
+    long = "x" * 9000 + "END"
+    monkeypatch.setattr(
+        sr,
+        "run_confined",
+        lambda *a, **k: sr.SandboxResult(1, long, "ERR", False),
+    )
+    out = sr.run_pytest("tests", python=sr.PYTHON, ro={}, rw={}, cwd="/memory")
+    assert out.output == (long + "ERR")[-4000:] and out.full_output == long + "ERR"
+    assert (
+        sr.PytestOutcome(output="abc").full_output == "abc"
+    )  # empty means the same text

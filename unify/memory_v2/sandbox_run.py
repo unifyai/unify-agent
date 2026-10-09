@@ -519,6 +519,15 @@ class PytestOutcome:
     timed_out: bool = False
     output: str = ""
     valid: bool = True
+    # memory v2.1 (spec §9.2): the run's output uncut by this module: stdout then stderr as run_confined kept
+    # them (each its last CAPTURE_MAX_BYTES, prefixed "[N earlier bytes dropped]" when bytes were dropped, so
+    # nothing is cut silently). ``output`` stays the 4,000-character tail every v2 reason quotes; empty means
+    # the same text as ``output``.
+    full_output: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.full_output:
+            self.full_output = self.output
 
 
 def _case_id(case: ET.Element, rootdir: str, tests_dir: str) -> str:
@@ -758,6 +767,7 @@ def run_pytest(
             returncode=r.returncode,
             timed_out=r.timed_out,
             output=(r.stdout + r.stderr)[-4000:],
+            full_output=r.stdout + r.stderr,
         )
         if r.timed_out:
             out.valid = False

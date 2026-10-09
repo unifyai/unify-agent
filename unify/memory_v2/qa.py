@@ -751,7 +751,8 @@ class QAChecks:
 
     def __init__(self, gate: Any, run: Any) -> None:
         self.gate, self.run, self.cfg = gate, run, gate.qa
-        self.seed = seed_of(run.candidate)
+        # memory v2.1: the pass's seed when the gate was given one (every round and the merge draw alike)
+        self.seed = getattr(run, "seed", None) or seed_of(run.candidate)
         self.started: float | None = None
 
     # -- shared -------------------------------------------------------------------------------------------

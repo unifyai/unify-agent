@@ -326,6 +326,10 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
+    # Memory v2.1 (spec §9.2): each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
+    # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
+    # row, whose reasons keep v2's 300-character tail.
+    outputs: dict[str, str] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -691,6 +695,11 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
+    # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
+    outputs: dict[str, str] = field(default_factory=dict)
+    # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same
+    # recorded inputs and mutants); None: :func:`.qa.seed_of` the candidate, as in v2
+    seed: bytes | None = None
 
     def fail(
         self,
@@ -719,6 +728,14 @@ class _Run:
 
     def note(self, reason: str) -> None:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
+
+    def output(self, label: str, o: PytestOutcome) -> None:
+        """Keep a failing run's whole recorded output under *label* for the full gate result (memory v2.1):
+        :attr:`.sandbox_run.PytestOutcome.full_output`, which only the sandbox's own marked capture bound cuts.
+
+        Never part of a reason: the reasons, and so the pass row, keep v2's 300-character tail.
+        """
+        self.outputs[label] = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
 
     def stop(self, failures: list[tuple[str, str]]) -> None:
         for check, reason in failures:
@@ -774,12 +791,21 @@ class Gate:
         self.qa = qa if qa is not None else QAConfig()
 
     # -- public API ---------------------------------------------------------------------------------------
-    def check(self, parent: str, candidate: str, manifest: dict) -> GateResult:
+    def check(
+        self,
+        parent: str,
+        candidate: str,
+        manifest: dict,
+        *,
+        seed: bytes | None = None,
+    ) -> GateResult:
         """The whole gate on *candidate*, without merging; no per-item reduction is tried.
 
-        ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them.
+        ``items_refused`` names the items its failures belong to, as :meth:`merge` would refuse them. *seed*
+        (memory v2.1): the pass's stage-5 seed, so a repair round's check and the final merge draw the same
+        sample; None draws by the candidate, as in v2.
         """
-        res, _, notes, _, _ = self._check(parent, candidate, manifest)
+        res, _, notes, _, _ = self._check(parent, candidate, manifest, seed=seed)
         res.reasons.extend(notes)
         return res
 
@@ -899,8 +925,12 @@ class Gate:
         kind: str,
         channel: str | None,
         usd: str,
+        *,
+        seed: bytes | None = None,
     ) -> GateResult:
         """Check, then fast-forward ``main``; evidence is recorded only for a landed candidate.
+
+        *seed*: as for :meth:`check` (memory v2.1); the reduced candidate is checked with the same seed.
 
         Per-item admission (stage 7): when the candidate is refused and every failure belongs to manifest
         items (an item's G1 checks, its G2 evidence and held-out runs, its own tests' red→green, examples
@@ -942,18 +972,24 @@ class Gate:
                 c_sha,
                 manifest,
                 reduce_as=pass_id,
+                seed=seed,
             )
             if reduced is not None:
                 again, covers2, notes2, shapes2, _ = self._check(
                     p_sha,
                     reduced.sha,
                     reduced.manifest,
+                    seed=seed,
                 )
                 if again.passed:
                     again.reasons = [
                         f"item refused: {r}" for r in res.reasons + reduced.reasons
                     ]
                     again.refused = []
+                    again.outputs = {
+                        **{f"item refused: {k}": v for k, v in res.outputs.items()},
+                        **again.outputs,
+                    }
                     res, covers, notes, shapes = again, covers2, notes2, shapes2
                     landed, landed_manifest = reduced.sha, reduced.manifest
                 else:
@@ -962,6 +998,9 @@ class Gate:
                         f"({reduced.sha[:12]}) was refused too",
                     )
                     res.reasons += [f"reduced: {r}" for r in again.reasons]
+                    res.outputs.update(
+                        {f"reduced: {k}": v for k, v in again.outputs.items()},
+                    )
                     res.refused += [c for c in again.refused if c not in res.refused]
                 res.items_refused = reduced.refused
         except BaseException as exc:
@@ -1090,6 +1129,7 @@ class Gate:
         candidate: str,
         manifest: dict,
         reduce_as: str | None = None,
+        seed: bytes | None = None,
     ) -> tuple[
         GateResult,
         set[tuple[str, str, int]],
@@ -1104,6 +1144,7 @@ class Gate:
         res = GateResult(True, {c: True for c in CHECKS})
         tmp = Path(tempfile.mkdtemp(prefix="memv2-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
+        run.seed = seed
         reduced = None
         try:
             if self._prepare(run):
@@ -1133,6 +1174,7 @@ class Gate:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
+        res.outputs = dict(run.outputs)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
 
@@ -1800,6 +1842,7 @@ class Gate:
                 elif not cleanup:
                     self._test_only_repair(run, t, edited, on_cand, on_parent)
                 if not _green(on_cand):
+                    run.output(f"{t} (candidate)", on_cand)
                     run.fail(
                         "G3",
                         f"{t} is not green on the candidate ({_describe(on_cand)}) "
@@ -1998,12 +2041,14 @@ class Gate:
 
         for n, item in enumerate(targets):
             if not readable:
+                run.output("docstring examples (candidate)", outcome)
                 run.fail(
                     "G3",
                     f"the examples of {item} could not be run ({_describe(outcome)}) "
                     f"{outcome.output[-300:]}",
                 )
             elif ran(outcome.failed, n) or not ran(outcome.passed, n):
+                run.output("docstring examples (candidate)", outcome)
                 run.fail(
                     "G3",
                     f"an example in the docstring of {item} fails as a doctest "
@@ -2081,6 +2126,7 @@ class Gate:
                 f"; nor can it count as a repair of a red test, since the pass edits "
                 f"{carried[:5]}, which it exercises"
             )
+        run.output(f"{test} (parent)", on_parent)
         run.fail("G3", f"the tests in {test} {why}", _owners(run.man, test))
         return False
 
@@ -2192,6 +2238,7 @@ class Gate:
                         f"this pass does not touch env/{ch}",
                     )
                 elif not readable or new_red:
+                    run.output(f"suite {rel} (candidate)", suite)
                     repair = (
                         "; the parent's suite was unreadable, so the candidate's must be green"
                         if broken is not None
@@ -2224,6 +2271,7 @@ class Gate:
             if regression is not None and before:
                 reg = self._pytest(regression, rel, qa_env=run.qa_env)
                 if reg.timed_out or not reg.valid:
+                    run.output(f"regression run of {rel}", reg)
                     run.fail(
                         "G3",
                         f"the regression run of {rel} is unreadable ({_describe(reg)}) "
@@ -2231,6 +2279,7 @@ class Gate:
                     )
                 lost = sorted(before - reg.passed)
                 if lost:
+                    run.output(f"regression run of {rel}", reg)
                     run.fail(
                         "G3",
                         "the parent's tests no longer pass against the candidate's library: "
