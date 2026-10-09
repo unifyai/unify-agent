@@ -120,6 +120,7 @@ from .switch import (
     sol_max_calls_map,
     sol_route,
     sol_token,
+    checker_visible,
     surfacing_options,
     v21_enabled,
 )
@@ -983,7 +984,15 @@ async def run_due_passes(
         stores.blobs,
         **common,
         # memory v2.1 (spec §9.1, P4 Amendment E): the v2.1 layout and checks for WRITE; v2 when the switch is off
-        v21=gate_v21.config_for(stores, lookup) if v21_enabled(settings) else None,
+        v21=(
+            gate_v21.config_for(
+                stores,
+                lookup,
+                checker_visible=checker_visible(settings),
+            )
+            if v21_enabled(settings)
+            else None
+        ),
     )
     curate_gate: Gate | None = None  # built when a CURATE pass is first queued (P6)
     config = PassConfig(
@@ -1014,7 +1023,12 @@ async def run_due_passes(
                 stores.evidence,
                 stores.blobs,
                 **common,
-                v21=gate_v21.config_for(stores, lookup, role="curate"),
+                v21=gate_v21.config_for(
+                    stores,
+                    lookup,
+                    role="curate",
+                    checker_visible=checker_visible(settings),
+                ),
             )
         if (
             cfg.run_guard_usd is not None

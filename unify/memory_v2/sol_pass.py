@@ -535,15 +535,31 @@ def _trailers(
     v21: bool,
     curate: bool = False,
 ) -> dict:
-    """A candidate commit's trailers: v2's, plus ``Tests-Changed:`` under v2.1 when the manifest states reasons,
-    plus ``Why:`` and ``Items:`` on a v2.1 CURATE pass (P6, :func:`.curate.trailers`).
+    """A candidate commit's trailers: v2's; under v2.1 also ``Why:``, ``Episodes:`` and ``Items:`` (spec §8.2 rule
+    6, :func:`_v21_trailers`) and ``Tests-Changed:`` when the manifest states reasons (spec §9.1); a CURATE pass's
+    ``Why:`` and ``Items:`` are :func:`.curate.trailers`' (every item it adds, changes, deletes, aliases or retires).
     """
     out: dict = {"Pass": pass_id, "Episode": sources, "Evidence": sources}
-    if v21 and _tests_changed(manifest):
-        out["Tests-Changed"] = _tests_changed(manifest)
-    if v21 and curate:
-        out.update(_curate.trailers(manifest))
+    if v21:
+        out.update(
+            _v21_trailers(manifest, list(sources) if isinstance(sources, list) else []),
+        )
+        if _tests_changed(manifest):
+            out["Tests-Changed"] = _tests_changed(manifest)
+        if curate:
+            out.update(_curate.trailers(manifest))
     return out
+
+
+def _v21_check_description() -> str:
+    """``check`` under v2.1 (spec §12.4; P2 Amendment B): no channel wording; the static checks, then the manifest
+    items' own tests and the gate's drawn recorded inputs."""
+    return (
+        "Check a manifest against your current /memory files: the gate's static checks (the manifest, the "
+        "layout and links, fixtures, covers and safety), then the items' own tests and the recorded inputs the "
+        "gate draws. Returns 'ok' or the gate's reasons, with the output of any failing test. "
+        f"Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
+    )
 
 
 def sol_tools(
@@ -564,6 +580,8 @@ def sol_tools(
         + "). Returns 'ok' "
         f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
     )
+    if v21:
+        description = _v21_check_description()
     tools = copy.deepcopy(_TOOL_TEMPLATES)
     for tool in tools:
         if tool["function"]["name"] == "check":
@@ -1472,6 +1490,28 @@ def _sources(manifest: object) -> list[str]:
     return sorted(out)
 
 
+def _v21_trailers(manifest: object, sources: list[str]) -> dict[str, list[str]]:
+    """The v2.1 commit trailers (spec §8.2 rule 6): ``Why`` (the manifest's one line, at most 200 characters),
+    ``Episodes`` (the source episodes) and ``Items`` (the item ids the manifest names).
+    """
+    m = manifest if isinstance(manifest, dict) else {}
+    why = m.get("why")
+    line = (
+        " ".join(why.split())[:200]
+        if isinstance(why, str) and why.strip()
+        else "(not given)"
+    )
+    raw = m.get("items") if isinstance(m.get("items"), list) else []
+    items = sorted(
+        {
+            it["item"]
+            for it in raw
+            if isinstance(it, dict) and isinstance(it.get("item"), str)
+        },
+    )
+    return {"Why": [line], "Episodes": list(sources), "Items": items or ["(none)"]}
+
+
 def _money(usd: object) -> Decimal | None:
     """A finite, non-negative decimal string as a Decimal; anything else (``unknown``) is None."""
     if not isinstance(usd, str):
@@ -2131,6 +2171,14 @@ class SolPass:
             },
         )
 
+    def _brief_v21(self) -> str:
+        """The v2.1 system message: the CURATE brief for a CURATE pass (P6: the request's role), else WRITE."""
+        from .prompts_v21 import curate_brief_now, write_brief_now
+
+        if self._role == "curate":
+            return curate_brief_now()
+        return write_brief_now()
+
     def _keep_cancelled_work(
         self,
         box: Path,
@@ -2414,8 +2462,8 @@ class SolPass:
                 {
                     "role": "system",
                     "content": (
-                        _curate.curate_system()
-                        if self.cfg.v21 and req.kind == "curate"
+                        self._brief_v21()  # spec v2.1 §12: the role's brief alone
+                        if self.cfg.v21
                         else _qa.system(sol_system(**switches), self._qa)
                     ),
                 },

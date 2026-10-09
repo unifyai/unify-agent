@@ -33,8 +33,12 @@ from pathlib import Path
 from ..catalogue import channel_lines
 from ..index import IndexOverBudget, index_with_names
 from ..memory_repo import items
+from .. import prompts_v21 as _prompts_v21
 
 logger = logging.getLogger(__name__)
+
+#: The reviewed v2.1 actor guide (P7, spec §12.1): constant bytes, naming nothing the library holds.
+GUIDE_V21 = _prompts_v21.GUIDE_V21
 
 INDEX_BUDGET_TOKENS = 4000
 
@@ -115,20 +119,6 @@ def render_catalogue(checkout: Path, shown_before: bool = False) -> tuple[str, d
     checkout = Path(checkout)
     text = GUIDE if shown_before or channel_lines(checkout) else ""
     return text, record_shown(text, channels=(), items=(), renderer="catalogue")
-
-
-#: The v2.1 actor guide (spec §12.1): constant bytes, naming nothing the library holds. P7 replaces this text
-#: with the GUIDE the lead reviews; the section's layout (guide, location, index view) stays.
-GUIDE_V21 = (
-    "Memory: a Python library of tested functions and linked notes built from earlier work. "
-    "`import memory` in a cell; the index below lists every item. `memory.show(item)` shows one in full "
-    '(source, links, status, history), `memory.index("<package>")` prints one section of the index, and '
-    "`memory.find(value)` lists the functions built on recorded inputs shaped like structured data you hold "
-    "(it cannot match plain text). `experimental` items are candidates; `stable` ones are tested and have "
-    "been used; suspect items are left out of the index, and `memory.show` says why. A function raises "
-    "MemoryInputError on an input it was not built for; then do the work directly. Write your own code in "
-    "your session as usual.\n"
-)
 
 
 def location_line(checkout: Path) -> str:
