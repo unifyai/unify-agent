@@ -58,9 +58,25 @@ _ENDED = ("landed", "refused", "deadline", "cancelled", "error")
 WORKER_PASSES = 2
 
 
+def slot_s(wall_s: float, passes: int = WORKER_PASSES) -> float:
+    """A worker slot's deadline: each pass's wall bound and each item-records step's bisect budget (P5)."""
+    from ..item_bisect import BISECT_BUDGET_S
+
+    return passes * (float(wall_s) + BISECT_BUDGET_S)
+
+
 def failsafe_s(wall_s: float, passes: int = 1) -> float:
-    """The worker's failsafe: *passes* passes, each with its wall bound, cancel grace and reconcile, plus a margin."""
-    return passes * (float(wall_s) + CANCEL_GRACE_S + RECONCILE_S) + FAILSAFE_EXTRA_S
+    """The worker's failsafe: *passes* passes, each with its wall bound, cancel grace and reconcile, plus a margin;
+    a slot of several passes also each item-records step's bisect budget (P5; MAIN, 9 Oct).
+    """
+    from ..item_bisect import BISECT_BUDGET_S
+
+    bisect = passes * BISECT_BUDGET_S if passes > 1 else 0.0
+    return (
+        passes * (float(wall_s) + CANCEL_GRACE_S + RECONCILE_S)
+        + bisect
+        + FAILSAFE_EXTRA_S
+    )
 
 
 # --- the supervisor ----------------------------------------------------------------------------------------
@@ -348,8 +364,9 @@ def spawn(
             proc_start(proc.pid) or "",
             now,
             now
-            + WORKER_PASSES
-            * float(wall_s),  # the slot: WRITE, then the CURATE it made due
+            + slot_s(
+                wall_s,
+            ),  # the slot: WRITE, then the CURATE it made due, each with its records
             eid,
         )
         write_inflight(paths, rec)

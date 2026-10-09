@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -28,6 +29,14 @@ from .sandbox_run import PYTHON, PytestOutcome, run_pytest
 from .snapshot import listing, materialise
 
 PROBE_S = 300.0
+
+
+class ProbeCut(Exception):
+    """The probe stopped between runs: its budget ran out (``budget``) or it was told to stop (``stopped``)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass
@@ -94,7 +103,24 @@ def probe(
     python: Path = PYTHON,
     pytest_runner: Callable[..., PytestOutcome] = run_pytest,
     timeout_s: float = PROBE_S,
+    deadline: float | None = None,
+    stop: Callable[[], bool] | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> list[ProbeRow]:
+    """*deadline* (on *clock*) bounds the whole probe: each run gets at most the time left, and
+    :class:`ProbeCut` is raised between runs once it is spent (``budget``) or *stop* returns True (``stopped``).
+    """
+
+    def run_timeout() -> float:
+        if stop is not None and stop():
+            raise ProbeCut("stopped")
+        if deadline is None:
+            return timeout_s
+        left = deadline - clock()
+        if left <= 1:
+            raise ProbeCut("budget")
+        return min(timeout_s, left)
+
     later_sha = _resolve(mem, later)
     if later_sha is None:
         raise ValueError("the later revision does not resolve")
@@ -106,13 +132,14 @@ def probe(
             continue
         tree = overlay(mem, sha, later_sha, tests, work / f"v{n}")
         for t in tests:
+            to = run_timeout()
             o = pytest_runner(
                 t,
                 python=python,
                 ro={tree: "/memory"},
                 rw={},
                 cwd="/memory",
-                timeout_s=timeout_s,
+                timeout_s=to,
                 env=dict(_PYTEST_ENV),
             )
             rows.append(

@@ -97,9 +97,9 @@ def test_finish_spawns_and_returns_without_waiting_and_one_pass_runs_at_a_time(
         assert time.monotonic() - started < 2.0 and ev["phase"] == "spawned"
         assert rec is not None and ap.owns(rec)
         assert rec.pass_id == "e1.p0" and rec.after_episode == "e1"
-        assert (
-            rec.deadline_at - rec.started_at == ap.WORKER_PASSES * 60
-        )  # WRITE, then a due CURATE
+        assert rec.deadline_at - rec.started_at == ap.slot_s(
+            60,
+        )  # WRITE, then a due CURATE, each with its item records
         calls = []
         busy = ap.maybe_spawn(
             stores,

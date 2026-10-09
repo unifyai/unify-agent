@@ -25,6 +25,11 @@ from .layout import item_path, module_bodies
 
 BISECT_MAX_VERSIONS = 20
 VERSION_SCAN = 200
+#: The newest refused versions run (the rest are counted in ``versions_cut``).
+BISECT_MAX_REFUSED = 10
+#: Seconds all of one consolidation's bisects may take together (AGENTS.md: bounded runtime; MAIN, 9 Oct). An item
+#: the budget does not reach is recorded ``{"skipped": "budget"}``, and the records are still written.
+BISECT_BUDGET_S = 600.0
 
 
 def versions_of(
@@ -70,6 +75,18 @@ def versions_of(
     return list(reversed(out))
 
 
+def _takes(fn: Callable[..., Any], kwargs: Mapping[str, Any]) -> bool:
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return all(k in params for k in kwargs) or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def _signature(rows: list[Any]) -> tuple:
     """How one version behaved under the tests: invalid, timed out, or (passed ids, failed ids)."""
     if not rows or any(not r.valid for r in rows):
@@ -93,8 +110,13 @@ def bisect_item(
     probe: Callable[..., list] | None = None,
     refused: Callable[..., list[tuple[str, str]]] | None = None,
     max_versions: int = BISECT_MAX_VERSIONS,
+    deadline: float | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> dict:
-    """Run *item*'s current *tests* (from *head*) on its versions and on its refused versions (module docstring)."""
+    """Run *item*'s current *tests* (from *head*) on its versions and on its newest :data:`BISECT_MAX_REFUSED`
+    refused versions (module docstring). *deadline* and *stop* bound the probe
+    (:func:`.history_probe.probe`); a probe cut short gives ``{"skipped": "budget" | "stopped"}``.
+    """
     if ":" not in item:
         return {"skipped": "a note has no tests to run"}
     if not tests:
@@ -106,8 +128,24 @@ def bisect_item(
     every = versions_of(mem, item, head)
     versions = every[-max_versions:] if max_versions > 0 else []
     labels = [(f"v{i}", sha) for i, sha in enumerate(versions)]
-    refused_rows = list(refused_fn(ev, mem, item))
-    rows = probe(mem, labels + refused_rows, head, list(tests), work=Path(work))
+    every_refused = list(refused_fn(ev, mem, item))
+    refused_rows = every_refused[
+        -BISECT_MAX_REFUSED:
+    ]  # recorded oldest first: the newest are kept
+    extra = {k: v for k, v in (("deadline", deadline), ("stop", stop)) if v is not None}
+    if extra and not _takes(probe, extra):
+        extra = {}  # a probe without the bounds (a test's stand-in)
+    try:
+        rows = probe(
+            mem,
+            labels + refused_rows,
+            head,
+            list(tests),
+            work=Path(work),
+            **extra,
+        )
+    except history_probe.ProbeCut as cut:
+        return {"skipped": cut.reason}
     by_label: dict[str, list[Any]] = {}
     for r in rows:
         by_label.setdefault(r.label, []).append(r)
@@ -119,7 +157,10 @@ def bisect_item(
         introduced = versions[i]
     return {
         "versions": versions,
-        "versions_cut": len(every) - len(versions),
+        "versions_cut": len(every)
+        - len(versions)
+        + len(every_refused)
+        - len(refused_rows),
         "introduced": introduced,
         "changes": [
             versions[i] for i in range(1, len(versions)) if sigs[i] != sigs[i - 1]

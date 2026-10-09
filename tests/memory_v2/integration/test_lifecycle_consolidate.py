@@ -256,3 +256,118 @@ def test_checker_visibility_is_a_declared_switch():
     )
     with pytest.raises(ValueError):
         checker_visible(SimpleNamespace(UNIFY_MEMORY_V21_CHECKER_VISIBLE="yes"))
+
+
+# --- the bisect bound (MAIN, 9 Oct; AGENTS.md: bounded runtime) ----------------------------------------------
+
+
+class _Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+
+def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
+    lib,
+    tmp_path,
+):
+    stores, head = lib
+    for eid in ("e1", "e2"):
+        _episode(
+            stores,
+            eid,
+            head,
+            {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1, "errored": 1}},
+        )
+    clock, calls = _Clock(), []
+
+    def slow(mem, versions, later, tests, *, work, deadline, stop=None):
+        calls.append(deadline)
+        clock.t += 700.0  # one bisect spends the whole budget
+        return [
+            ProbeRow(label, sha, t, failed=["x"])
+            for label, sha in versions
+            for t in tests
+        ]
+
+    out = lifecycle.consolidate_records(
+        stores,
+        checker_visible=False,
+        work=tmp_path / "w",
+        probe=slow,
+        refused=lambda ev, m, i: [],
+        clock=clock,
+    )
+    recs = read_records(stores.memory, out["noted"])
+    assert calls == [
+        600.0,
+    ]  # PD first (sorted), with the call's whole budget as its deadline
+    assert "introduced" in recs[PD]["bisect"] and recs[WEEK]["bisect"] == {
+        "skipped": "budget",
+        "at": head,
+    }
+
+
+def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
+    lib,
+    tmp_path,
+):
+    from functools import partial
+
+    from unify.memory_v2 import history_probe
+    from unify.memory_v2.sandbox_run import PytestOutcome
+
+    stores, head = lib
+    for eid in ("e1", "e2"):
+        _episode(
+            stores,
+            eid,
+            head,
+            {WEEK: {"called": 1, "errored": 1}, PD: {"called": 1, "errored": 1}},
+        )
+    stopped, runs = [], []
+
+    def runner(target, **kw):  # SIGTERM arrives while the first run is in flight
+        runs.append(target)
+        stopped.append(True)
+        return PytestOutcome(failed={"test_dates.py::test_week"}, returncode=1)
+
+    out = lifecycle.consolidate_records(
+        stores,
+        checker_visible=False,
+        work=tmp_path / "w",
+        probe=partial(history_probe.probe, pytest_runner=runner),
+        refused=lambda ev, m, i: [],
+        stop=lambda: bool(stopped),
+    )
+    recs = read_records(stores.memory, out["noted"])
+    assert runs == [DATES_TEST]  # no run starts after the stop
+    assert "introduced" in recs[PD]["bisect"] and recs[WEEK]["bisect"] == {
+        "skipped": "stopped",
+        "at": head,
+    }
+
+
+def test_an_item_is_not_bisected_again_at_the_same_suspect_version(lib, tmp_path):
+    from unify.memory_v2.item_records import empty_record, write_records
+
+    stores, head = lib
+    rec = {
+        **empty_record(WEEK, "function"),
+        "changed_at": head,
+        "bisect": {"skipped": "budget", "at": head},
+    }
+    write_records(
+        stores.memory,
+        head,
+        {WEEK: rec},
+    )  # an earlier consolidation's map at this version
+    for eid in ("e1", "e2"):
+        _episode(stores, eid, head, {WEEK: {"called": 1, "errored": 1}})
+    probe = _Probe()
+    out = _consolidate(stores, tmp_path, probe)
+    recs = read_records(stores.memory, out["noted"])
+    assert recs[WEEK]["status"] == "suspect" and probe.calls == []
+    assert recs[WEEK]["bisect"] == {"skipped": "budget", "at": head}

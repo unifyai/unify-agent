@@ -756,6 +756,7 @@ def after_passes(
     settings: Any,
     recorded: list[str],
     emit: Callable[[dict], None] | None,
+    stop: Callable[[], bool] | None = None,
 ) -> None:
     """Memory v2.1 (spec §4.4, §10; D38, D40): once a consolidation's passes are recorded, the item records of
     ``main``'s head, the status changes and the bisects (:func:`..lifecycle.consolidate_records`). Nothing runs
@@ -774,6 +775,7 @@ def after_passes(
                 checker_visible=checker_visible(settings),
                 work=Path(work),
                 action_lookup=EpisodeLookup(stores).action,
+                stop=stop,  # the worker's SIGTERM, checked between bisect runs
             )
     except Exception as exc:  # noqa: BLE001 - the records never stop the request
         _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
@@ -1013,6 +1015,9 @@ async def run_due_passes(
         due,
     )  # under v2.1 a CURATE pass joins after a WRITE pass when the library state warrants it
     curate_state: _curate.CurateState | None = None
+    stopped = (
+        supervise.stop.is_set if supervise is not None else None
+    )  # bounds P5's bisects on SIGTERM
     recorded: list[str] = (
         []
     )  # the passes recorded since the last item records (v2.1, after_passes)
@@ -1167,7 +1172,7 @@ async def run_due_passes(
         if cfg.v21 and not curating:
             # spec §7 (MAIN, 9 Oct): WRITE's item records and statuses first, so CURATE's trigger reads fresh
             # suspects and use; then CURATE if the library's state warrants it (§10.3)
-            after_passes(stores, settings, recorded, emit)
+            after_passes(stores, settings, recorded, emit, stop=stopped)
             recorded = []
             try:
                 curate_state = _curate_state(stores, lookup)
@@ -1201,6 +1206,7 @@ async def run_due_passes(
         settings,
         recorded,
         emit,
+        stop=stopped,
     )  # memory v2.1 only (CURATE's records, or every pass's without v2.1 CURATE); at once with the switch off
     if v21_enabled(settings):
         # P7 Amendment A: the pin-able head moves last, after the item records are written

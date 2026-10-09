@@ -54,7 +54,9 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
             ap.proc_start(os.getpid()) or "",
             now,
             now
-            + ap.WORKER_PASSES * wall_s,  # the slot: WRITE, then the CURATE it made due
+            + ap.slot_s(
+                wall_s,
+            ),  # the slot: WRITE, then the CURATE it made due, each with its records
             args.episode,
         ),
     )

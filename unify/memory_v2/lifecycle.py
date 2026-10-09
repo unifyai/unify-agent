@@ -569,8 +569,16 @@ def consolidate_records(
     probe: Any = None,
     refused: Any = None,
     action_lookup: Any = None,
+    stop: Any = None,
+    budget_s: float | None = None,
+    clock: Any = None,
 ) -> dict:
     """The item records of ``main``'s head, after a consolidation's passes (spec §4.4, §10).
+
+    The bisects of one call share :data:`.item_bisect.BISECT_BUDGET_S` (*budget_s*), and *stop* (a callable, the
+    worker's SIGTERM) is checked between probe runs. An item they do not reach is ``{"skipped": "budget"}`` (or
+    ``"stopped"``); the records are written all the same. An item bisected, or skipped on budget, at its current
+    suspect version (``changed_at``) is not bisected again until that version changes.
 
     - The map is computed from the tree at the head, every indexed episode's use and signals, the verification
       and provenance of the passes, and the map carried to the head.
@@ -634,6 +642,12 @@ def consolidate_records(
         aliases=ev.aliases(),
         curations=ev.curations(),
     )
+    import time
+
+    from .item_bisect import BISECT_BUDGET_S
+
+    now = clock or time.monotonic
+    deadline = now() + float(BISECT_BUDGET_S if budget_s is None else budget_s)
     bisected: list[str] = []
     for item in sorted(changes):
         rec = records[item]
@@ -642,20 +656,39 @@ def consolidate_records(
             "negative_signals",
         ):
             continue
+        at = rec.get("changed_at")
+        old = (prev.get(item) or {}) if isinstance(prev, dict) else {}
+        done = old.get("bisect")
+        if (
+            isinstance(done, dict)
+            and done.get("at") == at
+            and done.get("skipped") != "stopped"
+        ):
+            # once per suspect version: a bisect killed or cut short is never retried in a loop
+            rec["bisect"], rec["rollback"] = done, old.get("rollback")
+            continue
         tests = (rec.get("verification") or {}).get("tests") or []
-        try:
-            result = bisect_item(
-                mem,
-                ev,
-                item,
-                head,
-                list(tests),
-                work=Path(work) / item.replace(":", "__"),
-                probe=probe,
-                refused=refused,
-            )
-        except (GitError, OSError, ValueError) as exc:
-            result = {"error": type(exc).__name__}
+        if stop is not None and stop():
+            result = {"skipped": "stopped"}
+        elif deadline - now() <= 1:
+            result = {"skipped": "budget"}
+        else:
+            try:
+                result = bisect_item(
+                    mem,
+                    ev,
+                    item,
+                    head,
+                    list(tests),
+                    work=Path(work) / item.replace(":", "__"),
+                    probe=probe,
+                    refused=refused,
+                    deadline=deadline,
+                    stop=stop,
+                )
+            except (GitError, OSError, ValueError) as exc:
+                result = {"error": type(exc).__name__}
+        result = {**result, "at": at}
         rec["bisect"] = result
         rec["rollback"] = rollback_target(
             rec["use"],

@@ -353,7 +353,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
     monkeypatch.setattr(
         consolidate,
         "after_passes",
-        lambda stores, settings, recorded, emit: order.append(("records",)),
+        lambda stores, settings, recorded, emit, **kw: order.append(("records",)),
     )
     real = memory_writer.publish
     monkeypatch.setattr(
