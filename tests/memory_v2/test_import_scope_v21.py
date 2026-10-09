@@ -292,3 +292,15 @@ def test_the_switch_reaches_the_gate(tmp_path, monkeypatch):
         assert made[-1] is None or (
             isinstance(made[-1], V21Config) and made[-1].layout and made[-1].checks
         )
+
+
+def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):
+    """RUNTIME's review B1: importing memory.text.parse runs memory/text/__init__.py first, so an __init__.py that
+    rebinds a name changes the package's own modules."""
+    cand = dict(LIB)
+    cand["memory/text/__init__.py"] = (
+        LIB["memory/text/__init__.py"] + "\nparse.tokens = lambda s: []\n"
+    )
+    run = _run(tmp_path, LIB, cand, ["memory/text/__init__.py"])
+    assert "memory.text.parse:tokens" in Gate._behaviour_targets(run, {}, v21=True)
+    assert "memory.text" in layout.import_graph(tmp_path / "c")["memory.text.parse"]

@@ -269,13 +269,14 @@ _CURATE = (
     "module, listed in the manifest's `aliases`.\n"
     "- Generalise variants into one parametric function.\n"
     "- Repair a suspect item, or roll it back to the proposed earlier version (`git show <commit>:<path>`).\n"
-    "- Retire an item that is wrong, or unused across many episodes, together with its tests.\n"
+    "- Retire an item that is wrong, or unused across many episodes, together with its tests, with a one-line "
+    "reason in `retired`.\n"
     "- Fix broken links and add missing ones between notes and functions.\n"
     "- Regroup packages when that makes the index clearer, keeping each moved function's old id as an alias.\n"
     "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "deleted": ["<retired id>"], '
-    '"deleted_tests": ["<test file removed with them>"], "aliases": {"<old id>": "<new id>"}, '
+    '"retired": {"<retired id>": "<one-line reason>"}, "deleted_tests": ["<test file removed with them>"], "aliases": {"<old id>": "<new id>"}, '
     '"tests_changed": {"<test>": "<reason>"}, "why": "<one line>", "summary": "<what changed>"}\n'
     "  `items` lists every item you added or changed, with the covers of the items it replaces.\n"
     "\n"

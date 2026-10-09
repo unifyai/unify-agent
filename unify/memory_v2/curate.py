@@ -25,6 +25,10 @@ from pathlib import Path
 from .library_index import INDEX_VIEW_TOKENS
 
 CURATE_DIR = "curate"
+# the paths CURATE's brief names (P7's prompts_v21), as stage_inputs writes them
+OVERLAPS_INPUT = "/inputs/curate/overlap.json"
+SUSPECTS_INPUT = "/inputs/curate/suspects.json"
+TRIGGER_INPUT = "/inputs/curate/trigger.json"
 
 #: CURATE's brief (spec §10.4 in prompt form, with §12.3's inputs). A placeholder: P7 writes the reviewed text.
 CURATE_BRIEF_V21 = """\

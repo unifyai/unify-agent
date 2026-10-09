@@ -150,3 +150,20 @@ def test_what_to_read_names_every_part_required_parts_demands():
         "every reply the working model sent and every action that changed something, with the cell it came from"
         in " ".join(brief.split())
     )
+
+
+def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):
+    """RUNTIME's review B2 (MAIN, 9 Oct): P6's gate refuses a deletion that is neither an alias nor `retired` with a
+    one-line reason, so the brief's manifest and its retire bullet name `retired`; and the brief's input paths are
+    the files CURATE's inputs are written to."""
+    from unify.memory_v2 import curate
+
+    brief = " ".join(pv.curate_brief_now().split())
+    assert '"retired": {"<retired id>": "<one-line reason>"}' in brief
+    assert "together with its tests, with a one-line reason in `retired`." in brief
+    from tests.memory_v2.test_curate import _state
+
+    written = curate.stage_inputs(tmp_path, _state())
+    assert {curate.OVERLAPS_INPUT, curate.SUSPECTS_INPUT, curate.TRIGGER_INPUT} <= set(
+        written,
+    )

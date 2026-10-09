@@ -455,14 +455,21 @@ def imports(
 
 
 def import_graph(tree: Path) -> dict[str, set[str]]:
-    """Library module (or package init) -> the library modules its code imports, directly."""
+    """Library module (or package init) -> the library modules its code imports, directly, and a module's own
+    package init (which Python runs before the module)."""
     tree = Path(tree)
     modules = library_modules(tree)
     graph: dict[str, set[str]] = {}
     for m in sorted(modules):
         refs = imports((tree / module_path(m)).read_bytes(), _package(m), modules)
         names, whole = refs if refs is not None else (set(), set())
-        graph[m] = (whole | {n.split(":", 1)[0] for n in names}) - {m}
+        deps = (whole | {n.split(":", 1)[0] for n in names}) - {m}
+        package = ".".join(m.split(".")[:2])
+        if package != m and package in modules:
+            deps.add(
+                package,
+            )  # importing memory.<package>.<module> runs the package's __init__.py first
+        graph[m] = deps
     return graph
 
 

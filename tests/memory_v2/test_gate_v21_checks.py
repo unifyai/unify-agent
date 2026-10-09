@@ -55,7 +55,7 @@ def _checks(tmp_path, items, cfg=None, **run):
         lookup=lambda e, i: None,
     )
     base = dict(
-        man=SimpleNamespace(items=items, deleted=[]),
+        man=SimpleNamespace(items=items, deleted=[], unlisted=[], skeleton=[]),
         fails=[],
         notes=[],
         verification={},
@@ -384,3 +384,35 @@ def test_a_helper_edit_that_breaks_a_stored_procedure_is_refused(tmp_path):
             assert reason.startswith(
                 f"{job} changes behaviour without a test: its procedure on e1 (worktree) passes",
             )
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
+def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
+    """RUNTIME's review B1: the scope comes from the import graph, where a module depends on its package init."""
+    from tests.memory_v2.test_procedures import _wt
+    from unify.memory_v2 import layout
+
+    ep, cover, files = _wt(tmp_path)
+    job = "memory.proc.jobs:total_amounts"
+    init = '"""Procedures."""\nfrom . import util\n\nutil.amount = lambda row: int(row[1]) + 1\n'
+    p_tree, c_tree = _lib(tmp_path / "p", UTIL), _lib(tmp_path / "c", UTIL)
+    (c_tree / "memory/proc/__init__.py").write_text(init)
+    v = _checks(
+        tmp_path,
+        [],
+        cfg=V21Config(episodes={"e1": ep}.get, worktree_files=files),
+        p_tree=p_tree,
+        c_tree=c_tree,
+        changed=["memory/proc/__init__.py"],
+        p_bodies={job: ("function", "j", True)},
+        c_bodies={job: ("function", "j", True)},
+        graph=layout.merge_graphs(
+            layout.import_graph(p_tree),
+            layout.import_graph(c_tree),
+        ),
+    )
+    v.gate.ev, v.gate.python = _stored((job, cover)), PYTHON
+    v._procedure_behaviour()
+    assert [(c, r.split(":", 1)[0]) for c, r, _ in v.run.fails] == [
+        ("G3", f"{job} changes behaviour without a test"),
+    ]
