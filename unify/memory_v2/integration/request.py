@@ -44,6 +44,9 @@ _CURRENT: Any = None
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
 CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
+#: Memory v2.1: the evidence store's busy wait while a pass worker shares it (async_pass.BUSY_TIMEOUT_S; a
+#: constant here keeps the v2 path free of the async module).
+_V21_BUSY_TIMEOUT_S = 60.0
 #: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
 MAX_STATUSES = 10_000
 _ERROR_CHARS = 2000
@@ -334,6 +337,11 @@ class RequestRun:
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
+        # memory v2.1 (P3's flag; set at open): passes run in a detached worker and the request pins ``served``
+        self.v21 = False
+        self._landed: list[dict] = (
+            []
+        )  # v2.1: worker results applied at open, reported at finish
 
     @property
     def memory_main(self) -> str:
@@ -374,16 +382,26 @@ class RequestRun:
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
-        self.stores = consolidate.open_stores(paths)
-        self.state = State.load(paths.state)
-        self.pin = self.stores.memory.head()
         self.v21 = v21_enabled(SETTINGS)
+        self.stores = consolidate.open_stores(
+            paths,
+            busy_timeout_s=_V21_BUSY_TIMEOUT_S if self.v21 else None,
+        )
+        self.state = State.load(paths.state)
         if (
             self.v21
         ):  # memory v2.1: the read-only copy and the index view (spec v2.1 §4.5, §6)
+            from ..memory_writer import served_head
+            from .async_pass import apply_results
+
+            # under the request lock (spec §6), before _open_v21 copies the pin (P7)
+            self._landed = apply_results(self.state, paths)
+            # P7 Amendment A: the served head, whose item records are already written
+            self.pin = served_head(self.stores.memory)
             self.surfacing = surfacing_options(SETTINGS)
             self._open_v21(consolidate)
         else:
+            self.pin = self.stores.memory.head()
             # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
             export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
             # the use record's view of the pin, taken before anything is generated beside the export and
@@ -711,7 +729,8 @@ class RequestRun:
         emit: Callable[[dict], None] | None = None,
         consolidate: bool = True,
     ) -> None:
-        """Record the request and run the due passes (blocking); never raises. *handle* is unused: the
+        """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_V21=on`` a due pass starts
+        in a detached worker and the request returns at once); never raises. *handle* is unused: the
         transcript is the record. With *consolidate* False (a driver's ``{"quit": true, "consolidate":
         false}``) the episode is recorded and no pass starts; due passes stay due, and one ``held`` event
         says so."""
@@ -727,6 +746,7 @@ class RequestRun:
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
+                self._report_landed(progress, emit)
                 self._held(eid, progress, emit)
         except BaseException as exc:
             self._error("finish", exc, progress)
@@ -815,6 +835,29 @@ class RequestRun:
         self.state.save()
         return ep.episode_id, sha
 
+    def _report_landed(
+        self,
+        progress: Callable[[str], None],
+        emit: Callable[[dict], None] | None,
+    ) -> None:
+        """Memory v2.1: one ``landed`` event per worker result applied at open, naming this request (the first
+        that ran after it); once."""
+        rows, self._landed = self._landed, []
+        if not rows:
+            return
+        try:
+            from . import consolidate
+            from .async_pass import landed_event
+
+            for row in rows:
+                consolidate._deliver(
+                    self.stores,
+                    self._emitter(emit),
+                    landed_event(row, self.episode_id, self.pin),
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._error("passes", exc, progress)
+
     async def _consolidate(
         self,
         eid: str,
@@ -826,6 +869,26 @@ class RequestRun:
 
         from . import consolidate
 
+        if self.v21:  # spec v2.1 §6: never wait for a pass
+            self._report_landed(progress, emit)
+            try:
+                from .async_pass import maybe_spawn
+
+                maybe_spawn(
+                    self.stores,
+                    eid,
+                    sha,
+                    effort=sol_effort(self.effort),
+                    settings=SETTINGS,
+                    emit=self._emitter(emit),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._error("passes", exc, progress)
+            try:
+                self.state.save()
+            except Exception as exc:  # noqa: BLE001
+                self._error("state", exc, progress)
+            return
         try:
             await consolidate.run_due_passes(
                 self.stores,

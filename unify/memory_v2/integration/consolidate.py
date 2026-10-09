@@ -88,6 +88,7 @@ from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
 from ..qa import QAConfig
+from ..reconcile import unavailable as unavailable_reconcile
 from ..redact import Redactor, redact_error
 from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
@@ -179,15 +180,17 @@ def _bare(path: Path) -> Repo:
     return Repo(path) if (path / "HEAD").is_file() else Repo.init_bare(path)
 
 
-def open_stores(paths: Paths) -> Stores:
-    """The harness-side stores under ``paths.home``; the two bare repos are created on first use."""
+def open_stores(paths: Paths, *, busy_timeout_s: float | None = None) -> Stores:
+    """The harness-side stores under ``paths.home``; the two bare repos are created on first use. *busy_timeout_s*
+    (memory v2.1's pass worker) is the evidence store's SQLite busy timeout; None keeps v2's.
+    """
     paths.home.mkdir(parents=True, exist_ok=True)
     return Stores(
         paths,
         _bare(paths.memory),
         _bare(paths.episodes),
         BlobStore(paths.blobs),
-        EvidenceStore(paths.evidence),
+        EvidenceStore(paths.evidence, timeout_s=busy_timeout_s),
     )
 
 
@@ -401,17 +404,24 @@ def sol_settings(settings: Any) -> SolSettings:
     """
     settle_sol_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
-    raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
-    if isinstance(raw_e, bool):
-        raise ValueError(f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}")
-    try:
-        e = int(str(raw_e).strip())
-    except ValueError:
-        e = 0
-    if e <= 0:
-        raise ValueError(
-            f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
-        )
+    from .switch import v21_enabled, v21_experience_budget
+
+    if v21_enabled(settings):
+        e = v21_experience_budget(settings)  # D43: E = 100k recorded tokens under v2.1
+    else:
+        raw_e = getattr(settings, "UNIFY_MEMORY_V2_E", "") or EXPERIENCE_BUDGET
+        if isinstance(raw_e, bool):
+            raise ValueError(
+                f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}",
+            )
+        try:
+            e = int(str(raw_e).strip())
+        except ValueError:
+            e = 0
+        if e <= 0:
+            raise ValueError(
+                f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
+            )
     a_tok = _decimal(
         "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
         getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
@@ -487,23 +497,32 @@ def _reserve(
     )
 
 
-def _settle(stores: Stores, pass_id: str, usd: str, unknown_cost_calls: int) -> None:
-    _ledger(
-        stores,
-        {
-            "pass_id": pass_id,
-            "phase": "settle",
-            "usd": usd,
-            "unknown_cost_calls": int(unknown_cost_calls),
-        },
-    )
+def _settle(
+    stores: Stores,
+    pass_id: str,
+    usd: str,
+    unknown_cost_calls: int,
+    unknown_usd_each: Decimal | None = None,
+) -> None:
+    row = {
+        "pass_id": pass_id,
+        "phase": "settle",
+        "usd": usd,
+        "unknown_cost_calls": int(unknown_cost_calls),
+    }
+    if (
+        unknown_usd_each is not None
+    ):  # memory v2.1 (P7 Amendment D): unpriced calls at the worst case
+        row["unknown_usd_each"] = format(unknown_usd_each, "f")
+    _ledger(stores, row)
 
 
 def committed_sol_usd(stores: Stores) -> Decimal:
     """The Sol USD committed in this home, from the ledger's structured fields only.
 
     A pass with a ``settle`` line counts its known USD plus ``unknown_cost_calls`` times the per-call
-    reserve it held (an unpriced call's cost is unknown, never zero). A pass with only its ``reserve``
+    reserve it held, or its line's ``unknown_usd_each`` (memory v2.1: the worst case of one Sol call) when it
+    has one (an unpriced call's cost is unknown, never zero). A pass with only its ``reserve``
     line (it started and never settled) counts its whole cap. An unreadable line is skipped.
     """
     total = Decimal(0)
@@ -536,6 +555,8 @@ def committed_sol_usd(stores: Stores) -> Decimal:
                 ):
                     continue  # unreadable: the reservation (if any) stays at its whole cap
                 per_call = open_.pop(pid, (Decimal(0), Decimal(0)))[1]
+                if "unknown_usd_each" in row:
+                    per_call = _decimal("unknown each", row["unknown_usd_each"])
                 total += Decimal(known) + n * per_call
         except (ValueError, KeyError, TypeError):
             continue
@@ -731,6 +752,7 @@ async def run_due_passes(
     settings: Any,
     emit: Callable[[dict], None] | None,
     clock: Callable[[], float] = time.monotonic,
+    supervise: Any = None,
 ) -> list[PassOutcome]:
     """Run the passes due once episode *eid* (commit *sha*) is indexed, in order; blocking.
 
@@ -739,6 +761,12 @@ async def run_due_passes(
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
     actor's effort unless ``UNIFY_MEMORY_V2_SOL_EFFORT`` fixes another (``request.sol_effort``); it picks the
     pass's scale of the allowance cap and its call limit.
+
+    With *supervise* (memory v2.1's worker, :class:`.async_pass.Supervisor`), Sol's deadline is the supervisor's
+    ``pass_deadline_s``, the pass runs under its wall bound, its Sol-lane calls are reconciled from the proxy
+    journal's window before it is settled (P7 Amendment D: unpriced calls are booked at the worst case of one
+    Sol call; with no readable journal the pass is not settled and its whole cap stays committed), the end event
+    adds ``ended`` and ``reconciled``, and only the first due pass runs.
     """
     try:
         cfg = sol_settings(settings)
@@ -798,7 +826,7 @@ async def run_due_passes(
         model=cfg.model,
         effort=effort,
         max_calls=max_calls,
-        deadline_s=DEADLINE_S,
+        deadline_s=supervise.pass_deadline_s if supervise is not None else DEADLINE_S,
         max_usd=cap,
         show_usage=cfg.show_usage,
         v21=cfg.v21,
@@ -850,10 +878,18 @@ async def run_due_passes(
         failure: str | None = None
         failure_code: str | None = None
         try:
-            outcome = await asyncio.wait_for(
-                sol.run(req, pass_id),
-                timeout=DEADLINE_S + OVERRUN_S,
-            )
+            if supervise is None:
+                outcome = await asyncio.wait_for(
+                    sol.run(req, pass_id),
+                    timeout=DEADLINE_S + OVERRUN_S,
+                )
+            else:  # memory v2.1: the worker's wall bound; SIGTERM cancels through the abort path
+                supervised = await supervise(lambda: sol.run(req, pass_id))
+                outcome = supervised.outcome
+                if outcome is None:
+                    failure_code = (
+                        "deadline" if supervised.ended == "deadline" else "sol_error"
+                    )
         except Exception as exc:  # noqa: BLE001 - SolPass recorded the pass as failed
             # the outer bound (a pass that overran its deadline) is a deadline; anything else an error
             failure_code = "deadline" if isinstance(exc, TimeoutError) else "sol_error"
@@ -863,24 +899,48 @@ async def run_due_passes(
             failure_code = "sol_error"  # cancelled or interrupted
             raise
         finally:
+            recon = None
+            if supervise is not None:
+                try:
+                    recon = await supervise.reconcile()
+                except Exception as exc:  # noqa: BLE001
+                    # unreconciled: no settle line, so the whole cap stays committed
+                    _error(stores, f"{pass_id}: reconcile: {type(exc).__name__}")
+                    recon = unavailable_reconcile()
             _note_costs(stores, sha, eid, pass_id, rows, effort)
             _note_transcript(stores, sha, pass_id, sol)
             try:
-                _settle(stores, pass_id, *_spend(outcome, rows)[:2])
+                if recon is None:
+                    _settle(stores, pass_id, *_spend(outcome, rows)[:2])
+                elif recon["journal"] == "read":
+                    _settle(
+                        stores,
+                        pass_id,
+                        recon["usd"],
+                        recon["unknown"],
+                        Decimal(recon["worst_case_usd"]),
+                    )
+                # else no readable journal: no settle line, so the whole cap stays committed
             except OSError as exc:  # unsettled: the whole cap stays committed
                 _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
-            _deliver(
+            event = _end_event(
                 stores,
-                emit,
-                _end_event(
-                    stores,
-                    pass_id,
-                    outcome,
-                    rows,
-                    clock() - started,
-                    failure_code,
-                ),
+                pass_id,
+                outcome,
+                rows,
+                clock() - started,
+                failure_code,
             )
+            if v21_enabled(settings):
+                # Amendment C: the lag when the pass ended, before publishing
+                event["served_lag_commits"] = _served_lag(stores)
+            if supervise is not None:
+                read = recon["journal"] == "read"
+                event["usd"] = recon["usd"] if read else UNKNOWN
+                event["unknown_cost_calls"] = recon["unknown"] if read else None
+                event["ended"] = supervise.last.ended if supervise.last else None
+                event["reconciled"] = recon
+            _deliver(stores, emit, event)
             if stores.evidence.pass_exists(pass_id):
                 trig.mark_done(req)
                 if hasattr(state, "drift"):
@@ -890,11 +950,57 @@ async def run_due_passes(
         if outcome is None:
             break
         outcomes.append(outcome)
+        if supervise is not None:
+            break  # one pass per worker
         if _CALL_MAY_BE_IN_FLIGHT & set(getattr(outcome, "codes", None) or ()):
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
+    # at integration: directly after P5's after_passes(...)
+    if v21_enabled(settings):
+        # P7 Amendment A: the pin-able head moves last, after the item records are written
+        from ..memory_writer import publish
+
+        try:
+            served = publish(stores.memory)
+        except Exception as exc:  # noqa: BLE001
+            # served stays where it was: requests keep a recorded pin
+            _error(stores, f"publish: {type(exc).__name__}")
+            served = None
+        lag = _served_lag(stores)
+        if served is not None:
+            _deliver(
+                stores,
+                emit,
+                {
+                    "type": "consolidation",
+                    "phase": "published",
+                    "served": served,
+                    "served_lag_commits": lag,
+                },
+            )
+        if lag:
+            # Amendment C: commits without their item records, which no request can pin yet
+            _deliver(
+                stores,
+                emit,
+                {
+                    "type": "consolidation",
+                    "phase": "served_lag",
+                    "served_lag_commits": lag,
+                },
+            )
     return outcomes
+
+
+def _served_lag(stores: Stores) -> int | None:
+    """``served``'s first-parent lag behind memory ``main`` (P7 Amendment C), or None when it cannot be read."""
+    from ..memory_writer import served_lag
+
+    try:
+        return served_lag(stores.memory)
+    except Exception:  # noqa: BLE001 - an unreadable lag is unknown, never 0
+        return None
 
 
 #: Pass end codes after which a model call may still be in flight at Sol's proxy.

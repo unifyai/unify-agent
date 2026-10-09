@@ -1113,6 +1113,9 @@ def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
 def _v21_settings(raw):
     s = _settings()
     s.UNIFY_MEMORY_V21 = raw
+    s.UNIFY_MEMORY_V21_E = (
+        1  # v2.1's own E (D43, 100k by default): one small episode makes a pass due
+    )
     return s
 
 

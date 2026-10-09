@@ -289,8 +289,14 @@ _PASS_COLUMNS = (
 
 
 class EvidenceStore:
-    def __init__(self, path: Path) -> None:
-        self.db = sqlite3.connect(str(path))
+    def __init__(self, path: Path, timeout_s: float | None = None) -> None:
+        # memory v2.1: a pass worker and a request share the store, so the worker waits longer on a busy lock;
+        # None keeps sqlite3's default (5 s), as in v2
+        self.db = (
+            sqlite3.connect(str(path))
+            if timeout_s is None
+            else sqlite3.connect(str(path), timeout=float(timeout_s))
+        )
         self.db.executescript(_SCHEMA)
         _migrate_item_use(self.db)
         have = {r[1] for r in self.db.execute("PRAGMA table_info(passes)")}

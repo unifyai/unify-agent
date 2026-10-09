@@ -606,6 +606,65 @@ def parse_checker_visible(v: Any) -> str:
     return _on_off(CHECKER_VISIBLE, v)
 
 
+V21_E = "UNIFY_MEMORY_V21_E"
+V21_PASS_WALL_S = "UNIFY_MEMORY_V21_PASS_WALL_S"
+SOL_JOURNAL = "UNIFY_MEMORY_V2_SOL_JOURNAL"
+#: The pass's wall-clock bound in seconds (spec §6, §9.2, §15): calibrated with the budget by the offline replay.
+V21_PASS_WALL_S_DEFAULT = 2700
+
+
+def _positive_whole(name: str, default: int, v: Any) -> int:
+    refusal = f"{name} must be a positive whole number, not {v!r}"
+    if isinstance(v, bool):
+        raise ValueError(refusal)
+    if isinstance(v, int):
+        value = v
+    else:
+        text = _stripped(v)
+        if text == "":
+            return default
+        if not _DIGITS.fullmatch(text):
+            raise ValueError(refusal)
+        value = int(text)
+    if value <= 0:
+        raise ValueError(refusal)
+    return value
+
+
+def parse_v21_e(v: Any) -> int:
+    """``UNIFY_MEMORY_V21_E``: E under v2.1, positive digits (D43; empty: 100,000)."""
+    from ..trigger import EXPERIENCE_BUDGET_V21
+
+    return _positive_whole(V21_E, EXPERIENCE_BUDGET_V21, v)
+
+
+def parse_v21_pass_wall_s(v: Any) -> int:
+    """``UNIFY_MEMORY_V21_PASS_WALL_S``: one pass's wall-clock bound in seconds (empty: 2700)."""
+    return _positive_whole(V21_PASS_WALL_S, V21_PASS_WALL_S_DEFAULT, v)
+
+
+def parse_sol_journal(v: Any) -> str:
+    """Empty, or the absolute path of the Sol route proxy's journal (JSON lines with ``request_attempt_id``,
+    ``generation_id`` and ``account_charge``), read only to reconcile cancelled calls (spec §6).
+    """
+    text = _stripped(v)
+    if text and not text.startswith("/"):
+        raise ValueError(f"{SOL_JOURNAL} must be empty or an absolute path")
+    return text
+
+
+def v21_experience_budget(settings: Any) -> int:
+    return parse_v21_e(getattr(settings, V21_E, ""))
+
+
+def v21_pass_wall_s(settings: Any) -> int:
+    return parse_v21_pass_wall_s(getattr(settings, V21_PASS_WALL_S, ""))
+
+
+def sol_journal(settings: Any) -> str | None:
+    return parse_sol_journal(getattr(settings, SOL_JOURNAL, "")) or None
+
+
 @dataclass(frozen=True)
 class SurfacingOptions:
     """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
@@ -727,6 +786,9 @@ PARSERS = {
     QA_DETERMINISM: parse_qa_determinism,
     QA_REPLAY: parse_qa_replay,
     QA_FIXTURE_SIZE: parse_qa_fixture_size,
+    V21_E: parse_v21_e,
+    V21_PASS_WALL_S: parse_v21_pass_wall_s,
+    SOL_JOURNAL: parse_sol_journal,
 }
 
 

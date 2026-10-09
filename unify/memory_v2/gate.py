@@ -1061,8 +1061,16 @@ class Gate:
             raise
         if res.passed:
             try:
-                self.mem.fast_forward("main", landed, expected_old=p_sha)
-            except GitError as exc:
+                if isinstance(self.v21, V21Config):
+                    # memory v2.1 (P7 Amendment A): the one writer; re-targets over status commits only
+                    from .memory_writer import land
+
+                    landed = land(self.mem, landed, p_sha)
+                else:
+                    self.mem.fast_forward("main", landed, expected_old=p_sha)
+            except (
+                GitError
+            ) as exc:  # StaleParent is a GitError: refused, and _record keeps the whole patch
                 res.passed = False
                 res.reasons.append(f"merge: {exc}")
         res.reasons.extend(notes)  # after every failure reason, including the merge's
