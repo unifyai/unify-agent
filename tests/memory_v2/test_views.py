@@ -163,3 +163,25 @@ def test_coverage_counts_an_empty_part_as_read_and_bytes_are_clipped():
     assert s["missing"] == [] and s["covered"] == 1
     assert (s["parts_required"], s["parts_read"]) == (2, 2)
     assert (s["bytes_required"], s["bytes_read"]) == (3, 3)
+
+
+def test_grep_refuses_an_invalid_pattern(tmp_path: Path):
+    root = tmp_path / "inputs"
+    root.mkdir()
+    assert v.grep("(", "/inputs", {"/inputs": root}).startswith(
+        "refused: invalid pattern:",
+    )
+
+
+def test_grep_bounded_runs_in_a_child_and_times_out(tmp_path: Path):
+    root = tmp_path / "inputs"
+    root.mkdir()
+    (root / "f.txt").write_text("needle\n" + "a" * 30 + "!\n")
+    roots = {"/inputs": root}
+    assert (
+        v.grep_bounded("needle", "/inputs", roots, timeout_s=10)
+        == "/inputs/f.txt:1: needle"
+    )
+    assert v.grep_bounded("(a+)+$", "/inputs", roots, timeout_s=1) == (
+        "[grep timed out after 1 s: narrow the pattern or the path]"
+    )

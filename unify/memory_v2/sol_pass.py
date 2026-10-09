@@ -59,7 +59,9 @@ from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import GitError, Repo
 from .index import build_index
 from .memory_repo import items as memory_items
+from . import batch_map as _bm
 from . import qa as _qa
+from . import views as _views
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
@@ -339,7 +341,90 @@ _TOOL_TEMPLATES = [
 ]
 
 
-def sol_tools(*, docstrings: bool = False, soft_budget: bool = False) -> list[dict]:
+#: Spec v2.1 §7.3 (P1): the writer's bounded readers and its coverage tools, added only under ``v21``.
+_V21_TOOL_TEMPLATES = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": (
+                "Read a file or list a directory under /inputs, /memory or /outputs. Returns at most 8000 bytes "
+                "from offset; a marker gives the next offset. Nothing is ever cut silently."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": (
+                "Search files under a path with a Python regular expression; returns path:line: text hits, "
+                "one bounded page at a time (a marker gives the next offset)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_episode",
+            "description": (
+                "Read one part of a batch episode: 'request', 'observation:<i>', 'cell:<i>', 'action:<i>' or "
+                "'diff'. Reading every part the batch map lists as required covers the episode."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "episode": {"type": "string"},
+                    "part": {"type": "string"},
+                    "offset": {"type": "integer"},
+                },
+                "required": ["episode", "part"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dismiss",
+            "description": (
+                "Mark a batch episode as read enough, with a one-line reason, when it holds nothing to store."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "episode": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["episode", "reason"],
+            },
+        },
+    },
+]
+
+
+def sol_tools(
+    *,
+    docstrings: bool = False,
+    soft_budget: bool = False,
+    v21: bool = False,
+) -> list[dict]:
     """Sol's tools under the v2.1 switches; all off, v2's byte for byte (only ``check``'s text varies)."""
     description = (
         "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
@@ -356,12 +441,21 @@ def sol_tools(*, docstrings: bool = False, soft_budget: bool = False) -> list[di
     for tool in tools:
         if tool["function"]["name"] == "check":
             tool["function"]["description"] = description
+    if v21:
+        tools += copy.deepcopy(_V21_TOOL_TEMPLATES)
     return tools
 
 
 #: The v2 tools (every v2.1 switch at its default).
 _TOOLS = sol_tools()
 _OUTPUT_CAP = 8000
+
+
+def _head_marked(text: str) -> tuple[str, str]:
+    """A cell's output under v2.1 (P5): its head, marked when cut (never the tail alone), and the full text."""
+    return _views.view(text.encode("utf-8", errors="replace"), 0, _OUTPUT_CAP), text
+
+
 _MAX_CELLS_PER_TURN = 8
 _MANIFEST_MAX_BYTES = 1024**2
 _MANIFEST_MAX_DEPTH = 16
@@ -445,6 +539,8 @@ class PassOutcome:
     # per-item admission (the gate's): the manifest items that landed, and each refused item's codes
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
+    # spec v2.1 §7.4: views.Coverage.summary() of the writer's reads (None with v21 off)
+    coverage: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1459,7 +1555,17 @@ class SolPass:
         finally:
             shutil.rmtree(cdir, ignore_errors=True)
         content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
-        content = content[-_OUTPUT_CAP:]
+        if self.cfg.v21:
+            shown, full = _head_marked(content)
+            out_dir = cells.parent / "outputs"
+            out_dir.mkdir(exist_ok=True)
+            n = len(list(out_dir.iterdir()))
+            (out_dir / f"cell-{n}.txt").write_text(full)
+            if len(full.encode("utf-8", errors="replace")) > _OUTPUT_CAP:
+                shown += f"\n(full output: /outputs/cell-{n}.txt)"
+            content = shown
+        else:
+            content = content[-_OUTPUT_CAP:]
         if r.timed_out:
             content += f"\n(cell timed out after {timeout_s:.0f} s)"
         elif r.returncode != 0:
@@ -1493,6 +1599,56 @@ class SolPass:
             detail = _redact(f"check error: {type(exc).__name__}: {exc}")[:300]
             return f"check error: {type(exc).__name__}", detail
         return _check_reply(reasons), None
+
+    async def _v21_tool(
+        self,
+        name: str,
+        args: dict,
+        roots: dict[str, Path],
+        cov: _views.Coverage,
+        eps: dict[str, Episode],
+    ) -> str:
+        """The v2.1 readers (spec §7.3) and dismiss. Only ``read_episode`` credits coverage, with the range
+        :func:`.views.view_range` actually showed, on the part it stands for (:func:`.batch_map.canonical_part`).
+        grep runs in a bounded child process. A bad argument is answered with a refusal, never raised.
+        """
+        try:
+            offset = int(args.get("offset", 0) or 0)
+            if name == "read":
+                return _views.read(str(args.get("path", "")), roots, offset)
+            if name == "grep":
+                return await asyncio.to_thread(
+                    _views.grep_bounded,
+                    str(args.get("pattern", "")),
+                    str(args.get("path", "/inputs")),
+                    roots,
+                    offset,
+                )
+            if name == "dismiss":
+                return cov.dismiss(
+                    str(args.get("episode", "")),
+                    str(args.get("reason", "")),
+                )
+            eid, part = str(args.get("episode", "")), str(args.get("part", ""))
+            if eid not in eps:
+                return f"refused: {eid!r} is not in this batch"[:300]
+            data = _bm.part_text(eps[eid], part).encode()
+            text, a, b = _views.view_range(data, offset)
+            cov.credit(eid, _bm.canonical_part(eps[eid], part), a, b)
+            return text
+        except (
+            OSError,
+            KeyError,
+            ValueError,
+            TypeError,
+            StopIteration,
+            IndexError,
+        ) as exc:
+            return (
+                str(exc)
+                if isinstance(exc, PermissionError)
+                else f"refused: {type(exc).__name__}: {exc}"
+            )[:300]
 
     async def _run_cell(self, *args) -> str:
         """The confined cell on a worker thread; on cancellation, wait for the box before the pass cleans up."""
@@ -1570,6 +1726,9 @@ class SolPass:
         over_quota: str | None = None
         causes: list[str] = []  # PassOutcome.codes, set where each cause arises
         errored = False
+        cov: _views.Coverage | None = (
+            None  # spec v2.1 §7.4, built after /inputs is staged
+        )
 
         def cause(code: str) -> None:
             if code not in causes:
@@ -1598,6 +1757,7 @@ class SolPass:
                 checks,
                 list(merged or []),
                 dict(refused or {}),
+                cov.summary() if cov is not None else None,
             )
 
         with (
@@ -1611,6 +1771,21 @@ class SolPass:
             cells.mkdir()
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
+            if self.cfg.v21:
+                bmap = json.loads((inputs / "batch_map.json").read_text())
+                required = {
+                    r["episode_id"]: r["required_parts"] for r in bmap["episodes"]
+                }
+                eps = {e: self.load(e) for e in required}
+                sizes = {
+                    (e, part): len(_bm.part_text(eps[e], part).encode())
+                    for e, ps in required.items()
+                    for part in ps
+                }
+                cov = _views.Coverage(required, sizes)
+                outputs = Path(tmp) / "outputs"
+                outputs.mkdir()
+                roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
             channels = _exported_channels(inputs / "episodes")
             _channel_dirs(box, channels)
             # D26: Sol tends the library on its channels, so library.json gives each function's recorded
@@ -1625,6 +1800,7 @@ class SolPass:
             tools = sol_tools(
                 docstrings=switches["docstrings"],
                 soft_budget=switches["soft_budget"],
+                v21=self.cfg.v21,
             )
             first = (
                 f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
@@ -1721,8 +1897,17 @@ class SolPass:
                     elif finished:
                         content = "not run: pass finished"
                     elif name == "finish":
-                        summary, finished = str(args.get("summary", "")), True
-                        content = "ok"
+                        missing = cov.missing() if cov is not None else []
+                        if missing:
+                            content = (
+                                f"not finished: {len(missing)} episode(s) neither covered nor dismissed: "
+                                + ", ".join(missing[:20])
+                                + (" …" if len(missing) > 20 else "")
+                                + ". Use read_episode on each required part, or dismiss with a reason."
+                            )
+                        else:
+                            summary, finished = str(args.get("summary", "")), True
+                            content = "ok"
                     elif name == "check":
                         if stop is not None:
                             content = f"not run: {stop}"
@@ -1757,12 +1942,24 @@ class SolPass:
                             )
                             if detail is not None:
                                 notes.append(detail)
+                    elif cov is not None and name in (
+                        "read",
+                        "grep",
+                        "read_episode",
+                        "dismiss",
+                    ):
+                        if calls >= max_calls:
+                            content = "not run: the pass's call cap is reached"
+                        else:
+                            calls += 1  # a reader call counts against max_calls, as a check does
+                            content = await self._v21_tool(name, args, roots, cov, eps)
                     elif name != "execute_code":
                         content = (
-                            f"unknown tool {name!r}; use execute_code, check or finish"[
-                                :300
-                            ]
-                        )
+                            f"unknown tool {name!r}; use execute_code, check, finish, read, grep, "
+                            "read_episode or dismiss"
+                            if cov is not None
+                            else f"unknown tool {name!r}; use execute_code, check or finish"
+                        )[:300]
                     elif stop is not None:
                         content = f"not run: {stop}"
                     elif ran >= _MAX_CELLS_PER_TURN:

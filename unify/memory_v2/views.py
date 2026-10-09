@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 VIEW_BYTES = 8000
 _LINE_CHARS = 300
 _PATTERN_MAX = 500
+#: grep runs in a child process bounded by this wall time: a pathological pattern never stalls the pass.
+GREP_TIMEOUT_S = 10.0
 
 
 def _is_binary(data: bytes) -> bool:
@@ -132,7 +137,10 @@ def grep(
 ) -> str:
     if len(pattern) > _PATTERN_MAX:
         return f"refused: pattern longer than {_PATTERN_MAX} characters"
-    rx = re.compile(pattern)
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        return f"refused: invalid pattern: {exc}"[:300]
     base = resolve(vpath, roots)
     files = (
         [base] if base.is_file() else sorted(x for x in base.rglob("*") if x.is_file())
@@ -167,6 +175,40 @@ def grep(
     if b < len(hits):
         out += f"\n[… hits {a}–{b} of {len(hits)}; next: offset={b}]"
     return out
+
+
+def grep_bounded(
+    pattern: str,
+    vpath: str,
+    roots: dict[str, Path],
+    offset: int = 0,
+    timeout_s: float | None = None,
+) -> str:
+    """:func:`grep` in a child Python process (``-I``; this file alone, standard library only), killed after
+    *timeout_s* (default :data:`GREP_TIMEOUT_S`). The writer's pattern never runs in the pass's own process.
+    """
+    limit = GREP_TIMEOUT_S if timeout_s is None else timeout_s
+    job = {
+        "pattern": pattern,
+        "vpath": vpath,
+        "roots": {k: str(r) for k, r in roots.items()},
+        "offset": offset,
+    }
+    try:
+        r = subprocess.run(
+            [sys.executable, "-I", "-S", os.path.abspath(__file__)],
+            input=json.dumps(job).encode(),
+            capture_output=True,
+            timeout=limit,
+            env={},
+        )
+    except subprocess.TimeoutExpired:
+        return f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
+    if r.returncode != 0:
+        return f"refused: grep failed ({r.stderr.decode(errors='replace').strip().splitlines()[-1:]})"[
+            :300
+        ]
+    return r.stdout.decode("utf-8", errors="replace")
 
 
 class Coverage:
@@ -254,3 +296,17 @@ class Coverage:
         return sum(
             max(0, min(e, n) - max(s, 0)) for s, e in self._ranges.get((eid, part), [])
         )
+
+
+if __name__ == "__main__":  # grep_bounded's child: one job on stdin, the page on stdout
+    _job = json.loads(sys.stdin.read())
+    try:
+        _out = grep(
+            _job["pattern"],
+            _job["vpath"],
+            {k: Path(r) for k, r in _job["roots"].items()},
+            int(_job["offset"]),
+        )
+    except PermissionError as _exc:
+        _out = str(_exc)
+    sys.stdout.write(_out)
