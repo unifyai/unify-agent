@@ -1185,3 +1185,132 @@ def test_v21_gates_write_passes_with_the_v21_checks(tmp_path, monkeypatch, on):
         assert g.v21 is not None and g.v21.checks and g.v21.role == "write" and g.qa.v21
     else:
         assert g.v21 is None and not g.qa.v21
+
+
+# --- memory v2.1: CURATE after WRITE, triggered by library state (P6) ------------------------------------------
+
+from unify.memory_v2.curate import curate_system
+from tests.memory_v2.test_gate import _merged
+from tests.memory_v2.test_layout import LIB
+from tests.memory_v2.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
+
+#: an earlier pass left two functions doing one job
+DUPLICATE = {
+    "memory/text/__init__.py": '"""Text helpers."""\n',
+    "memory/text/parse.py": LIB["memory/text/parse.py"],
+    SPLIT_PATH: SPLIT,
+}
+
+
+def _settings21(on=True, **kw):
+    s = _settings(**kw)
+    s.UNIFY_MEMORY_V21 = "on" if on else "off"
+    return s
+
+
+def _run21(stores, eid, sha, *, on=True, **kw):
+    return asyncio.run(
+        run_due_passes(
+            stores,
+            eid,
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=_settings21(on, **kw),
+            emit=None,
+        ),
+    )
+
+
+def _no_records(monkeypatch):
+    # P5's records are not under test here: no suspect item, every item experimental
+    monkeypatch.setattr(consolidate, "_lifecycle", lambda stores, sha: (None, {}, {}))
+
+
+def _kinds(stores):
+    return [
+        r[0]
+        for r in stores.evidence.db.execute("SELECT kind FROM passes ORDER BY pass_id")
+    ]
+
+
+def test_curate_runs_after_write_when_the_library_state_warrants_it(
+    tmp_path,
+    monkeypatch,
+):
+    fake = FakeSol()
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    _no_records(monkeypatch)
+    stores = _stores(tmp_path)
+    _merged(stores.memory, DUPLICATE)
+    sha, _ = _record(stores, "e1")
+    outs = _run21(stores, "e1", sha)
+    assert [o.pass_id for o in outs] == ["e1.p0", "e1.p1"] and _kinds(stores) == [
+        "batched",
+        "curate",
+    ]
+    starts = [e for e in _events(stores) if e["phase"] == "start"]
+    assert "curate" not in starts[0]
+    assert f"overlap (antiunify): {TOKENS}, {SPLIT_ID}" in starts[1]["curate"]
+    assert fake.seen[-1][0] == {"role": "system", "content": curate_system()}
+    # the library is unchanged and CURATE was shown these reasons: the next WRITE pass runs alone
+    sha2, _ = _record(stores, "e2", minute=1)
+    assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0"]
+    assert _kinds(stores) == ["batched", "curate", "batched"]
+
+
+def test_no_curate_on_a_library_with_nothing_to_curate(tmp_path, monkeypatch):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    _no_records(monkeypatch)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    assert [o.pass_id for o in _run21(stores, "e1", sha)] == ["e1.p0"]
+
+
+def test_curate_never_runs_with_v21_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(
+        consolidate,
+        "_lifecycle",
+        lambda *a: pytest.fail("v2 never reads CURATE's state"),
+    )
+    stores = _stores(tmp_path)
+    _merged(stores.memory, DUPLICATE)
+    sha, _ = _record(stores, "e1")
+    assert [o.pass_id for o in _run21(stores, "e1", sha, on=False)] == ["e1.p0"]
+    found = stores.evidence.db.execute(
+        "SELECT 1 FROM sqlite_master WHERE name IN ('curate_seen', 'curations')",
+    ).fetchone()
+    assert found is None
+
+
+def test_curate_waits_for_the_run_guard(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        consolidate,
+        "unillm_turn",
+        FakeSol(),
+    )  # 0.01 USD a call: the WRITE pass commits 0.01
+    _no_records(monkeypatch)
+    stores = _stores(tmp_path)
+    _merged(stores.memory, DUPLICATE)
+    sha, _ = _record(stores, "e1")
+    assert [o.pass_id for o in _run21(stores, "e1", sha, guard="0.01")] == ["e1.p0"]
+    held = _events(stores)[-1]
+    assert held["pass_id"] == "e1.p1" and held["reason_codes"] == ["run_guard"]
+    assert (
+        stores.evidence.curate_seen() == set()
+    )  # never shown: it fires again once the guard allows
+
+
+def test_no_curate_after_a_write_whose_call_may_still_be_in_flight(
+    tmp_path,
+    monkeypatch,
+):
+    fake = FakeSol(script=[RuntimeError("upstream failed")])
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    _no_records(monkeypatch)
+    stores = _stores(tmp_path)
+    _merged(stores.memory, DUPLICATE)
+    sha, _ = _record(stores, "e1")
+    _run21(stores, "e1", sha)
+    assert fake.calls == 1 and _kinds(stores) == ["batched"]
