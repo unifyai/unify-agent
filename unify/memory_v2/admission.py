@@ -20,8 +20,8 @@ text or error response; :func:`is_rejection`) is also a cover: it is how an item
 environment itself restricts a value (spec §F3a). The gate requires at least one cover that is not such a
 rejection.
 
-In every case the action's memory channel (:func:`.episodes.env_channel` of its kind and channel key)
-must be the item's channel.
+In v2 the action's memory channel (:func:`.episodes.env_channel` of its kind and channel key) must be the
+item's channel. v2.1 has no channel rule (D42).
 """
 
 from __future__ import annotations
@@ -90,8 +90,14 @@ def cover_problem(
     a: Action | None,
     channel: str | None,
     has_blob: Callable[[str], bool],
+    *,
+    channel_rule: bool = True,
 ) -> str | None:
-    """Why recorded action *a* cannot be a cover of an item on memory channel *channel*, or None."""
+    """Why recorded action *a* cannot be a cover of an item on memory channel *channel*, or None.
+
+    With *channel_rule* False (memory v2.1, spec §4.1 and D42) the action's channel is not compared: a cover is
+    any real recorded observation of its kind, and the item's source channel lives in its record (P5).
+    """
     if a is None:
         return "not a recorded action"
     kind = getattr(a, "kind", "tool")
@@ -101,6 +107,8 @@ def cover_problem(
     problem = rule(a, has_blob)
     if problem is not None:
         return f"{problem} ({kind})"
+    if not channel_rule:
+        return None
     mapped = env_channel(kind, a.channel)
     if mapped != channel:
         return f"a {kind} action on {a.channel}"[:200]
