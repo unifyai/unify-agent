@@ -466,8 +466,12 @@ class V21Checks:
                 it.item,
             )
         if ran < len(cases):
-            run.note(
-                f"G2 cross-episode: {it.item}: {len(cases) - ran} input(s) not judged (timed out or not JSON)",
+            # review R3: fail closed, as every check the gate could not complete
+            run.fail(
+                "G2",
+                f"{it.item}: the cross-episode check did not complete: {len(cases) - ran} of {len(cases)} recorded "
+                "inputs not judged (timed out, or a result that is not JSON)",
+                it.item,
             )
 
     def _lint(self, it: Any) -> None:
@@ -665,12 +669,22 @@ class V21Checks:
         run = self.run
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         aliases, retired = raw.get("aliases") or {}, raw.get("retired") or {}
+        live = dict(self.gate.ev.aliases())
         if self.cfg.role != "curate":
             if aliases or retired:
                 run.fail(
                     "G1",
                     "aliases and retirements belong to CURATE; a WRITE pass may not declare them",
                 )
+            # review S3(c): live aliases are checked for every role; dropping one is a removal (CURATE's)
+            c_mods = layout.library_modules(run.c_tree)
+            for alias in sorted(live):
+                if self._forwards(run.c_tree, alias, c_mods) is None:
+                    run.fail(
+                        "G5",
+                        f"alias {alias} is no longer forwarded; removals belong to CURATE, and a WRITE pass may not "
+                        "drop an alias",
+                    )
             return
         if not all(
             isinstance(d, dict)
@@ -691,15 +705,16 @@ class V21Checks:
             run.c_tree,
         )
         listed = {it.item: it for it in run.man.items}
-        live = dict(self.gate.ev.aliases())
         rows: list[dict] = []
+        deleted = set(run.man.deleted)
         for alias, target in sorted(aliases.items()):
             problem = self._alias_problem(
                 alias,
                 target,
                 set(aliases) | set(live),
                 p_ids | set(live),
-                c_ids,
+                c_ids
+                - deleted,  # review S3(a): the target is a kept function of the candidate
                 c_mods,
             )
             if problem is not None:
@@ -709,7 +724,6 @@ class V21Checks:
                 {"item": alias, "action": "alias", "target": target, "reason": why},
             )
             self._alias_tests(alias, target, listed, p_mods)
-        deleted = set(run.man.deleted)
         for item in sorted(deleted - set(aliases)):
             if not retired.get(item, "").strip():
                 run.fail(
@@ -735,7 +749,7 @@ class V21Checks:
                 or self._forwards(run.c_tree, alias, c_mods) is not None
             ):
                 continue  # still forwarded, or declared again
-            if row.get("commit") == run.parent:
+            if row.get("commit") in self._parent_chain():
                 run.fail(
                     "G5",
                     f"alias {alias} was added by the pass that made the parent ({run.parent[:12]}); it stays for "
@@ -750,8 +764,10 @@ class V21Checks:
                         "reason": why,
                     },
                 )
+        # review R5 (spec §10.4: generalising and regrouping are CURATE's): the parent's count leaves out only its live
+        # aliases, the candidate's every alias; and a new function is the target of an alias this pass declares
         aliased = set(aliases) | set(live)
-        n_p = len((p_ids | {n.item_id for n in p_lib.notes}) - aliased)
+        n_p = len((p_ids | {n.item_id for n in p_lib.notes}) - set(live))
         n_c = len((c_ids | {n.item_id for n in c_lib.notes}) - aliased)
         if n_c > n_p:
             run.fail(
@@ -759,7 +775,38 @@ class V21Checks:
                 f"a CURATE pass may not grow the library ({n_p} to {n_c} items that are not aliases); add a function "
                 "only as the target that old names become aliases of",
             )
+        else:
+            targets = set(aliases.values())
+            for new in sorted(c_ids - p_ids - aliased - targets):
+                run.fail(
+                    "G5",
+                    f"{new} is a new function; a CURATE pass adds a function only as the target that old names "
+                    "become aliases of",
+                    new if new in listed else None,
+                )
         run.curations = rows
+
+    def _parent_chain(self) -> set[str]:
+        """Review S3(b): the parent and the commits under it reached through harness status commits only, so a
+        status commit between the alias's pass and this one does not end its "one more pass".
+        """
+        run = self.run
+        out = {run.parent}
+        mem = getattr(self.gate, "mem", None)
+        if mem is None:
+            return out
+        from .memory_writer import is_status_commit
+
+        c = run.parent
+        for _ in range(200):
+            try:
+                if not is_status_commit(mem, c):
+                    break
+                c = mem.run("rev-parse", f"{c}^").strip()
+            except Exception:  # noqa: BLE001 - an unreadable commit ends the walk
+                break
+            out.add(c)
+        return out
 
     def _alias_problem(
         self,
@@ -895,8 +942,11 @@ class V21Checks:
         for n, (item, cover) in enumerate(targets):
             ep = self.ep(cover.episode)
             if ep is None:
-                run.note(
-                    f"G3 behaviour check: {item}'s procedure on {cover.episode} cannot be read; not compared",
+                # review R4: fail closed, as _reproduced does: a stored procedure that cannot be compared refuses
+                run.fail(
+                    "G3",
+                    f"behaviour check not completed: {item}'s procedure on {cover.episode} cannot be read",
+                    owner_of(item),
                 )
                 continue
             outcome = []

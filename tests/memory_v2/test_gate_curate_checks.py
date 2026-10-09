@@ -415,3 +415,83 @@ def test_a_listed_cover_is_held_only_by_its_re_run(tmp_path, monkeypatch):
         SPLIT_ID,
     ]  # listing it is no longer enough (Amendment B)
     assert (TOKENS, "c") in seen
+
+
+# --- RUNTIME's review: R5 (generalise and regroup are CURATE's) and S3 --------------------------------------
+
+GEN_P = {
+    "memory/m/__init__.py": '"""M."""\n',
+    "memory/m/one.py": '"""One."""\n\n\ndef a(x):\n    """Add one."""\n    return x + 1\n',
+    "memory/m/two.py": '"""Two."""\n\n\ndef b(x):\n    """Add one."""\n    return x + 1\n',
+}
+GEN_C = {
+    "memory/m/__init__.py": '"""M."""\n',
+    "memory/m/gen.py": '"""Gen."""\n\n\ndef g(x, k=1):\n    """Add k."""\n    return x + k\n',
+    "memory/m/one.py": '"""One: a is kept as an alias."""\n\nfrom memory.m.gen import g as a\n',
+    "memory/m/two.py": '"""Two: b is kept as an alias."""\n\nfrom memory.m.gen import g as b\n',
+}
+A, B, G = "memory.m.one:a", "memory.m.two:b", "memory.m.gen:g"
+
+
+def test_generalising_two_functions_into_one_lands(tmp_path):
+    raw = {"why": "a and b are one parametric function", "aliases": {A: G, B: G}}
+    v = _checks(tmp_path, GEN_P, GEN_C, raw, items=[_item(item=G)], deleted=[A, B])
+    v.curate()
+    assert v.run.fails == []
+
+
+def test_a_new_function_that_no_alias_targets_is_refused(tmp_path):
+    cand = {
+        **GEN_P,
+        "memory/m/two.py": '"""Two."""\n\n\ndef h(x):\n    """Add two."""\n    return x + 2\n',
+    }
+    raw = {
+        "why": "b is wrong; h does it right",
+        "retired": {B: "it added the wrong amount"},
+    }
+    v = _checks(
+        tmp_path,
+        GEN_P,
+        cand,
+        raw,
+        items=[_item(item="memory.m.two:h")],
+        deleted=[B],
+    )
+    v.curate()
+    assert [(c, i) for c, _, i in v.run.fails] == [("G5", "memory.m.two:h")]
+    assert "is a new function" in v.run.fails[0][1]
+
+
+def test_an_alias_to_a_deleted_function_is_refused(tmp_path):
+    v = _merge(tmp_path, deleted=[SPLIT_ID, TOKENS])
+    assert any(
+        f"alias {SPLIT_ID} -> {TOKENS}: the candidate holds no function" in r
+        for r in _reasons(v)
+    )
+
+
+def test_one_more_pass_walks_back_over_status_commits(tmp_path, monkeypatch):
+    from unify.memory_v2 import memory_writer
+
+    before, after = {**LIB, SPLIT_PATH: SPLIT_ALIAS}, dict(LIB)
+    grand = "g" * 40
+    young = {SPLIT_ID: {"target": TOKENS, "pass_id": "c0", "commit": grand}}
+    monkeypatch.setattr(memory_writer, "is_status_commit", lambda mem, c: c == PARENT)
+    v = _checks(tmp_path, before, after, {"why": "drop the old name"}, live=young)
+    v.gate.mem = SimpleNamespace(
+        run=lambda *a: grand + "\n",
+    )  # PARENT^ is the alias's commit
+    v.curate()
+    assert [c for c, _, _ in v.run.fails] == [
+        "G5",
+    ] and "stays for one more pass" in v.run.fails[0][1]
+
+
+def test_a_write_pass_may_not_drop_a_live_alias(tmp_path):
+    before, after = {**LIB, SPLIT_PATH: SPLIT_ALIAS}, dict(LIB)
+    live = {SPLIT_ID: {"target": TOKENS, "pass_id": "c0", "commit": "o" * 40}}
+    v = _checks(tmp_path, before, after, {}, role="write", live=live)
+    v.curate()
+    assert [c for c, _, _ in v.run.fails] == [
+        "G5",
+    ] and "may not drop an alias" in v.run.fails[0][1]

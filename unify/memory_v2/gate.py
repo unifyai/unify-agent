@@ -441,10 +441,14 @@ def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> 
     )
 
 
-def _test_file(test_id: str, tests_dir: str) -> str:
-    """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*)."""
+def _test_file(test_id: str, tests_dir: str, layout21: bool = False) -> str:
+    """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*).
+
+    *layout21* (memory v2.1): a ``memory/`` id is already from the root; under v2 only ``env/`` is (review S4).
+    """
     path = test_id.split("::", 1)[0]
-    return path if path.startswith(("env/", "memory/")) else f"{tests_dir}/{path}"
+    roots = ("env/", "memory/") if layout21 else ("env/",)
+    return path if path.startswith(roots) else f"{tests_dir}/{path}"
 
 
 def _unfit_forms(
@@ -1016,6 +1020,12 @@ class Gate:
             )
             return res
         landed, landed_manifest = c_sha, manifest
+        if seed is None and self._v21_checks():
+            from .qa import seed_of
+
+            seed = seed_of(
+                c_sha,
+            )  # review R2: the reduced re-check draws the candidate's sample
         try:
             res, covers, notes, shapes, reduced = self._check(
                 p_sha,
@@ -2494,7 +2504,7 @@ class Gate:
         touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
 
         def file_of(t: str, rel: str) -> str:
-            return _test_file(t, rel) if v21 else t.split("::", 1)[0]
+            return _test_file(t, rel, self._layout21) if v21 else t.split("::", 1)[0]
 
         def kept(ids: set[str], rel: str) -> set[str]:
             return {t for t in ids if file_of(t, rel) not in retired}
@@ -2564,7 +2574,10 @@ class Gate:
                     )
                     # new failures only in test files the manifest's items list are those items' own
                     # (per-item admission); anything else refuses the whole pass
-                    owners = [_owners(run.man, _test_file(t, rel)) for t in new_red]
+                    owners = [
+                        _owners(run.man, _test_file(t, rel, self._layout21))
+                        for t in new_red
+                    ]
                     run.fail(
                         "G3",
                         f"suite {rel} has new failures or is unreadable on the candidate "

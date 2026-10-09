@@ -72,3 +72,46 @@ def test_v21_checks_need_the_v21_layout(world):
         assert "V21Config.layout" in str(exc)
     else:
         raise AssertionError("v2.1 checks on the v2 layout were built")
+
+
+def test_v21_merge_checks_the_reduced_candidate_with_the_candidates_seed(
+    world,
+    monkeypatch,
+):
+    """Review R2: without a check() round the merge seeds stage 5 by the candidate, and the reduced re-check uses
+    the same seed, so both draw the same recorded inputs and mutants."""
+    from types import SimpleNamespace
+
+    from unify.memory_v2.qa import seed_of
+
+    mem, ev, gate = world
+    gate.v21 = gate_v21.V21Config(checks=True)
+    c = _candidate(mem, FILES)
+    seeds = []
+
+    def fake_check(parent, candidate, manifest, *, reduce_as=None, seed=None):
+        seeds.append(seed)
+        reduced = (
+            SimpleNamespace(sha=candidate, manifest=manifest, refused={}, reasons=[])
+            if reduce_as
+            else None
+        )
+        return GateResult(False, reasons=["G3: x"]), set(), [], {}, reduced
+
+    monkeypatch.setattr(gate, "_check", fake_check)
+    gate.merge(mem.head(), c, MAN, "p9", "incremental", "venmo", "0")
+    assert seeds == [seed_of(c), seed_of(c)]
+
+
+def test_a_memory_test_id_is_root_relative_only_under_the_v21_layout():
+    """Review S4(a): v2's test ids keep v2's mapping; a memory/ path is from the root only under v2.1."""
+    from unify.memory_v2.gate import _test_file
+
+    tid = "memory/a/tests/test_b.py::test_c"
+    assert _test_file(tid, "env/x/tests") == "env/x/tests/memory/a/tests/test_b.py"
+    assert (
+        _test_file(tid, "memory/a/tests", layout21=True) == "memory/a/tests/test_b.py"
+    )
+    assert (
+        _test_file("env/x/tests/test_a.py::t", "env/x/tests") == "env/x/tests/test_a.py"
+    )

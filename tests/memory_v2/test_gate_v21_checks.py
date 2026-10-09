@@ -416,3 +416,48 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
     assert [(c, r.split(":", 1)[0]) for c, r, _ in v.run.fails] == [
         ("G3", f"{job} changes behaviour without a test"),
     ]
+
+
+def test_cross_episode_runs_that_do_not_complete_refuse(tmp_path, monkeypatch):
+    """Review R3: a cross-episode check the gate could not complete fails closed."""
+    a = SimpleNamespace(status="ok", kind="dialogue", channel="dialogue:user")
+    for name, fn in (
+        ("_doc", lambda *x: None),
+        ("family", lambda a: "f"),
+        ("is_rejection", lambda a: False),
+        ("_unfit_reason", lambda a, f: None),
+        ("truncated", lambda a: False),
+        ("output_cases", lambda picked, blob, form: (["c1", "c2"], [])),
+    ):
+        monkeypatch.setattr(gate_v21, name, fn)
+    monkeypatch.setattr(
+        gate_v21,
+        "run_outputs",
+        lambda item, cases, **kw: {("e2", 0): ("handled", "x", None), ("e3", 1): None},
+    )
+    it = _item(covers=[("e1", 0)], input="text")
+    v = _checks(tmp_path, [it])
+    v.gate.lookup = lambda e, i: a
+    v.gate._pool = lambda run, covers: ([("e2", a), ("e3", a)], False)
+    v._cross_episode(it)
+    assert v.run.verification[it.item]["cross_episode"] == {"ran": 1, "ok": 1}
+    assert [(c, i) for c, _, i in v.run.fails] == [
+        ("G2", it.item),
+    ] and "did not complete" in v.run.fails[0][1]
+
+
+def test_an_unreadable_stored_procedure_refuses_the_behaviour_check(tmp_path):
+    """Review R4: a stored procedure the behaviour check cannot compare fails closed, as _reproduced does."""
+    job = "memory.calc.sums:total"
+    v = _checks(
+        tmp_path,
+        [],
+        changed=["memory/calc/sums.py"],
+        p_bodies={job: ("function", "a", True)},
+        c_bodies={job: ("function", "a", True)},
+    )
+    v.gate.ev = _stored((job, Cover("e9", "episode", runner="worktree", params={})))
+    v._procedure_behaviour()
+    assert [c for c, _, _ in v.run.fails] == [
+        "G3",
+    ] and "e9 cannot be read" in v.run.fails[0][1]

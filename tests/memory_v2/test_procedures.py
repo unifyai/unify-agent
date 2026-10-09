@@ -243,7 +243,16 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
     cover = pr.parse_cover(
         {"episode": "e3", "type": "episode", "runner": "dialogue", "action": 0},
     )
-    good = [Signal("s1", "e3", "checker", "pass", "2026-10-09T00:00:00Z")]
+    good = [
+        Signal(
+            "s1",
+            "e3",
+            "checker",
+            "pass",
+            "2026-10-09T00:00:00Z",
+            visible_to_actor=True,
+        ),
+    ]
     run = lambda src, n, sig, visible=True: pr.run_procedure(
         "memory.proc.jobs:solve",
         cover,
@@ -264,6 +273,9 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
     )
     # Amendment D: a checker verdict the bed does not declare visible to the actor is never evidence
     assert "no positive signal" in run(DIALOGUE, 4, good, visible=False).reason
+    # review R1: with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
+    hidden = [Signal("s3", "e3", "checker", "pass", "2026-10-09T00:00:00Z")]
+    assert "no positive signal" in run(DIALOGUE, 6, hidden).reason
     support = [Signal("s2", "e3", "provenance", "support", "2026-10-09T00:00:00Z")]
     assert run(
         DIALOGUE,

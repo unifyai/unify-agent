@@ -463,11 +463,14 @@ def _dialogue(
     a = ep.actions[i] if i is not None and i < len(ep.actions) else None
     if a is None or getattr(a, "kind", "tool") != "dialogue" or a.status != "ok":
         return Outcome(False, f"action {i} is not an answered dialogue action")
-    sigs = list(signals(ep.episode_id) or [])
-    if (
-        not checker_visible
-    ):  # Amendment D: a verdict the actor never saw is never evidence
-        sigs = [s for s in sigs if getattr(s, "source", None) != "checker"]
+    # Amendments A3, D: a checker verdict counts only when the bed declares its verdicts visible AND this signal is
+    # one the actor saw (P9's visible_to_actor), as lifecycle.counted_signals; a hidden grader is never evidence
+    sigs = [
+        s
+        for s in (signals(ep.episode_id) or [])
+        if getattr(s, "source", None) != "checker"
+        or (checker_visible and getattr(s, "visible_to_actor", False) is True)
+    ]
     if any((s.source, s.label) in _CONTRARY for s in sigs):
         return Outcome(False, "the episode carries a contrary signal")
     if not any((s.source, s.label) in _SUPPORT for s in sigs):
