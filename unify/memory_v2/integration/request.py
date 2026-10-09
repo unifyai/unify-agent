@@ -150,6 +150,19 @@ def memory_v21_on() -> bool:
     return parse_memory_v21(getattr(SETTINGS, V21, "") or "") == "on"
 
 
+def checker_visible_on() -> bool:
+    """Whether the CLI takes ``{"checker": ...}`` lines (spec v2.1 §5, P9): ``UNIFY_MEMORY_V21`` and
+    ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` both on."""
+    from unify.settings import SETTINGS
+
+    from .switch import CHECKER_VISIBLE, parse_checker_visible
+
+    return (
+        memory_v21_on()
+        and parse_checker_visible(getattr(SETTINGS, CHECKER_VISIBLE, "") or "") == "on"
+    )
+
+
 def recorded_dialogue(
     lines: list[dict],
     counterpart: str,
@@ -315,6 +328,9 @@ class RequestRun:
         # Only the checker's verdict of a posted outcome (R10): True, False or None (none posted).
         self.solved: bool | None = None
         self.outcome_at: str | None = None
+        # Spec v2.1 §5 (P9): the verdicts the bed showed the actor, one per ``{"checker": ...}`` line, in order:
+        # {"label": "pass"|"fail", "obs": observations in the transcript when it came (or None), "at": time}.
+        self.checker_seen: list[dict] = []
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
@@ -578,6 +594,54 @@ class RequestRun:
             "checks": checks,
         }
 
+    def take_checker(self, raw: Any) -> dict:
+        """Keep one verdict the bed showed the actor (spec v2.1 §5, P9); the answer the CLI writes for a
+        ``{"checker": {"label": "pass"|"fail"}}`` line. The bed sends it just before the message that shows the
+        actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused,
+        with nothing kept, unless ``UNIFY_MEMORY_V21`` and ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` are on, or when
+        the line is anything but exactly ``{"label": "pass"}`` or ``{"label": "fail"}``. The answer never quotes
+        the line."""
+        if not checker_visible_on():
+            return {
+                "type": "checker",
+                "accepted": False,
+                "reason": "this session takes no checker lines (UNIFY_MEMORY_V21_CHECKER_VISIBLE is off)",
+            }
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"label"}
+            or raw["label"] not in ("pass", "fail")
+        ):
+            return {
+                "type": "checker",
+                "accepted": False,
+                "reason": 'a checker line is exactly {"label": "pass"} or {"label": "fail"}',
+            }
+        self.checker_seen.append(
+            {"label": raw["label"], "obs": self._observations_now(), "at": _now()},
+        )
+        return {
+            "type": "checker",
+            "accepted": True,
+            "label": raw["label"],
+            "count": len(self.checker_seen),
+        }
+
+    def _observations_now(self) -> int | None:
+        """How many observations this request's transcript holds now, or None when it cannot be read."""
+        from unify import transcripts
+
+        from . import trajectory
+        from .adapters import dialogue
+
+        try:
+            lines = trajectory.read_jsonl(
+                transcripts.transcripts_dir() / f"{self.episode_id}.jsonl",
+            )
+        except (OSError, ValueError):
+            return None
+        return dialogue.observation_count(lines)
+
     # -- finish -----------------------------------------------------------------------------------
 
     @staticmethod
@@ -735,6 +799,16 @@ class RequestRun:
             self.solved,
             self.outcome_at or ended_at,
         )
+        if self.checker_seen:
+            # Spec v2.1 §5 (P9): the verdicts the actor saw, as agent-visible checker signals
+            consolidate.post_visible_checkers(
+                stores,
+                ep,
+                sha,
+                list(self.checker_seen),
+                lines,
+                counterpart,
+            )
         bumped = self.state.generations.observe(ep.fingerprints or {})
         self.state.drift |= bumped
         self.state.suspect |= bumped

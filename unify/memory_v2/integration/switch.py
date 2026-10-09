@@ -118,6 +118,8 @@ SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
 SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
 # memory v2.1 (spec v2.1; P1 onwards): the writer's batch map, views and coverage; off by default
 V21 = "UNIFY_MEMORY_V21"
+# memory v2.1 P9: the bed's runner posts the verdicts the actor sees as structured checker lines; off by default
+CHECKER_VISIBLE = "UNIFY_MEMORY_V21_CHECKER_VISIBLE"
 DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
 
 QA_FIXTURES = "UNIFY_MEMORY_V2_QA_FIXTURES"
@@ -597,6 +599,13 @@ def v21_enabled(settings: Any) -> bool:
     return parse_v21(getattr(settings, V21, "") or "") == "on"
 
 
+def parse_checker_visible(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_CHECKER_VISIBLE``: ``off`` (also for empty) or ``on``. On (with ``UNIFY_MEMORY_V21``),
+    the CLI takes ``{"checker": {"label": "pass"|"fail"}}`` lines: the verdicts the bed shows the actor, recorded
+    as agent-visible checker signals (spec v2.1 §5, P9)."""
+    return _on_off(CHECKER_VISIBLE, v)
+
+
 @dataclass(frozen=True)
 class SurfacingOptions:
     """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
@@ -711,6 +720,7 @@ PARSERS = {
     SOFT_BUDGET: parse_soft_budget,
     SOL_USAGE: parse_sol_usage,
     V21: parse_memory_v21,
+    CHECKER_VISIBLE: parse_checker_visible,
     QA_FIXTURES: parse_qa_fixtures,
     QA_MUTATION: parse_qa_mutation,
     QA_MIN_KILL: parse_qa_min_kill,

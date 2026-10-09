@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS shape_commits(commit_sha TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, shapes TEXT, backfilled INTEGER,
   PRIMARY KEY(commit_sha, item));
 """
+# Spec v2.1 §5 (P9): the checker signals the bed showed the actor, created by the first such signal, so a store
+# that never records one (every bed without UNIFY_MEMORY_V21_CHECKER_VISIBLE) keeps the schema above.
+_VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
 
 # Memory v2.1 (spec §8.4, §9.2): one row per v2.1 pass (its rounds, the blob ids of each refused round's full
 # gate result and of its final one), created by the first write, so a store that never runs a v2.1 pass keeps
@@ -521,6 +524,28 @@ class EvidenceStore:
                     sig.reveal_p,
                 ),
             )
+            if sig.visible_to_actor:
+                # Spec v2.1 §5 (P9): the table exists only once a visible signal is posted, so a store that
+                # never had one keeps the schema it had before.
+                self.db.execute(_VISIBLE_TABLE)
+                self.db.execute(
+                    "INSERT OR REPLACE INTO signal_visible VALUES(?)",
+                    (sig.signal_id,),
+                )
+
+    def _visible_ids(self, eid: str) -> set[str]:
+        """The ids of *eid*'s signals that the bed showed the actor (none when the table was never made)."""
+        made = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_visible'",
+        ).fetchone()
+        if not made:
+            return set()
+        rows = self.db.execute(
+            "SELECT v.signal_id FROM signal_visible v JOIN signals s ON s.signal_id=v.signal_id "
+            "WHERE s.episode_id=?",
+            (eid,),
+        ).fetchall()
+        return {r[0] for r in rows}
 
     def signals_for(self, eid: str) -> list["Signal"]:
         from .signals import Signal
@@ -529,8 +554,20 @@ class EvidenceStore:
             "SELECT * FROM signals WHERE episode_id=? ORDER BY ts, signal_id",
             (eid,),
         ).fetchall()
+        visible = self._visible_ids(eid)
         return [
-            Signal(r[0], r[1], r[2], r[3], r[4], r[5], r[6], bool(r[7]), r[8])
+            Signal(
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                bool(r[7]),
+                r[8],
+                visible_to_actor=r[0] in visible,
+            )
             for r in rows
         ]
 
