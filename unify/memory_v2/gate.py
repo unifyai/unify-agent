@@ -489,8 +489,11 @@ FIXTURE_ELEMENTS = 16
 
 def _fixture_elements(data: bytes) -> list:
     """The first :data:`FIXTURE_ELEMENTS` elements of a fixture holding a collection of recorded inputs: the
-    items of a JSON list, the values of a JSON object of records, the same one level down (``{"rows": [...]}``),
-    or the lines of a JSON-lines file; ``[]`` for anything else. Bounded and value-free."""
+    items of a JSON list, the values of a JSON object, or the lines of a JSON-lines file; ``[]`` for anything
+    else. One level down, only a collection is opened as well (``{"rows": [...]}``, ``{"by_id": {"a": {...}}}``):
+    a member that is a list, or an object whose values are all objects or lists. A record (an object with any
+    other value) is one input and is never opened, so its field values are never elements. At most
+    ``2 * FIXTURE_ELEMENTS`` elements in all. Bounded and value-free."""
     try:
         text = bytes(data).decode("utf-8")
     except UnicodeDecodeError:
@@ -516,8 +519,17 @@ def _fixture_elements(data: bytes) -> list:
             return list(v.values())[:FIXTURE_ELEMENTS]
         return []
 
+    def collection(v) -> bool:
+        return isinstance(v, list) or (
+            isinstance(v, dict)
+            and bool(v)
+            and all(isinstance(x, (dict, list)) for x in v.values())
+        )
+
     out = list(members(top))
     for v in members(top):
+        if not collection(v):
+            continue  # a record is one input: its field values are not elements
         if len(out) >= 2 * FIXTURE_ELEMENTS:
             break
         out += members(v)[: 2 * FIXTURE_ELEMENTS - len(out)]
@@ -2028,7 +2040,9 @@ class Gate:
             ]
             # a fixture is also a collection of recorded inputs (a JSON list, records by name, one level of
             # wrapping, or JSON lines) whose examples pick one: each element is shaped on its own
-            mine += [d for d in map(value_shape, _fixture_elements(data)) if d is not None]
+            mine += [
+                d for d in map(value_shape, _fixture_elements(data)) if d is not None
+            ]
             if any(fixture_fits(d, r) for d in mine for r in recorded):
                 return
         if paths:
