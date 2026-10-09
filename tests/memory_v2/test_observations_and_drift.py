@@ -107,7 +107,8 @@ def test_grid_size_alone_never_turns_the_channel_suspect_under_structure():
 
 # --- observations: the helper's pointer --------------------------------------------------------------------
 
-POINTER = 'record.read(author="user")'
+POINTER = 'record.read(author="user", limit=1)'
+ALL = 'record.read(author="user", limit=10**6)'
 
 
 def test_off_the_exported_helper_is_the_frozen_file_byte_for_byte(
@@ -129,10 +130,12 @@ def test_on_the_helper_points_observation_inputs_at_the_record(library):  # noqa
     memory = _helper(export)
     assert POINTER in memory.catalog()  # the input-forms line
     assert POINTER in memory.__doc__
-    assert (
-        f"The current ones: the `text` of each `{POINTER}` entry."
-        in memory.describe("parse_feedback")
+    assert f'The current one: `{POINTER}[0]["text"]`' in memory.describe(
+        "parse_feedback",
     )
+    assert (
+        ALL in memory.catalog() and ALL in memory.__doc__
+    )  # every entry, past the default newest 50
     assert POINTER not in memory.describe(
         "read_ledger",
     )  # a path-input function: no pointer
