@@ -27,7 +27,7 @@ FILES_LINE = "- The library is also plain files at the location below, so `grep`
 GUIDE_V21 = (
     "### Memory Library\n"
     "\n"
-    "A read-only Python library of tested functions and linked notes, built from earlier work, is importable "
+    "A Python library of tested functions and linked notes, built from earlier work, is importable "
     "in your cells as `memory`. Before you write code for a step, look in the index for an item that does it. "
     "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
     "\n"
