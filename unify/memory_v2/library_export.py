@@ -35,6 +35,7 @@ from .layout import (
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
 from .library_index import HIDDEN, build_links, render_index, render_links
+from .redact import redact_error
 
 HISTORY_SCAN = 200
 HISTORY_SHOW = 5
@@ -70,6 +71,8 @@ def item_history(repo: Repo, sha: str, *, scan: int = HISTORY_SCAN) -> History:
 
     A function changes when its unparsed definition differs from its parent's (what ``git log -L`` follows,
     computed by AST instead of git's function-name heuristics). A note changes when its file changes.
+    Each subject is redacted (:func:`..redact.redact_error`): ``show`` prints it to the actor, and a commit
+    may have come from any merge path.
     """
     raw = repo.run(
         "log",
@@ -111,7 +114,9 @@ def item_history(repo: Repo, sha: str, *, scan: int = HISTORY_SCAN) -> History:
             else:
                 continue
             for item in sorted(ids):
-                out.setdefault(item, []).append(f"{commit[:12]} {subject}")
+                out.setdefault(item, []).append(
+                    f"{commit[:12]} {redact_error(subject)}",
+                )
     return out, len(rows) <= scan
 
 

@@ -214,6 +214,20 @@ def test_history_lists_the_commits_that_changed_each_item(tmp_path):
     assert lx.item_history(mem, b, scan=1)[1] is False
 
 
+def test_history_subjects_reach_the_actor_redacted(tmp_path):
+    """show() prints each item's history to the actor; a commit subject may come from any merge path, so a
+    key-shaped string in it never reaches the export (RUNTIME, P3 Task 3 review)."""
+    key = "sk-or-v1-" + "ab" * 32
+    mem = Repo.init_bare(tmp_path / "memory")
+    a = _commit(mem, {"memory/text/parse.py": PARSE}, f"add parse ({key})")
+    hist, _ = lx.item_history(mem, a)
+    assert hist["memory.text.parse:words"] == [
+        f"{a[:12]} add parse (<redacted:key-shaped>)",
+    ]
+    out = lx.generated_v21(_tree(tmp_path / "lib"), history=(hist, True))
+    assert not any(key.encode() in data for data in out.values())
+
+
 def test_write_generated_still_writes_v2s_files(tmp_path):
     from unify.memory_v2.catalogue import generated, write_generated
 
