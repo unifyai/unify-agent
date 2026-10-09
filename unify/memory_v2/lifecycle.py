@@ -392,11 +392,13 @@ def next_records(
     channels: Mapping[str, list[str]] | None = None,
     aliases: Mapping[str, dict] | None = None,
     curations: Iterable[Mapping] | None = None,
+    unknown_version: Iterable[str] = (),
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """The map of every item of the tree (*items*: id -> kind) and the status changes against *prev*.
 
     An item's status counts only the episodes pinned to the library commits that ran its current version
-    (*since*: from *changed_at*, the commit that last changed it, onward). A new version therefore starts as
+    (*since*: from *changed_at*, the commit that last changed it, onward). An item in *unknown_version* (that
+    commit could not be found) is never promoted to ``stable``: its counted use may be an older version's. A new version therefore starts as
     ``experimental``, and its predecessors' use stays in its ``use`` record. ``bisect`` and ``rollback`` carry
     over while the version is unchanged; ``alias_of`` and ``deprecated`` are CURATE's and carry over.
     A function with failure-only provenance in at least :data:`MIN_EPISODES` episodes is ``suspect`` (rule
@@ -419,6 +421,7 @@ def next_records(
         and isinstance(r.get("item"), str)
     }
     use = aggregate_use(facts)
+    unknown = set(unknown_version)
     records: dict[str, dict] = {}
     for item in sorted(items):
         old = prev.get(item) or {}
@@ -450,6 +453,10 @@ def next_records(
         )
         mine = [f for f in facts if f.memory_main in since.get(item, set())]
         status, rule, reason, evidence = decide_status(item, prior, mine)
+        if item in unknown and status == "stable" and prior != "stable":
+            # its current version is not known (RUNTIME S1): the use counted may be an older version's
+            status, rule, evidence = "experimental", None, []
+            reason = "not promoted to stable: the commit that last changed it is beyond the scanned history"
         if rec["alias_of"]:  # CURATE (P6): the name forwards to its target
             status, rule, evidence = "deprecated", "curate", []
             reason = f"an alias of {rec['alias_of']}"
@@ -561,6 +568,48 @@ def source_channels(
     return out
 
 
+_BISECTS = (
+    "CREATE TABLE IF NOT EXISTS item_bisects(item TEXT, changed_at TEXT, bisect TEXT, rollback TEXT, "
+    "PRIMARY KEY(item, changed_at))"
+)
+
+
+def bisect_results(ev: EvidenceStore) -> dict[str, tuple[str, Any, Any]]:
+    """The newest stored bisect of each item: item -> (the version it bisected, ``bisect``, ``rollback``)."""
+    import json
+
+    with ev.db:
+        ev.db.execute(_BISECTS)
+    out: dict[str, tuple[str, Any, Any]] = {}
+    for item, changed_at, bisect, rollback in ev.db.execute(
+        "SELECT item, changed_at, bisect, rollback FROM item_bisects ORDER BY rowid",
+    ):
+        out[item] = (changed_at, json.loads(bisect), json.loads(rollback))
+    return out
+
+
+def _store_bisect(
+    ev: EvidenceStore,
+    item: str,
+    changed_at: str | None,
+    bisect: Any,
+    rollback: Any,
+) -> None:
+    import json
+
+    with ev.db:
+        ev.db.execute(_BISECTS)
+        ev.db.execute(
+            "INSERT OR REPLACE INTO item_bisects VALUES(?,?,?,?)",
+            (
+                item,
+                changed_at,
+                json.dumps(bisect, sort_keys=True),
+                json.dumps(rollback, sort_keys=True),
+            ),
+        )
+
+
 def consolidate_records(
     stores: Any,
     *,
@@ -587,19 +636,25 @@ def consolidate_records(
     - When the head has a map and a status changed, one empty status commit lands on ``main`` and carries the
       new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
       of this consolidation appear with the next commit's map.
-    - Each function that turned ``suspect`` by its own use (rules ``errors`` and ``negative_signals``) is
-      bisected first (:func:`.item_bisect.bisect_item`), and a rollback target is proposed.
+    - The map is written BEFORE any bisect (RUNTIME S1), so a bisect that is killed or runs long never holds back
+      the records. Then each ``suspect`` function (rules ``errors`` and ``negative_signals``) with no bisect of
+      its current version is bisected (:func:`.item_bisect.bisect_item`), and a rollback target is proposed. A
+      commit's map is never rewritten, so the result is stored in the evidence store (:func:`bisect_results`)
+      and reaches the next map written. One killed before it was stored is bisected again next time.
+    - An item whose last change is beyond :func:`.library_export.item_history`'s scan gets it from its own
+      file's history (:func:`.item_bisect.versions_of`). If that fails too, its version is unknown, and it is
+      never promoted to ``stable`` (:func:`next_records`).
 
-    Returns ``{"head", "noted", "changes", "bisected"}``; ``noted`` is the commit whose map was written, or None.
+    Returns ``{"head", "noted", "changes", "bisected", "bisects"}``. ``noted`` is the commit whose map was
+    written, or None; ``bisects`` holds this call's results, item -> ``{"bisect", "rollback"}``.
     """
     from pathlib import Path
 
     from .gitio import GitError
-    from .item_bisect import bisect_item, rollback_target
-    from .item_records import read_records, records_at, write_records
+    from .item_bisect import bisect_item, rollback_target, versions_of
+    from .item_records import records_at
     from .layout import discover, import_graph
     from .library_export import item_history
-    from .memory_repo import MemoryRepo
 
     mem, ev = stores.memory, stores.evidence
     head = mem.head()
@@ -620,6 +675,19 @@ def consolidate_records(
         i: (full.get(history[i][0].split(" ", 1)[0]) if history.get(i) else None)
         for i in items
     }
+    unknown_version: set[str] = set()
+    for i in sorted(items):
+        if (
+            changed_at[i] is None
+        ):  # beyond item_history's scan: read its own file's history (RUNTIME S1)
+            try:
+                own = versions_of(mem, i, head)
+            except GitError:
+                own = []
+            changed_at[i] = own[-1] if own else None
+            if changed_at[i] is None:
+                unknown_version.add(i)
+    stored = bisect_results(ev)
     since = {
         i: set(order[pos[c] :]) if c in pos else set(order)
         for i, c in changed_at.items()
@@ -641,7 +709,17 @@ def consolidate_records(
         # CURATE's decisions (P6); getattr until P6 is integrated (a1 drops it)
         aliases=ev.aliases(),
         curations=ev.curations(),
+        unknown_version=unknown_version,
     )
+    for (
+        item,
+        rec,
+    ) in records.items():  # a stored bisect of the current version reaches this map
+        s = stored.get(item)
+        if rec["bisect"] is None and s is not None and s[0] == rec["changed_at"]:
+            rec["bisect"], rec["rollback"] = s[1], s[2]
+    # RUNTIME S1: the map is published BEFORE any bisect, so a killed or long bisect never holds back the records
+    noted = _publish(mem, head, records, changes)
     import time
 
     from .item_bisect import BISECT_BUDGET_S
@@ -649,7 +727,8 @@ def consolidate_records(
     now = clock or time.monotonic
     deadline = now() + float(BISECT_BUDGET_S if budget_s is None else budget_s)
     bisected: list[str] = []
-    for item in sorted(changes):
+    bisects: dict[str, dict] = {}
+    for item in sorted(records):
         rec = records[item]
         if rec["status"] != "suspect" or rec["status_rule"] not in (
             "errors",
@@ -657,15 +736,14 @@ def consolidate_records(
         ):
             continue
         at = rec.get("changed_at")
-        old = (prev.get(item) or {}) if isinstance(prev, dict) else {}
-        done = old.get("bisect")
+        done = rec.get("bisect")
         if (
             isinstance(done, dict)
             and done.get("at") == at
             and done.get("skipped") != "stopped"
         ):
-            # once per suspect version: a bisect killed or cut short is never retried in a loop
-            rec["bisect"], rec["rollback"] = done, old.get("rollback")
+            # once per suspect version (from the map carried to the head, or the evidence store): a bisect
+            # cut short by the budget is never retried in a loop; one stopped, or killed before storing, is
             continue
         tests = (rec.get("verification") or {}).get("tests") or []
         if stop is not None and stop():
@@ -689,14 +767,36 @@ def consolidate_records(
             except (GitError, OSError, ValueError) as exc:
                 result = {"error": type(exc).__name__}
         result = {**result, "at": at}
-        rec["bisect"] = result
-        rec["rollback"] = rollback_target(
+        rollback = rollback_target(
             rec["use"],
             result.get("versions", []),
             result.get("introduced"),
             order,
         )
+        # the published map is never rewritten: the result is stored and reaches the next map written
+        _store_bisect(ev, item, at, result, rollback)
+        bisects[item] = {"bisect": result, "rollback": rollback}
         bisected.append(item)
+    return {
+        "head": head,
+        "noted": noted,
+        "changes": changes,
+        "bisected": bisected,
+        "bisects": bisects,
+    }
+
+
+def _publish(
+    mem: Any,
+    head: str,
+    records: dict[str, dict],
+    changes: dict[str, str],
+) -> str | None:
+    """Write the map: on *head* when it has none (a pass landed it), else on one empty status commit when a
+    status changed; None when nothing was written."""
+    from .item_records import read_records, write_records
+    from .memory_repo import MemoryRepo
+
     noted = None
     if read_records(mem, head) is None:
         write_records(mem, head, records)
@@ -718,4 +818,4 @@ def consolidate_records(
             ensure_served(mem)
             noted = MemoryRepo(mem).status_commit(changes, evidence)
         write_records(mem, noted, records)
-    return {"head": head, "noted": noted, "changes": changes, "bisected": bisected}
+    return noted

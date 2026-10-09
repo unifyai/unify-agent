@@ -129,7 +129,13 @@ def test_a_consolidation_records_the_map_on_main_and_hides_a_suspect(lib, tmp_pa
         and recs[WEEK]["provenance"]["pass"] == "p1"
     )
     assert out["bisected"] == [WEEK] and probe.calls == [([("v0", head)], [DATES_TEST])]
-    assert recs[WEEK]["bisect"]["introduced"] == head and recs[WEEK]["rollback"] is None
+    # RUNTIME S1: the map was published before the bisect; the result is stored and reaches the next map
+    assert recs[WEEK]["bisect"] is None
+    assert (
+        out["bisects"][WEEK]["bisect"]["introduced"] == head
+        and out["bisects"][WEEK]["rollback"] is None
+    )
+    assert lifecycle.bisect_results(stores.evidence)[WEEK][0] == head
     files = _copy(stores, head, tmp_path / "co")
     index = files["INDEX.md"].decode()
     assert "week(" not in index and "summary(" not in index and "parse_date(" in index
@@ -300,11 +306,14 @@ def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
         refused=lambda ev, m, i: [],
         clock=clock,
     )
-    recs = read_records(stores.memory, out["noted"])
+    recs = {
+        i: r["bisect"] for i, r in out["bisects"].items()
+    }  # published before the bisect (RUNTIME S1)
+    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
     assert calls == [
         600.0,
     ]  # PD first (sorted), with the call's whole budget as its deadline
-    assert "introduced" in recs[PD]["bisect"] and recs[WEEK]["bisect"] == {
+    assert "introduced" in recs[PD] and recs[WEEK] == {
         "skipped": "budget",
         "at": head,
     }
@@ -342,9 +351,12 @@ def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
         refused=lambda ev, m, i: [],
         stop=lambda: bool(stopped),
     )
-    recs = read_records(stores.memory, out["noted"])
+    recs = {
+        i: r["bisect"] for i, r in out["bisects"].items()
+    }  # published before the bisect (RUNTIME S1)
+    assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
     assert runs == [DATES_TEST]  # no run starts after the stop
-    assert "introduced" in recs[PD]["bisect"] and recs[WEEK]["bisect"] == {
+    assert "introduced" in recs[PD] and recs[WEEK] == {
         "skipped": "stopped",
         "at": head,
     }
@@ -371,3 +383,100 @@ def test_an_item_is_not_bisected_again_at_the_same_suspect_version(lib, tmp_path
     recs = read_records(stores.memory, out["noted"])
     assert recs[WEEK]["status"] == "suspect" and probe.calls == []
     assert recs[WEEK]["bisect"] == {"skipped": "budget", "at": head}
+
+
+def test_the_records_are_published_before_the_bisect_and_a_killed_bisect_runs_again(
+    lib,
+    tmp_path,
+):
+    """RUNTIME S1 (1): a kill during the bisect never holds back the map; the item is bisected next time, and its
+    result reaches the next map written (a commit's map is never rewritten)."""
+    stores, head = lib
+    for eid in ("e1", "e2"):
+        _episode(stores, eid, head, {WEEK: {"called": 1, "errored": 1}})
+
+    def killed(*a, **k):
+        raise KeyboardInterrupt  # SIGINT/SIGKILL mid-bisect
+
+    with pytest.raises(KeyboardInterrupt):
+        _consolidate(stores, tmp_path / "a", killed)
+    recs = read_records(stores.memory, head)
+    assert recs[WEEK]["status"] == "suspect" and recs[WEEK]["bisect"] is None
+    probe = _Probe()
+    out = _consolidate(stores, tmp_path / "b", probe)
+    assert out["noted"] is None and out["bisected"] == [WEEK] and len(probe.calls) == 1
+    again = _Probe()
+    for i in range(3):
+        _episode(
+            stores,
+            f"c{i}",
+            head,
+            {PD: {"called": 1}},
+        )  # a status change: the next map is written
+    later = _consolidate(stores, tmp_path / "c", again)
+    assert again.calls == [] and later["noted"] not in (None, head)
+    assert (
+        read_records(stores.memory, later["noted"])[WEEK]["bisect"]["introduced"]
+        == head
+    )
+
+
+def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
+    lib,
+    tmp_path,
+    monkeypatch,
+):
+    """RUNTIME S1 (2): with its version unknown, three clean uses do not make an item stable; with the history
+    found in its own file it is promoted as usual."""
+    from unify.memory_v2 import item_bisect, library_export
+
+    stores, head = lib
+    for i in range(3):
+        _episode(stores, f"c{i}", head, {PD: {"called": 1}})
+    monkeypatch.setattr(
+        library_export,
+        "item_history",
+        lambda mem, sha, **k: ({}, False),
+    )
+    monkeypatch.setattr(item_bisect, "versions_of", lambda *a, **k: [])
+    out = _consolidate(stores, tmp_path / "a")
+    rec = read_records(stores.memory, out["noted"])[PD]
+    assert (
+        rec["status"] == "experimental"
+        and "beyond the scanned history" in rec["status_reason"]
+    )
+    monkeypatch.undo()
+    assert (
+        lifecycle.next_records(
+            items={PD: "function"},
+            prev={},
+            facts=[],
+            since={PD: set()},
+            changed_at={PD: None},
+            functions={PD: "memory.text.dates"},
+            graph={},
+            note_uses={},
+            unknown_version=[PD],
+        )[0][PD]["status"]
+        == "experimental"
+    )
+
+
+def test_the_last_change_comes_from_the_items_own_history_when_the_scan_misses_it(
+    lib,
+    tmp_path,
+    monkeypatch,
+):
+    from unify.memory_v2 import library_export
+
+    stores, head = lib
+    for i in range(3):
+        _episode(stores, f"c{i}", head, {PD: {"called": 1}})
+    monkeypatch.setattr(
+        library_export,
+        "item_history",
+        lambda mem, sha, **k: ({}, False),
+    )
+    out = _consolidate(stores, tmp_path / "a")
+    rec = read_records(stores.memory, out["noted"])[PD]
+    assert rec["changed_at"] == head and rec["status"] == "stable"
