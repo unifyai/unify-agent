@@ -116,6 +116,7 @@ from .switch import (
     sol_route,
     sol_token,
     surfacing_options,
+    v21_enabled,
 )
 
 __all__ = [
@@ -890,6 +891,23 @@ async def run_due_passes(
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
+    # at integration: directly after P5's after_passes(...)
+    if v21_enabled(settings):
+        # P7 Amendment A: the pin-able head moves last, after the item records are written
+        from ..memory_writer import publish
+
+        try:
+            served = publish(stores.memory)
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - served stays where it was: requests keep a recorded pin
+            _error(stores, f"publish: {type(exc).__name__}")
+        else:
+            _deliver(
+                stores,
+                emit,
+                {"type": "consolidation", "phase": "published", "served": served},
+            )
     return outcomes
 
 

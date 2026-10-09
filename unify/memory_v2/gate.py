@@ -490,7 +490,8 @@ FIXTURE_ELEMENTS = 16
 def _fixture_elements(data: bytes) -> list:
     """The first :data:`FIXTURE_ELEMENTS` elements of a fixture holding a collection of recorded inputs: the
     items of a JSON list, the values of a JSON object of records, the same one level down (``{"rows": [...]}``),
-    or the lines of a JSON-lines file; ``[]`` for anything else. Bounded and value-free."""
+    or the lines of a JSON-lines file; ``[]`` for anything else. Bounded and value-free.
+    """
     try:
         text = bytes(data).decode("utf-8")
     except UnicodeDecodeError:
@@ -965,8 +966,16 @@ class Gate:
             raise
         if res.passed:
             try:
-                self.mem.fast_forward("main", landed, expected_old=p_sha)
-            except GitError as exc:
+                if getattr(self, "v21", None) is not None:
+                    # memory v2.1 (P7 Amendment A): the one writer; re-targets over status commits only
+                    from .memory_writer import land
+
+                    landed = land(self.mem, landed, p_sha)
+                else:
+                    self.mem.fast_forward("main", landed, expected_old=p_sha)
+            except (
+                GitError
+            ) as exc:  # StaleParent is a GitError: refused, and _record keeps the whole patch
                 res.passed = False
                 res.reasons.append(f"merge: {exc}")
         res.reasons.extend(notes)  # after every failure reason, including the merge's
@@ -2028,7 +2037,9 @@ class Gate:
             ]
             # a fixture is also a collection of recorded inputs (a JSON list, records by name, one level of
             # wrapping, or JSON lines) whose examples pick one: each element is shaped on its own
-            mine += [d for d in map(value_shape, _fixture_elements(data)) if d is not None]
+            mine += [
+                d for d in map(value_shape, _fixture_elements(data)) if d is not None
+            ]
             if any(fixture_fits(d, r) for d in mine for r in recorded):
                 return
         if paths:
