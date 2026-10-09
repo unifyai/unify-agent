@@ -71,6 +71,19 @@ def actor_model() -> str:
     return resolve_default_model()[0]
 
 
+def check_v21_switches(settings: Any) -> None:
+    """Refuse a v2.1 run whose v2 settings contradict the v2.1 prompts or gate (spec §12.4; switch.V21_CONFLICTS)."""
+    from .switch import v21_conflicts
+
+    bad = v21_conflicts(settings)
+    if bad:
+        raise MemoryV2Unavailable(
+            "UNIFY_MEMORY_V21=on cannot run with "
+            + ", ".join(bad)
+            + ": each is a v2 setting that the v2.1 prompts and gate contradict; turn it off",
+        )
+
+
 def sol_effort(actor: str) -> str:
     """Sol's reasoning effort for this run: ``UNIFY_MEMORY_V2_SOL_EFFORT`` when it fixes one (a declared mismatch
     ablation), else the actor's (*actor*; the default ``actor``)."""
@@ -361,6 +374,8 @@ class RequestRun:
         policy = sandbox.build_policy(fresh=True)
         check_hidden(paths, policy)
         self.v21 = v21_enabled(SETTINGS)
+        if self.v21:  # a refused run records nothing: begin cleans up and re-raises
+            check_v21_switches(SETTINGS)
         self.stores = consolidate.open_stores(
             paths,
             busy_timeout_s=_V21_BUSY_TIMEOUT_S if self.v21 else None,

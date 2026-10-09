@@ -33,8 +33,12 @@ from pathlib import Path
 from ..catalogue import channel_lines
 from ..index import IndexOverBudget, index_with_names
 from ..memory_repo import items
+from .. import prompts_v21 as _prompts_v21
 
 logger = logging.getLogger(__name__)
+
+#: The reviewed v2.1 guide (P7, spec §12.1); at integration it replaces P3's own GUIDE_V21.
+GUIDE_V21 = _prompts_v21.GUIDE_V21
 
 INDEX_BUDGET_TOKENS = 4000
 

@@ -1327,6 +1327,28 @@ def _sources(manifest: object) -> list[str]:
     return sorted(out)
 
 
+def _v21_trailers(manifest: object, sources: list[str]) -> dict[str, list[str]]:
+    """The v2.1 commit trailers (spec §8.2 rule 6): ``Why`` (the manifest's one line, at most 200 characters),
+    ``Episodes`` (the source episodes) and ``Items`` (the item ids the manifest names).
+    """
+    m = manifest if isinstance(manifest, dict) else {}
+    why = m.get("why")
+    line = (
+        " ".join(why.split())[:200]
+        if isinstance(why, str) and why.strip()
+        else "(not given)"
+    )
+    raw = m.get("items") if isinstance(m.get("items"), list) else []
+    items = sorted(
+        {
+            it["item"]
+            for it in raw
+            if isinstance(it, dict) and isinstance(it.get("item"), str)
+        },
+    )
+    return {"Why": [line], "Episodes": list(sources), "Items": items or ["(none)"]}
+
+
 def _money(usd: object) -> Decimal | None:
     """A finite, non-negative decimal string as a Decimal; anything else (``unknown``) is None."""
     if not isinstance(usd, str):
@@ -1826,6 +1848,14 @@ class SolPass:
         )
         return reasons
 
+    def _brief_v21(self) -> str:
+        """The v2.1 system message: the CURATE brief for a CURATE pass (P6's ``PassConfig.role``), else WRITE."""
+        from .prompts_v21 import curate_brief_now, write_brief_now
+
+        if getattr(self.cfg, "role", "write") == "curate":
+            return curate_brief_now()
+        return write_brief_now()
+
     def _keep_cancelled_work(
         self,
         box: Path,
@@ -2016,7 +2046,11 @@ class SolPass:
                 # unchanged while its switches are off)
                 {
                     "role": "system",
-                    "content": _qa.system(sol_system(**switches), self._qa),
+                    "content": (
+                        self._brief_v21()  # spec v2.1 §12: the role's brief alone
+                        if self.cfg.v21
+                        else _qa.system(sol_system(**switches), self._qa)
+                    ),
                 },
                 {"role": "user", "content": first},
             ]
@@ -2241,7 +2275,13 @@ class SolPass:
             candidate = self.mem.commit_all(
                 wt,
                 f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
-                {"Pass": pass_id, "Episode": sources, "Evidence": sources},
+                {
+                    "Pass": pass_id,
+                    "Episode": sources,
+                    "Evidence": sources,
+                    # at integration: P4's Tests-Changed, and the same trailers in P2's _commit_round
+                    **(_v21_trailers(manifest, sources) if self.cfg.v21 else {}),
+                },
             )
         # a manifest that could not be read (not a regular file, not JSON) reaches the gate as None: G1 refuses it
         res = self.gate.merge(
