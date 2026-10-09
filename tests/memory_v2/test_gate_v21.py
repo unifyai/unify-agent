@@ -340,7 +340,7 @@ def test_cross_episode_text_input_that_crashes_is_refused(world21):
     assert any(
         "from episodes outside its provenance" in r and "IndexError" in r
         for r in res.reasons
-    )
+    ), (res.reasons, res.verification)
     assert res.verification["memory.talk.words:first_word"]["cross_episode"] == {
         "ran": 1,
         "ok": 0,

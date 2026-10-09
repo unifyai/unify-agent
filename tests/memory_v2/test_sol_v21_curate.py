@@ -3,7 +3,8 @@
 import asyncio
 import json
 
-from unify.memory_v2.curate import CurateState, curate_system
+from unify.memory_v2.curate import CurateState
+from unify.memory_v2.prompts_v21 import curate_brief_now
 from unify.memory_v2.sol_pass import PassConfig, SolPass
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_gate import _merged
@@ -82,7 +83,10 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21
     )
     out = asyncio.run(sol.run(PassRequest("curate", None, [], False), "c1"))
     assert out.passed, out.reasons
-    assert model.seen[0] == {"role": "system", "content": curate_system()}
+    assert model.seen[0] == {
+        "role": "system",
+        "content": curate_brief_now(),
+    }  # P7's brief
     first = model.seen[1]["content"]
     assert first.startswith("Pass c1: curate\n") and f"- {FIRED['overlap:f1']}" in first
     assert json.loads(model.outputs["t"])["reasons"] == list(FIRED.values())

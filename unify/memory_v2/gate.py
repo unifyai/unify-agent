@@ -1544,6 +1544,13 @@ class Gate:
         for t in man.deleted_tests:
             self._retired_ok(run, t)
         self._pins(run)
+        if self._layout21:
+            # memory v2.1: a package's __init__.py (its one-paragraph docstring) goes with what the pass declares there
+            declared |= {
+                f"memory/{p.split('/')[1]}/__init__.py"
+                for p in list(declared)
+                if p.startswith("memory/") and p.count("/") >= 2
+            }
         for p in run.changed:
             if p not in declared:
                 run.fail("G1", f"undeclared change {p}")

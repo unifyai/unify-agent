@@ -158,7 +158,8 @@ def test_checker_posts_pass_or_fail_only(tmp_path):
     assert post_checker(stores, "e2", sha2, True, "2026-10-08T01:03:00Z") is True
     (line,) = stores.episodes.notes(sha1)
     note = json.loads(line)
-    assert set(note) == {f.name for f in fields(Signal)}
+    # P9: visible_to_actor is in a note only when True, so every other note keeps its bytes
+    assert set(note) == {f.name for f in fields(Signal)} - {"visible_to_actor"}
     assert (note["source"], note["label"], note["refers_to"]) == (
         "checker",
         "fail",
@@ -1192,7 +1193,7 @@ def test_v21_gates_write_passes_with_the_v21_checks(tmp_path, monkeypatch, on):
 
 # --- memory v2.1: CURATE after WRITE, triggered by library state (P6) ------------------------------------------
 
-from unify.memory_v2.curate import curate_system
+from unify.memory_v2.prompts_v21 import curate_brief_now
 from tests.memory_v2.test_gate import _merged
 from tests.memory_v2.test_layout import LIB
 from tests.memory_v2.test_overlap import SPLIT, SPLIT_ID, SPLIT_PATH, TOKENS
@@ -1208,6 +1209,7 @@ DUPLICATE = {
 def _settings21(on=True, **kw):
     s = _settings(**kw)
     s.UNIFY_MEMORY_V21 = "on" if on else "off"
+    s.UNIFY_MEMORY_V21_E = 1  # v2.1's own E (P7, D43: 100k by default)
     return s
 
 
@@ -1255,7 +1257,10 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
     starts = [e for e in _events(stores) if e["phase"] == "start"]
     assert "curate" not in starts[0]
     assert f"overlap (antiunify): {TOKENS}, {SPLIT_ID}" in starts[1]["curate"]
-    assert fake.seen[-1][0] == {"role": "system", "content": curate_system()}
+    assert fake.seen[-1][0] == {
+        "role": "system",
+        "content": curate_brief_now(),
+    }  # P7's brief
     # the library is unchanged and CURATE was shown these reasons: the next WRITE pass runs alone
     sha2, _ = _record(stores, "e2", minute=1)
     assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0"]
