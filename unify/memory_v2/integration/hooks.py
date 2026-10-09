@@ -103,9 +103,23 @@ def worker_paths() -> list[str]:
 
 
 def worker_mounts() -> list[Path]:
-    """Paths the worker's sandbox binds read-write: the run's memory export, nothing else."""
+    """Paths the worker's sandbox binds read-write: the run's memory export (v2), nothing else. Under
+    UNIFY_MEMORY_V21 there are none: the copy is bound read-only (:func:`worker_readonly_mounts`).
+    """
     path = _checkout()
-    return [] if path is None else [path]
+    if path is None or getattr(_run(), "v21", False):
+        return []
+    return [path]
+
+
+def worker_readonly_mounts() -> list[Path]:
+    """Paths the worker's sandbox binds read-only after its masks: the run's v2.1 library copy (spec v2.1 §6),
+    whose root, the parent of ``memory/``, is also first on the import path (:func:`worker_paths`).
+    """
+    path = _checkout()
+    if path is None or not getattr(_run(), "v21", False):
+        return []
+    return [path]
 
 
 def worker_audit() -> dict | None:

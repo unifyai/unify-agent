@@ -136,6 +136,7 @@ def _identity_hooks() -> types.ModuleType:
     hooks.sandbox_objects = lambda objects: objects
     hooks.worker_paths = lambda: []
     hooks.worker_mounts = lambda: []
+    hooks.worker_readonly_mounts = lambda: []
     hooks.begin_request = lambda request: None
     hooks.worker_audit = lambda: None
     hooks.worker_cell_done = lambda events: None
