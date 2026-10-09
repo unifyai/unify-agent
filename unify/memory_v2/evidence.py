@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, 
   PRIMARY KEY(commit_sha, item));
 """
 
+# Memory v2.1 (spec §8.4, §9.2): one row per v2.1 pass (its rounds, the blob ids of each refused round's full
+# gate result and of its final one), created by the first write, so a store that never runs a v2.1 pass keeps
+# the v2 schema (as with _SHAPE_SCHEMA).
+_ROUNDS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS pass_rounds(pass_id TEXT PRIMARY KEY, role TEXT, rounds INTEGER, "
+    "round_blobs TEXT, gate_blob TEXT)"
+)
+
+
+def _json_as(raw: object, default: list | dict) -> list | dict:
+    """*raw* parsed as JSON of *default*'s type; *default* for NULL, unparsable or another type."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw else default
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
 # The item_use counts, in column order. Each is added to a store that lacks it (a store opened before
 # the column existed), as ``INTEGER NOT NULL DEFAULT 0``, or ``DEFAULT 1`` for :data:`_UNKNOWN_BY_DEFAULT`.
 _USE_COUNTS = (
@@ -661,6 +679,72 @@ class EvidenceStore:
                 f"VALUES({', '.join('?' for _ in _PASS_COLUMNS)})",
                 tuple(row.get(k) for k in _PASS_COLUMNS),
             )
+
+    def record_pass_rounds(self, row: dict) -> bool:
+        """Record a v2.1 pass's rounds (``pass_id``, ``role``, ``rounds`` or None when unknown, ``round_blobs``
+        as a JSON list, ``gate_blob``); the first record of a pass wins. False if one existed.
+        """
+        with self.db:
+            self.db.execute(_ROUNDS_SCHEMA)
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO pass_rounds(pass_id, role, rounds, round_blobs, gate_blob) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    row["pass_id"],
+                    row.get("role", "write"),
+                    row.get("rounds"),
+                    row.get("round_blobs") or "[]",
+                    row.get("gate_blob"),
+                ),
+            )
+        return cur.rowcount == 1
+
+    def pass_rounds(self, role: str = "write") -> list[dict]:
+        """Every recorded v2.1 pass of *role*, oldest first, joined with its pass row (its D13 ``patch_blob``,
+        ``passed``, ``items_merged`` and ``items_refused``); [] when no v2.1 pass ran.
+        """
+        if not self._has_table("pass_rounds"):
+            return []
+        out = []
+        for (
+            pid,
+            rounds,
+            rblobs,
+            gblob,
+            patch,
+            passed,
+            merged,
+            refused,
+        ) in self.db.execute(
+            "SELECT r.pass_id, r.rounds, r.round_blobs, r.gate_blob, p.patch_blob, p.passed, p.items_merged, "
+            "p.items_refused FROM pass_rounds r LEFT JOIN passes p ON p.pass_id = r.pass_id "
+            "WHERE r.role = ? ORDER BY r.rowid",
+            (role,),
+        ):
+            out.append(
+                {
+                    "pass_id": pid,
+                    "rounds": rounds,
+                    "round_blobs": _json_as(rblobs, []),
+                    "gate_blob": gblob,
+                    "patch_blob": patch,
+                    "passed": passed,
+                    "items_merged": [
+                        i for i in _json_as(merged, []) if isinstance(i, str)
+                    ],
+                    "items_refused": _json_as(refused, {}),
+                },
+            )
+        return out
+
+    def _has_table(self, name: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
 
     def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
         """Append *notes* to a recorded pass's reasons (after the gate's); KeyError if it is not recorded."""
