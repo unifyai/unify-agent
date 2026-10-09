@@ -304,19 +304,11 @@ def generated(
     }
 
 
-def write_generated(
-    checkout: Path,
-    shapes: ShapeLookup | None = None,
-    suspect: Iterable[str] = (),
-) -> dict[str, bytes]:
-    """Write the generated files into the export at *checkout*, replacing whatever is there; returns them.
-    The channels in *suspect* (the harness's drift state) are flagged in the catalog.
-
-    A path the export already holds (a commit from before the paths were reserved) is replaced: the
-    generated file wins. Nothing is followed: an existing link or directory at a generated path is removed.
+def write_files(checkout: Path, files: dict[str, bytes]) -> dict[str, bytes]:
+    """Write *files* (relative path -> bytes) into *checkout*, replacing whatever is there; returns them.
+    Nothing is followed: an existing link or directory at a path, or at its parent, is removed first.
     """
     checkout = Path(checkout)
-    files = generated(checkout, shapes, suspect)
     for rel, data in files.items():
         dest = checkout / rel
         parent = dest.parent
@@ -331,3 +323,18 @@ def write_generated(
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
     return files
+
+
+def write_generated(
+    checkout: Path,
+    shapes: ShapeLookup | None = None,
+    suspect: Iterable[str] = (),
+) -> dict[str, bytes]:
+    """Write the generated files into the export at *checkout*, replacing whatever is there; returns them.
+    The channels in *suspect* (the harness's drift state) are flagged in the catalog.
+
+    A path the export already holds (a commit from before the paths were reserved) is replaced: the
+    generated file wins. Nothing is followed: an existing link or directory at a generated path is removed.
+    """
+    checkout = Path(checkout)
+    return write_files(checkout, generated(checkout, shapes, suspect))
