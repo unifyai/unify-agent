@@ -128,7 +128,12 @@ def _diff_functions(ep: Episode) -> tuple[list[dict], list[str], bool]:
     return out, unparsed, bool(runs)
 
 
-def actor_functions(ep: Episode) -> list[dict]:
+def actor_functions(
+    ep: Episode,
+    diff: tuple[list[dict], list[str], bool] | None = None,
+) -> list[dict]:
+    """The actor's functions: top-level defs of its Python cells, then those its work-tree diff adds. *diff* is
+    ``_diff_functions(ep)`` when the caller already has it."""
     out: list[dict] = []
     py = [c for c in ep.cells if (c.language or "python") == "python"]
     for c in py:
@@ -149,7 +154,7 @@ def actor_functions(ep: Episode) -> list[dict]:
                     "called_later": later,
                 },
             )
-    out.extend(_diff_functions(ep)[0])
+    out.extend((diff or _diff_functions(ep))[0])
     return out
 
 
@@ -167,10 +172,18 @@ def canonical_part(ep: Episode, part: str) -> str:
     return f"observation:{obs.index(text)}"
 
 
+def observation_copies(ep: Episode) -> dict[str, int]:
+    """Each observation that repeats an earlier one byte for byte, mapped to the first copy (keys are the
+    indices as strings, as in the JSON map)."""
+    obs = _observations(ep)
+    return {str(i): obs.index(t) for i, t in enumerate(obs) if obs.index(t) != i}
+
+
 def required_parts(
     ep: Episode,
     signals: list[dict],
     functions: list[dict],
+    diff: tuple[list[dict], list[str], bool] | None = None,
 ) -> list[str]:
     """Every part a writer must read to cover *ep*: the request, every distinct observation (where any verdict
     lives; the harness never decides which by its text), every cell that defines a function or carries a
@@ -192,7 +205,7 @@ def required_parts(
         parts.append(f"cell:{c}")
     for a in sorted({s["action"] for s in signals if s["action"] is not None}):
         parts.append(f"action:{a}")
-    if _diff_functions(ep)[2]:
+    if (diff or _diff_functions(ep))[2]:
         parts.append("diff")
     return parts
 
@@ -254,7 +267,8 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
     for eid in eids:
         ep = load(eid)
         sig = structural_signals(ep)
-        fns = actor_functions(ep)
+        diff = _diff_functions(ep)
+        fns = actor_functions(ep, diff)
         rows.append(
             {
                 "episode_id": ep.episode_id,
@@ -262,6 +276,7 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "regime": ep.regime,
                 "request": ep.request[0] if ep.request else "",
                 "observations": len(_observations(ep)),
+                "observation_copies": observation_copies(ep),
                 "cells": len(ep.cells),
                 "actions": len(ep.actions),
                 "items_used": ep.memory_use,
@@ -269,8 +284,8 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "errors": _errors(ep),
                 "signals": sig,
                 "functions": fns,
-                "diff_unparsed": _diff_functions(ep)[1],
-                "required_parts": required_parts(ep, sig, fns),
+                "diff_unparsed": diff[1],
+                "required_parts": required_parts(ep, sig, fns, diff),
             },
         )
     return {"version": 1, "episodes": rows}
