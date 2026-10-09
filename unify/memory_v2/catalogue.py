@@ -49,8 +49,6 @@ README = "README.md"
 HELPER = "memory.py"
 CATALOG = ".memory/catalog.json"
 SHAPES = ".memory/shapes.py"
-# Written before each cell under UNIFY_MEMORY_V2_OBSERVATIONS=on (RequestRun.refresh_observations), not at export.
-OBSERVATIONS = ".memory/observations.json"
 GENERATED = (README, HELPER, CATALOG, SHAPES)
 CATALOG_VERSION = 1
 # The soft size of the catalogue (README plus the channel lines ``memory.catalog()`` prints), in estimated

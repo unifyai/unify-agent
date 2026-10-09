@@ -288,8 +288,6 @@ class RequestRun:
         self.solved: bool | None = None
         self.outcome_at: str | None = None
         self._lock: int | None = None
-        # UNIFY_MEMORY_V2_OBSERVATIONS: the transcript's (size, mtime) at the last refresh
-        self._observed: tuple[int, int] | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
 
@@ -427,54 +425,6 @@ class RequestRun:
             blobs=self.stores.blobs,
             freeze=True,
         )
-
-    def refresh_observations(self) -> None:
-        """``UNIFY_MEMORY_V2_OBSERVATIONS=on`` under catalogue surfacing: write the counterpart's messages so
-        far (:func:`.adapters.dialogue.counterpart_messages` of the request's live transcript) to the
-        export's ``.memory/observations.json``, for ``memory.observation()``. Called before each code cell
-        (``hooks.before_cell``); rewritten only when the transcript changed. The bytes are kept with the
-        generated files, so the file is left out of ``memory.diff`` unless a cell edited it.
-        """
-        if self.surfacing is None or not self.surfacing.catalogue:
-            return
-        from unify import transcripts
-
-        from ..catalogue import OBSERVATIONS
-        from . import trajectory
-        from .adapters.dialogue import counterpart_messages
-        from .switch import observations_on
-
-        if not observations_on():
-            return
-        path = transcripts.transcripts_dir() / f"{self.episode_id}.jsonl"
-        try:
-            st = path.stat()
-        except OSError:
-            return
-        key = (st.st_size, st.st_mtime_ns)
-        if key == self._observed:
-            return
-        values = counterpart_messages(
-            trajectory.read_jsonl(path),
-            redactor=self.redactor(),
-        )
-        data = (
-            json.dumps(
-                {"version": 1, "messages": values},
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("utf-8")
-        target = Path(self.paths.checkout) / OBSERVATIONS
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.is_symlink():  # a cell's edit: replaced, never followed
-            target.unlink()
-        tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, target)
-        self.generated[OBSERVATIONS] = data
-        self._observed = key
 
     def redactor(self) -> Any:
         """The run's redactor as far as it is known before the episode is assembled: the environment's

@@ -830,11 +830,6 @@ class PythonWorker:
                 )
         cid = next(self._ids)
         self.inventory = None
-        from unify.memory_v2.integration import hooks as _mv2
-
-        # UNIFY_MEMORY_V2_OBSERVATIONS=on: the export's view of the counterpart's
-        # messages is brought up to date before the cell runs; inert otherwise.
-        _mv2.before_cell()
         try:
             await self._send(
                 {

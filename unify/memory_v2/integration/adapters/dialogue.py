@@ -311,34 +311,6 @@ def dialogue_actions(
     return actions
 
 
-#: At most this many counterpart messages are kept for ``memory.observations()``: the request and the
-#: latest ones (a long session's earlier messages are left out).
-MAX_COUNTERPART_MESSAGES = 64
-
-
-def counterpart_messages(
-    transcript_lines: Iterable[dict],
-    *,
-    redactor: Redactor | None = None,
-    max_observation_chars: int = DEFAULT_OBSERVATION_CAP,
-    max_messages: int = MAX_COUNTERPART_MESSAGES,
-) -> list[Any]:
-    """The counterpart's messages so far, oldest first: every genuine user-role message (the request, then
-    each observation or follow-up; loop-authored notices skipped), each redacted and bounded by
-    :func:`observation_value` exactly as :func:`dialogue_actions` records an observation, so a function
-    built on recorded observations takes these as it took those. Past *max_messages*, the first message
-    and the latest ``max_messages - 1``.
-    """
-    red = redactor if redactor is not None else Redactor()
-    msgs = [m for m in _messages(transcript_lines) if _is_observation(m)]
-    if len(msgs) > max_messages:
-        msgs = msgs[:1] + msgs[len(msgs) - (max_messages - 1) :]
-    return [
-        observation_value(red.text(_text(m.get("content"))), max_observation_chars)
-        for m in msgs
-    ]
-
-
 def _line_bucket(n: int) -> str:
     if n == 0:
         return "0"

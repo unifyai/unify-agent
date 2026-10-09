@@ -47,12 +47,11 @@ The contract (online build, spec §F1 and D23):
   shrink (a larger grid, a longer list) is not taken for a changed environment. A trailing counter, a JSON
   kind or a change of keys still is.
 - ``UNIFY_MEMORY_V2_OBSERVATIONS``: ``off`` (or empty; the default) or ``on``, read under
-  ``UNIFY_MEMORY_V2_SURFACING=catalogue`` only. On, before each code cell the harness writes the
-  counterpart's messages so far in this request (the request itself first, then each reply the counterpart
-  sent; redacted and capped exactly as the dialogue recorder keeps an observation) to the export's
-  ``.memory/observations.json``, and the ``memory`` helper reads them back (``memory.observation()``,
-  ``memory.observations()``), so a stored function whose input form is ``observation`` can take the
-  current one without the cell pasting it. Off, nothing is written and the helper behaves as before.
+  ``UNIFY_MEMORY_V2_SURFACING=catalogue`` only. On, the exported ``memory`` helper says where a function whose input
+  form is ``observation`` finds the current ones: the entries from ``user`` in the team record the sandbox already
+  holds (``record.read()``; the request, then each reply), whose ``text`` it takes as it took the recorded
+  observations it was built on. One line in ``catalog()``'s input forms and one in such a function's
+  ``describe()``; no data, no file. Off, the helper is the frozen file byte for byte.
 
 The v2.1 surfacing switches (lane S1). Each default restores the behaviour of the v2 screen build
 (``9deefbfd1``) exactly, so a paired v2 vs v2.1 comparison runs on one build:

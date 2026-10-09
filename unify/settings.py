@@ -356,8 +356,7 @@ class ProductionSettings(BaseSettings):
     # with UNIFY_MEMORY_V2 on): ``_DIALOGUE_DRIFT`` ``lines`` (default) or
     # ``structure`` (the dialogue drift fingerprint without line-count buckets);
     # ``_OBSERVATIONS`` empty/off or ``on`` (under catalogue surfacing, the
-    # counterpart's messages so far written beside the export before each cell,
-    # read by ``memory.observation()``).
+    # memory helper points observation inputs at the team record's entries).
     UNIFY_MEMORY_V2_DIALOGUE_DRIFT: str = "lines"
     UNIFY_MEMORY_V2_OBSERVATIONS: str = ""
     # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
