@@ -1881,14 +1881,66 @@ def _jsonl(path: Path) -> list[dict]:
     return out
 
 
-def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -> dict:
+def _decode_value(value: Any, blobs: Any, episode_id: str) -> Any:
+    """Format 2 (episodes.RECORD_FORMAT), strictly and with the standard library only: a reference when
+    ``__capped__`` is the dict's only key (its blob checked against its id), an escaped ``__literal__``
+    unwrapped. Mirrors ``episodes._decode2``; a missing or corrupt blob raises ValueError.
+    """
+    if isinstance(value, dict) and len(value) == 1:
+        ref = value.get("__capped__")
+        if isinstance(ref, dict) and "blob" in ref:
+            sha = str(ref["blob"])
+            if not blobs.has(sha):
+                raise ValueError(f"episode {episode_id}: blob {sha} missing")
+            data = blobs.get(sha)
+            if hashlib.sha256(data).hexdigest() != sha:
+                raise ValueError(f"episode {episode_id}: blob {sha} corrupt")
+            return json.loads(data.decode())
+        if "__literal__" in value:
+            return value["__literal__"]
+    return value
+
+
+def _decode_row(row: dict, blobs: Any, episode_id: str) -> dict:
+    row = dict(row)
+    row["args"] = [_decode_value(x, blobs, episode_id) for x in row.get("args") or []]
+    row["kwargs"] = {
+        k: _decode_value(v, blobs, episode_id)
+        for k, v in (row.get("kwargs") or {}).items()
+    }
+    row["response"] = _decode_value(row.get("response"), blobs, episode_id)
+    return row
+
+
+def use_from_episode_dir(
+    path: str | Path,
+    items: Iterable[str] | None = None,
+    blobs: Any = None,
+) -> dict:
     """:func:`request_use` over an exported episode directory (``transcript.jsonl``, ``actions.jsonl``,
     ``memory.diff``), with the export roots, import surface, shown record and cell statuses its
     ``memory_use.json`` recorded.
 
-    *items* default to the ``items_at_pin`` recorded there (empty without one).
+    *items* default to the ``items_at_pin`` recorded there (empty without one). A record in format 2
+    (``UNIFY_MEMORY_V21``; ``record_format`` in ``meta.json``) stores large values as blob references, so its
+    actions are resolved through *blobs* (a :class:`..blobs.BlobStore`); without it the call is refused rather
+    than count references as values.
     """
     path = Path(path)
+    actions = _jsonl(path / "actions.jsonl")
+    try:
+        meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, *_SAFE_LOAD):
+        meta = {}
+    if isinstance(meta, dict) and meta.get("record_format", 1) != 1:
+        if blobs is None:
+            raise ValueError(
+                "record_format 2: pass blobs to resolve the record's references",
+            )
+        eid = str(meta.get("episode_id", ""))
+        actions = [
+            _decode_row(r, blobs, eid) if isinstance(r, dict) else r for r in actions
+        ]
     try:
         recorded = json.loads((path / "memory_use.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, *_SAFE_LOAD):
@@ -1905,7 +1957,7 @@ def use_from_episode_dir(path: str | Path, items: Iterable[str] | None = None) -
     return request_use(
         _jsonl(path / "transcript.jsonl"),
         items,
-        _jsonl(path / "actions.jsonl"),
+        actions,
         memory_diff=diff,
         export_roots=roots if isinstance(roots, list) else (),
         surface=recorded.get("surface"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -116,6 +117,31 @@ def _jsonl(rows: list[Any]) -> str:
     return "".join(json.dumps(r, sort_keys=True, default=str) + "\n" for r in rows)
 
 
+#: A reference to a value stored as a blob ({"__capped__": {excerpt, blob, bytes}}, BlobStore.cap_text).
+_REF = "__capped__"
+#: Record format 2 (UNIFY_MEMORY_V21): a recorded value that is itself a dict with a _REF or _LITERAL key is
+#: written as {_LITERAL: value}, so it is never read as a reference (RUNTIME's T7 checklist, point 2).
+_LITERAL = "__literal__"
+#: The record format a v2.1 writer stamps in meta.json; a record without the key is format 1.
+RECORD_FORMAT = 2
+
+
+class EpisodeRecordError(ValueError):
+    """A recorded episode that cannot be loaded as recorded: a blob it references is missing, or its bytes do
+    not hash to its id. Loading fails closed rather than return a value with a hole in it.
+    """
+
+
+def _blob_value(blobs: BlobStore, blob: Any, episode_id: str) -> Any:
+    sha = str(blob)
+    if not blobs.has(sha):
+        raise EpisodeRecordError(f"episode {episode_id}: blob {sha} missing")
+    data = blobs.get(sha)
+    if hashlib.sha256(data).hexdigest() != sha:
+        raise EpisodeRecordError(f"episode {episode_id}: blob {sha} corrupt")
+    return json.loads(data.decode())
+
+
 class EpisodeWriter:
     def __init__(
         self,
@@ -123,6 +149,8 @@ class EpisodeWriter:
         blobs: BlobStore,
         redactor: Redactor,
         response_cap: int = 16384,
+        *,
+        v21: bool = False,
     ) -> None:
         self.repo, self.blobs, self.redactor, self.cap = (
             repo,
@@ -130,11 +158,27 @@ class EpisodeWriter:
             redactor,
             response_cap,
         )
+        # UNIFY_MEMORY_V21: record format 2 (every large value as a blob; values like a reference escaped)
+        self.v21 = v21
 
     def _capped(self, value: Any) -> Any:
         text = json.dumps(value, sort_keys=True, default=str)
         out = self.blobs.cap_text(text, self.cap)
         return value if "text" in out else {"__capped__": out}
+
+    def _stored(self, value: Any) -> Any:
+        """Format 2: *value* (already redacted) inline, escaped when it looks like a reference, or a reference
+        to its canonical JSON stored whole as a blob when that is over the inline cap.
+        """
+        out = self.blobs.cap_text(
+            json.dumps(value, sort_keys=True, default=str),
+            self.cap,
+        )
+        if "text" not in out:
+            return {_REF: out}
+        if isinstance(value, dict) and (_REF in value or _LITERAL in value):
+            return {_LITERAL: value}
+        return value
 
     def write(self, ep: Episode) -> str:
         r = self.redactor
@@ -157,11 +201,20 @@ class EpisodeWriter:
         actions = []
         for a in ep.actions:
             row = r.obj(asdict(a))
-            row["response"] = self._capped(row["response"])
+            if self.v21:  # format 2: args, kwargs and the response, each stored whole
+                row["args"] = [self._stored(x) for x in row["args"]]
+                row["kwargs"] = {k: self._stored(v) for k, v in row["kwargs"].items()}
+                row["response"] = self._stored(row["response"])
+            else:
+                row["response"] = self._capped(row["response"])
             actions.append(row)
+        request = r.obj(ep.request)
+        if self.v21:
+            meta["record_format"] = RECORD_FORMAT
+            request = [self._stored(x) for x in request]
         files = {
             "meta.json": json.dumps(r.obj(meta), sort_keys=True, indent=1) + "\n",
-            "request.json": json.dumps(r.obj(ep.request), indent=1) + "\n",
+            "request.json": json.dumps(request, indent=1) + "\n",
             "replies.json": json.dumps(r.obj(ep.replies), indent=1) + "\n",
             "transcript.jsonl": _jsonl(r.obj(ep.transcript)),
             "cells.jsonl": _jsonl([r.obj(asdict(c)) for c in ep.cells]),
@@ -192,10 +245,34 @@ class EpisodeWriter:
         return sha
 
 
-def _uncap(value: Any, blobs: BlobStore) -> Any:
-    if isinstance(value, dict) and "__capped__" in value:
-        return json.loads(blobs.get(value["__capped__"]["blob"]).decode())
+def _uncap(value: Any, blobs: BlobStore, episode_id: str = "") -> Any:
+    """Format 1: an action response stored as a blob, resolved (a missing or corrupt blob fails closed)."""
+    if isinstance(value, dict) and _REF in value:
+        return _blob_value(blobs, value[_REF]["blob"], episode_id)
     return value
+
+
+def _decode2(value: Any, blobs: BlobStore, episode_id: str) -> Any:
+    """Format 2, strictly: a reference only when _REF is the dict's only key; an escaped literal unwrapped."""
+    if isinstance(value, dict) and len(value) == 1:
+        if _REF in value and isinstance(value[_REF], dict) and "blob" in value[_REF]:
+            return _blob_value(blobs, value[_REF]["blob"], episode_id)
+        if _LITERAL in value:
+            return value[_LITERAL]
+    return value
+
+
+def decode_action_row(row: dict, blobs: BlobStore, episode_id: str) -> dict:
+    """One format-2 ``actions.jsonl`` row with its args, kwargs and response resolved (for readers of raw
+    records, such as the offline use analysis; a missing or corrupt blob raises EpisodeRecordError).
+    """
+    row = dict(row)
+    row["args"] = [_decode2(x, blobs, episode_id) for x in row.get("args") or []]
+    row["kwargs"] = {
+        k: _decode2(v, blobs, episode_id) for k, v in (row.get("kwargs") or {}).items()
+    }
+    row["response"] = _decode2(row.get("response"), blobs, episode_id)
+    return row
 
 
 def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
@@ -203,6 +280,8 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
         return repo.show(rev, f"{rel}/{name}").decode()
 
     meta = json.loads(read("meta.json"))
+    fmt = meta.pop("record_format", 1)
+    eid = str(meta.get("episode_id", ""))
 
     def lines(name: str) -> list[Any]:
         return [json.loads(ln) for ln in read(name).splitlines() if ln.strip()]
@@ -216,12 +295,18 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
     except (GitError, ValueError, RecursionError):
         memory_use = None
     actions = []
+    request = json.loads(read("request.json"))
+    if fmt == RECORD_FORMAT:
+        request = [_decode2(x, blobs, eid) for x in request]
     for row in lines("actions.jsonl"):
-        row["response"] = _uncap(row["response"], blobs)
+        if fmt == RECORD_FORMAT:
+            row = decode_action_row(row, blobs, eid)
+        else:
+            row["response"] = _uncap(row["response"], blobs, eid)
         actions.append(Action(**row))
     return Episode(
         **meta,
-        request=json.loads(read("request.json")),
+        request=request,
         transcript=lines("transcript.jsonl"),
         cells=[Cell(**c) for c in lines("cells.jsonl")],
         actions=actions,
