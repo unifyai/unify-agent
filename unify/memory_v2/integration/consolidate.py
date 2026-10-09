@@ -79,6 +79,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from .. import gate_v21
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
 from ..evidence import EvidenceStore
@@ -104,7 +105,6 @@ from ..sol_pass import (
 from ..trigger import EXPERIENCE_BUDGET, USD_PER_TOKEN, PassRequest, Trigger
 from .cost import UNKNOWN, money, recording_turn
 from .paths import Paths
-from ..gate_v21 import V21Config
 from .switch import (
     SOL_BASE_URL,
     SOL_EFFORT_SCALE,
@@ -731,8 +731,8 @@ async def run_due_passes(
         # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
         **surfacing_options(settings).gate_kwargs(),
         qa=QAConfig.from_settings(settings),  # stage-5 test checks; all off by default
-        # spec v2.1 D42 (P3 Amendment B: a config object); None is v2
-        v21=V21Config() if v21_enabled(settings) else None,
+        # memory v2.1 (spec §9.1, P4 Amendment E): the v2.1 layout and checks for WRITE; v2 when the switch is off
+        v21=gate_v21.config_for(stores, lookup) if v21_enabled(settings) else None,
     )
     config = PassConfig(
         model=cfg.model,

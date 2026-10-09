@@ -219,6 +219,8 @@ class ManifestItem:
         default_factory=dict,
     )  # field -> SEMANTIC_TYPES key
     input: str | None = None  # an INPUT_KINDS key; None: not declared
+    # memory v2.1: the typed covers (procedures.Cover: an actor cell, a work-tree diff or an episode procedure)
+    typed_covers: list = field(default_factory=list)
 
     @property
     def channel(self) -> str | None:
@@ -452,10 +454,112 @@ def _input(raw: object, item: str, kind: str) -> str | None:
     return raw
 
 
-def parse_manifest(manifest: object) -> Manifest:
-    """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError."""
+def _parse_v21(manifest: dict) -> Manifest:
+    """The memory v2.1 manifest (spec §4, §8.2): ``function`` items ``memory.<package>.<module>:<name>`` and
+    ``note`` items ``notes/<topic>/<slug>.md``, tests under ``memory/<package>/tests/``, test helpers as
+    ``support``, and covers that are action covers ``[episode, index]`` or typed covers (:mod:`.procedures`).
+    The ``fixtures`` and ``tests_changed`` keys are read by the gate (:mod:`.gate_v21`).
+    """
+    from . import layout
+    from .procedures import parse_cover
+
+    patterns = {"function": layout.FUNCTION_ID, "note": layout.NOTE_ID}
+
+    def item_id(entry: object) -> bool:
+        return isinstance(entry, str) and any(p.match(entry) for p in patterns.values())
+
+    def tests_of(raw: object, what: str) -> list[str]:
+        out = [safe_rel(t) for t in _str_list(raw, what)]
+        for t in out:
+            if layout.classify(t) != "test":
+                raise ManifestError(
+                    f"test {t} is not memory/<package>/tests/test_<name>.py",
+                )
+        return out
+
+    raw_items = manifest.get("items", [])
+    if not isinstance(raw_items, list):
+        raise ManifestError("items must be a list")
+    out = Manifest()
+    seen: set[str] = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict) or not isinstance(raw.get("item"), str):
+            raise ManifestError(f"bad item {raw!r}"[:200])
+        item = raw["item"]
+        if item in seen:
+            raise ManifestError(f"{item} is listed twice")
+        seen.add(item)
+        kind = raw.get("kind")
+        if kind not in patterns:
+            raise ManifestError(f"{item}: unknown or unsupported kind {kind!r}"[:200])
+        if not patterns[kind].match(item):
+            raise ManifestError(f"{item!r}: not a {kind} id"[:200])
+        tests = tests_of(raw.get("tests"), f"{item}: tests")
+        raw_covers = raw.get("covers")
+        if raw_covers is not None and not isinstance(raw_covers, list):
+            raise ManifestError(f"{item}: covers must be a list")
+        covers: list[tuple[str, int]] = []
+        typed: list = []
+        for raw_cover in raw_covers or []:
+            try:
+                c = parse_cover(raw_cover)
+            except ValueError as exc:
+                raise ManifestError(f"{item}: {exc}"[:300]) from exc
+            (covers if isinstance(c, tuple) else typed).append(c)
+        if (covers or typed) and kind != "function":
+            raise ManifestError(f"{item}: only functions cover recorded work")
+        form = raw.get("input")
+        if form is not None and (
+            kind != "function" or not isinstance(form, str) or form not in INPUT_KINDS
+        ):
+            raise ManifestError(
+                f"{item}: a function's input is one of {', '.join(INPUT_KINDS)}"[:300],
+            )
+        if raw.get("field_types") is not None:
+            raise ManifestError(f"{item}: field_types is a v2 field")
+        out.items.append(
+            ManifestItem(
+                item,
+                kind,
+                layout.item_path(item),
+                _str_list(raw.get("source_episodes"), f"{item}: source_episodes"),
+                tests,
+                covers,
+                {},
+                form,
+                typed,
+            ),
+        )
+    out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]
+    for p in out.support:
+        if layout.classify(p) != "test_helper":
+            raise ManifestError(
+                f"support file {p} is not a test helper under memory/<package>/tests/",
+            )
+    out.deleted = _str_list(manifest.get("deleted"), "deleted")
+    out.unlisted = _str_list(manifest.get("unlisted"), "unlisted")
+    for entry in out.deleted + out.unlisted:
+        if not item_id(entry):
+            raise ManifestError(f"{entry!r} is not an item id"[:200])
+        if entry in seen:
+            raise ManifestError(f"{entry} is both in items and deleted or unlisted")
+    if set(out.deleted) & set(out.unlisted):
+        raise ManifestError("an item cannot be both deleted and unlisted")
+    out.deleted_tests = tests_of(manifest.get("deleted_tests"), "deleted_tests")
+    if _str_list(manifest.get("skeleton"), "skeleton"):
+        raise ManifestError("the v2.1 library has no skeleton")
+    return out
+
+
+def parse_manifest(manifest: object, *, v21: bool = False) -> Manifest:
+    """Validate the manifest's shape, its ids and its paths against the layout; raise ManifestError.
+
+    *v21*: the memory v2.1 layout (:func:`_parse_v21`); off, v2's, unchanged.
+    """
     if not isinstance(manifest, dict):
         raise ManifestError("the manifest must be an object")
+    if v21:
+        return _parse_v21(manifest)
     raw_items = manifest.get("items", [])
     if not isinstance(raw_items, list):
         raise ManifestError("items must be a list")

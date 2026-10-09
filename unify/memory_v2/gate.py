@@ -327,6 +327,9 @@ class GateResult:
     # an item refused only because the whole pass was).
     items_merged: list[str] = field(default_factory=list)
     items_refused: dict[str, list[str]] = field(default_factory=dict)
+    # memory v2.1 (gate_v21): the item verification records (spec §4.4) and whether CURATE is due (G4)
+    verification: dict[str, dict] = field(default_factory=dict)
+    curate_due: bool = False
     # Memory v2.1 (spec §9.2): each failing run's whole output (sandbox_run.PytestOutcome.full_output: bounded
     # only by the sandbox's marked capture), key-shaped strings redacted, by run label. Never stored in the pass
     # row, whose reasons keep v2's 300-character tail.
@@ -360,6 +363,14 @@ def _green(o: PytestOutcome) -> bool:
         and not o.failed
         and bool(o.passed)
     )
+
+
+def _shown(o: PytestOutcome) -> str:
+    """The output a reason quotes: v2's last 300 characters, or under v2.1 the head and the whole output's blob."""
+    blob = getattr(o, "output_blob", None)
+    if blob is None:
+        return o.output[-300:]
+    return o.output[:300] + f" [full output: blob {blob}]"
 
 
 def _describe(o: PytestOutcome) -> str:
@@ -430,7 +441,7 @@ def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> 
 def _test_file(test_id: str, tests_dir: str) -> str:
     """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*)."""
     path = test_id.split("::", 1)[0]
-    return path if path.startswith("env/") else f"{tests_dir}/{path}"
+    return path if path.startswith(("env/", "memory/")) else f"{tests_dir}/{path}"
 
 
 def _unfit_forms(
@@ -696,6 +707,9 @@ class _Run:
     episode_inputs: dict[str, list[tuple[str, int, Action]]] = field(
         default_factory=dict,
     )
+    # memory v2.1: per item, what the checks measured (gate_v21, qa); whether the index is over its view (G4)
+    verification: dict[str, dict] = field(default_factory=dict)
+    curate_due: bool = False
     # run label -> the whole recorded output of a failing run (GateResult.outputs; memory v2.1)
     outputs: dict[str, str] = field(default_factory=dict)
     # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same
@@ -738,7 +752,12 @@ class _Run:
 
         Never part of a reason: the reasons, and so the pass row, keep v2's 300-character tail.
         """
-        self.outputs[label] = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
+        text = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
+        blob = getattr(o, "output_blob", None)
+        # memory v2.1 (spec P5): the whole output, past the capture bound, is a blob
+        self.outputs[label] = (
+            text if blob is None else f"{text}\n[whole output: blob {blob}]"
+        )
 
     def stop(self, failures: list[tuple[str, str]]) -> None:
         for check, reason in failures:
@@ -776,7 +795,8 @@ class Gate:
         (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches.
         *v21* (``UNIFY_MEMORY_V21``, :class:`.gate_v21.V21Config`; None is v2): with ``layout``, covers have
         no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph
-        (D42).
+        (D42). With ``checks``, the v2.1 gate checks (:mod:`.gate_v21`) and stage 5
+        in v2.1 mode.
         """
         if surfacing not in ("index", "catalogue"):
             raise ValueError(
@@ -797,6 +817,14 @@ class Gate:
         # stage-5 test checks (memory v2.1); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
         self.v21 = v21
+        if v21 is not None and v21.checks:
+            if not v21.layout:
+                raise ValueError(
+                    "the v2.1 gate checks need the v2.1 library layout (V21Config.layout)",
+                )
+            from .qa import v21_config
+
+            self.qa = v21_config(self.qa)
 
     @property
     def _layout21(self) -> bool:
@@ -857,7 +885,7 @@ class Gate:
         run = _Run(res, Manifest(), manifest, "", "", tmp)
         try:
             try:
-                run.man = parse_manifest(manifest)
+                run.man = self._parse_manifest(manifest)
             except ManifestError as exc:
                 run.fail("G1", f"malformed manifest: {exc}")
                 return list(res.reasons)
@@ -920,6 +948,9 @@ class Gate:
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
+            v = self._v21(run)
+            if v is not None:
+                v.static()
             qa = QAChecks(self, run)
             if self.qa.on or qa.uses_kit():
                 qa.kit()  # library code never uses the test kit (static)
@@ -1037,25 +1068,61 @@ class Gate:
         res.reasons.extend(notes)  # after every failure reason, including the merge's
         if res.passed:
             res.merged = landed
-            res.items_merged = [it.item for it in parse_manifest(landed_manifest).items]
-            for it in parse_manifest(landed_manifest).items:
+            landed_items = self._parse_manifest(landed_manifest).items
+            res.items_merged = [it.item for it in landed_items]
+            for it in landed_items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
+            if self._v21_checks():
+                # Amendment C: typed covers persist beside covers, for the behaviour check and deletion (G5)
+                from .procedures import cover_raw
+
+                for it in landed_items:
+                    for c in it.typed_covers:
+                        self.ev.add_typed_cover(
+                            it.item,
+                            c.episode,
+                            json.dumps(cover_raw(c), sort_keys=True),
+                        )
             if self.surfacing == "catalogue":
                 self.ev.write_commit_shapes(landed, shapes)
         else:
             try:
-                ids = [it.item for it in parse_manifest(manifest).items]
+                ids = [it.item for it in self._parse_manifest(manifest).items]
             except ManifestError:
                 ids = []
             res.items_merged = []
             res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
+        if self._v21_checks() and res.verification:
+            # the item verification records (spec §4.4), for P5's item records; measured, never a refusal
+            self.ev.add_pass_notes(
+                pass_id,
+                [
+                    "v21-verification "
+                    + json.dumps(res.verification, sort_keys=True, default=str),
+                ],
+            )
         return res
 
     # -- helpers ------------------------------------------------------------------------------------------
+    def _v21_checks(self) -> bool:
+        return self.v21 is not None and self.v21.checks
+
+    def _parse_manifest(self, manifest: object) -> Manifest:
+        """The manifest under the gate's layout: v2.1's (:func:`.manifest.parse_manifest` ``v21``) or v2's."""
+        return parse_manifest(manifest, v21=self.v21 is not None and self.v21.layout)
+
+    def _v21(self, run: _Run):
+        """The memory v2.1 checks of *run* (:mod:`.gate_v21`), or None with them off."""
+        if not self._v21_checks():
+            return None
+        from .gate_v21 import V21Checks
+
+        return V21Checks(self, run)
+
     def _resolve(self, rev: str) -> str | None:
         if not isinstance(rev, str) or not rev or rev.startswith("-") or "\n" in rev:
             return None
@@ -1077,28 +1144,45 @@ class Gate:
         extra_env: dict[str, str] | None = None,
         qa_env: QAEnv | None = None,
     ) -> PytestOutcome:
-        if qa_env is not None:
-            # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced blobs
-            # at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
-            return self.pytest(
-                target,
-                python=self.python,
-                ro={tree: "/memory", qa_env.inputs: "/inputs"},
-                rw={},
-                cwd="/memory",
-                timeout_s=_TIMEOUT_S,
-                env={**qa_env.env, **(extra_env or {})},
-                import_skips_fail=True,
-            )
-        return self.pytest(
-            target,
-            python=self.python,
-            ro={tree: "/memory"},
-            rw={},
-            cwd="/memory",
-            timeout_s=_TIMEOUT_S,
-            env={**_PYTEST_ENV, **(extra_env or {})},
+        # memory v2.1 (spec P5): the whole output is spooled and kept as a blob; v2 passes nothing new
+        spool = (
+            Path(tempfile.mkdtemp(prefix="memv21-out-")) if self._v21_checks() else None
         )
+        more = {"spool_dir": spool} if spool is not None else {}
+        try:
+            if qa_env is not None:
+                # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced
+                # blobs at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
+                o = self.pytest(
+                    target,
+                    python=self.python,
+                    ro={tree: "/memory", qa_env.inputs: "/inputs"},
+                    rw={},
+                    cwd="/memory",
+                    timeout_s=_TIMEOUT_S,
+                    env={**qa_env.env, **(extra_env or {})},
+                    import_skips_fail=True,
+                    **more,
+                )
+            else:
+                o = self.pytest(
+                    target,
+                    python=self.python,
+                    ro={tree: "/memory"},
+                    rw={},
+                    cwd="/memory",
+                    timeout_s=_TIMEOUT_S,
+                    env={**_PYTEST_ENV, **(extra_env or {})},
+                    **more,
+                )
+            if spool is not None:
+                from .gate_v21 import keep_output
+
+                keep_output(o, spool, self.blobs)
+            return o
+        finally:
+            if spool is not None:
+                shutil.rmtree(spool, ignore_errors=True)
 
     def _record(
         self,
@@ -1162,8 +1246,13 @@ class Gate:
         reduced = None
         try:
             if self._prepare(run):
+                v = self._v21(run)
                 self._g1(run)
+                if v is not None:
+                    v.g1()
                 self._g2(run)
+                if v is not None:
+                    v.g2()
                 # stage 5: the test kit when a switch is on or the library's tests use it (else nothing)
                 qa = QAChecks(self, run)
                 if qa.prepare():
@@ -1171,8 +1260,14 @@ class Gate:
                     if self.qa.on:
                         qa.static(self.lookup)
                 self._g3(run)
-                self._g4(run)
+                if v is not None:
+                    v.g3()
+                    v.g4()
+                else:
+                    self._g4(run)
                 self._g5(run)
+                if v is not None:
+                    v.g5()
                 self._g6(run)
                 if self.qa.on:
                     # last: only a candidate the rest of the gate accepts, or, under per-item admission,
@@ -1188,6 +1283,8 @@ class Gate:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
+        res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
+        res.curate_due = run.curate_due
         res.outputs = dict(run.outputs)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
@@ -1273,7 +1370,7 @@ class Gate:
     def _prepare(self, run: _Run) -> bool:
         """Parse, resolve and extract; refuse what must never be extracted or run. False stops the check."""
         try:
-            run.man = parse_manifest(run.manifest_raw)
+            run.man = self._parse_manifest(run.manifest_raw)
         except ManifestError as exc:
             run.res.manifest_invalid = True
             run.stop([("G1", f"malformed manifest: {exc}")])
@@ -1350,6 +1447,10 @@ class Gate:
         declared |= {
             ch + f for ch in man.skeleton for f in ("/__init__.py", "/NOTES.md")
         }
+        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+        if self._v21_checks() and isinstance(raw.get("fixtures"), dict):
+            # the fixtures the harness recorded: the only files under tests/data/ a pass may add (gate_v21)
+            declared |= {p for p in raw["fixtures"] if isinstance(p, str)}
         for it in man.items:
             declared.add(it.path)
             declared.update(it.tests)
@@ -1614,7 +1715,7 @@ class Gate:
         )
         for n, it in enumerate(run.man.items):
             if it.kind == "env_function":
-                if not it.covers:
+                if not it.covers and not getattr(it, "typed_covers", None):
                     run.fail("G2", f"{it.item} covers no recorded action", it.item)
                 valid: list[tuple[str, int, Action]] = []
                 for eid, idx in it.covers:
@@ -1822,7 +1923,7 @@ class Gate:
         edited = {
             it.item
             for it in man.items
-            if it.kind == "env_function"
+            if it.kind in ("env_function", "function")
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
@@ -1866,7 +1967,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"{t} is not green on the candidate ({_describe(on_cand)}) "
-                        f"{on_cand.output[-300:]}",
+                        f"{_shown(on_cand)}",
                         _owners(man, t),
                     )
         # a function declared with a test that is red on the parent may change behaviour (each edited
@@ -2120,14 +2221,14 @@ class Gate:
                 run.fail(
                     "G3",
                     f"the examples of {item} could not be run ({_describe(outcome)}) "
-                    f"{outcome.output[-300:]}",
+                    f"{_shown(outcome)}",
                 )
             elif ran(outcome.failed, n) or not ran(outcome.passed, n):
                 run.output("docstring examples (candidate)", outcome)
                 run.fail(
                     "G3",
                     f"an example in the docstring of {item} fails as a doctest "
-                    f"{outcome.output[-300:]}",
+                    f"{_shown(outcome)}",
                     item,
                 )
 
@@ -2264,16 +2365,38 @@ class Gate:
 
         Returns the parent test files with a protected test (a file whose protected tests are lost fails
         here, so on a passing gate each still passes in both runs).
+
+        Memory v2.1 (``checks``; spec §9.1 "no unexplained test loss"): each package's suite
+        ``memory/<package>/tests`` is compared the same way, its protected files are returned as paths from the
+        tree's root, and a deleted test file is retired only with a reason in the manifest's ``tests_changed``
+        (else its lost tests refuse here). A test of an alias is collected through the alias: listed under the
+        alias's target (P6), its failures belong to that item.
         """
         protected: set[str] = set()
         if not run.changed:
             return protected
+        v21 = self._v21_checks()
         retired = set(run.man.deleted_tests)
+        if v21:
+            raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+            stated = (
+                raw.get("tests_changed")
+                if isinstance(raw.get("tests_changed"), dict)
+                else {}
+            )
+            retired = {
+                t
+                for t in retired
+                if isinstance(stated.get(t), str) and stated[t].strip()
+            }
         regression = self._regression_tree(run)
         touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
 
-        def kept(ids: set[str]) -> set[str]:
-            return {t for t in ids if t.split("::", 1)[0] not in retired}
+        def file_of(t: str, rel: str) -> str:
+            return _test_file(t, rel) if v21 else t.split("::", 1)[0]
+
+        def kept(ids: set[str], rel: str) -> set[str]:
+            return {t for t in ids if file_of(t, rel) not in retired}
 
         channels = sorted(
             {
@@ -2282,8 +2405,27 @@ class Gate:
                 if p.startswith("env/") and p.split("/")[2:3] == ["tests"]
             },
         )
-        for ch in channels:
-            rel = f"env/{ch}/tests"
+        suites = [(f"env/{ch}/tests", ch in touched, f"env/{ch}") for ch in channels]
+        if v21:
+            from .layout import classify
+
+            pkgs = sorted(
+                {
+                    p.split("/")[1]
+                    for p in set(run.p_files) | set(run.c_files)
+                    if classify(p) in ("test", "test_helper", "fixture")
+                },
+            )
+            changed_pkgs = {
+                p.split("/")[1]
+                for p in run.changed
+                if p.startswith("memory/") and p.count("/") >= 2
+            }
+            suites += [
+                (f"memory/{pkg}/tests", pkg in changed_pkgs, f"memory/{pkg}")
+                for pkg in pkgs
+            ]
+        for rel, is_touched, area in suites:
             before: set[str] = set()  # protected: passed on the parent
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read
@@ -2296,8 +2438,8 @@ class Gate:
                         "and its regression run is skipped",
                     )
                 else:
-                    before, known_red = kept(base.passed), kept(base.failed)
-                    protected |= {t.split("::", 1)[0] for t in before}
+                    before, known_red = kept(base.passed, rel), kept(base.failed, rel)
+                    protected |= {file_of(t, rel) for t in before}
             after: set[str] = set()
             if (run.c_tree / rel).is_dir():
                 suite = self._pytest(run.c_tree, rel, qa_env=run.qa_env)
@@ -2305,12 +2447,12 @@ class Gate:
                 new_red = sorted(suite.failed - known_red)
                 if (
                     broken is not None
-                    and ch not in touched
+                    and not is_touched
                     and not (readable and not suite.failed)
                 ):
                     run.note(
                         f"pre-existing: suite {rel} is still not green ({_describe(suite)}); "
-                        f"this pass does not touch env/{ch}",
+                        f"this pass does not touch {area}",
                     )
                 elif not readable or new_red:
                     run.output(f"suite {rel} (candidate)", suite)
@@ -2325,7 +2467,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"suite {rel} has new failures or is unreadable on the candidate "
-                        f"({_describe(suite)}; new {new_red[:5]}{repair}) {suite.output[-300:]}",
+                        f"({_describe(suite)}; new {new_red[:5]}{repair}) {_shown(suite)}",
                         (
                             sorted({o for found in owners for o in found})
                             if readable and all(owners)
@@ -2350,7 +2492,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"the regression run of {rel} is unreadable ({_describe(reg)}) "
-                        f"{reg.output[-300:]}",
+                        f"{_shown(reg)}",
                     )
                 lost = sorted(before - reg.passed)
                 if lost:

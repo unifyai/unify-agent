@@ -47,6 +47,12 @@ _ROUNDS_SCHEMA = (
     "round_blobs TEXT, gate_blob TEXT)"
 )
 
+# memory v2.1 (P4 Amendment C): the typed covers of landed items, created lazily on the first v2.1 merge
+_TYPED_COVERS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS typed_covers(item TEXT, episode_id TEXT, cover_json TEXT, "
+    "PRIMARY KEY(item, episode_id, cover_json))"
+)
+
 
 def _json_as(raw: object, default: list | dict) -> list | dict:
     """*raw* parsed as JSON of *default*'s type; *default* for NULL, unparsable or another type."""
@@ -745,6 +751,26 @@ class EvidenceStore:
             ).fetchone()
             is not None
         )
+
+    def add_typed_cover(self, item: str, eid: str, cover_json: str) -> None:
+        """Record a typed cover of a landed v2.1 item (:func:`.procedures.cover_raw`, as canonical JSON)."""
+        with self.db:
+            self.db.execute(_TYPED_COVERS_SCHEMA)
+            self.db.execute(
+                "INSERT OR IGNORE INTO typed_covers VALUES(?,?,?)",
+                (item, eid, cover_json),
+            )
+
+    def typed_covers(self) -> list[tuple[str, str, str]]:
+        """Every recorded typed cover as ``(item, episode_id, cover_json)``, sorted; [] before any v2.1 merge."""
+        if not self._has_table("typed_covers"):
+            return []
+        return [
+            (r[0], r[1], r[2])
+            for r in self.db.execute(
+                "SELECT item, episode_id, cover_json FROM typed_covers ORDER BY item, episode_id, cover_json",
+            )
+        ]
 
     def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
         """Append *notes* to a recorded pass's reasons (after the gate's); KeyError if it is not recorded."""

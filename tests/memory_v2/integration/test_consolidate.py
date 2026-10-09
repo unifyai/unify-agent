@@ -1154,3 +1154,34 @@ def test_v21_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
     assert out.coverage is None
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
     assert not {"coverage", "reads", "exported_bytes"} & set(end)
+
+
+@pytest.mark.parametrize("on", [False, True])
+def test_v21_gates_write_passes_with_the_v21_checks(tmp_path, monkeypatch, on):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    made = []
+
+    class Recording(consolidate.Gate):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(consolidate, "Gate", Recording)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=_v21_settings("on" if on else "off"),
+            emit=None,
+        ),
+    )
+    (g,) = made
+    if on:
+        assert g.v21 is not None and g.v21.checks and g.v21.role == "write" and g.qa.v21
+    else:
+        assert g.v21 is None and not g.qa.v21

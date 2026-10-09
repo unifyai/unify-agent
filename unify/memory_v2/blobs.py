@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 from pathlib import Path
 
 BLOB_ID = re.compile(r"^[0-9a-f]{64}\Z")
@@ -25,6 +26,21 @@ class BlobStore:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_bytes(data)
+            os.replace(tmp, p)
+        return sha
+
+    def put_file(self, path: Path) -> str:
+        """Store a file's bytes without reading it whole into memory; the same id :meth:`put` gives."""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        sha = h.hexdigest()
+        p = self._path(sha)
+        if not p.exists():
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_suffix(".tmp")
+            shutil.copyfile(path, tmp)
             os.replace(tmp, p)
         return sha
 

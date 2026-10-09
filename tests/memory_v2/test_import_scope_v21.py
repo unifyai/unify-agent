@@ -287,5 +287,8 @@ def test_the_switch_reaches_the_gate(tmp_path, monkeypatch):
         )
         assert (
             made[-1] is not None
-        ) is seen  # Amendment B: V21Config() when on, None (v2) when off
-        assert made[-1] is None or made[-1] == V21Config()
+        ) is seen  # Amendment B: a V21Config when on, None (v2) when off
+        # P4: consolidate builds it with gate_v21.config_for, the layout and the checks on
+        assert made[-1] is None or (
+            isinstance(made[-1], V21Config) and made[-1].layout and made[-1].checks
+        )
