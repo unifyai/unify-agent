@@ -32,6 +32,7 @@ import ast
 import asyncio
 import contextvars
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -418,7 +419,120 @@ _V21_TOOL_TEMPLATES = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fixture",
+            "description": (
+                "Copy recorded bytes of a batch episode into a test fixture under memory/<package>/tests/data/. "
+                "action is an action index (its recorded response, or a work-tree action's file), 'args:<i>' (the "
+                "arguments that action was called with) or 'request:<j>' (a user message: the request, then the "
+                "observations). slice [start, end] keeps those bytes only. append=true adds one line "
+                '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
+                "tests/data/<module>.<function>.inputs.jsonl. The gate accepts only fixtures made this way, "
+                "unchanged."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "episode": {"type": "string"},
+                    "action": {"type": ["integer", "string"]},
+                    "dest": {"type": "string"},
+                    "slice": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "append": {"type": "boolean"},
+                },
+                "required": ["episode", "action", "dest"],
+            },
+        },
+    },
 ]
+
+
+def _fixture_call(
+    args: dict,
+    eps: dict,
+    box: Path,
+    blob: Callable[[str], bytes],
+    made: dict,
+) -> str:
+    """The ``fixture`` tool (spec v2.1 §7.4): recorded bytes into ``tests/data/``, provenance kept by the harness.
+
+    Refuses an episode outside the batch, a destination the fixture rules refuse (:func:`.fixtures.make`), a link on
+    the way to it, and appending to a file that did not come through this tool. Its output earns no coverage.
+    """
+    from .fixtures import FixtureError, make
+
+    eid = str(args.get("episode", ""))
+    if eid not in eps:
+        return f"refused: {eid[:80]!r} is not in this batch"
+    dest = str(args.get("dest", ""))
+    append = bool(args.get("append", False))
+    try:
+        data, entry = make(
+            eps[eid],
+            args.get("action"),
+            dest,
+            blob=blob,
+            cut=args.get("slice"),
+            append=append,
+            existing=made.get(dest),
+        )
+    except FixtureError as exc:
+        return f"refused: {exc}"[:300]
+    cur = Path(box)
+    for part in Path(dest).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            return "refused: a directory on the way to dest is a link"
+    target = Path(box) / dest
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        return "refused: dest is a link"
+    if append and dest not in made and target.exists():
+        return "refused: dest exists and did not come through fixture()"
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_NOFOLLOW
+        | (os.O_APPEND if append else os.O_TRUNC)
+    )
+    with os.fdopen(os.open(target, flags, 0o644), "wb") as f:
+        f.write(data)
+    made[dest] = entry
+    verb = "appended a line to" if append else "wrote"
+    return f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
+
+
+def _with_fixtures(manifest: object, made: dict) -> object:
+    """The harness's fixture provenance replaces whatever the manifest says under ``fixtures`` (spec v2.1 §7.4)."""
+    if not isinstance(manifest, dict):
+        return manifest
+    return {**manifest, "fixtures": {k: made[k] for k in sorted(made)}}
+
+
+def _tests_changed(manifest: object) -> list[str]:
+    """``Tests-Changed:`` trailers from the manifest's stated reasons (spec v2.1 §9.1, no unexplained test loss)."""
+    stated = manifest.get("tests_changed") if isinstance(manifest, dict) else None
+    if not isinstance(stated, dict):
+        return []
+    return [
+        f"{k}: {v.strip()}"[:300].replace("\n", " ")
+        for k, v in sorted(stated.items())
+        if isinstance(k, str) and isinstance(v, str) and v.strip()
+    ]
+
+
+def _trailers(pass_id: str, sources: object, manifest: object, v21: bool) -> dict:
+    """A candidate commit's trailers: v2's, plus ``Tests-Changed:`` under v2.1 when the manifest states reasons."""
+    out: dict = {"Pass": pass_id, "Episode": sources, "Evidence": sources}
+    if v21 and _tests_changed(manifest):
+        out["Tests-Changed"] = _tests_changed(manifest)
+    return out
 
 
 def sol_tools(
@@ -1384,6 +1498,8 @@ class SolPass:
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
         self.messages: list[dict] = []
+        # v2.1: fixture provenance the fixture tool recorded this pass (spec §7.4); the manifest's own is ignored
+        self.fixtures_made: dict[str, dict] = {}
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
 
@@ -1629,6 +1745,8 @@ class SolPass:
         manifest, problem = _check_manifest(raw)
         if problem is not None:
             return problem, None
+        if _v21_on(self):
+            manifest = _with_fixtures(manifest, self.fixtures_made)
         try:
             with tempfile.TemporaryDirectory(prefix="memv2-check-") as tmp:
                 tree = Path(tmp) / "tree"
@@ -1791,7 +1909,7 @@ class SolPass:
                     "\0",
                     "",
                 ),
-                {"Pass": pass_id, "Episode": sources, "Evidence": sources},
+                _trailers(pass_id, sources, manifest, True),
             )
 
     def _close_rounds(
@@ -1830,6 +1948,7 @@ class SolPass:
 
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
+        self.fixtures_made = {}
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
             return PassOutcome(
@@ -2046,6 +2165,7 @@ class SolPass:
                 manifest, problem = _check_manifest(raw)
                 if problem is not None:
                     return problem
+                manifest = _with_fixtures(manifest, self.fixtures_made)
                 try:
                     candidate, res = commit_and_check(manifest)
                 except (
@@ -2106,6 +2226,7 @@ class SolPass:
                     return False
                 started = time.monotonic()
                 found, manifest, problem = _read_manifest(box)
+                manifest = _with_fixtures(manifest, self.fixtures_made)
                 candidate = None
                 if not found or problem is not None:
                     res = GateResult(False, {}, [problem or "no manifest"], [])
@@ -2281,6 +2402,15 @@ class SolPass:
                                 notes.append(detail)
                             elif self.cfg.v21 and content == "ok":
                                 content = check_tests(args.get("manifest"))
+                    elif cov is not None and name == "fixture":
+                        calls += 1  # a writer action, against max_calls; it earns no coverage
+                        content = _fixture_call(
+                            args,
+                            eps,
+                            box,
+                            self.gate._blob,
+                            self.fixtures_made,
+                        )
                     elif cov is not None and name in (
                         "read",
                         "grep",
@@ -2298,7 +2428,7 @@ class SolPass:
                     elif name != "execute_code":
                         content = (
                             f"unknown tool {name!r}; use execute_code, check, finish, read, grep, "
-                            "read_episode or dismiss"
+                            "read_episode, dismiss or fixture"
                             if cov is not None
                             else f"unknown tool {name!r}; use execute_code, check or finish"
                         )[:300]
@@ -2392,6 +2522,8 @@ class SolPass:
             if problem is not None:
                 notes.append(problem)
                 cause(CODE_MANIFEST_INVALID)
+            if self.cfg.v21:
+                manifest = _with_fixtures(manifest, self.fixtures_made)
             _remove(box / ".pass")
             _clear_checkout(wt)
             left_out = _mirror(box, wt, skip_top=frozenset({".pass"}))
@@ -2405,7 +2537,7 @@ class SolPass:
                 candidate = self.mem.commit_all(
                     wt,
                     f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
-                    {"Pass": pass_id, "Episode": sources, "Evidence": sources},
+                    _trailers(pass_id, sources, manifest, bool(self.cfg.v21)),
                 )
         # a manifest that could not be read (not a regular file, not JSON) reaches the gate as None: G1 refuses it
         res = self.gate.merge(

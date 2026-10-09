@@ -60,6 +60,7 @@ def test_tools_present_only_with_v21():
         "grep",
         "read_episode",
         "dismiss",
+        "fixture",
     }
     desc = next(
         t for t in sol_tools(v21=True) if t["function"]["name"] == "read_episode"
