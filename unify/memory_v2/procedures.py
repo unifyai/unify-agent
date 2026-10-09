@@ -176,6 +176,22 @@ def parse_cover(raw: object) -> tuple[str, int] | Cover:
     )
 
 
+def cover_raw(c: Cover) -> dict:
+    """*c* in the manifest's form, which :func:`parse_cover` reads back to an equal cover."""
+    if c.type == "cell":
+        return {"episode": c.episode, "type": "cell", "cell": c.index}
+    if c.type == "diff":
+        return {"episode": c.episode, "type": "diff"}
+    raw: dict = {"episode": c.episode, "type": "episode", "runner": c.runner}
+    if c.action is not None:
+        raw["action"] = c.action
+    if c.params:
+        raw["params"] = dict(c.params)
+    if c.paths:
+        raw["paths"] = list(c.paths)
+    return raw
+
+
 def _scalars(v: Any) -> Iterable[Any]:
     if isinstance(v, dict):
         for x in v.values():

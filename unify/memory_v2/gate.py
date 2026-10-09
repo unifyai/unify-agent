@@ -193,7 +193,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import docstrings
 from .admission import cover_problem, is_rejection
@@ -769,13 +769,16 @@ class Gate:
         surfacing: str = "index",
         soft_budget: bool = False,
         qa: QAConfig | None = None,
+        v21: Any = None,
     ) -> None:
         """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
         changed environment functions; *surfacing* ``"catalogue"`` records and freezes input shapes per
         commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
         never a refusal) instead of the index's hard cap. *qa* is the stage-5 test checks' configuration
-        (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches.
+        (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches. *v21* (a
+        :class:`.gate_v21.V21Config`) turns on memory v2.1: its ``layout`` (P3) and its ``checks``
+        (:mod:`.gate_v21`, stage 5 in v2.1 mode); None is v2.
         """
         if surfacing not in ("index", "catalogue"):
             raise ValueError(
@@ -795,6 +798,15 @@ class Gate:
         self.pytest = pytest_runner
         # stage-5 test checks (memory v2.1); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
+        self.v21 = v21
+        if v21 is not None and v21.checks:
+            if not v21.layout:
+                raise ValueError(
+                    "the v2.1 gate checks need the v2.1 library layout (V21Config.layout)",
+                )
+            from .qa import v21_config
+
+            self.qa = v21_config(self.qa)
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(
@@ -849,7 +861,7 @@ class Gate:
         run = _Run(res, Manifest(), manifest, "", "", tmp)
         try:
             try:
-                run.man = parse_manifest(manifest)
+                run.man = self._parse_manifest(manifest)
             except ManifestError as exc:
                 run.fail("G1", f"malformed manifest: {exc}")
                 return list(res.reasons)
@@ -912,6 +924,9 @@ class Gate:
                 self._g5(run)  # needs G2's validated covers
             self._g4(run)
             self._g6(run)
+            v = self._v21(run)
+            if v is not None:
+                v.static()
             qa = QAChecks(self, run)
             if self.qa.on or qa.uses_kit():
                 qa.kit()  # library code never uses the test kit (static)
@@ -1029,25 +1044,61 @@ class Gate:
         res.reasons.extend(notes)  # after every failure reason, including the merge's
         if res.passed:
             res.merged = landed
-            res.items_merged = [it.item for it in parse_manifest(landed_manifest).items]
-            for it in parse_manifest(landed_manifest).items:
+            landed_items = self._parse_manifest(landed_manifest).items
+            res.items_merged = [it.item for it in landed_items]
+            for it in landed_items:
                 for eid in it.source_episodes:
                     self.ev.add_item_evidence(it.item, eid, "source")
             for item, eid, idx in sorted(covers):
                 self.ev.add_cover(item, eid, idx)
+            if self._v21_checks():
+                # Amendment C: typed covers persist beside covers, for the behaviour check and deletion (G5)
+                from .procedures import cover_raw
+
+                for it in landed_items:
+                    for c in it.typed_covers:
+                        self.ev.add_typed_cover(
+                            it.item,
+                            c.episode,
+                            json.dumps(cover_raw(c), sort_keys=True),
+                        )
             if self.surfacing == "catalogue":
                 self.ev.write_commit_shapes(landed, shapes)
         else:
             try:
-                ids = [it.item for it in parse_manifest(manifest).items]
+                ids = [it.item for it in self._parse_manifest(manifest).items]
             except ManifestError:
                 ids = []
             res.items_merged = []
             res.items_refused = {i: res.items_refused.get(i) or ["pass"] for i in ids}
         self._record(p_sha, c_sha, pass_id, kind, channel, usd, res)
+        if self._v21_checks() and res.verification:
+            # the item verification records (spec §4.4), for P5's item records; measured, never a refusal
+            self.ev.add_pass_notes(
+                pass_id,
+                [
+                    "v21-verification "
+                    + json.dumps(res.verification, sort_keys=True, default=str),
+                ],
+            )
         return res
 
     # -- helpers ------------------------------------------------------------------------------------------
+    def _v21_checks(self) -> bool:
+        return self.v21 is not None and self.v21.checks
+
+    def _parse_manifest(self, manifest: object) -> Manifest:
+        """The manifest under the gate's layout: v2.1's (:func:`.manifest.parse_manifest` ``v21``) or v2's."""
+        return parse_manifest(manifest, v21=self.v21 is not None and self.v21.layout)
+
+    def _v21(self, run: _Run):
+        """The memory v2.1 checks of *run* (:mod:`.gate_v21`), or None with them off."""
+        if not self._v21_checks():
+            return None
+        from .gate_v21 import V21Checks
+
+        return V21Checks(self, run)
+
     def _resolve(self, rev: str) -> str | None:
         if not isinstance(rev, str) or not rev or rev.startswith("-") or "\n" in rev:
             return None
@@ -1154,8 +1205,13 @@ class Gate:
         reduced = None
         try:
             if self._prepare(run):
+                v = self._v21(run)
                 self._g1(run)
+                if v is not None:
+                    v.g1()
                 self._g2(run)
+                if v is not None:
+                    v.g2()
                 # stage 5: the test kit when a switch is on or the library's tests use it (else nothing)
                 qa = QAChecks(self, run)
                 if qa.prepare():
@@ -1163,8 +1219,14 @@ class Gate:
                     if self.qa.on:
                         qa.static(self.lookup)
                 self._g3(run)
-                self._g4(run)
+                if v is not None:
+                    v.g3()
+                    v.g4()
+                else:
+                    self._g4(run)
                 self._g5(run)
+                if v is not None:
+                    v.g5()
                 self._g6(run)
                 if self.qa.on:
                     # last: only a candidate the rest of the gate accepts, or, under per-item admission,
@@ -1180,6 +1242,8 @@ class Gate:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         res.items_refused = {i: list(c) for i, c in run.item_fail.items()}
+        res.verification = {i: dict(r) for i, r in sorted(run.verification.items())}
+        res.curate_due = run.curate_due
         res.outputs = dict(run.outputs)
         passed = res.passed
         return res, (run.covers if passed else set()), run.notes, snapshot, reduced
@@ -1264,7 +1328,7 @@ class Gate:
     def _prepare(self, run: _Run) -> bool:
         """Parse, resolve and extract; refuse what must never be extracted or run. False stops the check."""
         try:
-            run.man = parse_manifest(run.manifest_raw)
+            run.man = self._parse_manifest(run.manifest_raw)
         except ManifestError as exc:
             run.res.manifest_invalid = True
             run.stop([("G1", f"malformed manifest: {exc}")])
@@ -1341,6 +1405,10 @@ class Gate:
         declared |= {
             ch + f for ch in man.skeleton for f in ("/__init__.py", "/NOTES.md")
         }
+        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+        if self._v21_checks() and isinstance(raw.get("fixtures"), dict):
+            # the fixtures the harness recorded: the only files under tests/data/ a pass may add (gate_v21)
+            declared |= {p for p in raw["fixtures"] if isinstance(p, str)}
         for it in man.items:
             declared.add(it.path)
             declared.update(it.tests)
@@ -1605,7 +1673,7 @@ class Gate:
         )
         for n, it in enumerate(run.man.items):
             if it.kind == "env_function":
-                if not it.covers:
+                if not it.covers and not getattr(it, "typed_covers", None):
                     run.fail("G2", f"{it.item} covers no recorded action", it.item)
                 valid: list[tuple[str, int, Action]] = []
                 for eid, idx in it.covers:
