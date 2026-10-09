@@ -1347,6 +1347,66 @@ class _Spend:
     unknown: int = 0
 
 
+#: The full result a v2.1 pass cancelled before its gate leaves in its draft (spec §6, §8.4).
+CANCELLED_RESULT = (
+    "# Gate result: pass {pass_id}, cancelled before the gate ran\n"
+    "\n"
+    "- passed: no\n"
+    "- candidate: none\n"
+    "- refused checks: none (nothing was checked)\n"
+    "- items refused: {items}\n"
+    "\n"
+    "The pass was cancelled by its wall-clock bound or at shutdown before its work reached the gate. patch.diff "
+    "holds the work as it stood; none of it has been checked.\n"
+)
+
+
+def _named_items(box: Path) -> list[str]:
+    """The item ids the box's manifest names, if it can be read (a cancelled pass's draft names them)."""
+    try:
+        raw = json.loads(
+            (Path(box) / ".pass" / "manifest.json").read_text(encoding="utf-8"),
+        )
+    except (OSError, ValueError):
+        return []
+    items = raw.get("items") if isinstance(raw, dict) else None
+    return sorted(
+        {
+            it["item"]
+            for it in items or []
+            if isinstance(it, dict) and isinstance(it.get("item"), str)
+        },
+    )
+
+
+class _KeepOnCancel:
+    """Memory v2.1 (spec §6): a pass cancelled at its bound or at shutdown keeps Sol's work as a draft. It is the
+    innermost context of :meth:`SolPass._run`'s ``with``, so it exits first, while the box still exists.
+    """
+
+    def __init__(self, sol: "SolPass", parent: str, pass_id: str) -> None:
+        self.sol, self.parent, self.pass_id = sol, parent, pass_id
+
+    def __enter__(self) -> "_KeepOnCancel":
+        return self
+
+    def __exit__(self, et, ev, tb) -> bool:
+        live = getattr(self.sol, "_live", None)
+        if (
+            et is not None
+            and issubclass(et, asyncio.CancelledError)
+            and self.sol.cfg.v21
+            and live is not None
+        ):
+            self.sol._cancel_patch = self.sol._keep_cancelled_work(
+                live[0],
+                live[1],
+                self.parent,
+                self.pass_id,
+            )
+        return False
+
+
 class SolPass:
     """One consolidation pass, bounded by ``max_calls``, ``max_usd`` (a Decimal) and ``deadline_s``.
 
@@ -1376,6 +1436,9 @@ class SolPass:
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
         self.messages: list[dict] = []
+        # memory v2.1: the live box and checkout, and a cancelled pass's (patch blob, named items)
+        self._live: tuple[Path, Path] | None = None
+        self._cancel_patch: tuple[str | None, list[str]] = (None, [])
 
     def transcript(self, pass_id: str) -> list[str]:
         """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`)."""
@@ -1728,6 +1791,9 @@ class SolPass:
         parent: str,
         spend: _Spend,
         reasons: list[str],
+        *,
+        patch_blob: str | None = None,
+        refused: dict | None = None,
     ) -> list[str]:
         reasons = reasons + _unpriced(spend.unknown)
         self.ev.record_pass(
@@ -1740,15 +1806,54 @@ class SolPass:
                 "passed": 0,
                 "reasons": json.dumps(reasons),
                 "usd": _usd(spend.usd),
-                "patch_blob": None,
+                "patch_blob": patch_blob,
                 "items_merged": "[]",
-                "items_refused": "{}",
+                "items_refused": json.dumps(refused or {}, sort_keys=True),
             },
         )
         return reasons
 
+    def _keep_cancelled_work(
+        self,
+        box: Path,
+        wt: Path,
+        parent: str,
+        pass_id: str,
+    ) -> tuple[str | None, list[str]]:
+        """Sol's box as a patch on *parent* (a commit no ref names, as D13 saves refused work) and the item ids its
+        manifest named. Never raises: a cancellation must not be masked."""
+        named = _named_items(box)
+        store = getattr(self.gate, "blobs", None)
+        try:
+            _remove(box / ".pass")
+            _clear_checkout(wt)
+            _mirror(box, wt, skip_top=frozenset({".pass"}))
+            # at integration with P2: drop the generated files Sol left unchanged (P2's _drop_unchanged)
+            commit = self.mem.commit_all(
+                wt,
+                f"cancelled pass {pass_id}",
+                {"Pass": pass_id},
+            )
+            if commit == parent or not isinstance(store, BlobStore):
+                return None, named
+            return store.put(self.mem.diff(parent, commit).encode()), named
+        except Exception:  # noqa: BLE001
+            return None, named
+
+    def _cancelled_result(self, pass_id: str, named: list[str]) -> str | None:
+        """The blob id of :data:`CANCELLED_RESULT` for a cancelled v2.1 pass (its draft's gate result)."""
+        store = getattr(self.gate, "blobs", None)
+        if not isinstance(store, BlobStore):
+            return None
+        text = CANCELLED_RESULT.format(
+            pass_id=pass_id,
+            items=", ".join(named) or "none named",
+        )
+        return store.put(text.encode())
+
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
+        self._live, self._cancel_patch = None, (None, [])
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
             return PassOutcome(
@@ -1766,7 +1871,19 @@ class SolPass:
         except BaseException as exc:  # cancellation and interrupts included
             if not self.ev.pass_exists(pass_id):  # the gate records its own errors
                 reason = _redact(f"pass error: {type(exc).__name__}: {exc}")[:500]
-                self._fail(req, pass_id, parent, spend, [reason])
+                cancelled = self.cfg.v21 and isinstance(exc, asyncio.CancelledError)
+                patch, named = self._cancel_patch if cancelled else (None, [])
+                self._fail(
+                    req,
+                    pass_id,
+                    parent,
+                    spend,
+                    [reason],
+                    patch_blob=patch,
+                    refused={i: ["cancelled"] for i in named} if cancelled else None,
+                )
+                # P2's pass_rounds row (k), at integration: "gate_blob": self._cancelled_result(pass_id, named)
+                # if cancelled else None, and "role": getattr(self.cfg, "role", "write")
             raise
 
     async def _run(
@@ -1831,10 +1948,12 @@ class SolPass:
             tempfile.TemporaryDirectory(
                 prefix="memv2-sol-",
             ) as tmp,
+            _KeepOnCancel(self, parent, pass_id),
         ):
             box, inputs, cells = (Path(tmp) / n for n in ("memory", "inputs", "cells"))
             box.mkdir()
             cells.mkdir()
+            self._live = (box, wt)
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
             if self.cfg.v21:

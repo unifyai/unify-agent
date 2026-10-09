@@ -94,7 +94,10 @@ def _on_lane(row: dict, models: frozenset[str]) -> bool:
 
 
 def lane_calls(
-    path: str, start: int, end: int, models: Iterable[str]
+    path: str,
+    start: int,
+    end: int,
+    models: Iterable[str],
 ) -> dict[str, LaneCall]:
     """The Sol-lane requests whose ``request_started`` row lies in bytes ``[start, end)``, each with its LAST row's
     status, charge and generation id from anywhere in the journal (terminal rows may come later).
@@ -124,6 +127,19 @@ def lane_calls(
     return calls
 
 
+def unavailable(worst_case_usd: Decimal = SOL_CALL_WORST_CASE_USD) -> dict:
+    """The summary when the journal cannot be read: nothing priced, nothing known, the whole cap kept."""
+    return {
+        "journal": "unavailable",
+        "calls": None,
+        "priced": 0,
+        "unknown": None,
+        "usd": "0",
+        "worst_case_usd": money(worst_case_usd),
+        "booked_usd": UNKNOWN,
+    }
+
+
 async def reconcile_window(
     path: str | None,
     start: int | None,
@@ -144,29 +160,13 @@ async def reconcile_window(
     """
     models = tuple(models)
     if not path or start is None or end is None or end < start:
-        return {
-            "journal": "unavailable",
-            "calls": None,
-            "priced": 0,
-            "unknown": None,
-            "usd": "0",
-            "worst_case_usd": money(worst_case_usd),
-            "booked_usd": UNKNOWN,
-        }
+        return unavailable(worst_case_usd)
     deadline = clock() + float(budget_s)
     while True:
         try:
             calls = lane_calls(path, start, end, models)
         except OSError:
-            return {
-                "journal": "unavailable",
-                "calls": None,
-                "priced": 0,
-                "unknown": None,
-                "usd": "0",
-                "worst_case_usd": money(worst_case_usd),
-                "booked_usd": UNKNOWN,
-            }
+            return unavailable(worst_case_usd)
         if all(c.terminal for c in calls.values()) or clock() >= deadline:
             break
         await sleep(min(RETRY_S, max(0.0, deadline - clock())))
