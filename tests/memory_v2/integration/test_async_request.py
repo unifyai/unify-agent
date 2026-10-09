@@ -37,9 +37,13 @@ def _snapshot(root):
 
 def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_path):
     """Needs P3's actor export and library fixtures and P5's records: runs once they are integrated."""
-    export_actor_v21 = pytest.importorskip(
-        "unify.memory_v2.integration.checkout",
-    ).export_actor_v21
+    checkout = pytest.importorskip("unify.memory_v2.integration.checkout")
+    if not hasattr(
+        checkout,
+        "export_actor_v21",
+    ):  # importorskip skips only a missing module
+        pytest.skip("needs P3's checkout.export_actor_v21")
+    export_actor_v21 = checkout.export_actor_v21
     write_records = pytest.importorskip("unify.memory_v2.item_records").write_records
     LIB = pytest.importorskip("tests.memory_v2.test_layout").LIB
     _commit = pytest.importorskip("tests.memory_v2.test_library_helper")._commit
