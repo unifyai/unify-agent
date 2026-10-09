@@ -17,7 +17,7 @@ statuses, the recorded shapes and the history, so the same commit gives the same
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .catalogue import ShapeLookup, body_digest
@@ -34,6 +34,7 @@ from .layout import (
     module_of,
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
+from .item_records import use_totals, verification_summary
 from .library_index import HIDDEN, build_links, render_index, render_links
 from .redact import redact_error
 
@@ -129,17 +130,21 @@ def items_data(
     status_of: Callable[[str], str] | None,
     history: dict[str, list[str]],
     complete: bool,
+    records: Mapping[str, dict] | None = None,
 ) -> dict:
     """``.memory/items.json``: everything :func:`.library_helper.show` needs that the files do not hold."""
     rows: dict[str, dict] = {}
 
     def common(item: str) -> dict:
         h = history.get(item, [])
+        rec = records.get(item) if records else None
         return {
             "status": _status(status_of, item),
-            "status_reason": None,  # P5: why an item is suspect or deprecated
-            "verification": None,  # P5: the item record's verification summary
-            "use": None,  # P5: the item record's use summary
+            "status_reason": (
+                rec.get("status_reason") if rec else None
+            ),  # why it is out of the index (P5)
+            "verification": verification_summary(rec) if rec else None,
+            "use": use_totals(rec) if rec else None,
             "history": h[:HISTORY_SHOW],
             "history_more": max(0, len(h) - HISTORY_SHOW),
         }
@@ -174,6 +179,7 @@ def find_data(
     lib: Library,
     status_of: Callable[[str], str] | None,
     shapes: ShapeLookup | None,
+    records: Mapping[str, dict] | None = None,
 ) -> dict:
     """``.memory/find.json``: each listed function with the recorded input shapes of its current body."""
     bodies = function_bodies(tree) if shapes is not None else {}
@@ -186,7 +192,7 @@ def find_data(
             "module": f.module,
             "name": f.name,
             "signature": f.signature,
-            "input": "",
+            "input": ((records or {}).get(f.item_id) or {}).get("input") or "",
             "summary": f.summary,
         }  # input: the item record's form, from P5
         if shapes is not None and f.item_id in bodies:
@@ -209,8 +215,12 @@ def generated_v21(
     status_of: Callable[[str], str] | None = None,
     shapes: ShapeLookup | None = None,
     history: History | None = None,
+    records: Mapping[str, dict] | None = None,
 ) -> dict[str, bytes]:
-    """Every generated file of the copy of the library at *tree*, by relative path (module docstring)."""
+    """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
+
+    *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives P3's files
+    byte for byte."""
     tree = Path(tree)
     lib = discover(tree)
     links = build_links(lib)
@@ -219,8 +229,8 @@ def generated_v21(
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
         INDEX_FILE: render_index(lib, links, status_of).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
-        ITEMS_FILE: _json_bytes(items_data(lib, status_of, found, complete)),
-        FIND_FILE: _json_bytes(find_data(tree, lib, status_of, shapes)),
+        ITEMS_FILE: _json_bytes(items_data(lib, status_of, found, complete, records)),
+        FIND_FILE: _json_bytes(find_data(tree, lib, status_of, shapes, records)),
         MATCHER_FILE: matcher_source(),
         SHAPES_FILE: (_HERE / "analysis" / "shapes.py").read_bytes(),
     }

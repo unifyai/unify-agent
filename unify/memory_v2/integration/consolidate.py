@@ -661,6 +661,47 @@ def _end_event(
 # --- the driver ------------------------------------------------------------------------------------------
 
 
+def after_passes(
+    stores: Stores,
+    settings: Any,
+    recorded: list[str],
+    emit: Callable[[dict], None] | None,
+) -> None:
+    """Memory v2.1 (spec §4.4, §10; D38, D40): once a consolidation's passes are recorded, the item records of
+    ``main``'s head, the status changes and the bisects (:func:`..lifecycle.consolidate_records`). Nothing runs
+    with ``UNIFY_MEMORY_V21`` off, or when no pass was recorded (the run guard held them all back). Never raises:
+    a failure is logged, and the next consolidation computes everything again from the same evidence.
+    """
+    if not recorded or not v21_enabled(settings):
+        return
+    from .. import lifecycle
+    from .switch import checker_visible
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="memv21-records-") as work:
+            summary = lifecycle.consolidate_records(
+                stores,
+                checker_visible=checker_visible(settings),
+                work=Path(work),
+                action_lookup=EpisodeLookup(stores).action,
+            )
+    except Exception as exc:  # noqa: BLE001 - the records never stop the request
+        _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
+        return
+    _deliver(
+        stores,
+        emit,
+        {
+            "type": "consolidation",
+            "phase": "records",
+            "passes": list(recorded),
+            "noted": summary["noted"],
+            "status_changes": summary["changes"],
+            "bisected": summary["bisected"],
+        },
+    )
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -744,6 +785,7 @@ async def run_due_passes(
         v21=cfg.v21,
     )
     outcomes: list[PassOutcome] = []
+    recorded: list[str] = []  # the passes recorded (v2.1 records)
     for i, req in enumerate(due):
         pass_id = f"{eid}.p{i}"
         if (
@@ -822,6 +864,7 @@ async def run_due_passes(
                 ),
             )
             if stores.evidence.pass_exists(pass_id):
+                recorded.append(pass_id)
                 trig.mark_done(req)
                 if hasattr(state, "drift"):
                     state.drift.difference_update(drift)
@@ -834,6 +877,12 @@ async def run_due_passes(
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
+    after_passes(
+        stores,
+        settings,
+        recorded,
+        emit,
+    )  # memory v2.1 only; returns at once with the switch off
     return outcomes
 
 

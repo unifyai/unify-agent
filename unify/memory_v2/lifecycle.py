@@ -487,3 +487,196 @@ def next_records(
         if r["status"] != _status_in(prev.get(i))
     }
     return records, changes
+
+
+# --- at consolidation (spec §4.4, §10; D38, D40) ------------------------------------------------------------
+
+VERIFICATION_LINE = "v21-verification "
+
+
+def _json_list(raw: Any) -> list:
+    import json
+
+    try:
+        value = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return value if isinstance(value, list) else []
+
+
+def verification_from_passes(ev: EvidenceStore) -> dict[str, dict]:
+    """The newest verification record (P4's ``v21-verification`` pass-row line) of each item a pass landed,
+    with the pass that landed it."""
+    import json
+
+    out: dict[str, dict] = {}
+    for pass_id, reasons, merged in ev.db.execute(
+        "SELECT pass_id, reasons, items_merged FROM passes ORDER BY rowid",
+    ):
+        landed = {i for i in _json_list(merged) if isinstance(i, str)}
+        for line in _json_list(reasons):
+            if not (isinstance(line, str) and line.startswith(VERIFICATION_LINE)):
+                continue
+            try:
+                rec = json.loads(line[len(VERIFICATION_LINE) :])
+            except ValueError:
+                continue
+            for item, v in (rec.items() if isinstance(rec, dict) else ()):
+                if item in landed and isinstance(v, dict):
+                    out[item] = {**v, "pass": pass_id}
+    return out
+
+
+def provenance_from_evidence(
+    ev: EvidenceStore,
+    items: Iterable[str],
+) -> dict[str, dict]:
+    """Each item's source episodes (``item_evidence``) and the last pass that landed it."""
+    last: dict[str, str] = {}
+    for pass_id, merged in ev.db.execute(
+        "SELECT pass_id, items_merged FROM passes ORDER BY rowid",
+    ):
+        for name in _json_list(merged):
+            if isinstance(name, str):
+                last[name] = pass_id
+    return {
+        i: {"episodes": ev.item_episodes(i), "pass": last.get(i)} for i in sorted(items)
+    }
+
+
+def source_channels(
+    ev: EvidenceStore,
+    items: Iterable[str],
+    action_lookup: Any,
+) -> dict[str, list[str]]:
+    """The channels of the recorded actions each item covers (D42: the source channel lives in the record)."""
+    out: dict[str, list[str]] = {}
+    for item in sorted(items):
+        seen: set[str] = set()
+        for eid, idx in ev.covers_of(item):
+            action = action_lookup(eid, idx) if action_lookup is not None else None
+            if action is not None and isinstance(getattr(action, "channel", None), str):
+                seen.add(action.channel)
+        out[item] = sorted(seen)
+    return out
+
+
+def consolidate_records(
+    stores: Any,
+    *,
+    checker_visible: bool,
+    work: Any,
+    probe: Any = None,
+    refused: Any = None,
+    action_lookup: Any = None,
+) -> dict:
+    """The item records of ``main``'s head, after a consolidation's passes (spec §4.4, §10).
+
+    - The map is computed from the tree at the head, every indexed episode's use and signals, the verification
+      and provenance of the passes, and the map carried to the head.
+    - When the head has no map yet (a pass landed it), the map is written on it: the status changes ride the
+      pass's commit.
+    - When the head has a map and a status changed, one empty status commit lands on ``main`` and carries the
+      new map (:meth:`.memory_repo.MemoryRepo.status_commit`). Otherwise nothing is written, and the use counts
+      of this consolidation appear with the next commit's map.
+    - Each function that turned ``suspect`` by its own use (rules ``errors`` and ``negative_signals``) is
+      bisected first (:func:`.item_bisect.bisect_item`), and a rollback target is proposed.
+
+    Returns ``{"head", "noted", "changes", "bisected"}``; ``noted`` is the commit whose map was written, or None.
+    """
+    from pathlib import Path
+
+    from .gitio import GitError
+    from .item_bisect import bisect_item, rollback_target
+    from .item_records import read_records, records_at, write_records
+    from .layout import discover, import_graph
+    from .library_export import item_history
+    from .memory_repo import MemoryRepo
+
+    mem, ev = stores.memory, stores.evidence
+    head = mem.head()
+    with mem.temp_checkout(head) as wt:
+        lib = discover(wt)
+        graph = import_graph(wt)
+    items = {f.item_id: "function" for f in lib.functions} | {
+        n.item_id: "note" for n in lib.notes
+    }
+    functions = {f.item_id: f.module for f in lib.functions}
+    note_uses = {n.item_id: list(n.uses) for n in lib.notes}
+    prev, _ = records_at(mem, head)
+    order = mem.log_shas()
+    pos = {c: i for i, c in enumerate(order)}
+    full = {c[:12]: c for c in order}
+    history, _complete = item_history(mem, head)
+    changed_at = {
+        i: (full.get(history[i][0].split(" ", 1)[0]) if history.get(i) else None)
+        for i in items
+    }
+    since = {
+        i: set(order[pos[c] :]) if c in pos else set(order)
+        for i, c in changed_at.items()
+    }
+    facts = facts_from_evidence(ev, checker_visible=checker_visible)
+    records, changes = next_records(
+        items=items,
+        prev=prev,
+        facts=facts,
+        since=since,
+        changed_at=changed_at,
+        functions=functions,
+        graph=graph,
+        note_uses=note_uses,
+        verification=verification_from_passes(ev),
+        provenance=provenance_from_evidence(ev, items),
+        failure=failure_only(ev, functions, {f.episode_id: f for f in facts}),
+        channels=source_channels(ev, items, action_lookup),
+        # CURATE's decisions (P6); getattr until P6 is integrated (a1 drops it)
+        aliases=ev.aliases() if hasattr(ev, "aliases") else None,
+        curations=ev.curations() if hasattr(ev, "curations") else None,
+    )
+    bisected: list[str] = []
+    for item in sorted(changes):
+        rec = records[item]
+        if rec["status"] != "suspect" or rec["status_rule"] not in (
+            "errors",
+            "negative_signals",
+        ):
+            continue
+        tests = (rec.get("verification") or {}).get("tests") or []
+        try:
+            result = bisect_item(
+                mem,
+                ev,
+                item,
+                head,
+                list(tests),
+                work=Path(work) / item.replace(":", "__"),
+                probe=probe,
+                refused=refused,
+            )
+        except (GitError, OSError, ValueError) as exc:
+            result = {"error": type(exc).__name__}
+        rec["bisect"] = result
+        rec["rollback"] = rollback_target(
+            rec["use"],
+            result.get("versions", []),
+            result.get("introduced"),
+            order,
+        )
+        bisected.append(item)
+    noted = None
+    if read_records(mem, head) is None:
+        write_records(mem, head, records)
+        noted = head
+    elif changes:
+        evidence = sorted(
+            {
+                e
+                for i in changes
+                if records[i]["status_rule"] != "taint"
+                for e in records[i]["status_evidence"]
+            },
+        )
+        noted = MemoryRepo(mem).status_commit(changes, evidence)
+        write_records(mem, noted, records)
+    return {"head": head, "noted": noted, "changes": changes, "bisected": bisected}

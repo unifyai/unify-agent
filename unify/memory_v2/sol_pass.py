@@ -1581,7 +1581,18 @@ class SolPass:
         from .catalogue import write_files
         from .library_export import generated_v21, item_history
 
-        files = generated_v21(box, history=item_history(self.mem, parent))
+        from .item_records import records_at, status_of
+
+        records, _ = records_at(
+            self.mem,
+            parent,
+        )  # the writer reads the records through memory.show (spec §4.4)
+        files = generated_v21(
+            box,
+            history=item_history(self.mem, parent),
+            status_of=status_of(records),
+            records=records,
+        )
         write_files(box, files)
         return files
 
