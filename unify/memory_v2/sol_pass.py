@@ -386,7 +386,8 @@ _V21_TOOL_TEMPLATES = [
             "name": "read_episode",
             "description": (
                 "Read one part of a batch episode: 'request', 'observation:<i>', 'cell:<i>', 'action:<i>' or "
-                "'diff'. Reading every part the batch map lists as required covers the episode."
+                "'diff'. Reading every part the batch map lists as required covers the episode. parts=[...] reads up "
+                "to 8 parts on one page: 8000 bytes of content in all, each part marked and credited for what is shown."
             ),
             "parameters": {
                 "type": "object",
@@ -1628,21 +1629,31 @@ class SolPass:
             return "refused: parts must be a non-empty list"
         if len(parts) > READ_PARTS_PER_CALL:
             return f"refused: at most {READ_PARTS_PER_CALL} parts per call"
-        left, out = _views.VIEW_BYTES, []
-        for item in parts:
+        items: list[tuple[str, int, bytes]] = []
+        for item in parts:  # every item is checked before anything is shown or credited
             name, off = (
                 (item.get("part"), item.get("offset", 0))
                 if isinstance(item, dict)
                 else (item, 0)
             )
             name = str(name)
-            data = _bm.part_text(ep, name).encode()
+            if isinstance(off, bool) or not isinstance(off, int) or off < 0:
+                return f"refused: offset must be an integer >= 0 (part {name!r}); nothing was read"[
+                    :300
+                ]
+            try:
+                data = _bm.part_text(ep, name).encode()
+            except (KeyError, ValueError, IndexError, StopIteration):
+                return f"refused: unknown part {name!r}; nothing was read"[:300]
+            items.append((name, off, data))
+        left, out = _views.VIEW_BYTES, []
+        for name, off, data in items:
             if left <= 0:
                 out.append(
                     f"== {name} ==\nnot shown (page full): read again with parts={json.dumps([name])}",
                 )
                 continue
-            text, a, b = _views.view_range(data, int(off or 0), left)
+            text, a, b = _views.view_range(data, off, left)
             cov.credit(eid, _bm.canonical_part(ep, name), a, b)
             left -= b - a
             out.append(f"== {name} ==\n{text}")

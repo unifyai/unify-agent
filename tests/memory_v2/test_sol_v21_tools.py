@@ -229,3 +229,35 @@ def test_read_episode_parts_share_one_page(tmp_path):
     assert model.outputs["many"] == "refused: at most 8 parts per call"
     s = out.coverage
     assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1
+
+
+def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):
+    turns = [
+        _call(
+            "bogus",
+            "read_episode",
+            {"episode": "e1", "parts": ["request", "bogus"]},
+        ),
+        _call(
+            "neg",
+            "read_episode",
+            {"episode": "e1", "parts": ["request", {"part": "cell:0", "offset": -1}]},
+        ),
+        _call(
+            "txt",
+            "read_episode",
+            {"episode": "e1", "parts": [{"part": "request", "offset": "x"}]},
+        ),
+    ]
+    out, model = _pass(tmp_path, turns, max_calls=5)
+    assert model.outputs["bogus"].startswith("refused: unknown part 'bogus'")
+    assert model.outputs["neg"].startswith("refused: offset must be an integer >= 0")
+    assert model.outputs["txt"].startswith("refused: offset must be an integer >= 0")
+    assert out.coverage["bytes_read"] == 0 and out.coverage["parts_read"] == 0
+
+
+def test_read_episode_says_its_page_is_content_bytes():
+    desc = next(
+        t for t in sol_tools(v21=True) if t["function"]["name"] == "read_episode"
+    )
+    assert "8000 bytes of content in all" in desc["function"]["description"]
