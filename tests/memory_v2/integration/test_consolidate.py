@@ -1367,6 +1367,11 @@ def test_v21_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
             ),
         )
         assert [c.max_reads for c in seen] == [want]
+        start = [e for e in _events(stores) if e.get("phase") == "start"][-1]
+        if on:  # the E and read cap the pass ran with, under v2.1 only
+            assert (start["experience_budget"], start["max_reads"]) == (1, want)
+        else:
+            assert "experience_budget" not in start and "max_reads" not in start
     for bad in ("0", "-1", "x", True):
         with pytest.raises(ValueError):
             parse_v21_max_reads(bad)

@@ -1096,6 +1096,10 @@ async def run_due_passes(
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
         start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
+        if cfg.v21:
+            # the E and the read cap this pass ran with (v2's start event is unchanged)
+            start["experience_budget"] = int(cfg.experience_budget)
+            start["max_reads"] = int(config.max_reads)
         if curating:
             # why it runs (spec §10.3); codes and ids only
             start["curate"] = sorted(curate_state.fired.values())
