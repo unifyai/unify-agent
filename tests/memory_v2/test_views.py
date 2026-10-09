@@ -136,4 +136,30 @@ def test_coverage_requires_full_reads_or_dismissal():
         "missing": [],
         "parts_required": 3,
         "parts_read": 2,
+        "bytes_required": 20015,
+        "bytes_read": 20010,
     }
+
+
+def test_coverage_fails_closed_on_a_missing_or_bad_size():
+    with pytest.raises(ValueError, match="size"):
+        v.Coverage(required={"e1": ["request", "cell:0"]}, sizes={("e1", "request"): 3})
+    with pytest.raises(ValueError, match="size"):
+        v.Coverage(required={"e1": ["request"]}, sizes={("e1", "request"): -1})
+
+
+def test_coverage_counts_an_empty_part_as_read_and_bytes_are_clipped():
+    cov = v.Coverage(
+        required={"e1": ["request", "observation:0"]},
+        sizes={("e1", "request"): 3, ("e1", "observation:0"): 0},
+    )
+    cov.credit(
+        "e1",
+        "request",
+        0,
+        8000,
+    )  # a range past the end counts only the part's bytes
+    s = cov.summary()
+    assert s["missing"] == [] and s["covered"] == 1
+    assert (s["parts_required"], s["parts_read"]) == (2, 2)
+    assert (s["bytes_required"], s["bytes_read"]) == (3, 3)

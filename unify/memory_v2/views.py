@@ -179,6 +179,18 @@ class Coverage:
     ) -> None:
         self.required = {e: list(p) for e, p in required.items()}
         self.sizes = dict(sizes)
+        for (
+            e,
+            ps,
+        ) in (
+            self.required.items()
+        ):  # fail closed: a part with no size would count as read
+            for part in ps:
+                n = self.sizes.get((e, part))
+                if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                    raise ValueError(
+                        f"coverage: no valid size for {e!r} {part!r}: {n!r}",
+                    )
         self._ranges: dict[tuple[str, str], list[tuple[int, int]]] = {}
         self.dismissed: dict[str, str] = {}
 
@@ -193,7 +205,7 @@ class Coverage:
         self._ranges[(eid, part)] = merged
 
     def _part_done(self, eid: str, part: str) -> bool:
-        n = self.sizes.get((eid, part), 0)
+        n = self.sizes[(eid, part)]
         r = self._ranges.get((eid, part), [])
         return n == 0 or (len(r) == 1 and r[0][0] <= 0 and r[0][1] >= n)
 
@@ -227,9 +239,18 @@ class Coverage:
             "missing": self.missing(),
             "parts_required": sum(len(p) for p in self.required.values()),
             "parts_read": sum(
-                self._part_done(e, p)
-                for e, ps in self.required.items()
-                for p in ps
-                if (e, p) in self._ranges
+                self._part_done(e, p) for e, ps in self.required.items() for p in ps
+            ),
+            "bytes_required": sum(
+                self.sizes[(e, p)] for e, ps in self.required.items() for p in ps
+            ),
+            "bytes_read": sum(
+                self._bytes_read(e, p) for e, ps in self.required.items() for p in ps
             ),
         }
+
+    def _bytes_read(self, eid: str, part: str) -> int:
+        n = self.sizes[(eid, part)]
+        return sum(
+            max(0, min(e, n) - max(s, 0)) for s, e in self._ranges.get((eid, part), [])
+        )
