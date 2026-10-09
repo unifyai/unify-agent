@@ -128,16 +128,18 @@ def _shallow(obj: Any, limit: int = _MAX_DEPTH) -> bool:
     return True
 
 
-def trailing_object(text: str) -> dict | None:
+def trailing_object(text: str, scan_chars: int | None = _SCAN_CHARS) -> dict | None:
     """The JSON object that ends the text (after an optional closing code fence), else None.
 
     Never raises: an over-long trailing segment, a parse failure, a too-deep nesting
     (``RecursionError`` inside the decoder) or a result deeper than ``_MAX_DEPTH`` all give None.
+    *scan_chars* ``None`` scans the whole text (``UNIFY_MEMORY_V21``); ``_SCAN_TRIES`` and ``_MAX_DEPTH`` still
+    bound the cost.
     """
     body = _strip_closing_fence(text)
     if not body.endswith("}"):
         return None
-    offset = max(0, len(body) - _SCAN_CHARS)
+    offset = 0 if scan_chars is None else max(0, len(body) - scan_chars)
     window = body[offset:]
     tries = 0
     pos = window.find("{")
@@ -154,9 +156,9 @@ def trailing_object(text: str) -> dict | None:
     return None
 
 
-def action_payload(text: str) -> Any:
+def action_payload(text: str, scan_chars: int | None = _SCAN_CHARS) -> Any:
     """The action a reply carries: its trailing JSON object, else its final non-empty line."""
-    obj = trailing_object(text)
+    obj = trailing_object(text, scan_chars)
     if obj is not None:
         return obj
     lines = [ln.strip() for ln in _strip_closing_fence(text).splitlines() if ln.strip()]
@@ -250,6 +252,7 @@ def dialogue_actions(
     max_observation_chars: int | None = DEFAULT_OBSERVATION_CAP,
     max_payload_chars: int | None = DEFAULT_PAYLOAD_CAP,
     answered_only: bool = False,
+    payload_scan_chars: int | None = _SCAN_CHARS,
 ) -> list[Action]:
     """One ``kind="dialogue"`` action per turn-ending reply, in transcript order.
 
@@ -285,7 +288,7 @@ def dialogue_actions(
     for i, msg in enumerate(msgs):
         if not _is_reply(msg) or (answered_only and answer[i] is None):
             continue
-        payload = red.obj(action_payload(_text(msg.get("content"))))
+        payload = red.obj(action_payload(_text(msg.get("content")), payload_scan_chars))
         method, args, kwargs = split_action(payload)
         if kwargs:
             serialised = json.dumps(kwargs, sort_keys=True, ensure_ascii=False)

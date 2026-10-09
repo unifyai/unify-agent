@@ -1932,7 +1932,10 @@ def use_from_episode_dir(
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, *_SAFE_LOAD):
         meta = {}
-    if isinstance(meta, dict) and meta.get("record_format", 1) != 1:
+    fmt = meta.get("record_format", 1) if isinstance(meta, dict) else 1
+    if isinstance(fmt, bool) or fmt not in (1, 2):
+        raise ValueError(f"unknown record_format {fmt!r}")
+    if fmt == 2:
         if blobs is None:
             raise ValueError(
                 "record_format 2: pass blobs to resolve the record's references",

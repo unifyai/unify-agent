@@ -282,6 +282,11 @@ def load_episode(repo: Repo, rev: str, rel: str, blobs: BlobStore) -> Episode:
     meta = json.loads(read("meta.json"))
     fmt = meta.pop("record_format", 1)
     eid = str(meta.get("episode_id", ""))
+    if isinstance(fmt, bool) or fmt not in (
+        1,
+        RECORD_FORMAT,
+    ):  # fail closed: never read another format as 1
+        raise EpisodeRecordError(f"episode {eid}: unknown record_format {fmt!r}")
 
     def lines(name: str) -> list[Any]:
         return [json.loads(ln) for ln in read(name).splitlines() if ln.strip()]

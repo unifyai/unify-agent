@@ -74,3 +74,25 @@ def test_finish_writes_record_format_2_only_under_v21(mv2, monkeypatch):  # noqa
         _transcript(run)
         _finish(mv2, run)
     assert made == [{}, {"v21": True}]  # off: the call as at 4675a3c45
+
+
+def test_a_long_multi_line_trailing_object_is_the_payload_under_v21():
+    import json
+
+    obj = {
+        "action": "submit",
+        "grid": [[i % 10 for i in range(40)] for _ in range(400)],
+    }
+    reply = "Here is my answer:\n" + json.dumps(
+        obj,
+        indent=1,
+    )  # multi-line, about 100 K
+    assert len(reply) > 65536 and reply.count("\n") > 100
+    lines = inp.dialogue_lines()
+    lines[1]["message"]["content"] = reply
+    (off,) = request_mod.recorded_dialogue(lines, "env", Redactor())
+    (on,) = request_mod.recorded_dialogue(lines, "env", Redactor(), v21=True)
+    assert off.method == "act" and off.args == [
+        "}",
+    ]  # as at 4675a3c45: the reply's last line
+    assert on.method == "submit" and on.args == [obj["grid"]]

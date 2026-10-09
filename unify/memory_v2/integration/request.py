@@ -162,7 +162,15 @@ def recorded_dialogue(
     """
     from .adapters import dialogue
 
-    caps = {"max_observation_chars": None, "max_payload_chars": None} if v21 else {}
+    caps = (
+        {
+            "max_observation_chars": None,
+            "max_payload_chars": None,
+            "payload_scan_chars": None,
+        }
+        if v21
+        else {}
+    )
     return dialogue.dialogue_actions(
         lines,
         counterpart,

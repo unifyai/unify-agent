@@ -181,3 +181,22 @@ def test_offline_use_analysis_refuses_or_resolves_a_format_2_record(tmp_path):
         use_from_episode_dir(_export(repo1, sha1, episode_dir(old), tmp_path / "e1")),
         dict,
     )
+
+
+@pytest.mark.parametrize("bad", [3, "x"])
+def test_an_unknown_record_format_fails_closed(tmp_path, monkeypatch, bad):
+    import unify.memory_v2.episodes as episodes_mod
+    from unify.memory_v2.analysis.use import use_from_episode_dir
+
+    ep = _v21_ep()
+    monkeypatch.setattr(episodes_mod, "RECORD_FORMAT", bad)  # the writer stamps it
+    repo, blobs, sha = _write(tmp_path, ep)
+    monkeypatch.undo()
+    with pytest.raises(
+        EpisodeRecordError,
+        match=f"episode {ep.episode_id}: unknown record_format {bad!r}",
+    ):
+        load_episode(repo, sha, episode_dir(ep), blobs)
+    d = _export(repo, sha, episode_dir(ep), tmp_path / "export")
+    with pytest.raises(ValueError, match="unknown record_format"):
+        use_from_episode_dir(d, blobs=blobs)
