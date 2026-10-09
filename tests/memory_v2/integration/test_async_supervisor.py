@@ -127,6 +127,8 @@ class _Blocking:
 async def _cancelled_pass(tmp_path):
     _, ev, sol = _sol(tmp_path, _Blocking(), v21=True)
     sol.load = EPS.__getitem__
+    # the brief is not under test here (it reads P2's and P4's constants; test_sol_v21_brief.py pins it)
+    sol._brief_v21 = lambda: "brief"
     req = PassRequest("incremental", "svc", ["e1", "e2"], False)
     task = asyncio.ensure_future(sol.run(req, "p9"))
     for _ in range(600):
