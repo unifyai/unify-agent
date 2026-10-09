@@ -589,6 +589,14 @@ def parse_memory_v21(v: Any) -> str:
     return _on_off(V21, v)
 
 
+parse_v21 = parse_memory_v21
+
+
+def v21_enabled(settings: Any) -> bool:
+    """Whether memory v2.1 is on in *settings* (``unify.settings.SETTINGS`` or any object; missing is off)."""
+    return parse_v21(getattr(settings, V21, "") or "") == "on"
+
+
 @dataclass(frozen=True)
 class SurfacingOptions:
     """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
