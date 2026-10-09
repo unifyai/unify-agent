@@ -25,16 +25,54 @@ def _is_binary(data: bytes) -> bool:
     return False
 
 
-def view(data: bytes, offset: int = 0, length: int = VIEW_BYTES) -> str:
-    n = len(data)
-    if _is_binary(data):
-        return f"[binary: {n} bytes, sha256 {hashlib.sha256(data).hexdigest()}]"
+def _cont(byte: int) -> bool:
+    return byte & 0xC0 == 0x80  # a UTF-8 continuation byte
+
+
+def _bounds(get, n: int, offset: int, length: int) -> tuple[int, int]:
+    """The page [a, b) of an *n*-byte text: at most VIEW_BYTES long, its edges moved onto character boundaries
+    (a forward, b back), so a page never shows half a character and coverage counts exactly what was shown.
+    """
     a = max(0, min(int(offset), n))
-    b = min(n, a + max(1, int(length)))
-    text = data[a:b].decode("utf-8", errors="replace")
+    while a < n and _cont(get(a)):
+        a += 1
+    end = min(n, a + max(1, min(int(length), VIEW_BYTES)))
+    b = end
+    while a < b < n and _cont(get(b)):
+        b -= 1
+    if b == a and end > a:  # a single character longer than the page: show it whole
+        b = end
+        while b < n and _cont(get(b)):
+            b += 1
+    return a, b
+
+
+def _page(text: str, a: int, b: int, n: int) -> str:
     if b < n:
         text += f"\n[… shown bytes {a}–{b} of {n}; next: offset={b}]"
     return text
+
+
+def _binary_line(n: int, sha: str) -> str:
+    return f"[binary: {n} bytes, sha256 {sha}]"
+
+
+def view_range(
+    data: bytes,
+    offset: int = 0,
+    length: int = VIEW_BYTES,
+) -> tuple[str, int, int]:
+    """A bounded view of *data* and the byte range [a, b) it shows (binary content: its size and sha256, and the
+    whole range)."""
+    n = len(data)
+    if _is_binary(data):
+        return _binary_line(n, hashlib.sha256(data).hexdigest()), 0, n
+    a, b = _bounds(data.__getitem__, n, offset, length)
+    return _page(data[a:b].decode("utf-8", errors="replace"), a, b, n), a, b
+
+
+def view(data: bytes, offset: int = 0, length: int = VIEW_BYTES) -> str:
+    return view_range(data, offset, length)[0]
 
 
 def resolve(vpath: str, roots: dict[str, Path]) -> Path:
@@ -54,11 +92,27 @@ def read(
     offset: int = 0,
     length: int = VIEW_BYTES,
 ) -> str:
+    """The same page as ``view`` of the file's bytes, reading only the page (and a few bytes around it) from disk;
+    a directory is listed."""
     p = resolve(vpath, roots)
     if p.is_dir():
         names = sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir())
         return view("\n".join(names).encode(), offset, length)
-    return view(p.read_bytes(), offset, length)
+    n = p.stat().st_size
+    with p.open("rb") as f:
+        if _is_binary(f.read(8192)):
+            f.seek(0)
+            sha = hashlib.sha256()
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                sha.update(chunk)
+            return _binary_line(n, sha.hexdigest())
+        lo = max(0, min(int(offset), n))
+        f.seek(lo)
+        buf = f.read(VIEW_BYTES + 8)
+        a, b = _bounds(lambda i: buf[i - lo], min(n, lo + len(buf)), offset, length)
+        if a == len(buf) + lo:  # the window held only continuation bytes past the end
+            a = b = min(n, a)
+        return _page(buf[a - lo : b - lo].decode("utf-8", errors="replace"), a, b, n)
 
 
 def _virtual(p: Path, roots: dict[str, Path]) -> str:
@@ -92,14 +146,23 @@ def grep(
         data = real.read_bytes()
         if _is_binary(data):
             continue
-        for i, line in enumerate(
-            data.decode("utf-8", errors="replace").splitlines(),
-            1,
-        ):
+        vp, at = _virtual(real, roots), 0
+        for i, raw in enumerate(data.split(b"\n"), 1):
+            line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
             if rx.search(line):
-                hits.append(f"{_virtual(real, roots)}:{i}: {line[:_LINE_CHARS]}")
+                hit = f"{vp}:{i}: {line[:_LINE_CHARS]}"
+                if len(line) > _LINE_CHARS:
+                    hit += f"… [line {i}: {len(line)} chars, shown {_LINE_CHARS}; read({vp}, offset={at})]"
+                hits.append(hit)
+            at += len(raw) + 1
     a = max(0, int(offset))
-    b = min(len(hits), a + max_hits)
+    b, used = a, 0
+    while b < len(hits) and b - a < max_hits:
+        size = len(hits[b].encode()) + (1 if b > a else 0)
+        if b > a and used + size > VIEW_BYTES:
+            break
+        used += size
+        b += 1
     out = "\n".join(hits[a:b]) or "(no hits)"
     if b < len(hits):
         out += f"\n[… hits {a}–{b} of {len(hits)}; next: offset={b}]"
