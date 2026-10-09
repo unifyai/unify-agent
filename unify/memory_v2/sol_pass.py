@@ -422,6 +422,8 @@ class PassConfig:
     deadline_s: float = 900.0
     # UNIFY_MEMORY_V2_SOL_USAGE: end the first message with the library-use table (off: as before)
     show_usage: bool = False
+    # UNIFY_MEMORY_V21 (spec v2.1, P1): the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
+    v21: bool = False
 
 
 @dataclass
@@ -455,8 +457,13 @@ def export_for_sol(
     *,
     response_blobs: tuple[BlobStore, Path] | None = None,
     blob_min_bytes: int = _qa.RESPONSE_BLOB_BYTES,
+    v21: bool = False,
 ) -> None:
     """Write ``<dest>/<episode_id>.json`` per episode: the request, cells and actions, and nothing else.
+
+    With *v21* (spec v2.1 D31) the row also carries the declared regime, the memory pin, the work-tree diff,
+    the use record, the structural signals, and each cell's error and language. Ruling R10's allowlist applies
+    only with *v21* off.
 
     Ruling R10: no outcome, signal or checker data reaches Sol. The fields are an allowlist: cells carry
     their index, code and printed output; actions their index (the ``action_index`` covers cite), cell,
@@ -506,6 +513,17 @@ def export_for_sol(
                 env_channel(getattr(a, "kind", "tool"), a.channel) for a in ep.actions
             ],
         }
+        if v21:
+            from .batch_map import structural_signals
+
+            row["regime"] = ep.regime
+            row["memory_main"] = ep.memory_main
+            row["worktree_diff"] = ep.worktree_diff or ""
+            row["memory_use"] = ep.memory_use
+            row["signals"] = structural_signals(ep)
+            for c_row, c in zip(row["cells"], ep.cells):
+                c_row["error"] = c.error
+                c_row["language"] = c.language
         if response_blobs is not None:
             store, bdir = response_blobs
             bdir.mkdir(parents=True, exist_ok=True)
@@ -533,14 +551,15 @@ def export_blobs(
     blobs: BlobStore | None,
     dest: Path,
     *,
-    per_blob_bytes: int = EXPORT_BLOB_BYTES,
-    total_bytes: int = EXPORT_TOTAL_BYTES,
+    per_blob_bytes: int | None = EXPORT_BLOB_BYTES,
+    total_bytes: int | None = EXPORT_TOTAL_BYTES,
 ) -> dict:
     """Copy the file blobs the episodes' worktree actions recorded to ``<dest>/<blob id>``, size-capped.
 
     Only well-formed ids (:data:`.blobs.BLOB_ID`) of ``blob_before``/``blob_after`` on ``kind ==
     "worktree"`` actions are looked up, in episode and action order. A blob larger than *per_blob_bytes*,
-    one past *total_bytes* in all, or one missing from the store is skipped. ``<dest>/index.json`` lists
+    one past *total_bytes* in all, or one missing from the store is skipped; a cap of ``None`` is no cap
+    (spec v2.1 §7.2). ``<dest>/index.json`` lists
     ``{"exported": [...], "skipped": {id: reason}}`` (memlab's ``analysis.recorded.load_blob`` reads it).
     """
     dest = Path(dest)
@@ -567,11 +586,11 @@ def export_blobs(
                     skipped[sha] = "not in the blob store"
                     continue
                 size = blobs.size(sha)
-                if size > per_blob_bytes:
+                if per_blob_bytes is not None and size > per_blob_bytes:
                     skipped[sha] = (
                         f"{size} bytes, over the per-blob cap of {per_blob_bytes}"
                     )
-                elif used + size > total_bytes:
+                elif total_bytes is not None and used + size > total_bytes:
                     skipped[sha] = f"over the export's total cap of {total_bytes} bytes"
                 else:
                     (dest / sha).write_bytes(blobs.get(sha))
@@ -1355,12 +1374,15 @@ class SolPass:
                 else None
             ),
             blob_min_bytes=self._qa.response_blob_bytes,
+            v21=self.cfg.v21,
         )
         export_blobs(
             self.load,
             list(req.episodes),
             getattr(self.gate, "blobs", None),
             inputs / "blobs",
+            per_blob_bytes=None if self.cfg.v21 else EXPORT_BLOB_BYTES,
+            total_bytes=None if self.cfg.v21 else EXPORT_TOTAL_BYTES,
         )
         (inputs / "request.json").write_text(
             json.dumps(
@@ -1372,6 +1394,18 @@ class SolPass:
                 },
             ),
         )
+        if self.cfg.v21:
+            from .batch_map import build_batch_map
+
+            (inputs / "batch_map.json").write_text(
+                json.dumps(
+                    build_batch_map(self.load, list(req.episodes)),
+                    sort_keys=True,
+                    default=str,
+                    indent=1,
+                )
+                + "\n",
+            )
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
