@@ -118,11 +118,18 @@ def _text_of(parts: Any) -> str:
     return str(parts)
 
 
-def bounded_tail(text: Any, redactor: Redactor, limit: int = MAX_TAIL_BYTES) -> str:
+def bounded_tail(
+    text: Any,
+    redactor: Redactor,
+    limit: int | None = MAX_TAIL_BYTES,
+) -> str:
     """The redacted last ``limit`` bytes (UTF-8) of ``text``.
 
     Redaction runs on the whole text before the cut, so a secret that straddles
-    the cut is never left half-visible."""
+    the cut is never left half-visible. ``None`` keeps the whole text (``UNIFY_MEMORY_V21``).
+    """
+    if limit is None:
+        return redactor.text(_text_of(text))
     if limit <= 0:
         return ""
     s = redactor.text(_text_of(text))
@@ -139,31 +146,33 @@ def _decode(a: Any) -> str:
         return str(a)
 
 
-def _arg(a: Any, redactor: Redactor) -> str:
+def _arg(a: Any, redactor: Redactor, full: bool = False) -> str:
     """One argv entry: decoded, redacted in full, and only then capped at
     ``MAX_ARG_CHARS`` with a marker, so a secret that straddles the cap is
     never left as a fragment. Redaction is linear in the entry, and the OS
     bounds an entry by ARG_MAX."""
     s = redactor.text(_decode(a))
-    if len(s) <= MAX_ARG_CHARS:
+    if full or len(s) <= MAX_ARG_CHARS:
         return s
     return s[:MAX_ARG_CHARS] + f"<truncated: {len(s) - MAX_ARG_CHARS} chars>"
 
 
-def _argv(raw: Any, redactor: Redactor) -> list[str]:
+def _argv(raw: Any, redactor: Redactor, full: bool = False) -> list[str]:
     """argv as a list of redacted, capped strings. A string (``os.system``, or
     Popen with ``shell=True`` before expansion) runs under ``sh -c``. Entries
     past ``MAX_ARGV`` are dropped and counted in a final marker entry."""
     if raw is None:
         return []
     if isinstance(raw, (str, bytes, os.PathLike)):
-        return ["sh", "-c", _arg(raw, redactor)]
+        return ["sh", "-c", _arg(raw, redactor, full)]
     if isinstance(raw, (list, tuple)):
+        if full:  # UNIFY_MEMORY_V21: every entry, whole
+            return [_arg(a, redactor, True) for a in raw]
         out = [_arg(a, redactor) for a in raw[:MAX_ARGV]]
         if len(raw) > MAX_ARGV:
             out.append(f"<truncated: {len(raw) - MAX_ARGV} more args>")
         return out
-    return [_arg(raw, redactor)]
+    return [_arg(raw, redactor, full)]
 
 
 def program_of(
@@ -219,11 +228,12 @@ def action_from_audit(
     record: Mapping[str, Any],
     redactor: Optional[Redactor] = None,
     *,
-    tail_bytes: int = MAX_TAIL_BYTES,
+    tail_bytes: int | None = MAX_TAIL_BYTES,
+    full: bool = False,
 ) -> Action:
-    """One process record from the audit adapter as a shell action."""
+    """One process record from the audit adapter as a shell action (*full*: nothing cut; ``UNIFY_MEMORY_V21``)."""
     red = redactor or Redactor()
-    args = _argv(record.get("argv", record.get("args")), red)
+    args = _argv(record.get("argv", record.get("args")), red, full)
     channel = program_of(args, record.get("exe") or record.get("executable"), red)
     exit_code = record.get("exit_code")
     if isinstance(exit_code, bool) or not isinstance(exit_code, int):
@@ -264,15 +274,16 @@ def action_from_cell(
     result: ShellCellResult,
     redactor: Optional[Redactor] = None,
     *,
-    tail_bytes: int = MAX_TAIL_BYTES,
+    tail_bytes: int | None = MAX_TAIL_BYTES,
+    full: bool = False,
 ) -> Action:
-    """One bash cell as a shell action (channel ``"bash"``, args ``[command]``)."""
+    """One bash cell as a shell action (channel ``"bash"``, args ``[command]``; *full*: nothing cut)."""
     red = redactor or Redactor()
     return Action(
         cell=_cell(result.cell),
         channel=BASH_CHANNEL,
         method="run",
-        args=[_arg(result.command, red)],
+        args=[_arg(result.command, red, full)],
         kwargs={},
         response={
             "exit_code": result.exit_code,
@@ -290,15 +301,20 @@ def shell_actions(
     cell_results: Iterable[ShellCellResult] = (),
     *,
     redactor: Optional[Redactor] = None,
-    tail_bytes: int = MAX_TAIL_BYTES,
+    tail_bytes: int | None = MAX_TAIL_BYTES,
+    full: bool = False,
 ) -> list[Action]:
     """All shell actions of a request, in cell order (stable within a cell:
     bash cells first, then process records in the order they were audited).
     Audit records of other events (file opens, listings) are skipped."""
     red = redactor or Redactor()
-    rows = [action_from_cell(r, red, tail_bytes=tail_bytes) for r in cell_results]
+    if full:  # UNIFY_MEMORY_V21: whole arguments and whole outputs
+        tail_bytes = None
+    rows = [
+        action_from_cell(r, red, tail_bytes=tail_bytes, full=full) for r in cell_results
+    ]
     rows += [
-        action_from_audit(r, red, tail_bytes=tail_bytes)
+        action_from_audit(r, red, tail_bytes=tail_bytes, full=full)
         for r in audit_records
         if _is_spawn(r)
     ]

@@ -163,8 +163,12 @@ def action_payload(text: str) -> Any:
     return lines[-1] if lines else ""
 
 
-def cap_text(text: str, cap: int) -> str:
-    """At most ``cap`` characters, keeping the head and the tail (where counters and JSON sit)."""
+def cap_text(text: str, cap: int | None) -> str:
+    """At most ``cap`` characters, keeping the head and the tail (where counters and JSON sit); ``None`` keeps
+    the whole text (``UNIFY_MEMORY_V21``: the episode writer stores a large value as a blob).
+    """
+    if cap is None:
+        return text
     if cap <= 0:
         raise ValueError("cap must be positive")
     if len(text) <= cap:
@@ -198,19 +202,22 @@ def split_action(payload: Any) -> tuple[str, list, dict]:
     return METHOD, [payload], {}
 
 
-def _bounded(value: Any, cap: int) -> Any:
-    """*value*, or its capped text (JSON for a non-string) when its text is longer than *cap*."""
+def _bounded(value: Any, cap: int | None) -> Any:
+    """*value*, or its capped text (JSON for a non-string) when its text is longer than *cap* (None: no cap)."""
+    if cap is None:
+        return value
     if isinstance(value, str):
         return cap_text(value, cap)
     serialised = json.dumps(value, sort_keys=True, ensure_ascii=False)
     return cap_text(serialised, cap) if len(serialised) > cap else value
 
 
-def observation_value(text: str, cap: int = DEFAULT_OBSERVATION_CAP) -> Any:
+def observation_value(text: str, cap: int | None = DEFAULT_OBSERVATION_CAP) -> Any:
     """An (already redacted) observation as recorded: the parsed object or array when the whole text is
     one JSON object or array of bounded depth and at most *cap* characters, else the text capped at *cap*.
+    ``None`` is no cap (``UNIFY_MEMORY_V21``).
     """
-    if len(text) <= cap:
+    if cap is None or len(text) <= cap:
         stripped = text.strip()
         if stripped[:1] in ("{", "["):
             try:
@@ -240,8 +247,8 @@ def dialogue_actions(
     counterpart: str,
     *,
     redactor: Redactor | None = None,
-    max_observation_chars: int = DEFAULT_OBSERVATION_CAP,
-    max_payload_chars: int = DEFAULT_PAYLOAD_CAP,
+    max_observation_chars: int | None = DEFAULT_OBSERVATION_CAP,
+    max_payload_chars: int | None = DEFAULT_PAYLOAD_CAP,
     answered_only: bool = False,
 ) -> list[Action]:
     """One ``kind="dialogue"`` action per turn-ending reply, in transcript order.
@@ -254,7 +261,8 @@ def dialogue_actions(
     are redacted before anything else (one pass over each text, so a secret is never cut in two), then
     bounded: the observation by :func:`observation_value` at ``max_observation_chars``, the arguments
     at ``max_payload_chars`` (arguments whose JSON is longer become their capped JSON text, as
-    ``args[0]``). Time is linear in the transcript's size.
+    ``args[0]``); a cap of ``None`` keeps the value whole (``UNIFY_MEMORY_V21``). Time is linear in the
+    transcript's size.
     """
     if not isinstance(counterpart, str) or not COUNTERPART_RE.match(counterpart):
         raise ValueError(
@@ -281,7 +289,7 @@ def dialogue_actions(
         method, args, kwargs = split_action(payload)
         if kwargs:
             serialised = json.dumps(kwargs, sort_keys=True, ensure_ascii=False)
-            if len(serialised) > max_payload_chars:
+            if max_payload_chars is not None and len(serialised) > max_payload_chars:
                 args, kwargs = [cap_text(serialised, max_payload_chars)], {}
         else:
             args = [_bounded(a, max_payload_chars) for a in args]

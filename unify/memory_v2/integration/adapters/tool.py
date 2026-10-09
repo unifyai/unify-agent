@@ -247,7 +247,7 @@ class RecordingObserver:
         redactor: Redactor | None = None,
         *,
         max_calls: int = 2000,
-        max_value_bytes: int = 16384,
+        max_value_bytes: int | None = 16384,
         max_error_chars: int = 500,
         max_nodes: int = _MAX_NODES,
     ) -> None:
@@ -348,7 +348,17 @@ class RecordingObserver:
     # -- values -------------------------------------------------------------------------------------
 
     def _value(self, value: Any) -> Any:
-        # Bounded first (nodes and characters), redacted while copying, then capped as a whole.
+        # Bounded first (nodes and characters), redacted while copying, then capped as a whole. With
+        # max_value_bytes None (UNIFY_MEMORY_V21) no character budget and no size cap apply: the value is kept
+        # whole (the episode writer stores a large one as a blob); the structural guards (depth, items per
+        # container, nodes, cycles) stay, each marked where it acts.
+        if self.max_value_bytes is None:
+            return jsonable(
+                value,
+                redactor=self.redactor,
+                max_nodes=self.max_nodes,
+                max_chars=float("inf"),
+            )
         clean = jsonable(
             value,
             redactor=self.redactor,

@@ -956,7 +956,7 @@ def worktree_diff(
     after: str,
     *,
     redactor: Redactor,
-    blob_cap: int = BLOB_CAP,
+    blob_cap: int | None = BLOB_CAP,
     cap: int = DIFF_CAP,
     max_paths: int = DIFF_PATHS,
     seconds: float = DIFF_SECONDS,
@@ -1046,7 +1046,7 @@ def _path_diff(
     a_oid: str | None,
     b_oid: str | None,
     redactor: Redactor,
-    blob_cap: int,
+    blob_cap: int | None,
     deadline: float,
 ) -> str:
     a, b = (
@@ -1069,7 +1069,7 @@ def _path_diff(
         for x in (a, b)
     )
     note = ""
-    if text and all(len(x) <= blob_cap for x in sides):
+    if text and (blob_cap is None or all(len(x) <= blob_cap for x in sides)):
         a_lines, b_lines = (_lines(x) if x is not None else [] for x in (ra, rb))
         if max(len(a_lines), len(b_lines)) <= DIFF_LINES:
             hunks = "".join(
@@ -1124,7 +1124,7 @@ class WorkTreeRecorder:
         blobs: BlobStore,
         *,
         redactor: Redactor | None = None,
-        blob_cap: int = BLOB_CAP,
+        blob_cap: int | None = BLOB_CAP,
         snapshot_cap: int = SNAPSHOT_CAP,
         budget_bytes: int = SNAPSHOT_BUDGET_BYTES,
         budget_files: int = SNAPSHOT_BUDGET_FILES,
@@ -1525,7 +1525,9 @@ class WorkTreeRecorder:
         """
         size = len(data)
         text = exportable_text(data)
-        over = size > self.blob_cap
+        over = (
+            self.blob_cap is not None and size > self.blob_cap
+        )  # None: UNIFY_MEMORY_V21, stored whole
         hits = self.redactor.hits
         if text:
             clean = self._redact(data)
