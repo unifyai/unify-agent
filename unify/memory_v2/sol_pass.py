@@ -53,7 +53,7 @@ from . import manifest as _manifest
 from .blobs import BLOB_ID, BlobStore
 from .episodes import Episode, env_channel
 from .evidence import EvidenceStore
-from .gate import Gate, ParentSnapshot
+from .gate import Gate, GateResult, ParentSnapshot
 from .catalogue import readme_for_sol
 from .docstrings import describe_standard as describe_docstring_standard
 from .gitio import GitError, Repo
@@ -61,6 +61,7 @@ from .index import build_index
 from .memory_repo import items as memory_items
 from . import batch_map as _bm
 from . import qa as _qa
+from . import repair as _repair
 from . import views as _views
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
@@ -529,6 +530,9 @@ class PassConfig:
     v21: bool = False
     # spec v2.1 §7.4: reader calls (read, grep, read_episode, dismiss) count here, never against max_calls
     max_reads: int = 400
+    # memory v2.1 ROUND_RESERVE (spec §15), once offline replay calibrates it; None: the pass's own median
+    # round cost (repair.round_reserve)
+    round_reserve_usd: Decimal | None = None
 
 
 @dataclass
@@ -554,6 +558,10 @@ class PassOutcome:
     coverage: dict | None = None
     reads: int = 0  # reader calls made (v21)
     exported_bytes: int | None = None  # blob bytes staged in /inputs (v21: uncapped)
+    # memory v2.1 repair (spec §9.2): Sol's rounds (1 + the repair rounds started; 0 with v21 off) and the full
+    # gate results written for Sol during the pass, in order (/inputs/gate/result-<n>.md)
+    rounds: int = 0
+    round_results: list[str] = field(default_factory=list)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1747,6 +1755,66 @@ class SolPass:
         )
         return reasons
 
+    def _commit_round(
+        self,
+        box: Path,
+        parent: str,
+        pass_id: str,
+        summary: str,
+        manifest: object,
+    ) -> str:
+        """A v2.1 round's candidate (spec §9.2): the box as the commit would hold it (no ``.pass``), committed on a
+        fresh checkout of *parent* with the message and trailers v2's final commit has, and no round number
+        (Amendment A: the merge lands the last checked commit itself; the round lives in ``pass_rounds``). It is
+        one commit on the parent that no ref names (D13), so a refused round never enters ``main``'s history.
+        Called after :func:`_measure` restored the host's access to the box."""
+        sources = _sources(manifest)
+        with self.mem.temp_checkout(parent) as rwt:
+            _clear_checkout(rwt)
+            _mirror(box, rwt, skip_top=frozenset({".pass"}))
+            return self.mem.commit_all(
+                rwt,
+                f"consolidation pass {pass_id}: {_redact(summary)[:200]}".replace(
+                    "\0",
+                    "",
+                ),
+                {"Pass": pass_id, "Episode": sources, "Evidence": sources},
+            )
+
+    def _close_rounds(
+        self,
+        pass_id: str,
+        round_no: int,
+        round_blobs: list[str],
+        res: GateResult,
+        candidate: str | None,
+        pass_notes: Iterable[str],
+    ) -> None:
+        """v2.1: the pass's final full gate result into the blob store and its ``pass_rounds`` row (spec §8.4,
+        §9.3); nothing with v21 off."""
+        if not self.cfg.v21:
+            return
+        text = _repair.render_result(
+            pass_id,
+            round_no,
+            res,
+            final=True,
+            candidate=candidate,
+            pass_notes=pass_notes,
+        )
+        store = getattr(self.gate, "blobs", None)
+        self.ev.record_pass_rounds(
+            {
+                "pass_id": pass_id,
+                "role": "write",
+                "rounds": round_no + 1,
+                "round_blobs": json.dumps(round_blobs),
+                "gate_blob": (
+                    store.put(text.encode()) if isinstance(store, BlobStore) else None
+                ),
+            },
+        )
+
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
         if self.ev.pass_exists(pass_id):
@@ -1767,6 +1835,21 @@ class SolPass:
             if not self.ev.pass_exists(pass_id):  # the gate records its own errors
                 reason = _redact(f"pass error: {type(exc).__name__}: {exc}")[:500]
                 self._fail(req, pass_id, parent, spend, [reason])
+            if (
+                self.cfg.v21
+            ):  # a WRITE pass all the same (drafts count it); its rounds are unknown
+                try:
+                    self.ev.record_pass_rounds(
+                        {
+                            "pass_id": pass_id,
+                            "role": "write",
+                            "rounds": None,
+                            "round_blobs": "[]",
+                            "gate_blob": None,
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - never masks the pass's own exception
+                    pass
             raise
 
     async def _run(
@@ -1780,6 +1863,30 @@ class SolPass:
         reserve = cap / max_calls if max_calls > 0 else cap
         deadline = time.monotonic() + float(self.cfg.deadline_s)
         calls, checks, summary = 0, 0, ""
+        # memory v2.1 repair rounds (spec §9.2; repair.py states the budget rule)
+        round_no = 0  # the round Sol is in: 0 until its first accepted finish
+        round_usd: list[Decimal] = []  # each completed round's charge
+        round_s: list[float] = (
+            []
+        )  # each completed round's seconds, its gate check included
+        round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for Sol
+        round_blobs: list[str] = []  # the same texts in the blob store
+        mark = [
+            Decimal("0"),
+            time.monotonic(),
+        ]  # the current round's start: charge, clock
+        # Amendment A: one stage-5 seed per pass, from its first committed candidate, for every check and the
+        # merge; and the last checked candidate, which the merge lands itself when the box is unchanged since
+        pass_seed: list[bytes | None] = [None]
+        check_files = [
+            0,
+        ]  # Amendment B: /inputs/gate/check-<k>.md written for Sol's check calls
+        checked: dict[str, Any] = {
+            "candidate": None,
+            "manifest": None,
+            "current": False,
+            "seconds": 0.0,
+        }
         base: ParentSnapshot | str | None = (
             None  # the parent, taken once for every check
         )
@@ -1808,7 +1915,7 @@ class SolPass:
             merged: list[str] | None = None,
             refused: dict[str, list[str]] | None = None,
         ) -> PassOutcome:
-            return PassOutcome(
+            o = PassOutcome(
                 pass_id,
                 passed,
                 commit,
@@ -1825,6 +1932,9 @@ class SolPass:
                 reads,
                 self._exported_bytes,
             )
+            if self.cfg.v21:
+                o.rounds, o.round_results = round_no + 1, list(round_paths)
+            return o
 
         with (
             self.mem.temp_checkout() as wt,
@@ -1890,6 +2000,146 @@ class SolPass:
             ]
             self.messages = messages
             finished = False
+
+            def charged() -> Decimal:
+                return spend.usd + spend.unknown * reserve
+
+            def commit_and_check(manifest: object) -> tuple[str, GateResult]:
+                """v2.1: the box as one commit on the parent, and the whole gate on it without merging, with
+                the pass's seed (set from the first candidate the pass commits; Amendment A).
+                """
+                candidate = self._commit_round(box, parent, pass_id, summary, manifest)
+                if pass_seed[0] is None:
+                    pass_seed[0] = _qa.seed_of(candidate)
+                return candidate, self.gate.check(
+                    parent,
+                    candidate,
+                    manifest,
+                    seed=pass_seed[0],
+                )
+
+            def check_tests(raw: object) -> str:
+                """Amendment B: under v2.1 ``check`` also runs the items' own tests and the gate's drawn inputs
+                (``gate.check``, no merge, nothing written to the evidence store). A refusal is answered with
+                the gate's full result as a head-first view of /inputs/gate/check-<k>.md, which read pages.
+                """
+                manifest, problem = _check_manifest(raw)
+                if problem is not None:
+                    return problem
+                try:
+                    candidate, res = commit_and_check(manifest)
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a broken check never ends the pass
+                    notes.append(
+                        _redact(f"check error: {type(exc).__name__}: {exc}")[:300],
+                    )
+                    return f"check error: {type(exc).__name__}"
+                if res.passed:
+                    return "ok: the static checks, the items' own tests and the gate's drawn inputs pass"
+                text = _repair.render_result(
+                    pass_id,
+                    round_no,
+                    res,
+                    final=False,
+                    candidate=candidate,
+                )
+                # a file under /inputs, so a long result can be paged with read at the marker's offset (P5)
+                vpath = f"/inputs/gate/check-{check_files[0]}.md"
+                (inputs / "gate").mkdir(exist_ok=True)
+                (inputs / "gate" / f"check-{check_files[0]}.md").write_text(text)
+                check_files[0] += 1
+                return _views.view(text.encode()) + f"\n(full result: {vpath})"
+
+            def repair() -> bool:
+                """v2.1, after an accepted finish (spec §9.2): True opens repair round ``round_no + 1``.
+
+                False ends the pass: its final candidate then goes to the one merge (per-item admission).
+                """
+                nonlocal round_no, stop, over_quota
+                round_usd.append(charged() - mark[0])
+                round_s.append(time.monotonic() - mark[1])
+
+                def refused_round(check_s: float) -> str | None:
+                    return _repair.may_repair(
+                        round_no,
+                        cap - charged(),
+                        remaining(),
+                        max_calls - calls,
+                        round_usd,
+                        round_s,
+                        self.cfg.round_reserve_usd,
+                        last_check_s=check_s,
+                    )
+
+                why = refused_round(
+                    checked["seconds"],
+                )  # before the check: no jail time on a pass that cannot repair
+                if why is not None:
+                    notes.append(why)
+                    return False
+                over_quota = _measure(
+                    box,
+                )  # also restores the host's access before the mirror
+                if over_quota is not None:
+                    stop = over_quota
+                    return False
+                started = time.monotonic()
+                found, manifest, problem = _read_manifest(box)
+                candidate = None
+                if not found or problem is not None:
+                    res = GateResult(False, {}, [problem or "no manifest"], [])
+                else:
+                    try:
+                        candidate, res = commit_and_check(manifest)
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 - the final merge records the gate's own error
+                        notes.append(
+                            _redact(
+                                f"repair: the gate's check failed: {type(exc).__name__}: {exc}",
+                            )[:300],
+                        )
+                        return False
+                    checked.update(candidate=candidate, manifest=manifest, current=True)
+                check_s = time.monotonic() - started
+                checked["seconds"] = check_s
+                round_s[
+                    -1
+                ] += check_s  # the gate's jail time counts against the deadline
+                if res.passed:
+                    return False  # the one merge lands this very commit
+                vpath = f"/inputs/gate/result-{round_no}.md"
+                text = _repair.render_result(
+                    pass_id,
+                    round_no,
+                    res,
+                    final=False,
+                    candidate=candidate,
+                )
+                (inputs / "gate").mkdir(exist_ok=True)
+                (inputs / "gate" / f"result-{round_no}.md").write_text(text)
+                round_paths.append(vpath)
+                store = getattr(self.gate, "blobs", None)
+                if isinstance(store, BlobStore):
+                    round_blobs.append(store.put(text.encode()))
+                why = refused_round(
+                    check_s,
+                )  # after the check, with its time: this one decides
+                if why is not None:
+                    notes.append(why)
+                    return False
+                round_no += 1
+                checked["current"] = False  # Sol may change the box again
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _repair.repair_message(round_no, vpath, res),
+                    },
+                )
+                mark[0], mark[1] = charged(), time.monotonic()
+                return True
+
             while (
                 not finished
                 and stop is None
@@ -2009,6 +2259,8 @@ class SolPass:
                             )
                             if detail is not None:
                                 notes.append(detail)
+                            elif self.cfg.v21 and content == "ok":
+                                content = check_tests(args.get("manifest"))
                     elif cov is not None and name in (
                         "read",
                         "grep",
@@ -2067,6 +2319,10 @@ class SolPass:
                             "content": "Use execute_code, check, or finish.",
                         },
                     )
+                if finished and self.cfg.v21 and stop is None and repair():
+                    finished = (
+                        False  # a repair round: the loop goes on under the same caps
+                    )
             if (
                 not finished
                 and stop is None
@@ -2084,19 +2340,35 @@ class SolPass:
             if over_quota is not None:
                 # no mirror, no commit: the tree is not looked at further
                 cause(CODE_OVER_QUOTA)
-                return outcome(
-                    False,
+                reasons = self._fail(req, pass_id, parent, spend, notes + [over_quota])
+                self._close_rounds(
+                    pass_id,
+                    round_no,
+                    round_blobs,
+                    GateResult(False, {}, list(reasons), []),
                     None,
-                    self._fail(req, pass_id, parent, spend, notes + [over_quota]),
+                    (),
                 )
+                return outcome(False, None, reasons)
             found, manifest, problem = _read_manifest(box)
             if not found:
                 cause(CODE_NO_MANIFEST)
-                return outcome(
-                    False,
-                    None,
-                    self._fail(req, pass_id, parent, spend, notes + ["no manifest"]),
+                reasons = self._fail(
+                    req,
+                    pass_id,
+                    parent,
+                    spend,
+                    notes + ["no manifest"],
                 )
+                self._close_rounds(
+                    pass_id,
+                    round_no,
+                    round_blobs,
+                    GateResult(False, {}, list(reasons), []),
+                    None,
+                    (),
+                )
+                return outcome(False, None, reasons)
             if problem is not None:
                 notes.append(problem)
                 cause(CODE_MANIFEST_INVALID)
@@ -2106,11 +2378,15 @@ class SolPass:
             if left_out:
                 notes.append(f"special or unreadable entries left out: {left_out[:5]}")
             sources = _sources(manifest)
-            candidate = self.mem.commit_all(
-                wt,
-                f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
-                {"Pass": pass_id, "Episode": sources, "Evidence": sources},
-            )
+            if self.cfg.v21 and checked["current"]:
+                # Amendment A: the box is unchanged since the last check, so the merge lands that very commit
+                candidate = checked["candidate"]
+            else:
+                candidate = self.mem.commit_all(
+                    wt,
+                    f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
+                    {"Pass": pass_id, "Episode": sources, "Evidence": sources},
+                )
         # a manifest that could not be read (not a regular file, not JSON) reaches the gate as None: G1 refuses it
         res = self.gate.merge(
             parent,
@@ -2120,6 +2396,7 @@ class SolPass:
             req.kind,
             req.channel,
             _usd(spend.usd),
+            **({"seed": pass_seed[0]} if pass_seed[0] is not None else {}),
         )
         if getattr(res, "manifest_invalid", False):
             cause(CODE_MANIFEST_INVALID)
@@ -2128,6 +2405,7 @@ class SolPass:
         # the pass's own notes (left-out entries, deadline, model failures) follow the gate's reasons
         tail = notes + _unpriced(spend.unknown)
         self.ev.add_pass_notes(pass_id, tail)
+        self._close_rounds(pass_id, round_no, round_blobs, res, candidate, tail)
         # the commit that landed: the candidate, or its reduction to the admitted items
         landed = getattr(res, "merged", None) or candidate
         return outcome(

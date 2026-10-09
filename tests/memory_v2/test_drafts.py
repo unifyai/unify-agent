@@ -146,3 +146,22 @@ def test_stage_drafts_writes_open_drafts_and_the_last_result(tmp_path):
     msg = drafts_message(staged, True)
     assert "- p1: memory.x:f" in msg and "/inputs/gate/previous.md" in msg
     assert drafts_message([], False).endswith("- none")
+
+
+def test_a_corrupt_blob_is_marked_never_staged_as_whole(tmp_path):
+    """RUNTIME (T3, m): a staged patch or result must hash to its id; a damaged one is a marker line."""
+    from unify.memory_v2.drafts import _blob
+
+    blobs = BlobStore(tmp_path / "b")
+    sha = blobs.put(b"diff --git a/x b/x\n")
+    assert _blob(blobs, sha, "patch") == b"diff --git a/x b/x\n"
+    path = tmp_path / "b" / sha[:2] / sha[2:]  # where BlobStore keeps it
+    path.write_bytes(b"diff --git a/x b/x\n+tampered\n")
+    assert (
+        _blob(blobs, sha, "patch")
+        == f"(patch {sha} is corrupt in the blob store)\n".encode()
+    )
+    assert (
+        _blob(blobs, "0" * 64, "patch")
+        == f"(patch {'0' * 64} is not in the blob store)\n".encode()
+    )

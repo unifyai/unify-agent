@@ -18,6 +18,7 @@ A state, once reached, is final. Finished and archived drafts stay in the eviden
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -54,10 +55,15 @@ def draft_states(rows: list[dict], idle: int = DRAFT_IDLE_PASSES) -> dict[str, s
 
 
 def _blob(blobs: BlobStore, sha: object, what: str) -> bytes:
-    """A blob's bytes, or a one-line marker naming what is missing (never a silent gap)."""
-    if isinstance(sha, str) and blobs.has(sha):
-        return blobs.get(sha)
-    return f"({what} {sha} is not in the blob store)\n".encode()
+    """A blob's bytes, or a one-line marker naming what is missing or corrupt (never a silent gap, and never a
+    damaged patch passed on as if whole): the bytes must hash to their id, as the store wrote them.
+    """
+    if not (isinstance(sha, str) and blobs.has(sha)):
+        return f"({what} {sha} is not in the blob store)\n".encode()
+    data = blobs.get(sha)
+    if hashlib.sha256(data).hexdigest() != sha:
+        return f"({what} {sha} is corrupt in the blob store)\n".encode()
+    return data
 
 
 def stage_drafts(
