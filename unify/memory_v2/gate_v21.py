@@ -454,7 +454,13 @@ class V21Checks:
             if outcome in ("handled", "refused"):
                 ok += 1
             else:
-                name = builtin_error(result) or "another exception"
+                # run_outputs names the class with its module (builtins.IndexError): only builtins are named
+                cls = (
+                    result[len("builtins.") :]
+                    if isinstance(result, str) and result.startswith("builtins.")
+                    else None
+                )
+                name = builtin_error(cls) or "another exception"
                 raised[name] = raised.get(name, 0) + 1
         record["cross_episode"] = {"ran": ran, "ok": ok}
         if raised:

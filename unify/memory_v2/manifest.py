@@ -546,8 +546,13 @@ def _parse_v21(manifest: dict) -> Manifest:
     if set(out.deleted) & set(out.unlisted):
         raise ManifestError("an item cannot be both deleted and unlisted")
     out.deleted_tests = tests_of(manifest.get("deleted_tests"), "deleted_tests")
-    if _str_list(manifest.get("skeleton"), "skeleton"):
-        raise ManifestError("the v2.1 library has no skeleton")
+    # the library modules whose module-level code (imports, bindings, docstring) the pass changes (P6)
+    out.skeleton = _str_list(manifest.get("skeleton"), "skeleton")
+    for s in out.skeleton:
+        if not re.fullmatch(r"memory\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?", s):
+            raise ManifestError(
+                f"{s!r} is not a library module (memory.<package>[.<module>])"[:200],
+            )
     return out
 
 

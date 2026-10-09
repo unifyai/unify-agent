@@ -304,11 +304,11 @@ def test_a_deleted_procedure_must_stay_covered(tmp_path):
     v = _checks(tmp_path, [], c_bodies={})
     v.gate.ev, v.run.man.deleted = _stored((gone, proc)), [gone]
     v.g5()
-    assert v.run.fails == [
+    # P6 Amendment B's wording: a remaining item holds a procedure only by reproducing it
+    assert [(c, r.split(";")[0], i) for c, r, i in v.run.fails] == [
         (
             "G5",
-            f"{gone} is deleted, but its procedures on e1 are covered by no remaining item; "
-            "a kept function must take over each recorded job",
+            f"{gone} is deleted, but its procedures on e1 are reproduced by no remaining item",
             gone,
         ),
     ]

@@ -2128,6 +2128,11 @@ class SolPass:
         with self.mem.temp_checkout(parent) as rwt:
             _clear_checkout(rwt)
             _mirror(box, rwt, skip_top=frozenset({".pass"}))
+            if getattr(self, "_v21_generated", None):
+                _drop_unchanged(
+                    rwt,
+                    self._v21_generated,
+                )  # P3: the generated files are never committed
             return self.mem.commit_all(
                 rwt,
                 f"consolidation pass {pass_id}: {_redact(summary)[:200]}".replace(

@@ -1348,8 +1348,15 @@ class QAChecks:
                     item,
                 )
             first = run.qa_first.get(t)
-            if first is not None:
-                new_cases |= outcome.passed - first.passed
+            if first is None:
+                # a test file this pass did not change has no first run (G3 runs new and changed tests only):
+                # the candidate's own run without the appended lines is the baseline (not kept in qa_first)
+                first = self._pytest(
+                    run.c_tree,
+                    t,
+                    self._timeout(self.cfg.run_s, f"the baseline run of {t}"),
+                )
+            new_cases |= outcome.passed - first.passed
         record["drawn_inputs_read"] = min(len(drawn), len(new_cases))
         if len(new_cases) < len(drawn):
             text = (
