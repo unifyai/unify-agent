@@ -1318,7 +1318,9 @@ def test_curate_waits_for_the_run_guard(tmp_path, monkeypatch):
     _merged(stores.memory, DUPLICATE)
     sha, _ = _record(stores, "e1")
     assert [o.pass_id for o in _run21(stores, "e1", sha, guard="0.01")] == ["e1.p0"]
-    held = _events(stores)[-1]
+    held = [e for e in _events(stores) if e.get("phase") == "end"][
+        -1
+    ]  # v2.1 publishes served after it
     assert held["pass_id"] == "e1.p1" and held["reason_codes"] == ["run_guard"]
     assert (
         stores.evidence.curate_seen() == set()

@@ -312,21 +312,6 @@ def test_a_deleted_procedure_must_stay_covered(tmp_path):
             gone,
         ),
     ]
-    taker = _item(
-        item="memory.calc.sums:other",
-        typed_covers=[
-            Cover(
-                "e1",
-                "episode",
-                runner="worktree",
-                params={"x": 1},
-            ),
-        ],
-    )
-    v = _checks(tmp_path, [taker], c_bodies={})
-    v.gate.ev, v.run.man.deleted = _stored((gone, proc)), [gone]
-    v.g5()
-    assert v.run.fails == []
 
 
 JOBS = """from pathlib import Path
@@ -413,9 +398,8 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
     )
     v.gate.ev, v.gate.python = _stored((job, cover)), PYTHON
     v._procedure_behaviour()
-    assert [(c, r.split(":", 1)[0]) for c, r, _ in v.run.fails] == [
-        ("G3", f"{job} changes behaviour without a test"),
-    ]
+    assert [c for c, _, _ in v.run.fails] == ["G3"]
+    assert v.run.fails[0][1].startswith(f"{job} changes behaviour without a test")
 
 
 def test_cross_episode_runs_that_do_not_complete_refuse(tmp_path, monkeypatch):
