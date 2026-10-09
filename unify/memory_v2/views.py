@@ -205,9 +205,8 @@ def grep_bounded(
     except subprocess.TimeoutExpired:
         return f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
     if r.returncode != 0:
-        return f"refused: grep failed ({r.stderr.decode(errors='replace').strip().splitlines()[-1:]})"[
-            :300
-        ]
+        last = " ".join(r.stderr.decode(errors="replace").strip().splitlines()[-1:])
+        return f"refused: grep failed ({last})"[:300]
     return r.stdout.decode("utf-8", errors="replace")
 
 

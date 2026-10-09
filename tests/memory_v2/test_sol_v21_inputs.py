@@ -118,3 +118,37 @@ def test_stage_inputs_writes_the_batch_map_only_under_v21(tmp_path: Path):
         "action:0",
     ]
     assert not (_staged(tmp_path / "off") / "batch_map.json").exists()
+
+
+def test_export_blobs_records_the_bytes_exported(tmp_path: Path):
+    sha = "b" * 64
+    ep = _ep()
+    ep.actions = [
+        Action(
+            cell=0,
+            channel="ws",
+            method="write",
+            args=[],
+            kwargs={},
+            kind="worktree",
+            response={"blob_after": sha},
+        ),
+    ]
+    out = export_blobs(
+        lambda e: ep,
+        ["e1"],
+        _Blobs({sha: b"12345"}),
+        tmp_path / "on",
+        per_blob_bytes=None,
+        total_bytes=None,
+        record_bytes=True,
+    )
+    assert out["exported_bytes"] == 5
+    assert (
+        json.loads((tmp_path / "on" / "index.json").read_text())["exported_bytes"] == 5
+    )
+    off = export_blobs(lambda e: ep, ["e1"], _Blobs({sha: b"12345"}), tmp_path / "off")
+    assert "exported_bytes" not in off
+    assert "exported_bytes" not in json.loads(
+        (tmp_path / "off" / "index.json").read_text(),
+    )

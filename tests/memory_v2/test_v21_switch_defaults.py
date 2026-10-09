@@ -403,3 +403,17 @@ def test_a_merge_at_the_defaults_keeps_the_v2_evidence_schema(
     assert _tables(ev.db) == _tables(base) | TELEMETRY_TABLES
     assert ev.commit_shapes(mem.head()) is None
     assert not any(r.startswith(("note: G4", "G3: the examples")) for r in res.reasons)
+
+
+def test_memory_v21_switch_default_off_and_validated(monkeypatch):
+    """UNIFY_MEMORY_V21 (spec v2.1, P1 Task 6): off by default, ``off``/``on`` (empty means off), else refused."""
+    from unify.settings import ProductionSettings
+
+    monkeypatch.delenv("UNIFY_MEMORY_V21", raising=False)
+    assert ProductionSettings().UNIFY_MEMORY_V21 == "off"
+    for raw, want in (("", "off"), ("off", "off"), (" ON ", "on")):
+        monkeypatch.setenv("UNIFY_MEMORY_V21", raw)
+        assert ProductionSettings().UNIFY_MEMORY_V21 == want
+    monkeypatch.setenv("UNIFY_MEMORY_V21", "maybe")
+    with pytest.raises(ValueError):
+        ProductionSettings()

@@ -449,6 +449,9 @@ def sol_tools(
 #: The v2 tools (every v2.1 switch at its default).
 _TOOLS = sol_tools()
 _OUTPUT_CAP = 8000
+#: spec v2.1 §7.4: parts per read_episode call (one shared page) and reader calls per model turn
+READ_PARTS_PER_CALL = 8
+READERS_PER_TURN = 16
 
 
 def _head_marked(text: str) -> tuple[str, str]:
@@ -518,6 +521,8 @@ class PassConfig:
     show_usage: bool = False
     # UNIFY_MEMORY_V21 (spec v2.1, P1): the writer's batch map, signals, views, coverage (off: as at 4675a3c45)
     v21: bool = False
+    # spec v2.1 §7.4: reader calls (read, grep, read_episode, dismiss) count here, never against max_calls
+    max_reads: int = 400
 
 
 @dataclass
@@ -541,6 +546,8 @@ class PassOutcome:
     items_refused: dict[str, list[str]] = field(default_factory=dict)
     # spec v2.1 §7.4: views.Coverage.summary() of the writer's reads (None with v21 off)
     coverage: dict | None = None
+    reads: int = 0  # reader calls made (v21)
+    exported_bytes: int | None = None  # blob bytes staged in /inputs (v21: uncapped)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -649,6 +656,7 @@ def export_blobs(
     *,
     per_blob_bytes: int | None = EXPORT_BLOB_BYTES,
     total_bytes: int | None = EXPORT_TOTAL_BYTES,
+    record_bytes: bool = False,
 ) -> dict:
     """Copy the file blobs the episodes' worktree actions recorded to ``<dest>/<blob id>``, size-capped.
 
@@ -692,10 +700,13 @@ def export_blobs(
                     (dest / sha).write_bytes(blobs.get(sha))
                     used += size
                     exported.append(sha)
-    (dest / "index.json").write_text(
-        json.dumps({"exported": exported, "skipped": skipped}, sort_keys=True) + "\n",
-    )
-    return {"exported": exported, "skipped": skipped}
+    out: dict = {"exported": exported, "skipped": skipped}
+    if (
+        record_bytes
+    ):  # v2.1: the bytes actually staged, so an uncapped export's size is on record
+        out["exported_bytes"] = used
+    (dest / "index.json").write_text(json.dumps(out, sort_keys=True) + "\n")
+    return out
 
 
 def previous_gate(evidence: EvidenceStore, channels: Iterable[str]) -> dict:
@@ -1472,14 +1483,16 @@ class SolPass:
             blob_min_bytes=self._qa.response_blob_bytes,
             v21=self.cfg.v21,
         )
-        export_blobs(
+        exported = export_blobs(
             self.load,
             list(req.episodes),
             getattr(self.gate, "blobs", None),
             inputs / "blobs",
             per_blob_bytes=None if self.cfg.v21 else EXPORT_BLOB_BYTES,
             total_bytes=None if self.cfg.v21 else EXPORT_TOTAL_BYTES,
+            record_bytes=self.cfg.v21,
         )
+        self._exported_bytes = exported.get("exported_bytes")
         (inputs / "request.json").write_text(
             json.dumps(
                 {
@@ -1600,6 +1613,36 @@ class SolPass:
             return f"check error: {type(exc).__name__}", detail
         return _check_reply(reasons), None
 
+    @staticmethod
+    def _read_parts(ep: Episode, eid: str, parts: object, cov: _views.Coverage) -> str:
+        """``read_episode(parts=[...])``: up to READ_PARTS_PER_CALL parts sharing ONE VIEW_BYTES page, filled in
+        order. Each part has its own marked view and is credited for the range shown; a part reached with the
+        page full is listed, not shown. A part is a name or ``{"part": name, "offset": n}``.
+        """
+        if not isinstance(parts, list) or not parts:
+            return "refused: parts must be a non-empty list"
+        if len(parts) > READ_PARTS_PER_CALL:
+            return f"refused: at most {READ_PARTS_PER_CALL} parts per call"
+        left, out = _views.VIEW_BYTES, []
+        for item in parts:
+            name, off = (
+                (item.get("part"), item.get("offset", 0))
+                if isinstance(item, dict)
+                else (item, 0)
+            )
+            name = str(name)
+            data = _bm.part_text(ep, name).encode()
+            if left <= 0:
+                out.append(
+                    f"== {name} ==\nnot shown (page full): read again with parts={json.dumps([name])}",
+                )
+                continue
+            text, a, b = _views.view_range(data, int(off or 0), left)
+            cov.credit(eid, _bm.canonical_part(ep, name), a, b)
+            left -= b - a
+            out.append(f"== {name} ==\n{text}")
+        return "\n\n".join(out)
+
     async def _v21_tool(
         self,
         name: str,
@@ -1629,13 +1672,16 @@ class SolPass:
                     str(args.get("episode", "")),
                     str(args.get("reason", "")),
                 )
-            eid, part = str(args.get("episode", "")), str(args.get("part", ""))
+            eid = str(args.get("episode", ""))
             if eid not in eps:
                 return f"refused: {eid!r} is not in this batch"[:300]
-            data = _bm.part_text(eps[eid], part).encode()
-            text, a, b = _views.view_range(data, offset)
-            cov.credit(eid, _bm.canonical_part(eps[eid], part), a, b)
-            return text
+            if "parts" not in args:
+                part = str(args.get("part", ""))
+                data = _bm.part_text(eps[eid], part).encode()
+                text, a, b = _views.view_range(data, offset)
+                cov.credit(eid, _bm.canonical_part(eps[eid], part), a, b)
+                return text
+            return self._read_parts(eps[eid], eid, args.get("parts"), cov)
         except (
             OSError,
             KeyError,
@@ -1726,6 +1772,8 @@ class SolPass:
         over_quota: str | None = None
         causes: list[str] = []  # PassOutcome.codes, set where each cause arises
         errored = False
+        reads = 0  # v21 reader calls, against cfg.max_reads
+        self._exported_bytes = None
         cov: _views.Coverage | None = (
             None  # spec v2.1 §7.4, built after /inputs is staged
         )
@@ -1758,6 +1806,8 @@ class SolPass:
                 list(merged or []),
                 dict(refused or {}),
                 cov.summary() if cov is not None else None,
+                reads,
+                self._exported_bytes,
             )
 
         with (
@@ -1874,6 +1924,7 @@ class SolPass:
                 tool_calls = msg.get("tool_calls") or []
                 tool_calls = tool_calls if isinstance(tool_calls, list) else []
                 ran = 0
+                readers = 0  # v21 reader calls in this turn
                 for n, tc in enumerate(tool_calls):
                     if not isinstance(tc, dict):
                         messages.append(
@@ -1948,10 +1999,13 @@ class SolPass:
                         "read_episode",
                         "dismiss",
                     ):
-                        if calls >= max_calls:
-                            content = "not run: the pass's call cap is reached"
+                        if readers >= READERS_PER_TURN:
+                            content = f"not run: at most {READERS_PER_TURN} reader calls per turn"
+                        elif name != "dismiss" and reads >= int(self.cfg.max_reads):
+                            content = "not run: reader budget reached"  # dismiss still runs, so a pass can end
                         else:
-                            calls += 1  # a reader call counts against max_calls, as a check does
+                            readers += 1
+                            reads += 1
                             content = await self._v21_tool(name, args, roots, cov, eps)
                     elif name != "execute_code":
                         content = (

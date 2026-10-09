@@ -166,3 +166,66 @@ def test_v21_tools_are_unknown_when_off(tmp_path):
         model.outputs["r"] == "unknown tool 'read'; use execute_code, check or finish"
     )
     assert out.coverage is None
+
+
+def _calls(*calls):
+    """One assistant turn carrying several tool calls."""
+    return {"role": "assistant", "tool_calls": [c["tool_calls"][0] for c in calls]}
+
+
+def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
+    read = lambda cid: _call(
+        cid,
+        "read_episode",
+        {"episode": "e2", "part": "request"},
+    )  # noqa: E731
+    turns = [
+        read("a"),
+        read("b"),
+        _calls(
+            read("c"),
+            _call("d", "dismiss", {"episode": "e1", "reason": "nothing reusable"}),
+        ),
+    ]
+    out, model = _pass(tmp_path, turns, max_calls=4, max_reads=2)
+    assert model.outputs["a"] == '"req"' and model.outputs["b"] == '"req"'
+    assert model.outputs["c"] == "not run: reader budget reached"
+    assert (
+        model.outputs["d"] == "ok"
+    )  # dismiss still runs past the budget, so the pass can finish
+    assert (
+        out.reads == 3 and out.calls == 4
+    )  # model turns only; reader calls are counted apart
+    assert out.coverage["missing"] == [] and out.summary == "done"
+
+
+def test_at_most_16_reader_calls_per_turn(tmp_path):
+    many = [_call(f"r{i}", "read", {"path": "/inputs"}) for i in range(17)]
+    _, model = _pass(tmp_path, [_calls(*many)], max_calls=3)
+    assert model.outputs["r15"].startswith("batch_map.json")
+    assert model.outputs["r16"] == "not run: at most 16 reader calls per turn"
+
+
+def test_read_episode_parts_share_one_page(tmp_path):
+    ep = EPS["e1"]
+    cell = bm.part_text(ep, "cell:0").encode()
+    turns = [
+        _call(
+            "p",
+            "read_episode",
+            {"episode": "e1", "parts": ["request", "cell:0", "observation:0"]},
+        ),
+        _call("many", "read_episode", {"episode": "e1", "parts": ["request"] * 9}),
+    ]
+    out, model = _pass(tmp_path, turns, max_calls=5)
+    got = model.outputs["p"]
+    request, rest = got.split("\n\n== cell:0 ==\n", 1)
+    assert request == '== request ==\n"req"'
+    shown = views.VIEW_BYTES - len(b'"req"')
+    assert f"[… shown bytes 0–{shown} of {len(cell)}; next: offset={shown}]" in rest
+    assert rest.endswith(
+        '== observation:0 ==\nnot shown (page full): read again with parts=["observation:0"]',
+    )
+    assert model.outputs["many"] == "refused: at most 8 parts per call"
+    s = out.coverage
+    assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1

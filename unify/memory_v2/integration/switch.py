@@ -116,6 +116,8 @@ SURFACING = "UNIFY_MEMORY_V2_SURFACING"
 DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
 SOL_USAGE = "UNIFY_MEMORY_V2_SOL_USAGE"
+# memory v2.1 (spec v2.1; P1 onwards): the writer's batch map, views and coverage; off by default
+V21 = "UNIFY_MEMORY_V21"
 DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
 
 QA_FIXTURES = "UNIFY_MEMORY_V2_QA_FIXTURES"
@@ -582,6 +584,11 @@ def parse_soft_budget(v: Any) -> str:
     return _on_off(SOFT_BUDGET, v)
 
 
+def parse_memory_v21(v: Any) -> str:
+    """``UNIFY_MEMORY_V21``: ``off`` (also for empty) or ``on``."""
+    return _on_off(V21, v)
+
+
 @dataclass(frozen=True)
 class SurfacingOptions:
     """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
@@ -695,6 +702,7 @@ PARSERS = {
     DOCSTRINGS: parse_docstrings,
     SOFT_BUDGET: parse_soft_budget,
     SOL_USAGE: parse_sol_usage,
+    V21: parse_memory_v21,
     QA_FIXTURES: parse_qa_fixtures,
     QA_MUTATION: parse_qa_mutation,
     QA_MIN_KILL: parse_qa_min_kill,

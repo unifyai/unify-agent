@@ -304,6 +304,9 @@ class SolSettings:
         default_factory=lambda: sol_effort_scale_map(""),
     )
     max_calls: dict[str, int] = field(default_factory=lambda: sol_max_calls_map(""))
+    v21: bool = (
+        False  # UNIFY_MEMORY_V21: the writer's batch map, views and coverage (spec v2.1)
+    )
 
     @property
     def cap_usd(self) -> Decimal:
@@ -377,12 +380,13 @@ def sol_settings(settings: Any) -> SolSettings:
             f"{SOL_BASE_URL} replaces the OpenRouter transport; UNIFY_MEMORY_V2_SOL_MODEL must be an "
             "@openrouter endpoint (or a bare model id)",
         )
-    from .switch import parse_sol_usage
+    from .switch import V21, parse_memory_v21, parse_sol_usage
 
     usage = parse_sol_usage(getattr(settings, "UNIFY_MEMORY_V2_SOL_USAGE", "") or "")
+    v21 = parse_memory_v21(getattr(settings, V21, "") or "") == "on"
     scale = sol_effort_scale_map(getattr(settings, SOL_EFFORT_SCALE, "") or "")
     calls = sol_max_calls_map(getattr(settings, SOL_MAX_CALLS, "") or "")
-    return SolSettings(model, e, a_tok, guard, route, usage == "on", scale, calls)
+    return SolSettings(model, e, a_tok, guard, route, usage == "on", scale, calls, v21)
 
 
 # --- money -----------------------------------------------------------------------------------------------
@@ -638,6 +642,17 @@ def _end_event(
             if outcome is not None
             else {}
         ),
+        # memory v2.1 only (absent with UNIFY_MEMORY_V21 off): the writer's coverage, its reader calls and the
+        # blob bytes its /inputs held (uncapped under v2.1, so a disk-full stage leaves its size here)
+        **(
+            {
+                "coverage": outcome.coverage,
+                "reads": int(outcome.reads),
+                "exported_bytes": outcome.exported_bytes,
+            }
+            if outcome is not None and outcome.coverage is not None
+            else {}
+        ),
     }
 
 
@@ -722,6 +737,7 @@ async def run_due_passes(
         deadline_s=DEADLINE_S,
         max_usd=cap,
         show_usage=cfg.show_usage,
+        v21=cfg.v21,
     )
     outcomes: list[PassOutcome] = []
     for i, req in enumerate(due):

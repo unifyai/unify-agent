@@ -403,6 +403,10 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
     UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
     UNIFY_MEMORY_V2_SOL_USAGE: str = ""
+    # Memory v2.1 (unify/memory_v2; spec docs memory-v2.1-spec.md): ``off``
+    # (default; empty means it) or ``on``. On: the writer reads a batch
+    # map and bounded views, and finish waits for coverage. Off: v2 as built.
+    UNIFY_MEMORY_V21: str = "off"
     # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
     # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
@@ -627,6 +631,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_DOCSTRINGS",
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
         "UNIFY_MEMORY_V2_SOL_USAGE",
+        "UNIFY_MEMORY_V21",
         "UNIFY_MEMORY_V2_QA_FIXTURES",
         "UNIFY_MEMORY_V2_QA_MUTATION",
         "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",

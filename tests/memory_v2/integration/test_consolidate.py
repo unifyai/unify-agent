@@ -1082,7 +1082,11 @@ def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on
 
 
 @pytest.mark.parametrize("step", [RuntimeError("upstream failed"), "sleep"])
-def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(tmp_path, monkeypatch, step):
+def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
+    tmp_path,
+    monkeypatch,
+    step,
+):
     # Sol's proxy serves one Sol call at a time: after a call ended by an error or the deadline (it may still be
     # running upstream), the session starts no further pass; the request stays due
     fake = FakeSol(script=[step])
@@ -1101,3 +1105,52 @@ def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(tmp_pat
     assert fake.calls == 1
     assert [e["phase"] for e in _events(stores)] == ["start", "end"]
     assert len(outcomes) <= 1
+
+
+# --- memory v2.1 P1 (UNIFY_MEMORY_V21) ------------------------------------------------------------------
+
+
+def _v21_settings(raw):
+    s = _settings()
+    s.UNIFY_MEMORY_V21 = raw
+    return s
+
+
+def test_sol_settings_reads_the_v21_switch():
+    assert sol_settings(_settings()).v21 is False
+    assert sol_settings(_v21_settings("on")).v21 is True
+    assert sol_settings(_v21_settings("off")).v21 is False
+    with pytest.raises(ValueError):
+        sol_settings(_v21_settings("maybe"))
+
+
+def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monkeypatch):
+    fake = FakeSol()  # finishes every turn: refused under v21 until e1 is covered
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    (out,) = asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=_v21_settings("on"),
+            emit=None,
+        ),
+    )
+    assert not out.passed and out.coverage["missing"] == ["e1"]
+    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
+    assert end["coverage"] == out.coverage
+    assert end["reads"] == 0 and end["exported_bytes"] == 0
+
+
+def test_v21_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    (out,) = _run(stores, "e1", sha)
+    assert out.coverage is None
+    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
+    assert not {"coverage", "reads", "exported_bytes"} & set(end)
