@@ -79,6 +79,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from .. import gate_v21
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
 from ..evidence import EvidenceStore
@@ -729,6 +730,8 @@ async def run_due_passes(
         # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
         **surfacing_options(settings).gate_kwargs(),
         qa=QAConfig.from_settings(settings),  # stage-5 test checks; all off by default
+        # memory v2.1 (spec §9.1, P4 Amendment E): the v2.1 layout and checks for WRITE; v2 when the switch is off
+        v21=gate_v21.config_for(stores, lookup) if cfg.v21 else None,
     )
     config = PassConfig(
         model=cfg.model,
