@@ -387,8 +387,13 @@ def run_confined(
     cwd: str = "/tmp",
     timeout_s: float = 120.0,
     env: dict[str, str] | None = None,
+    late_ro: dict[Path, str] | None = None,
 ) -> SandboxResult:
     """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
+
+    *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
+    read-only (memory v2.1's generated files in the writer's box, P3 Amendment C). Each source must be an
+    existing path that is not a link.
 
     *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
     bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
@@ -422,6 +427,13 @@ def run_confined(
     for src, dst in (rw or {}).items():
         _check_bind_source(src, homes)
         args += ["--bind", str(src), dst]
+    for src, dst in (late_ro or {}).items():
+        _check_bind_source(src, homes)
+        if Path(src).is_symlink() or not Path(src).exists():
+            raise ValueError(
+                f"refusing a late read-only bind of {src}: missing or a link",
+            )
+        args += ["--ro-bind", str(src), dst]
     args += [
         "--remount-ro",
         "/",

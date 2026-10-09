@@ -115,3 +115,54 @@ def render_catalogue(checkout: Path, shown_before: bool = False) -> tuple[str, d
     checkout = Path(checkout)
     text = GUIDE if shown_before or channel_lines(checkout) else ""
     return text, record_shown(text, channels=(), items=(), renderer="catalogue")
+
+
+#: The v2.1 actor guide (spec §12.1): constant bytes, naming nothing the library holds. P7 replaces this text
+#: with the GUIDE the lead reviews; the section's layout (guide, location, index view) stays.
+GUIDE_V21 = (
+    "Memory: a Python library of tested functions and linked notes built from earlier work. "
+    "`import memory` in a cell; the index below lists every item. `memory.show(item)` shows one in full "
+    '(source, links, status, history), `memory.index("<package>")` prints one section of the index, and '
+    "`memory.find(value)` lists the functions built on recorded inputs shaped like structured data you hold "
+    "(it cannot match plain text). `experimental` items are candidates; `stable` ones are tested and have "
+    "been used; suspect items are left out of the index, and `memory.show` says why. A function raises "
+    "MemoryInputError on an input it was not built for; then do the work directly. Write your own code in "
+    "your session as usual.\n"
+)
+
+
+def location_line(checkout: Path) -> str:
+    return f"Library files: `{checkout}`, holding INDEX.md, links.json, memory/ and notes/.\n"
+
+
+def render_memory_v21(
+    checkout: Path,
+    budget_tokens: int | None = None,
+) -> tuple[str, dict]:
+    """``UNIFY_MEMORY_V21=on`` (spec v2.1 §4.5, §6): the guide, the copy's location, then the index view
+    (:func:`..library_index.index_view` of the copy's ``INDEX.md``), or ``""`` while the index lists no item.
+
+    The hooks append it last in the system prompt, after the clock line (:func:`.hooks.system_prompt`). The
+    guide and the location are the same for the whole run, and the view changes only when a consolidation
+    commits or changes a status (cache rule), so each pass changes only the section's tail.
+    """
+    from ..analysis.use import record_shown
+    from ..layout import INDEX_FILE
+    from ..library_index import INDEX_VIEW_TOKENS, index_view, listed, packages_of
+
+    checkout = Path(checkout)
+    try:
+        index = (checkout / INDEX_FILE).read_text(encoding="utf-8")
+    except OSError:
+        index = ""
+    text = ""
+    if listed(index):
+        budget = INDEX_VIEW_TOKENS if budget_tokens is None else budget_tokens
+        text = GUIDE_V21 + location_line(checkout) + "\n" + index_view(index, budget)
+    # per-item exposure under v2.1 is P5's (use records); the record keeps the packages and the digest
+    return text, record_shown(
+        text,
+        channels=packages_of(index),
+        items=(),
+        renderer="index_v21",
+    )

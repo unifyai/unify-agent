@@ -195,7 +195,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import docstrings
+from . import docstrings, layout
 from .admission import cover_problem, is_rejection
 from .blobs import BlobStore
 from .catalogue import body_digest, catalogue_tokens, reserved
@@ -219,6 +219,7 @@ from .held_out import (
     seen_actions,
 )
 from . import reduction
+from .gate_v21 import V21Config
 from .manifest import (
     MODULE_PATH,
     NOTES_PATH,
@@ -700,6 +701,8 @@ class _Run:
     # the stage-5 seed (memory v2.1: one per pass, so every round's check and the final merge draw the same
     # recorded inputs and mutants); None: :func:`.qa.seed_of` the candidate, as in v2
     seed: bytes | None = None
+    # v2.1: the import graph of both versions (G3's behaviour scope; None in v2)
+    graph: dict[str, set[str]] | None = None
 
     def fail(
         self,
@@ -763,6 +766,7 @@ class Gate:
         surfacing: str = "index",
         soft_budget: bool = False,
         qa: QAConfig | None = None,
+        v21: V21Config | None = None,
     ) -> None:
         """The v2.1 switches (:mod:`.integration.switch`; each default is the v2 behaviour):
         *docstring_standard* turns on the lean docstring standard (G1) and its examples run (G3) for new or
@@ -770,6 +774,9 @@ class Gate:
         commit for the export's catalogue; *soft_budget* makes *budget_tokens* G4's soft budget (a note,
         never a refusal) instead of the index's hard cap. *qa* is the stage-5 test checks' configuration
         (:class:`.qa.QAConfig`; None runs none of them). Sol's brief follows the gate's switches.
+        *v21* (``UNIFY_MEMORY_V21``, :class:`.gate_v21.V21Config`; None is v2): with ``layout``, covers have
+        no channel rule (G2), and G3's behaviour check and per-item reduction are scoped by the import graph
+        (D42).
         """
         if surfacing not in ("index", "catalogue"):
             raise ValueError(
@@ -789,6 +796,13 @@ class Gate:
         self.pytest = pytest_runner
         # stage-5 test checks (memory v2.1); the default runs none of them
         self.qa = qa if qa is not None else QAConfig()
+        self.v21 = v21
+
+    @property
+    def _layout21(self) -> bool:
+        """Memory v2.1's library layout rules (D42) are on."""
+        v21 = getattr(self, "v21", None)
+        return v21 is not None and bool(v21.layout)
 
     # -- public API ---------------------------------------------------------------------------------------
     def check(
@@ -1192,6 +1206,7 @@ class Gate:
                 run.man,
                 run.item_fail,
                 run.c_tree,
+                v21=self._layout21,
             )
             manifest = reduction.build(
                 run.man,
@@ -1428,7 +1443,7 @@ class Gate:
         return [
             it.item
             for it in run.man.items
-            if it.kind == "env_function"
+            if it.kind in ("env_function", "function")
             and it.item in run.c_bodies
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
@@ -1604,7 +1619,12 @@ class Gate:
                 valid: list[tuple[str, int, Action]] = []
                 for eid, idx in it.covers:
                     action = lookup(eid, idx)
-                    problem = cover_problem(action, it.channel, self.blobs.has)
+                    problem = cover_problem(
+                        action,
+                        it.channel,
+                        self.blobs.has,
+                        channel_rule=not self._layout21,
+                    )
                     if problem is not None:
                         run.fail(
                             "G2",
@@ -1908,27 +1928,10 @@ class Gate:
                     ),
                     item,
                 )
-        for channel in sorted(self._changed_channels(run)):
-            module = f"{channel}/__init__.py"
-            before = public_bindings(
-                (run.p_tree / module).read_bytes() if module in run.p_files else None,
-            )
-            after = public_bindings(
-                (run.c_tree / module).read_bytes() if module in run.c_files else None,
-            )
-            for name, is_def in sorted((before or {}).items()):
-                item = f"{channel}:{name}"
-                if (
-                    item in probes
-                    or item in unseen
-                    or item in declared
-                    or item in refused
-                ):
-                    continue
-                if after is None or name not in after:
-                    continue  # deleted: its recorded covers stay covered under G5
-                if is_def or item in recorded:
-                    probes[item] = self._probe(run, item, recorded, strict=False)
+        for item in self._behaviour_targets(run, recorded, self._layout21):
+            if item in probes or item in unseen or item in declared or item in refused:
+                continue
+            probes[item] = self._probe(run, item, recorded, strict=False)
         total = sum(len(p.cases) for p in probes.values())
         if total > BEHAVIOUR_MAX_CASES:
             run.fail(
@@ -1990,6 +1993,66 @@ class Gate:
         }
 
     @staticmethod
+    def _behaviour_targets(
+        run: _Run,
+        recorded: dict[str, set[tuple[str, int]]],
+        v21: bool = False,
+    ) -> list[str]:
+        """The functions G3's behaviour check compares (D28), in order, before :meth:`_behaviour`'s skips.
+
+        **v2:** for each changed channel, every public function of its parent module whose name the candidate's
+        module still binds: a ``def``, or a name bound by assignment or import that has recorded covers.
+
+        **v2.1** (spec §4.1, D42): the same rule over each changed library module and every module that imports
+        one, directly or through others. The scope uses :func:`..layout.dependants` over the import graphs of
+        both versions. The graph is kept on the run for :meth:`_behaviour_owner`.
+        """
+        if v21:
+            run.graph = layout.merge_graphs(
+                layout.import_graph(run.p_tree),
+                layout.import_graph(run.c_tree),
+            )
+            changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
+            scope = [
+                (m, layout.module_path(m))
+                for m in sorted(layout.dependants(run.graph, changed))
+            ]
+        else:
+            scope = [
+                (ch, f"{ch}/__init__.py") for ch in sorted(Gate._changed_channels(run))
+            ]
+        out: list[str] = []
+        for prefix, module in scope:
+            before = public_bindings(
+                (run.p_tree / module).read_bytes() if module in run.p_files else None,
+            )
+            after = public_bindings(
+                (run.c_tree / module).read_bytes() if module in run.c_files else None,
+            )
+            for name, is_def in sorted((before or {}).items()):
+                item = f"{prefix}:{name}"
+                if after is None or name not in after:
+                    continue  # deleted: its recorded covers stay covered under G5
+                if is_def or item in recorded:
+                    out.append(item)
+        return out
+
+    @staticmethod
+    def _source_channels(acts: list[tuple[str, int, Action]]) -> list[str]:
+        """v2.1: the memory channels (``env/<name>``) of a function's recorded covers. They stand for the channel
+        its path named in v2 (spec §4.1: the source channel moves to the item's record, P5).
+        """
+        out: set[str] = set()
+        for _, _, a in acts:
+            kind = getattr(a, "kind", "tool")
+            if kind == "shell":
+                continue
+            ch = env_channel(kind, a.channel)
+            if ch:
+                out.add(f"env/{ch}")
+        return sorted(out)
+
+    @staticmethod
     def _behaviour_owner(run: _Run, item: str, pr: _Probe) -> str | None:
         """The one manifest item a behaviour change of *item* found by :meth:`_behaviour` is attributable to
         (per-item admission); None refuses the pass whole.
@@ -2000,10 +2063,22 @@ class Gate:
         module is one environment function in ``items`` whose body it adds or edits: no ``skeleton`` change of
         the channel and no ``deleted`` or ``unlisted`` item there. Refusing that item restores the parent's
         function and refuses its callers (:mod:`.reduction`), and the reduced candidate runs the behaviour
-        check again. A parent library that cannot be read is no item's.
+        check again. A parent library that cannot be read is no item's. Under v2.1 the edits that count are
+        those in the item's module or in a library module it imports, directly or through others.
         """
         if pr.why == "the parent's library cannot be read":
             return None
+        if (
+            run.graph is not None
+        ):  # v2.1 (D42): what the item's module imports, transitively
+            related = layout.imported_closure(run.graph, item.split(":", 1)[0])
+            touched = (*run.man.deleted, *run.man.unlisted)
+            if any(s in related for s in run.man.skeleton) or any(
+                o.split(":", 1)[0] in related for o in touched
+            ):
+                return None
+            owners = [e for e in Gate._edited(run) if e.split(":", 1)[0] in related]
+            return owners[0] if len(owners) == 1 else None
         channel = item.split(":", 1)[0]
         if channel in run.man.skeleton or any(
             other.split(":", 1)[0] == channel
@@ -2418,11 +2493,17 @@ class Gate:
             return pr
         pr.skipped += len(unread)
         given = {(e, i) for e, i, _ in acts}
-        acts += [
-            c
-            for c in self._episode_inputs(run, item.split(":", 1)[0])
-            if (c[0], c[1]) not in given
-        ]
+        if (
+            self._layout21
+        ):  # the recorded actions of its covers' channels in this pass's episodes (D42)
+            pool = [
+                c
+                for ch in self._source_channels(acts)
+                for c in self._episode_inputs(run, ch)
+            ]
+        else:
+            pool = self._episode_inputs(run, item.split(":", 1)[0])
+        acts += [c for c in pool if (c[0], c[1]) not in given]
         if any(_form(a, p_form) != _form(a, c_form) for _, _, a in acts):
             pr.why = "its input form changed"
             return pr

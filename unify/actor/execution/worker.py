@@ -283,9 +283,17 @@ class PythonWorker:
         workspace = str(policy.workspace)
         from unify.memory_v2.integration import hooks as _mv2
 
-        # UNIFY_MEMORY_V2=on: the request's memory export, read-write.
+        # UNIFY_MEMORY_V2=on: the request's memory export, read-write (v2) ...
         mounts = _mv2.worker_mounts()
-        wrapped = sandbox.wrap_argv(argv, policy, cwd=workspace, writable=mounts)
+        # ... or read-only (UNIFY_MEMORY_V21=on, spec v2.1 §6)
+        late_ro = _mv2.worker_readonly_mounts()
+        wrapped = sandbox.wrap_argv(
+            argv,
+            policy,
+            cwd=workspace,
+            writable=mounts,
+            late_readonly=late_ro,
+        )
         with sandbox.unconfined():  # already wrapped; never wrap twice
             self._proc = await asyncio.create_subprocess_exec(
                 *wrapped,

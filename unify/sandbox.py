@@ -162,7 +162,16 @@ RULES: dict[str, str] = {
         "the harness's proxy, which opens tunnels only to the package index "
         "hosts and never to a loopback, link-local or private address"
     ),
+    "late-readonly-state-only": (
+        "a path bound read-only after the masks is the memory library copy "
+        "(memory-checkout) of the Unify state directory, never a link: nothing "
+        "else of the host or of the state directory"
+    ),
 }
+
+# The state directory's entries wrap_argv may bind read-only after the masks
+# (late_readonly): memory v2.1's library copy only (memory_v2/integration/paths.py).
+LATE_READONLY_DIRS = ("memory-checkout",)
 
 SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
@@ -2262,6 +2271,7 @@ def wrap_argv(
     cwd: Optional[str] = None,
     writable: Sequence[Path] = (),
     readonly: Sequence[Path] = (),
+    late_readonly: Sequence[Path] = (),
     egress: Optional["EgressProxy"] = None,
 ) -> list[str]:
     """*argv* as a bubblewrap command line under *policy*.
@@ -2272,7 +2282,10 @@ def wrap_argv(
     policy's network with one loopback port (:data:`INSTALLER_PROXY_PORT`)
     forwarded to that allow-listing proxy; only the harness's package
     installer asks for these (unify/environment.py). No command ever gets the
-    host's network.
+    host's network. *late_readonly* paths are bound read-only right after
+    the writable ones, so a path under a masked directory (memory v2.1's
+    library copy, under the hidden state directory) is seen and is never
+    writable.
 
     The command line starts ``/bin/sh -c 'exec "$@" 9<"$0"' <seccomp.bpf>``:
     the shell opens the seccomp program on descriptor 9 for bubblewrap
@@ -2315,7 +2328,8 @@ def wrap_argv(
         str(_SECCOMP_FD),
     ]
     extra = [Path(os.path.realpath(p)) for p in writable]
-    shown = (*policy.readonly_state, policy.workspace, *extra)
+    late = [_late_readonly_path(Path(p), policy) for p in late_readonly]
+    shown = (*policy.readonly_state, policy.workspace, *extra, *late)
 
     def _inside_shown(path: Path) -> bool:
         return any(_within(path, p) and path != p for p in shown)
@@ -2376,6 +2390,8 @@ def wrap_argv(
             args += ["--ro-bind", str(notices / rule), str(path)]
     for path in extra:
         args += ["--bind", str(path), str(path)]
+    for path in late:
+        args += ["--ro-bind", str(path), str(path)]
     # A harness-only directory inside a mount above is hidden last of all,
     # unless it holds a mount itself (a log directory that holds the
     # workspace): the harness's own file tools still refuse it then. One
@@ -2391,7 +2407,7 @@ def wrap_argv(
         _refuse_shown_socket(
             egress.directory,
             policy,
-            (*extra, *readonly),
+            (*extra, *readonly, *late),
             "installer-index-only",
         )
         args += ["--ro-bind", str(egress.directory), _PROXY_MOUNT]
@@ -2410,7 +2426,7 @@ def wrap_argv(
         _refuse_shown_socket(
             bridge.directory,
             policy,
-            (*extra, *readonly),
+            (*extra, *readonly, *late),
             "network-proxy-only",
         )
         args += ["--ro-bind", str(bridge.directory), _PROXY_MOUNT]
@@ -2453,6 +2469,27 @@ def wrap_argv(
 
 
 _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
+
+
+def _late_readonly_path(path: Path, policy: SandboxPolicy) -> Path:
+    """A *late_readonly* path of :func:`wrap_argv`, resolved: one of
+    :data:`LATE_READONLY_DIRS` directly under the policy's state directory,
+    an existing directory and not a link (memory v2.1's library copy).
+    Anything else is refused, so no caller can mount another host path into
+    a command, not even another part of the state directory."""
+    real = Path(os.path.realpath(path))
+    state = Path(os.path.realpath(policy.state_dir))
+    if (
+        path.is_symlink()
+        or not real.is_dir()
+        or real not in {state / name for name in LATE_READONLY_DIRS}
+    ):
+        raise SandboxRefusal(
+            "late-readonly-state-only",
+            f"{path} is not one of {', '.join(LATE_READONLY_DIRS)} in the Unify "
+            f"state directory {state}",
+        )
+    return real
 
 
 def _refuse_shown_socket(

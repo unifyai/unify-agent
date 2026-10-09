@@ -18,6 +18,7 @@ admit no ``.memlab`` in a library) and left out of the memory diff.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import shutil
@@ -42,11 +43,93 @@ _EXCLUDE = (
 )
 
 
+def _writable_retry(func, path, exc, *, root: Path) -> None:
+    """``shutil.rmtree``'s error handler: a read-only v2.1 export (:func:`make_read_only`) gets its write bits
+    back where removal needs them. Any error other than a permission error is raised as before.
+
+    Bits are restored only on real directories inside *root*, the export being removed: a path outside it, or
+    one reached through a link, keeps its error."""
+    if not isinstance(exc, PermissionError):
+        raise exc
+    parent = os.path.abspath(os.path.dirname(path) or ".")
+    rel = os.path.relpath(parent, os.path.abspath(root))
+    if (
+        rel == ".."
+        or rel.startswith(".." + os.sep)
+        or os.path.realpath(
+            parent,
+        )
+        != os.path.normpath(os.path.join(os.path.realpath(root), rel))
+    ):
+        raise exc
+    os.chmod(parent, stat.S_IRWXU)
+    if stat.S_ISDIR(os.lstat(path).st_mode):
+        os.chmod(path, stat.S_IRWXU)
+    func(path)
+
+
 def _clear(dest: Path) -> None:
     if dest.is_symlink() or dest.is_file():
         dest.unlink()
     elif dest.exists():
-        shutil.rmtree(dest)
+        shutil.rmtree(dest, onexc=functools.partial(_writable_retry, root=dest))
+
+
+def make_read_only(root: Path) -> None:
+    """Drop every write bit under *root*: files 0444, directories 0555, deepest first, links never followed."""
+    for dirpath, dirnames, filenames in os.walk(root, topdown=False):
+        for name in filenames:
+            p = os.path.join(dirpath, name)
+            if not os.path.islink(p):
+                os.chmod(p, 0o444)
+        for name in dirnames:
+            p = os.path.join(dirpath, name)
+            if not os.path.islink(p):
+                os.chmod(p, 0o555)
+    os.chmod(root, 0o555)
+
+
+def export_actor_v21(
+    memory_dir: Path,
+    sha: str,
+    dest: Path,
+    *,
+    status_of=None,
+    shapes=None,
+) -> dict[str, bytes]:
+    """``UNIFY_MEMORY_V21=on``: replace *dest* with the actor's read-only copy of memory commit *sha* (spec
+    v2.1 §6). It holds:
+
+    - the commit's library modules, package docstrings and notes only (:func:`..layout.exported`): never a
+      tests directory, a fixture, compiled code or a path outside the layout;
+    - the generated files (:func:`..library_export.generated_v21`), which replace any committed copy.
+
+    Every write bit is then dropped, and the sandbox binds the copy read-only (:func:`.hooks.worker_readonly_mounts`).
+    Returns the generated files.
+    """
+    from ..catalogue import write_files
+    from ..layout import exported
+    from ..library_export import generated_v21, item_history
+
+    dest = Path(dest)
+    _clear(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    repo = Repo(Path(memory_dir))
+    files, refused = listing(repo, sha)
+    if refused:
+        raise GitError(
+            f"memory {sha[:12]} holds entries an export refuses: {refused[:5]}",
+        )
+    materialise(repo, {p: v for p, v in files.items() if exported(p)}, dest)
+    generated = generated_v21(
+        dest,
+        status_of=status_of,
+        shapes=shapes,
+        history=item_history(repo, sha),
+    )
+    write_files(dest, generated)
+    make_read_only(dest)
+    return generated
 
 
 def export_checkout(

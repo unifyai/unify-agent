@@ -192,8 +192,13 @@ def check_hidden(paths: Any, policy: Any) -> None:
         )
 
 
-def pinned_items(checkout: Path) -> list[str]:
-    """The ids of the memory functions in the export at *checkout* (listed or not), in id order."""
+def pinned_items(checkout: Path, v21: bool = False) -> list[str]:
+    """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *v21* the
+    v2.1 function items (spec §4.2)."""
+    if v21:
+        from ..layout import discover
+
+        return sorted(f.item_id for f in discover(Path(checkout)).functions)
     from ..memory_repo import items
 
     return sorted(
@@ -285,6 +290,7 @@ class RequestRun:
         self.surfacing: Any = (
             None  # the v2.1 switches read at open (switch.SurfacingOptions)
         )
+        self.v21 = False  # UNIFY_MEMORY_V21, read at open (spec v2.1)
         # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
         self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
@@ -347,7 +353,7 @@ class RequestRun:
         from . import consolidate, cost, worktree_capture
         from .checkout import export_checkout
         from .state import State
-        from .switch import surfacing_options
+        from .switch import surfacing_options, v21_enabled
 
         paths = self.paths
         policy = sandbox.build_policy(fresh=True)
@@ -355,24 +361,31 @@ class RequestRun:
         self.stores = consolidate.open_stores(paths)
         self.state = State.load(paths.state)
         self.pin = self.stores.memory.head()
-        # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
-        export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
-        # the use record's view of the pin, taken before anything is generated beside the export and
-        # before the actor can edit the scratch copy
-        self.item_ids = pinned_items(paths.checkout)
-        self.surface = use.library_surface(paths.checkout)
-        self.export_roots = use.roots_of(paths.checkout)
-        self.surfacing = surfacing_options(SETTINGS)
-        if self.surfacing.catalogue:
-            self._surface_catalogue(consolidate)
-        else:  # the v2 index and export line, byte for byte; nothing generated in the export
-            from .prompt import render_memory
+        self.v21 = v21_enabled(SETTINGS)
+        if (
+            self.v21
+        ):  # memory v2.1: the read-only copy and the index view (spec v2.1 §4.5, §6)
+            self.surfacing = surfacing_options(SETTINGS)
+            self._open_v21(consolidate)
+        else:
+            # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
+            export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
+            # the use record's view of the pin, taken before anything is generated beside the export and
+            # before the actor can edit the scratch copy
+            self.item_ids = pinned_items(paths.checkout)
+            self.surface = use.library_surface(paths.checkout)
+            self.export_roots = use.roots_of(paths.checkout)
+            self.surfacing = surfacing_options(SETTINGS)
+            if self.surfacing.catalogue:
+                self._surface_catalogue(consolidate)
+            else:  # the v2 index and export line, byte for byte; nothing generated in the export
+                from .prompt import render_memory
 
-            self.index, self.shown = render_memory(
-                paths.checkout,
-                self.state.suspect,
-                sys.maxsize if self.surfacing.soft_budget else None,
-            )
+                self.index, self.shown = render_memory(
+                    paths.checkout,
+                    self.state.suspect,
+                    sys.maxsize if self.surfacing.soft_budget else None,
+                )
         self.episode_id = new_episode_id(transcripts.transcripts_dir())
         self.started_at = _now()
         self.model, self.effort, self.build = actor_model(), actor_effort(), build_id()
@@ -431,7 +444,53 @@ class RequestRun:
                     type(exc).__name__,
                 )
 
-    def _shape_rows(self, consolidate: Any) -> dict:
+    def _open_v21(self, consolidate: Any) -> None:
+        """``UNIFY_MEMORY_V21=on`` (spec v2.1 §4.5, §6). Writes the read-only copy of the pin: no tests, plus the
+        generated helper, INDEX.md and links.json (:func:`.checkout.export_actor_v21`). The memory section is
+        the guide and the index view. No memory.diff is recorded, because the copy cannot be written.
+        """
+        from ..analysis import use
+        from ..shape_rows import lookup_from
+        from .checkout import export_actor_v21
+        from .prompt import render_memory_v21
+
+        paths = self.paths
+        try:
+            shapes = lookup_from(self._shape_rows(consolidate, v21=True))
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - find then matches nothing; the library stays usable
+            logger.warning(
+                "memory v2.1: input shapes not read (%s)",
+                type(exc).__name__,
+            )
+            shapes = None
+        self.generated = export_actor_v21(
+            paths.memory,
+            self.pin,
+            paths.checkout,
+            shapes=shapes,
+        )
+        self.item_ids = pinned_items(paths.checkout, v21=True)
+        self.export_roots = use.roots_of(paths.checkout)
+        self.index, self.shown = render_memory_v21(paths.checkout)
+
+    def _memory_diff(self) -> str:
+        """What the request wrote into its export (v2), or ``""`` under v2.1, whose copy is read-only and records
+        no memory.diff (spec v2.1 §6)."""
+        if self.v21:
+            return ""
+        from .checkout import checkout_diff
+
+        return checkout_diff(
+            self.paths.memory,
+            self.pin,
+            self.paths.checkout,
+            self.stores.blobs,
+            generated=self.generated,
+        )
+
+    def _shape_rows(self, consolidate: Any, v21: bool = False) -> dict:
         """The pinned commit's input-shape rows, frozen on first export (:func:`..shape_rows.shapes_at`);
         functions without recorded shapes are backfilled from the evidence store's covers.
         """
@@ -446,6 +505,7 @@ class RequestRun:
             lookup=episodes(self.stores).action if episodes is not None else None,
             blobs=self.stores.blobs,
             freeze=True,
+            v21=v21,
         )
 
     def redactor(self) -> Any:
@@ -616,7 +676,6 @@ class RequestRun:
 
         from ..episodes import EpisodeWriter
         from . import consolidate, trajectory
-        from .checkout import checkout_diff
 
         stores, paths = self.stores, self.paths
         lines = trajectory.read_jsonl(
@@ -625,13 +684,7 @@ class RequestRun:
         cells = trajectory.timed_cells(trajectory.fold(lines))
         self._worktree_finished = True  # finish ends the capture, whatever it returns
         wt = self.worktree.finish(cells)
-        memory_diff = checkout_diff(
-            paths.memory,
-            self.pin,
-            paths.checkout,
-            stores.blobs,
-            generated=self.generated,
-        )
+        memory_diff = self._memory_diff()
         ended_at = _now()
         extra_actions = wt.actions
         counterpart = dialogue_counterpart()
