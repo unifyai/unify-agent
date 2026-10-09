@@ -25,7 +25,7 @@ def test_v21_e_is_100k_and_v2_keeps_its_own():
     assert sol_settings(on).experience_budget == 100000
     assert (
         sol_settings(
-            SimpleNamespace(UNIFY_MEMORY_V21="on", UNIFY_MEMORY_V21_E=75000)
+            SimpleNamespace(UNIFY_MEMORY_V21="on", UNIFY_MEMORY_V21_E=75000),
         ).experience_budget
         == 75000
     )
@@ -54,7 +54,7 @@ def test_wall_bound_and_journal():
     assert sol_journal(SimpleNamespace()) is None
     assert (
         sol_journal(
-            SimpleNamespace(UNIFY_MEMORY_V2_SOL_JOURNAL="/srv/proxy/costs.jsonl")
+            SimpleNamespace(UNIFY_MEMORY_V2_SOL_JOURNAL="/srv/proxy/costs.jsonl"),
         )
         == "/srv/proxy/costs.jsonl"
     )
@@ -68,3 +68,16 @@ def test_the_settings_load_with_their_defaults():
     assert SETTINGS.UNIFY_MEMORY_V21_E == 100000
     assert SETTINGS.UNIFY_MEMORY_V21_PASS_WALL_S == 2700
     assert SETTINGS.UNIFY_MEMORY_V2_SOL_JOURNAL == ""
+
+
+def test_the_v2_max_calls_map_still_parses():
+    """The v2.1 integer parsers must not replace v2's per-effort validator (it is looked up at call time)."""
+    from unify.memory_v2.integration.switch import sol_max_calls_map
+
+    assert sol_max_calls_map("low:40,medium:60,high:80") == {
+        "low": 40,
+        "medium": 60,
+        "high": 80,
+    }
+    with pytest.raises(ValueError):
+        sol_max_calls_map("low:0,medium:60,high:80")

@@ -602,7 +602,7 @@ SOL_JOURNAL = "UNIFY_MEMORY_V2_SOL_JOURNAL"
 V21_PASS_WALL_S_DEFAULT = 2700
 
 
-def _positive_int(name: str, default: int, v: Any) -> int:
+def _positive_whole(name: str, default: int, v: Any) -> int:
     refusal = f"{name} must be a positive whole number, not {v!r}"
     if isinstance(v, bool):
         raise ValueError(refusal)
@@ -624,12 +624,12 @@ def parse_v21_e(v: Any) -> int:
     """``UNIFY_MEMORY_V21_E``: E under v2.1, positive digits (D43; empty: 100,000)."""
     from ..trigger import EXPERIENCE_BUDGET_V21
 
-    return _positive_int(V21_E, EXPERIENCE_BUDGET_V21, v)
+    return _positive_whole(V21_E, EXPERIENCE_BUDGET_V21, v)
 
 
 def parse_v21_pass_wall_s(v: Any) -> int:
     """``UNIFY_MEMORY_V21_PASS_WALL_S``: one pass's wall-clock bound in seconds (empty: 2700)."""
-    return _positive_int(V21_PASS_WALL_S, V21_PASS_WALL_S_DEFAULT, v)
+    return _positive_whole(V21_PASS_WALL_S, V21_PASS_WALL_S_DEFAULT, v)
 
 
 def parse_sol_journal(v: Any) -> str:
