@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +68,7 @@ from .procedures import (
 from .qa import builtin_error
 from .qa_static import truncated
 from .sandbox_run import SandboxResult, run_confined
+from .redact import KEY_SHAPED
 from .quality import (
     TEST_FILE,
     count_items,
@@ -83,6 +85,38 @@ CROSS_CASES = (
 )
 # Amendment C: the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
 BEHAVIOUR_MAX_PROCEDURES = 16
+OUTPUT_VIEW_BYTES = 4000  # the head of a test run's output kept in memory and quoted (spec P5: explicit, marked)
+_KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
+
+
+def keep_output(outcome: Any, spool: Path, blobs: Any) -> None:
+    """Spec P5 under v2.1: a test run's whole output (stdout, then stderr, as v2 joins them; each spooled up to
+    :data:`.sandbox_run.SPOOL_MAX_BYTES`, marked past it) is kept as a blob, with key-shaped strings redacted line
+    by line. The outcome's ``output`` becomes a head-first view of at most :data:`OUTPUT_VIEW_BYTES` bytes, marked
+    with the whole size and the blob id. Nothing is kept when the run printed nothing.
+    """
+    combined = spool / "combined"
+    with open(combined, "wb") as out:
+        for name in ("stdout", "stderr"):
+            part = spool / name
+            if part.is_file():
+                with open(part, "rb") as f:
+                    for line in f:
+                        out.write(_KEY_SHAPED_BYTES.sub(b"<redacted:key-shaped>", line))
+    n = combined.stat().st_size
+    if n == 0:
+        return
+    sha = blobs.put_file(combined)
+    with open(combined, "rb") as f:
+        head = f.read(OUTPUT_VIEW_BYTES)
+    text = head.decode("utf-8", "replace")
+    if n > len(head):
+        outcome.output = (
+            text + f"\n[… shown bytes 0–{len(head)} of {n}; full output: blob {sha}]"
+        )
+    else:
+        outcome.output = text + f"\n[full output: blob {sha}]"
+    outcome.output_blob = sha
 
 
 def _no_episode(eid: str) -> Episode | None:

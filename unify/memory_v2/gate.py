@@ -364,6 +364,14 @@ def _green(o: PytestOutcome) -> bool:
     )
 
 
+def _shown(o: PytestOutcome) -> str:
+    """The output a reason quotes: v2's last 300 characters, or under v2.1 the head and the whole output's blob."""
+    blob = getattr(o, "output_blob", None)
+    if blob is None:
+        return o.output[-300:]
+    return o.output[:300] + f" [full output: blob {blob}]"
+
+
 def _describe(o: PytestOutcome) -> str:
     return (
         f"rc={o.returncode} valid={o.valid} timed_out={o.timed_out} "
@@ -741,7 +749,12 @@ class _Run:
 
         Never part of a reason: the reasons, and so the pass row, keep v2's 300-character tail.
         """
-        self.outputs[label] = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
+        text = KEY_SHAPED.sub(_REDACTED, o.full_output or o.output)
+        blob = getattr(o, "output_blob", None)
+        # memory v2.1 (spec P5): the whole output, past the capture bound, is a blob
+        self.outputs[label] = (
+            text if blob is None else f"{text}\n[whole output: blob {blob}]"
+        )
 
     def stop(self, failures: list[tuple[str, str]]) -> None:
         for check, reason in failures:
@@ -1120,28 +1133,45 @@ class Gate:
         extra_env: dict[str, str] | None = None,
         qa_env: QAEnv | None = None,
     ) -> PytestOutcome:
-        if qa_env is not None:
-            # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced blobs
-            # at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
-            return self.pytest(
-                target,
-                python=self.python,
-                ro={tree: "/memory", qa_env.inputs: "/inputs"},
-                rw={},
-                cwd="/memory",
-                timeout_s=_TIMEOUT_S,
-                env={**qa_env.env, **(extra_env or {})},
-                import_skips_fail=True,
-            )
-        return self.pytest(
-            target,
-            python=self.python,
-            ro={tree: "/memory"},
-            rw={},
-            cwd="/memory",
-            timeout_s=_TIMEOUT_S,
-            env={**_PYTEST_ENV, **(extra_env or {})},
+        # memory v2.1 (spec P5): the whole output is spooled and kept as a blob; v2 passes nothing new
+        spool = (
+            Path(tempfile.mkdtemp(prefix="memv21-out-")) if self._v21_checks() else None
         )
+        more = {"spool_dir": spool} if spool is not None else {}
+        try:
+            if qa_env is not None:
+                # a stage-5 switch is on or the library's tests use the test kit: memlab and the referenced
+                # blobs at /inputs, and a skip for a failed import fails (the kit must never be silently missing)
+                o = self.pytest(
+                    target,
+                    python=self.python,
+                    ro={tree: "/memory", qa_env.inputs: "/inputs"},
+                    rw={},
+                    cwd="/memory",
+                    timeout_s=_TIMEOUT_S,
+                    env={**qa_env.env, **(extra_env or {})},
+                    import_skips_fail=True,
+                    **more,
+                )
+            else:
+                o = self.pytest(
+                    target,
+                    python=self.python,
+                    ro={tree: "/memory"},
+                    rw={},
+                    cwd="/memory",
+                    timeout_s=_TIMEOUT_S,
+                    env={**_PYTEST_ENV, **(extra_env or {})},
+                    **more,
+                )
+            if spool is not None:
+                from .gate_v21 import keep_output
+
+                keep_output(o, spool, self.blobs)
+            return o
+        finally:
+            if spool is not None:
+                shutil.rmtree(spool, ignore_errors=True)
 
     def _record(
         self,
@@ -1920,7 +1950,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"{t} is not green on the candidate ({_describe(on_cand)}) "
-                        f"{on_cand.output[-300:]}",
+                        f"{_shown(on_cand)}",
                         _owners(man, t),
                     )
         # a function declared with a test that is red on the parent may change behaviour (each edited
@@ -2119,14 +2149,14 @@ class Gate:
                 run.fail(
                     "G3",
                     f"the examples of {item} could not be run ({_describe(outcome)}) "
-                    f"{outcome.output[-300:]}",
+                    f"{_shown(outcome)}",
                 )
             elif ran(outcome.failed, n) or not ran(outcome.passed, n):
                 run.output("docstring examples (candidate)", outcome)
                 run.fail(
                     "G3",
                     f"an example in the docstring of {item} fails as a doctest "
-                    f"{outcome.output[-300:]}",
+                    f"{_shown(outcome)}",
                     item,
                 )
 
@@ -2324,7 +2354,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"suite {rel} has new failures or is unreadable on the candidate "
-                        f"({_describe(suite)}; new {new_red[:5]}{repair}) {suite.output[-300:]}",
+                        f"({_describe(suite)}; new {new_red[:5]}{repair}) {_shown(suite)}",
                         (
                             sorted({o for found in owners for o in found})
                             if readable and all(owners)
@@ -2349,7 +2379,7 @@ class Gate:
                     run.fail(
                         "G3",
                         f"the regression run of {rel} is unreadable ({_describe(reg)}) "
-                        f"{reg.output[-300:]}",
+                        f"{_shown(reg)}",
                     )
                 lost = sorted(before - reg.passed)
                 if lost:

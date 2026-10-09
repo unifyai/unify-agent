@@ -73,6 +73,9 @@ PRLIMIT = "/usr/bin/prlimit"
 JUNIT_MAX_BYTES = 8 * 1024**2
 # Each of stdout and stderr keeps at most its last CAPTURE_MAX_BYTES; the rest is read and dropped.
 CAPTURE_MAX_BYTES = 1024**2
+# memory v2.1 (spec P5, P4 Amendment A): a spooled stream keeps at most SPOOL_MAX_BYTES on the harness's disk
+# (each of stdout and stderr of one run); past it the spool stops and ends with a marker naming the bytes not kept.
+SPOOL_MAX_BYTES = 64 * 1024**2
 
 _KILL_GRACE_S = 10.0
 
@@ -310,13 +313,26 @@ class _Tail:
 
     The box can always reach the host's pipes (its pid 1 holds them, and ``/proc/1/fd/1`` is open to the
     same user), so the host must never buffer them whole or decode them strictly: the text is decoded as
-    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped.
+    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped. With *spool* (memory v2.1,
+    spec P5) every byte is also written to that harness-side file, up to *spool_max* (:data:`SPOOL_MAX_BYTES`),
+    after which it ends with ``[spool limit reached: N further bytes not kept]``; memory stays bounded.
     """
 
-    def __init__(self, stream, cap: int = CAPTURE_MAX_BYTES) -> None:
+    def __init__(
+        self,
+        stream,
+        cap: int = CAPTURE_MAX_BYTES,
+        spool: Path | None = None,
+        spool_max: int | None = None,
+    ) -> None:
         self._stream, self._cap = stream, cap
         self._buf = bytearray()
         self._dropped = 0
+        self._spool = (
+            open(spool, "wb") if spool is not None else None
+        )  # noqa: SIM115 - closed by the drain
+        self._spool_room = SPOOL_MAX_BYTES if spool_max is None else spool_max
+        self._unspooled = 0
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
 
@@ -326,6 +342,12 @@ class _Tail:
                 chunk = self._stream.read1(1 << 16)
                 if not chunk:
                     break
+                if self._spool is not None:
+                    kept = chunk[: self._spool_room]
+                    if kept:
+                        self._spool.write(kept)
+                        self._spool_room -= len(kept)
+                    self._unspooled += len(chunk) - len(kept)
                 self._buf += chunk
                 if len(self._buf) > 2 * self._cap:
                     cut = len(self._buf) - self._cap
@@ -338,6 +360,15 @@ class _Tail:
                 self._stream.close()
             except OSError:
                 pass
+            if self._spool is not None:
+                try:
+                    if self._unspooled:
+                        self._spool.write(
+                            f"\n[spool limit reached: {self._unspooled} further bytes not kept]\n".encode(),
+                        )
+                    self._spool.close()
+                except OSError:
+                    pass
 
     def text(self, timeout: float) -> str:
         self._thread.join(timeout)
@@ -387,12 +418,15 @@ def run_confined(
     cwd: str = "/tmp",
     timeout_s: float = 120.0,
     env: dict[str, str] | None = None,
+    spool: tuple[Path, Path] | None = None,
 ) -> SandboxResult:
     """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
 
     *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
     bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
     ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
+    *spool* (memory v2.1) also writes every byte of stdout and stderr to those two harness-side files (each at
+    most :data:`SPOOL_MAX_BYTES`, marked past it); it changes nothing about the box.
     """
     for name in env or {}:
         if name.upper() in HARNESS_ONLY_ENV:
@@ -481,8 +515,8 @@ def run_confined(
 
     try:
         # inside the try: a failure to start a drain thread still kills the box
-        tails.append(_Tail(proc.stdout))
-        tails.append(_Tail(proc.stderr))
+        tails.append(_Tail(proc.stdout, spool=spool[0] if spool is not None else None))
+        tails.append(_Tail(proc.stderr, spool=spool[1] if spool is not None else None))
         proc.wait(timeout=timeout_s)
         return result(proc.returncode, False)
     except subprocess.TimeoutExpired:
@@ -524,6 +558,8 @@ class PytestOutcome:
     # nothing is cut silently). ``output`` stays the 4,000-character tail every v2 reason quotes; empty means
     # the same text as ``output``.
     full_output: str = ""
+    # memory v2.1: the whole output's blob id (the gate sets it; :func:`.gate_v21.keep_output`)
+    output_blob: str | None = None
 
     def __post_init__(self) -> None:
         if not self.full_output:
@@ -714,13 +750,22 @@ def run_pytest(
     timeout_s: float = 300.0,
     env: dict[str, str] | None = None,
     import_skips_fail: bool = False,
+    spool_dir: Path | None = None,
 ) -> PytestOutcome:
     """Run pytest on *tests_dir_in_box* in the box; see :class:`PytestOutcome` for ids and validity.
 
     *import_skips_fail* (default off: a skip is a skip): load the skip-marking plugin and count a skip caused
     by a failed import as a failure, ``<file>::test module skipped`` for a module skipped at collection and
-    the test's id for a test.
+    the test's id for a test. *spool_dir* (memory v2.1) receives the run's whole ``stdout`` and ``stderr``
+    (:func:`run_confined`'s *spool*); without it the call is v2's.
     """
+    more = (
+        {"spool": (spool_dir / "stdout", spool_dir / "stderr")}
+        if spool_dir is not None
+        else {}
+    )
+    if spool_dir is not None:
+        spool_dir.mkdir(parents=True, exist_ok=True)
     with contextlib.ExitStack() as stack:
         tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="memv2-junit-"))
         rw2 = dict(rw)
@@ -762,6 +807,7 @@ def run_pytest(
             cwd=cwd,
             timeout_s=timeout_s,
             env=env2,
+            **more,
         )
         out = PytestOutcome(
             returncode=r.returncode,
