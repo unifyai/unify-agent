@@ -138,6 +138,7 @@ def test_required_parts_and_row():
         "request",
         "observation:0",
         "cell:0",
+        "cell:1",  # T8: the source cell of an action that is not a read
         "action:0",
     ]
     m = bm.build_batch_map(lambda e: ep, ["e1"])
@@ -153,7 +154,13 @@ def test_required_parts_and_row():
         "called": [],
     }
     assert row["errors"] == [{"action": 0, "error": "x", "next_call": None}]
-    assert row["required_parts"] == ["request", "observation:0", "cell:0", "action:0"]
+    assert row["required_parts"] == [
+        "request",
+        "observation:0",
+        "cell:0",
+        "cell:1",
+        "action:0",
+    ]
 
 
 def test_part_text_is_canonical_json():
@@ -255,3 +262,112 @@ def test_row_states_which_observations_are_copies():
     ep = _obs_ep(["same", "other", "same"])
     row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
     assert row["observation_copies"] == {"2": 0}
+
+
+# --- P1 T8 (a1's blocker): what the actor did is required -----------------------------------------------------
+
+
+def _row(seq, role, content="", **extra):
+    return {
+        "seq": seq,
+        "type": "message",
+        "message": {"role": role, "content": content, **extra},
+    }
+
+
+def _cell_call(seq, cid):
+    call = {
+        "id": cid,
+        "type": "function",
+        "function": {"name": "execute_code", "arguments": "{}"},
+    }
+    return [
+        _row(seq, "assistant", "", tool_calls=[call]),
+        _row(seq + 1, "tool", "out", tool_call_id=cid),
+    ]
+
+
+def test_a_dialogue_action_and_the_cell_before_its_reply_are_required():
+    ep = _ep(
+        cells=[Cell(0, "x = 1", "1"), Cell(1, "grid = [[1]]", "[[1]]")],
+        actions=[
+            Action(
+                cell=-1,
+                channel="env",
+                method="submit",
+                args=[[[1]]],
+                kwargs={},
+                response="Verdict: wrong",
+                status="ok",
+                kind="dialogue",
+            ),
+        ],
+    )
+    ep.request = ["Solve the grid", "Verdict: wrong"]
+    ep.transcript = [
+        _row(0, "user", "Solve the grid"),
+        *_cell_call(1, "c0"),
+        *_cell_call(3, "c1"),
+        _row(5, "assistant", '{"action": "submit", "grid": [[1]]}'),
+        _row(6, "user", "Verdict: wrong"),
+    ]
+    assert bm.required_parts(ep, bm.structural_signals(ep), bm.actor_functions(ep)) == [
+        "request",
+        "observation:0",
+        "cell:1",
+        "action:0",
+    ]
+
+
+def test_a_write_action_and_its_source_cell_are_required():
+    ep = _ep(
+        cells=[Cell(0, "x = 1", ""), Cell(1, "open('out.json', 'w').write('{}')", "")],
+        actions=[
+            Action(
+                cell=0,
+                channel="svc",
+                method="get",
+                args=[],
+                kwargs={},
+                status="ok",
+                effect="read",
+            ),
+            Action(
+                cell=1,
+                channel="workspace",
+                method="write",
+                args=["out.json"],
+                kwargs={},
+                status="ok",
+                effect="write",
+                kind="worktree",
+            ),
+        ],
+    )
+    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
+        "request",
+        "observation:0",
+        "cell:1",
+        "action:1",
+    ]
+
+
+def test_a_pure_read_episode_requires_nothing_extra():
+    ep = _ep(
+        cells=[Cell(0, "x = 1", "")],
+        actions=[
+            Action(
+                cell=0,
+                channel="svc",
+                method="get",
+                args=[],
+                kwargs={},
+                status="ok",
+                effect="read",
+            ),
+        ],
+    )
+    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
+        "request",
+        "observation:0",
+    ]

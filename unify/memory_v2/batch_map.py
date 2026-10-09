@@ -179,6 +179,45 @@ def observation_copies(ep: Episode) -> dict[str, int]:
     return {str(i): obs.index(t) for i, t in enumerate(obs) if obs.index(t) != i}
 
 
+def _cells_before_replies(ep: Episode) -> dict[int, int]:
+    """Episode action index of each dialogue action -> the index of the last cell completed before its reply,
+    from the transcript's order. The dialogue recorder's own reply rule pairs actions with replies: its
+    answered replies when the counts match (the online recorder), else all of them; with neither, no pairing.
+    """
+    from .integration.adapters.dialogue import _is_observation, _is_reply, _messages
+
+    msgs = _messages(ep.transcript)
+    calls: set[str] = set()
+    done: set[str] = set()
+    replies: list[tuple[int | None, bool]] = []  # (last cell index before it, answered)
+    for i, m in enumerate(msgs):
+        for tc in m.get("tool_calls") or []:
+            fn = (
+                tc.get("function")
+                if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
+                else {}
+            )
+            if fn.get("name") == "execute_code" and isinstance(tc.get("id"), str):
+                calls.add(tc["id"])
+        if m.get("role") == "tool" and m.get("tool_call_id") in calls:
+            done.add(m["tool_call_id"])
+        if _is_reply(m):
+            answered = False
+            for later in msgs[i + 1 :]:
+                if later.get("role") == "assistant":
+                    break
+                if _is_observation(later):
+                    answered = True
+                    break
+            replies.append((len(done) - 1 if done else None, answered))
+    dialogue = [i for i, a in enumerate(ep.actions) if a.kind == "dialogue"]
+    answered = [c for c, ok in replies if ok]
+    pairs = answered if len(answered) == len(dialogue) else [c for c, _ in replies]
+    if len(pairs) != len(dialogue):
+        return {}
+    return {i: c for i, c in zip(dialogue, pairs) if c is not None}
+
+
 def required_parts(
     ep: Episode,
     signals: list[dict],
@@ -187,7 +226,8 @@ def required_parts(
 ) -> list[str]:
     """Every part a writer must read to cover *ep*: the request, every distinct observation (where any verdict
     lives; the harness never decides which by its text), every cell that defines a function or carries a
-    signal, every action a signal names, and the work-tree diff whenever a ``.py`` file in it has added lines.
+    signal, every action a signal names, every dialogue action and every action that is not a read (with its
+    source cell), and the work-tree diff whenever a ``.py`` file in it has added lines.
     """
     parts = ["request"]
     seen: set[str] = set()
@@ -201,9 +241,25 @@ def required_parts(
         for s in signals
         if s["kind"] == "cell_error" and s["cell"] is not None
     }
+    actions = {s["action"] for s in signals if s["action"] is not None}
+    # T8 (what the actor did): every dialogue action and every action that is not a read, with its source cell
+    # (a dialogue action's: the last cell completed before its reply). Structural only: kind and effect.
+    acted = [
+        i
+        for i, a in enumerate(ep.actions)
+        if a.kind == "dialogue" or a.effect != "read"
+    ]
+    actions |= set(acted)
+    known = {c.index for c in ep.cells}
+    before = _cells_before_replies(ep)
+    for i in acted:
+        a = ep.actions[i]
+        source = before.get(i) if a.kind == "dialogue" else a.cell
+        if source in known:
+            cells.add(source)
     for c in sorted(cells):
         parts.append(f"cell:{c}")
-    for a in sorted({s["action"] for s in signals if s["action"] is not None}):
+    for a in sorted(actions):
         parts.append(f"action:{a}")
     if (diff or _diff_functions(ep))[2]:
         parts.append("diff")

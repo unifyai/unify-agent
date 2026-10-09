@@ -1901,6 +1901,24 @@ def _decode_value(value: Any, blobs: Any, episode_id: str) -> Any:
     return value
 
 
+def _sole_key_marker(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) == 1
+        and ("__capped__" in value or "__literal__" in value)
+    )
+
+
+def _holds_reference(row: dict) -> bool:
+    """Whether an actions row holds a format-2 marker (a sole-key __capped__ or __literal__ dict)."""
+    values = [
+        row.get("response"),
+        *(row.get("args") or []),
+        *(row.get("kwargs") or {}).values(),
+    ]
+    return any(_sole_key_marker(v) for v in values)
+
+
 def _decode_row(row: dict, blobs: Any, episode_id: str) -> dict:
     row = dict(row)
     row["args"] = [_decode_value(x, blobs, episode_id) for x in row.get("args") or []]
@@ -1931,8 +1949,14 @@ def use_from_episode_dir(
     try:
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, *_SAFE_LOAD):
+        meta = None
+    if not isinstance(meta, dict):
+        if any(_holds_reference(r) for r in actions if isinstance(r, dict)):
+            raise ValueError(
+                "no readable meta.json, and the actions hold record references: cannot tell the record format",
+            )
         meta = {}
-    fmt = meta.get("record_format", 1) if isinstance(meta, dict) else 1
+    fmt = meta.get("record_format", 1)
     if isinstance(fmt, bool) or fmt not in (1, 2):
         raise ValueError(f"unknown record_format {fmt!r}")
     if fmt == 2:

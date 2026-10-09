@@ -200,3 +200,17 @@ def test_an_unknown_record_format_fails_closed(tmp_path, monkeypatch, bad):
     d = _export(repo, sha, episode_dir(ep), tmp_path / "export")
     with pytest.raises(ValueError, match="unknown record_format"):
         use_from_episode_dir(d, blobs=blobs)
+
+
+def test_offline_use_refuses_references_without_a_readable_meta(tmp_path):
+    from unify.memory_v2.analysis.use import use_from_episode_dir
+
+    ep = _v21_ep()
+    repo, blobs, sha = _write(tmp_path, ep)
+    d = _export(repo, sha, episode_dir(ep), tmp_path / "export")
+    (d / "meta.json").unlink()
+    with pytest.raises(ValueError, match="no readable meta.json"):
+        use_from_episode_dir(d, blobs=blobs)
+    (d / "meta.json").write_text("{not json")
+    with pytest.raises(ValueError, match="no readable meta.json"):
+        use_from_episode_dir(d, blobs=blobs)
