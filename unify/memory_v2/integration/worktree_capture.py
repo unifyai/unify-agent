@@ -169,8 +169,10 @@ class WorktreeCapture:
         redactor_factory: Callable[[], Redactor],
         *,
         hidden: Callable[[str], bool] | None = None,
+        v21: bool = False,
     ) -> None:
         self.paths = paths
+        self.v21 = v21  # UNIFY_MEMORY_V21: text files stored whole (no blob cap)
         self.workspace = Path(os.path.realpath(workspace))
         self._redactor_factory = redactor_factory
         self._hidden = hidden
@@ -200,6 +202,7 @@ class WorktreeCapture:
                 snapshot_repo(self.paths.worktree_git),
                 BlobStore(self.paths.blobs),
                 hidden=hidden,
+                **({"blob_cap": None} if self.v21 else {}),
             )
             recorder.begin()
         except Exception as exc:  # noqa: BLE001 - a capture never fails the request

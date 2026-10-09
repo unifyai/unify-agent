@@ -78,8 +78,10 @@ def install(monkeypatch) -> Fakes:
         diff: str
 
     class WorktreeCapture:
-        def __init__(self, paths, workspace, redactor_factory) -> None:
-            f.calls.append(("WorktreeCapture", (paths, workspace), {}))
+        def __init__(self, paths, workspace, redactor_factory, **kw) -> None:
+            f.calls.append(
+                ("WorktreeCapture", (paths, workspace), kw),
+            )  # kw: v21 only when on
             self.redactor_factory = redactor_factory
 
         def begin(self) -> None:

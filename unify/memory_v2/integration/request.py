@@ -140,18 +140,35 @@ def dialogue_counterpart() -> str:
     return getattr(SETTINGS, "UNIFY_MEMORY_V2_DIALOGUE", "") or ""
 
 
-def recorded_dialogue(lines: list[dict], counterpart: str, redactor: Any) -> list:
+def memory_v21_on() -> bool:
+    """Whether ``UNIFY_MEMORY_V21`` is on (spec v2.1): the recorders keep full values and the episode is
+    written in record format 2."""
+    from unify.settings import SETTINGS
+
+    from .switch import V21, parse_memory_v21
+
+    return parse_memory_v21(getattr(SETTINGS, V21, "") or "") == "on"
+
+
+def recorded_dialogue(
+    lines: list[dict],
+    counterpart: str,
+    redactor: Any,
+    v21: bool = False,
+) -> list:
     """The dialogue actions a request's episode records under ``UNIFY_MEMORY_V2_DIALOGUE``: answered replies
     only, so a reply nothing followed (a single-turn request's final reply) adds no action and leaves the
-    episode as it is with the setting off.
+    episode as it is with the setting off. With *v21* the observation and the payload are kept whole.
     """
     from .adapters import dialogue
 
+    caps = {"max_observation_chars": None, "max_payload_chars": None} if v21 else {}
     return dialogue.dialogue_actions(
         lines,
         counterpart,
         redactor=redactor,
         answered_only=True,
+        **caps,
     )
 
 
@@ -357,6 +374,8 @@ class RequestRun:
             paths,
             Path(policy.workspace),
             self.redactor,
+            # UNIFY_MEMORY_V21: files stored whole (the keyword only when on: off, the call as at 4675a3c45)
+            **({"v21": True} if memory_v21_on() else {}),
         )
         self.worktree.begin()
         self._scope.enter_context(transcripts.resume_session(self.episode_id))
@@ -612,7 +631,12 @@ class RequestRun:
             # UNIFY_MEMORY_V2_DIALOGUE: the transcript's dialogue actions follow the work-tree rows
             extra_actions = [
                 *wt.actions,
-                *recorded_dialogue(lines, counterpart, self.redactor()),
+                *recorded_dialogue(
+                    lines,
+                    counterpart,
+                    self.redactor(),
+                    v21=memory_v21_on(),
+                ),
             ]
         ep, redactor = trajectory.assemble(
             self,
@@ -634,7 +658,14 @@ class RequestRun:
             shown_text=self.index,
             cell_status=dict(self.cell_status),
         )
-        sha = EpisodeWriter(stores.episodes, stores.blobs, redactor).write(ep)
+        sha = EpisodeWriter(
+            stores.episodes,
+            stores.blobs,
+            redactor,
+            **(
+                {"v21": True} if memory_v21_on() else {}
+            ),  # record format 2; off, the call as at 4675a3c45
+        ).write(ep)
         stores.evidence.index_episode(ep, sha)
         consolidate.post_checker(
             stores,
