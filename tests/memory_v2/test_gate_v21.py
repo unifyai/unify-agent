@@ -225,6 +225,8 @@ def test_v21_gate_passes_and_records_verification(world21):
         ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p1'").fetchone()[0],
     )
     assert any(r.startswith("v21-verification ") for r in reasons)
+    # P3's deferred item: the landed commit's shapes are frozen under the v2.1 id, for the actor's find
+    assert ITEM_ID in (ev.commit_shapes(res.merged) or {})
 
 
 def test_a_fixture_not_made_by_fixture_tool_is_refused(world21):
