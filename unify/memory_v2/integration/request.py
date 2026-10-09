@@ -216,6 +216,7 @@ def memory_use(
     shown: dict | None = None,
     shown_text: str = "",
     cell_status: dict | None = None,
+    v21: bool = False,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`).
 
@@ -258,6 +259,7 @@ def memory_use(
             surface=surface,
             shown=shown,
             cell_status=cell_status,
+            v21=v21,
         )
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
@@ -473,6 +475,10 @@ class RequestRun:
         )
         self.item_ids = pinned_items(paths.checkout, v21=True)
         self.export_roots = use.roots_of(paths.checkout)
+        self.surface = use.library_surface(
+            paths.checkout,
+            v21=True,
+        )  # re-exports for the use record (P5)
         self.index, self.shown = render_memory_v21(paths.checkout)
 
     def _memory_diff(self) -> str:
@@ -534,6 +540,7 @@ class RequestRun:
                 result,
                 items=self.item_ids,
                 roots=self.export_roots,
+                v21=self.v21,
             )
         else:
             status = use.runtime_status(
@@ -542,6 +549,7 @@ class RequestRun:
                 getattr(result, "session_created", None),
                 items=self.item_ids,
                 roots=self.export_roots,
+                v21=self.v21,
             )
         self.cell_status[str(call_id)] = status
 
@@ -718,6 +726,7 @@ class RequestRun:
             shown=self.shown,
             shown_text=self.index,
             cell_status=dict(self.cell_status),
+            v21=self.v21,
         )
         sha = EpisodeWriter(
             stores.episodes,
