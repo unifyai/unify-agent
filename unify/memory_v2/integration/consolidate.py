@@ -313,29 +313,47 @@ def post_visible_checkers(
     with the dialogue adapter's own pairing (:func:`.adapters.dialogue.answered_observations`). Without the
     dialogue setting, without an answered action, or when the episode's dialogue actions and the pairing
     disagree in number, or when the entries' counts do not strictly increase, it refers to the episode as a
-    whole, never to a guessed action (MAIN, 9 Oct). A regime
-    in which checker signals are not observable posts nothing. Returns how many were posted.
+    whole, never to a guessed action (MAIN, 9 Oct). An entry whose verdict message never reached the actor (its
+    count unreadable, or at or past the transcript's final observation count) is dropped and logged (review S2).
+    A regime in which checker signals are not observable posts nothing. Returns how many were posted.
     """
     from .adapters import dialogue
 
     eid = ep.episode_id
+    # Review S2: a verdict counts only if its message reached the actor in this request: its observation number
+    # is below the transcript's final observation count. A request that ended first (cancel, quit, deadline), or
+    # an entry whose count could not be read, drops it, logged and never posted.
+    total = dialogue.observation_count(lines)
+    delivered: list[tuple[int, dict]] = []
+    for n, entry in enumerate(entries, 1):
+        obs = entry.get("obs")
+        if isinstance(obs, int) and not isinstance(obs, bool) and 0 <= obs < total:
+            delivered.append((n, entry))
+        else:
+            why = (
+                "count unreadable"
+                if not isinstance(obs, int)
+                else f"observation {obs} of {total} never shown"
+            )
+            _error(
+                stores,
+                f"{eid}: checker line {n} dropped: the actor never saw its verdict ({why})",
+            )
     answered: list[int] = []
     positions: list[int] = []
     if counterpart:
         answered = dialogue.answered_observations(lines)
         positions = [i for i, a in enumerate(ep.actions) if a.kind == "dialogue"]
-        obs_seen = [e.get("obs") for e in entries]
-        increasing = all(isinstance(o, int) for o in obs_seen) and all(
-            a < b for a, b in zip(obs_seen, obs_seen[1:])
-        )
+        obs_seen = [e["obs"] for _, e in delivered]
+        increasing = all(a < b for a, b in zip(obs_seen, obs_seen[1:]))
         if len(answered) != len(positions) or not increasing:
             # the pairing is not certain for every entry: no entry names an action
             answered, positions = [], []
     posted = 0
-    for n, entry in enumerate(entries, 1):
+    for n, entry in delivered:
         refers_to = eid
-        obs = entry.get("obs")
-        if isinstance(obs, int) and obs in answered:
+        obs = entry["obs"]
+        if obs in answered:
             refers_to = f"{eid}/actions/{positions[answered.index(obs)]}"
         sig = Signal(
             f"{eid}.checker.{n}",

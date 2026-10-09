@@ -171,7 +171,8 @@ def test_loop_authored_user_messages_are_not_observations():
 def _stores(tmp_path, regime: str = "dense"):
     repo = Repo.init_bare(tmp_path / "ep.git")
     ev = EvidenceStore(tmp_path / "evidence.sqlite")
-    return SimpleNamespace(episodes=repo, evidence=ev), repo
+    paths = SimpleNamespace(errors=tmp_path / "errors.jsonl")
+    return SimpleNamespace(episodes=repo, evidence=ev, paths=paths), repo
 
 
 def _episode(eid: str, n_dialogue: int, regime: str = "dense"):
@@ -234,7 +235,6 @@ def test_refers_to_episode_when_dialogue_is_off(tmp_path):
     "entries,n_dialogue",
     [
         (_entries((1, "fail"), (1, "pass")), 2),  # not strictly increasing: uncertain
-        (_entries((None, "pass")), 2),  # the transcript could not be read
         (
             _entries((1, "pass")),
             1,
@@ -432,6 +432,7 @@ class _CheckerRun(_Run):
 
 
 def test_cli_hands_a_checker_line_to_the_run_and_never_to_the_actor(monkeypatch):
+    _on(monkeypatch)
     log: list = []
     code, out, log, handle = _drive(
         monkeypatch,
@@ -447,6 +448,7 @@ def test_cli_hands_a_checker_line_to_the_run_and_never_to_the_actor(monkeypatch)
 
 
 def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):
+    _on(monkeypatch)
     code, out, log, handle = _drive(
         monkeypatch,
         ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
@@ -462,3 +464,122 @@ def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):
             "reason": "this session records no memory",
         },
     ]
+
+
+# ── review S4: off-path equivalence of the stdin channel ────────────────────
+
+
+def _off(monkeypatch):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "off")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_CHECKER_VISIBLE", "off")
+
+
+def test_cli_with_the_switches_off_ignores_a_checker_line_as_before(monkeypatch):
+    _off(monkeypatch)
+    log: list = []
+    code, out, log, handle = _drive(
+        monkeypatch,
+        ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
+        b'{"checker": {"label": "pass"}}\n{"quit": true}\n',
+        _CheckerRun(log),
+    )
+    assert code == 0
+    assert [e[0] for e in log] == [
+        "begin",
+        "act",
+        "finish",
+        "abort",
+    ]  # not handed to the run
+    assert [
+        o for o in out if o.get("type") == "checker"
+    ] == []  # and no answer: no control line at all
+
+
+@pytest.mark.parametrize("switches", ["off", "on"])
+def test_a_line_that_also_quits_is_never_swallowed(monkeypatch, switches):
+    (_on if switches == "on" else _off)(monkeypatch)
+    log: list = []
+    code, out, log, handle = _drive(
+        monkeypatch,
+        ["act", "--persist", "--jsonl", "--no-clarify", "--quiet", "Say hi"],
+        b'{"checker": {"label": "pass"}, "quit": true}\n',
+        _CheckerRun(log),
+    )
+    assert (
+        code == 0
+    )  # the quit was honoured (a swallowed quit leaves the persistent session waiting)
+    assert "take_checker" not in [e[0] for e in log]
+    assert [e[0] for e in log] == ["begin", "act", "finish", "abort"]
+
+
+# ── review S2: only verdicts the actor saw are posted ───────────────────────
+
+
+def _errors(tmp_path):
+    path = tmp_path / "errors.jsonl"
+    return (
+        [json.loads(x)["error"] for x in path.read_text().splitlines()]
+        if path.exists()
+        else []
+    )
+
+
+def test_a_verdict_the_actor_never_saw_is_dropped_and_logged(tmp_path):
+    stores, repo = _stores(tmp_path)
+    ep = _episode("ep6", 2)
+    stores.evidence.index_episode(ep, repo.head())
+    lines = _arc_lines()[
+        :4
+    ]  # the request ended after the first submit, before its verdict was shown
+    n = consolidate.post_visible_checkers(
+        stores,
+        ep,
+        repo.head(),
+        _entries((1, "fail")),
+        lines,
+        "env",
+    )
+    assert n == 0 and stores.evidence.signals_for("ep6") == []
+    (err,) = _errors(tmp_path)
+    assert "checker line 1 dropped" in err and "observation 1 of 1 never shown" in err
+
+
+def test_an_unreadable_count_is_dropped_not_posted(tmp_path):
+    stores, repo = _stores(tmp_path)
+    ep = _episode("ep7", 2)
+    stores.evidence.index_episode(ep, repo.head())
+    n = consolidate.post_visible_checkers(
+        stores,
+        ep,
+        repo.head(),
+        _entries((None, "pass")),
+        _arc_lines(),
+        "env",
+    )
+    assert n == 0 and stores.evidence.signals_for("ep7") == []
+    assert "count unreadable" in _errors(tmp_path)[0]
+
+
+def test_delivered_entries_still_pair_when_a_later_one_is_dropped(tmp_path):
+    stores, repo = _stores(tmp_path)
+    ep = _episode("ep8", 2)
+    stores.evidence.index_episode(ep, repo.head())
+    entries = _entries(
+        (1, "fail"),
+        (2, "pass"),
+        (3, "pass"),
+    )  # the third came after the last shown verdict
+    n = consolidate.post_visible_checkers(
+        stores,
+        ep,
+        repo.head(),
+        entries,
+        _arc_lines(),
+        "env",
+    )
+    assert n == 2
+    assert [(s.signal_id, s.refers_to) for s in stores.evidence.signals_for("ep8")] == [
+        ("ep8.checker.1", "ep8/actions/1"),
+        ("ep8.checker.2", "ep8/actions/2"),
+    ]
+    assert len(_errors(tmp_path)) == 1

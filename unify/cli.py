@@ -313,6 +313,17 @@ def _stdin_reader(
         loop.remove_reader(fd)
 
 
+def _checker_lines_on() -> bool:
+    """Whether the CLI takes ``{"checker": ...}`` lines (memory v2.1 P9): ``UNIFY_MEMORY_V21`` and
+    ``UNIFY_MEMORY_V21_CHECKER_VISIBLE`` both on. Off, such a line is no control line at all.
+    """
+    try:
+        from unify.memory_v2.integration.request import checker_visible_on
+    except ImportError:
+        return False
+    return checker_visible_on()
+
+
 class Act:
     """One actor driven from the terminal, with no conversation loop above it."""
 
@@ -481,8 +492,10 @@ class Act:
                     if "outcome" in item:
                         self._post_outcome(item.get("outcome"))
                         continue
-                    if "checker" in item:
-                        # memory v2.1 P9: a verdict the bed showed the actor; never a message
+                    if set(item) == {"checker"} and _checker_lines_on():
+                        # memory v2.1 P9: a verdict the bed showed the actor; never a message. Only a checker-only
+                        # line, only with UNIFY_MEMORY_V21 and its checker switch on (review S4): any other line,
+                        # including one that also names message, quit or cancel, is handled exactly as before P9.
                         self._post_checker(item.get("checker"))
                         continue
                     if item.get("quit"):
