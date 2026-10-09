@@ -31,6 +31,8 @@ import asyncio
 import fcntl
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -280,3 +282,202 @@ def record_result(paths: Any, row: dict) -> None:
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
         fh.flush()
+
+
+# --- spawning (the request side) ---------------------------------------------------------------------------
+
+
+def spawn(
+    paths: Any,
+    eid: str,
+    sha: str,
+    effort: str,
+    *,
+    wall_s: float,
+    popen: Callable[..., Any] = subprocess.Popen,
+    argv_prefix: list[str] | None = None,
+    clock: Callable[[], float] = time.time,
+) -> InFlight | None:
+    """Start the worker in its own session, holding the pass lock through an inherited descriptor; None when the
+    lock is held (a worker is running, starting or ending). Credentials never enter argv.
+    """
+    fd = try_lock(lock_path(paths))
+    if fd is None:
+        return None
+    log = None
+    try:
+        log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
+        argv = [
+            *(argv_prefix or [sys.executable, "-m", WORKER_MODULE]),
+            "--home",
+            str(paths.home),
+            "--episode",
+            eid,
+            "--sha",
+            sha,
+            "--effort",
+            effort,
+            "--lock-fd",
+            str(fd),
+        ]
+        proc = popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            pass_fds=(fd,),
+            close_fds=True,
+        )
+        now = clock()
+        rec = InFlight(
+            f"{eid}.p0",
+            proc.pid,
+            proc.pid,
+            proc_start(proc.pid) or "",
+            now,
+            now + float(wall_s),
+            eid,
+        )
+        write_inflight(paths, rec)
+        return rec
+    finally:
+        os.close(fd)  # the worker keeps the lock on the descriptor it inherited
+        if log is not None:
+            log.close()
+
+
+def maybe_spawn(
+    stores: Any,
+    eid: str,
+    sha: str,
+    *,
+    effort: str,
+    settings: Any,
+    emit: Callable[[dict], None] | None,
+    popen: Callable[..., Any] = subprocess.Popen,
+    argv_prefix: list[str] | None = None,
+) -> dict:
+    """At a v2.1 request's end: start a pass if one is due and none is in flight, and return at once (spec §6).
+    Delivers one event (``spawned`` or ``busy``) and returns it; ``not_due`` and ``error`` deliver nothing.
+    Never raises: a failure is recorded in ``errors.jsonl``, and the request stays due.
+    """
+    from ..trigger import Trigger
+    from .consolidate import _deliver, _error
+    from .switch import v21_experience_budget, v21_pass_wall_s
+
+    paths = stores.paths
+    try:
+        rec = read_inflight(paths)
+        if rec is not None and owns(rec):
+            event = {
+                "type": "consolidation",
+                "phase": "busy",
+                "episode_id": eid,
+                "pass_id": rec.pass_id,
+            }
+            _deliver(stores, emit, event)
+            return event
+        budget = v21_experience_budget(settings)
+        due = Trigger(
+            stores.evidence,
+            mode="batched",
+            experience_budget=budget,
+        ).after_episode(eid)
+        if not due:
+            return {"phase": "not_due"}
+        wall_s = v21_pass_wall_s(settings)
+        rec = spawn(
+            paths,
+            eid,
+            sha,
+            effort,
+            wall_s=wall_s,
+            popen=popen,
+            argv_prefix=argv_prefix,
+        )
+        if rec is None:
+            event = {
+                "type": "consolidation",
+                "phase": "busy",
+                "episode_id": eid,
+                "pass_id": None,
+            }
+        else:
+            event = {
+                "type": "consolidation",
+                "phase": "spawned",
+                "episode_id": eid,
+                "pass_id": rec.pass_id,
+                "trigger_tokens": due[0].experience_tokens,
+                "experience_budget": budget,
+                "wall_s": wall_s,
+            }
+        _deliver(stores, emit, event)
+        return event
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - a request's end never fails on consolidation
+        _error(stores, f"spawn: {type(exc).__name__}: {exc}")
+        return {"phase": "error"}
+
+
+# --- results (the next request) ----------------------------------------------------------------------------
+
+
+def _cursor(paths: Any) -> int:
+    try:
+        return int(cursor_path(paths).read_text().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _rows_from(paths: Any, offset: int) -> tuple[list[dict], int]:
+    """Complete result lines from byte *offset* (a line still being written waits), and the offset after them."""
+    try:
+        with open(results_path(paths), "rb") as fh:
+            fh.seek(offset)
+            data = fh.read()
+    except OSError:
+        return [], offset
+    end = data.rfind(b"\n") + 1
+    rows = []
+    for line in data[:end].splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("ended") in _ENDED:
+            rows.append(row)
+    return rows, offset + end
+
+
+def unapplied(paths: Any) -> list[dict]:
+    return _rows_from(paths, _cursor(paths))[0]
+
+
+def apply_results(state: Any, paths: Any) -> list[dict]:
+    """Apply the worker rows no request has applied yet (drift and suspect clears), save the state, then move the
+    cursor. Called under the request lock at a v2.1 request's open."""
+    rows, end = _rows_from(paths, _cursor(paths))
+    if not rows and end == _cursor(paths):
+        return []
+    for row in rows:
+        state.drift.difference_update(row.get("drift_cleared") or [])
+        state.suspect.difference_update(row.get("suspect_cleared") or [])
+    state.save()
+    _atomic_write(cursor_path(paths), f"{end}\n")
+    return rows
+
+
+def landed_event(row: dict, episode_id: str, pin: str) -> dict:
+    """The ``landed`` event: the pass, how it ended, and the first request that ran after it."""
+    return {
+        "type": "consolidation",
+        "phase": "landed",
+        "pass_id": row.get("pass_id"),
+        "ended": row.get("ended"),
+        "commit": row.get("commit"),
+        "first_request": episode_id,
+        "pinned": pin,
+    }

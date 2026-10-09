@@ -188,7 +188,7 @@ def open_stores(paths: Paths, *, busy_timeout_s: float | None = None) -> Stores:
         _bare(paths.memory),
         _bare(paths.episodes),
         BlobStore(paths.blobs),
-        EvidenceStore(paths.evidence, busy_timeout_s=busy_timeout_s),
+        EvidenceStore(paths.evidence, timeout_s=busy_timeout_s),
     )
 
 
