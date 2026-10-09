@@ -407,6 +407,10 @@ class ProductionSettings(BaseSettings):
     # (default; empty means it) or ``on``. On: the writer reads a batch
     # map and bounded views, and finish waits for coverage. Off: v2 as built.
     UNIFY_MEMORY_V21: str = "off"
+    # Memory v2.1 P9: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_V21), a
+    # ``{"checker": {"label": ...}}`` stdin line records the verdict the bed
+    # showed the actor as an agent-visible checker signal. Off: refused.
+    UNIFY_MEMORY_V21_CHECKER_VISIBLE: str = "off"
     # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
     # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
     # (``on``/``strict``) draws seeded random recorded inputs per new function;
@@ -632,6 +636,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V2_SOFT_BUDGET",
         "UNIFY_MEMORY_V2_SOL_USAGE",
         "UNIFY_MEMORY_V21",
+        "UNIFY_MEMORY_V21_CHECKER_VISIBLE",
         "UNIFY_MEMORY_V2_QA_FIXTURES",
         "UNIFY_MEMORY_V2_QA_MUTATION",
         "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",

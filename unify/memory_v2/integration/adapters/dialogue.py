@@ -318,6 +318,37 @@ def dialogue_actions(
     return actions
 
 
+def observation_count(transcript_lines: Iterable[dict]) -> int:
+    """How many observations (non-loop-authored user messages) the transcript holds so far."""
+    return sum(1 for m in _messages(transcript_lines) if _is_observation(m))
+
+
+def answered_observations(transcript_lines: Iterable[dict]) -> list[int]:
+    """For each answered reply, in the order of :func:`dialogue_actions` with ``answered_only`` (one entry per
+    action it records), the 0-based ordinal, among the transcript's observations, of the observation that
+    answers it. Spec v2.1 §5 (P9): a verdict posted just before the message that shows it to the actor is tied
+    to the dialogue action that message answers. The pairing rule is :func:`dialogue_actions`'s own.
+    """
+    msgs = _messages(transcript_lines)
+    answer: list[int | None] = [None] * len(msgs)
+    following: int | None = None
+    for j in range(len(msgs) - 1, -1, -1):
+        answer[j] = following
+        if msgs[j].get("role") == "assistant":
+            following = None
+        elif _is_observation(msgs[j]):
+            following = j
+    ordinal: dict[int, int] = {}
+    for j, m in enumerate(msgs):
+        if _is_observation(m):
+            ordinal[j] = len(ordinal)
+    return [
+        ordinal[answer[i]]
+        for i, m in enumerate(msgs)
+        if _is_reply(m) and answer[i] is not None
+    ]
+
+
 def _line_bucket(n: int) -> str:
     if n == 0:
         return "0"

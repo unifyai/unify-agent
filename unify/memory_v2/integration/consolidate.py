@@ -129,6 +129,7 @@ __all__ = [
     "events_path",
     "open_stores",
     "post_checker",
+    "post_visible_checkers",
     "run_due_passes",
     "sol_settings",
 ]
@@ -283,6 +284,65 @@ def post_checker(
     except SignalMasked:
         return False
     return True
+
+
+def post_visible_checkers(
+    stores: Stores,
+    ep: Episode,
+    sha: str,
+    entries: list[dict],
+    lines: list[dict],
+    counterpart: str,
+) -> int:
+    """Post the verdicts the bed showed the actor (spec v2.1 §5, P9) on episode *ep* as agent-visible checker
+    signals, one per entry, in order: ``<eid>.checker.<n>``, ``pass`` or ``fail``.
+
+    Each entry is ``{"label", "obs", "at"}`` (:meth:`.request.RequestRun.take_checker`): ``obs`` is how many
+    observations the transcript held when the line came, so the verdict's own message is observation number
+    ``obs``. The signal refers to the dialogue action that message answers (``<eid>/actions/<index>``), found
+    with the dialogue adapter's own pairing (:func:`.adapters.dialogue.answered_observations`). Without the
+    dialogue setting, without an answered action, or when the episode's dialogue actions and the pairing
+    disagree in number, or when the entries' counts do not strictly increase, it refers to the episode as a
+    whole, never to a guessed action (MAIN, 9 Oct). A regime
+    in which checker signals are not observable posts nothing. Returns how many were posted.
+    """
+    from .adapters import dialogue
+
+    eid = ep.episode_id
+    answered: list[int] = []
+    positions: list[int] = []
+    if counterpart:
+        answered = dialogue.answered_observations(lines)
+        positions = [i for i, a in enumerate(ep.actions) if a.kind == "dialogue"]
+        obs_seen = [e.get("obs") for e in entries]
+        increasing = all(isinstance(o, int) for o in obs_seen) and all(
+            a < b for a, b in zip(obs_seen, obs_seen[1:])
+        )
+        if len(answered) != len(positions) or not increasing:
+            # the pairing is not certain for every entry: no entry names an action
+            answered, positions = [], []
+    posted = 0
+    for n, entry in enumerate(entries, 1):
+        refers_to = eid
+        obs = entry.get("obs")
+        if isinstance(obs, int) and obs in answered:
+            refers_to = f"{eid}/actions/{positions[answered.index(obs)]}"
+        sig = Signal(
+            f"{eid}.checker.{n}",
+            eid,
+            "checker",
+            entry["label"],
+            entry["at"],
+            refers_to=refers_to,
+            regime=stores.evidence.regime_of(eid),
+            visible_to_actor=True,
+        )
+        try:
+            post_signal(sig, stores.episodes, sha, stores.evidence)
+        except SignalMasked:
+            continue
+        posted += 1
+    return posted
 
 
 # --- settings --------------------------------------------------------------------------------------------

@@ -481,6 +481,10 @@ class Act:
                     if "outcome" in item:
                         self._post_outcome(item.get("outcome"))
                         continue
+                    if "checker" in item:
+                        # memory v2.1 P9: a verdict the bed showed the actor; never a message
+                        self._post_checker(item.get("checker"))
+                        continue
                     if item.get("quit"):
                         line = "/quit"
                     elif item.get("cancel"):
@@ -601,6 +605,22 @@ class Act:
         finally:
             self._cancel_answered.set()
             signal.signal(_CANCEL_INTERRUPT_SIGNAL, previous)
+
+    def _post_checker(self, raw: object) -> None:
+        """Hand a ``{"checker": ...}`` line to the memory run and answer it (memory v2.1 P9: a verdict the
+        bed showed the actor, kept as an agent-visible checker signal). Without a memory run it is refused.
+        """
+        if self._mv2 is None:
+            answer = {
+                "type": "checker",
+                "accepted": False,
+                "reason": "this session records no memory",
+            }
+        else:
+            answer = self._mv2.take_checker(raw)
+        if not answer["accepted"]:
+            self._progress(f"checker line refused: {answer['reason']}")
+        self._emit(**answer)
 
     def _post_outcome(self, raw: object) -> None:
         """Hand an ``{"outcome": ...}`` line to the session and answer it.

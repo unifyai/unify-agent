@@ -44,6 +44,19 @@ class Signal:
     regime: str = "dense"
     revealed: bool = True
     reveal_p: str | None = None
+    # Spec v2.1 §5 (P9): the bed showed the actor this same verdict (a checker signal posted from a
+    # ``{"checker": ...}`` line). Only such checker signals may be used by the writer, the gate and the
+    # lifecycle; a grader the actor never sees (``{"outcome": ...}``) stays False.
+    visible_to_actor: bool = False
+
+
+def note_text(sig: Signal) -> str:
+    """The signal's note line: ``visible_to_actor`` appears only when True, so every other signal's note
+    is byte-identical to the build without it."""
+    row = asdict(sig)
+    if not row["visible_to_actor"]:
+        del row["visible_to_actor"]
+    return json.dumps(row, sort_keys=True)
 
 
 def post_signal(
@@ -66,7 +79,7 @@ def post_signal(
         raise SignalMasked(
             f"{sig.source} signals are not observable in the {ep_regime} regime",
         )
-    episodes.add_note(commit_sha, json.dumps(asdict(sig), sort_keys=True))
+    episodes.add_note(commit_sha, note_text(sig))
     evidence.add_signal(sig)
 
 
