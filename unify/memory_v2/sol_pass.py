@@ -454,6 +454,11 @@ READ_PARTS_PER_CALL = 8
 READERS_PER_TURN = 16
 
 
+def _v21_on(sol: object) -> bool:
+    """PassConfig.v21 of *sol*; off when it has no config (tests drive the staging helpers on stand-ins)."""
+    return bool(getattr(getattr(sol, "cfg", None), "v21", False))
+
+
 def _head_marked(text: str) -> tuple[str, str]:
     """A cell's output under v2.1 (P5): its head, marked when cut (never the tail alone), and the full text."""
     return _views.view(text.encode("utf-8", errors="replace"), 0, _OUTPUT_CAP), text
@@ -1481,16 +1486,16 @@ class SolPass:
                 else None
             ),
             blob_min_bytes=self._qa.response_blob_bytes,
-            v21=self.cfg.v21,
+            v21=_v21_on(self),
         )
         exported = export_blobs(
             self.load,
             list(req.episodes),
             getattr(self.gate, "blobs", None),
             inputs / "blobs",
-            per_blob_bytes=None if self.cfg.v21 else EXPORT_BLOB_BYTES,
-            total_bytes=None if self.cfg.v21 else EXPORT_TOTAL_BYTES,
-            record_bytes=self.cfg.v21,
+            per_blob_bytes=None if _v21_on(self) else EXPORT_BLOB_BYTES,
+            total_bytes=None if _v21_on(self) else EXPORT_TOTAL_BYTES,
+            record_bytes=_v21_on(self),
         )
         self._exported_bytes = exported.get("exported_bytes")
         (inputs / "request.json").write_text(
@@ -1503,7 +1508,7 @@ class SolPass:
                 },
             ),
         )
-        if self.cfg.v21:
+        if _v21_on(self):
             from .batch_map import build_batch_map
 
             (inputs / "batch_map.json").write_text(
@@ -1568,7 +1573,7 @@ class SolPass:
         finally:
             shutil.rmtree(cdir, ignore_errors=True)
         content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
-        if self.cfg.v21:
+        if _v21_on(self):
             shown, full = _head_marked(content)
             out_dir = cells.parent / "outputs"
             out_dir.mkdir(exist_ok=True)
