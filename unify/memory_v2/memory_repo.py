@@ -7,6 +7,8 @@ rewritten by the next pass.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import ast
 import re
 from dataclasses import dataclass, field
@@ -256,6 +258,29 @@ class MemoryRepo:
                 wt,
                 f"hide {item_id}",
                 {"Hide": reason, "Evidence": evidence},
+            )
+        self.repo.fast_forward("main", sha, expected_old=base)
+        return sha
+
+    def status_commit(self, changes: Mapping[str, str], evidence: Sequence[str]) -> str:
+        """memory v2.1 (spec §4.4, §10.1; D10's harness commit): one empty commit on ``main`` recording a
+        consolidation's status changes, item by item (``Status: <item> <status>``) with the episodes behind them
+        (``Evidence:``). The tree is unchanged: a v2.1 item leaves the index by its status, never by losing its
+        code, so ``memory.show`` still reaches it. The commit gives the requests after it a new pin, so the
+        prompt prefix changes only when a commit lands (cache rule). v2's :meth:`hide` is unchanged.
+        """
+        if not changes:
+            raise ValueError("no status change to record")
+        base = self.repo.head()
+        with self.repo.temp_checkout(base) as wt:
+            sha = self.repo.commit_all(
+                wt,
+                f"status: {len(changes)} item(s)",
+                {
+                    "Status": [f"{item} {changes[item]}" for item in sorted(changes)],
+                    "Evidence": sorted(set(evidence)),
+                },
+                allow_empty=True,
             )
         self.repo.fast_forward("main", sha, expected_old=base)
         return sha

@@ -417,3 +417,17 @@ def test_memory_v21_switch_default_off_and_validated(monkeypatch):
     monkeypatch.setenv("UNIFY_MEMORY_V21", "maybe")
     with pytest.raises(ValueError):
         ProductionSettings()
+
+
+def test_memory_v21_checker_visible_default_off_and_validated(monkeypatch):
+    """UNIFY_MEMORY_V21_CHECKER_VISIBLE (spec v2.1 §5; P5 Task 7, the switch P9 reads too): off by default,
+    ``off``/``on``, else refused, as P1's UNIFY_MEMORY_V21."""
+    from unify.settings import ProductionSettings
+
+    monkeypatch.delenv("UNIFY_MEMORY_V21_CHECKER_VISIBLE", raising=False)
+    assert ProductionSettings().UNIFY_MEMORY_V21_CHECKER_VISIBLE == "off"
+    monkeypatch.setenv("UNIFY_MEMORY_V21_CHECKER_VISIBLE", "on")
+    assert ProductionSettings().UNIFY_MEMORY_V21_CHECKER_VISIBLE == "on"
+    monkeypatch.setenv("UNIFY_MEMORY_V21_CHECKER_VISIBLE", "maybe")
+    with pytest.raises(ValueError):
+        ProductionSettings()

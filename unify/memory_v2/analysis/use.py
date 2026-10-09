@@ -119,6 +119,8 @@ from typing import Any, Iterable
 
 __all__ = [
     "HEADER_PREFIX",
+    "HELPER_FUNCTIONS_V21",
+    "LAYOUT_V21",
     "VERSION",
     "attribute_errors",
     "dict_status",
@@ -203,10 +205,17 @@ MAX_NAME_CHARS = 200
 #: functions of it whose calls show the library (``cell_exposure``).
 HELPER_MODULE = "memory"
 HELPER_FUNCTIONS = ("catalog", "find", "describe")
+#: memory v2.1 (spec §4.2, §6): the library is the package ``memory``, whose generated ``__init__.py`` is the
+#: helper (these functions), and a function item is ``memory.<package>.<module>:<name>``. A record computed for a
+#: v2.1 pin carries ``"layout": LAYOUT_V21``; a v2 record has no such key, so v2's records are unchanged.
+LAYOUT_V21 = "v21"
+PACKAGE_V21 = "memory"
+HELPER_FUNCTIONS_V21 = ("show", "index", "find")
 
 _IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 _IDENT_RE = re.compile(_IDENT)
 _ITEM_ID = re.compile(rf"^env/({_IDENT}):({_IDENT})\Z")
+_ITEM_ID_V21 = re.compile(rf"^memory\.({_IDENT})\.({_IDENT}):({_IDENT})\Z")
 _FRAME = re.compile(r'^  File "(?P<file>.*)", line \d+, in (?P<func>.+)$')
 _TYPE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.]*)(?::|$)")
 _HEADER = "Traceback (most recent call last):"
@@ -286,13 +295,19 @@ def _public_names(tree: ast.Module) -> list[str]:
     return [n for n in names if not n.startswith("_")]
 
 
-def library_surface(root: str | Path) -> dict:
+def library_surface(root: str | Path, *, v21: bool = False) -> dict:
     """The import surface of the library at *root* (the export, read before any cell runs):
     ``{"star": {channel: names a star import binds}, "reexports": {"env/a:g": "env/b:g"}}``.
 
     ``star`` is the module's ``__all__``, or its public top-level names without one. A re-export is a
     top-level ``from env.<b> import g [as h]`` (or ``from ..<b> import g``) in ``env/<a>/__init__.py``.
+
+    With *v21* (spec v2.1 §4.2) the keys are ``<package>`` and ``<package>.<module>`` of
+    ``memory/<package>/(__init__|<module>).py``, and a re-export is any top-level ``from`` import of a library name in
+    such a file (:func:`_library_surface_v21`).
     """
+    if v21:
+        return _library_surface_v21(Path(root))
     star: dict[str, list[str]] = {}
     reexports: dict[str, str] = {}
     for mod in sorted(Path(root).glob("env/*/__init__.py")):
@@ -323,6 +338,62 @@ def library_surface(root: str | Path) -> dict:
                 if a.name != "*" and len(reexports) < MAX_REEXPORTS:
                     reexports[f"env/{channel}:{a.asname or a.name}"] = (
                         f"env/{source}:{a.name}"
+                    )
+    return {"star": star, "reexports": dict(sorted(reexports.items()))}
+
+
+def _source_key_v21(key: str, node: ast.ImportFrom) -> str | None:
+    """The library key (``<package>`` or ``<package>.<module>``) a top-level ``from`` import in library file
+    *key* names, or None (relative imports resolve against the file's package, ``memory.<package>``).
+    """
+    if node.level == 0:
+        parts = (node.module or "").split(".")
+        return (
+            ".".join(parts[1:])
+            if parts[0] == PACKAGE_V21 and len(parts) in (2, 3)
+            else None
+        )
+    sub = node.module.split(".") if node.module else []
+    if node.level == 1 and len(sub) == 1:
+        return f"{key.split('.', 1)[0]}.{sub[0]}"
+    if node.level == 2 and len(sub) in (1, 2):
+        return ".".join(sub)
+    return None
+
+
+def _library_surface_v21(root: Path) -> dict:
+    """:func:`library_surface` of a v2.1 export: ``star`` per key, and every name a library file binds by a
+    top-level ``from`` import of another library file (``memory.<key>:<name>`` -> the source's id), so a name
+    re-exported by a package or a module resolves to the module that defines it."""
+    star: dict[str, list[str]] = {}
+    reexports: dict[str, str] = {}
+    for mod in sorted(root.glob(f"{PACKAGE_V21}/*/*.py")):
+        pkg, name = mod.parent.name, mod.stem
+        if not re.fullmatch(_IDENT, pkg) or not re.fullmatch(_IDENT, name):
+            continue
+        if len(star) >= MAX_CHANNEL_KEYS:
+            break
+        key = pkg if name == "__init__" else f"{pkg}.{name}"
+        try:
+            tree = ast.parse(mod.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, ValueError, RecursionError, MemoryError):
+            continue
+        names = _all_names(tree)
+        if names is None:
+            names = _public_names(tree)
+        star[key] = sorted({n for n in names if re.fullmatch(_IDENT, n)})[
+            :MAX_STAR_NAMES
+        ]
+        for node in tree.body:
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            source = _source_key_v21(key, node)
+            if source is None or source == key:
+                continue
+            for a in node.names:
+                if a.name != "*" and len(reexports) < MAX_REEXPORTS:
+                    reexports[f"{PACKAGE_V21}.{key}:{a.asname or a.name}"] = (
+                        f"{PACKAGE_V21}.{source}:{a.name}"
                     )
     return {"star": star, "reexports": dict(sorted(reexports.items()))}
 
@@ -359,17 +430,87 @@ class _Items:
 
     def item(self, channel: str, name: str) -> str | None:
         """The item ``<channel>.<name>`` resolves to (following re-exports), or None."""
-        iid: str | None = f"env/{channel}:{name}"
+        iid: str | None = self.iid(channel, name)
         for _ in range(MAX_REEXPORT_HOPS):
             if iid is None or iid in self.known:
                 return iid
             iid = self.reexports.get(iid)
         return None
 
+    # The layout's naming: v2's ``env/<channel>:<name>``. :class:`_Items21` overrides each method.
+    def iid(self, channel: str, name: str) -> str:
+        return f"env/{channel}:{name}"
+
+    def channel_of(self, iid: str) -> str:
+        return iid.split(":", 1)[0][len("env/") :]
+
+    def items_under(self, channel: str) -> list[str]:
+        """The items a channel key holds (a module object used as a value reaches each of them)."""
+        return [f"env/{channel}:{n}" for n in self.by_channel.get(channel, [])]
+
+    def frame_channel(self, parts: list[str], anchored: bool) -> str | None:
+        """The channel whose module a traceback frame's file is, or None. *parts* are the file's path
+        components: relative to an export root when *anchored*, else the whole path (read by its tail).
+        """
+        if anchored:
+            if len(parts) == 3 and parts[0] == "env" and parts[2] == "__init__.py":
+                return parts[1] if parts[1] in self.by_channel else None
+            return None
+        if len(parts) >= 3 and parts[-1] == "__init__.py" and parts[-3] == "env":
+            return parts[-2] if parts[-2] in self.by_channel else None
+        return None
+
     def star_names(self, channel: str) -> list[str]:
         if self.star is not None and channel in self.star:
             return list(self.star[channel])
         return list(self.by_channel.get(channel, []))
+
+
+class _Items21(_Items):
+    """The v2.1 items at the pin (spec §4.2). A key is ``<package>.<module>`` (a module, whose public functions
+    are items) or ``<package>`` (a package init, which holds no item but may re-export one). ``modules`` and
+    ``packages`` are the keys of each kind; ``channels`` is both."""
+
+    def __init__(self, ids: Iterable[str], surface: Any = None) -> None:
+        super().__init__((), surface)
+        for raw in sorted({i for i in ids if isinstance(i, str)}):
+            m = _ITEM_ID_V21.match(raw)
+            if m is None:
+                continue
+            self.ids.append(raw)
+            self.by_channel.setdefault(f"{m.group(1)}.{m.group(2)}", []).append(
+                m.group(3),
+            )
+        self.known = frozenset(self.ids)
+        star = self.star or {}
+        self.modules = frozenset(self.by_channel) | frozenset(
+            k for k in star if "." in k
+        )
+        self.packages = frozenset(k.split(".", 1)[0] for k in self.modules) | frozenset(
+            k for k in star if "." not in k
+        )
+        self.channels = self.modules | self.packages
+
+    def iid(self, channel: str, name: str) -> str:
+        return f"{PACKAGE_V21}.{channel}:{name}"
+
+    def channel_of(self, iid: str) -> str:
+        return iid.split(":", 1)[0][len(PACKAGE_V21) + 1 :]
+
+    def items_under(self, channel: str) -> list[str]:
+        return [
+            i
+            for i in self.ids
+            if self.channel_of(i) == channel
+            or self.channel_of(i).startswith(channel + ".")
+        ]
+
+    def frame_channel(self, parts: list[str], anchored: bool) -> str | None:
+        tail = parts if anchored else parts[-3:]
+        if len(tail) != 3 or tail[0] != PACKAGE_V21 or not tail[2].endswith(".py"):
+            return None
+        key = tail[1] if tail[2] == "__init__.py" else f"{tail[1]}.{tail[2][:-3]}"
+        return key if key in self.by_channel else None
 
 
 def env_channel(kind: Any, channel: Any) -> str | None:
@@ -538,6 +679,7 @@ def runtime_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
+    v21: bool = False,
 ) -> dict:
     """One cell's status from the runtime's structured result, as the use record keeps it.
 
@@ -549,7 +691,7 @@ def runtime_status(
     error longer than :data:`MAX_TRACEBACK_CHARS`, whose outcome is then unknown) and each exit is
     ``[kind, channel, function]`` (``kind`` ``refused`` or ``errored``; see :func:`attribute_errors`).
     """
-    its = items if isinstance(items, _Items) else _Items(items)
+    its = items if isinstance(items, _Items) else (_Items21 if v21 else _Items)(items)
     exits: list[list[str]] = []
     if not isinstance(error, str) or not error:
         status = "ok"
@@ -591,6 +733,7 @@ def dict_status(
     *,
     items: Iterable[str] | _Items,
     roots: Iterable[str] = (),
+    v21: bool = False,
 ) -> dict:
     """One cell's status from the code tool's plain ``dict`` result (the legacy projection returns one,
     unwrapped, for an empty cell and when the session executor itself raised).
@@ -610,6 +753,7 @@ def dict_status(
             get("session_created"),
             items=items,
             roots=roots,
+            v21=v21,
         )
     if error is None:
         return _no_result("empty", "empty")
@@ -980,7 +1124,7 @@ _ROW_KEYS = (
 
 
 class _Tally:
-    def __init__(self) -> None:
+    def __init__(self, helpers: tuple[str, ...] = HELPER_FUNCTIONS) -> None:
         self.items: dict[str, dict] = {}
         self.module_imports: dict[str, int] = {}
         self.unknown: dict[str, int] = {}
@@ -988,10 +1132,7 @@ class _Tally:
         # cell_exposure: what the cells asked the library helper (or help()) to show
         self.exposed_items: set[str] = set()
         self.exposed_channels: set[str] = set()
-        self.helper_calls: dict[str, int] = dict.fromkeys(
-            (*HELPER_FUNCTIONS, "help"),
-            0,
-        )
+        self.helper_calls: dict[str, int] = dict.fromkeys((*helpers, "help"), 0)
 
     def row(self, item: str) -> dict:
         r = self.items.get(item)
@@ -1378,9 +1519,7 @@ class _Cell(ast.NodeVisitor):
         if channel in self.items.channels:
             self.t.exposed_channels.add(channel)
             if items:
-                self.t.exposed_items.update(
-                    f"env/{channel}:{n}" for n in self.items.by_channel.get(channel, [])
-                )
+                self.t.exposed_items.update(self.items.items_under(channel))
 
     def _named_item(self, text: str) -> str | None:
         """The item a constant names as :func:`..memory_helper.describe` reads it, or None."""
@@ -1438,7 +1577,7 @@ class _Cell(ast.NodeVisitor):
                 iid = self._named_item(const)
             if iid is not None and iid in self.items.known:
                 self.t.exposed_items.add(iid)
-                self.t.exposed_channels.add(iid.split(":", 1)[0][len("env/") :])
+                self.t.exposed_channels.add(self.items.channel_of(iid))
 
     def visit_Call(self, node: ast.Call) -> None:
         target = self.resolve(node.func)
@@ -1485,9 +1624,199 @@ class _Cell(ast.NodeVisitor):
             self._unbind(node.id)
 
 
+class _Cell21(_Cell):
+    """:class:`_Cell` for a v2.1 library (spec §4.2, §6).
+
+    ``memory`` is the package and the helper at once (``("helper",)``): its attributes are the helper's functions
+    (:data:`HELPER_FUNCTIONS_V21`) or packages; a package's attributes are its modules or the items it
+    re-exports; a module's attributes are items. A call of the helper, or of ``help`` on a memory object, is a
+    lookup (``cell_exposure``): it shows and does not use, so an item passed to it is neither called nor
+    referenced.
+    """
+
+    def resolve(self, node: ast.AST) -> _Binding | None:
+        its = self.items
+        if isinstance(node, ast.Attribute):
+            base = self.resolve(node.value)
+            if base is None:
+                return None
+            if base[0] == "helper":
+                if node.attr in HELPER_FUNCTIONS_V21:
+                    return ("helper_fn", node.attr)
+                return (
+                    ("dynamic", "*")
+                    if node.attr == "__dict__"
+                    else ("module", node.attr)
+                )
+            if base[0] == "module":
+                sub = f"{base[1]}.{node.attr}"
+                if "." not in base[1] and sub in its.modules:
+                    return ("module", sub)
+                iid = its.item(base[1], node.attr)
+                if iid is not None:
+                    return ("item", iid)
+                return ("dynamic", base[1]) if node.attr == "__dict__" else None
+            return base if base[0] == "dynamic" else None
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if (
+                isinstance(fn, ast.Name)
+                and fn.id in ("getattr", "vars")
+                and fn.id not in self.b
+                and node.args
+            ):
+                base = self.resolve(node.args[0])
+                if base is not None and base[0] in ("module", "dynamic"):
+                    return ("dynamic", base[1])
+                if base is not None and base[0] == "helper":
+                    return ("dynamic", "*")
+                return None
+            if (
+                self._is_import_call(fn)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                parts = node.args[0].value.split(".")
+                if parts[0] == PACKAGE_V21:
+                    return ("dynamic", ".".join(parts[1:3]) or "*")
+            return None
+        return super().resolve(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            parts = alias.name.split(".")
+            if parts[0] != PACKAGE_V21:
+                self._unbind(alias.asname or parts[0])
+                continue
+            key = ".".join(parts[1:])
+            if key:
+                self.t.add(self.t.module_imports, self._key(key))
+            if alias.asname is None:
+                self._bind(PACKAGE_V21, ("helper",))
+            elif not key:
+                self._bind(alias.asname, ("helper",))
+            elif len(parts) <= 3:
+                self._bind(alias.asname, ("module", key))
+            else:
+                self._unbind(alias.asname)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        parts = (node.module or "").split(".")
+        if node.level or parts[0] != PACKAGE_V21 or len(parts) > 3:
+            for alias in node.names:
+                if alias.name != "*":
+                    self._unbind(alias.asname or alias.name)
+            return
+        if len(parts) == 1:  # from memory import show / <package>
+            for alias in node.names:
+                if alias.name == "*":
+                    for name in HELPER_FUNCTIONS_V21:
+                        self._bind(name, ("helper_fn", name))
+                    continue
+                target = alias.asname or alias.name
+                if alias.name in HELPER_FUNCTIONS_V21:
+                    self._bind(target, ("helper_fn", alias.name))
+                else:
+                    self.t.add(self.t.module_imports, self._key(alias.name))
+                    self._bind(target, ("module", alias.name))
+            return
+        key = ".".join(parts[1:])
+        for alias in node.names:
+            if alias.name == "*":
+                for name in self.items.star_names(key):
+                    iid = self.items.item(key, name)
+                    if iid is None:
+                        self._unbind(name)
+                        continue
+                    self._bind(name, ("item", iid))
+                    self._use(iid, "imported")
+                continue
+            target = alias.asname or alias.name
+            sub = f"{key}.{alias.name}"
+            if (
+                len(parts) == 2 and sub in self.items.modules
+            ):  # from memory.<package> import <module>
+                self.t.add(self.t.module_imports, self._key(sub))
+                self._bind(target, ("module", sub))
+                continue
+            iid = self.items.item(key, alias.name)
+            if iid is None:
+                self._unbind(target)
+                continue
+            self._bind(target, ("item", iid))
+            self._use(iid, "imported")
+
+    def _named_item(self, text: str) -> str | None:
+        """The item a constant names (``memory.<p>.<m>:<f>`` or ``memory.<p>.<m>.<f>``), or None."""
+        text = text.strip()
+        m = _ITEM_ID_V21.match(text)
+        if m is not None:
+            return self.items.item(f"{m.group(1)}.{m.group(2)}", m.group(3))
+        parts = text.split(".")
+        if len(parts) == 4 and parts[0] == PACKAGE_V21:
+            return self.items.item(f"{parts[1]}.{parts[2]}", parts[3])
+        return None
+
+    def _exposure(self, name: str, node: ast.Call) -> None:
+        """A lookup: ``show`` (an item, or each item of a module), ``index`` (every package, or one package with
+        its items) and ``find`` (counted only: what it shows depends on the value), or ``help`` on a memory
+        object."""
+        arg = node.args[0] if node.args else None
+        if arg is None and name == "index":
+            arg = next((k.value for k in node.keywords if k.arg == "package"), None)
+        const = (
+            arg.value
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+            else None
+        )
+        target = self.resolve(arg) if arg is not None else None
+        if name == "help" and (target is None or target[0] not in ("item", "module")):
+            return  # not a memory object: not counted
+        self.t.helper_calls[name] += 1
+        if name == "index":
+            if arg is None:
+                for package in sorted(self.items.packages):
+                    self._show_channel(package, items=False)
+            elif const is not None:
+                self._show_channel(
+                    const.strip().removeprefix(PACKAGE_V21 + "."),
+                    items=True,
+                )
+        elif name in ("show", "help"):
+            iid = None
+            if target is not None and target[0] == "item":
+                iid = target[1]
+            elif target is not None and target[0] == "module":
+                self._show_channel(target[1], items=True)
+            elif const is not None and name == "show":
+                iid = self._named_item(const)
+            if iid is not None and iid in self.items.known:
+                self.t.exposed_items.add(iid)
+                self.t.exposed_channels.add(self.items.channel_of(iid))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = self.resolve(node.func)
+        if target is not None and target[0] == "helper_fn":
+            self._exposure(target[1], node)
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "help"
+            and node.func.id not in self.b
+        ):
+            self._exposure("help", node)
+        else:
+            super().visit_Call(node)
+            return
+        for a in [*node.args, *(k.value for k in node.keywords)]:
+            t = self.resolve(a)
+            if t is None or t[0] not in ("item", "module"):
+                self.visit(
+                    a,
+                )  # an item or module passed to a lookup is shown, not referenced
+
+
 # --- errors ----------------------------------------------------------------------------------------------
-
-
 def _chained(lines: list[str], i: int) -> bool:
     """Whether the header at *i* follows one of CPython's chain lines (blank, chain line, blank)."""
     return i >= 2 and lines[i - 1].strip() == "" and lines[i - 2].strip() in _CHAIN
@@ -1584,21 +1913,21 @@ def parse_traceback(text: str) -> list[dict]:
 
 
 def _module_channel(path: str, items: _Items, roots: tuple[str, ...]) -> str | None:
-    """The channel whose ``env/<channel>/__init__.py`` *path* is: exactly under one of the export
-    *roots* when they are known, else by its last three components."""
+    """The channel whose library module *path* is (:meth:`_Items.frame_channel`): exactly under one of the
+    export *roots* when they are known, else by its last components."""
     path = path.replace("\\", "/")
     if roots:
         for root in roots:
             prefix = root.replace("\\", "/").rstrip("/") + "/"
             if path.startswith(prefix):
-                parts = path[len(prefix) :].split("/")
-                if len(parts) == 3 and parts[0] == "env" and parts[2] == "__init__.py":
-                    return parts[1] if parts[1] in items.by_channel else None
+                channel = items.frame_channel(
+                    path[len(prefix) :].split("/"),
+                    anchored=True,
+                )
+                if channel is not None:
+                    return channel
         return None
-    parts = path.split("/")
-    if len(parts) >= 3 and parts[-1] == "__init__.py" and parts[-3] == "env":
-        return parts[-2] if parts[-2] in items.by_channel else None
-    return None
+    return items.frame_channel(path.split("/"), anchored=False)
 
 
 def _exits(
@@ -1645,7 +1974,7 @@ def _outcomes(
 ) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for kind, channel, func in exits:
-        iid = f"env/{channel}:{func}"
+        iid = its.iid(channel, func)
         if iid not in its.known:
             out.append(("unattributed", channel))
         else:
@@ -1659,6 +1988,7 @@ def attribute_errors(
     *,
     roots: Iterable[str] = (),
     modified: Iterable[str] = (),
+    v21: bool = False,
 ) -> list[tuple[str, str]]:
     """``(outcome, item or channel)`` per exception of a cell's traceback that left a memory item.
 
@@ -1670,7 +2000,7 @@ def attribute_errors(
     ``errored`` for any other type, each with ``_modified`` when the item's channel is in *modified*, and
     ``unattributed`` (with the channel) when that frame is not a public item.
     """
-    its = items if isinstance(items, _Items) else _Items(items)
+    its = items if isinstance(items, _Items) else (_Items21 if v21 else _Items)(items)
     if not text:
         return []
     return _outcomes(
@@ -1691,8 +2021,8 @@ def _reached(its: _Items, items: set[str], channels: set[str]) -> set[str]:
         return set(its.ids)
     out = {i for i in items if i in its.known}
     for channel in channels:
-        out |= {f"env/{channel}:{n}" for n in its.by_channel.get(channel, ())}
-        prefix = f"env/{channel}:"
+        out |= set(its.items_under(channel))
+        prefix = its.iid(channel, "")
         for name in its.reexports:
             if name.startswith(prefix):
                 iid = its.item(channel, name[len(prefix) :])
@@ -1729,6 +2059,7 @@ def request_use(
     surface: Any = None,
     shown: Any = None,
     cell_status: Any = None,
+    v21: bool = False,
 ) -> dict:
     """The request's ``memory_use`` record (see the module docstring); deterministic and bounded.
 
@@ -1741,12 +2072,16 @@ def request_use(
     :func:`dict_status`, :func:`failed_status`), by tool call id: a mapping, or the record's own
     ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
     ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
+
+    With *v21* (spec v2.1 §4.2) *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
+    itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "v21"``. Its
+    ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
     """
     lines = list(lines)
-    its = _Items(items, surface)
+    its = (_Items21 if v21 else _Items)(items, surface)
     roots = _roots(export_roots)
     changed, diff_truncated = modified_channels(memory_diff, its)
-    tally = _Tally()
+    tally = _Tally(HELPER_FUNCTIONS_V21 if v21 else HELPER_FUNCTIONS)
     sessions: dict[Any, dict] = {}
     cells = transcript_cells(lines)
     statuses = _statuses(cells[:MAX_CELLS], cell_status, its, _reply_causes(lines))
@@ -1779,7 +2114,7 @@ def request_use(
                     unparsed += 1
                     opaque = True
             if tree is not None:
-                visitor = _Cell(its, bindings, tally, idx)
+                visitor = (_Cell21 if v21 else _Cell)(its, bindings, tally, idx)
                 try:
                     for stmt in tree.body:
                         visitor.visit(stmt)
@@ -1802,11 +2137,11 @@ def request_use(
                     refusals.append((idx, what))
     latest_ok = _ok_after(actions)
     for idx, iid in refusals:
-        channel = iid.split(":", 1)[0][len("env/") :]
+        channel = its.channel_of(iid)
         if latest_ok.get(channel, -1) > idx:
             tally.row(iid)["refused_then_accepted"] += 1
     for iid, row in tally.items.items():
-        row["modified_in_request"] = iid.split(":", 1)[0][len("env/") :] in changed
+        row["modified_in_request"] = its.channel_of(iid) in changed
     prompts = _system_prompts(lines)
     source, section, shown_record, shown_items, shown_channels = _exposure(
         prompts,
@@ -1826,7 +2161,7 @@ def request_use(
             by_cause[st["cause"]] += 1
     unread = sum(st["status"] == "unread" for st in statuses)
     unknown_items = sorted(_reached(its, reach_items, reach_channels))
-    return {
+    record = {
         "version": VERSION,
         "export_roots": roots,
         "items_at_pin": its.ids[:MAX_ITEMS_AT_PIN],
@@ -1863,6 +2198,9 @@ def request_use(
         },
         "truncated": truncated,
     }
+    if v21:
+        record["layout"] = LAYOUT_V21
+    return record
 
 
 def _jsonl(path: Path) -> list[dict]:
@@ -1990,4 +2328,5 @@ def use_from_episode_dir(
         surface=recorded.get("surface"),
         shown=recorded.get("shown_record"),
         cell_status=recorded.get("cell_status"),
+        v21=recorded.get("layout") == LAYOUT_V21,
     )

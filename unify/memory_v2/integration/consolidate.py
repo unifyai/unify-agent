@@ -746,6 +746,47 @@ def _end_event(
 # --- the driver ------------------------------------------------------------------------------------------
 
 
+def after_passes(
+    stores: Stores,
+    settings: Any,
+    recorded: list[str],
+    emit: Callable[[dict], None] | None,
+) -> None:
+    """Memory v2.1 (spec §4.4, §10; D38, D40): once a consolidation's passes are recorded, the item records of
+    ``main``'s head, the status changes and the bisects (:func:`..lifecycle.consolidate_records`). Nothing runs
+    with ``UNIFY_MEMORY_V21`` off, or when no pass was recorded (the run guard held them all back). Never raises:
+    a failure is logged, and the next consolidation computes everything again from the same evidence.
+    """
+    if not recorded or not v21_enabled(settings):
+        return
+    from .. import lifecycle
+    from .switch import checker_visible
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="memv21-records-") as work:
+            summary = lifecycle.consolidate_records(
+                stores,
+                checker_visible=checker_visible(settings),
+                work=Path(work),
+                action_lookup=EpisodeLookup(stores).action,
+            )
+    except Exception as exc:  # noqa: BLE001 - the records never stop the request
+        _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
+        return
+    _deliver(
+        stores,
+        emit,
+        {
+            "type": "consolidation",
+            "phase": "records",
+            "passes": list(recorded),
+            "noted": summary["noted"],
+            "status_changes": summary["changes"],
+            "bisected": summary["bisected"],
+        },
+    )
+
+
 # --- memory v2.1 CURATE (spec §10.3, P6) --------------------------------------------------------------------
 
 
@@ -755,8 +796,7 @@ def _lifecycle(
 ) -> tuple[Callable[[str], str] | None, dict[str, dict], dict[str, dict]]:
     """P5's item records at library commit *sha*: each item's status, the suspect items (with their reasons,
     episodes, bisect result and rollback target) and the use records by item. The one place P6 reads P5
-    (Amendment A: ``item_records.records_at`` and ``status_of``; the record field names below are P6's reading of
-    P5's plan, reconciled by a1 at integration)."""
+    (Amendment A: ``item_records.records_at`` and ``status_of``; P5's record fields)."""
     from .. import item_records
 
     recs, _changed_at = item_records.records_at(stores.memory, sha)
@@ -767,13 +807,12 @@ def _lifecycle(
         if not isinstance(r, dict):
             continue
         if r.get("status") == "suspect":
-            reasons = r.get("reasons")
-            if not isinstance(reasons, list):
-                reasons = [r["reason"]] if isinstance(r.get("reason"), str) else []
+            # P5's record fields (spec §4.4): status_reason (str) and status_evidence (episode ids)
+            reason = r.get("status_reason")
             suspects[item] = {
-                "reasons": [str(x) for x in reasons],
+                "reasons": [reason] if isinstance(reason, str) and reason else [],
                 "episodes": [
-                    e for e in (r.get("episodes") or []) if isinstance(e, str)
+                    e for e in (r.get("status_evidence") or []) if isinstance(e, str)
                 ],
                 "bisect": r.get("bisect"),
                 "rollback": r.get("rollback"),
@@ -961,6 +1000,9 @@ async def run_due_passes(
         due,
     )  # under v2.1 a CURATE pass joins after a WRITE pass when the library state warrants it
     curate_state: _curate.CurateState | None = None
+    recorded: list[str] = (
+        []
+    )  # the passes recorded since the last item records (v2.1, after_passes)
     i = 0
     while i < len(queue):
         req, pass_id = queue[i], f"{eid}.p{i}"
@@ -1083,6 +1125,7 @@ async def run_due_passes(
                 event["reconciled"] = recon
             _deliver(stores, emit, event)
             if stores.evidence.pass_exists(pass_id):
+                recorded.append(pass_id)
                 if curating:
                     # shown once (:mod:`..curate`): these reasons fire again only once their content changes
                     stores.evidence.record_curate_seen(pass_id, curate_state.fired)
@@ -1099,14 +1142,15 @@ async def run_due_passes(
         if outcome is None:
             break
         outcomes.append(outcome)
-        if supervise is not None:
-            break  # one pass per worker
         if _CALL_MAY_BE_IN_FLIGHT & set(getattr(outcome, "codes", None) or ()):
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
         if cfg.v21 and not curating:
-            # spec §10.3: after WRITE's gate, CURATE runs if the library's state warrants it
+            # spec §7 (MAIN, 9 Oct): WRITE's item records and statuses first, so CURATE's trigger reads fresh
+            # suspects and use; then CURATE if the library's state warrants it (§10.3)
+            after_passes(stores, settings, recorded, emit)
+            recorded = []
             try:
                 curate_state = _curate_state(stores, lookup)
             except (
@@ -1114,7 +1158,9 @@ async def run_due_passes(
             ) as exc:  # noqa: BLE001 - a measurement never stops consolidation; nothing is due
                 _error(stores, f"{pass_id}: curate state: {type(exc).__name__}")
                 curate_state = None
-            if curate_state is not None:
+            if curate_state is not None and not (
+                supervise is not None and supervise.stop.is_set()
+            ):
                 episodes = sorted(
                     {
                         e
@@ -1123,8 +1169,21 @@ async def run_due_passes(
                         if isinstance(e, str) and stores.evidence.episode_exists(e)
                     },
                 )
-                queue.append(PassRequest("curate", None, episodes, False, None))
-    # at integration: directly after P5's after_passes(...)
+                curate_req = PassRequest("curate", None, episodes, False, None)
+                if supervise is not None:
+                    queue[i:] = [
+                        curate_req,
+                    ]  # the worker's slot: this WRITE, then the CURATE it made due
+                else:
+                    queue.append(curate_req)
+        if supervise is not None and not (i < len(queue) and queue[i].kind == "curate"):
+            break  # one pass per worker, and the CURATE it made due in the same slot
+    after_passes(
+        stores,
+        settings,
+        recorded,
+        emit,
+    )  # memory v2.1 only (CURATE's records, or every pass's without v2.1 CURATE); at once with the switch off
     if v21_enabled(settings):
         # P7 Amendment A: the pin-able head moves last, after the item records are written
         from ..memory_writer import publish

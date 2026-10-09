@@ -96,6 +96,7 @@ def export_actor_v21(
     *,
     status_of=None,
     shapes=None,
+    records=None,
 ) -> dict[str, bytes]:
     """``UNIFY_MEMORY_V21=on``: replace *dest* with the actor's read-only copy of memory commit *sha* (spec
     v2.1 §6). It holds:
@@ -126,6 +127,7 @@ def export_actor_v21(
         status_of=status_of,
         shapes=shapes,
         history=item_history(repo, sha),
+        records=records,
     )
     write_files(dest, generated)
     make_read_only(dest)

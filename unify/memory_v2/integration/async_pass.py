@@ -54,8 +54,13 @@ WORKER_MODULE = "unify.memory_v2.integration.pass_worker"
 _ENDED = ("landed", "refused", "deadline", "cancelled", "error")
 
 
-def failsafe_s(wall_s: float) -> float:
-    return float(wall_s) + CANCEL_GRACE_S + RECONCILE_S + FAILSAFE_EXTRA_S
+#: The passes one worker slot runs (MAIN, 9 Oct; spec §7): the WRITE pass, then the CURATE pass it made due.
+WORKER_PASSES = 2
+
+
+def failsafe_s(wall_s: float, passes: int = 1) -> float:
+    """The worker's failsafe: *passes* passes, each with its wall bound, cancel grace and reconcile, plus a margin."""
+    return passes * (float(wall_s) + CANCEL_GRACE_S + RECONCILE_S) + FAILSAFE_EXTRA_S
 
 
 # --- the supervisor ----------------------------------------------------------------------------------------
@@ -89,6 +94,8 @@ class Supervisor:
         self.window: tuple[int | None, int | None] = (None, None)
         self.last: Supervised | None = None
         self.reconciled: dict | None = None
+        # every pass of the slot, in order, with its own reconciliation (WRITE's is never overwritten by CURATE's)
+        self.runs: list[tuple[Supervised, dict | None]] = []
 
     @property
     def pass_deadline_s(self) -> float:
@@ -131,6 +138,7 @@ class Supervisor:
             result = Supervised(None, ended, self.clock() - t0)
         self.window = (start_at, journal_offset(self.journal))
         self.last = result
+        self.runs.append((result, None))
         return result
 
     async def reconcile(self, **kw: Any) -> dict:
@@ -147,6 +155,8 @@ class Supervisor:
             models=self.models,
             **kw,
         )
+        if self.runs:
+            self.runs[-1] = (self.runs[-1][0], self.reconciled)
         return self.reconciled
 
 

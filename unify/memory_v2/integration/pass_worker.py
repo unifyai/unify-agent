@@ -53,7 +53,8 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
             os.getpgid(0),
             ap.proc_start(os.getpid()) or "",
             now,
-            now + wall_s,
+            now
+            + ap.WORKER_PASSES * wall_s,  # the slot: WRITE, then the CURATE it made due
             args.episode,
         ),
     )
@@ -82,16 +83,27 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
             return None  # nothing was due, or the run guard held it back: no pass ran
         drift, suspect = view.cleared()
         out = outcomes[0] if outcomes else None
+        # the WRITE pass (the slot's first); a CURATE pass it made due is reported beside it
+        first, first_recon = sup.runs[0] if sup.runs else (sup.last, sup.reconciled)
         row = {
             "pass_id": pass_id,
-            "ended": sup.last.ended,
+            "ended": first.ended,
             "commit": getattr(out, "commit", None),
             "drift_cleared": drift,
             "suspect_cleared": suspect,
-            "seconds": round(sup.last.seconds, 3),
-            "reconciled": sup.reconciled,
+            "seconds": round(first.seconds, 3),
+            "reconciled": first_recon,
             "ended_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         }
+        if len(sup.runs) > 1:
+            curate, curate_recon = sup.runs[1]
+            row["curate"] = {
+                "pass_id": f"{args.episode}.p1",
+                "ended": curate.ended,
+                "commit": getattr(curate.outcome, "commit", None),
+                "seconds": round(curate.seconds, 3),
+                "reconciled": curate_recon,
+            }
         ap.record_result(paths, row)
         return row
     finally:
@@ -109,10 +121,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from unify.settings import SETTINGS
 
-        from .async_pass import failsafe_s
+        from .async_pass import WORKER_PASSES, failsafe_s
         from .switch import v21_pass_wall_s
 
-        signal.alarm(int(failsafe_s(v21_pass_wall_s(SETTINGS))) + 1)
+        signal.alarm(
+            int(failsafe_s(v21_pass_wall_s(SETTINGS), passes=WORKER_PASSES)) + 1,
+        )
         asyncio.run(_main(args))
         return 0
     except Exception as exc:  # noqa: BLE001

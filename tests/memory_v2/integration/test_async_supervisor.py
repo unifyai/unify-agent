@@ -310,3 +310,108 @@ async def test_with_no_journal_the_pass_is_not_settled_and_its_whole_cap_stays_c
     ledger = _ledger(consolidate, stores)
     assert [r["phase"] for r in ledger] == ["reserve"]
     assert consolidate.committed_sol_usd(stores) == Decimal(ledger[0]["cap_usd"])
+
+
+@pytest.mark.asyncio
+async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_published_last(
+    monkeypatch,
+    tmp_path,
+):
+    """MAIN's ruling (9 Oct; spec §7): WRITE, its item records, the CURATE it made due in the same supervised
+    slot, CURATE's records, then ``served`` published last; each pass keeps its own supervised run.
+    """
+    from types import SimpleNamespace
+
+    from tests.memory_v2.integration import test_consolidate as tc
+    from unify.memory_v2 import memory_writer
+    from unify.memory_v2.integration import consolidate
+    from unify.memory_v2.sol_pass import PassOutcome
+
+    order = []
+
+    class _QuickSol:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run(self, req, pass_id):
+            order.append((req.kind, pass_id))
+            return PassOutcome(pass_id, False, None, "0", 0, ["nothing to merge"])
+
+        def transcript(self, pass_id):
+            return []
+
+    due = iter([SimpleNamespace(suspects={}, fired={"index": "index over its view"})])
+    monkeypatch.setattr(consolidate, "SolPass", _QuickSol)
+    monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
+    monkeypatch.setattr(
+        consolidate,
+        "_curate_state",
+        lambda stores, lookup: next(due, None),
+    )
+    monkeypatch.setattr(
+        consolidate,
+        "after_passes",
+        lambda stores, settings, recorded, emit: order.append(("records",)),
+    )
+    real = memory_writer.publish
+    monkeypatch.setattr(
+        memory_writer,
+        "publish",
+        lambda mem, *a, **k: order.append(("publish",)) or real(mem, *a, **k),
+    )
+    stores = tc._stores(tmp_path)
+    sha, _ = tc._record(stores, "e1")
+    settings = tc._settings(e=1)
+    settings.UNIFY_MEMORY_V21, settings.UNIFY_MEMORY_V21_E = "on", 1
+    sup = ap.Supervisor(30.0, asyncio.Event(), models=("openai/gpt-6-sol",))
+    out = await _drive(consolidate, stores, sha, settings, sup)
+    write = next(o for o in order if len(o) == 2)
+    assert write[1] == "e1.p0" and write[0] != "curate"
+    assert order[order.index(write) + 1 :] == [
+        ("records",),
+        ("curate", "e1.p1"),
+        ("records",),
+        ("publish",),
+    ]
+    assert (
+        len(out) == 2 and len(sup.runs) == 2
+    )  # each pass its own supervised run and reconciliation
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from tests.memory_v2.integration import test_consolidate as tc
+    from unify.memory_v2.integration import consolidate
+    from unify.memory_v2.sol_pass import PassOutcome
+
+    stop = asyncio.Event()
+    kinds = []
+
+    class _StoppingSol:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run(self, req, pass_id):
+            kinds.append(req.kind)
+            stop.set()  # SIGTERM arrives during WRITE, after its last call
+            return PassOutcome(pass_id, False, None, "0", 0, [])
+
+        def transcript(self, pass_id):
+            return []
+
+    monkeypatch.setattr(consolidate, "SolPass", _StoppingSol)
+    monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
+    monkeypatch.setattr(
+        consolidate,
+        "_curate_state",
+        lambda stores, lookup: SimpleNamespace(suspects={}, fired={"index": "x"}),
+    )
+    stores = tc._stores(tmp_path)
+    sha, _ = tc._record(stores, "e1")
+    settings = tc._settings(e=1)
+    settings.UNIFY_MEMORY_V21, settings.UNIFY_MEMORY_V21_E = "on", 1
+    sup = ap.Supervisor(30.0, stop, models=("openai/gpt-6-sol",))
+    await _drive(consolidate, stores, sha, settings, sup)
+    assert "curate" not in kinds and len(sup.runs) == 1

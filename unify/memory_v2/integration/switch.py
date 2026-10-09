@@ -665,6 +665,13 @@ def sol_journal(settings: Any) -> str | None:
     return parse_sol_journal(getattr(settings, SOL_JOURNAL, "")) or None
 
 
+def checker_visible(settings: Any) -> bool:
+    """The bed's declaration ``checker_visible_to_actor`` (spec v2.1 §5): whether the checker's verdict is one
+    the actor itself sees. Only then does the item lifecycle count checker signals. Missing is off. The one
+    switch P9 reads too."""
+    return parse_checker_visible(getattr(settings, CHECKER_VISIBLE, "") or "") == "on"
+
+
 @dataclass(frozen=True)
 class SurfacingOptions:
     """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
