@@ -652,14 +652,21 @@ class V21Checks:
         candidate is a behaviour change: the function now does its recorded job differently.
 
         Every runner compares with the same recording, so "a different confirmed effect" is green to red. The
-        scope is every unchanged stored function with an episode cover once any module changed (a superset of
-        P3's import-graph scope, ``Gate._behaviour_targets``, which narrows it at integration); the owner is
-        the pass's one edited function, else the pass (P3's ``_behaviour_owner`` rule replaces this at
-        integration).
+        scope is P3's (D42): the stored functions of each changed module and of every module importing one
+        (``run.graph``, built by the gate's own behaviour check, :meth:`.gate.Gate._behaviour_targets`), and
+        the owner is :meth:`.gate.Gate._behaviour_owner`'s. Without a graph (a run that built none) every stored
+        procedure is in scope and the owner is the pass's one edited function, else the pass.
         """
         run = self.run
         if not any(classify(p) in ("module", "package_init") for p in run.changed):
             return
+        graph = getattr(run, "graph", None)
+        scope: set[str] | None = None
+        if graph is not None:
+            from . import layout
+
+            changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
+            scope = layout.dependants(graph, changed)
         edited = {it.item for it in self._edited()}
         targets = [
             (item, c)
@@ -668,6 +675,7 @@ class V21Checks:
             and item in run.c_bodies
             and item not in edited
             and item not in run.item_fail
+            and (scope is None or item.split(":", 1)[0] in scope)
             for c in covers
             if c.type == "episode"
         ]
@@ -680,7 +688,17 @@ class V21Checks:
                 f"{BEHAVIOUR_MAX_PROCEDURES} re-run in one pass; change fewer modules",
             )
             return
-        owner = sorted(edited)[0] if len(edited) == 1 else None
+        fallback = sorted(edited)[0] if len(edited) == 1 else None
+
+        def owner_of(item: str) -> str | None:
+            if graph is None:
+                return fallback
+            from types import SimpleNamespace
+
+            from .gate import Gate
+
+            return Gate._behaviour_owner(run, item, SimpleNamespace(why=None))
+
         started = time.monotonic()
         for n, (item, cover) in enumerate(targets):
             ep = self.ep(cover.episode)
@@ -724,7 +742,7 @@ class V21Checks:
                     f"passes on the parent's library and fails on the candidate's ({outcome[1].reason}); any "
                     "change in what a stored function does on its recorded work needs a test that fails on the "
                     "parent's library and passes on the candidate's",
-                    owner,
+                    owner_of(item),
                 )
 
     def g5(self) -> None:

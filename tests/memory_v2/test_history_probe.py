@@ -90,8 +90,8 @@ def test_later_tests_are_red_on_a_refused_version_and_green_on_main(repo, tmp_pa
         work=tmp_path / "w",
     )
     assert [(r.label, r.red, r.failed, r.passed) for r in rows] == [
-        ("refused:p9", True, ["test_ops.py::test_double"], []),
-        ("main", False, [], ["test_ops.py::test_double"]),
+        ("refused:p9", True, ["memory/calc/tests/test_ops.py::test_double"], []),
+        ("main", False, [], ["memory/calc/tests/test_ops.py::test_double"]),
     ]
 
 
