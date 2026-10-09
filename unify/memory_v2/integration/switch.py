@@ -595,6 +595,28 @@ def v21_enabled(settings: Any) -> bool:
     return parse_memory_v21(getattr(settings, V21, "") or "") == "on"
 
 
+#: v2 settings whose value contradicts the v2.1 prompts or gate (spec §12.4): the v2 docstring check (fixtures
+#: under env/<channel>/tests/), the catalogue guide, memlab replay in tests, and the fixture-size cap (P5 forbids
+#: caps on data).
+V21_CONFLICTS: tuple[tuple[str, str], ...] = (
+    ("UNIFY_MEMORY_V2_DOCSTRINGS", "on"),
+    ("UNIFY_MEMORY_V2_SURFACING", "catalogue"),
+    ("UNIFY_MEMORY_V2_QA_REPLAY", "on"),
+    ("UNIFY_MEMORY_V2_QA_FIXTURE_SIZE", "on"),
+)
+
+
+def v21_conflicts(settings: Any) -> list[str]:
+    """``NAME=value`` for each setting in :data:`V21_CONFLICTS` at its contradicting value, while v2.1 is on."""
+    if not v21_enabled(settings):
+        return []
+    out = []
+    for name, bad in V21_CONFLICTS:
+        if str(getattr(settings, name, "") or "").strip().lower() == bad:
+            out.append(f"{name}={bad}")
+    return out
+
+
 V21_E = "UNIFY_MEMORY_V21_E"
 V21_PASS_WALL_S = "UNIFY_MEMORY_V21_PASS_WALL_S"
 SOL_JOURNAL = "UNIFY_MEMORY_V2_SOL_JOURNAL"

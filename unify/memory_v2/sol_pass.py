@@ -420,6 +420,17 @@ _V21_TOOL_TEMPLATES = [
 ]
 
 
+def _v21_check_description() -> str:
+    """``check`` under v2.1 (spec §12.4; P2 Amendment B): no channel wording; the static checks, then the manifest
+    items' own tests and the gate's drawn recorded inputs."""
+    return (
+        "Check a manifest against your current /memory files: the gate's static checks (the manifest, the "
+        "layout and links, fixtures, covers and safety), then the items' own tests and the recorded inputs the "
+        "gate draws. Returns 'ok' or the gate's reasons, with the output of any failing test. "
+        f"Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
+    )
+
+
 def sol_tools(
     *,
     docstrings: bool = False,
@@ -438,6 +449,8 @@ def sol_tools(
         + "). Returns 'ok' "
         f"or the gate's reasons. Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
     )
+    if v21:
+        description = _v21_check_description()
     tools = copy.deepcopy(_TOOL_TEMPLATES)
     for tool in tools:
         if tool["function"]["name"] == "check":
