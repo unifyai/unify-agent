@@ -279,3 +279,67 @@ def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour
         r.startswith(f"G3: {ITEM_ID} is edited in a clean-up pass without a red test")
         for r in res.reasons
     )
+
+
+# --- D28 on declared aliases (MAIN, 10 Oct): their own recorded inputs and their target's, at least 2 ------
+
+
+def _parent_without_alias_tests(mem, ev, blobs, covers):
+    files = {
+        k: v for k, v in _parent_files(blobs).items() if k != T_IDS
+    }  # the old name has no test
+    parent = _merged(mem, files)
+    for item, eid, idx in covers:
+        ev.add_cover(item, eid, idx)
+    return parent
+
+
+@needs_bwrap
+def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_name(
+    world21,
+):
+    mem, ev, blobs, gate = world21
+    parent = _parent_without_alias_tests(
+        mem,
+        ev,
+        blobs,
+        [(ITEM_ID, "e1", 0), (ACCOUNT, "e2", 0)],
+    )
+    wrong = ALIAS_IDS.replace(
+        "import user_id as account_id",
+        "import account_name as account_id",
+    )
+    man = _curate_man(
+        items=[_entry(NAME_ID, [T], [("e2", 0)], ["e2"])],
+        aliases={ACCOUNT: NAME_ID},
+    )
+    res = gate(role="curate").check(parent, _candidate(mem, {IDS: wrong}), man)
+    assert not res.passed
+    assert any(
+        r.startswith(f"G3: {ACCOUNT} changes behaviour without a test")
+        for r in res.reasons
+    ), res.reasons
+
+
+@needs_bwrap
+def test_an_alias_with_fewer_than_two_recorded_inputs_is_refused(world21):
+    mem, ev, blobs, gate = world21
+    parent = _parent_without_alias_tests(
+        mem,
+        ev,
+        blobs,
+        [(ACCOUNT, "e2", 0)],
+    )  # the target has no cover
+    res = gate(role="curate").check(
+        parent,
+        _candidate(mem, {IDS: ALIAS_IDS}),
+        _curate_man(),
+    )
+    assert not res.passed
+    assert any(
+        r.startswith(
+            f"G3: alias {ACCOUNT} -> {ITEM_ID}: the behaviour check compares an alias on at least 2",
+        )
+        and r.endswith("found 1")
+        for r in res.reasons
+    ), res.reasons

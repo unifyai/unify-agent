@@ -2127,6 +2127,11 @@ class Gate:
         recorded: dict[str, set[tuple[str, int]]] = {}
         for it, e, i in self.ev.covers():
             recorded.setdefault(it, set()).add((e, i))
+        # memory v2.1 CURATE (MAIN, 10 Oct): a declared alias is compared on its own recorded inputs and its
+        # target's, so an alias that answers differently is refused even when its old name has no test
+        aliases = self._declared_aliases(run)
+        for alias, target in aliases.items():
+            recorded.setdefault(alias, set()).update(recorded.get(target, set()))
         probes: dict[str, _Probe] = {}
         for item in sorted(unseen):
             if self._held(run, item, protected):
@@ -2144,6 +2149,20 @@ class Gate:
             if item in probes or item in unseen or item in declared or item in refused:
                 continue
             probes[item] = self._probe(run, item, recorded, strict=False)
+        for alias, target in sorted(aliases.items()):
+            n = (
+                len(probes[alias].cases)
+                if alias in probes and probes[alias].why is None
+                else 0
+            )
+            if n < 2:
+                # fail closed: a declared alias the behaviour check cannot compare on two inputs is not landed
+                run.fail(
+                    "G3",
+                    f"alias {alias} -> {target}: the behaviour check compares an alias on at least 2 recorded "
+                    f"inputs (its own and its target's) and found {n}",
+                    target if target in {it.item for it in run.man.items} else None,
+                )
         total = sum(len(p.cases) for p in probes.values())
         if total > BEHAVIOUR_MAX_CASES:
             run.fail(
@@ -2187,6 +2206,18 @@ class Gate:
                     "and were not compared",
                 )
         run.same = same
+
+    def _declared_aliases(self, run: _Run) -> dict[str, str]:
+        """A v2.1 CURATE gate's declared aliases (old id -> target) of the checked manifest; {} otherwise."""
+        if not (self._v21_checks() and getattr(self.v21, "role", "write") == "curate"):
+            return {}
+        raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+        found = raw.get("aliases")
+        if not isinstance(found, dict):
+            return {}
+        return {
+            a: t for a, t in found.items() if isinstance(a, str) and isinstance(t, str)
+        }
 
     @staticmethod
     def _exemption_refused(item: str, why: str) -> str:
@@ -2678,7 +2709,12 @@ class Gate:
 
         A candidate name bound by assignment or import has no docstring of its own and keeps the parent's
         form. None when the parent's library cannot be read.
+
+        Memory v2.1: each tree's function docstring ``Input:`` line (the manifest's declared input first, for the
+        candidate); v2's report reads only environment functions, which left every v2.1 form unknown.
         """
+        if self._layout21:
+            return self._forms_v21(run, item)
         if run.p_inputs is None:
             try:
                 p_report = items(run.p_tree)
@@ -2699,6 +2735,34 @@ class Gate:
         p_form = known(run.p_inputs.get(item, ""))
         c_docs = self._doc_inputs(run)
         return p_form, (known(c_docs[item]) if item in c_docs else p_form)
+
+    @staticmethod
+    def _forms_v21(run: _Run, item: str) -> tuple[str | None, str | None]:
+        from . import layout
+
+        def doc_form(tree: Path) -> str | None:
+            try:
+                module = ast.parse((Path(tree) / layout.item_path(item)).read_bytes())
+            except (OSError, SyntaxError, ValueError):
+                return None
+            name = item.split(":", 1)[1]
+            for node in module.body:
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name == name
+                ):
+                    m = re.search(
+                        r"^\s*Input:\s*([a-z]+)\s*$",
+                        ast.get_docstring(node) or "",
+                        re.M,
+                    )
+                    return m.group(1) if m and m.group(1) in INPUT_KINDS else None
+            return None  # bound by assignment or import: no docstring of its own
+
+        listed = {it.item: it.input for it in run.man.items}
+        p_form = doc_form(run.p_tree)
+        c_form = listed.get(item) or doc_form(run.c_tree) or p_form
+        return (p_form or c_form), c_form
 
     def _episode_inputs(self, run: _Run, channel: str) -> list[tuple[str, int, Action]]:
         """The recorded actions on *channel* (``env/<name>``) in the pass's own episodes (its manifest's source

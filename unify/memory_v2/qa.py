@@ -1337,7 +1337,8 @@ class QAChecks:
         sep = b"" if not old or old.endswith(b"\n") else b"\n"
         target.write_bytes(old + sep + ("\n".join(lines) + "\n").encode("utf-8"))
         new_cases: set[str] = set()
-        for t in self._tests(it):
+        # every test file of the item the candidate holds, changed or not (a CURATE refactor changes none)
+        for t in sorted(x for x in it.tests if x in run.c_files):
             to = self._timeout(self.cfg.run_s, f"the drawn-inputs run of {t}")
             outcome = self._pytest(tree, t, to)
             if not _green(outcome):
