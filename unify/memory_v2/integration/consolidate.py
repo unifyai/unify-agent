@@ -1190,7 +1190,7 @@ async def run_due_passes(
         if cfg.v21 and not curating:
             # spec §7 (MAIN, 9 Oct): WRITE's item records and statuses first, so CURATE's trigger reads fresh
             # suspects and use; then CURATE if the library's state warrants it (§10.3)
-            after_passes(stores, settings, recorded, emit, stop=stopped)
+            _records_step(stores, settings, recorded, emit, stopped)
             recorded = []
             try:
                 curate_state = _curate_state(stores, lookup)
@@ -1219,12 +1219,12 @@ async def run_due_passes(
                     queue.append(curate_req)
         if supervise is not None and not (i < len(queue) and queue[i].kind == "curate"):
             break  # one pass per worker, and the CURATE it made due in the same slot
-    after_passes(
+    _records_step(
         stores,
         settings,
         recorded,
         emit,
-        stop=stopped,
+        stopped,
     )  # memory v2.1 only (CURATE's records, or every pass's without v2.1 CURATE); at once with the switch off
     if v21_enabled(settings):
         # P7 Amendment A: the pin-able head moves last, after the item records are written
@@ -1260,6 +1260,21 @@ async def run_due_passes(
                 },
             )
     return outcomes
+
+
+def _records_step(
+    stores: Stores,
+    settings: Any,
+    recorded: list[str],
+    emit: Callable[[dict], None] | None,
+    stop: Callable[[], bool] | None,
+) -> None:
+    """:func:`after_passes`, never stopping the slot: a failure is logged, and served is still published (its lag
+    then shows the commits without records; P7 Amendment C)."""
+    try:
+        after_passes(stores, settings, recorded, emit, stop=stop)
+    except Exception as exc:  # noqa: BLE001 - the records never stop consolidation
+        _error(stores, redact_error(f"item records: {type(exc).__name__}: {exc}"))
 
 
 def _served_lag(stores: Stores) -> int | None:

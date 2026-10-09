@@ -232,7 +232,8 @@ async def _drive(consolidate, stores, sha, settings, sup):
 
 def _end(consolidate, stores):
     lines = consolidate.events_path(stores.paths).read_text().splitlines()
-    return [json.loads(x) for x in lines][-1]
+    # the pass's end event (v2.1 publishes served after it)
+    return [e for e in map(json.loads, lines) if e.get("phase") == "end"][-1]
 
 
 def _ledger(consolidate, stores):

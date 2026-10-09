@@ -240,6 +240,7 @@ def test_a_v21_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
     sha, _ = _record(stores, "e1")
     settings = _settings()
     settings.UNIFY_MEMORY_V21 = "on"
+    settings.UNIFY_MEMORY_V21_E = 1  # P7's E (D43: 100k by default)
     asyncio.run(
         consolidate.run_due_passes(
             stores,
