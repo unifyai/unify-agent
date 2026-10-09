@@ -1337,3 +1337,34 @@ def test_no_curate_after_a_write_whose_call_may_still_be_in_flight(
     sha, _ = _record(stores, "e1")
     _run21(stores, "e1", sha)
     assert fake.calls == 1 and _kinds(stores) == ["batched"]
+
+
+def test_v21_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
+    tmp_path,
+    monkeypatch,
+):
+    """MAIN, 10 Oct: the replay and the reruns set the writer's reader calls without a code change."""
+    from unify.memory_v2.integration.switch import parse_v21_max_reads
+
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    for on, value, want in ((True, "", 400), (True, "7", 7), (False, "7", 400)):
+        seen = _spy_configs(monkeypatch)
+        stores = _stores(tmp_path / f"{on}{value}")
+        sha, _ = _record(stores, "e1")
+        settings = _v21_settings("on" if on else "off")
+        settings.UNIFY_MEMORY_V21_MAX_READS = value
+        asyncio.run(
+            run_due_passes(
+                stores,
+                "e1",
+                sha,
+                State(stores.paths.state),
+                effort="low",
+                settings=settings,
+                emit=None,
+            ),
+        )
+        assert [c.max_reads for c in seen] == [want]
+    for bad in ("0", "-1", "x", True):
+        with pytest.raises(ValueError):
+            parse_v21_max_reads(bad)

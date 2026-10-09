@@ -629,6 +629,9 @@ def v21_conflicts(settings: Any) -> list[str]:
 
 
 V21_E = "UNIFY_MEMORY_V21_E"
+#: The v2.1 writer's reader calls per pass (PassConfig.max_reads), settable for the replay and the reruns.
+V21_MAX_READS = "UNIFY_MEMORY_V21_MAX_READS"
+V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
 V21_PASS_WALL_S = "UNIFY_MEMORY_V21_PASS_WALL_S"
@@ -692,6 +695,15 @@ def v21_sol_usd_per_token(settings: Any) -> Decimal:
     return Decimal(
         parse_v21_sol_usd_per_token(getattr(settings, V21_SOL_USD_PER_TOKEN, "")),
     )
+
+
+def parse_v21_max_reads(v: Any) -> int:
+    """``UNIFY_MEMORY_V21_MAX_READS``: a pass's reader calls under v2.1, positive digits (empty: 400)."""
+    return _positive_whole(V21_MAX_READS, V21_MAX_READS_DEFAULT, v)
+
+
+def v21_max_reads(settings: Any) -> int:
+    return parse_v21_max_reads(getattr(settings, V21_MAX_READS, ""))
 
 
 def v21_experience_budget(settings: Any) -> int:
@@ -835,6 +847,7 @@ PARSERS = {
     QA_REPLAY: parse_qa_replay,
     QA_FIXTURE_SIZE: parse_qa_fixture_size,
     V21_E: parse_v21_e,
+    V21_MAX_READS: parse_v21_max_reads,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

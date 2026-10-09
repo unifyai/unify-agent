@@ -123,6 +123,7 @@ from .switch import (
     checker_visible,
     surfacing_options,
     v21_enabled,
+    v21_max_reads,
 )
 
 __all__ = [
@@ -1027,6 +1028,8 @@ async def run_due_passes(
         max_usd=cap,
         show_usage=cfg.show_usage,
         v21=cfg.v21,
+        # memory v2.1: the writer's reader calls (UNIFY_MEMORY_V21_MAX_READS); off, PassConfig's default as before
+        **({"max_reads": v21_max_reads(settings)} if cfg.v21 else {}),
     )
     outcomes: list[PassOutcome] = []
     queue = list(

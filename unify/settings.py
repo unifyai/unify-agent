@@ -414,6 +414,8 @@ class ProductionSettings(BaseSettings):
     # Memory v2.1 P7: E (D43: 100k recorded tokens), one pass's wall-clock bound (s), and the Sol route
     # proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_V21_E: int = 100000
+    # Memory v2.1: the writer's reader calls per pass (PassConfig.max_reads).
+    UNIFY_MEMORY_V21_MAX_READS: int = 400
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
@@ -645,6 +647,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V21",
         "UNIFY_MEMORY_V21_CHECKER_VISIBLE",
         "UNIFY_MEMORY_V21_E",
+        "UNIFY_MEMORY_V21_MAX_READS",
         "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
         "UNIFY_MEMORY_V21_PASS_WALL_S",
         "UNIFY_MEMORY_V2_SOL_JOURNAL",
