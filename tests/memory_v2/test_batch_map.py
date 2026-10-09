@@ -134,7 +134,12 @@ def test_required_parts_and_row():
     )
     sig = bm.structural_signals(ep)
     fns = bm.actor_functions(ep)
-    assert bm.required_parts(ep, sig, fns) == ["request", "cell:0", "action:0"]
+    assert bm.required_parts(ep, sig, fns) == [
+        "request",
+        "observation:0",
+        "cell:0",
+        "action:0",
+    ]
     m = bm.build_batch_map(lambda e: ep, ["e1"])
     row = m["episodes"][0]
     assert (
@@ -148,10 +153,99 @@ def test_required_parts_and_row():
         "called": [],
     }
     assert row["errors"] == [{"action": 0, "error": "x", "next_call": None}]
-    assert row["required_parts"] == ["request", "cell:0", "action:0"]
+    assert row["required_parts"] == ["request", "observation:0", "cell:0", "action:0"]
 
 
 def test_part_text_is_canonical_json():
     ep = _ep(cells=[Cell(0, "x=1", "out")])
     assert bm.part_text(ep, "request") == '"Do the thing"'
     assert '"code": "x=1"' in bm.part_text(ep, "cell:0")
+
+
+def test_error_cell_without_function_is_required():
+    ep = _ep(
+        cells=[Cell(0, "x = 1", "", error="Traceback ... boom"), Cell(1, "y = 2", "")],
+    )
+    sig = bm.structural_signals(ep)
+    assert bm.required_parts(ep, sig, bm.actor_functions(ep)) == [
+        "request",
+        "observation:0",
+        "cell:0",
+    ]
+
+
+_TWO_FILES = (
+    "diff --git a/good.py b/good.py\n--- /dev/null\n+++ b/good.py\n@@ -0,0 +1,2 @@\n"
+    "+def good(x):\n+    return x\n"
+    "diff --git a/bad.py b/bad.py\n--- /dev/null\n+++ b/bad.py\n@@ -0,0 +1,1 @@\n"
+    "+def bad(:\n"
+)
+
+
+def test_diff_parsed_per_file_and_unparsable_files_listed():
+    ep = _ep(diff=_TWO_FILES)
+    fns = bm.actor_functions(ep)
+    assert [(f["name"], f["path"], f["lineno"]) for f in fns] == [
+        ("good", "good.py", 1),
+    ]
+    row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
+    assert row["diff_unparsed"] == ["bad.py"]
+    assert row["required_parts"] == ["request", "observation:0", "diff"]
+
+
+def test_diff_fragment_of_a_modified_file():
+    diff = (
+        "diff --git a/svc.py b/svc.py\n--- a/svc.py\n+++ b/svc.py\n@@ -10,2 +10,5 @@ class Svc:\n"
+        "     x = 1\n"
+        "+    def total(self, rows):\n"
+        "+        return sum(rows)\n"
+        "+\n"
+        "     y = 2\n"
+    )
+    fns = bm.actor_functions(_ep(diff=diff))
+    assert [(f["name"], f["path"], f["lineno"], f["signature"]) for f in fns] == [
+        ("total", "svc.py", 11, "(self, rows)"),
+    ]
+
+
+def test_diff_with_python_lines_but_no_function_is_still_required():
+    diff = "diff --git a/c.py b/c.py\n--- a/c.py\n+++ b/c.py\n@@ -1,1 +1,2 @@\n x = 1\n+y = 2\n"
+    ep = _ep(diff=diff)
+    assert bm.actor_functions(ep) == []
+    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
+        "request",
+        "observation:0",
+        "diff",
+    ]
+
+
+def _obs_ep(observations):
+    ep = _ep()
+    ep.request = ["Do the thing", *observations]
+    return ep
+
+
+def test_every_observation_is_required_and_readable():
+    ep = _obs_ep(["obs A", "Verdict: wrong total"])
+    sig = bm.structural_signals(ep)
+    assert bm.required_parts(ep, sig, []) == [
+        "request",
+        "observation:0",
+        "observation:1",
+    ]
+    assert bm.part_text(ep, "observation:1") == '"Verdict: wrong total"'
+    row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
+    assert row["observations"] == 2
+
+
+def test_identical_observations_are_required_once_and_any_copy_credits_it():
+    ep = _obs_ep(["same", "other", "same", "same"])
+    assert bm.required_parts(ep, [], []) == [
+        "request",
+        "observation:0",
+        "observation:1",
+    ]
+    assert bm.canonical_part(ep, "observation:2") == "observation:0"
+    assert bm.canonical_part(ep, "observation:3") == "observation:0"
+    assert bm.canonical_part(ep, "observation:1") == "observation:1"
+    assert bm.canonical_part(ep, "cell:0") == "cell:0"

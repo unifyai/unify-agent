@@ -9,12 +9,14 @@ from __future__ import annotations
 import ast
 import json
 import re
+import textwrap
 from collections import Counter
 from typing import Callable, Iterable
 
 from .episodes import Episode
 
 _ADDED_PY = re.compile(r"^\+\+\+ b/(?P<path>.+\.py)$")
+_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,\d+)? @@")
 
 
 def _call_key(a) -> str:
@@ -61,15 +63,69 @@ def _called_names(code: str) -> Counter:
     )
 
 
-def _diff_added_python(diff: str) -> str:
-    out, in_py = [], False
+def _diff_python_runs(diff: str) -> dict[str, list[tuple[int, list[str]]]]:
+    """Added lines of each ``.py`` file in a unified diff, as runs of consecutive new-file lines.
+
+    Returns ``{path: [(first new-file line, [line, ...]), ...]}``. Header lines count only outside a hunk, so an
+    added line that itself starts with ``++`` is still an added line.
+    """
+    runs: dict[str, list[tuple[int, list[str]]]] = {}
+    path, in_hunk, new_line = None, False, 0
     for line in diff.splitlines():
-        if line.startswith("+++ "):
-            in_py = bool(_ADDED_PY.match(line))
+        if line.startswith("diff --git "):
+            path, in_hunk = None, False
             continue
-        if in_py and line.startswith("+") and not line.startswith("+++"):
-            out.append(line[1:])
-    return "\n".join(out)
+        if not in_hunk and line.startswith("+++ "):
+            m = _ADDED_PY.match(line)
+            path = m.group("path") if m else None
+            continue
+        h = _HUNK.match(line)
+        if h:
+            in_hunk, new_line = True, int(h.group("start"))
+            continue
+        if not in_hunk or path is None:
+            continue
+        if line.startswith("+"):
+            file_runs = runs.setdefault(path, [])
+            if file_runs and file_runs[-1][0] + len(file_runs[-1][1]) == new_line:
+                file_runs[-1][1].append(line[1:])
+            else:
+                file_runs.append((new_line, [line[1:]]))
+            new_line += 1
+        elif line.startswith(" ") or line == "":
+            new_line += 1
+    return runs
+
+
+def _diff_functions(ep: Episode) -> tuple[list[dict], list[str], bool]:
+    """The actor's functions in the work-tree diff, the ``.py`` files with an unparsable run, and whether any
+    ``.py`` file has added lines. Each run is dedented and parsed on its own, so one bad file or fragment
+    hides nothing else."""
+    out: list[dict] = []
+    unparsed: list[str] = []
+    runs = _diff_python_runs(ep.worktree_diff or "")
+    for path, file_runs in runs.items():
+        for start, lines in file_runs:
+            try:
+                tree = ast.parse(textwrap.dedent("\n".join(lines)))
+            except SyntaxError:
+                if path not in unparsed:
+                    unparsed.append(path)
+                continue
+            for d in _defs(tree):
+                out.append(
+                    {
+                        "name": d.name,
+                        "signature": "(" + ast.unparse(d.args) + ")",
+                        "source": "diff",
+                        "cell": None,
+                        "path": path,
+                        "lineno": start + d.lineno - 1,
+                        "cell_error": False,
+                        "called_later": 0,
+                    },
+                )
+    return out, unparsed, bool(runs)
 
 
 def actor_functions(ep: Episode) -> list[dict]:
@@ -93,25 +149,22 @@ def actor_functions(ep: Episode) -> list[dict]:
                     "called_later": later,
                 },
             )
-    added = _diff_added_python(ep.worktree_diff or "")
-    if added:
-        try:
-            tree = ast.parse(added)
-        except SyntaxError:
-            tree = None
-        for d in _defs(tree) if tree is not None else []:
-            out.append(
-                {
-                    "name": d.name,
-                    "signature": "(" + ast.unparse(d.args) + ")",
-                    "source": "diff",
-                    "cell": None,
-                    "lineno": d.lineno,
-                    "cell_error": False,
-                    "called_later": 0,
-                },
-            )
+    out.extend(_diff_functions(ep)[0])
     return out
+
+
+def _observations(ep: Episode) -> list[str]:
+    return list(ep.request[1:])
+
+
+def canonical_part(ep: Episode, part: str) -> str:
+    """The required part that *part* stands for: a byte-identical observation is required once, as its first
+    copy, and reading any copy credits that one. Every other part is its own."""
+    if not part.startswith("observation:"):
+        return part
+    obs = _observations(ep)
+    text = obs[int(part[12:])]
+    return f"observation:{obs.index(text)}"
 
 
 def required_parts(
@@ -119,12 +172,27 @@ def required_parts(
     signals: list[dict],
     functions: list[dict],
 ) -> list[str]:
+    """Every part a writer must read to cover *ep*: the request, every distinct observation (where any verdict
+    lives; the harness never decides which by its text), every cell that defines a function or carries a
+    signal, every action a signal names, and the work-tree diff whenever a ``.py`` file in it has added lines.
+    """
     parts = ["request"]
-    for c in sorted({f["cell"] for f in functions if f["source"] == "cell"}):
+    seen: set[str] = set()
+    for i, text in enumerate(_observations(ep)):
+        if text not in seen:
+            seen.add(text)
+            parts.append(f"observation:{i}")
+    cells = {f["cell"] for f in functions if f["source"] == "cell"}
+    cells |= {
+        s["cell"]
+        for s in signals
+        if s["kind"] == "cell_error" and s["cell"] is not None
+    }
+    for c in sorted(cells):
         parts.append(f"cell:{c}")
     for a in sorted({s["action"] for s in signals if s["action"] is not None}):
         parts.append(f"action:{a}")
-    if any(f["source"] == "diff" for f in functions):
+    if _diff_functions(ep)[2]:
         parts.append("diff")
     return parts
 
@@ -132,6 +200,8 @@ def required_parts(
 def part_text(ep: Episode, part: str) -> str:
     if part == "request":
         obj = ep.request[0] if ep.request else ""
+    elif part.startswith("observation:"):
+        obj = _observations(ep)[int(part[12:])]
     elif part == "diff":
         obj = ep.worktree_diff or ""
     elif part.startswith("cell:"):
@@ -191,6 +261,7 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "memory_main": ep.memory_main,
                 "regime": ep.regime,
                 "request": ep.request[0] if ep.request else "",
+                "observations": len(_observations(ep)),
                 "cells": len(ep.cells),
                 "actions": len(ep.actions),
                 "items_used": ep.memory_use,
@@ -198,6 +269,7 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "errors": _errors(ep),
                 "signals": sig,
                 "functions": fns,
+                "diff_unparsed": _diff_functions(ep)[1],
                 "required_parts": required_parts(ep, sig, fns),
             },
         )
