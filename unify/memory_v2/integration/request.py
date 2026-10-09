@@ -467,10 +467,11 @@ class RequestRun:
                 type(exc).__name__,
             )
             shapes = None
+        from ..gitio import Repo
         from ..item_records import records_at, status_of
 
         # the item records at the pin (P5): statuses for the index and find, and what memory.show prints
-        records, _ = records_at(self.stores.memory, self.pin)
+        records, _ = records_at(Repo(paths.memory), self.pin)
         self.generated = export_actor_v21(
             paths.memory,
             self.pin,
