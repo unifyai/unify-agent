@@ -178,30 +178,44 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
             "    tried = 'changed'\n"
             "except OSError as exc:\n"
             "    tried = errno.errorcode.get(exc.errno, str(exc.errno))\n"
-            "[d.parse_date('2026-10-09'), tried, memory.index('web').splitlines()[0]]",
+            f"root = {str(paths.checkout)!r}\n"
+            "seen = sorted(os.path.relpath(os.path.join(r, f), root) for r, _, fs in os.walk(root) for f in fs)\n"
+            "[d.parse_date('2026-10-09'), tried, memory.index('web').splitlines()[0], seen]",
         )
     finally:
         await ex.close()
     # EROFS comes only from the read-only bind: the owner may chmod a file of mode 0444 on a writable mount
-    assert list(out) == ["2026-10-09", "EROFS", "## memory.web"]
+    assert list(out)[:3] == ["2026-10-09", "EROFS", "## memory.web"]
+    # what the actor itself sees (RUNTIME, T4): the library and notes, never its tests or their data
+    seen = list(out)[3]
+    assert set(KEPT) <= set(seen) and not any("tests" in f.split("/") for f in seen)
 
 
 @needs_bwrap
-def test_wrap_argv_refuses_a_late_mount_that_is_not_a_directory_under_the_state_directory(
+def test_wrap_argv_binds_late_only_the_memory_checkout_of_the_state_directory(
     world,  # noqa: F811
     tmp_path,
 ):
-    """RUNTIME, P3 Task 4: no caller mounts an arbitrary host path into a cell through *late_readonly*."""
+    """RUNTIME, P3 Task 4 (S-1): no caller mounts any other host path into a cell through *late_readonly*,
+    not even another directory of the state directory (the memory repo, episodes, blobs, evidence).
+    """
     policy = sandbox.build_policy(fresh=True)
     state = Path(world["state"])
     inside = state / "memory-checkout"
     inside.mkdir()
     outside = tmp_path / "elsewhere"
     outside.mkdir()
+    for name in ("memory", "episodes.git", "blobs"):
+        (state / name).mkdir(exist_ok=True)
+    (state / "nested" / "memory-checkout").mkdir(parents=True)
     (state / "memory-alias").symlink_to(inside)
     (state / "memory-file").write_text("x")
     for bad in (
         outside,
+        state / "memory",
+        state / "episodes.git",
+        state / "blobs",
+        state / "nested" / "memory-checkout",
         state / "memory-alias",
         state / "memory-missing",
         state / "memory-file",
@@ -210,6 +224,12 @@ def test_wrap_argv_refuses_a_late_mount_that_is_not_a_directory_under_the_state_
     ):
         with pytest.raises(sandbox.SandboxRefusal, match="late-readonly-state-only"):
             sandbox.wrap_argv(["true"], policy, late_readonly=[bad])
+    assert sandbox.LATE_READONLY_DIRS == ("memory-checkout",)
+    argv = sandbox.wrap_argv(["true"], policy, late_readonly=[inside])
+    real = os.path.realpath(inside)
+    assert any(
+        argv[k : k + 3] == ["--ro-bind", real, real] for k in range(len(argv) - 2)
+    )
     # off, a v2 worker's command line is unchanged element for element
     assert sandbox.wrap_argv(["true"], policy, writable=[inside]) == sandbox.wrap_argv(
         ["true"],

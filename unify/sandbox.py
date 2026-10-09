@@ -163,11 +163,15 @@ RULES: dict[str, str] = {
         "hosts and never to a loopback, link-local or private address"
     ),
     "late-readonly-state-only": (
-        "a path bound read-only after the masks is an existing directory inside "
-        "the Unify state directory, never a link: the harness's own copy of the "
-        "memory library, nothing else of the host"
+        "a path bound read-only after the masks is the memory library copy "
+        "(memory-checkout) of the Unify state directory, never a link: nothing "
+        "else of the host or of the state directory"
     ),
 }
+
+# The state directory's entries wrap_argv may bind read-only after the masks
+# (late_readonly): memory v2.1's library copy only (memory_v2/integration/paths.py).
+LATE_READONLY_DIRS = ("memory-checkout",)
 
 SECRET_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 
@@ -2468,21 +2472,22 @@ _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-t
 
 
 def _late_readonly_path(path: Path, policy: SandboxPolicy) -> Path:
-    """A *late_readonly* path of :func:`wrap_argv`, resolved: an existing
-    directory strictly inside the policy's state directory, and not a link
-    (memory v2.1's library copy). Anything else is refused, so no caller can
-    mount an arbitrary host path into a command."""
+    """A *late_readonly* path of :func:`wrap_argv`, resolved: one of
+    :data:`LATE_READONLY_DIRS` directly under the policy's state directory,
+    an existing directory and not a link (memory v2.1's library copy).
+    Anything else is refused, so no caller can mount another host path into
+    a command, not even another part of the state directory."""
     real = Path(os.path.realpath(path))
     state = Path(os.path.realpath(policy.state_dir))
     if (
         path.is_symlink()
         or not real.is_dir()
-        or real == state
-        or not _within(real, state)
+        or real not in {state / name for name in LATE_READONLY_DIRS}
     ):
         raise SandboxRefusal(
             "late-readonly-state-only",
-            f"{path} is not a directory inside the Unify state directory {state}",
+            f"{path} is not one of {', '.join(LATE_READONLY_DIRS)} in the Unify "
+            f"state directory {state}",
         )
     return real
 
