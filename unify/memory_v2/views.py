@@ -167,3 +167,69 @@ def grep(
     if b < len(hits):
         out += f"\n[… hits {a}–{b} of {len(hits)}; next: offset={b}]"
     return out
+
+
+class Coverage:
+    """Which required parts of each episode reached the writer in full (spec v2.1 §7.4)."""
+
+    def __init__(
+        self,
+        required: dict[str, list[str]],
+        sizes: dict[tuple[str, str], int],
+    ) -> None:
+        self.required = {e: list(p) for e, p in required.items()}
+        self.sizes = dict(sizes)
+        self._ranges: dict[tuple[str, str], list[tuple[int, int]]] = {}
+        self.dismissed: dict[str, str] = {}
+
+    def credit(self, eid: str, part: str, a: int, b: int) -> None:
+        rs = sorted(self._ranges.get((eid, part), []) + [(a, b)])
+        merged: list[tuple[int, int]] = []
+        for s, e in rs:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        self._ranges[(eid, part)] = merged
+
+    def _part_done(self, eid: str, part: str) -> bool:
+        n = self.sizes.get((eid, part), 0)
+        r = self._ranges.get((eid, part), [])
+        return n == 0 or (len(r) == 1 and r[0][0] <= 0 and r[0][1] >= n)
+
+    def _covered(self, eid: str) -> bool:
+        return all(self._part_done(eid, p) for p in self.required[eid])
+
+    def dismiss(self, eid: str, reason: str) -> str:
+        if eid not in self.required:
+            return f"refused: {eid!r} is not in this batch"
+        reason = (
+            (reason or "").strip().splitlines()[0][:300]
+            if (reason or "").strip()
+            else ""
+        )
+        if not reason:
+            return "refused: give a one-line reason"
+        self.dismissed[eid] = reason
+        return "ok"
+
+    def missing(self) -> list[str]:
+        return [
+            e for e in self.required if not self._covered(e) and e not in self.dismissed
+        ]
+
+    def summary(self) -> dict:
+        covered = [e for e in self.required if self._covered(e)]
+        return {
+            "episodes": len(self.required),
+            "covered": len(covered),
+            "dismissed": {e: r for e, r in self.dismissed.items() if e not in covered},
+            "missing": self.missing(),
+            "parts_required": sum(len(p) for p in self.required.values()),
+            "parts_read": sum(
+                self._part_done(e, p)
+                for e, ps in self.required.items()
+                for p in ps
+                if (e, p) in self._ranges
+            ),
+        }

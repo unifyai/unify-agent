@@ -112,3 +112,28 @@ def test_grep_output_is_bounded_and_marked(tmp_path: Path):
     assert shown < 50 and marker == f"0–{shown} of 50; next: offset={shown}]"
     nxt = v.grep("needle", "/inputs", {"/inputs": root}, offset=shown)
     assert nxt.splitlines()[0].startswith(f"/inputs/f.txt:{shown + 1}: needle")
+
+
+def test_coverage_requires_full_reads_or_dismissal():
+    cov = v.Coverage(
+        required={"e1": ["request", "cell:0"], "e2": ["request"]},
+        sizes={("e1", "request"): 10, ("e1", "cell:0"): 20000, ("e2", "request"): 5},
+    )
+    assert cov.missing() == ["e1", "e2"]
+    cov.credit("e1", "request", 0, 10)
+    cov.credit("e1", "cell:0", 0, 8000)
+    cov.credit("e1", "cell:0", 16000, 20000)
+    assert "e1" in cov.missing()  # 8000–16000 never read
+    cov.credit("e1", "cell:0", 8000, 16000)
+    assert cov.missing() == ["e2"]
+    assert cov.dismiss("e2", "") == "refused: give a one-line reason"
+    assert cov.dismiss("e2", "duplicate of e1's request") == "ok"
+    s = cov.summary()
+    assert s == {
+        "episodes": 2,
+        "covered": 1,
+        "dismissed": {"e2": "duplicate of e1's request"},
+        "missing": [],
+        "parts_required": 3,
+        "parts_read": 2,
+    }
