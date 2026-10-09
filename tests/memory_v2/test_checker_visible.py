@@ -395,11 +395,17 @@ def test_finish_posts_visible_checkers_only_when_any_were_taken(
     from tests.memory_v2.integration.test_request import _finish, _transcript
 
     calls = []
+    # the request imports consolidate at call time: under the mv2 fixture that is fake_tracks' module, so the
+    # recorder goes on whichever module is installed now
+    import sys
+
+    cons = sys.modules["unify.memory_v2.integration.consolidate"]
     monkeypatch.setattr(
-        consolidate,
+        cons,
         "post_visible_checkers",
         lambda stores, ep, sha, entries, lines, counterpart: calls.append(entries)
         or len(entries),
+        raising=False,
     )
     _on(monkeypatch)
     run = _begin(mv2, "none taken")
