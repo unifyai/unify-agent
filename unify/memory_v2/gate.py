@@ -440,7 +440,7 @@ def _covers_a_write(covers: list[tuple[str, int, Action]], form: str | None) -> 
 def _test_file(test_id: str, tests_dir: str) -> str:
     """The test file of a suite's test id, as a path from the tree's root (ids may be relative to *tests_dir*)."""
     path = test_id.split("::", 1)[0]
-    return path if path.startswith("env/") else f"{tests_dir}/{path}"
+    return path if path.startswith(("env/", "memory/")) else f"{tests_dir}/{path}"
 
 
 def _unfit_forms(
@@ -1906,7 +1906,7 @@ class Gate:
         edited = {
             it.item
             for it in man.items
-            if it.kind == "env_function"
+            if it.kind in ("env_function", "function")
             and run.p_bodies.get(it.item, ("", ""))[:2]
             != run.c_bodies.get(it.item, ("", ""))[:2]
         }
@@ -2293,16 +2293,38 @@ class Gate:
 
         Returns the parent test files with a protected test (a file whose protected tests are lost fails
         here, so on a passing gate each still passes in both runs).
+
+        Memory v2.1 (``checks``; spec §9.1 "no unexplained test loss"): each package's suite
+        ``memory/<package>/tests`` is compared the same way, its protected files are returned as paths from the
+        tree's root, and a deleted test file is retired only with a reason in the manifest's ``tests_changed``
+        (else its lost tests refuse here). A test of an alias is collected through the alias: listed under the
+        alias's target (P6), its failures belong to that item.
         """
         protected: set[str] = set()
         if not run.changed:
             return protected
+        v21 = self._v21_checks()
         retired = set(run.man.deleted_tests)
+        if v21:
+            raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
+            stated = (
+                raw.get("tests_changed")
+                if isinstance(raw.get("tests_changed"), dict)
+                else {}
+            )
+            retired = {
+                t
+                for t in retired
+                if isinstance(stated.get(t), str) and stated[t].strip()
+            }
         regression = self._regression_tree(run)
         touched = {p.split("/")[1] for p in run.changed if p.startswith("env/")}
 
-        def kept(ids: set[str]) -> set[str]:
-            return {t for t in ids if t.split("::", 1)[0] not in retired}
+        def file_of(t: str, rel: str) -> str:
+            return _test_file(t, rel) if v21 else t.split("::", 1)[0]
+
+        def kept(ids: set[str], rel: str) -> set[str]:
+            return {t for t in ids if file_of(t, rel) not in retired}
 
         channels = sorted(
             {
@@ -2311,8 +2333,27 @@ class Gate:
                 if p.startswith("env/") and p.split("/")[2:3] == ["tests"]
             },
         )
-        for ch in channels:
-            rel = f"env/{ch}/tests"
+        suites = [(f"env/{ch}/tests", ch in touched, f"env/{ch}") for ch in channels]
+        if v21:
+            from .layout import classify
+
+            pkgs = sorted(
+                {
+                    p.split("/")[1]
+                    for p in set(run.p_files) | set(run.c_files)
+                    if classify(p) in ("test", "test_helper", "fixture")
+                },
+            )
+            changed_pkgs = {
+                p.split("/")[1]
+                for p in run.changed
+                if p.startswith("memory/") and p.count("/") >= 2
+            }
+            suites += [
+                (f"memory/{pkg}/tests", pkg in changed_pkgs, f"memory/{pkg}")
+                for pkg in pkgs
+            ]
+        for rel, is_touched, area in suites:
             before: set[str] = set()  # protected: passed on the parent
             known_red: set[str] = set()  # failed on the parent
             broken: str | None = None  # the baseline cannot be read
@@ -2325,8 +2366,8 @@ class Gate:
                         "and its regression run is skipped",
                     )
                 else:
-                    before, known_red = kept(base.passed), kept(base.failed)
-                    protected |= {t.split("::", 1)[0] for t in before}
+                    before, known_red = kept(base.passed, rel), kept(base.failed, rel)
+                    protected |= {file_of(t, rel) for t in before}
             after: set[str] = set()
             if (run.c_tree / rel).is_dir():
                 suite = self._pytest(run.c_tree, rel, qa_env=run.qa_env)
@@ -2334,12 +2375,12 @@ class Gate:
                 new_red = sorted(suite.failed - known_red)
                 if (
                     broken is not None
-                    and ch not in touched
+                    and not is_touched
                     and not (readable and not suite.failed)
                 ):
                     run.note(
                         f"pre-existing: suite {rel} is still not green ({_describe(suite)}); "
-                        f"this pass does not touch env/{ch}",
+                        f"this pass does not touch {area}",
                     )
                 elif not readable or new_red:
                     run.output(f"suite {rel} (candidate)", suite)

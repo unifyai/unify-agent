@@ -343,3 +343,39 @@ def test_cross_episode_text_input_that_crashes_is_refused(world21):
         "ran": 1,
         "ok": 0,
     }
+
+
+def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(world21):
+    mem, ev, blobs, gate = world21
+    files, fixtures = _files_and_fixtures(blobs)
+    assert (
+        gate()
+        .merge(
+            mem.head(),
+            _candidate(mem, files),
+            _man(fixtures),
+            "p1",
+            "write",
+            None,
+            "0",
+        )
+        .passed
+    )
+    man = {
+        "items": [],
+        "deleted": [],
+        "deleted_tests": [T],
+        "unlisted": [],
+        "support": [],
+    }
+    lost = "no longer passes the parent's tests"
+    res = gate(role="curate").check(mem.head(), _candidate(mem, {T: None}), man)
+    assert not res.passed and any(
+        f"suite memory/acct/tests {lost}" in r for r in res.reasons
+    )
+    stated = {
+        **man,
+        "tests_changed": {T: "the function is covered by test_accounts.py"},
+    }
+    res = gate(role="curate").check(mem.head(), _candidate(mem, {T: None}), stated)
+    assert not any(lost in r for r in res.reasons), res.reasons
