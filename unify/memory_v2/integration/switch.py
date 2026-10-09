@@ -629,6 +629,8 @@ def v21_conflicts(settings: Any) -> list[str]:
 
 
 V21_E = "UNIFY_MEMORY_V21_E"
+#: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
+V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
 V21_PASS_WALL_S = "UNIFY_MEMORY_V21_PASS_WALL_S"
 SOL_JOURNAL = "UNIFY_MEMORY_V2_SOL_JOURNAL"
 #: The pass's wall-clock bound in seconds (spec §6, §9.2, §15): calibrated with the budget by the offline replay.
@@ -673,6 +675,23 @@ def parse_sol_journal(v: Any) -> str:
     if text and not text.startswith("/"):
         raise ValueError(f"{SOL_JOURNAL} must be empty or an absolute path")
     return text
+
+
+def parse_v21_sol_usd_per_token(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN``: a positive plain decimal string (empty: v2's rate, 0.00000073)."""
+    return _plain_decimal(
+        V21_SOL_USD_PER_TOKEN,
+        _stripped(v) or SOL_ALLOWANCE_DEFAULT,
+        v,
+        positive=True,
+    )
+
+
+def v21_sol_usd_per_token(settings: Any) -> Decimal:
+    """The USD per recorded token of a v2.1 pass's cap (MAIN, 9 Oct: the replay can raise it without code)."""
+    return Decimal(
+        parse_v21_sol_usd_per_token(getattr(settings, V21_SOL_USD_PER_TOKEN, "")),
+    )
 
 
 def v21_experience_budget(settings: Any) -> int:
@@ -816,6 +835,7 @@ PARSERS = {
     QA_REPLAY: parse_qa_replay,
     QA_FIXTURE_SIZE: parse_qa_fixture_size,
     V21_E: parse_v21_e,
+    V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,
 }

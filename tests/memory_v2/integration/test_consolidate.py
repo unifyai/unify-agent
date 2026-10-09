@@ -1128,6 +1128,21 @@ def test_sol_settings_reads_the_v21_switch():
         sol_settings(_v21_settings("maybe"))
 
 
+def test_v21_has_its_own_usd_per_token_and_the_off_path_ignores_it():
+    """MAIN, 9 Oct (spec §15, F9): v2's rate by default; the replay can raise v2.1's without a code change."""
+    assert sol_settings(_v21_settings("on")).usd_per_token == Decimal("0.00000073")
+    raised = _v21_settings("on")
+    raised.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = "0.000002"
+    assert sol_settings(raised).usd_per_token == Decimal("0.000002")
+    off = _v21_settings("off")
+    off.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = "0.000002"
+    assert sol_settings(off).usd_per_token == Decimal("0.00000073")
+    for bad in ("0", "-1", "1e-6", "abc"):
+        raised.UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN = bad
+        with pytest.raises(ValueError):
+            sol_settings(raised)
+
+
 def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monkeypatch):
     fake = FakeSol()  # finishes every turn: refused under v21 until e1 is covered
     monkeypatch.setattr(consolidate, "unillm_turn", fake)

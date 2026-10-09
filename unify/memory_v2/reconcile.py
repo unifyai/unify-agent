@@ -71,14 +71,16 @@ class LaneCall:
         return self.status in _TERMINAL
 
 
-def _rows(path: str) -> Iterable[tuple[int, dict]]:
-    """``(byte offset of the line, row)`` of every complete, parseable JSON line of the journal."""
+def _rows(path: str, offset: int = 0) -> Iterable[tuple[int, dict]]:
+    """``(byte offset of the line, row)`` of every complete, parseable JSON line of the journal from byte *offset*
+    (a line boundary: a window edge is the journal's size when it was taken)."""
     with open(path, "rb") as fh:
+        fh.seek(offset)
         data = fh.read()
     complete = data[
         : data.rfind(b"\n") + 1
     ]  # a last line without its newline is still being written
-    at = 0
+    at = offset
     for raw in complete.split(b"\n")[:-1]:
         try:
             row = json.loads(raw)
@@ -104,7 +106,8 @@ def lane_calls(
     """
     lane = frozenset(m for m in models if m)
     calls: dict[str, LaneCall] = {}
-    for at, row in _rows(path):
+    # from the window's start: a request's later rows always follow its request_started row (append-only)
+    for at, row in _rows(path, start):
         rid = row.get("request_attempt_id") or row.get("call_id")
         if not isinstance(rid, str) or not rid:
             continue

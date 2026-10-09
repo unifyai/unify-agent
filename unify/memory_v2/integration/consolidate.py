@@ -409,7 +409,7 @@ def sol_settings(settings: Any) -> SolSettings:
     """
     settle_sol_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_SOL_MODEL", "") or "").strip()
-    from .switch import v21_enabled, v21_experience_budget
+    from .switch import v21_enabled, v21_experience_budget, v21_sol_usd_per_token
 
     if v21_enabled(settings):
         e = v21_experience_budget(settings)  # D43: E = 100k recorded tokens under v2.1
@@ -427,11 +427,15 @@ def sol_settings(settings: Any) -> SolSettings:
             raise ValueError(
                 f"UNIFY_MEMORY_V2_E must be a positive integer, not {raw_e!r}"[:200],
             )
-    a_tok = _decimal(
-        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
-        getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
-        or format(USD_PER_TOKEN, "f"),
-    )
+    if v21_enabled(settings):
+        # spec §15 (F9): the v2.1 writer's rate is its own setting, so the offline replay can size it
+        a_tok = v21_sol_usd_per_token(settings)
+    else:
+        a_tok = _decimal(
+            "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
+            getattr(settings, "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS", "")
+            or format(USD_PER_TOKEN, "f"),
+        )
     if (
         a_tok <= 0
     ):  # a zero cap would consume experience with passes that can make no call
