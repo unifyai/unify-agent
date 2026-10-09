@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from .episodes import Episode
@@ -55,6 +56,16 @@ _TYPED_COVERS_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS typed_covers(item TEXT, episode_id TEXT, cover_json TEXT, "
     "PRIMARY KEY(item, episode_id, cover_json))"
 )
+
+# Memory v2.1 CURATE (spec §10.3-10.4, P6): the fingerprints each CURATE pass was shown, and the aliases,
+# retirements and dropped aliases each landed CURATE pass made (P5 reads them for alias_of and deprecated).
+# Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
+_CURATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);
+CREATE TABLE IF NOT EXISTS curations(seq INTEGER PRIMARY KEY AUTOINCREMENT, pass_id TEXT, commit_sha TEXT,
+  item TEXT, action TEXT, target TEXT, reason TEXT, UNIQUE(pass_id, item, action))
+"""
+CURATION_ACTIONS = ("alias", "retire", "drop_alias")
 
 
 def _json_as(raw: object, default: list | dict) -> list | dict:
@@ -728,6 +739,86 @@ class EvidenceStore:
                 f"VALUES({', '.join('?' for _ in _PASS_COLUMNS)})",
                 tuple(row.get(k) for k in _PASS_COLUMNS),
             )
+
+    def _curate_tables(self) -> None:
+        for ddl in _CURATE_SCHEMA.split(";"):
+            if ddl.strip():
+                self.db.execute(ddl)
+
+    def record_curate_seen(self, pass_id: str, fingerprints: Iterable[str]) -> int:
+        """Record the fingerprints CURATE pass *pass_id* was shown (:mod:`.curate`); returns how many were new."""
+        with self.db:
+            self._curate_tables()
+            n = 0
+            for fp in sorted(set(fingerprints)):
+                n += self.db.execute(
+                    "INSERT OR IGNORE INTO curate_seen VALUES(?,?)",
+                    (fp, pass_id),
+                ).rowcount
+        return n
+
+    def curate_seen(self) -> set[str]:
+        """Every fingerprint some CURATE pass was shown."""
+        if not self._has_table("curate_seen"):
+            return set()
+        return {r[0] for r in self.db.execute("SELECT fingerprint FROM curate_seen")}
+
+    def record_curations(self, pass_id: str, commit: str, rows: list[dict]) -> int:
+        """Record what landed CURATE pass *pass_id* (commit *commit*) did: ``alias``, ``retire`` or ``drop_alias``
+        rows with ``item``, ``target`` and ``reason``. Returns the rows written; a pass's rows are written once.
+        """
+        with self.db:
+            self._curate_tables()
+            n = 0
+            for r in rows:
+                if r.get("action") not in CURATION_ACTIONS:
+                    raise ValueError(f"unknown curation action {r.get('action')!r}")
+                n += self.db.execute(
+                    "INSERT OR IGNORE INTO curations(pass_id, commit_sha, item, action, target, reason) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        pass_id,
+                        commit,
+                        r["item"],
+                        r["action"],
+                        r.get("target"),
+                        r.get("reason") or "",
+                    ),
+                ).rowcount
+        return n
+
+    def curations(self) -> list[dict]:
+        """Every curation row, oldest first."""
+        if not self._has_table("curations"):
+            return []
+        return [
+            {
+                "pass_id": r[0],
+                "commit": r[1],
+                "item": r[2],
+                "action": r[3],
+                "target": r[4],
+                "reason": r[5],
+            }
+            for r in self.db.execute(
+                "SELECT pass_id, commit_sha, item, action, target, reason FROM curations ORDER BY seq",
+            )
+        ]
+
+    def aliases(self) -> dict[str, dict]:
+        """The live aliases: old item -> ``{"target", "pass_id", "commit"}`` of the landed pass that added it,
+        until a later landed CURATE pass dropped or retired it."""
+        live: dict[str, dict] = {}
+        for r in self.curations():
+            if r["action"] == "alias":
+                live[r["item"]] = {
+                    "target": r["target"],
+                    "pass_id": r["pass_id"],
+                    "commit": r["commit"],
+                }
+            else:
+                live.pop(r["item"], None)
+        return live
 
     def record_pass_rounds(self, row: dict) -> bool:
         """Record a v2.1 pass's rounds (``pass_id``, ``role``, ``rounds`` or None when unknown, ``round_blobs``

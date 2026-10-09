@@ -1,5 +1,8 @@
 """The consolidation driver (integration Task 24, v1): checker signal, size trigger, Sol pass, gate.
 
+Under ``UNIFY_MEMORY_V21=on``, after a WRITE pass, a CURATE pass follows when the library's state warrants it (spec
+§10.3, :mod:`..curate`): overlap candidates, suspect items or an index over its view, each shown to CURATE once.
+
 After each request's episode is committed and indexed, :func:`run_due_passes` asks the batched size
 trigger (:class:`..trigger.Trigger`, spec §F1) whether the experience recorded since the last pass has
 reached E tokens. A due pass covers every channel with new evidence (there is no channel filter: the
@@ -79,6 +82,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from .. import curate as _curate
 from .. import gate_v21
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
@@ -742,6 +746,123 @@ def _end_event(
 # --- the driver ------------------------------------------------------------------------------------------
 
 
+# --- memory v2.1 CURATE (spec §10.3, P6) --------------------------------------------------------------------
+
+
+def _lifecycle(
+    stores: Stores,
+    sha: str,
+) -> tuple[Callable[[str], str] | None, dict[str, dict], dict[str, dict]]:
+    """P5's item records at library commit *sha*: each item's status, the suspect items (with their reasons,
+    episodes, bisect result and rollback target) and the use records by item. The one place P6 reads P5
+    (Amendment A: ``item_records.records_at`` and ``status_of``; the record field names below are P6's reading of
+    P5's plan, reconciled by a1 at integration)."""
+    from .. import item_records
+
+    recs, _changed_at = item_records.records_at(stores.memory, sha)
+    status_of = item_records.status_of(recs)
+    suspects: dict[str, dict] = {}
+    use: dict[str, dict] = {}
+    for item, r in sorted(recs.items()):
+        if not isinstance(r, dict):
+            continue
+        if r.get("status") == "suspect":
+            reasons = r.get("reasons")
+            if not isinstance(reasons, list):
+                reasons = [r["reason"]] if isinstance(r.get("reason"), str) else []
+            suspects[item] = {
+                "reasons": [str(x) for x in reasons],
+                "episodes": [
+                    e for e in (r.get("episodes") or []) if isinstance(e, str)
+                ],
+                "bisect": r.get("bisect"),
+                "rollback": r.get("rollback"),
+            }
+        if isinstance(r.get("use"), dict):
+            use[item] = dict(r["use"])
+    return status_of, suspects, use
+
+
+def _rollback_files(
+    stores: Stores,
+    suspects: dict[str, dict],
+) -> dict[str, dict[str, bytes]]:
+    """For each suspect item with a rollback target: its module (or note) and its package's test files there."""
+    from .. import layout
+
+    out: dict[str, dict[str, bytes]] = {}
+    for item in sorted(suspects):
+        target = (suspects[item] or {}).get("rollback")
+        if not isinstance(target, str) or not target:
+            continue
+        files, _ = listing(stores.memory, target)
+        path = layout.item_path(item)
+        tests = path.rsplit("/", 1)[0] + "/tests/"
+        keep = [
+            p
+            for p in sorted(files)
+            if p == path or (p.startswith(tests) and layout.classify(p) == "test")
+        ]
+        out[item] = {
+            p: stores.memory.run("show", f"{target}:{p}").encode("utf-8") for p in keep
+        }
+    return out
+
+
+def _curate_state(
+    stores: Stores,
+    lookup: "EpisodeLookup",
+) -> _curate.CurateState | None:
+    """CURATE's trigger (spec §10.3) on memory ``main`` now, after WRITE's gate: the state, with the reasons no
+    CURATE pass has been shown, or None when CURATE is not due. It reads library state only: the commit, its
+    records, its covers and shapes, and the fingerprints earlier CURATE passes were shown, never the stream.
+    """
+    from .. import layout
+    from ..library_export import item_history
+    from ..library_index import build_links, render_index
+    from ..overlap import overlap_candidates
+    from ..shape_rows import shapes_at
+
+    sha = stores.memory.head()
+    tmp = Path(tempfile.mkdtemp(prefix="memv2-curate-"))
+    try:
+        files, _ = listing(stores.memory, sha)
+        tree = materialise(stores.memory, files, tmp / "main")
+        status_of, suspects, use = _lifecycle(stores, sha)
+        rows = shapes_at(
+            stores.memory,
+            stores.evidence,
+            sha,
+            tree,
+            lookup=lookup.action,
+            blobs=stores.blobs,
+            v21=True,
+        )
+        lib = layout.discover(tree)
+        state = _curate.CurateState(
+            commit=sha,
+            overlap=overlap_candidates(
+                tree,
+                shapes=rows,
+                covers=stores.evidence.covers(),
+                typed=stores.evidence.typed_covers(),
+            ),
+            suspects=suspects,
+            index_tokens=estimate_tokens(
+                render_index(lib, build_links(lib), status_of),
+            ),
+            bodies=layout.function_bodies(tree),
+            use=use,
+            history=item_history(stores.memory, sha)[0],
+            aliases=stores.evidence.aliases(),
+            rollback_files=_rollback_files(stores, suspects),
+        )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    state.fired = _curate.due(state, stores.evidence.curate_seen())
+    return state if state.fired else None
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -811,17 +932,21 @@ async def run_due_passes(
     cap = trig.pass_budget_usd() * scale
     reserve = cap / max_calls
     lookup = EpisodeLookup(stores)
-    gate = Gate(
-        stores.memory,
-        stores.evidence,
-        stores.blobs,
+    common = dict(
         action_lookup=lookup.action,
         # the v2.1 switches (each default is v2's); Sol's brief follows the gate (cadence_replay does the same)
         **surfacing_options(settings).gate_kwargs(),
         qa=QAConfig.from_settings(settings),  # stage-5 test checks; all off by default
+    )
+    gate = Gate(
+        stores.memory,
+        stores.evidence,
+        stores.blobs,
+        **common,
         # memory v2.1 (spec §9.1, P4 Amendment E): the v2.1 layout and checks for WRITE; v2 when the switch is off
         v21=gate_v21.config_for(stores, lookup) if v21_enabled(settings) else None,
     )
+    curate_gate: Gate | None = None  # built when a CURATE pass is first queued (P6)
     config = PassConfig(
         model=cfg.model,
         effort=effort,
@@ -832,8 +957,23 @@ async def run_due_passes(
         v21=cfg.v21,
     )
     outcomes: list[PassOutcome] = []
-    for i, req in enumerate(due):
-        pass_id = f"{eid}.p{i}"
+    queue = list(
+        due,
+    )  # under v2.1 a CURATE pass joins after a WRITE pass when the library state warrants it
+    curate_state: _curate.CurateState | None = None
+    i = 0
+    while i < len(queue):
+        req, pass_id = queue[i], f"{eid}.p{i}"
+        i += 1
+        curating = req.kind == "curate"
+        if curating and curate_gate is None:
+            curate_gate = Gate(
+                stores.memory,
+                stores.evidence,
+                stores.blobs,
+                **common,
+                v21=gate_v21.config_for(stores, lookup, role="curate"),
+            )
         if (
             cfg.run_guard_usd is not None
             and committed_sol_usd(stores) + cap > cfg.run_guard_usd
@@ -848,7 +988,7 @@ async def run_due_passes(
         rows: list[CostRow] = []
         sol = SolPass(
             stores.memory,
-            gate,
+            curate_gate if curating else gate,
             stores.evidence,
             lookup.episode,
             recording_turn(
@@ -862,17 +1002,18 @@ async def run_due_passes(
             ),
             config,
             redactor=Redactor.from_environ(os.environ),
+            curate=curate_state if curating else None,
         )
         try:
             _reserve(stores, pass_id, cap, reserve, max_calls, scale)
         except OSError as exc:  # an unrecorded commitment: start nothing
             _error(stores, f"{pass_id}: ledger: {type(exc).__name__}: {exc}")
             break
-        _deliver(
-            stores,
-            emit,
-            _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale),
-        )
+        start = _start_event(req, pass_id, cfg.model, effort, cap, max_calls, scale)
+        if curating:
+            # why it runs (spec §10.3); codes and ids only
+            start["curate"] = sorted(curate_state.fired.values())
+        _deliver(stores, emit, start)
         started = clock()
         outcome: PassOutcome | None = None
         failure: str | None = None
@@ -942,11 +1083,19 @@ async def run_due_passes(
                 event["reconciled"] = recon
             _deliver(stores, emit, event)
             if stores.evidence.pass_exists(pass_id):
-                trig.mark_done(req)
-                if hasattr(state, "drift"):
-                    state.drift.difference_update(drift)
-                if outcome is not None and outcome.passed and hasattr(state, "suspect"):
-                    state.suspect.difference_update(drift)
+                if curating:
+                    # shown once (:mod:`..curate`): these reasons fire again only once their content changes
+                    stores.evidence.record_curate_seen(pass_id, curate_state.fired)
+                else:
+                    trig.mark_done(req)
+                    if hasattr(state, "drift"):
+                        state.drift.difference_update(drift)
+                    if (
+                        outcome is not None
+                        and outcome.passed
+                        and hasattr(state, "suspect")
+                    ):
+                        state.suspect.difference_update(drift)
         if outcome is None:
             break
         outcomes.append(outcome)
@@ -956,6 +1105,25 @@ async def run_due_passes(
             # a model call ended by the deadline or an error may still be running at Sol's proxy, which serves
             # one Sol call at a time: start no further pass in this session (the requests stay due)
             break
+        if cfg.v21 and not curating:
+            # spec §10.3: after WRITE's gate, CURATE runs if the library's state warrants it
+            try:
+                curate_state = _curate_state(stores, lookup)
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - a measurement never stops consolidation; nothing is due
+                _error(stores, f"{pass_id}: curate state: {type(exc).__name__}")
+                curate_state = None
+            if curate_state is not None:
+                episodes = sorted(
+                    {
+                        e
+                        for row in curate_state.suspects.values()
+                        for e in (row or {}).get("episodes", [])
+                        if isinstance(e, str) and stores.evidence.episode_exists(e)
+                    },
+                )
+                queue.append(PassRequest("curate", None, episodes, False, None))
     # at integration: directly after P5's after_passes(...)
     if v21_enabled(settings):
         # P7 Amendment A: the pin-able head moves last, after the item records are written

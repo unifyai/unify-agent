@@ -61,6 +61,7 @@ from .gitio import GitError, Repo
 from .index import build_index
 from .memory_repo import items as memory_items
 from . import batch_map as _bm
+from . import curate as _curate
 from . import qa as _qa
 from . import repair as _repair
 from . import views as _views
@@ -527,11 +528,21 @@ def _tests_changed(manifest: object) -> list[str]:
     ]
 
 
-def _trailers(pass_id: str, sources: object, manifest: object, v21: bool) -> dict:
-    """A candidate commit's trailers: v2's, plus ``Tests-Changed:`` under v2.1 when the manifest states reasons."""
+def _trailers(
+    pass_id: str,
+    sources: object,
+    manifest: object,
+    v21: bool,
+    curate: bool = False,
+) -> dict:
+    """A candidate commit's trailers: v2's, plus ``Tests-Changed:`` under v2.1 when the manifest states reasons,
+    plus ``Why:`` and ``Items:`` on a v2.1 CURATE pass (P6, :func:`.curate.trailers`).
+    """
     out: dict = {"Pass": pass_id, "Episode": sources, "Evidence": sources}
     if v21 and _tests_changed(manifest):
         out["Tests-Changed"] = _tests_changed(manifest)
+    if v21 and curate:
+        out.update(_curate.trailers(manifest))
     return out
 
 
@@ -1565,6 +1576,9 @@ class SolPass:
 
     Sol sees the episodes through :func:`export_for_sol` over *load* (ruling R10 is enforced here, not by
     the caller). A pass that ends with an exception, cancellation included, is recorded as failed.
+
+    Under v2.1 a request of kind ``curate`` runs the writer's second role (:mod:`.curate`) on *curate*, the library
+    state its trigger read.
     """
 
     def __init__(
@@ -1577,6 +1591,7 @@ class SolPass:
         config: PassConfig,
         *,
         redactor: Redactor | None = None,
+        curate: "_curate.CurateState | None" = None,
     ) -> None:
         self.mem, self.gate, self.ev = memory, gate, evidence
         self.load, self.turn, self.cfg = load, model_turn, config
@@ -1593,6 +1608,9 @@ class SolPass:
         # memory v2.1: the live box and checkout, and a cancelled pass's (patch blob, named items)
         self._live: tuple[Path, Path] | None = None
         self._cancel_patch: tuple[str | None, list[str]] = (None, [])
+        # memory v2.1 CURATE (P6): the library state a "curate" request curates, and the pass's role
+        self.curate_state = curate
+        self._role = "write"
 
     def transcript(self, pass_id: str) -> list[str]:
         """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`)."""
@@ -1765,7 +1783,11 @@ class SolPass:
         if not staged:
             _stage_memlab(inputs / "memlab")
         self._drafts = []
-        if _v21_on(self):
+        if _v21_on(self) and req.kind == "curate":
+            # CURATE (spec §12.3): its own inputs; drafts are WRITE's (§8.4)
+            (inputs / "gate").mkdir(exist_ok=True)
+            _curate.stage_inputs(inputs, self.curate_state)
+        elif _v21_on(self):
             from .drafts import stage_drafts
 
             if isinstance(store, BlobStore):
@@ -2061,7 +2083,7 @@ class SolPass:
                     "\0",
                     "",
                 ),
-                _trailers(pass_id, sources, manifest, True),
+                _trailers(pass_id, sources, manifest, True, self._role == "curate"),
             )
 
     def _close_rounds(
@@ -2089,7 +2111,7 @@ class SolPass:
         self.ev.record_pass_rounds(
             {
                 "pass_id": pass_id,
-                "role": "write",
+                "role": self._role,
                 "rounds": round_no + 1,
                 "round_blobs": json.dumps(round_blobs),
                 "gate_blob": (
@@ -2144,6 +2166,17 @@ class SolPass:
         self.messages = []
         self.fixtures_made = {}
         self._live, self._cancel_patch = None, (None, [])
+        self._role = "curate" if req.kind == "curate" else "write"
+        if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
+            # spec v2.1 §10.3: CURATE runs only under v2.1, on the library state its trigger read; nothing is spent
+            return PassOutcome(
+                pass_id,
+                False,
+                None,
+                "0",
+                0,
+                ["curate: needs memory v2.1 and the library state it curates"],
+            )
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
             return PassOutcome(
@@ -2179,7 +2212,7 @@ class SolPass:
                         self.ev.record_pass_rounds(
                             {
                                 "pass_id": pass_id,
-                                "role": getattr(self.cfg, "role", "write"),
+                                "role": self._role,
                                 "rounds": None,
                                 "round_blobs": "[]",
                                 # a cancelled pass's draft points at its fixed gate result (P7)
@@ -2295,8 +2328,12 @@ class SolPass:
             self._stage_inputs(req, inputs, wt)
             if self.cfg.v21:
                 bmap = json.loads((inputs / "batch_map.json").read_text())
+                # CURATE reads the suspects' episodes as evidence; coverage (spec §7.4) is WRITE's batch rule
                 required = {
-                    r["episode_id"]: r["required_parts"] for r in bmap["episodes"]
+                    r["episode_id"]: (
+                        [] if req.kind == "curate" else r["required_parts"]
+                    )
+                    for r in bmap["episodes"]
                 }
                 eps = {e: self.load(e) for e in required}
                 sizes = {
@@ -2317,15 +2354,21 @@ class SolPass:
             )
             if self.cfg.v21:
                 # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
-                # folders and no library.json (P2 replaces previous_gate.json)
+                # folders and no library.json (P2's gate inputs replace previous_gate.json)
                 self._v21_generated = self._stage_library_v21(box, parent)
-                (inputs / "previous_gate.json").write_text(
-                    json.dumps(previous_gate(self.ev, channels), indent=1) + "\n",
-                )
-                first = (
-                    f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
-                    + self._library_message_v21(box)
-                )
+                if req.kind == "curate":
+                    # memory v2.1 CURATE (P6): the library view, then what the trigger found
+                    first = (
+                        f"Pass {pass_id}: curate\n\n"
+                        + self._library_message_v21(box)
+                        + "\n\n"
+                        + _curate.message(self.curate_state)
+                    )
+                else:
+                    first = (
+                        f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
+                        + self._library_message_v21(box)
+                    )
             else:
                 _channel_dirs(box, channels)
                 # D26: Sol tends the library on its channels, so library.json gives each function's recorded
@@ -2347,7 +2390,7 @@ class SolPass:
                 )
             if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
-            if self.cfg.v21:
+            if self.cfg.v21 and req.kind != "curate":
                 from .drafts import drafts_message
 
                 first += "\n\n" + drafts_message(
@@ -2359,7 +2402,11 @@ class SolPass:
                 # unchanged while its switches are off)
                 {
                     "role": "system",
-                    "content": _qa.system(sol_system(**switches), self._qa),
+                    "content": (
+                        _curate.curate_system()
+                        if self.cfg.v21 and req.kind == "curate"
+                        else _qa.system(sol_system(**switches), self._qa)
+                    ),
                 },
                 {"role": "user", "content": first},
             ]
@@ -2765,7 +2812,13 @@ class SolPass:
                 candidate = self.mem.commit_all(
                     wt,
                     f"consolidation pass {pass_id}: {summary[:200]}".replace("\0", ""),
-                    _trailers(pass_id, sources, manifest, bool(self.cfg.v21)),
+                    _trailers(
+                        pass_id,
+                        sources,
+                        manifest,
+                        bool(self.cfg.v21),
+                        self._role == "curate",
+                    ),
                 )
         # a manifest that could not be read (not a regular file, not JSON) reaches the gate as None: G1 refuses it
         res = self.gate.merge(
