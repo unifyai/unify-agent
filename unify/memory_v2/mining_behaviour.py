@@ -762,64 +762,88 @@ def analyse(units: dict, snaps: dict, results: list, a_clusters: set[str]) -> di
     return {"clusters": kept, "edges": len(edges), "one_way": one_way}
 
 
-def main(argv: list[str] | None = None) -> int:
-    if argv is None and "--child" in sys.argv:
-        return child_main()
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--git", required=True)
-    ap.add_argument("--rev", default="main")
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
-    ap.add_argument(
-        "--worktree",
-        help="a copy of the run's worktree repo: replay in each episode's recorded tree",
-    )
-    a = ap.parse_args(argv)
-    out = Path(a.out)
+def run_behaviour(
+    episodes,
+    out: Path,
+    *,
+    jobs: int,
+    trees: dict[str, Path] | None = None,
+    batch: set[str] | None = None,
+    cached: dict[str, dict] | None = None,
+) -> tuple[dict, dict[str, dict]]:
+    """Tier (b) over *episodes* (``(episode_id, request_key, cells)``): (the behaviour document, each newly
+    replayed episode's replay result). *cached* replay results (by episode) are reused, so an episode is
+    replayed once in its lifetime; with *batch*, only pairs with a unit from a batch episode are cross-run.
+    *trees* (episode -> its exported recorded workspace) replays office code in place.
+    """
+    trees = trees or {}
+    cached = dict(cached or {})
     out.mkdir(parents=True, exist_ok=True)
-    episodes = _mining.read_git(a.git, a.rev)
-    units, jobs, causes = collect_units(episodes)
+    units, jobs_by_ep, causes = collect_units(episodes)
     reqs_by_key: dict[str, set] = {}
     for u in units.values():
         reqs_by_key.setdefault(u["akey"], set()).add(u["request"])
     a_clusters = {
         k for k, r in reqs_by_key.items() if len(r) >= 2
     }  # tier (a)'s recurring keys
-    trees: dict[str, Path] = {}
-    if a.worktree:
-        trees = export_trees(a.worktree, a.git, a.rev, list(jobs), out / "trees")
-        for eid in trees:
-            jobs[eid]["cwd"] = "/w"
+    for eid in trees:
+        if eid in jobs_by_ep:
+            jobs_by_ep[eid]["cwd"] = "/w"
 
     def replay(eid):
         if eid not in trees:
-            return in_box(jobs[eid], 600)
+            return in_box(jobs_by_ep[eid], 600)
         run = (
             out / "run" / eid
         )  # a fresh, disposable copy: the export is never writable
         shutil.rmtree(run, ignore_errors=True)
         shutil.copytree(trees[eid], run, symlinks=True)
         try:
-            return in_box(jobs[eid], 600, [(str(run), "/w", True)])
+            return in_box(jobs_by_ep[eid], 600, [(str(run), "/w", True)])
         finally:
             shutil.rmtree(run, ignore_errors=True)
 
+    todo = [e for e in jobs_by_ep if e not in cached]
+    fresh: dict[str, dict] = {}
+    with ThreadPoolExecutor(jobs) as pool:
+        for eid, r in zip(todo, pool.map(replay, todo)):
+            if "box_error" in r:
+                r = {
+                    "snaps": {},
+                    "causes": {
+                        t["uid"]: r["box_error"]
+                        for t in itertools.chain.from_iterable(
+                            jobs_by_ep[eid]["targets"].values(),
+                        )
+                    },
+                    "fidelity": [0, 0],
+                }
+            fresh[eid] = cached[eid] = r
     snaps: dict[str, dict] = {}
     fidelity = [0, 0]
-    with ThreadPoolExecutor(a.jobs) as pool:
-        for eid, r in zip(jobs, pool.map(replay, list(jobs))):
-            if "box_error" in r:
-                for t in itertools.chain.from_iterable(jobs[eid]["targets"].values()):
-                    causes[t["uid"]] = r["box_error"]
-                continue
-            snaps.update(r["snaps"])
-            causes.update(r["causes"])
-            fidelity[0] += r["fidelity"][0]
-            fidelity[1] += r["fidelity"][1]
+    for eid in jobs_by_ep:
+        r = cached.get(eid) or {}
+        snaps.update({u: v for u, v in (r.get("snaps") or {}).items() if u in units})
+        causes.update({u: v for u, v in (r.get("causes") or {}).items() if u in units})
+        fidelity[0] += (r.get("fidelity") or [0, 0])[0]
+        fidelity[1] += (r.get("fidelity") or [0, 0])[1]
     pairs = candidate_pairs(units, snaps)
+    if batch is not None:
+        pairs = [
+            (x, y)
+            for x, y in pairs
+            if units[x]["episode"] in batch or units[y]["episode"] in batch
+        ]
     chunks = [
         pairs[i : i + PAIRS_PER_CHILD] for i in range(0, len(pairs), PAIRS_PER_CHILD)
     ]
+    tree_root = out / "trees"
+    if trees:
+        tree_root.mkdir(parents=True, exist_ok=True)
+        for eid, t in trees.items():
+            link = tree_root / eid
+            if not link.exists() and Path(t).resolve() != link.resolve():
+                shutil.copytree(t, link, symlinks=True)
 
     def cross(chunk):
         ids = {x for p in chunk for x in p}
@@ -836,10 +860,10 @@ def main(argv: list[str] | None = None) -> int:
             for i in ids
             if units[i]["episode"] in trees
         }
-        return in_box(job, 1800, [(str(out / "trees"), "/trees", False)])
+        return in_box(job, 1800, [(str(tree_root), "/trees", False)])
 
     results, ref = [], {}
-    with ThreadPoolExecutor(a.jobs) as pool:
+    with ThreadPoolExecutor(jobs) as pool:
         for chunk, r in zip(chunks, pool.map(cross, chunks)):
             if "box_error" in r:
                 results += [[x, y, r["box_error"]] for x, y in chunk]
@@ -882,21 +906,44 @@ def main(argv: list[str] | None = None) -> int:
         "new_vs_a": sum(1 for c in report["clusters"] if c["new_vs_a"]),
         "not_runnable_by_cause": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
     }
-    (out / "behaviour.json").write_text(
-        json.dumps(
-            {
-                "summary": summary,
-                "clusters": report["clusters"],
-                "units": units,
-                "causes": causes,
-                "results": results,
-            },
-            indent=1,
-            default=str,
-        )
-        + "\n",
+    doc = {
+        "summary": summary,
+        "clusters": report["clusters"],
+        "units": units,
+        "causes": causes,
+        "results": results,
+    }
+    return doc, fresh
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None and "--child" in sys.argv:
+        return child_main()
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--git", required=True)
+    ap.add_argument("--rev", default="main")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    ap.add_argument(
+        "--worktree",
+        help="a copy of the run's worktree repo: replay in each episode's recorded tree",
     )
-    print(json.dumps(summary))
+    a = ap.parse_args(argv)
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    episodes = _mining.read_git(a.git, a.rev)
+    trees: dict[str, Path] = {}
+    if a.worktree:
+        trees = export_trees(
+            a.worktree,
+            a.git,
+            a.rev,
+            [e for e, _, _ in episodes],
+            out / "trees",
+        )
+    doc, _ = run_behaviour(episodes, out, jobs=a.jobs, trees=trees)
+    (out / "behaviour.json").write_text(json.dumps(doc, indent=1, default=str) + "\n")
+    print(json.dumps(doc["summary"]))
     return 0
 
 

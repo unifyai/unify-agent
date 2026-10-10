@@ -724,6 +724,9 @@ class PassConfig:
     # arm C's analysts ("off" or "sol", UNIFY_MEMORY_V21_ANALYSTS)
     staging_root: str | None = None
     analysts: str = "off"
+    # r5 (r4 §4): S0 at pass start (its cache folder; None: no S0) and the run's worktree repo (office replays)
+    s0_cache: str | None = None
+    worktree_git: str | None = None
 
 
 @dataclass
@@ -759,6 +762,8 @@ class PassOutcome:
     nothing_to_store: bool = False
     # r5 arm C: one row per Sol analyst (episode, status, flags, turns, usd, files); their spend is in usd too
     analysts: list[dict] = field(default_factory=list)
+    # r5: S0's summary for this pass (clusters, tier (b) counts, or its error); None when S0 did not run
+    s0: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1702,6 +1707,7 @@ class SolPass:
         self._s0_clustered: set[str] = set()
         self._s0_seen: set[str] = set()
         self._analyst_rows: list[dict] = []
+        self._s0_summary: dict | None = None
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -1962,6 +1968,26 @@ class SolPass:
             if self.cfg.staging_root
             else Path(inputs).parent / "staging-local"
         )
+        if self.cfg.s0_cache:
+            from . import s0_pass as _s0
+
+            batch = set(req.episodes)
+            since = getattr(self.ev, "experience_since", None)
+            history = (
+                [e for e, _ in since(0) if e not in batch] if since is not None else []
+            )
+            got = await asyncio.to_thread(
+                _s0.run,
+                self.load,
+                list(req.episodes),
+                history,
+                Path(inputs) / "s0",
+                Path(self.cfg.s0_cache),
+                worktree=self.cfg.worktree_git,
+            )
+            self._s0_clustered = set(got.get("clustered") or [])
+            self._s0_seen = set(got.get("seen") or [])
+            self._s0_summary = {k: v for k, v in got.items() if k != "seen"}
         if self.cfg.analysts == "sol":
             flags = {
                 e: _analysts.flagged(ep, self._s0_clustered, self._s0_seen)
@@ -2450,6 +2476,8 @@ class SolPass:
         self._shown_full = {}
         self._shared = {}
         self._analyst_rows = []
+        self._s0_summary = None
+        self._s0_clustered, self._s0_seen = set(), set()
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -2612,6 +2640,7 @@ class SolPass:
             if self.cfg.v21:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
+                o.s0 = self._s0_summary
                 o.analysts = [
                     {
                         k: r.get(k)

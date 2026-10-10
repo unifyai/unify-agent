@@ -1050,6 +1050,12 @@ async def run_due_passes(
             {
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
                 "analysts": v21_analysts(settings),
+                "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
+                "worktree_git": (
+                    str(stores.paths.worktree_git)
+                    if Path(stores.paths.worktree_git).is_dir()
+                    else None
+                ),
             }
             if cfg.v21
             else {}
