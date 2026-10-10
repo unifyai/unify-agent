@@ -269,7 +269,13 @@ def required_parts(
 def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> str:
     """*part* of *ep* as the writer reads it; *shared* (r5, :mod:`.shared_text`): the request's shared blocks shown
     as their markers (the raw episode files keep every byte)."""
-    if part == "request":
+    if part.startswith("shared:"):
+        # r5 (RUNTIME B2): a shared request block is its own part, so the writer sees it once; the identical-part
+        # credit then covers it in every other episode whose request holds it
+        if not shared or part[7:] not in shared:
+            raise KeyError(part)
+        obj = shared[part[7:]]
+    elif part == "request":
         obj = ep.request[0] if ep.request else ""
         if shared:
             from .shared_text import mark
@@ -393,6 +399,14 @@ def _errors(ep: Episode) -> list[dict]:
     return out
 
 
+def _shared_parts(ep: Episode, shared: dict[str, str]) -> list[str]:
+    """``shared:<id>`` for each shared block *ep*'s request holds (RUNTIME B2: shown once, never only a marker)."""
+    from .shared_text import blocks
+
+    held = set(blocks(ep.request[0] if ep.request else ""))
+    return [f"shared:{b}" for b, text in sorted(shared.items()) if text in held]
+
+
 def build_batch_map(
     load: Callable[[str], Episode],
     eids: Iterable[str],
@@ -428,7 +442,8 @@ def build_batch_map(
                 "signals": sig,
                 "functions": fns,
                 "diff_unparsed": diff[1],
-                "required_parts": required_parts(ep, sig, fns, diff),
+                "required_parts": required_parts(ep, sig, fns, diff)
+                + (_shared_parts(ep, shared) if shared else []),
             },
         )
     out = {"version": 1, "episodes": rows}

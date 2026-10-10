@@ -1013,6 +1013,9 @@ async def run_due_passes(
         return []
     cap = trig.pass_budget_usd() * scale
     reserve = cap / max_calls
+    # r5 S6 and RUNTIME B1 (F5 as amended): a v2.1 pass is uncapped only when Sol's calls go through a proxy route,
+    # whose ceilings bound it in flight; with no route it keeps the allowance cap and the call limit
+    uncapped = bool(cfg.v21 and cfg.route is not None)
     lookup = EpisodeLookup(stores)
     common = dict(
         action_lookup=lookup.action,
@@ -1042,9 +1045,9 @@ async def run_due_passes(
         effort=effort,
         # memory v2.1 r5 (S6): no USD cap and no count limits on a pass; the step guard and the deadline are
         # operational. The allowance (cap) stays the run guard's booking for the pass (_reserve), never a pass limit.
-        max_calls=STEP_GUARD if cfg.v21 else max_calls,
+        max_calls=STEP_GUARD if uncapped else max_calls,
         deadline_s=supervise.pass_deadline_s if supervise is not None else DEADLINE_S,
-        max_usd=None if cfg.v21 else cap,
+        max_usd=None if uncapped else cap,
         # r5: staging lives beside the fork's (fork.staging_dir), and arm C's analysts follow their switch
         **(
             {
@@ -1138,10 +1141,15 @@ async def run_due_passes(
             )  # recorded; r5 S6: not enforced on an uncapped pass
             # r5 S6: no pass cap or count limits; the operational step guard; the allowance only as the run guard's
             # booking for this pass
-            start["cap_usd"] = None
-            start["max_calls"] = None
-            start["operational_step_guard"] = STEP_GUARD
-            start["run_guard_booking_usd"] = _usd(cap)
+            if uncapped:
+                start["cap_usd"] = None
+                start["max_calls"] = None
+                start["operational_step_guard"] = STEP_GUARD
+                start["run_guard_booking_usd"] = _usd(cap)
+            else:
+                start["capped"] = (
+                    "no Sol route: the allowance cap and call limit apply (RUNTIME B1)"
+                )
         if curating:
             # why it runs (spec §10.3); codes and ids only
             start["curate"] = sorted(curate_state.fired.values())

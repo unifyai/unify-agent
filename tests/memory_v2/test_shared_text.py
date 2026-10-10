@@ -26,10 +26,7 @@ def test_a_block_in_most_episodes_becomes_one_marker(tmp_path):
     assert list(sh.values()) == [PRE]
     marked = shared_text.mark(PRE + "\n\nTask 1: do thing 1", sh)
     bid = next(iter(sh))
-    assert (
-        marked
-        == f"[shared request text {bid}: /inputs/shared/{bid}.txt]\n\nTask 1: do thing 1"
-    )
+    assert marked == shared_text.marker(bid) + "\n\nTask 1: do thing 1"
 
 
 def test_shared_blocks_edge_cases(tmp_path):
@@ -91,3 +88,22 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
         "request",
         sol._shared,
     )
+
+
+def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical(
+    tmp_path,
+):
+    """RUNTIME B2: the marker alone never covers the block; it is a required part, read once, then credited
+    elsewhere by the identical-part credit."""
+    eps = {
+        f"e{i}": _episode(f"e{i}", request=(PRE + f"\n\nTask {i}",)) for i in range(3)
+    }
+    ev = EvidenceStore(tmp_path / "x.sqlite")
+    for e, ep in eps.items():
+        shared_text.update_counts(ev, e, ep.request[0])
+    sh = shared_text.shared(ev)
+    bid = next(iter(sh))
+    assert f"'shared:{bid}'" in shared_text.marker(bid)
+    bmap = bm.build_batch_map(eps.__getitem__, list(eps), sh)
+    assert all(f"shared:{bid}" in row["required_parts"] for row in bmap["episodes"])
+    assert json.loads(bm.part_text(eps["e0"], f"shared:{bid}", sh)) == PRE

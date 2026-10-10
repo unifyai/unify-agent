@@ -68,7 +68,7 @@ def shared(ev) -> dict[str, str]:
 
 
 def marker(bid: str) -> str:
-    return f"[shared request text {bid}: /inputs/shared/{bid}.txt]"
+    return f"[shared request text {bid}: read_episode part 'shared:{bid}', also /inputs/shared/{bid}.txt]"
 
 
 def mark(text: str, shared_blocks: dict[str, str]) -> str:
