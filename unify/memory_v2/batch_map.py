@@ -266,9 +266,15 @@ def required_parts(
     return parts
 
 
-def part_text(ep: Episode, part: str) -> str:
+def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> str:
+    """*part* of *ep* as the writer reads it; *shared* (r5, :mod:`.shared_text`): the request's shared blocks shown
+    as their markers (the raw episode files keep every byte)."""
     if part == "request":
         obj = ep.request[0] if ep.request else ""
+        if shared:
+            from .shared_text import mark
+
+            obj = mark(obj, shared)
     elif part.startswith("observation:"):
         obj = _observations(ep)[int(part[12:])]
     elif part == "diff":
@@ -318,7 +324,15 @@ def _errors(ep: Episode) -> list[dict]:
     return out
 
 
-def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict:
+def build_batch_map(
+    load: Callable[[str], Episode],
+    eids: Iterable[str],
+    shared: dict[str, str] | None = None,
+) -> dict:
+    """The batch map; *shared* (r5): requests carry shared blocks as markers, and ``shared_blocks`` lists each
+    block's file once."""
+    if shared:
+        from .shared_text import mark
     rows = []
     for eid in eids:
         ep = load(eid)
@@ -330,7 +344,11 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "episode_id": ep.episode_id,
                 "memory_main": ep.memory_main,
                 "regime": ep.regime,
-                "request": ep.request[0] if ep.request else "",
+                "request": (
+                    mark(ep.request[0] if ep.request else "", shared)
+                    if shared
+                    else (ep.request[0] if ep.request else "")
+                ),
                 "observations": len(_observations(ep)),
                 "observation_copies": observation_copies(ep),
                 "cells": len(ep.cells),
@@ -344,4 +362,10 @@ def build_batch_map(load: Callable[[str], Episode], eids: Iterable[str]) -> dict
                 "required_parts": required_parts(ep, sig, fns, diff),
             },
         )
-    return {"version": 1, "episodes": rows}
+    out = {"version": 1, "episodes": rows}
+    if shared:
+        out["shared_blocks"] = [
+            {"id": b, "chars": len(t), "file": f"/inputs/shared/{b}.txt"}
+            for b, t in sorted(shared.items())
+        ]
+    return out

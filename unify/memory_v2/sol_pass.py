@@ -1688,6 +1688,8 @@ class SolPass:
         self.fixtures_made: dict[str, dict] = {}
         # v2.1 (design r2 §1, RUNTIME P2): sha256 of a part shown complete in this pass -> (episode, part)
         self._shown_full: dict[str, tuple[str, str]] = {}
+        # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
+        self._shared: dict[str, str] = {}
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -1836,11 +1838,30 @@ class SolPass:
             ),
         )
         if _v21_on(self):
+            from . import shared_text as _shared_text
             from .batch_map import build_batch_map
 
+            # r5 (r4 §1): count this batch's request blocks once each, then show the shared ones as markers, each
+            # block once under /inputs/shared/
+            if hasattr(
+                self.ev,
+                "db",
+            ):  # an evidence store (test doubles without one show requests as they are)
+                for e in req.episodes:
+                    ep_ = self.load(e)
+                    _shared_text.update_counts(
+                        self.ev,
+                        e,
+                        ep_.request[0] if ep_.request else "",
+                    )
+                self._shared = _shared_text.shared(self.ev)
+            if self._shared:
+                (inputs / "shared").mkdir(exist_ok=True)
+                for b, text in self._shared.items():
+                    (inputs / "shared" / f"{b}.txt").write_text(text)
             (inputs / "batch_map.json").write_text(
                 json.dumps(
-                    build_batch_map(self.load, list(req.episodes)),
+                    build_batch_map(self.load, list(req.episodes), self._shared),
                     sort_keys=True,
                     default=str,
                     indent=1,
@@ -2035,6 +2056,7 @@ class SolPass:
         parts: object,
         cov: _views.Coverage,
         shown: dict[str, tuple[str, str]] | None = None,
+        shared: dict[str, str] | None = None,
     ) -> str:
         """``read_episode(parts=[...])``: up to READ_PARTS_PER_CALL parts sharing ONE VIEW_BYTES page, filled in
         order. Each part has its own marked view and is credited for the range shown; a part reached with the
@@ -2057,7 +2079,7 @@ class SolPass:
                     :300
                 ]
             try:
-                data = _bm.part_text(ep, name).encode()
+                data = _bm.part_text(ep, name, shared).encode()
             except (KeyError, ValueError, IndexError, StopIteration):
                 return f"refused: unknown part {name!r}; nothing was read"[:300]
             items.append((name, off, data))
@@ -2142,7 +2164,7 @@ class SolPass:
                 return f"refused: {eid!r} is not in this batch"[:300]
             if "parts" not in args:
                 part = str(args.get("part", ""))
-                data = _bm.part_text(eps[eid], part).encode()
+                data = _bm.part_text(eps[eid], part, self._shared).encode()
                 canon = _bm.canonical_part(eps[eid], part)
                 same = (
                     _identical(self._shown_full, cov, eid, canon, data)
@@ -2161,6 +2183,7 @@ class SolPass:
                 args.get("parts"),
                 cov,
                 self._shown_full,
+                self._shared,
             )
         except (
             OSError,
@@ -2333,6 +2356,7 @@ class SolPass:
         self.messages = []
         self.fixtures_made = {}
         self._shown_full = {}
+        self._shared = {}
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -2524,7 +2548,7 @@ class SolPass:
                 }
                 eps = {e: self.load(e) for e in required}
                 sizes = {
-                    (e, part): len(_bm.part_text(eps[e], part).encode())
+                    (e, part): len(_bm.part_text(eps[e], part, self._shared).encode())
                     for e, ps in required.items()
                     for part in ps
                 }
