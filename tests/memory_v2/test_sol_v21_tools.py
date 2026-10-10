@@ -188,15 +188,14 @@ def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
             _call("d", "dismiss", {"episode": "e1", "reason": "nothing reusable"}),
         ),
     ]
-    out, model = _pass(tmp_path, turns, max_calls=4, max_reads=2)
+    out, model = _pass(tmp_path, turns, max_calls=6, max_reads=2)
     assert model.outputs["a"] == '"req"' and model.outputs["b"] == '"req"'
     assert model.outputs["c"] == "not run: reader budget reached"
     assert (
         model.outputs["d"] == "ok"
     )  # dismiss still runs past the budget, so the pass can finish
-    assert (
-        out.reads == 3 and out.calls == 4
-    )  # model turns only; reader calls are counted apart
+    # model turns only, reader calls counted apart; finish is refused twice for its missing manifest (r2 §3)
+    assert out.reads == 3 and out.calls == 6
     assert out.coverage["missing"] == [] and out.summary == "done"
 
 

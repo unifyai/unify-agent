@@ -509,6 +509,10 @@ def _fixture_call(
     return f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
 
 
+# design r2 §3: finish refuses an unparseable manifest at most this many times in a pass
+FINISH_G1_REFUSALS = 2
+
+
 def _identical(
     shown: dict[str, tuple[str, str]],
     cov: Any,
@@ -736,6 +740,10 @@ class PassOutcome:
     # gate results written for Sol during the pass, in order (/inputs/gate/result-<n>.md)
     rounds: int = 0
     round_results: list[str] = field(default_factory=list)
+    # design r2 §5 (v21): Sol's last finish was accepted; and its manifest, parsed by the gate's parser at that
+    # finish, listed no item and no deletion: the writer's explicit decision that the batch holds nothing to store
+    finished: bool = False
+    nothing_to_store: bool = False
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -2070,6 +2078,29 @@ class SolPass:
             out.append(f"== {name} ==\n{text}")
         return "\n\n".join(out)
 
+    def _finish_manifest_problem(self, box: Path) -> tuple[str | None, bool]:
+        """Design r2 §3 (RUNTIME P6): (the G1 refusal ``finish`` would meet, from the gate's own manifest parser;
+        whether the parsed manifest lists no item and no deletion).
+
+        No refusal when the manifest parses. A manifest the host cannot read yet (the final check restores access
+        first) is left to the final check rather than refused here.
+        """
+        found, manifest, problem = _read_manifest(box)
+        if not found:
+            return (
+                "G1: no manifest: write /memory/.pass/manifest.json, then finish",
+                False,
+            )
+        if problem is not None:
+            return (None if "cannot be read" in problem else f"G1: {problem}"), False
+        try:
+            man = self.gate._parse_manifest(
+                _with_fixtures(manifest, self.fixtures_made),
+            )
+        except _manifest.ManifestError as exc:
+            return _redact(f"G1: malformed manifest: {exc}")[:600], False
+        return None, not man.items and not man.deleted
+
     async def _v21_tool(
         self,
         name: str,
@@ -2373,6 +2404,15 @@ class SolPass:
         # memory v2.1 repair rounds (spec §9.2; repair.py states the budget rule)
         round_no = 0  # the round Sol is in: 0 until its first accepted finish
         round_usd: list[Decimal] = []  # each completed round's charge
+        # v2.1 (design r2 §3): the charge when Sol first wrote (a cell, a check or a fixture), round 0's charge
+        # from then on (what a repair round is priced on), finish's G1 refusals, and the last accepted finish
+        phase: dict[str, Any] = {
+            "write_mark": None,
+            "round0_write": None,
+            "g1_refusals": 0,
+            "finish_accepted": False,
+            "nothing_to_store": False,
+        }
         round_s: list[float] = (
             []
         )  # each completed round's seconds, its gate check included
@@ -2441,6 +2481,10 @@ class SolPass:
             )
             if self.cfg.v21:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
+                o.finished = bool(phase["finish_accepted"])
+                o.nothing_to_store = bool(
+                    phase["finish_accepted"] and phase["nothing_to_store"],
+                )
             return o
 
         with (
@@ -2546,6 +2590,11 @@ class SolPass:
             def charged() -> Decimal:
                 return spend.usd + spend.unknown * reserve
 
+            def writing() -> None:
+                """The charge when Sol first wrote: round 0's reading ends there (design r2 §3)."""
+                if phase["write_mark"] is None:
+                    phase["write_mark"] = charged()
+
             def commit_and_check(manifest: object) -> tuple[str, GateResult]:
                 """v2.1: the box as one commit on the parent, and the whole gate on it without merging, with
                 the pass's seed (set from the first candidate the pass commits; Amendment A).
@@ -2602,6 +2651,17 @@ class SolPass:
                 nonlocal round_no, stop, over_quota
                 round_usd.append(charged() - mark[0])
                 round_s.append(time.monotonic() - mark[1])
+                if round_no == 0 and self.cfg.v21:
+                    # design r2 §3: price a repair round on the write phase, not on round 0's reading
+                    wm = phase["write_mark"]
+                    phase["round0_write"] = (
+                        charged() - wm if wm is not None else round_usd[0]
+                    )
+                priced = (
+                    [phase["round0_write"]] + round_usd[1:]
+                    if phase["round0_write"] is not None
+                    else round_usd
+                )
 
                 def refused_round(check_s: float) -> str | None:
                     return _repair.may_repair(
@@ -2609,7 +2669,7 @@ class SolPass:
                         cap - charged(),
                         remaining(),
                         max_calls - calls,
-                        round_usd,
+                        priced,
                         round_s,
                         self.cfg.round_reserve_usd,
                         last_check_s=check_s,
@@ -2759,7 +2819,19 @@ class SolPass:
                         content = "not run: pass finished"
                     elif name == "finish":
                         missing = cov.missing() if cov is not None else []
-                        if missing:
+                        g1, empty = (
+                            self._finish_manifest_problem(box)
+                            if self.cfg.v21
+                            and not missing
+                            and phase["g1_refusals"] < FINISH_G1_REFUSALS
+                            else (None, False)
+                        )
+                        if g1 is not None:
+                            phase[
+                                "g1_refusals"
+                            ] += 1  # bounded: past it the final check refuses by name
+                            content = f"not finished: {g1}"
+                        elif missing:
                             content = (
                                 f"not finished: {len(missing)} episode(s) neither covered nor dismissed: "
                                 + ", ".join(missing[:20])
@@ -2768,6 +2840,7 @@ class SolPass:
                             )
                         else:
                             summary, finished = str(args.get("summary", "")), True
+                            phase.update(finish_accepted=True, nothing_to_store=empty)
                             content = "ok"
                     elif name == "check":
                         if stop is not None:
@@ -2785,6 +2858,8 @@ class SolPass:
                         else:
                             checks += 1
                             calls += 1  # a check is a call against max_calls
+                            if self.cfg.v21:
+                                writing()
                             if base is None:
                                 try:
                                     base = self.gate.parent_snapshot(
@@ -2807,6 +2882,7 @@ class SolPass:
                                 content = check_tests(args.get("manifest"))
                     elif cov is not None and name == "fixture":
                         calls += 1  # a writer action, against max_calls; it earns no coverage
+                        writing()
                         content = _fixture_call(
                             args,
                             eps,
@@ -2847,6 +2923,8 @@ class SolPass:
                         content = f"not run: {stop}"
                     else:
                         ran += 1
+                        if self.cfg.v21:
+                            writing()
                         timeout = max(
                             1.0,
                             min(float(self.cfg.cell_timeout_s), remaining()),

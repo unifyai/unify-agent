@@ -87,7 +87,7 @@ from .. import gate_v21
 from ..blobs import BlobStore
 from ..episodes import Action, CostRow, Episode, episode_dir, load_episode
 from ..evidence import EvidenceStore
-from ..gate import Gate
+from ..gate import CHECKS as GATE_CHECKS, Gate
 from ..gitio import Repo
 from ..index import build_index, estimate_tokens
 from ..memory_repo import items as memory_items
@@ -760,6 +760,19 @@ def _end_event(
                 "coverage": outcome.coverage,
                 "reads": int(outcome.reads),
                 "exported_bytes": outcome.exported_bytes,
+                # design r2 §3: the gate checks that refused the pass and the first reason line; §5: Sol's last
+                # finish accepted, and its parsed manifest listing nothing (the writer's own "nothing to store")
+                "refused_by": sorted({c for c in outcome.codes if c in GATE_CHECKS}),
+                "first_reason": next(
+                    (
+                        r.splitlines()[0][:300]
+                        for r in outcome.reasons
+                        if r and r != "ok"
+                    ),
+                    None,
+                ),
+                "finished": bool(outcome.finished),
+                "nothing_to_store": bool(outcome.nothing_to_store),
             }
             if outcome is not None and outcome.coverage is not None
             else {}
