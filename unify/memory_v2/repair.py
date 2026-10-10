@@ -46,7 +46,7 @@ def round_reserve(round_usd: list[Decimal], fixed: Decimal | None = None) -> Dec
 
 def may_repair(
     done: int,
-    remaining_usd: Decimal,
+    remaining_usd: Decimal | None,
     remaining_s: float,
     calls_left: int,
     round_usd: list[Decimal],
@@ -60,12 +60,15 @@ def may_repair(
     check's seconds, which the final merge spends again.
     """
     nxt = done + 1
-    if done >= REPAIR_ROUNDS:
+    uncapped = (
+        remaining_usd is None
+    )  # memory v2.1 r5 (S6): no round count and no USD reserve; time still applies
+    if not uncapped and done >= REPAIR_ROUNDS:
         return f"repair: no round {nxt}: at most {REPAIR_ROUNDS} repair rounds per pass"
     if calls_left < 1:
         return f"repair: no round {nxt}: the pass's call cap is reached"
-    need = round_reserve(round_usd, fixed_usd)
-    if remaining_usd < need:
+    need = None if uncapped else round_reserve(round_usd, fixed_usd)
+    if need is not None and remaining_usd < need:
         return (
             f"repair: no round {nxt}: {_money(remaining_usd)} USD left, "
             f"below the round reserve of {_money(need)} USD"

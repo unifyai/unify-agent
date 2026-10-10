@@ -96,16 +96,16 @@ _READ_TOOLS = (
 
 _CHECK_FINISH = (
     "- `check(manifest)` runs the gate's static checks, the items' own tests and the recorded inputs the gate "
-    "draws, on your current files, at most <<max_checks>> times per pass. It changes nothing.\n"
+    "draws, on your current files<<check_limit>>. It changes nothing.\n"
     "- `finish(summary)` ends the round.\n"
 )
 
 _REPAIR = (
     "# Repair\n"
     "If the gate refuses anything, its full result (every check, every failing test's output and every note) is "
-    "written to /inputs/gate/result-<round>.md and you get a repair round, up to <<repair_rounds>> of them while "
-    "the pass budget lasts. Fix what it refused, keep the manifest current, and call `finish` again. When the "
-    "rounds or the budget run out, the items that pass land and the rest is kept as a draft for a later pass.\n"
+    "written to /inputs/gate/result-<round>.md and you get a repair round<<repair_limit>>. Fix what it refused, "
+    "keep the manifest current, and call `finish` again. <<repair_end>>, the items that pass land and the rest is "
+    "kept as a draft for a later pass.\n"
 )
 
 _TRUST = (
@@ -309,6 +309,27 @@ def _fill(template: str, values: Mapping[str, object]) -> str:
     return out
 
 
+def _limits(max_checks: int | None, repair_rounds: int | None) -> dict[str, str]:
+    """The brief's limit phrases: a number where the pass enforces one, nothing where it does not (memory v2.1 r5:
+    no count or budget limits; the wall clock and the operational step guard end a runaway).
+    """
+    return {
+        "check_limit": (
+            f", at most {max_checks} times per pass" if max_checks is not None else ""
+        ),
+        "repair_limit": (
+            f", up to {repair_rounds} of them while the pass budget lasts"
+            if repair_rounds is not None
+            else ""
+        ),
+        "repair_end": (
+            "When the rounds or the budget run out"
+            if repair_rounds is not None
+            else "When the pass's time runs out"
+        ),
+    }
+
+
 def _pct(share: Decimal) -> str:
     """A share as a whole-or-decimal percentage string: Decimal('0.6') -> '60'."""
     return format((Decimal(share) * 100).normalize(), "f")
@@ -321,8 +342,8 @@ def _env(env: Mapping[str, str]) -> str:
 def write_brief(
     *,
     view_bytes: int,
-    max_checks: int,
-    repair_rounds: int,
+    max_checks: int | None,
+    repair_rounds: int | None,
     mutation_min: Decimal,
     sample_k: int,
     lint_min: int,
@@ -338,8 +359,7 @@ def write_brief(
         {
             "extra_inputs": "".join(extra_inputs),
             "view_bytes": view_bytes,
-            "max_checks": max_checks,
-            "repair_rounds": repair_rounds,
+            **_limits(max_checks, repair_rounds),
             "mutation_min_pct": _pct(mutation_min),
             "sample_k": sample_k,
             "lint_min": lint_min,
@@ -353,8 +373,8 @@ def write_brief(
 def curate_brief(
     *,
     view_bytes: int,
-    max_checks: int,
-    repair_rounds: int,
+    max_checks: int | None,
+    repair_rounds: int | None,
     pytest_env: Mapping[str, str],
     index_tokens: int,
     overlaps_path: str,
@@ -366,8 +386,7 @@ def curate_brief(
         _CURATE,
         {
             "view_bytes": view_bytes,
-            "max_checks": max_checks,
-            "repair_rounds": repair_rounds,
+            **_limits(max_checks, repair_rounds),
             "pytest_env": _env(pytest_env),
             "index_tokens": index_tokens,
             "overlaps_path": overlaps_path,
@@ -380,13 +399,13 @@ def curate_brief(
 def write_brief_now(extra_inputs: tuple[str, ...] = ()) -> str:
     """The WRITE brief from the constants that enforce each number (imported here: they import this module's
     callers)."""
-    from . import code_lint, manifest, qa, repair, sol_pass, views
+    from . import code_lint, manifest, qa, views
     from .gate import _PYTEST_ENV
 
     return write_brief(
         view_bytes=views.VIEW_BYTES,
-        max_checks=sol_pass.MAX_CHECKS,
-        repair_rounds=repair.REPAIR_ROUNDS,
+        max_checks=None,  # r5 §5 (S6): no count limits under v2.1
+        repair_rounds=None,
         mutation_min=qa.MUTATION_MIN,
         sample_k=qa.SAMPLE_K,
         lint_min=code_lint.LINT_MIN,
@@ -398,14 +417,14 @@ def write_brief_now(extra_inputs: tuple[str, ...] = ()) -> str:
 
 def curate_brief_now() -> str:
     """The CURATE brief from the enforcing constants and P6's input paths."""
-    from . import curate, repair, sol_pass, views
+    from . import curate, views
     from .gate import _PYTEST_ENV
     from .library_index import INDEX_VIEW_TOKENS
 
     return curate_brief(
         view_bytes=views.VIEW_BYTES,
-        max_checks=sol_pass.MAX_CHECKS,
-        repair_rounds=repair.REPAIR_ROUNDS,
+        max_checks=None,  # r5 §5 (S6): no count limits under v2.1
+        repair_rounds=None,
         pytest_env=_PYTEST_ENV,
         index_tokens=INDEX_VIEW_TOKENS,
         overlaps_path=curate.OVERLAPS_INPUT,

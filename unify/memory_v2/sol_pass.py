@@ -86,6 +86,9 @@ EXPORT_TOTAL_BYTES = 32 * 1024**2
 
 # check calls per pass (each also counts against PassConfig.max_calls); a reply lists at most this many reasons
 MAX_CHECKS = 5
+# memory v2.1 r5 (S6): a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
+# and check calls end a runaway pass, labelled operational (the lead's step cap, 8 Oct), never a design budget
+STEP_GUARD = 500
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
 # A check starts only with at least this much of the pass deadline left (it runs to completion).
@@ -593,7 +596,7 @@ def _v21_check_description() -> str:
         "Check a manifest against your current /memory files: the gate's static checks (the manifest, the "
         "layout and links, fixtures, covers and safety), then the items' own tests and the recorded inputs the "
         "gate draws. Returns 'ok' or the gate's reasons, with the output of any failing test. "
-        f"Changes nothing; at most {MAX_CHECKS} per pass, each counted as a call."
+        "Changes nothing; each check counts as a call."
     )
 
 
@@ -679,6 +682,9 @@ CODE_MANIFEST_INVALID = "manifest_invalid"
 CODE_OVER_QUOTA = "over_quota"
 CODE_DEADLINE = "deadline"
 CODE_PASS_CAP = "pass_cap"
+CODE_STEP_GUARD = (
+    "operational_step_guard"  # r5 S6: an uncapped v2.1 pass reached STEP_GUARD
+)
 CODE_SOL_ERROR = "sol_error"
 # a Sol call found Sol's declared route not in effect
 CODE_ROUTE_NOT_IN_EFFECT = "route_not_in_effect"
@@ -699,7 +705,8 @@ class PassConfig:
     model: str = "openai/gpt-6-sol"
     effort: str = "low"
     max_calls: int = 40
-    max_usd: Decimal = Decimal("1.00")
+    # None (memory v2.1 r5, S6): no USD cap and no count limits; STEP_GUARD and the deadline end a runaway
+    max_usd: Decimal | None = Decimal("1.00")
     cell_timeout_s: float = 60.0
     deadline_s: float = 900.0
     # UNIFY_MEMORY_V2_SOL_USAGE: end the first message with the library-use table (off: as before)
@@ -2397,8 +2404,14 @@ class SolPass:
         parent: str,
         spend: _Spend,
     ) -> PassOutcome:
-        cap, max_calls = Decimal(self.cfg.max_usd), int(self.cfg.max_calls)
-        reserve = cap / max_calls if max_calls > 0 else cap
+        # r5 S6: v2.1 with max_usd None is uncapped: no USD stop, no unpriced reserve (the run-level guard books those
+        # at worst case), no count limits; STEP_GUARD and the deadline end a runaway, labelled operational
+        uncapped = bool(self.cfg.v21) and self.cfg.max_usd is None
+        cap = None if uncapped else Decimal(self.cfg.max_usd)
+        max_calls = STEP_GUARD if uncapped else int(self.cfg.max_calls)
+        reserve = (
+            Decimal(0) if uncapped else (cap / max_calls if max_calls > 0 else cap)
+        )
         deadline = time.monotonic() + float(self.cfg.deadline_s)
         calls, checks, summary = 0, 0, ""
         # memory v2.1 repair rounds (spec §9.2; repair.py states the budget rule)
@@ -2666,7 +2679,7 @@ class SolPass:
                 def refused_round(check_s: float) -> str | None:
                     return _repair.may_repair(
                         round_no,
-                        cap - charged(),
+                        None if cap is None else cap - charged(),
                         remaining(),
                         max_calls - calls,
                         priced,
@@ -2748,7 +2761,7 @@ class SolPass:
                 not finished
                 and stop is None
                 and calls < max_calls
-                and spend.usd + spend.unknown * reserve < cap
+                and (cap is None or spend.usd + spend.unknown * reserve < cap)
             ):
                 if remaining() <= 0:
                     stop = f"pass deadline of {self.cfg.deadline_s} s reached"
@@ -2823,7 +2836,7 @@ class SolPass:
                             self._finish_manifest_problem(box)
                             if self.cfg.v21
                             and not missing
-                            and phase["g1_refusals"] < FINISH_G1_REFUSALS
+                            and (uncapped or phase["g1_refusals"] < FINISH_G1_REFUSALS)
                             else (None, False)
                         )
                         if g1 is not None:
@@ -2845,7 +2858,7 @@ class SolPass:
                     elif name == "check":
                         if stop is not None:
                             content = f"not run: {stop}"
-                        elif checks >= MAX_CHECKS:
+                        elif not uncapped and checks >= MAX_CHECKS:
                             content = (
                                 f"not run: at most {MAX_CHECKS} check calls per pass"
                             )
@@ -2898,7 +2911,11 @@ class SolPass:
                     ):
                         if readers >= READERS_PER_TURN:
                             content = f"not run: at most {READERS_PER_TURN} reader calls per turn"
-                        elif name != "dismiss" and reads >= int(self.cfg.max_reads):
+                        elif (
+                            not uncapped
+                            and name != "dismiss"
+                            and reads >= int(self.cfg.max_reads)
+                        ):
                             content = "not run: reader budget reached"  # dismiss still runs, so a pass can end
                         else:
                             readers += 1
@@ -2958,9 +2975,13 @@ class SolPass:
                 not finished
                 and stop is None
                 and not errored
-                and (calls >= max_calls or spend.usd + spend.unknown * reserve >= cap)
+                and (
+                    calls >= max_calls
+                    or (cap is not None and spend.usd + spend.unknown * reserve >= cap)
+                )
             ):
-                cause(CODE_PASS_CAP)  # the call cap or the USD cap ended the pass
+                # the call cap or the USD cap ended the pass; uncapped (r5 S6): the operational step guard
+                cause(CODE_STEP_GUARD if uncapped else CODE_PASS_CAP)
             if stop is not None and over_quota is None:
                 notes.append(stop)
             summary = _redact(summary)

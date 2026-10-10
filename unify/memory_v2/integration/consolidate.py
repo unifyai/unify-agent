@@ -98,6 +98,8 @@ from ..signals import Signal, SignalMasked, post_signal
 from ..snapshot import listing, materialise
 from ..sol_pass import (
     CODE_ROUTE_NOT_IN_EFFECT,
+    CODE_STEP_GUARD,
+    STEP_GUARD,
     OTEL_REFUSAL,
     PassConfig,
     PassOutcome,
@@ -159,6 +161,7 @@ REASON_CODES = frozenset(
         "over_quota",
         "deadline",
         "pass_cap",
+        CODE_STEP_GUARD,
         "run_guard",
         "sol_error",
         CODE_ROUTE_NOT_IN_EFFECT,
@@ -1036,9 +1039,11 @@ async def run_due_passes(
     config = PassConfig(
         model=cfg.model,
         effort=effort,
-        max_calls=max_calls,
+        # memory v2.1 r5 (S6): no USD cap and no count limits on a pass; the step guard and the deadline are
+        # operational. The allowance (cap) stays the run guard's booking for the pass (_reserve), never a pass limit.
+        max_calls=STEP_GUARD if cfg.v21 else max_calls,
         deadline_s=supervise.pass_deadline_s if supervise is not None else DEADLINE_S,
-        max_usd=cap,
+        max_usd=None if cfg.v21 else cap,
         show_usage=cfg.show_usage,
         v21=cfg.v21,
         # memory v2.1: the writer's reader calls (UNIFY_MEMORY_V21_MAX_READS); off, PassConfig's default as before
@@ -1112,7 +1117,15 @@ async def run_due_passes(
         if cfg.v21:
             # the E and the read cap this pass ran with (v2's start event is unchanged)
             start["experience_budget"] = int(cfg.experience_budget)
-            start["max_reads"] = int(config.max_reads)
+            start["max_reads"] = int(
+                config.max_reads,
+            )  # recorded; r5 S6: not enforced on an uncapped pass
+            # r5 S6: no pass cap or count limits; the operational step guard; the allowance only as the run guard's
+            # booking for this pass
+            start["cap_usd"] = None
+            start["max_calls"] = None
+            start["operational_step_guard"] = STEP_GUARD
+            start["run_guard_booking_usd"] = _usd(cap)
         if curating:
             # why it runs (spec §10.3); codes and ids only
             start["curate"] = sorted(curate_state.fired.values())
