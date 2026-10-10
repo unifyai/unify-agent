@@ -30,3 +30,17 @@ def test_write_asks_for_a_linked_when_to_use_note_without_rules_about_ids():
         in text
     )
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+
+
+def test_write_points_lifted_functions_to_replay_without_requiring_it():
+    """MAIN 10 Oct: S2 went unused in the stage-1 replay; WRITE now says how to verify a lifted function."""
+    text = pv.write_brief_now()
+    assert (
+        "listing in its manifest entry the code it `replaces` and calling `replay`"
+        in text
+    )
+    assert (
+        "must" not in text.split("is best verified by listing")[1].split("\n")[0]
+    )  # informs, never forces
+    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+    assert "calling `replay`" not in pv.curate_brief_now()

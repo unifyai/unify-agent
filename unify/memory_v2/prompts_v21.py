@@ -201,7 +201,9 @@ _WRITE = (
     "Generalise it: values that vary become parameters, and the function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. Check shapes, not observed '
     "values: a function may restrict a field's values only by declaring the field's type in the item's "
-    "`field_types`, one of: <<semantic_types>>.\n"
+    "`field_types`, one of: <<semantic_types>>. A function lifted from the working model's cells is best verified "
+    "by listing in its manifest entry the code it `replaces` and calling `replay`: the instances that replay "
+    "become its test.\n"
     "3. Use every signal the records hold: a verdict the working model was shown, an error, a retry, an early "
     "end, a change in a returned count or score, or no signal at all. Prefer work from episodes with positive "
     'signals. Work whose episodes show only negative signals becomes a note ("X was tried and failed because Y; '
