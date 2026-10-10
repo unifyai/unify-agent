@@ -61,6 +61,7 @@ def test_tools_present_only_with_v21():
         "read_episode",
         "dismiss",
         "fixture",
+        "replay",
     }
     desc = next(
         t for t in sol_tools(v21=True) if t["function"]["name"] == "read_episode"

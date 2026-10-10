@@ -428,6 +428,24 @@ _V21_TOOL_TEMPLATES = [
     {
         "type": "function",
         "function": {
+            "name": "replay",
+            "description": (
+                "Verify a function item by replaying the recorded code it replaces. In the item's manifest entry, "
+                'list "replaces": [{"episode", "cell", "lines": [first, last], "call": "<one statement calling the '
+                'function, e.g. result = name(args)>"}]. Each instance is replayed with those lines replaced by the '
+                "call; it is verified when everything the original code left behind is the same. The verified "
+                "instances become a test file under memory/<package>/tests/, which you add to the item's tests."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"item": {"type": "string"}},
+                "required": ["item"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fixture",
             "description": (
                 "Copy recorded bytes of a batch episode into a test fixture under memory/<package>/tests/data/. "
@@ -1945,6 +1963,67 @@ class SolPass:
         write_files(box, files)
         return files
 
+    def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
+        """r5 S2: verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified
+        instances as the item's harness-written test. Never raises: problems are the reply.
+        """
+        from . import replay_verify as _rv
+
+        item = str(args.get("item", ""))
+        found, manifest, problem = _read_manifest(box)
+        if not found or problem is not None or not isinstance(manifest, dict):
+            return f"not run: {problem or 'no manifest'}"
+        entry = next(
+            (
+                i
+                for i in manifest.get("items") or []
+                if isinstance(i, dict) and i.get("item") == item
+            ),
+            None,
+        )
+        if entry is None or not entry.get("replaces"):
+            return f"not run: the manifest lists no item {item!r} with replaces"
+        trees_dir = Path(self.cfg.s0_cache) / "trees" if self.cfg.s0_cache else None
+        trees = (
+            {p.name: p for p in trees_dir.iterdir() if p.is_dir()}
+            if trees_dir is not None and trees_dir.is_dir()
+            else None
+        )
+        try:
+            got = _rv.verify(
+                self.load,
+                item,
+                entry["replaces"],
+                box,
+                trees=trees,
+                scratch=tmp,
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - a replay failure is the reply, never a crash
+            return f"replay error: {type(exc).__name__}"
+        cases = [
+            {**g["case"], "at": f"{g.get('episode')}:{g.get('cell')}:{g.get('lines')}"}
+            for g in got
+            if g.get("verdict") == "verified"
+        ]
+        lines = [
+            f"- {g.get('episode')} cell {g.get('cell')} lines {g.get('lines')}: {g['verdict']}"
+            for g in got
+        ]
+        if not cases:
+            return "\n".join(lines + ["No instance verified: no test written."])
+        rel, src = _rv.test_source(item, cases)
+        dest = box / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(src)
+        return "\n".join(
+            lines
+            + [
+                f"Test written: {rel} ({len(cases)} case(s)); add it to the item's tests.",
+            ],
+        )
+
     async def _staging_v21(
         self,
         req,
@@ -3065,6 +3144,15 @@ class SolPass:
                                 notes.append(detail)
                             elif self.cfg.v21 and content == "ok":
                                 content = check_tests(args.get("manifest"))
+                    elif cov is not None and name == "replay":
+                        calls += 1  # a writer action, against the step guard; it earns no coverage
+                        writing()
+                        content = await asyncio.to_thread(
+                            self._replay_call,
+                            args,
+                            box,
+                            Path(tmp),
+                        )
                     elif cov is not None and name == "fixture":
                         calls += 1  # a writer action, against max_calls; it earns no coverage
                         writing()

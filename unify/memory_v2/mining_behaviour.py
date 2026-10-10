@@ -502,9 +502,92 @@ def child_cross(job: dict) -> dict:
     }
 
 
+def _run_cells(
+    cells: list[dict],
+    snap: tuple[int, int] | None,
+    names: list[str],
+    prelude: list[str],
+) -> dict:
+    """Replay *cells* in one namespace; at line *snap* = (cell index, line) record the names then bound and the
+    values of *names*. The namespace's plain values after the last cell, tagged (S2's verification).
+    """
+    ns: dict = {"__name__": "__main__", "__builtins__": builtins}
+    for code in prelude:
+        err = _run_code(compile(code, "<prelude>", "exec"), ns, RUN_TIMEOUT_S)
+        if err:
+            return {"error": f"prelude {err}"}
+    seen: dict = {}
+    flags = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+    for cell in cells:
+        fname = f"<cell-{cell['index']}>"
+
+        def local(frame, event, arg, _idx=cell["index"]):
+            if (
+                snap
+                and not seen
+                and event == "line"
+                and (_idx, frame.f_lineno) == tuple(snap)
+            ):
+                scope = {**frame.f_globals, **frame.f_locals}
+                seen["bound"] = sorted(k for k in scope if not k.startswith("__"))
+                vals = {}
+                for n in names:
+                    if n in scope:
+                        try:
+                            vals[n] = enc(scope[n])
+                        except (NotPlain, RecursionError) as exc:
+                            seen["error"] = str(exc)
+                seen["inputs"] = vals
+            return local
+
+        def tracer(frame, event, arg, _f=fname, _local=local):
+            return _local if frame.f_code.co_filename == _f else None
+
+        try:
+            code = compile(cell["code"], fname, "exec", flags=flags)
+        except (SyntaxError, ValueError):
+            return {"error": "SyntaxError"}
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            sys.settrace(tracer)
+            try:
+                err = _run_code(code, ns, CELL_TIMEOUT_S)
+            finally:
+                sys.settrace(None)
+        if err:
+            return {"error": err}
+    after = {}
+    for k, v in ns.items():
+        if k.startswith("__"):
+            continue
+        try:
+            after[k] = enc(v)
+        except (NotPlain, RecursionError):
+            continue
+    return {"after": after, **seen}
+
+
+def child_verify(job: dict) -> dict:
+    """S2 (r5 §4): the original cells twice (determinism), then the rewritten last cell calling the function."""
+    signal.signal(signal.SIGALRM, _on_alarm)
+    if job.get("cwd"):
+        os.chdir(job["cwd"])
+    if job.get("path"):
+        sys.path.insert(0, job["path"])
+    snap = (job["cell"], job["line"])
+    first = _run_cells(job["cells"], snap, job["names"], [])
+    second = _run_cells(job["cells"], snap, job["names"], [])
+    rewritten = [*job["cells"][:-1], {**job["cells"][-1], "code": job["rewritten"]}]
+    third = _run_cells(rewritten, snap, job["names"], job.get("imports", []))
+    return {"first": first, "second": second, "third": third}
+
+
 def child_main() -> int:
     job = json.loads(sys.stdin.read())
-    out = child_replay(job) if job["mode"] == "replay" else child_cross(job)
+    modes = {"replay": child_replay, "cross": child_cross, "verify": child_verify}
+    out = modes[job["mode"]](job)
     sys.stdout.write(json.dumps(out))
     return 0
 

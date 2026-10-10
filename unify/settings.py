@@ -393,6 +393,9 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
     UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
+    # Memory v2.1 r5 (RUNTIME B1): a v2.1 pass with a Sol route runs with no pass cap, bounded in flight only by the
+    # route's ceilings; point this only at a proxy with a spend ceiling (the runner's Sol lane, the replay proxy),
+    # never at an uncapped relay.
     UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
     UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
     UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
