@@ -10,8 +10,10 @@ from cache, plus one fixed instruction. The process writes what the reply stages
     standard library only.
   - The request reaches it on stdin, a fresh pipe, never argv, the environment or a file.
   - Its environment is PATH and PYTHONDONTWRITEBYTECODE, nothing else.
-  - It calls the actor's own proxy route (``UNILLM_LLM_GATEWAY_URL`` with its placeholder key). Without a local
-    proxy and a placeholder key there is no fork, so it never reaches a provider directly and never holds a key.
+  - It calls the key proxy's fork lane (``/fork/v1``, fork-lane design; RUNTIME C3-C5): its base URL and token come
+    from the descriptor the runner hands this controller (``switch.settle_fork_route_env``), and the token reaches
+    the worker only inside its stdin request. Without the lane there is no fork (``refused: no fork lane``): never the
+    actor's route, never a provider directly, never a provider key.
 * **F2, mounts:** a bubblewrap box with a read-only root (``/usr``) and a private ``/tmp``. Home, the state dir and
   the library are not mounted. The worker file is read-only at ``/s``. The only writable bind is the episode's
   fresh staging dir.
@@ -32,7 +34,6 @@ There is no token cap; the run-level proxy guards bound the money.
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
 import shutil
@@ -40,7 +41,6 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
 
 INSTRUCTION = (
     "Your work on this request is finished and your reply has been sent; nothing you write now changes it. "
@@ -56,8 +56,6 @@ BOX_WORKER = "/s/fork_worker.py"
 #: The live audit's mark for the fork worker in a process's command line (runner token audits).
 FORK_MARK = BOX_WORKER
 STAGING_IN_BOX = "/staging"
-#: The actor's proxy placeholders (continual_arc_baselines.proxy.PLACEHOLDERS): the only keys the fork may send.
-PLACEHOLDERS = ("arc-proxy", "ARC_LLM_API_KEY")
 #: Operational guard on the CLI's wait for the fork (run safety, reported; not a design limit).
 WAIT_GUARD_S = 1800.0
 WRITE_GUARD_S = 120.0
@@ -67,23 +65,21 @@ def staging_dir(paths: Any, eid: str) -> Path:
     return Path(paths.state_dir) / "memory-staging" / eid
 
 
-def route(environ: dict) -> tuple[tuple[str, str] | None, str | None]:
-    """The actor's proxy route ``(chat completions URL, placeholder key)``, or why the fork has none."""
-    base = (environ.get("UNILLM_LLM_GATEWAY_URL") or "").strip().rstrip("/")
-    key = (environ.get("UNILLM_LLM_GATEWAY_KEY") or "").strip()
-    if not base or not key:
-        return None, "no proxy route"
-    u = urlparse(base)
-    host = (u.hostname or "").lower()
-    try:
-        local = host == "localhost" or ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        local = False
-    if u.scheme not in ("http", "https") or not local:
-        return None, "the gateway is not a local proxy"
-    if key not in PLACEHOLDERS:
-        return None, "the gateway key is not a proxy placeholder"
-    return (base + "/chat/completions", key), None
+def route() -> tuple[tuple[str, str] | None, str | None]:
+    """The fork lane's route ``(chat completions URL, token)``, or why the fork has none (RUNTIME C5): only the key
+    proxy's own fork lane, read once from its descriptor (``switch.settle_fork_route_env``); never the actor's route,
+    never a provider. With the fork on and no lane, the episode records ``refused: no fork lane``.
+    """
+    from . import switch
+
+    switch.settle_fork_route_env(os.environ, _settings())
+    return switch.fork_lane_route()
+
+
+def _settings() -> Any:
+    from unify.settings import SETTINGS
+
+    return SETTINGS
 
 
 def _model(client: Any) -> str | None:
@@ -195,7 +191,6 @@ def start(
     eid: str,
     settings: Any,
     *,
-    environ: dict | None = None,
     popen: Callable[..., Any] = subprocess.Popen,
     progress: Callable[[str], None] = lambda _m: None,
 ) -> Fork | None:
@@ -211,7 +206,7 @@ def start(
         progress(f"memory v2.1: fork not started: staging dir: {type(exc).__name__}")
         return None
     try:
-        r, why = route(dict(os.environ if environ is None else environ))
+        r, why = route()
         doc = None
         if r is not None:
             doc, why = request_doc(handle, eid, *r)

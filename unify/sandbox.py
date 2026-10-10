@@ -306,12 +306,14 @@ _SECRET_ENV_WORDS = frozenset({"PAT", "AUTH", "PASSWD", "PASS"})
 _URL_CREDENTIALS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s@:]*:[^/\s@]*@")
 # Harness-only by exact name, whatever the markers say: memory v2's route for
 # Sol's model calls (its URL names Sol's proxy listener; the token is its key;
-# the descriptor number is harmless but stays with the controller).
+# the descriptor number is harmless but stays with the controller), and the fork lane's route likewise (C2).
 HARNESS_ONLY_ENV = frozenset(
     {
         "UNIFY_MEMORY_V2_SOL_BASE_URL",
         "UNIFY_MEMORY_V2_SOL_TOKEN",
         "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+        "UNIFY_MEMORY_V21_FORK_BASE_URL",
+        "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
     },
 )
 

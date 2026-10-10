@@ -9,6 +9,7 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,10 +26,43 @@ from tests.memory_v2.integration.test_request import (  # noqa: F401
     mv2,
 )
 
-ROUTE = {
-    "UNILLM_LLM_GATEWAY_URL": "http://127.0.0.1:18080/v1",
-    "UNILLM_LLM_GATEWAY_KEY": "arc-proxy",
-}
+BASE = "http://127.0.0.1:18080/fork/v1"
+TOKEN = "fork-token-0123456789abcdef"
+
+
+def _fresh_lane_state(monkeypatch):
+    from unify.memory_v2.integration import switch as sw
+
+    for name, value in (
+        ("_FORK_TOKEN", None),
+        ("_FORK_BASE", ""),
+        ("_FORK_TRIED", False),
+        ("_FORK_REFUSAL", None),
+    ):
+        monkeypatch.setattr(sw, name, value)
+    return sw
+
+
+def _token_fd(text=TOKEN + "\n", inheritable=True):
+    r, w = os.pipe()
+    os.write(w, text.encode())
+    os.close(w)
+    os.set_inheritable(r, inheritable)
+    return r
+
+
+@pytest.fixture
+def lane(monkeypatch):
+    """The fork lane as the controller gets it (RUNTIME C3): the base URL and an inherited pipe with the token,
+    settled once; both names leave the environment."""
+    sw = _fresh_lane_state(monkeypatch)
+    fd = _token_fd()
+    env = {sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: str(fd)}
+    assert sw.settle_fork_route_env(env, SimpleNamespace(**env)) is None
+    assert env == {}
+    return TOKEN
+
+
 ON = SimpleNamespace(
     UNIFY_MEMORY_V21="on",
     UNIFY_MEMORY_V21_FORK="on",
@@ -125,32 +159,80 @@ def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
         switch.parse_v21_fork("maybe")
 
 
-# --- the route (F5/L5: the actor's own proxy, never a provider) -----------------------------------------------
+# --- the route (fork-lane design; RUNTIME C3, C5): the key proxy's fork lane only ------------------------------
+
+
+def test_without_the_fork_lane_there_is_no_fork(monkeypatch):
+    _fresh_lane_state(monkeypatch)
+    assert fork_mod.route() == (None, "no fork lane")
+
+
+def test_the_route_is_the_fork_lane_with_its_token(lane):
+    assert fork_mod.route() == ((BASE + "/chat/completions", TOKEN), None)
+
+
+def test_the_token_descriptor_is_read_once_and_closed(monkeypatch):
+    sw = _fresh_lane_state(monkeypatch)
+    fd = _token_fd()
+    env = {sw.V21_FORK_BASE_URL: BASE, "unify_memory_v21_fork_token_fd": str(fd)}
+    settings = SimpleNamespace(
+        **{sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: str(fd)},
+    )
+    assert sw.settle_fork_route_env(env, settings) is None
+    assert env == {}  # every case variant leaves the environment
+    with pytest.raises(OSError):
+        os.fstat(fd)  # closed: no later child inherits it
+    assert sw.settle_fork_route_env({}, settings) is None and sw.fork_lane_route()[
+        0
+    ] == (BASE + "/chat/completions", TOKEN)
 
 
 @pytest.mark.parametrize(
-    "env, why",
-    [
-        ({}, "no proxy route"),
-        (
-            {**ROUTE, "UNILLM_LLM_GATEWAY_URL": "https://openrouter.ai/api/v1"},
-            "the gateway is not a local proxy",
-        ),
-        (
-            {**ROUTE, "UNILLM_LLM_GATEWAY_KEY": "sk-or-v1-abc"},
-            "the gateway key is not a proxy placeholder",
-        ),
-    ],
+    "kind",
+    ["half_set", "not_inherited", "bad_base"],
 )
-def test_without_the_actors_proxy_route_there_is_no_fork(env, why):
-    assert fork_mod.route(env) == (None, why)
+def test_a_bad_fork_route_is_refused_never_used(monkeypatch, kind):
+    sw = _fresh_lane_state(monkeypatch)
+    if kind == "half_set":
+        settings = SimpleNamespace(
+            **{sw.V21_FORK_BASE_URL: BASE, sw.V21_FORK_TOKEN_FD: ""},
+        )
+    elif kind == "not_inherited":
+        settings = SimpleNamespace(
+            **{
+                sw.V21_FORK_BASE_URL: BASE,
+                sw.V21_FORK_TOKEN_FD: str(_token_fd(inheritable=False)),
+            },
+        )
+    else:
+        settings = SimpleNamespace(
+            **{
+                sw.V21_FORK_BASE_URL: "https://openrouter.ai/api/v1",
+                sw.V21_FORK_TOKEN_FD: str(_token_fd()),
+            },
+        )
+    why = sw.settle_fork_route_env({}, settings)
+    assert why and TOKEN not in why
+    assert sw.fork_lane_route() == (None, why)
 
 
-def test_the_route_is_the_actors_gateway_with_its_placeholder():
-    assert fork_mod.route(ROUTE) == (
-        ("http://127.0.0.1:18080/v1/chat/completions", "arc-proxy"),
-        None,
-    )
+def test_the_fork_route_names_never_reach_a_box():
+    """C2: both names are harness-only for the actor's sandbox and for memory's own boxes."""
+    from unify import sandbox
+    from unify.memory_v2 import sandbox_run
+
+    for name in ("UNIFY_MEMORY_V21_FORK_BASE_URL", "UNIFY_MEMORY_V21_FORK_TOKEN_FD"):
+        assert name in sandbox.HARNESS_ONLY_ENV and name in sandbox_run.HARNESS_ONLY_ENV
+        assert sandbox._is_secret_env(name, "x")
+
+
+def test_c5_fork_on_without_a_lane_is_recorded_refused(mv2, monkeypatch):  # noqa: F811
+    run, eid, src, seen, made, popen = _started(mv2, monkeypatch, [])
+    _fresh_lane_state(monkeypatch)
+    assert fork_mod.start(mv2.paths, SimpleNamespace(), eid, ON, popen=popen) is None
+    assert made == []
+    doc = json.loads((fork_mod.staging_dir(mv2.paths, eid) / "fork.json").read_text())
+    assert doc["status"] == "refused: no fork lane"
 
 
 # --- the worker: what it stages, from either reply shape, executing nothing ------------------------------------
@@ -335,6 +417,7 @@ def _home_bytes(home: Path) -> dict:
 def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
     mv2,
     monkeypatch,
+    lane,
 ):  # noqa: F811
     run, eid, src, seen, made, popen = _started(
         mv2,
@@ -346,7 +429,6 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
         SimpleNamespace(),
         eid,
         ON,
-        environ=ROUTE,
         popen=popen,
     )
     fork_mod.finish(f, ON)
@@ -358,9 +440,12 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
     )
     assert "pass_fds" not in p.kw
     blob = " ".join(p.argv)
-    assert "arc-proxy" not in blob and "18080" not in blob and "Double 21" not in blob
+    assert TOKEN not in blob and "18080" not in blob and "Double 21" not in blob
     url, headers, body = seen[0]
-    assert url == "http://127.0.0.1:18080/v1/chat/completions"
+    assert url == BASE + "/chat/completions"
+    assert (
+        headers["Authorization"] == "Bearer " + TOKEN
+    )  # C4: the token reaches the worker on its stdin only
     assert (
         headers["x-unify-session"] == f"fork.{eid}"
         and headers["x-unify-call-kind"] == "actor_fork"
@@ -382,6 +467,7 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
 def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
     mv2,
     monkeypatch,
+    lane,
 ):  # noqa: F811
     run, eid, src, seen, made, popen = _started(
         mv2,
@@ -400,7 +486,6 @@ def test_f3_nothing_flows_back_to_the_record_the_transcript_or_the_client(
         SimpleNamespace(),
         eid,
         ON,
-        environ=ROUTE,
         popen=popen,
     )
     fork_mod.finish(f, ON)
@@ -453,7 +538,6 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
             None,
             "e",
             off,
-            environ=ROUTE,
             popen=lambda *a, **k: spawned.append(a),
         )
         is None
@@ -464,6 +548,7 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
 def test_a_session_that_cannot_be_forked_is_recorded_never_forced(
     mv2,
     monkeypatch,
+    lane,
 ):  # noqa: F811
     run, eid, src, seen, made, popen = _started(mv2, monkeypatch, [])
     import unify.actor.code_act_actor as caa
@@ -479,7 +564,6 @@ def test_a_session_that_cannot_be_forked_is_recorded_never_forced(
             SimpleNamespace(),
             eid,
             ON,
-            environ=ROUTE,
             popen=popen,
         )
         is None

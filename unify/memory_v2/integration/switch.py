@@ -371,9 +371,15 @@ _FD_TRIED = False
 _FD_HELD = ""
 
 
-def _read_token_fd(fd: int) -> str:
-    """Sol's token from inherited descriptor *fd*, which is then closed; refusals name the rule, never a value."""
-    where = f"{SOL_TOKEN_FD} names descriptor {fd}, which"
+def _read_token_fd(
+    fd: int,
+    *,
+    fd_name: str = SOL_TOKEN_FD,
+    secret_name: str = SOL_TOKEN,
+) -> str:
+    """A route token (Sol's, or the fork lane's with its own names) from inherited descriptor *fd*, which is then
+    closed; refusals name the rule, never a value."""
+    where = f"{fd_name} names descriptor {fd}, which"
     try:
         mode = os.fstat(fd).st_mode
         inherited = os.get_inheritable(fd)
@@ -406,14 +412,14 @@ def _read_token_fd(fd: int) -> str:
     except OSError:
         raise SolRouteRefused(f"{where} could not be read") from None
     finally:
-        register_secret(SOL_TOKEN, data.decode("latin-1"))
+        register_secret(secret_name, data.decode("latin-1"))
         try:
             os.close(fd)  # whatever happened: no later child inherits it
         except OSError:
             pass
     text = data.decode("latin-1")
     text = text[:-1] if text.endswith("\n") else text
-    register_secret(SOL_TOKEN, text)
+    register_secret(secret_name, text)
     if not text:
         raise SolRouteRefused(f"{where} is empty")
     if not _BEARER_TOKEN.fullmatch(text):
@@ -729,6 +735,93 @@ def v21_fork(settings: Any) -> bool:
     return parse_v21_fork(getattr(settings, V21_FORK, "") or "") == "on"
 
 
+# --- the fork lane's route (docs/design/fork-lane-design.md; RUNTIME C2, C3, C5) ----------------------------------
+#: The key proxy's fork route: its base URL and the descriptor carrying its token, handed by the runner's learner to
+#: this controller's spawn alone. Read once (:func:`settle_fork_route_env`), then both names leave the environment;
+#: neither ever reaches an actor box (``HARNESS_ONLY_ENV``); the token lives in this process and goes to the fork worker
+#: on its stdin only.
+V21_FORK_BASE_URL = "UNIFY_MEMORY_V21_FORK_BASE_URL"
+V21_FORK_TOKEN_FD = "UNIFY_MEMORY_V21_FORK_TOKEN_FD"
+V21_FORK_TOKEN = "UNIFY_MEMORY_V21_FORK_TOKEN"  # the redaction name of the token's value (never a setting)
+_FORK_BASE_FORM = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})/fork/v1")
+_FORK_TOKEN: str | None = None
+_FORK_BASE: str = ""
+_FORK_TRIED = False
+_FORK_REFUSAL: str | None = None
+
+
+def parse_v21_fork_base_url(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_FORK_BASE_URL``: empty, or ``http://127.0.0.1:<port>/fork/v1`` exactly."""
+    s = _stripped(v)
+    if not s:
+        return ""
+    m = _FORK_BASE_FORM.fullmatch(s)
+    if m is None or not 1 <= int(m.group(1)) <= 65535:
+        raise ValueError(
+            f"{V21_FORK_BASE_URL} must be http://127.0.0.1:<port>/fork/v1 or empty",
+        )
+    return s
+
+
+def parse_v21_fork_token_fd(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_FORK_TOKEN_FD``: empty, or a descriptor number above 2."""
+    s = _stripped(v)
+    if not s:
+        return ""
+    if not s.isdigit() or int(s) <= 2:
+        raise ValueError(
+            f"{V21_FORK_TOKEN_FD} must be a descriptor number above 2 or empty",
+        )
+    return s
+
+
+def settle_fork_route_env(
+    environ: MutableMapping[str, str],
+    settings: Any,
+) -> str | None:
+    """C3: the first call with ``UNIFY_MEMORY_V21_FORK_TOKEN_FD`` set reads the fork token from that inherited
+    descriptor once (:func:`_read_token_fd`: inherited, a pipe or file, size-capped, timed, closed; registered for
+    redaction by value) and keeps it in this process. Every call removes every case variant of both route names from
+    *environ*, so no child spawned afterwards sees them. The base URL and the descriptor are set together or not at
+    all. Returns why the fork lane is refused (sticky), or None."""
+    global _FORK_TOKEN, _FORK_BASE, _FORK_TRIED, _FORK_REFUSAL
+    try:
+        base = parse_v21_fork_base_url(getattr(settings, V21_FORK_BASE_URL, ""))
+        fd = parse_v21_fork_token_fd(getattr(settings, V21_FORK_TOKEN_FD, ""))
+    except ValueError as exc:
+        base, fd = "", ""
+        _FORK_REFUSAL = _FORK_REFUSAL or str(exc)
+    if fd and not _FORK_TRIED:
+        _FORK_TRIED = True
+        try:
+            _FORK_TOKEN = _read_token_fd(
+                int(fd),
+                fd_name=V21_FORK_TOKEN_FD,
+                secret_name=V21_FORK_TOKEN,
+            )
+        except SolRouteRefused as exc:
+            _FORK_REFUSAL = _FORK_REFUSAL or str(exc)
+    if base:
+        _FORK_BASE = base
+    if bool(base) != bool(fd) and _FORK_REFUSAL is None:
+        _FORK_REFUSAL = f"{V21_FORK_BASE_URL} and {V21_FORK_TOKEN_FD} are set together or not at all"
+    for name in list(environ):
+        if name.upper() in (V21_FORK_BASE_URL, V21_FORK_TOKEN_FD):
+            environ.pop(name, None)
+    return _FORK_REFUSAL
+
+
+def fork_lane_route() -> tuple[tuple[str, str] | None, str | None]:
+    """C5: ``((chat completions URL, token), None)`` on the key proxy's fork lane, or ``(None, why)``: a refusal from
+    :func:`settle_fork_route_env`, or ``no fork lane``. Never any other route (no fallback to the actor's).
+    """
+    if _FORK_REFUSAL is not None:
+        return None, _FORK_REFUSAL
+    if not _FORK_BASE or not _FORK_TOKEN:
+        return None, "no fork lane"
+    return (_FORK_BASE + "/chat/completions", _FORK_TOKEN), None
+
+
 def parse_v21_analysts(v: Any) -> str:
     """``UNIFY_MEMORY_V21_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
     s = str(v or "").strip().lower() or "off"
@@ -889,6 +982,8 @@ PARSERS = {
     V21_MAX_READS: parse_v21_max_reads,
     V21_WAIT_SLOT: parse_v21_wait_slot,
     V21_FORK: parse_v21_fork,
+    V21_FORK_BASE_URL: parse_v21_fork_base_url,
+    V21_FORK_TOKEN_FD: parse_v21_fork_token_fd,
     V21_ANALYSTS: parse_v21_analysts,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
