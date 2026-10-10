@@ -1063,7 +1063,8 @@ async def run_due_passes(
             if cfg.v21
             else {}
         ),
-        show_usage=cfg.show_usage,
+        show_usage=cfg.show_usage
+        or cfg.v21,  # r5 S3: v2.1 writers always see measured library use
         v21=cfg.v21,
         # memory v2.1: the writer's reader calls (UNIFY_MEMORY_V21_MAX_READS); off, PassConfig's default as before
         **({"max_reads": v21_max_reads(settings)} if cfg.v21 else {}),

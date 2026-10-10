@@ -1726,6 +1726,9 @@ class SolPass:
         self._s0_seen: set[str] = set()
         self._analyst_rows: list[dict] = []
         self._s0_summary: dict | None = None
+        self._inputs_dir: Path | None = (
+            None  # the pass's /inputs on the host, once staged
+        )
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -1817,6 +1820,21 @@ class SolPass:
         from .usage import usage_table
 
         try:
+            if self.cfg.v21:
+                # r5 S3: v2.1's function items; the whole table under /inputs/usage.md, a marked head here
+                from .layout import discover
+                from .usage import MAX_TABLE_ROWS
+
+                ids = [f.item_id for f in discover(Path(tree)).functions]
+                full = usage_table(self.ev, list(req.episodes), ids, max_rows=None)
+                if self._inputs_dir is not None:
+                    (self._inputs_dir / "usage.md").write_text(full)
+                if len(ids) <= MAX_TABLE_ROWS:
+                    return full
+                return (
+                    usage_table(self.ev, list(req.episodes), ids)
+                    + "(the whole table: /inputs/usage.md)\n"
+                )
             ids = [
                 it.item_id
                 for it in memory_items(tree).items
@@ -2826,6 +2844,7 @@ class SolPass:
                     + "\n\nFunctions on this pass's channels:\n"
                     + (tended or "(none yet)")
                 )
+            self._inputs_dir = Path(inputs)
             if self.cfg.show_usage:  # UNIFY_MEMORY_V2_SOL_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
             if self.cfg.v21 and req.kind != "curate":

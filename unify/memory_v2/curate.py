@@ -216,6 +216,21 @@ def _safe(rel: str) -> bool:
     )
 
 
+def same_shape(bodies: dict[str, str]) -> list[list[str]]:
+    """r5 S3: groups of library functions whose definitions are the same after renaming names and lifting
+    literals (:mod:`.mining`'s tier (a)); each group sorted, groups sorted."""
+    from .mining import _parse, keep_names, normalise
+
+    by_key: dict[str, list[str]] = {}
+    for item, body in sorted(bodies.items()):
+        tree = _parse(body)
+        if tree is None or not tree.body:
+            continue
+        key = normalise(tree.body[0], keep_names([tree]) | {item.rsplit(":", 1)[-1]})[0]
+        by_key.setdefault(key, []).append(item)
+    return sorted(group for group in by_key.values() if len(group) > 1)
+
+
 def stage_inputs(inputs: Path, state: CurateState) -> list[str]:
     """Write CURATE's inputs under ``<inputs>/curate/`` (spec §12.3) and return their virtual paths, sorted.
 
@@ -230,6 +245,8 @@ def stage_inputs(inputs: Path, state: CurateState) -> list[str]:
         root / "trigger.json",
         {"commit": state.commit, "reasons": sorted(state.fired.values())},
     )
+    # r5 S3: functions with the same shape, for merging (by structure; the use counts are in use.json)
+    _write_json(root / "same_shape.json", {"groups": same_shape(state.bodies)})
     _write_json(root / "overlap.json", state.overlap)
     _write_json(root / "suspects.json", state.suspects)
     _write_json(root / "use.json", state.use)

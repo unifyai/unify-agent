@@ -137,6 +137,7 @@ def usage_table(
     evidence: EvidenceStore,
     eids: Iterable[str],
     items: Iterable[str],
+    max_rows: int | None = MAX_TABLE_ROWS,
 ) -> str:
     """The use of each item in *items* over the requests *eids* (a pass's batch), one line per item.
 
@@ -163,7 +164,8 @@ def usage_table(
         "item | requests at pin | shown it | shown its channel | requests calling | calls | "
         "refusals | then accepted | other errors | dynamic calls in channel | last call",
     ]
-    for item in ids[:MAX_TABLE_ROWS]:
+    shown = ids if max_rows is None else ids[:max_rows]
+    for item in shown:
         u = use.get(item) or {}
         seq = evidence.last_call_seq(item)
         last = "never" if seq is None else f"{latest - seq} requests ago"
@@ -180,8 +182,8 @@ def usage_table(
             f"{u.get('refused_accepted', 0)}{more} | "
             f"{errors} | {u.get('unknown_calls', 0)} | {last}",
         )
-    if len(ids) > MAX_TABLE_ROWS:
-        lines.append(f"(+{len(ids) - MAX_TABLE_ROWS} more items not shown)")
+    if len(ids) > len(shown):
+        lines.append(f"(+{len(ids) - len(shown)} more items not shown)")
     if not ids:
         lines.append("(the library has no functions yet)")
     flags = evidence.request_flags(eids) if eids else {}

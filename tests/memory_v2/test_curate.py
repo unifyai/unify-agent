@@ -120,6 +120,7 @@ def test_stage_inputs_writes_every_input_and_the_rollback_files(tmp_path):
         "/inputs/curate/rollback/0/memory/a/b.py",
         "/inputs/curate/rollback/0/memory/a/tests/test_b.py",
         "/inputs/curate/rollback/index.json",
+        "/inputs/curate/same_shape.json",
         "/inputs/curate/suspects.json",
         "/inputs/curate/trigger.json",
         "/inputs/curate/use.json",
