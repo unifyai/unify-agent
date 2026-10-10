@@ -393,7 +393,9 @@ _V21_TOOL_TEMPLATES = [
             "description": (
                 "Read one part of a batch episode: 'request', 'observation:<i>', 'cell:<i>', 'action:<i>' or "
                 "'diff'. Reading every part the batch map lists as required covers the episode. parts=[...] reads up "
-                "to 8 parts on one page: 8000 bytes of content in all, each part marked and credited for what is shown."
+                "to 8 parts on one page: 8000 bytes of content in all, each part marked and credited for what is shown. "
+                "'overview' shows the episode's end first (its last working cell, last action and last observation) "
+                "and then every step, newest first, with the part name that reads it."
             ),
             "parameters": {
                 "type": "object",
@@ -2162,6 +2164,26 @@ class SolPass:
             eid = str(args.get("episode", ""))
             if eid not in eps:
                 return f"refused: {eid!r} is not in this batch"[:300]
+            if "parts" not in args and str(args.get("part", "")) == "overview":
+                # r5 (r4 §5): end first, then every step's handle; credits the end parts only when all of it shows
+                text_, end_parts = _bm.solution_first(eps[eid], self._shared)
+                data = text_.encode()
+                text, a, b = _views.view_range(data, offset)
+                if offset == 0 and b >= len(data):
+                    for part in end_parts:
+                        whole = len(
+                            _bm.part_text(eps[eid], part, self._shared).encode(),
+                        )
+                        canon = _bm.canonical_part(eps[eid], part)
+                        cov.credit(eid, canon, 0, whole)
+                        _shown_complete(
+                            self._shown_full,
+                            cov,
+                            eid,
+                            canon,
+                            _bm.part_text(eps[eid], part, self._shared).encode(),
+                        )
+                return text
             if "parts" not in args:
                 part = str(args.get("part", ""))
                 data = _bm.part_text(eps[eid], part, self._shared).encode()

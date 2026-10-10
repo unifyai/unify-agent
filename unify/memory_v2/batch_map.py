@@ -307,6 +307,75 @@ def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> s
     return json.dumps(obj, sort_keys=True, default=str)
 
 
+_GIST = 100
+_TRACEBACK = "Traceback (most recent call last)"
+
+
+def _gist_cell(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError):
+        tree = None
+    defs = [d.name for d in _defs(tree)] if tree is not None else []
+    calls = (
+        [n for n, _ in _called_names(code).most_common(4)] if tree is not None else []
+    )
+    first = next((ln.strip() for ln in code.splitlines() if ln.strip()), "")
+    bits = ([f"defines {', '.join(defs)}"] if defs else []) + (
+        [f"calls {', '.join(calls)}"] if calls else []
+    )
+    return ("; ".join(bits) + " | " if bits else "") + first[:_GIST]
+
+
+def solution_first(
+    ep: Episode,
+    shared: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
+    """r5 (r4 §5): *ep* end first, then an index of every step, newest first; and the parts shown in full.
+
+    The end: the last cell that ran without an error, the last action and the last observation, each verbatim as
+    its own part (``read_episode`` returns the same bytes). The index: one line per cell, action and observation,
+    newest first, with its part name (the handle to read it), its size, whether it errored, and a deterministic
+    gist (a cell's definitions, calls and first line; an action's channel, method and status; an observation's
+    first line). Nothing is summarised by a model and nothing is left out: every step is listed and readable.
+    """
+    ok = [c for c in ep.cells if c.error is None and _TRACEBACK not in (c.output or "")]
+    obs = _observations(ep)
+    end_parts = []
+    if ok:
+        end_parts.append(f"cell:{ok[-1].index}")
+    if ep.actions:
+        end_parts.append(f"action:{len(ep.actions) - 1}")
+    if obs:
+        end_parts.append(f"observation:{len(obs) - 1}")
+    out = ["== end =="]
+    for part in end_parts:
+        out.append(f"-- {part} --\n{part_text(ep, part, shared)}")
+    if not end_parts:
+        out.append("(no cell, action or observation was recorded)")
+    out.append("\n== steps, newest first ==")
+    for c in reversed(ep.cells):
+        size = len(part_text(ep, f"cell:{c.index}").encode())
+        err = (
+            "error" if (c.error is not None or _TRACEBACK in (c.output or "")) else "ok"
+        )
+        out.append(f"cell:{c.index}  {size}B  {err}  {_gist_cell(c.code or '')}")
+    for i in range(len(ep.actions) - 1, -1, -1):
+        a = ep.actions[i]
+        size = len(part_text(ep, f"action:{i}").encode())
+        err = "error" if (a.status == "error" or a.error) else a.status
+        out.append(
+            f"action:{i}  {size}B  {err}  {a.kind} {a.channel}.{a.method} (cell {a.cell})",
+        )
+    for i in range(len(obs) - 1, -1, -1):
+        text = str(obs[i])
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        out.append(
+            f"observation:{i}  {len(part_text(ep, f'observation:{i}').encode())}B  {first[:_GIST]}",
+        )
+    return "\n".join(out) + "\n", end_parts
+
+
 def _errors(ep: Episode) -> list[dict]:
     out = []
     for i, a in enumerate(ep.actions):
