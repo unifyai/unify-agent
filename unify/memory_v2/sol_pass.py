@@ -2079,10 +2079,21 @@ class SolPass:
             )
             # the loader reaches the evidence store, whose SQLite connection belongs to this thread: load every
             # episode S0 reads here and hand the worker thread a plain dict (M3c/M4 qualification, 11 Oct)
-            loaded = {e: self.load(e) for e in dict.fromkeys([*history, *req.episodes])}
+            try:
+                loaded = {
+                    e: self.load(e) for e in dict.fromkeys([*history, *req.episodes])
+                }
+                s0_load = loaded.__getitem__
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - S0 never stops a pass: an unreadable episode is S0's error
+
+                def s0_load(_eid: str, _exc: Exception = exc):
+                    raise _exc
+
             got = await asyncio.to_thread(
                 _s0.run,
-                loaded.__getitem__,
+                s0_load,
                 list(req.episodes),
                 history,
                 Path(inputs) / "s0",

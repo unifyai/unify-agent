@@ -141,3 +141,33 @@ def test_s0_runs_on_every_pass_when_the_loader_is_bound_to_the_calling_thread(
         )
     for out in outs:
         assert out.s0 is not None and "error" not in out.s0, out.s0
+
+
+def test_an_unreadable_history_episode_is_s0s_error_and_the_pass_goes_on(
+    tmp_path,
+    monkeypatch,
+):
+    """RUNTIME (11 Oct): loading S0's episodes on the pass's thread must keep "S0 never stops a pass"."""
+    monkeypatch.setattr(
+        mining_behaviour,
+        "in_box",
+        lambda *a, **k: {"box_error": "no box in this test"},
+    )
+
+    def load(eid):
+        if eid == "e0":
+            raise OSError("history episode unreadable")
+        return EPS[eid]
+
+    model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
+    _, _, sol = _sol(
+        tmp_path,
+        model,
+        v21=True,
+        max_calls=4,
+        s0_cache=str(tmp_path / "cache"),
+    )
+    sol.load = load
+    monkeypatch.setattr(sol.ev, "experience_since", lambda after: [("e0", 0)])
+    out = asyncio.run(sol.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    assert out.s0 and "OSError" in out.s0["error"] and out.coverage is not None
