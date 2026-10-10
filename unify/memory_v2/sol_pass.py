@@ -782,6 +782,8 @@ class PassOutcome:
     analysts: list[dict] = field(default_factory=list)
     # r5: S0's summary for this pass (clusters, tier (b) counts, or its error); None when S0 did not run
     s0: dict | None = None
+    # r5: the batch's staging by source (fork, sol_analyst, replay_fork, none); None with v21 off
+    staging: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1729,6 +1731,7 @@ class SolPass:
         self._inputs_dir: Path | None = (
             None  # the pass's /inputs on the host, once staged
         )
+        self._staging_counts: dict | None = None
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -2114,13 +2117,17 @@ class SolPass:
                 spend.unknown += int(row.get("unknown_cost_calls", 0) or 0)
         path = Path(inputs) / "batch_map.json"
         bmap = json.loads(path.read_text())
+        counts: dict[str, int] = {}
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
             row["staging"] = _staging.export(
                 _staging.read(root, eid),
                 Path(inputs) / "staging" / eid,
             )
+            src = row["staging"].get("source", "none")
+            counts[src] = counts.get(src, 0) + 1
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
+        self._staging_counts = {"episodes": len(bmap.get("episodes", [])), **counts}
 
     @staticmethod
     def _library_message_v21(box: Path) -> str:
@@ -2575,6 +2582,8 @@ class SolPass:
         self._analyst_rows = []
         self._s0_summary = None
         self._s0_clustered, self._s0_seen = set(), set()
+        self._staging_counts = None
+        self._inputs_dir = None
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -2738,6 +2747,7 @@ class SolPass:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
                 o.s0 = self._s0_summary
+                o.staging = self._staging_counts
                 o.analysts = [
                     {
                         k: r.get(k)

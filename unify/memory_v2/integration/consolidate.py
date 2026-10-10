@@ -697,6 +697,16 @@ def reason_codes(outcome: PassOutcome | None, failure_code: str | None) -> list[
     return out[:MAX_REASON_CODES]
 
 
+def _by_category(usd: str, analysts: list[dict]) -> dict:
+    """r5: the pass's known USD split into Sol's writer and Sol's analysts (decimal strings; unknown stays unknown)."""
+    try:
+        spent = sum((Decimal(str(r.get("usd") or 0)) for r in analysts), Decimal(0))
+        total = Decimal(usd)
+    except (InvalidOperation, ValueError):
+        return {"writer": UNKNOWN, "analysts": UNKNOWN}
+    return {"writer": _usd(total - spent), "analysts": _usd(spent)}
+
+
 def _spend(outcome: PassOutcome | None, rows: list[CostRow]) -> tuple[str, int, int]:
     """(known USD, unpriced calls, calls): the pass's own figures, else the cost rows'."""
     if outcome is not None and money(outcome.usd) != UNKNOWN:
@@ -777,6 +787,12 @@ def _end_event(
                 ),
                 "finished": bool(outcome.finished),
                 "nothing_to_store": bool(outcome.nothing_to_store),
+                # r5: spend by category (the fork's is in the proxy journal, session fork.<episode>), the analysts,
+                # the batch's staging by source, and S0's summary
+                "usd_by_category": _by_category(usd, outcome.analysts),
+                "analysts": list(outcome.analysts),
+                "staging": outcome.staging,
+                "s0": outcome.s0,
             }
             if outcome is not None and outcome.coverage is not None
             else {}
