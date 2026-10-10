@@ -3,7 +3,7 @@
 A function item may say which pieces of the actor's recorded code it replaces: ``replaces: [{"episode", "cell",
 "lines": [a, b], "call": "<statement>"}]`` in its manifest entry, where ``call`` is the statement that does the same
 by calling the function (``comps = components(g, 8)``). For each instance, in a bubblewrap box with no network and
-the writer's tree read-only on the import path:
+the writer's tree read-only at /library on the import path:
 
 1. the episode's successful cells up to and including that cell are replayed twice; if the two runs end with
    different values, the instance is ``not replayable: nondeterministic``;
@@ -80,7 +80,7 @@ def _job(ep, inst: dict, fn_import: str, fn: str) -> dict:
         "targets": targets,
         "rewritten": rewrite(cells[-1].code, (a, b), str(inst["call"])),
         "imports": [fn_import],
-        "path": "/lib",
+        "path": "/library",
     }
 
 
@@ -151,7 +151,9 @@ def verify(
             )
             continue
         job["rewritten_call"] = str(inst["call"]).strip()
-        binds = [(str(tree), "/lib", False)]
+        binds = [
+            (str(tree), "/library", False),
+        ]  # RUNTIME F-1: /lib is a link on merged-/usr hosts
         run = None
         if trees and str(inst["episode"]) in trees:
             run = scratch / f"w-{inst['episode']}"
