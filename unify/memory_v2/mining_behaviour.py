@@ -638,6 +638,7 @@ def in_box(job: dict, timeout: float, binds: list[tuple[str, str, bool]] = ()) -
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=_mining.helper_env(),  # bwrap itself; the box then clears and sets its own
         )
     except subprocess.TimeoutExpired:
         return {"box_error": "box timeout"}
@@ -733,8 +734,14 @@ def export_trees(
                 ["git", "--git-dir", worktree, "archive", sha],
                 capture_output=True,
                 check=True,
+                env=_mining.helper_env(),
             ).stdout
-            subprocess.run(["tar", "x", "-C", str(tree)], input=data, check=True)
+            subprocess.run(
+                ["tar", "x", "-C", str(tree)],
+                input=data,
+                check=True,
+                env=_mining.helper_env(),
+            )
         out[eid] = tree
     return out
 
