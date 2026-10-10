@@ -634,6 +634,9 @@ V21_MAX_READS = "UNIFY_MEMORY_V21_MAX_READS"
 #: Opt-in (MAIN, 10 Oct): the CLI waits for the pass slot it spawned before it exits, for hosts whose sandbox ends
 #: every process of the controller with it (a PID namespace); off: the request returns at once, as built.
 V21_WAIT_SLOT = "UNIFY_MEMORY_V21_WAIT_SLOT"
+#: Design r5 (lead, 10 Oct): at each episode's end the actor's own conversation is forked once, in a confined
+#: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
+V21_FORK = "UNIFY_MEMORY_V21_FORK"
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -712,6 +715,15 @@ def parse_v21_wait_slot(v: Any) -> str:
 
 def v21_wait_slot(settings: Any) -> bool:
     return parse_v21_wait_slot(getattr(settings, V21_WAIT_SLOT, "") or "") == "on"
+
+
+def parse_v21_fork(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_FORK``: ``off`` (also for empty) or ``on``."""
+    return _on_off(V21_FORK, v)
+
+
+def v21_fork(settings: Any) -> bool:
+    return parse_v21_fork(getattr(settings, V21_FORK, "") or "") == "on"
 
 
 def v21_max_reads(settings: Any) -> int:
@@ -861,6 +873,7 @@ PARSERS = {
     V21_E: parse_v21_e,
     V21_MAX_READS: parse_v21_max_reads,
     V21_WAIT_SLOT: parse_v21_wait_slot,
+    V21_FORK: parse_v21_fork,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,
