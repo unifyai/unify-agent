@@ -226,7 +226,7 @@ def same_shape(bodies: dict[str, str]) -> list[list[str]]:
         tree = _parse(body)
         if tree is None or not tree.body:
             continue
-        key = normalise(tree.body[0], keep_names([tree]) | {item.rsplit(":", 1)[-1]})[0]
+        key = normalise(tree.body[0], keep_names([tree]))[0]
         by_key.setdefault(key, []).append(item)
     return sorted(group for group in by_key.values() if len(group) > 1)
 
