@@ -266,6 +266,50 @@ def test_parse_reply_reads_text_and_tool_call_blocks_and_refuses_other_paths(tmp
     assert not marker.exists()
 
 
+# The shapes the fork's replies used (0f, replay B2 of 10 Oct: 26 of 31 put the path on the fence line, 4 before the
+# fence, 3 inside it); each one stages the same file.
+_SHAPES = {
+    "inside": "```python\npath: candidates/double.py\n" + CODE + "```\n",
+    "info": "```path: candidates/double.py\n" + CODE + "```\n",
+    "line_before": "Here it is.\npath: candidates/double.py\n```python\n"
+    + CODE
+    + "```\n",
+    "block_before": "```text\npath: candidates/double.py\n```\n```python\n"
+    + CODE
+    + "```\n",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+def test_every_path_shape_the_fork_wrote_is_staged(shape):
+    files, refused = fw.parse_reply({"content": _SHAPES[shape]})
+    assert files == {"candidates/double.py": CODE} and refused == []
+
+
+def test_a_path_shape_outside_the_allow_list_is_still_refused():
+    msg = {"content": "```path: ../escape.py\nx\n```\npath: other.txt\n```\nx\n```\n"}
+    files, refused = fw.parse_reply(msg)
+    assert files == {}
+    assert {r["path"] for r in refused} == {"../escape.py", "other.txt"}
+
+
+def test_a_path_line_is_only_taken_by_the_fence_right_after_it():
+    # a blank line between, or a path-only block followed by prose, names no block
+    msg = {
+        "content": "path: notes.md\n\n```\nlost\n```\n"
+        + "```text\npath: cases/x.json\n```\nprose\n```json\n{}\n```\n",
+    }
+    files, refused = fw.parse_reply(msg)
+    assert files == {} and refused == []
+
+
+def test_a_fence_info_path_wins_and_a_repeated_inner_path_line_is_dropped():
+    files, _ = fw.parse_reply(
+        {"content": "```path: notes.md\npath: notes.md\nA lesson.\n```\n"},
+    )
+    assert files == {"notes.md": "A lesson.\n"}
+
+
 def test_the_worker_answers_tool_calls_without_running_them_and_writes_fork_json(
     tmp_path,
 ):
