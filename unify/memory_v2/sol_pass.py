@@ -1910,6 +1910,7 @@ class SolPass:
                         self.ev,
                         e,
                         ep_.request[0] if ep_.request else "",
+                        ep_.request[1:],
                     )
                 self._shared = _shared_text.shared(self.ev)
             if self._shared:

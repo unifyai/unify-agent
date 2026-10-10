@@ -23,9 +23,9 @@ def test_a_block_in_most_episodes_becomes_one_marker(tmp_path):
         PRE + "\n\nTask 1: do thing 1",
     )  # counted once per episode
     sh = shared_text.shared(ev)
-    assert list(sh.values()) == [PRE]
+    assert PRE in sh.values()  # the block (its long line is a shared unit too, M4)
     marked = shared_text.mark(PRE + "\n\nTask 1: do thing 1", sh)
-    bid = next(iter(sh))
+    bid = next(b for b, t in sh.items() if t == PRE)
     assert marked == shared_text.marker(bid) + "\n\nTask 1: do thing 1"
 
 
@@ -102,8 +102,34 @@ def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical
     for e, ep in eps.items():
         shared_text.update_counts(ev, e, ep.request[0])
     sh = shared_text.shared(ev)
-    bid = next(iter(sh))
-    assert f"'shared:{bid}'" in shared_text.marker(bid)
+    bid = next(b for b, t in sh.items() if t == PRE)
+    assert shared_text.marker(bid) == f"[shared:{bid}]"
     bmap = bm.build_batch_map(eps.__getitem__, list(eps), sh)
     assert all(f"shared:{bid}" in row["required_parts"] for row in bmap["episodes"])
     assert json.loads(bm.part_text(eps["e0"], f"shared:{bid}", sh)) == PRE
+
+
+def test_a_shared_line_inside_an_episode_specific_block_and_in_observations_is_marked(
+    tmp_path,
+):
+    """M4 (MAIN, 10 Oct): MED repeated the line-level instructions that sit in blocks with task-specific text."""
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    line = "Reply with exactly one action JSON on the last line."
+    obs = "Each demo request returns one more input-output pair of the task."
+    for i in range(3):
+        shared_text.update_counts(
+            ev,
+            f"e{i}",
+            f"Task {i}: rotate the grid {i} times\n{line}",
+            [obs, f"demo {i}"],
+        )
+    sh = shared_text.shared(ev)
+    assert set(sh.values()) == {line, obs}
+    lid = next(b for b, t in sh.items() if t == line)
+    assert (
+        shared_text.mark(f"Task 9: something\n{line}", sh)
+        == f"Task 9: something\n[shared:{lid}]"
+    )
+    ep = _episode("e1", request=(f"Task 1: rotate the grid 1 times\n{line}", obs))
+    assert "[shared:" in json.loads(bm.part_text(ep, "observation:0", sh))
+    assert {f"shared:{b}" for b in sh} <= set(bm._shared_parts(ep, sh))
