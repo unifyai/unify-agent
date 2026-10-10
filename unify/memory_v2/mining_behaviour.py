@@ -21,11 +21,17 @@ DreamCoder and TroVE):
    requests. Each is compared with tier (a): which tier-(a) clusters it merges, and which cross-episode clusters
    tier (a) missed.
 
+Code that reads its working directory (office tasks) is replayed in the episode's recorded workspace: with
+``--worktree <worktree.git>`` each episode's ``worktree_before`` is exported once; the replay gets a fresh,
+disposable copy of it as its working directory (``/w``, writable, so later cells see what earlier ones wrote), and
+cross-runs see every exported tree read-only, each run starting in the tree of the episode whose inputs it uses.
+The recorded export itself is never writable.
+
 Units that cannot take part are reported by cause, never forced: not standalone (``return``, ``break`` or ``await``
 outside their context), not reached in the replay (with the exception that stopped the cell), non-plain inputs,
 timeouts, no data effect. Standard library only; runnable as a script beside ``mining.py``:
 
-    python3 -I mining_behaviour.py --git <episodes.git> --out <dir> [--jobs N]
+    python3 -I mining_behaviour.py --git <episodes.git> --out <dir> [--jobs N] [--worktree <worktree.git>]
 """
 
 from __future__ import annotations
@@ -253,6 +259,8 @@ def _run_code(code, ns: dict, timeout: float) -> str | None:
 def child_replay(job: dict) -> dict:
     """Replay one episode's cells; snapshot each target unit's free names at its first execution."""
     signal.signal(signal.SIGALRM, _on_alarm)
+    if job.get("cwd"):
+        os.chdir(job["cwd"])
     ns: dict = {"__name__": "__main__", "__builtins__": builtins}
     snaps: dict[str, dict] = {}
     causes: dict[str, str] = {}
@@ -380,7 +388,15 @@ def _param_sets(own: list, other: list) -> list[list]:
     return sets
 
 
-def _execute(unit: dict, inputs: dict, params: list, timeout: float):
+def _execute(
+    unit: dict,
+    inputs: dict,
+    params: list,
+    timeout: float,
+    cwd: str | None = None,
+):
+    if cwd:
+        os.chdir(cwd)
     ns: dict = {"__name__": "__main__", "__builtins__": builtins}
     for imp in unit["imports"]:
         _run_code(compile(imp, "<import>", "exec"), ns, timeout)
@@ -408,10 +424,20 @@ def child_cross(job: dict) -> dict:
     """Reference effects of each unit on its own inputs, then each pair (u on w's inputs)."""
     signal.signal(signal.SIGALRM, _on_alarm)
     units, snaps = job["units"], job["snaps"]
+    cwd = job.get(
+        "cwd_of",
+        {},
+    )  # unit id -> the working directory of its episode's tree (office)
     ref: dict[str, dict] = {}
     for uid in {x for p in job["pairs"] for x in p}:
         u = units[uid]
-        err, ns, before = _execute(u, snaps[uid], u["params"], RUN_TIMEOUT_S)
+        err, ns, before = _execute(
+            u,
+            snaps[uid],
+            u["params"],
+            RUN_TIMEOUT_S,
+            cwd.get(uid),
+        )
         ref[uid] = {
             "err": err,
             "exact": _effects(before, ns, False) if not err else None,
@@ -441,7 +467,7 @@ def child_cross(job: dict) -> dict:
             _param_sets(ua["params"], ub["params"]),
         ):
             inputs = {n: snaps[b][bind[n]] for n in names}
-            err, ns, before = _execute(ua, inputs, params, RUN_TIMEOUT_S)
+            err, ns, before = _execute(ua, inputs, params, RUN_TIMEOUT_S, cwd.get(b))
             if err:
                 verdict = (
                     "timeout" if err == "timeout" and verdict == "differ" else verdict
@@ -472,8 +498,9 @@ def child_main() -> int:
 # --- the host -------------------------------------------------------------------------------------------------
 
 
-def box_argv(script_dir: Path) -> list[str]:
-    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes."""
+def box_argv(script_dir: Path, binds: list[tuple[str, str, bool]] = ()) -> list[str]:
+    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes; *binds*:
+    ``(host path, box path, writable)``."""
     bwrap, prlimit = shutil.which("bwrap"), shutil.which("prlimit")
     if not bwrap or not prlimit:
         raise RuntimeError(
@@ -498,14 +525,15 @@ def box_argv(script_dir: Path) -> list[str]:
             args += ["--symlink", target, link]
     args += [
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", str(script_dir), "/s",
+        *[x for src, dst, rw in binds for x in ("--bind" if rw else "--ro-bind", src, dst)],
         "--chdir", "/tmp", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
         prlimit, *BOX_LIMITS, "/usr/bin/python3", "-I", "/s/mining_behaviour.py", "--child",
     ]  # fmt: skip
     return args
 
 
-def in_box(job: dict, timeout: float) -> dict:
-    argv = box_argv(Path(__file__).resolve().parent)
+def in_box(job: dict, timeout: float, binds: list[tuple[str, str, bool]] = ()) -> dict:
+    argv = box_argv(Path(__file__).resolve().parent, binds)
     try:
         p = subprocess.run(
             argv,
@@ -571,6 +599,47 @@ def collect_units(episodes) -> tuple[dict, dict, dict]:
                 "targets": targets,
             }
     return units, jobs, causes
+
+
+def export_trees(
+    worktree: str,
+    episodes_git: str,
+    rev: str,
+    eids: list[str],
+    dest: Path,
+) -> dict[str, Path]:
+    """Each episode's recorded ``worktree_before`` exported once under *dest* (episode id -> tree)."""
+    names = (
+        _mining._git(episodes_git, "ls-tree", "-r", "--name-only", rev)
+        .decode()
+        .split("\n")
+    )
+    dirs = {
+        n.rsplit("/", 2)[-2]: n.rsplit("/", 1)[0]
+        for n in names
+        if n.endswith("/meta.json")
+    }
+    out = {}
+    for eid in eids:
+        if eid not in dirs:
+            continue
+        meta = json.loads(
+            _mining._git(episodes_git, "show", f"{rev}:{dirs[eid]}/meta.json"),
+        )
+        sha = meta.get("worktree_before")
+        if not sha:
+            continue
+        tree = dest / eid
+        if not tree.exists():
+            tree.mkdir(parents=True)
+            data = subprocess.run(
+                ["git", "--git-dir", worktree, "archive", sha],
+                capture_output=True,
+                check=True,
+            ).stdout
+            subprocess.run(["tar", "x", "-C", str(tree)], input=data, check=True)
+        out[eid] = tree
+    return out
 
 
 def _signature(names: list[str], snap: dict) -> tuple:
@@ -687,6 +756,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rev", default="main")
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 2))
+    ap.add_argument(
+        "--worktree",
+        help="a copy of the run's worktree repo: replay in each episode's recorded tree",
+    )
     a = ap.parse_args(argv)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -698,10 +771,29 @@ def main(argv: list[str] | None = None) -> int:
     a_clusters = {
         k for k, r in reqs_by_key.items() if len(r) >= 2
     }  # tier (a)'s recurring keys
+    trees: dict[str, Path] = {}
+    if a.worktree:
+        trees = export_trees(a.worktree, a.git, a.rev, list(jobs), out / "trees")
+        for eid in trees:
+            jobs[eid]["cwd"] = "/w"
+
+    def replay(eid):
+        if eid not in trees:
+            return in_box(jobs[eid], 600)
+        run = (
+            out / "run" / eid
+        )  # a fresh, disposable copy: the export is never writable
+        shutil.rmtree(run, ignore_errors=True)
+        shutil.copytree(trees[eid], run, symlinks=True)
+        try:
+            return in_box(jobs[eid], 600, [(str(run), "/w", True)])
+        finally:
+            shutil.rmtree(run, ignore_errors=True)
+
     snaps: dict[str, dict] = {}
     fidelity = [0, 0]
     with ThreadPoolExecutor(a.jobs) as pool:
-        for eid, r in zip(jobs, pool.map(lambda j: in_box(j, 600), jobs.values())):
+        for eid, r in zip(jobs, pool.map(replay, list(jobs))):
             if "box_error" in r:
                 for t in itertools.chain.from_iterable(jobs[eid]["targets"].values()):
                     causes[t["uid"]] = r["box_error"]
@@ -717,15 +809,20 @@ def main(argv: list[str] | None = None) -> int:
 
     def cross(chunk):
         ids = {x for p in chunk for x in p}
-        return in_box(
-            {
-                "mode": "cross",
-                "units": {i: units[i] for i in ids},
-                "snaps": {i: snaps[i] for i in ids},
-                "pairs": chunk,
-            },
-            1800,
-        )
+        job = {
+            "mode": "cross",
+            "units": {i: units[i] for i in ids},
+            "snaps": {i: snaps[i] for i in ids},
+            "pairs": chunk,
+        }
+        if not trees:
+            return in_box(job, 1800)
+        job["cwd_of"] = {
+            i: f"/trees/{units[i]['episode']}"
+            for i in ids
+            if units[i]["episode"] in trees
+        }
+        return in_box(job, 1800, [(str(out / "trees"), "/trees", False)])
 
     results, ref = [], {}
     with ThreadPoolExecutor(a.jobs) as pool:

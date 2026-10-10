@@ -204,3 +204,21 @@ def test_the_box_has_no_network_and_a_private_tmp(tmp_path):
     r = b.in_box(job, 60)
     assert "box_error" not in r, r
     assert r["cell_errors"] == {}, r["cell_errors"]
+
+
+def test_a_cell_that_reads_its_working_directory_replays_in_the_recorded_tree(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(b, "MIN_NODES", 12)
+    (tmp_path / "claims.csv").write_text("a,1\nb,2\n")
+    code = "rows = [line.split(',') for line in open('claims.csv').read().splitlines()]\ntotal = {}\nfor k, v in rows:\n    total[k] = total.get(k, 0) + int(v)\n"
+    units, jobs, causes = b.collect_units([("e0", "r0", [Cell(0, code, "", None)])])
+    job = json.loads(json.dumps(jobs["e0"]))
+    job["cwd"] = str(tmp_path)
+    r = b.child_replay(job)
+    loop = next(u for u in units.values() if u["src"].startswith("for k, v in rows"))
+    assert r["cell_errors"] == {} and r["snaps"][loop["uid"]]["rows"] == [
+        ["a", "1"],
+        ["b", "2"],
+    ]
