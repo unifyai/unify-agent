@@ -1433,6 +1433,7 @@ def _workspace_refusal(
     homes: Optional[Sequence[Path]] = None,
     guarded: Optional[Sequence[Path]] = None,
     state: Optional[Path] = None,
+    code: Optional[Sequence[tuple[Path, bool]]] = None,
 ) -> Optional[str]:
     """Why the read-write workspace bind of *path* is refused, ``None`` if not.
 
@@ -1444,8 +1445,10 @@ def _workspace_refusal(
     directory itself (*state*, default ``UNIFY_HOME``: its store and records
     would be the workspace); a system directory
     (:data:`_WORKSPACE_SYSTEM_DIRS`), or a path inside the first group of
-    them; and a path that is or contains a home's configuration, cache or
-    credential directory (:func:`_workspace_guarded`).
+    them; a path that is or contains a home's configuration, cache or
+    credential directory (:func:`_workspace_guarded`); and a path that is or
+    contains the harness's own code, or is inside the part of it marked so
+    (*code*, default :func:`_workspace_code_roots`).
     """
     if homes is None:
         homes = list(
@@ -1459,6 +1462,8 @@ def _workspace_refusal(
         from unify.db import store_home
 
         state = store_home()
+    if code is None:
+        code = _workspace_code_roots()
     states = {Path(os.path.abspath(state)), Path(os.path.realpath(state))}
     for p in dict.fromkeys((Path(os.path.abspath(path)), Path(os.path.realpath(path)))):
         if p == Path("/"):
@@ -1477,7 +1482,38 @@ def _workspace_refusal(
         for g in guarded:
             if _within(g, p):
                 return f"it would show {g}"
+        for root, inside_too in code:
+            if _within(root, p):
+                return f"it would make the harness's code {root} writable"
+            if inside_too and _within(p, root):
+                return f"it is inside the harness's code {root}"
     return None
+
+
+def _workspace_code_roots() -> list[tuple[Path, bool]]:
+    """The harness's code a workspace may not be or hold, each by both names.
+
+    The workspace is bound read-write after every other mount, so a
+    workspace holding the Unify package, the interpreter's prefixes or an
+    editable root would make that code writable to cells. One above the
+    package would also let a cell plant a ``.env`` that the CLI's
+    ``load_dotenv()`` (which walks up from the package) loads into the
+    harness. ``True``: a workspace inside it is refused too (the package and
+    the prefixes, and each editable root's packages); an editable root itself
+    is often a checkout whose other directories are the user's own.
+    """
+    out: list[tuple[Path, bool]] = [(Path(__file__).resolve().parent, True)]
+    out += [(p, True) for p in _interpreter_prefixes()]
+    for root in _editable_roots():
+        out.append((root, False))
+        out += [(p, True) for p in _editable_packages(root)]
+    return list(
+        dict.fromkeys(
+            (q, inside_too)
+            for p, inside_too in out
+            for q in (Path(os.path.abspath(p)), Path(os.path.realpath(p)))
+        ),
+    )
 
 
 @dataclass(frozen=True)

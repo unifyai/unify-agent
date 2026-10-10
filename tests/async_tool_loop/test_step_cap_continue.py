@@ -570,6 +570,76 @@ async def test_two_ineffective_compactions_in_a_row_end_the_request(mode):
     _assert_every_call_answered(history)
 
 
+class _OverThreshold:
+    """While the first request runs, every session call reports more prompt
+    tokens than the threshold allows, however the context is compacted: the
+    model looks once and then compresses. From the requester's next request
+    on, the calls are small and it answers."""
+
+    def __init__(self):
+        self.next_seen = False
+        self.forks = 0
+        self.forks_before_next = None
+
+    async def __call__(self, *, shared_session=None, client=None, **kw):
+        messages = kw.get("messages") or []
+        if _is_fork(messages):
+            self.forks += 1
+            return h.completion(content=SUMMARY)
+        if _is_compactor(messages):
+            return h.completion(content="Compacted.")
+        if not kw.get("tools"):
+            return h.completion(content=FINAL)
+        if not self.next_seen and any(
+            m.get("role") == "user" and NEXT in str(m.get("content")) for m in messages
+        ):
+            self.next_seen, self.forks_before_next = True, self.forks
+        turns = 0
+        for m in reversed(messages):
+            text = str(m.get("content") or "")
+            if m.get("role") == "user" and any(
+                mark in text for mark in (TASK, NEXT, RESTART)
+            ):
+                break
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                turns += 1
+        if self.next_seen:
+            # The context is still over the threshold when the next request
+            # arrives: compress once, then answer.
+            if self.forks == self.forks_before_next and turns == 0:
+                return h.completion(content=DRAFT, calls=[("compress_context", {})])
+            return h.completion(content=FINAL)
+        calls = LOOK if turns == 0 else [("compress_context", {})]
+        return h.completion(content=DRAFT, calls=calls, prompt_tokens=5_000)
+
+
+@pytest.mark.asyncio
+async def test_threshold_compactions_that_leave_the_context_over_it_end_the_request(
+    mode,
+    monkeypatch,
+):
+    """A compaction the context threshold asked for is ineffective when the
+    first call after it is still over the threshold. The second in a row
+    ends the request with its draft (no third compaction), and the session
+    takes its next request."""
+    import unillm
+
+    mode("continue")
+    monkeypatch.setattr(unillm, "get_max_input_tokens", lambda *a, **k: 4_000)
+    model = _OverThreshold()
+    (capped, answered), state, history = await _session(model, NEXT, max_steps=100)
+    assert capped == (
+        "🔚 Stopped: 2 compactions in a row left the context over its "
+        "threshold, so this request ended before it was finished. The session "
+        "is still open: the next message starts a new request." + BEST + DRAFT
+    )
+    assert model.forks_before_next == 2
+    assert answered == FINAL
+    assert state.step_cap_ineffective_compactions == 2
+    assert state.step_cap_ineffective_in_a_row == 0  # the next request's
+    _assert_every_call_answered(history)
+
+
 @pytest.mark.asyncio
 async def test_an_effective_compaction_between_resets_the_run(mode):
     mode("continue")

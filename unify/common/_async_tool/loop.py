@@ -58,7 +58,9 @@ from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
     _COMPRESSION_SIGNAL,
+    REQUEST_START_KEY,
     context_over_threshold,
+    keep_prefix_enabled,
 )
 from .response_format import (
     NormalizedResponseFormat,
@@ -125,6 +127,14 @@ class ToolLoopRuntimeState:
     keep_prefix_unmeasured: bool = False
     keep_prefix_shipped_next: bool = False
     keep_prefix_fallbacks: int = 0
+    # UNIFY_COMPACTION_KEEP_PREFIX=on: a persistent loop waited for its next
+    # request, so the next requester message it appends starts one
+    # (``context_compression.REQUEST_START_KEY``).
+    request_starts_next: bool = False
+    # A compaction the context threshold asked for, waiting for its first
+    # measured call (UNIFY_STEP_CAP_COMPACT=continue counts it ineffective
+    # when that call is still over the threshold).
+    compaction_unmeasured: bool = False
     # UNIFY_STEP_CAP_COMPACT=continue: whether this loop runs in the mode
     # (the loop sets it; its handle reads it to mark the restart summary as
     # loop-authored), the step-limit compactions that did not make the
@@ -188,6 +198,46 @@ class _TimeoutStop:
     @property
     def reason(self) -> str:
         return f"timeout ({self.timeout}s) exceeded"
+
+    @property
+    def cancelled(self) -> str:
+        return (
+            f"Cancelled: the request was stopped ({self.reason}) before this "
+            "call finished."
+        )
+
+    @property
+    def notice(self) -> str:
+        return (
+            f"This request was stopped ({self.reason}): no more tools can be "
+            "called for it. Reply now with your best answer to the request."
+        )
+
+    @property
+    def headline(self) -> str:
+        return (
+            f"🔚 Stopped: {self.reason}, so this request ended before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+
+
+@dataclass(frozen=True)
+class _IneffectiveStop:
+    """UNIFY_STEP_CAP_COMPACT=continue: compactions in a row that left the
+    context over the threshold end the request through the step limit's
+    reply path, with these texts (the attributes
+    ``_end_request_at_step_limit`` reads from a loop stop)."""
+
+    count: int
+    last_word: bool
+    label: str = "Compaction"
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"{self.count} compactions in a row left the context over its " "threshold"
+        )
 
     @property
     def cancelled(self) -> str:
@@ -1575,6 +1625,32 @@ async def async_tool_loop_inner(
         )
         return last
 
+    def _ineffective_threshold_compaction(over: bool, prompt_tokens: int) -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: count a compaction the context
+        threshold asked for when the first call after it is still over the
+        threshold (it did not bring the context under it); whether it is the
+        second ineffective compaction in a row of the request, which then
+        ends. Step-limit compactions are counted by their size
+        (``_ineffective_compaction``); both share the count in a row."""
+        if not over:
+            runtime_state.step_cap_ineffective_in_a_row = 0
+            return False
+        runtime_state.step_cap_ineffective_compactions += 1
+        runtime_state.step_cap_ineffective_in_a_row += 1
+        last = runtime_state.step_cap_ineffective_in_a_row >= STEP_CAP_INEFFECTIVE_LIMIT
+        logger.info(
+            "Context threshold – the first call after the compaction is still "
+            f"over it ({prompt_tokens} prompt tokens); "
+            + (
+                f"{runtime_state.step_cap_ineffective_in_a_row} in a row, so the "
+                "request ends"
+                if last
+                else "the request goes on"
+            ),
+            prefix=ICONS["early_exit"],
+        )
+        return last
+
     async def _end_request_on_cancel(reason: Optional[str]) -> None:
         """A persistent loop's requester cancelled the running request.
 
@@ -1627,6 +1703,8 @@ async def async_tool_loop_inner(
         # UNIFY_REPLY_CHANNEL=code+text: the next request starts with no reply.
         if _reply_slot is not None:
             _reply_slot.clear()
+        # The next requester message starts the next request.
+        runtime_state.request_starts_next = True
 
         # A cancel still queued was sent for the request that has just
         # ended (it came after that request's last call), so it has nothing
@@ -2040,6 +2118,10 @@ async def async_tool_loop_inner(
     _empty_final_answer_retries = 0
     _MAX_EMPTY_FINAL_ANSWER_RETRIES = 1
 
+    # UNIFY_STEP_CAP_COMPACT=continue: the second compaction in a row that
+    # left the context over its threshold ends the request at the next step.
+    _ineffective_end = False
+
     logger.debug(f"[setup +{_setup_elapsed()}] entering main loop")
 
     try:
@@ -2068,6 +2150,28 @@ async def async_tool_loop_inner(
                         _request_draft() if _step_cap_reply else None,
                         last_word=_step_cap_last_word,
                     )
+
+            if _ineffective_end:
+                _ineffective_end = False
+                stop = _IneffectiveStop(
+                    runtime_state.step_cap_ineffective_in_a_row,
+                    last_word=_step_cap_last_word,
+                )
+                logger.info(
+                    f"{stop.label} – {stop.reason}; ending the request",
+                    prefix=ICONS["early_exit"],
+                )
+                if persist:
+                    await _end_request_at_step_limit(stop)
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
+                return await _handle_limit_reached(
+                    stop.reason,
+                    _request_draft(),
+                    last_word=stop.last_word,
+                    stop=stop,
+                )
 
             # Assistant tool_calls missing replies (a seeded batch or a
             # resumed transcript) are run, in call order, before anything
@@ -2141,15 +2245,18 @@ async def async_tool_loop_inner(
                         if time_ctx is not None
                         else _msg_text
                     )
-                    await _msg_dispatcher.append_msgs(
-                        [
-                            {
-                                "role": "user",
-                                "_interjection": True,
-                                "content": _user_content,
-                            },
-                        ],
-                    )
+                    _requester_msg = {
+                        "role": "user",
+                        "_interjection": True,
+                        "content": _user_content,
+                    }
+                    if runtime_state.request_starts_next:
+                        runtime_state.request_starts_next = False
+                        # UNIFY_COMPACTION_KEEP_PREFIX=on: a compaction keeps
+                        # this request from here, additions included.
+                        if keep_prefix_enabled():
+                            _requester_msg[REQUEST_START_KEY] = True
+                    await _msg_dispatcher.append_msgs([_requester_msg])
 
             # A stop ends the loop here: any further turn would be sent only
             # to be thrown away.
@@ -2660,6 +2767,13 @@ async def async_tool_loop_inner(
                             0.7,
                             _max_input_tokens,
                         )
+                        if runtime_state.compaction_unmeasured:
+                            runtime_state.compaction_unmeasured = False
+                            if _continue and _ineffective_threshold_compaction(
+                                _over_threshold,
+                                _usage.prompt_tokens,
+                            ):
+                                _ineffective_end = True
                         if runtime_state.keep_prefix_unmeasured:
                             runtime_state.keep_prefix_unmeasured = False
                             if _over_threshold:

@@ -22,7 +22,7 @@ from unify.guidance_manager.settings import GuidanceSettings
 
 # The reasoning efforts unillm forwards to providers (it maps them per
 # provider, e.g. DeepSeek's high/max), with "" for "as shipped".
-_REVIEW_EFFORTS = ("", "none", "low", "medium", "high", "xhigh", "max")
+_REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _parse_bool(v: Any) -> bool:
@@ -593,6 +593,17 @@ class ProductionSettings(BaseSettings):
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
+
+    @field_validator("UNIFY_REASONING_EFFORT", mode="before")
+    @classmethod
+    def parse_reasoning_effort(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in _REASONING_EFFORTS:
+            raise ValueError(
+                "UNIFY_REASONING_EFFORT must be empty or one of "
+                f"{', '.join(_REASONING_EFFORTS[1:])}, not {v!r}",
+            )
+        return value
 
     @field_validator("UNIFY_LOOP_STOP", mode="before")
     @classmethod
