@@ -1,17 +1,19 @@
 """The episode-end fork's worker (memory v2.1 design r5 §2-§3): it continues the actor's own conversation through the
-actor's proxy route and writes what the reply says is worth keeping into the episode's staging directory.
+key proxy's fork lane and writes what the reply says is worth keeping into the episode's staging directory.
 
 It runs by path as ``/usr/bin/python3 -I /s/fork_worker.py``, never as ``-m unify...``, inside a bubblewrap box
 (:mod:`.fork`). It is standalone: standard library only, no package-relative import, so no credential lookup can
-start. It holds no credential: the proxy route takes the actor's placeholder key. :mod:`.staging` imports
+start. It holds no provider credential: the key proxy's fork lane takes only its per-stage fork token, which arrives
+in the stdin request's headers. :mod:`.staging` imports
 :func:`parse_reply` and the constants from here, so every reader of staged replies applies the same rules.
 
 * **Input:** one JSON document read from stdin, a fresh pipe; never argv, the environment or a file. It holds the
-  URL, the placeholder key, the headers, the request body and the episode id.
+  fork lane's URL, the headers (with the fork token), the request body and the episode id.
 * **Turns:** one POST per turn. A reply with tool calls is never executed: each call is answered with
   :data:`TOOL_REPLY` and the conversation continues. The fork ends at the first reply without tool calls.
-* **Output:** files parsed from fenced blocks whose first line is ``path: <relative path>``, from the reply text and
-  from every tool call's arguments. Only ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are
+* **Output:** files parsed from fenced blocks that a ``path: <relative path>`` names (:func:`blocks`: on the fence
+  line, as the block's first line, or right before the fence), from the reply text and from every tool call's
+  arguments. Only ``candidates/<name>.py``, ``cases/<name>.json`` and ``notes.md`` are
   written; anything else is refused and listed. Then ``fork.json``.
 
 Operational guards, which are run safety and not design: :data:`QUOTA_BYTES` and :data:`QUOTA_FILES` per episode,
@@ -39,20 +41,72 @@ ALLOWED = (
     re.compile(r"cases/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.json"),
     re.compile(r"notes\.md"),
 )
-_FENCE = re.compile(
-    r"^(?P<fence>`{3,}|~{3,})[^\n]*\n(?P<body>.*?)^(?P=fence)[ \t]*$",
-    re.M | re.S,
-)
-_PATH = re.compile(r"\A[ \t]*path:[ \t]*(?P<rel>[^\n]*?)[ \t]*\n")
+_OPEN = re.compile(r"(?P<fence>`{3,}|~{3,})(?P<info>[^\n]*)\Z")
+_PATH_LINE = re.compile(r"[ \t]*path:[ \t]*(?P<rel>[^\n]*?)[ \t]*\Z")
+
+
+def _fenced(lines: list[str]) -> list[tuple[int, int, str]]:
+    """(opening line, closing line, info string) of each fenced block: a line starting with three or more backticks or
+    tildes, closed by the first later line that is exactly the same fence (trailing blanks allowed).
+    """
+    out, i = [], 0
+    while i < len(lines):
+        m = _OPEN.match(lines[i])
+        if m:
+            close = next(
+                (
+                    j
+                    for j in range(i + 1, len(lines))
+                    if lines[j].rstrip(" \t") == m.group("fence")
+                ),
+                None,
+            )
+            if close is not None:
+                out.append((i, close, m.group("info")))
+                i = close + 1
+                continue
+        i += 1
+    return out
 
 
 def blocks(text: str) -> list[tuple[str, str]]:
-    """(relative path, content) for each fenced block of *text* whose first line is ``path: <rel>``."""
+    """(relative path, content) for each fenced block of *text* that a ``path: <rel>`` names. The fork's replies used
+    four shapes (0f, replay of 10 Oct), all accepted:
+
+    * the fence's info string is ``path: <rel>``;
+    * the block's first line is ``path: <rel>`` (the rest is the content);
+    * the line right before the fence is ``path: <rel>``;
+    * the block right before it holds only ``path: <rel>``, and its closing fence is right before this one's opening.
+
+    A path names only the block right after it: a blank line or prose between names nothing, and a block holding only
+    a path line stages nothing itself.
+    """
+    lines = text.split("\n")
     out = []
-    for m in _FENCE.finditer(text):
-        p = _PATH.match(m.group("body"))
-        if p:
-            out.append((p.group("rel"), m.group("body")[p.end() :]))
+    pending: tuple[int, str] | None = (
+        None  # (the line a following fence must open on, the path)
+    )
+    for start, end, info in _fenced(lines):
+        body = lines[start + 1 : end]
+        named = _PATH_LINE.fullmatch(info)
+        inner = _PATH_LINE.fullmatch(body[0]) if body else None
+        rel = None
+        if named:
+            rel = named.group("rel")
+            if inner and inner.group("rel") == rel:
+                body = body[1:]
+        elif inner:
+            if not any(line.strip() for line in body[1:]):
+                pending = (end + 1, inner.group("rel"))
+                continue
+            rel, body = inner.group("rel"), body[1:]
+        elif pending and pending[0] == start:
+            rel = pending[1]
+        elif start > 0 and (before := _PATH_LINE.fullmatch(lines[start - 1])):
+            rel = before.group("rel")
+        pending = None
+        if rel is not None:
+            out.append((rel, "".join(line + "\n" for line in body)))
     return out
 
 
