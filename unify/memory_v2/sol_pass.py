@@ -509,6 +509,37 @@ def _fixture_call(
     return f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
 
 
+def _identical(
+    shown: dict[str, tuple[str, str]],
+    cov: Any,
+    eid: str,
+    part: str,
+    data: bytes,
+) -> str | None:
+    """Design r2 §1 (RUNTIME P2): when *part*'s whole recorded bytes equal a part already shown COMPLETE in this
+    pass, credit it with that source and return the one-line reference; else None (the part is shown).
+    """
+    if not data or cov.part_done(eid, part):
+        return None
+    key = hashlib.sha256(data).hexdigest()
+    src = shown.get(key)
+    if src is None or src == (eid, part):
+        return None
+    cov.credit_identical(eid, part, src)
+    return f"identical to {src[0]}/{src[1]} (sha256 {key[:12]}), already shown in full; covered"
+
+
+def _shown_complete(
+    shown: dict[str, tuple[str, str]],
+    cov: Any,
+    eid: str,
+    part: str,
+    data: bytes,
+) -> None:
+    if data and cov.part_done(eid, part):
+        shown.setdefault(hashlib.sha256(data).hexdigest(), (eid, part))
+
+
 def _with_fixtures(manifest: object, made: dict) -> object:
     """The harness's fixture provenance replaces whatever the manifest says under ``fixtures`` (spec v2.1 §7.4)."""
     if not isinstance(manifest, dict):
@@ -1640,6 +1671,8 @@ class SolPass:
         self.messages: list[dict] = []
         # v2.1: fixture provenance the fixture tool recorded this pass (spec §7.4); the manifest's own is ignored
         self.fixtures_made: dict[str, dict] = {}
+        # v2.1 (design r2 §1, RUNTIME P2): sha256 of a part shown complete in this pass -> (episode, part)
+        self._shown_full: dict[str, tuple[str, str]] = {}
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -1981,7 +2014,13 @@ class SolPass:
         return _check_reply(reasons), None
 
     @staticmethod
-    def _read_parts(ep: Episode, eid: str, parts: object, cov: _views.Coverage) -> str:
+    def _read_parts(
+        ep: Episode,
+        eid: str,
+        parts: object,
+        cov: _views.Coverage,
+        shown: dict[str, tuple[str, str]] | None = None,
+    ) -> str:
         """``read_episode(parts=[...])``: up to READ_PARTS_PER_CALL parts sharing ONE VIEW_BYTES page, filled in
         order. Each part has its own marked view and is credited for the range shown; a part reached with the
         page full is listed, not shown. A part is a name or ``{"part": name, "offset": n}``.
@@ -2009,13 +2048,24 @@ class SolPass:
             items.append((name, off, data))
         left, out = _views.VIEW_BYTES, []
         for name, off, data in items:
+            canon = _bm.canonical_part(ep, name)
+            same = (
+                _identical(shown, cov, eid, canon, data)
+                if shown is not None and off == 0
+                else None
+            )
+            if same is not None:
+                out.append(f"== {name} ==\n{same}")
+                continue
             if left <= 0:
                 out.append(
                     f"== {name} ==\nnot shown (page full): read again with parts={json.dumps([name])}",
                 )
                 continue
             text, a, b = _views.view_range(data, off, left)
-            cov.credit(eid, _bm.canonical_part(ep, name), a, b)
+            cov.credit(eid, canon, a, b)
+            if shown is not None:
+                _shown_complete(shown, cov, eid, canon, data)
             left -= b - a
             out.append(f"== {name} ==\n{text}")
         return "\n\n".join(out)
@@ -2055,10 +2105,25 @@ class SolPass:
             if "parts" not in args:
                 part = str(args.get("part", ""))
                 data = _bm.part_text(eps[eid], part).encode()
+                canon = _bm.canonical_part(eps[eid], part)
+                same = (
+                    _identical(self._shown_full, cov, eid, canon, data)
+                    if offset == 0
+                    else None
+                )
+                if same is not None:
+                    return same
                 text, a, b = _views.view_range(data, offset)
-                cov.credit(eid, _bm.canonical_part(eps[eid], part), a, b)
+                cov.credit(eid, canon, a, b)
+                _shown_complete(self._shown_full, cov, eid, canon, data)
                 return text
-            return self._read_parts(eps[eid], eid, args.get("parts"), cov)
+            return self._read_parts(
+                eps[eid],
+                eid,
+                args.get("parts"),
+                cov,
+                self._shown_full,
+            )
         except (
             OSError,
             KeyError,
@@ -2229,6 +2294,7 @@ class SolPass:
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
         self.fixtures_made = {}
+        self._shown_full = {}
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):

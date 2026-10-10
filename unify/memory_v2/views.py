@@ -234,6 +234,9 @@ class Coverage:
                     )
         self._ranges: dict[tuple[str, str], list[tuple[int, int]]] = {}
         self.dismissed: dict[str, str] = {}
+        # design r2 §1: parts credited because identical bytes were already shown complete in this pass, with
+        # that source
+        self.identical: dict[tuple[str, str], tuple[str, str]] = {}
 
     def credit(self, eid: str, part: str, a: int, b: int) -> None:
         rs = sorted(self._ranges.get((eid, part), []) + [(a, b)])
@@ -266,6 +269,14 @@ class Coverage:
         self.dismissed[eid] = reason
         return "ok"
 
+    def credit_identical(self, eid: str, part: str, source: tuple[str, str]) -> None:
+        """Credit *part* whole: its bytes equal *source*'s, already shown complete in this pass (RUNTIME P2)."""
+        self.credit(eid, part, 0, self.sizes[(eid, part)])
+        self.identical[(eid, part)] = tuple(source)
+
+    def part_done(self, eid: str, part: str) -> bool:
+        return self._part_done(eid, part)
+
     def missing(self) -> list[str]:
         return [
             e for e in self.required if not self._covered(e) and e not in self.dismissed
@@ -273,7 +284,7 @@ class Coverage:
 
     def summary(self) -> dict:
         covered = [e for e in self.required if self._covered(e)]
-        return {
+        out = {
             "episodes": len(self.required),
             "covered": len(covered),
             "dismissed": {e: r for e, r in self.dismissed.items() if e not in covered},
@@ -289,6 +300,14 @@ class Coverage:
                 self._bytes_read(e, p) for e, ps in self.required.items() for p in ps
             ),
         }
+        if (
+            self.identical
+        ):  # design r2 §1: present only when a part was credited as identical
+            out["identical_parts"] = {
+                f"{e}/{p}": f"{se}/{sp}"
+                for (e, p), (se, sp) in sorted(self.identical.items())
+            }
+        return out
 
     def _bytes_read(self, eid: str, part: str) -> int:
         n = self.sizes[(eid, part)]
