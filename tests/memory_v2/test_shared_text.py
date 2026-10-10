@@ -37,7 +37,7 @@ def test_shared_blocks_edge_cases(tmp_path):
     shared_text.update_counts(ev, "e1", PRE)
     sh = shared_text.shared(ev)
     assert shared_text.mark(PRE, sh).startswith(
-        "[shared request text ",
+        "[shared:",
     )  # the whole request is the block
     short = "A heading\n\nbody"
     for i in range(3):
@@ -71,7 +71,7 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
         sol.run(PassRequest("incremental", "svc", list(eps), False), "p1"),
     )
     request = json.loads(model.outputs["r"])
-    assert request.startswith("[shared request text ") and request.endswith("Task 1")
+    assert request.startswith("[shared:") and request.endswith("Task 1")
     bmap = (
         json.loads(model.outputs["m"].split("\n[…")[0])
         if model.outputs["m"].startswith("{")
