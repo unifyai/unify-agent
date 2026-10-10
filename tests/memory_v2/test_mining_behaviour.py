@@ -86,6 +86,9 @@ def test_plain_data_round_trips_and_other_values_are_refused():
         "f": 1.5,
         "n": None,
         "ss": {frozenset({1, 2})},
+        "dec": __import__("decimal").Decimal("1.10"),
+        "d": __import__("datetime").date(2026, 10, 1),
+        "dt": __import__("datetime").datetime(2026, 10, 1, 9, 30),
     }
     assert b.dec(json.loads(json.dumps(b.enc(v)))) == v
     with pytest.raises(b.NotPlain):

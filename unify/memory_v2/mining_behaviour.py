@@ -8,8 +8,8 @@ DreamCoder and TroVE):
 1. **Replay.** Each episode's successful cells are re-run in order, in a fresh interpreter inside a bubblewrap box
    (no network, read-only root, a private ``/tmp``, process limits, a per-cell alarm). At the first execution of
    each substantive unit (a tier-(a) statement or cell of at least :data:`MIN_NODES` AST nodes) the values of its
-   free names are snapshotted. Only plain data (numbers, strings, lists, tuples, dicts, sets) leaves the box, as
-   tagged JSON; the host never unpickles or executes anything it receives.
+   free names are snapshotted. Only plain data (numbers including ``Decimal``, strings, dates, lists, tuples,
+   dicts, sets) leaves the box, as tagged JSON; the host never unpickles or executes anything it receives.
 2. **Cross-run.** Every unit is run, again in a box, on other units' snapshots: its free names are bound to the other
    unit's values by type (a grid to a grid, an int to an int, trying orders when a type repeats), and its literal
    parameters (numbers other than -1, 0 and 1, and strings) are bound to its own values, to the other unit's in
@@ -41,6 +41,8 @@ import ast
 import asyncio
 import builtins
 import contextlib
+import datetime as _dt
+import decimal
 import io
 import itertools
 import json
@@ -102,6 +104,12 @@ def enc(value, _count=None):
             "t": "d",
             "v": [[enc(k, count), enc(v, count)] for k, v in value.items()],
         }
+    if isinstance(value, decimal.Decimal):
+        return {"t": "dec", "v": str(value)}
+    if isinstance(value, _dt.datetime):  # before date: a datetime is a date
+        return {"t": "dt", "v": value.isoformat()}
+    if isinstance(value, _dt.date):
+        return {"t": "date", "v": value.isoformat()}
     raise NotPlain(f"non-plain input: {type(value).__name__}")
 
 
@@ -120,6 +128,12 @@ def dec(data, hashable: bool = False):
             return {dec(k, True): dec(x) for k, x in v}
         if t == "f":
             return float(v)
+        if t == "dec":
+            return decimal.Decimal(v)
+        if t == "dt":
+            return _dt.datetime.fromisoformat(v)
+        if t == "date":
+            return _dt.date.fromisoformat(v)
     return data
 
 
@@ -150,7 +164,7 @@ def canonical(value, unordered: bool = False) -> str:
 def kind(value) -> str:
     if isinstance(value, bool):
         return "bool"
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, decimal.Decimal)):
         return "num"
     if isinstance(value, str):
         return "str"
