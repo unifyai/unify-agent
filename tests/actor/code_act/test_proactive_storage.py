@@ -28,6 +28,7 @@ from unify.actor.code_act_actor import (
     _STORAGE_WHAT_CAN_BE_STORED,
     _start_proactive_storage_loop,
 )
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Reusable GuidanceManager stand-in (same as test_storage_function_and_guidance)
@@ -208,6 +209,8 @@ async def test_store_skills_tool_absent_without_guidance_manager():
             pass
 
 
+# as_shipped: deleted in step 5 (store_skills as a JSON tool on every turn)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
@@ -254,6 +257,8 @@ async def test_store_skills_filtered_when_can_store_false():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (store_skills as a JSON tool on every turn)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(120)
@@ -375,8 +380,6 @@ async def test_storage_check_receives_proactive_summaries():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -452,8 +455,6 @@ async def test_storage_check_no_proactive_summaries_passes_none():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor_mock = MagicMock()
@@ -510,8 +511,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],
@@ -523,8 +522,6 @@ async def test_proactive_storage_loop_returns_none_without_managers():
 
     result = _start_proactive_storage_loop(
         trajectory=[],
-        ask_tools={},
-        completed_tool_metadata={},
         actor=actor_mock,
         request="store something",
         parent_lineage=[],
@@ -591,8 +588,6 @@ async def test_proactive_storage_publishes_manager_method_events():
     mock_handle._client = MagicMock()
     mock_handle._client.messages = [{"role": "user", "content": "test"}]
     mock_handle._task = MagicMock()
-    mock_handle._task.get_ask_tools = MagicMock(return_value={})
-    mock_handle._task.get_completed_tool_metadata = MagicMock(return_value={})
     ctx.handle = mock_handle
 
     token = _CURRENT_AGENT_CONTEXT.set(ctx)

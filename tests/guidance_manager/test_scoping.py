@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from unify.guidance_manager.guidance_manager import GuidanceManager
 from tests.helpers import _handle_project
 
@@ -127,6 +129,7 @@ def test_scope_and_exclusion_combined():
 # -- search respects scope/exclusion --------------------------------------
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_respects_filter_scope():
     gm = GuidanceManager()
@@ -141,6 +144,7 @@ def test_search_respects_filter_scope():
     gm.filter_scope = None
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_respects_exclude_ids():
     gm = GuidanceManager()

@@ -87,7 +87,7 @@ This is how the user can redirect an agent mid-task without the overhead of stop
 
 ### Steering code that is already running
 
-**Files:** `unify/function_manager/steering.py`, `steering_patcher.py`
+**File:** `unify/function_manager/steering.py`
 
 Between LLM turns is not enough for `execute_code` and `execute_function`,
 whose work happens *inside* one tool call. A correction arriving four sends
@@ -115,9 +115,10 @@ parts:
   begins and discarded when it returns. That bound is what makes the rest
   sound: no cache key can outlive the execution it describes.
 
-The patch itself is written by an LLM owned by the execution engine
-(`steering_patcher`), given the running source and the calls already
-completed, and restricted to rewriting functions the block defines.
+The patch writer (an LLM given the running source and the calls already
+completed) went with the loop trim: nothing in the harness writes a patch any
+more. What stays is the cell-side checkpoint progress, which a failed cell
+reports to the model.
 
 Two limits. Replay records that a side effect happened; it cannot undo one, so
 invalidation is explicit rather than inferred. And a probe only runs when the
@@ -246,7 +247,7 @@ Each library follows the same pattern:
 
 ## The ConversationManager
 
-**File:** `unify/conversation_manager/conversation_manager.py`
+**File:** `unify/legacy/conversation_manager/conversation_manager.py`
 
 The ConversationManager is the top-level orchestrator for the live conversation. It has a different design from the actor and the libraries because it handles real-time interaction: it sees the full picture — the chat thread, notifications, in-flight actions, system state — and makes deliberate decisions about what to do. It uses a single-shot tool decision pattern (one LLM call → one action) rather than a multi-turn loop, because the user might send another message at any moment.
 
@@ -330,23 +331,6 @@ This three-layer separation prevents prompt injection between nesting levels and
 
 ---
 
-## Multi-request coordination
-
-**File:** `unify/common/_async_tool/multi_handle.py`
-
-A single tool loop can serve **multiple concurrent requests** through the `MultiHandleCoordinator`. Each request gets:
-
-- A unique `request_id`
-- Its own clarification and notification queues
-- Independent completion/cancellation
-- Tagged interjections so the LLM knows which request a message belongs to
-
-The LLM calls `final_answer(request_id, answer)` to complete specific requests. The loop continues until all requests are done (or persists indefinitely if `persist=True`).
-
-This is used by the ConversationManager to handle multiple user messages that arrive while the brain is already processing — rather than queuing them sequentially, they're multiplexed through a shared loop with shared context.
-
----
-
 ## Testing
 
 **Directory:** `tests/`
@@ -388,7 +372,7 @@ The core architecture (handles, loops, CodeAct, the libraries) is independent of
 ```
 unify/
 ├── unify/
-│   ├── cli.py                          # Terminal chat, `python -m unify`
+│   ├── cli.py                          # `unify act` (the default), `python -m unify`
 │   ├── workspace.py                    # The assistant's working directory
 │   ├── db.py                           # The store: five tables, two views, read-only path for model SQL
 │   ├── common/
@@ -396,17 +380,15 @@ unify/
 │   │   └── _async_tool/
 │   │       ├── loop.py                 # async_tool_loop_inner (the engine)
 │   │       ├── loop_config.py          # LoopConfig, TOOL_LOOP_LINEAGE
-│   │       ├── multi_handle.py         # MultiHandleCoordinator
 │   │       ├── propagation_mode.py     # ChatContextPropagation enum
 │   │       ├── context_compression.py  # Transparent context compression
-│   │       ├── dynamic_tools_factory.py # Runtime tool generation
 │   │       └── messages.py             # forward_handle_call, mirror dispatch
 │   ├── actor/
 │   │   ├── base.py                     # BaseActor, BaseCodeActActor
 │   │   ├── code_act_actor.py           # CodeActActor implementation
 │   │   ├── execution/                  # PythonExecutionSession, sandbox
 │   │   └── environments/               # Pluggable execution environments
-│   ├── conversation_manager/
+│   ├── legacy/conversation_manager/  # legacy, unused, unsupported
 │   │   ├── conversation_manager.py     # ConversationManager (the interaction loop)
 │   │   ├── events.py                   # Chat and actor events on the broker
 │   │   └── domains/

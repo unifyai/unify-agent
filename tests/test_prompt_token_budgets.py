@@ -9,6 +9,7 @@ every landed cut is banked by tightening the constant to the new size.
 
 from __future__ import annotations
 
+from unify.actor.core_surface import PromptSurface
 import json
 
 import pytest
@@ -19,10 +20,9 @@ from unify.manager_registry import ManagerRegistry
 pytestmark = pytest.mark.no_unify_context
 
 # Budgets sit just above the measured rendered size at the last tightening.
-ACTOR_SYSTEM_PROMPT_BUDGET = 10_400
+ACTOR_SYSTEM_PROMPT_BUDGET = 4_000
 ACTOR_ACT_TOOL_SCHEMAS_BUDGET = 14_500
 STORAGE_REVIEW_DOCTRINE_BUDGET = 4_700
-CM_SYSTEM_PROMPT_BUDGET = 11_100
 
 
 @pytest.fixture(autouse=True)
@@ -49,9 +49,8 @@ def _actor_system_prompt() -> str:
 
     return build_code_act_prompt(
         environments={"primitives": ActorEnvironment()},
-        tools=dict(_simulated_actor().get_tools("act")),
         can_store=True,
-        discovery_first_policy=True,
+        core=PromptSurface(),
     )
 
 
@@ -67,34 +66,14 @@ def _actor_act_tool_schemas() -> str:
 
 
 def _storage_review_doctrine() -> str:
-    # The static prefix every skill-librarian loop pays, in prompt order.
+    # The static prefix every skill-librarian loop pays, in prompt order: the
+    # minimal rulebook (baked in at the code freeze) and the instructions.
     from unify.actor.code_act_actor import (
-        _STORAGE_BASE_INSTRUCTIONS,
-        _STORAGE_RECURRING_DELIVERABLE,
-        _STORAGE_SUB_AGENT_PATTERNS,
-        _STORAGE_TWO_STORES,
-        _STORAGE_WHAT_CAN_BE_STORED,
+        _storage_base_instructions,
+        _storage_doctrine_sections,
     )
 
-    return "".join(
-        [
-            _STORAGE_WHAT_CAN_BE_STORED,
-            _STORAGE_TWO_STORES,
-            _STORAGE_SUB_AGENT_PATTERNS,
-            _STORAGE_RECURRING_DELIVERABLE,
-            _STORAGE_BASE_INSTRUCTIONS,
-        ],
-    )
-
-
-def _cm_system_prompt() -> str:
-    from unify.conversation_manager.prompt_builders import build_system_prompt
-
-    return build_system_prompt(
-        bio="A helpful assistant.",
-        first_name="Alice",
-        surname="Smith",
-    ).flatten()
+    return _storage_doctrine_sections() + _storage_base_instructions()
 
 
 _CASES = {
@@ -107,7 +86,6 @@ _CASES = {
         _storage_review_doctrine,
         STORAGE_REVIEW_DOCTRINE_BUDGET,
     ),
-    "cm_system_prompt": (_cm_system_prompt, CM_SYSTEM_PROMPT_BUDGET),
 }
 
 

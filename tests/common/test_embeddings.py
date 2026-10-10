@@ -18,7 +18,12 @@ from unify.common.semantic_search import rank_by_similarity
 from unify.settings import SETTINGS
 
 
-@pytest.fixture(params=[False, True], ids=["openrouter", "local"])
+@pytest.fixture(
+    params=[
+        pytest.param(False, id="openrouter", marks=pytest.mark.requires_provider_key),
+        pytest.param(True, id="local"),
+    ],
+)
 def embedders(request, monkeypatch):
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", request.param)
 
@@ -68,6 +73,7 @@ def test_repeated_texts_come_from_the_cache(embedders, monkeypatch):
     assert (embed(texts) == first).all()
 
 
+@pytest.mark.requires_provider_key
 def test_embedders_never_share_vectors(monkeypatch):
     text = ["Archive the quarterly board minutes."]
     monkeypatch.setattr(SETTINGS, "UNIFY_LOCAL_EMBEDDINGS", False)

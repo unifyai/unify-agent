@@ -489,6 +489,7 @@ def test_filter_functions_include_implementations():
     assert "name" in hits[0]  # Other fields still present
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_include_implementations():
     """search_functions respects include_implementations parameter."""
@@ -516,6 +517,7 @@ def test_search_functions_include_implementations():
     assert "name" in user_funcs[0]  # Other fields still present
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_matches_meaning_not_words():
     """A query that shares no words with a function's name or docstring finds it."""
@@ -582,8 +584,15 @@ def test_clear():
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture
+def python_in_process(monkeypatch):
+    """Python in process (the function manager's in-process mode, for non-actor callers): ``_inject_dependencies`` loads stored callees into this process. With the
+    sandboxed worker it refuses (tests/actor/code_act/test_bind_load_confinement.py)."""
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
+
+
 @_handle_project
-def test_inject_dependencies_resolves_actor_act():
+def test_inject_dependencies_resolves_actor_act(python_in_process):
     """_inject_dependencies injects a Primitives instance for 'primitives.actor.act' deps.
 
     When a stored function declares depends_on=["primitives.actor.act"],
@@ -611,7 +620,7 @@ def test_inject_dependencies_resolves_actor_act():
 
 
 @_handle_project
-def test_inject_dependencies_actor_idempotent():
+def test_inject_dependencies_actor_idempotent(python_in_process):
     """Injecting "primitives.actor.act" twice doesn't replace or duplicate the namespace entry."""
     fm = _FM()
 

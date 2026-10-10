@@ -1,0 +1,169 @@
+"""Spec §12.4 (P7 Task 2): the three prompts, and everything else the actor or the writer reads under v2.1, checked
+for conflicting instructions. Each rule lives in its role's prompts only, and no retired v2 rule survives.
+
+The surfaces come from P2 (repair and drafts messages), P3 (the rendered section and generated files) and P6
+(the CURATE inputs); those tests run once they are integrated."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from unify.memory_v2 import prompts_v21 as pv
+from unify.memory_v2.integration.switch import v21_conflicts
+from unify.memory_v2.sol_pass import sol_tools
+
+
+def _prompts():
+    return {
+        "guide": pv.GUIDE_V21,
+        "write": pv.write_brief_now(),
+        "curate": pv.curate_brief_now(),
+    }
+
+
+def _integrated():
+    for name in (
+        "unify.memory_v2.repair",
+        "unify.memory_v2.drafts",
+        "unify.memory_v2.library_export",
+        "unify.memory_v2.library_index",
+        "unify.memory_v2.code_lint",
+        "unify.memory_v2.curate",
+        "tests.memory_v2.test_layout",
+    ):
+        pytest.importorskip(name)
+
+
+def _surfaces(tmp_path):
+    from tests.memory_v2.test_layout import _tree
+    from unify.memory_v2 import catalogue, drafts, library_export, repair
+    from unify.memory_v2.gate import CHECKS, GateResult
+    from unify.memory_v2.integration import prompt
+
+    out = dict(_prompts())
+    root = _tree(tmp_path / "lib")
+    catalogue.write_files(root, library_export.generated_v21(root))
+    out["section"] = prompt.render_memory_v21(root)[0]
+    for tool in sol_tools(v21=True):
+        out[f"tool:{tool['function']['name']}"] = tool["function"]["description"]
+    out["repair"] = repair.repair_message(
+        1,
+        "/inputs/gate/result-0.md",
+        GateResult(False, {c: True for c in CHECKS}),
+    )
+    out["drafts"] = drafts.drafts_message(
+        [{"pass_id": "e1.p0", "items": ["memory.text.dates:parse_date"]}],
+        True,
+    )
+    return out
+
+
+def test_no_v2_rule_survives(tmp_path):
+    _integrated()
+    for name, text in _surfaces(tmp_path).items():
+        low = text.lower()
+        for retired in pv.V2_RETIRED:
+            assert retired.lower() not in low, (name, retired)
+        assert pv.benchmark_words(text) == [], name
+        assert pv.example_checks(text) == [], name
+
+
+def test_each_rule_lives_in_its_roles_prompts_only():
+    _integrated()
+    texts = _prompts()
+    assert len({r[0] for r in pv.RULES}) == len(pv.RULES)
+    for rule, _spec, owners, phrase in pv.RULES:
+        for role, text in texts.items():
+            if role in owners:
+                assert phrase in text, (rule, role)
+            else:
+                assert phrase not in text, (rule, role)
+
+
+def test_the_v21_tool_descriptions_hold_no_retired_rule():
+    for tool in sol_tools(v21=True):
+        text = tool["function"]["description"]
+        for retired in pv.V2_RETIRED:
+            assert retired.lower() not in text.lower(), (
+                tool["function"]["name"],
+                retired,
+            )
+        assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+
+
+def test_the_v21_check_description_names_no_channel_and_says_what_it_runs():
+    """P2 Amendment B: under v2.1 check() also runs the items' own tests and the drawn inputs."""
+    check = next(t for t in sol_tools(v21=True) if t["function"]["name"] == "check")[
+        "function"
+    ]["description"]
+    assert "channel" not in check and "static checks" in check
+    assert "not the tests" not in check
+    assert "the items' own tests and the recorded inputs the gate draws" in check
+    v2 = next(t for t in sol_tools() if t["function"]["name"] == "check")["function"][
+        "description"
+    ]
+    assert (
+        "covers and their channels" in v2 and "not the tests" in v2
+    )  # v2 is unchanged
+
+
+def test_v2_settings_that_contradict_v21_are_named_only_with_v21_on():
+    bad = SimpleNamespace(
+        UNIFY_MEMORY_V21="on",
+        UNIFY_MEMORY_V2_DOCSTRINGS="on",
+        UNIFY_MEMORY_V2_SURFACING="catalogue",
+        UNIFY_MEMORY_V2_QA_REPLAY="on",
+        UNIFY_MEMORY_V2_QA_FIXTURE_SIZE="on",
+    )
+    assert v21_conflicts(bad) == [
+        "UNIFY_MEMORY_V2_DOCSTRINGS=on",
+        "UNIFY_MEMORY_V2_SURFACING=catalogue",  # pragma: allowlist secret (a setting)
+        "UNIFY_MEMORY_V2_QA_REPLAY=on",
+        "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE=on",
+    ]
+    assert (
+        v21_conflicts(SimpleNamespace(**{**vars(bad), "UNIFY_MEMORY_V21": "off"})) == []
+    )
+    assert (
+        v21_conflicts(
+            SimpleNamespace(UNIFY_MEMORY_V21="on", UNIFY_MEMORY_V2_SURFACING="index"),
+        )
+        == []
+    )
+
+
+def test_what_to_read_names_every_part_required_parts_demands():
+    """T8 (P1): replies and changing actions are required parts, so the WRITE brief must say so (MAIN, 9 Oct)."""
+    from unify.memory_v2.batch_map import required_parts
+    from unify.memory_v2.episodes import Action
+    from tests.memory_v2.test_episodes import _ep
+
+    brief = pv.write_brief_now()
+    ep = _ep(
+        episode_id="e1",
+        actions=[Action(0, "acct", "pay", [], {}, {}, "ok", "write")],
+    )
+    assert "action:0" in required_parts(ep, [], [])
+    assert (
+        "every reply the working model sent and every action that changed something, with the cell it came from"
+        in " ".join(brief.split())
+    )
+
+
+def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):
+    """RUNTIME's review B2 (MAIN, 9 Oct): P6's gate refuses a deletion that is neither an alias nor `retired` with a
+    one-line reason, so the brief's manifest and its retire bullet name `retired`; and the brief's input paths are
+    the files CURATE's inputs are written to."""
+    from unify.memory_v2 import curate
+
+    brief = " ".join(pv.curate_brief_now().split())
+    assert '"retired": {"<retired id>": "<one-line reason>"}' in brief
+    assert "together with its tests, with a one-line reason in `retired`." in brief
+    from tests.memory_v2.test_curate import _state
+
+    written = curate.stage_inputs(tmp_path, _state())
+    assert {curate.OVERLAPS_INPUT, curate.SUSPECTS_INPUT, curate.TRIGGER_INPUT} <= set(
+        written,
+    )

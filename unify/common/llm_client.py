@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import re
+import secrets
 from pathlib import Path
 from typing import Any, Literal
 
@@ -118,6 +120,103 @@ def purpose_from_origin(origin: str | None) -> LLMPurpose | None:
     return None
 
 
+# ── UNIFY_REQUEST_METADATA_HEADERS ──────────────────────────────────────────
+# Four HTTP headers on every model call, so a proxy can attribute it. The
+# values are random or counted by the harness and never request content; the
+# request body is untouched (headers are not part of it).
+
+SESSION_HEADER = "X-Unify-Session"
+PARENT_HEADER = "X-Unify-Parent"
+REQUEST_HEADER = "X-Unify-Request"
+CALL_KIND_HEADER = "X-Unify-Call-Kind"
+MSG_COUNT_HEADER = "X-Unify-Msg-Count"
+
+#: Every header value matches this.
+HEADER_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_OUTSIDE_HEADER_CHARSET = re.compile(r"[^A-Za-z0-9_.:-]")
+
+
+def request_metadata_headers_enabled() -> bool:
+    """Whether ``UNIFY_REQUEST_METADATA_HEADERS=on``."""
+    return getattr(SETTINGS, "UNIFY_REQUEST_METADATA_HEADERS", "") == "on"
+
+
+def _header_value(text: Any) -> str:
+    """*text* in the header charset, at most 64 characters, never empty."""
+    value = _OUTSIDE_HEADER_CHARSET.sub("_", str(text or ""))[:64]
+    return value or "none"
+
+
+class _RequestMetadata:
+    """One client's header state: its session id, its parent's, and the
+    requester messages counted so far (see :func:`count_requester_message`)."""
+
+    __slots__ = ("session", "parent", "requests")
+
+    def __init__(self, parent: "_RequestMetadata | None" = None) -> None:
+        self.session = secrets.token_hex(8)
+        self.parent = parent.session if parent is not None else None
+        self.requests = parent.requests if parent is not None else 0
+
+
+def _install_request_metadata(
+    client: "unillm.AsyncUnify | unillm.Unify",
+    parent: "unillm.AsyncUnify | unillm.Unify | None" = None,
+) -> None:
+    """With ``UNIFY_REQUEST_METADATA_HEADERS=on``, add the headers to every
+    call *client* makes; off, *client* is left untouched.
+
+    The headers are merged into the call's ``extra_headers`` where unillm
+    has assembled the request (``_generate``), so ``X-Unify-Msg-Count``
+    counts the messages sent, and every retry (the tool-choice fallback's
+    included) carries them. A fork is a new client (unillm's ``copy()``
+    copies no instance attribute), so it gets its own session id.
+    """
+    if not request_metadata_headers_enabled():
+        return
+    state = _RequestMetadata(getattr(parent, "_unify_request_metadata", None))
+    client._unify_request_metadata = state
+    send = client._generate
+
+    def _generate(*args: Any, **kwargs: Any) -> Any:
+        messages = kwargs["messages"] if "messages" in kwargs else args[0]
+        headers = dict(kwargs.get("extra_headers") or {})
+        headers.update(_request_metadata_headers(client, state, messages))
+        kwargs["extra_headers"] = headers
+        return send(*args, **kwargs)
+
+    client._generate = _generate
+
+
+def _request_metadata_headers(
+    client: Any,
+    state: _RequestMetadata,
+    messages: Any,
+) -> dict[str, str]:
+    headers = {
+        SESSION_HEADER: state.session,
+        REQUEST_HEADER: str(state.requests),
+        CALL_KIND_HEADER: _header_value(getattr(client, "origin", None)),
+        MSG_COUNT_HEADER: str(len(messages or ())),
+    }
+    if state.parent is not None:
+        headers[PARENT_HEADER] = state.parent
+    return headers
+
+
+def count_requester_message(client: Any) -> None:
+    """A loop answering a requester took one more requester message.
+
+    ``X-Unify-Request`` on *client*'s later calls is the count: 1 from the
+    request the loop starts with, then one more for each later requester
+    message (the next request of a persistent session, or a message sent
+    while a request runs). A client without the headers is left alone.
+    """
+    state = getattr(client, "_unify_request_metadata", None)
+    if state is not None:
+        state.requests += 1
+
+
 def _build_llm_client(
     model: str,
     *,
@@ -152,6 +251,12 @@ def _build_llm_client(
         client.set_on_log_file_pending(pending_log.on_pending_path)
         client._pending_thinking_log = pending_log
 
+    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
+        from unify.common.tool_choice_fallback import install_tool_choice_fallback
+
+        install_tool_choice_fallback(client)
+
+    _install_request_metadata(client)
     return client
 
 
@@ -193,6 +298,46 @@ def new_llm_client(
         kwargs=kwargs,
         purpose=purpose,
     )
+
+
+def fork_llm_client(
+    parent: "unillm.AsyncUnify | unillm.Unify",
+    *,
+    origin: str,
+    purpose: LLMPurpose | None = None,
+    messages: list[dict] | None = None,
+) -> "unillm.AsyncUnify | unillm.Unify":
+    """A client that continues *parent*'s conversation under another origin.
+
+    Built with unillm's ``copy()``: the same model, system prompt, output
+    ceiling and prompt-caching targets. ``copy()`` restores the reasoning
+    effort *parent* was built with, so the effort it runs with now is set
+    again, and a cache affinity key (when the installed unillm has one) is
+    carried over so the fork reaches the replica holding the parent's
+    prefix. The transcript is *messages*, deep-copied, when given, else a
+    copy of the parent's. Nothing done on the fork reaches the parent.
+    """
+    fork = parent.copy()
+    if messages is not None:
+        fork._messages = copy.deepcopy(list(messages))
+    effort = getattr(parent, "reasoning_effort", None)
+    if effort is not None:
+        fork.set_reasoning_effort(effort)
+    affinity = getattr(parent, "cache_affinity", None)
+    if affinity is not None and hasattr(fork, "set_cache_affinity"):
+        fork.set_cache_affinity(affinity)
+    origin = tag_origin_with_purpose(origin, purpose)
+    fork.set_origin(origin)
+    if origin:
+        pending_log = PendingThinkingLog(origin)
+        fork.set_on_log_file_pending(pending_log.on_pending_path)
+        fork._pending_thinking_log = pending_log
+    if SETTINGS.UNIFY_TOOL_CHOICE_FALLBACK:
+        from unify.common.tool_choice_fallback import install_tool_choice_fallback
+
+        install_tool_choice_fallback(fork)
+    _install_request_metadata(fork, parent)
+    return fork
 
 
 def new_slow_brain_llm_client(

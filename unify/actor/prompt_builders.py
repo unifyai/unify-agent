@@ -1,105 +1,22 @@
 from __future__ import annotations
 
+import re
 import textwrap
 from typing import (
     Callable,
-    Dict,
     Optional,
     Mapping,
     TYPE_CHECKING,
 )
 
 if TYPE_CHECKING:
+    from unify.actor.core_surface import PromptSurface
     from unify.actor.environments.base import BaseEnvironment
 
 # ---------------------------------------------------------------------------
 # Static prompt content (inlined rather than wrapped in trivial functions)
 # ---------------------------------------------------------------------------
 
-_FUNCTION_AND_GUIDANCE_LIBRARY = textwrap.dedent("""
-    ### Function & Guidance Library
-
-    Two complementary stores (both read + write):
-
-    * **FunctionManager** — the *what*: concrete, reusable
-      function implementations (results carry `guidance_ids`).
-    * **GuidanceManager** — the *how*: procedures, SOPs,
-      walkthroughs, composition strategies (results carry `function_ids`).
-
-    **Discovery index scope:** Function search covers user-stored functions
-    **and** the built-in `primitives.*` catalogue — primitive rows come back
-    with `is_primitive`, `argspec`, and `docstring`. The exception:
-    callables already documented in this prompt (prompt-injected
-    functions and guidance) —
-    they never appear in search results, so empty discovery does **not**
-    mean a prompt-documented callable is unavailable; call it by exact
-    name via `execute_function`.
-
-    Always search **FunctionManager and GuidanceManager**
-    (`FunctionManager_search_functions`, `GuidanceManager_search`) before
-    deciding how to execute, then use what you find: call a relevant
-    function via `execute_function`, follow relevant guidance. Prefer healthy matches (empty
-    `stale_reasons`); stale entries are second-class — disclose the debt
-    if used and repair via update/re-link. A no-hit is **not** permission to immediately write new code.
-    Search is a discovery step, not an execution decision. After discovery,
-    choose the minimal correct execution path —
-    if the request or discovery step already identifies one exact function
-    or primitive call, use `execute_function`; use `execute_code` only
-    when the task genuinely requires multi-step composition. Search/filter results truncate long entries: when a
-    discovered entry is actually relevant, fetch the complete body with
-    `GuidanceManager_get_guidance` — do not act on a truncated preview.
-
-    #### Writing to the libraries
-
-    - **Guidance**: user-provided procedures to be remembered — persisting
-      them IS the task — go directly to `GuidanceManager_add_guidance`.
-      Guidance entries are the canonical home for durable shared rules
-      stored functions apply: when the user changes such a rule, update
-      the canonical entry FIRST (its `function_ids` are the authoritative
-      affected set), revise every linked function, and verify none was
-      missed — never add a second copy. A durable fact worth keeping (a
-      rate limit, a data quirk, a convention an API enforces) belongs in
-      the guidance entry or function docstring that acts on it.
-    - **Functions**: explicit user requests to add/update/delete functions
-      use `FunctionManager_add_functions` (`overwrite=True` to update) or
-      `FunctionManager_delete_function` directly.
-    - For skills discovered *during* execution, use `store_skills` —
-      a dedicated review extracts functions and compositional guidance
-      from the trajectory.
-
-    #### Function Execution Modes
-
-    Functions support execution mode overrides independent of the session's
-    `state_mode`:
-
-    | Mode | Syntax | Behavior |
-    |------|--------|----------|
-    | **stateful** (default) | `await func(...)` | Function's internal state persists across calls |
-    | **stateless** | `await func.stateless(...)` | Fresh environment, no inherited state |
-    | **read_only** | `await func.read_only(...)` | Sees current state, changes discarded |
-""").strip()
-
-_DISCOVERY_FIRST_POLICY = textwrap.dedent("""
-    ### Discovery-First Policy (Active) — HARD REQUIREMENT
-
-    A tool policy gates the full toolkit until each present library family
-    has been discovered: until then **only** FM / GM discovery tools
-    are available; the full tool set unlocks automatically once every
-    present gate has been called.
-
-    The CORRECT procedure:
-    1. Your **first tool-calling assistant message** includes every present
-       discovery family as parallel tool_calls in that same message:
-       `FunctionManager_search_functions` (with a non-empty `query`) and
-       `GuidanceManager_search` — omitting only families whose tools are
-       absent. Do not answer in plain text
-       first, do not serialize families across turns, and call only tools
-       that appear in the current tool list.
-    2. Then choose the minimal correct execution path:
-       if one exact function or primitive call is enough, use execute_function;
-       use execute_code only when the task genuinely needs multi-step
-       composition, branching, iteration, or combining intermediate results.
-""").strip()
 
 _TOOL_SELECTION = textwrap.dedent("""
     ### Tool Selection: `execute_function` vs `execute_code`
@@ -110,115 +27,9 @@ _TOOL_SELECTION = textwrap.dedent("""
       (branching, loops, combining intermediate results); a
       `print()`, `await handle.result()`, or temporary variable around a
       single call is boilerplate, not composition.
-    - **Handle adoption:** `execute_function` structurally guarantees the
-      returned handle is exposed to the outer loop for steering (ask,
-      stop, pause, resume). Inside `execute_code` a handle is only
-      adopted when it is the **last expression** — never consume a handle
-      inside a code block (print it, await-and-discard it) when the loop
-      needs steering.
-    - **Handle lifetime:** an adopted handle is steerable while its work
-      runs, and its completion is the outcome to report — never pause a
-      handle or relaunch finished work to keep it open for corrections
-      that have not arrived.
     - Procedures are **not** primitives — use the GuidanceManager JSON
       tools (`GuidanceManager_search`, `GuidanceManager_add_guidance`, …)
       directly.
-
-    ### Responding to a steering checkpoint
-
-    A running block suspends when a correction reaches it, and you get a
-    turn carrying the interjection and a progress report. Work already
-    done has already happened — a replacement block must not repeat it.
-    `steer(call_id=<id>, action="stop")` abandons the block (choose when the
-    correction changes the *remaining* work — an irreversible step the
-    correction was meant to prevent is worse than a discarded plan);
-    `steer(call_id=<id>, action="interject", payload=<text>)` resumes it as
-    written, the text available via `steering.messages` (choose when the
-    remaining work is unchanged). Do not stop on every interjection either.
-    When a correction concerns work already running in `primitives.*`
-    handles, route it via `handle.interject(...)` rather than restarting the
-    plan — `steer` is for handles the outer async tool loop is tracking for
-    you, not for handles you are holding directly in code.
-
-""").strip()
-
-_PYTHON_FIRST = textwrap.dedent("""
-    ### Python First
-
-    Every cell is Python. Prefer Python packages over shell CLI tools:
-    packages install via the `install_python_packages` JSON tool into
-    the one persistent workspace environment, where they stay for every
-    later task. When a task genuinely needs a CLI, run it from Python
-    with `subprocess` (or `asyncio.create_subprocess_exec`) and work
-    with its output as data.
-""").strip()
-
-_EXECUTION_RULES = textwrap.dedent("""
-    ### Execution Rules
-
-    1. **Sessions**: Python cells share one persistent sandbox for the
-       whole task — a notebook, not one-shot scripts. Bind results to
-       variables and compose later cells on them instead of re-fetching;
-       print only what the next decision needs, not whole payloads.
-       `list_sessions()` / `inspect_state()` rediscover live sessions
-       and names — variables survive context compression, since state
-       lives in the sandbox, not the transcript. Isolate a cell with
-       `state_mode="stateless"` or a named session; fan out in parallel
-       inside one cell, not across cells. `del` bulky intermediates. An
-       unexpected `NameError` on a known name usually means the sandbox
-       restarted — re-derive or re-fetch, never assume the value came
-       back.
-
-    2. **Async parallelism**: never wrap work in bare `asyncio.run(...)`
-       — the runtime already owns a loop; a sync façade uses the injected
-       `run_coro_sync(factory)` helper instead. Run independent I/O
-       concurrently with `asyncio.gather` / `TaskGroup` rather than a
-       serial per-item `await` loop; bound fan-out with a semaphore for
-       rate-limited APIs.
-
-    3. **Structured outputs**: define Pydantic models in the code and
-       call `model_rebuild()` on the outermost model.
-
-    4. **Notifications**:
-       - The user hears **only** what you send through the
-         `send_notification` tool — surface progress with it between
-         steps (concrete, user-facing, high-level; no filler, no internal
-         diagnostics), and when the whole task is done give the final
-         answer as a tool-less assistant message, never as a notification.
-       - Set `completed=True` only when the described work is
-         **verifiably finished**. Notifications surfacing a blocker or
-         requesting user action are in-progress — send them **before**
-         entering the wait loop (a notification gated on the blocked step
-         deadlocks).
-
-    5. **Verify outcomes against evidence**: after a mutation or
-       extraction, confirm the outcome from real evidence (return values,
-       a re-read) — a step that ran is not a step that worked. If the result rests on an unverified choice between
-       plausible alternatives, request clarification; if the evidence
-       contradicts the result, fix and re-run.
-
-    6. **Final answer**: when the request is fully addressed, you **MUST**
-       provide the final answer directly as a tool-less assistant message
-       — never via a tool call. End it with a brief **Uncertainties**
-       section listing the judgment calls you were least confident about
-       (only decisions that could materially affect the output).
-
-    7. **Data provenance — never present model knowledge as sourced
-       data**: when an external source fails, do **not** fill the gap with
-       realistic-looking records generated from memory — fabricated
-       records look authoritative but cannot be verified. Report the
-       source unavailable and offer alternatives; model-knowledge context
-       must be labelled as such, never formatted as sourced records.
-
-    8. **Proactive clarification**: when `request_clarification` is
-       available and a decision about user data is consequential (the user
-       would have to review and undo mistakes), prefer asking over
-       guessing — after initial exploration, after a small representative
-       batch, or on precedent-setting ambiguous cases; never about trivial
-       choices. Your request arrives self-contained: when it depends on
-       context you were not given (identifiers, scope, preferences it
-       assumes), ask via `request_clarification` rather than guessing
-       what the caller meant.
 """).strip()
 
 
@@ -227,18 +38,105 @@ _EXECUTION_RULES = textwrap.dedent("""
 # must not offer one.
 _PRIMITIVES_GLOBAL_ROW = "| `primitives` | `await primitives.actor.act(...)` spawns a sub-actor; `help(primitives.actor.act)` reads its live docs |\n"
 
-_SUB_ACTOR_DIAL = textwrap.dedent("""
-    - Plain code -> `query_llm(...)` -> a sub-agent
-      (`primitives.actor.act`) is a dial, not a mode switch: take
-      the lowest notch that preserves the judgment. Exact logic is
-      plain code; a bounded judgment is one `query_llm(...)` call
-      nested in your control flow; reserve a sub-agent for
-      sub-tasks whose plan must be discovered at runtime.
-""").lstrip()
+
+# ---------------------------------------------------------------------------
+# UNIFY_REPLY_CHANNEL: the reply rule
+# ---------------------------------------------------------------------------
+# Where the prompt states that the answer is a reply without a tool call, it
+# can say in one more sentence that a cell can send the reply with
+# ``reply(text)``. The sentences around it are made consistent with it; the
+# requester's own text is never changed. Every text below is built from the
+# shipped one, which is returned unchanged while the switch is off.
+
+# UNIFY_REPLY_CHANNEL=code+text: a cell can send the reply.
+_REPLY_FROM_CELL = (
+    "You can also reply from a cell with `reply(text)`, for example "
+    "`reply(answer)` when the answer is in a variable; it ends your turn."
+)
+_WRAP = 72
+
+
+def _reply_from_cell() -> bool:
+    from unify.common._async_tool import cell_reply
+
+    return cell_reply.enabled()
+
+
+def _reply_rule_additions() -> list[str]:
+    """The sentences that follow the statement of the reply rule."""
+    added: list[str] = []
+    if _reply_from_cell():
+        added.append(_REPLY_FROM_CELL)
+    return added
+
+
+def _refill(text: str, *, indent: str = "") -> str:
+    return textwrap.fill(
+        " ".join(text.split()),
+        width=_WRAP,
+        subsequent_indent=indent,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+_LEAN_ROLE_REPLY_RULE = (
+    "Your answer is your final reply: a message without a tool call. When\n"
+    "the requester defines a format for replies (a JSON object, a keyword, a\n"
+    "fixed template), each reply follows that format exactly."
+)
+
+
+def _lean_role() -> str:
+    """The lean profile's role, with the reply rule as the switches word it."""
+    added = _reply_rule_additions()
+    if not added:
+        return _LEAN_ROLE
+    governs = "each reply"
+    rule = " ".join(
+        [
+            "Your answer is your final reply: a message without a tool call.",
+            *added,
+            "When the requester defines a format for replies (a JSON object, "
+            f"a keyword, a fixed template), {governs} follows that format "
+            "exactly.",
+        ],
+    )
+    return _unified(_LEAN_ROLE, _LEAN_ROLE_REPLY_RULE, _refill(rule))
+
+
+# UNIFY_BIND_REQUEST=on: a cell reads the current request as ``request``
+# (unify/common/_async_tool/bound_request.py), said once, before the table of
+# the injected globals.
+_BIND_REQUEST_LINE = (
+    "The current request is available in cells as `request`: `request.text`\n"
+    "is its text and `request.data` the JSON values it contains, in order."
+)
+_GLOBALS_TABLE = "| Global | What it is |"
+
+
+def _with_bound_request(section: str) -> str:
+    from unify.common._async_tool import bound_request
+
+    if not bound_request.enabled():
+        return section
+    return section.replace(
+        f"\n\n{_GLOBALS_TABLE}",
+        f"\n\n{_BIND_REQUEST_LINE}\n\n{_GLOBALS_TABLE}",
+        1,
+    )
 
 
 def _build_sandbox_environment_section(*, has_primitives: bool) -> str:
-    """One table of the actually injected sandbox globals + query_llm doctrine.
+    """The sandbox section; UNIFY_BIND_REQUEST=on says a cell reads the
+    request as ``request``, before the table of globals."""
+    return _with_bound_request(
+        _shipped_sandbox_environment_section(has_primitives=has_primitives),
+    )
+
+
+def _shipped_sandbox_environment_section(*, has_primitives: bool) -> str:
+    """One table of the actually injected sandbox globals + the query_llm doctrine.
 
     The globals table mirrors ``create_execution_globals()``
     (``unify/function_manager/execution_env.py``) plus the per-execution
@@ -278,145 +176,30 @@ def _build_sandbox_environment_section(*, has_primitives: bool) -> str:
         | `query_llm` / `list_llms` | Semantic LLM calls from code (doctrine below); full contract `help(query_llm)`, endpoints `list_llms()` |
         | `run_coro_sync` | Drives a coroutine factory from a sync façade under the already-running loop |
         | `unillm` | Advanced direct LLM usage beyond `query_llm` |
-        | `SteerableToolHandle` | Handle type sub-actor and stored-function calls return; make it the last expression to hand steering to the outer loop |
 
         ```python
         {query_signature}
         {list_signature}
         ```
 
-        When to use `query_llm(...)` vs plain code:
-
-        - Keep exact substeps deterministic: lookups, primitive calls,
-          filters, arithmetic, dedupe, reshaping — if
-          exact logic is enough, keep it deterministic; no LLM call.
-          "count unread emails from Alice" is exact retrieval —
-          do not call query_llm(...); fetch, filter the sender, count.
-        - Call `query_llm(...)` when a substep processes meaning: classify,
-          extract, score, route, summarize into fields
-          (unstructured -> structured) and draft, respond, rewrite,
-          synthesize (unstructured -> unstructured). "Triage my inbox"
-          is meaning — a `query_llm(..., response_format=...)` judgment
-          per item.
-        - One block may
-          freely mix deterministic substeps and semantic substeps. Use
-          ``query_llm(...)`` only where meaning-based judgment is doing real work.
-        - Semantic downgrades are bugs — keyword ladders, regex
-          classifiers, templates pretending to be judgment. A
-          deterministic pre-filter may narrow the set; the judgment
-          itself is a real `query_llm(...)` call.
-        - Every `query_llm(...)` call is stateless — a memoryless
-          unstructured -> structured (or -> unstructured) transform.
-          Put all the evidence the judgment needs in the prompt; hold
-          running state in Python variables, never in the model — there
-          is no session between calls.
-        {sub_actor_dial}- Pass a Pydantic `response_format=` (and `temperature=0.0`) when
-          downstream Python branches on the result; images via
-          `images=[...]`. For reuse, keep the query_llm(...) call
-          inside the stored function and choose `model=` deliberately.
     """)
-    return template.format(
+    # The globals table and signatures; the doctrine short.
+    lean = template.format(
         primitives_row=_PRIMITIVES_GLOBAL_ROW if has_primitives else "",
         query_signature=query_signature,
         list_signature=list_signature,
-        sub_actor_dial=_SUB_ACTOR_DIAL if has_primitives else "",
     ).strip()
+    doctrine = _LEAN_QUERY_LLM
+    if has_primitives:
+        doctrine = f"{doctrine} {_LEAN_SUB_ACTOR_DIAL}"
+    return f"{lean}\n\n{doctrine}"
 
 
-_INCREMENTAL_EXECUTION = textwrap.dedent("""
-    ### Incremental Execution
-
-    Granularity follows predictability.
-
-    **Deterministic work** — pure computation, data transforms, file I/O
-    with known schemas — should run in a single `execute_code` block; do
-    not fragment code you are confident will run correctly end-to-end.
-
-    **Uncertain interactions** — browser automation, UI clicks, unfamiliar
-    APIs, coordinate-based actions, web scraping — should be broken into
-    small steps with verification between each.
-
-    **Judgment-heavy operations** — bulk classification, labeling, or
-    triaging of user data — need the same incremental caution even when
-    the code itself is straightforward: the *decision* per item is
-    subjective and error-prone. Study the existing data first (the user's
-    historical patterns are the ground truth); process a 5–10 item batch,
-    review, and (if `request_clarification` is available) confirm the
-    approach before scaling; when uncertain about an item, leave it
-    untouched rather than guess wrong.
-
-    For uncertain / interactive work: one meaningful action per call,
-    reviewed before the next — intermediate results persist across
-    cells. **Verify before scaling**: run a loop body once and confirm
-    the result before generalizing to iteration.
-    **Read-only for exploration**: branch off known-good state with
-    `state_mode="read_only"` to try alternatives without risk. Print or
-    display key outputs after each uncertain step — don't assume
-    success.
-""").strip()
-
-_STORAGE_DEFERRED_NOTICE = textwrap.dedent("""
-    ### Skill Storage
-
-    You can proactively store reusable skills at any point with the
-    `store_skills` tool — useful after a complex subtask that discovered
-    non-obvious configuration or composition strategies, when the user
-    explicitly asks to store a skill, or before transitioning phases. A
-    dedicated skill-consolidation process also reviews your full trajectory
-    automatically after you return your result, so `store_skills` is a
-    judgment call, not a routine step — skip it for trivial operations.
-
-    **Direct writes vs trajectory storage**: user-requested "remember
-    this" writes go directly to the libraries
-    (`GuidanceManager_add_guidance` after search,
-    `FunctionManager_add_functions` / `_delete_function`).
-    `store_skills` extracts reusable implementations and compositional
-    strategies from what you just did — not direct user-requested
-    mutations.
-
-    **Before compression**: when the context window nears capacity,
-    `store_skills` and `compress_context` become the only tools available.
-    Call `store_skills` first (with a specific request) if the trajectory
-    holds unstored skills worth preserving; otherwise go straight to
-    `compress_context`.
-""").strip()
-
-_STORAGE_SESSION_NOTICE = textwrap.dedent("""
-    ### Skill Storage
-
-    In this persistent session, a dedicated skill-consolidation process
-    reviews your trajectory automatically **after each completed turn**
-    (and again when the session ends). Do not call `store_skills` for
-    work a completed turn already contains — the automatic review covers
-    it. Reserve `store_skills` for mid-turn moments: something worth
-    keeping is at risk before a risky continuation, or the user
-    explicitly asks to store a skill right now.
-
-    Consolidation results arrive in the conversation as bracketed
-    background notes. When a note (or your own storage) reports a stored
-    function covering a deliverable that is requested again, the whole
-    turn is one execution and a report: call the stored function
-    (`execute_function`, or by name inside `execute_code`), then relay
-    its result — do not re-derive the procedure inline, and do not
-    re-verify work the function already validates. When the requester
-    amends the deliverable's spec, apply the amendment as an
-    `overwrite=True` edit to that stored function so the stored procedure
-    tracks the live spec.
-
-    **Direct writes vs trajectory storage**: user-requested "remember
-    this" writes go directly to the libraries
-    (`GuidanceManager_add_guidance` after search,
-    `FunctionManager_add_functions` / `_delete_function`).
-    `store_skills` extracts reusable implementations and compositional
-    strategies from what you just did — not direct user-requested
-    mutations.
-
-    **Before compression**: when the context window nears capacity,
-    `store_skills` and `compress_context` become the only tools available.
-    Call `store_skills` first (with a specific request) if the trajectory
-    holds unstored skills worth preserving; otherwise go straight to
-    `compress_context`.
-""").strip()
+def _unified(text: str, old: str, new: str) -> str:
+    """``text`` with ``old`` replaced by ``new``; ``old`` must occur exactly once."""
+    if text.count(old) != 1:
+        raise ValueError(f"expected one occurrence of {old!r}")
+    return text.replace(old, new)
 
 
 def _build_clock_context() -> str:
@@ -439,63 +222,53 @@ def _build_clock_context() -> str:
     """).strip()
 
 
-def _build_filesystem_context() -> str:
-    pass
+def _clock_in_first_message() -> bool:
+    """``UNIFY_CLOCK_PLACEMENT=first_message``."""
+    from unify.settings import SETTINGS
 
+    return SETTINGS.UNIFY_CLOCK_PLACEMENT == "first_message"
+
+
+def first_message_clock_line() -> str:
+    """``UNIFY_CLOCK_PLACEMENT=first_message``: the line that opens the
+    session's first user message, sampled now; empty otherwise.
+
+    The host's reading, not an authority: what the work itself says about
+    dates comes first.
+    """
+    if not _clock_in_first_message():
+        return ""
+    from unify.common import prompt_helpers
+
+    return (
+        f"The host clock reads {prompt_helpers.now()}. Dates stated in the "
+        "request or in the files and records you work with take precedence."
+    )
+
+
+def _session_sections() -> list[str]:
+    """The per-session sections of the system prompt, sampled now: the
+    clock (unless ``UNIFY_CLOCK_PLACEMENT`` moves it to the first user
+    message) and the filesystem context."""
+    if _clock_in_first_message():
+        return [_build_filesystem_context()]
+    return [_build_clock_context(), _build_filesystem_context()]
+
+
+def _build_filesystem_context() -> str:
     from unify.workspace import get_local_root
 
     resolved = get_local_root()
-    return textwrap.dedent(f"""
-        ### Filesystem Context
-
-        This is the **local workspace** used by `execute_code` and by
-        attachment send/receive.
-        Your working directory is `{resolved}`.  It **persists across
-        every interaction** with the user.  **Always use full absolute
-        paths** (starting with `{resolved}/`); never relative paths.
-
-        | Location | Purpose |
-        |----------|---------|
-        | `{resolved}/Attachments/` | **Inbound & Outbound** — exchanged attachments as `{{attachment_id}}_{{filename}}`. Persists across sessions. |
-        | `{resolved}/Outputs/` | **Outbound staging** — save generated files here so the caller can attach and send them. May be auto-cleared between sessions. |
-        | Everything else | Your own persistent workspace — organize however makes sense. |
-
-        **File conventions:**
-        - **Inbound**: attachments arrive at `{resolved}/Attachments/{{id}}_{{filename}}`.
-        - **Outbound**: save files for the user to `{resolved}/Outputs/` and
-          include the full path in your final answer; once sent, the file is
-          copied to `{resolved}/Attachments/` with a stable attachment ID.
-        - **Files elsewhere on this machine**: a path the user names outside
-          the workspace is theirs to give you; read it where it is. Write
-          your own outputs into the workspace, never into unrelated system
-          paths (`/tmp`, `/var`).
-
-        **Filesystem vs. the libraries:** reusable code belongs in the
-        function library and procedures in the guidance library, never as
-        loose scripts or notes on disk. Use the filesystem for working
-        artifacts — data being processed, intermediate results, produced
-        files — and keep longer-lived material organized.
-    """).strip()
+    return (
+        "### Workspace\n\n"
+        f"Your working directory is `{resolved}`; it persists across "
+        "tasks. Write files there, with absolute paths."
+    )
 
 
 # ---------------------------------------------------------------------------
 # Private helpers with real logic
 # ---------------------------------------------------------------------------
-
-
-# Tool contracts are not restated here: the async tool loop converts every
-# callable's docstring and signature into its JSON schema, which rides every
-# request — the prompt teaches only the calling convention.
-_TOOLS_SECTION = textwrap.dedent("""
-    ### Tools
-
-    Every tool is called via **structured JSON tool calls**, never from
-    inside Python code; sandbox callables (`primitives.*`, `query_llm`, …)
-    are the reverse — Python-only, never JSON tool calls. Each tool's
-    authoritative contract (arguments, semantics, cautions) is its schema
-    in the live tool list: consult it rather than guessing, and treat that
-    list as what is callable right now.
-""").strip()
 
 
 def _build_code_act_rules_and_examples(
@@ -518,14 +291,297 @@ def _build_code_act_rules_and_examples(
     return "\n\n---\n\n".join(p for p in parts if p and p.strip()).strip()
 
 
+# ---------------------------------------------------------------------------
+# The lean profile
+# ---------------------------------------------------------------------------
+# For a non-interactive session: one requester, nobody reading progress
+# notifications. The sections describe the session's mechanisms and state
+# few rules; the requester's reply format comes first.
+
+
+_LEAN_ROLE = textwrap.dedent("""
+    ### Role
+
+    You solve the request in this conversation by writing and running
+    Python, with a library of stored functions and procedures to draw on.
+
+    Your answer is your final reply: a message without a tool call. When
+    the requester defines a format for replies (a JSON object, a keyword, a
+    fixed template), each reply follows that format exactly.
+""").strip()
+
+_LEAN_QUERY_LLM = textwrap.dedent("""
+    Use plain Python for exact steps (lookups, filters, arithmetic,
+    reshaping) and `query_llm(...)` inside the code for steps that judge
+    meaning (classify, extract, summarise, draft). Each `query_llm` call is
+    stateless, so its prompt carries all the evidence it needs; pass a
+    Pydantic `response_format=` when the code branches on the result.
+""").strip()
+
+_LEAN_SUB_ACTOR_DIAL = (
+    "A sub-agent (`primitives.actor.act`) suits a sub-task whose plan must "
+    "be discovered while it runs."
+)
+
+
+_LEAN_EXECUTION_RULES = textwrap.dedent("""
+    ### Execution
+
+    1. **Sessions**: cells share one persistent sandbox for the task, like
+       a notebook: bind results to variables and build on them, and print
+       only what the next decision needs. `list_sessions()` and
+       `inspect_state()` show live sessions and names;
+       `state_mode="stateless"` or a named session isolates a cell. A
+       `NameError` on a known name usually means the sandbox restarted.
+    2. **Async**: the runtime owns the event loop, so code `await`s (and a
+       sync facade uses the injected `run_coro_sync(factory)`) rather than
+       calling `asyncio.run(...)`; `asyncio.gather` runs independent I/O
+       concurrently.
+    3. **Structured outputs**: Pydantic models defined in the code need
+       `model_rebuild()` on the outermost model.
+    4. **Evidence**: a step that ran is not a step that worked. The result
+       of a mutation or an extraction (a return value, a re-read) shows
+       whether it worked; when it contradicts the expected result, fix and
+       re-run.
+    5. **Final reply**: when the request is addressed, reply without a tool
+       call, in the requester's format when it defines one.
+    6. **Provenance**: when a source fails, the reply says so; records
+       generated from memory are not presented as sourced data.
+""").strip()
+
+_LEAN_CLARIFICATION_RULE = (
+    "7. **Clarification**: `request_clarification` asks the requester a\n"
+    "   question and waits for the answer."
+)
+
+_LEAN_INCREMENTAL_EXECUTION = textwrap.dedent("""
+    ### Verify Before Scaling
+
+    Run a loop body once and check its result before iterating over many
+    items. `state_mode="read_only"` tries an alternative on the current
+    state without changing it.
+""").strip()
+
+
+def _lean_execution_rules(can_clarify: bool) -> str:
+    if can_clarify:
+        return f"{_LEAN_EXECUTION_RULES}\n{_LEAN_CLARIFICATION_RULE}"
+    return _LEAN_EXECUTION_RULES
+
+
+def _injects_actor_primitives(environments: Mapping[str, "BaseEnvironment"]) -> bool:
+    """Whether an environment puts the actor primitive in the sandbox.
+
+    Any environment in the ``primitives`` namespace does, except the one for
+    the namespaces an environment registered (``UNIFY_ENV_NAMESPACES``): an
+    actor holding only those may not spawn a sub-actor. With the switch off
+    this is ``"primitives" in environments``.
+    """
+    env = environments.get("primitives")
+    if env is None:
+        return False
+    from unify.actor.environments.environment_namespaces import (
+        EnvironmentNamespacesEnvironment,
+    )
+
+    members = getattr(env, "sub_environments", None) or [env]
+    return not all(isinstance(e, EnvironmentNamespacesEnvironment) for e in members)
+
+
+# ---------------------------------------------------------------------------
+# UNIFY_PROMPT_TRIM and UNIFY_STATEFUL_CELLS
+# ---------------------------------------------------------------------------
+# Both rewrite the static sections (never an environment's own context, the
+# guidelines or the per-session sections). Each rewrite applies where its
+# text occurs: a section holds only some of them.
+
+# UNIFY_PROMPT_TRIM, no environment in the ``primitives`` namespace: nothing
+# in the sandbox is a primitive.
+_TRIM_NO_PRIMITIVES = (
+    (re.compile(r"\(`primitives\.\*`, `query_llm`, …\)"), "(`query_llm`, …)"),
+    (
+        re.compile(r"not functions, tools or `primitives\.\*` methods"),
+        "not functions or tools",
+    ),
+    (
+        re.compile(
+            r"stored function or primitive by name\.",
+        ),
+        "stored function by name.",
+    ),
+    (
+        re.compile(r" primitive calls,(?P<ws>\s+)filters"),
+        lambda m: m.group("ws") + "filters",
+    ),
+    (re.compile(r"`print\(\)`, `await handle\.result\(\)`, or"), "`print()` or"),
+    (
+        re.compile(r"Procedures are \*\*not\*\* primitives —"),
+        "Procedures are **not** callable —",
+    ),
+    (
+        re.compile(r"function(?P<ws>\s+)or\s+primitive\s+call"),
+        lambda m: "function" + ("\n" if "\n" in m.group(0) else " ") + "call",
+    ),
+)
+# ... and no environment at all: nothing is documented in the prompt for
+# search to leave out, and search finds stored functions only.
+_TRIM_DISCOVERY_SCOPE = re.compile(
+    r"\*\*Discovery index scope:\*\*.*?via `execute_function`\.\n\n",
+    re.DOTALL,
+)
+_TRIM_PRIMITIVE_CATALOGUE = (
+    re.compile(
+        r"Function search covers user-stored functions"
+        r"\s+\*\*and\*\* the built-in `primitives\.\*` catalogue — primitive rows come back"
+        r"\s+with `is_primitive`, `argspec`, and `docstring`\.",
+    ),
+    "Function search covers user-stored functions.",
+)
+# No sub-actor primitive: the actor cannot delegate.
+_TRIM_NO_DELEGATE = (
+    (
+        re.compile(r"no code, search or\s+sub-agent can take them for you"),
+        "no code or search\ncan take them for you",
+    ),
+    (
+        re.compile(
+            r" Do not delegate a sub-task whose result would be\s+such an action\.",
+        ),
+        "",
+    ),
+)
+# There are no sub-agents (delegation through primitives.actor is off).
+_TRIM_NO_SUB_AGENTS = (
+    re.compile(
+        r" If you are a sub-agent and your task seems to need one,"
+        r"\s+say so in your result instead of calling a function that does not"
+        r"\s+exist\.",
+    ),
+    "",
+)
+# No list_sessions / inspect_state tools.
+_TRIM_NO_SESSION_TOOLS = (
+    (
+        re.compile(
+            r"`list_sessions\(\)` and\s+`inspect_state\(\)` show live sessions and"
+            r" names;\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"`list_sessions\(\)` / `inspect_state\(\)` rediscover live sessions"
+            r"\s+and names — variables survive",
+        ),
+        "Variables survive",
+    ),
+)
+
+
+# UNIFY_STATEFUL_CELLS: every cell runs in the task's one session, and the
+# session tools are not offered (unify/actor/cell_state.py), so the prompt
+# names no cell mode and no session tool.
+_STATEFUL_CELLS = (
+    (
+        re.compile(
+            r"\s*`list_sessions\(\)` and\s+`inspect_state\(\)` show live sessions and"
+            r'\s+names;\s+`state_mode="stateless"` or a\s+named session isolates a'
+            r" cell\.",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r'\s*`state_mode="stateless"` or a\s+named session isolates a cell\.',
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r'\s*`state_mode="read_only"` tries an alternative on the current'
+            r"\s+state without changing it\.",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"`list_sessions\(\)` / `inspect_state\(\)` rediscover live sessions"
+            r"\s+and names — variables survive",
+        ),
+        "Variables survive",
+    ),
+    (
+        re.compile(
+            r'Isolate a cell with\s+`state_mode="stateless"` or a named session;'
+            r"\s+fan out",
+        ),
+        "Fan out",
+    ),
+    (
+        re.compile(
+            r"\*\*Read-only for exploration\*\*: branch off known-good state with"
+            r'\s+`state_mode="read_only"` to try alternatives without risk\.\s+',
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"Functions support execution mode overrides independent of the"
+            r" session's\s+`state_mode`:",
+        ),
+        "Functions called in a cell support execution mode overrides:",
+    ),
+)
+
+
+def _section_rewrites(
+    environments: Mapping[str, "BaseEnvironment"],
+    tools: Optional[Mapping[str, Callable]],
+) -> list:
+    """The (pattern, replacement) pairs the switches apply to static sections."""
+    from unify.actor import cell_state
+
+    rewrites: list = []
+    # First: it removes the whole session sentence the trim would shorten.
+    if cell_state.enabled():
+        rewrites.extend(_STATEFUL_CELLS)
+    if "primitives" not in environments:
+        rewrites.extend(_TRIM_NO_PRIMITIVES)
+        if not environments:
+            rewrites.append((_TRIM_DISCOVERY_SCOPE, ""))
+        else:
+            rewrites.append(_TRIM_PRIMITIVE_CATALOGUE)
+    if not _injects_actor_primitives(environments):
+        rewrites.extend(_TRIM_NO_DELEGATE)
+    # No sub-agents: helpers come from the agent record.
+    rewrites.append(_TRIM_NO_SUB_AGENTS)
+    if tools is not None and not (
+        "list_sessions" in tools and "inspect_state" in tools
+    ):
+        rewrites.extend(_TRIM_NO_SESSION_TOOLS)
+    return rewrites
+
+
+def _rewrite_sections(parts: list[str], rewrites: list) -> list[str]:
+    if not rewrites:
+        return parts
+    out = []
+    for part in parts:
+        for pattern, replacement in rewrites:
+            part = pattern.sub(replacement, part)
+        out.append(part)
+    return out
+
+
 def build_code_act_prompt(
     *,
     environments: Mapping[str, "BaseEnvironment"],
-    tools: Optional[Dict[str, Callable]] = None,
+    core: "PromptSurface",
     can_store: bool = False,
     guidelines: Optional[str] = None,
-    discovery_first_policy: bool = False,
     persist: bool = False,
+    library_read_only: bool = False,
+    session_sections: bool = True,
 ) -> str:
     """Build the system prompt for the CodeActActor.
 
@@ -537,116 +593,108 @@ def build_code_act_prompt(
 
     Parameters
     ----------
-    discovery_first_policy:
-        When ``True``, appends guidance explaining the discovery-first tool
-        policy (FM and GM must be called before other tools unlock).
+    core:
+        What the session's sandbox holds (unify/actor/core_surface.py). The
+        prompt names its objects in a short index and describes
+        ``execute_code`` as the only tool.
     persist:
         When ``True``, the skill-storage notice describes the persistent
-        session's schedule — automatic consolidation after each completed
-        turn, with results surfaced as background notes — and instructs
-        the session to execute stored functions on repeat requests for the
-        same deliverable. When ``False`` (one-shot act), the notice keeps
-        the post-result consolidation description.
+        session's schedule; when ``False`` (one-shot act), the review that
+        follows the result.
+    library_read_only:
+        When ``True`` (an admission-gated session), states that the
+        libraries cannot be written during the session and that a review
+        after it runs only when an external check admits it.
+    session_sections:
+        When ``False``, the per-session sections (the clock and the
+        workspace) are left out, so the prompt is the same for every session
+        of one configuration.
     """
-    has_execute_code = bool(tools and "execute_code" in tools)
-    has_fm_tools = bool(
-        tools and any(str(k).startswith("FunctionManager_") for k in tools.keys()),
-    )
-    has_gm_tools = bool(
-        tools and any(str(k).startswith("GuidanceManager_") for k in tools.keys()),
-    )
-    rules_and_examples = _build_code_act_rules_and_examples(
+    return _build_core_prompt(
+        core,
         environments=environments,
+        can_store=can_store,
+        guidelines=guidelines,
+        persist=persist,
+        library_read_only=library_read_only,
+        session_sections=session_sections,
     )
 
-    parts: list[str] = []
 
-    if has_execute_code:
-        # Sections are ordered static → dynamic so the stable core forms a
-        # cache-friendly prefix: role, contracts, execution semantics, and
-        # selection rules first (identical across actors), then per-actor and
-        # per-session content (environment scope, filesystem paths,
-        # guidelines) at the tail.
+# ---------------------------------------------------------------------------
+# The core tool surface
+# ---------------------------------------------------------------------------
+
+_CORE_SANDBOX_SEARCH = (
+    "Find stored functions with the\n"
+    "`FunctionManager_search_functions` JSON tool, then read live docs\n"
+    "in-sandbox with `help(...)`"
+)
+_CORE_SANDBOX_SEARCH_PYTHON = (
+    "Find stored functions with\n"
+    "`await functions.search(...)`, then read live docs in-sandbox with\n"
+    "`help(...)`"
+)
+
+
+# The lean rules' pointer to the session tools, which the core surface does not have.
+_LEAN_RULE_SESSIONS = (
+    "`list_sessions()` and\n"
+    "   `inspect_state()` show live sessions and names;\n"
+    '   `state_mode="stateless"` or a named session isolates a cell.'
+)
+_LEAN_RULE_SESSIONS_CORE = (
+    '`state_mode="stateless"` or a\n   named session isolates a cell.'
+)
+
+
+def _build_core_prompt(
+    core: "PromptSurface",
+    *,
+    environments: Mapping[str, "BaseEnvironment"],
+    can_store: bool,
+    guidelines: Optional[str],
+    persist: bool,
+    library_read_only: bool,
+    session_sections: bool,
+) -> str:
+    """The system prompt of a core-surface session: the lean profile's
+    sections, less what names JSON tools the session does not have."""
+    can_clarify = core.clarification
+    parts: list[str] = [_lean_role()]
+    tools = core.tools_section()
+    parts.append(tools)
+    sandbox = _build_sandbox_environment_section(
+        has_primitives=_injects_actor_primitives(environments),
+    )
+    parts.append(_unified(sandbox, _CORE_SANDBOX_SEARCH, _CORE_SANDBOX_SEARCH_PYTHON))
+    parts.append(core.index())
+    parts.append(core.python_first())
+    parts.append(
+        _unified(
+            _lean_execution_rules(can_clarify),
+            _LEAN_RULE_SESSIONS,
+            _LEAN_RULE_SESSIONS_CORE,
+        ),
+    )
+    parts.append(_LEAN_INCREMENTAL_EXECUTION)
+    if core.functions or core.guidance:
+        library = core.library_section()
+        parts.append(library)
+        if library_read_only:
+            parts.append(core.read_only_notice())
+    if can_store:
+        parts.append(core.storage_notice(persist=persist))
+    parts = _rewrite_sections(parts, _section_rewrites(environments, None))
+    if session_sections:
+        parts.extend(_session_sections())
+    rules_and_examples = _build_code_act_rules_and_examples(environments=environments)
+    if rules_and_examples:
+        parts.append(rules_and_examples)
+    if guidelines:
         parts.append(
-            "### Role\n\n"
-            "You are an expert agent that solves tasks by writing and executing code. "
-            "Your primary tool is a multi-session Python execution environment, "
-            "backed by a library of stored functions and procedures.",
+            f"### Guidelines\n\n"
+            f"Follow these guidelines throughout this session:\n\n"
+            f"{guidelines}",
         )
-
-        parts.append(_TOOLS_SECTION)
-
-        parts.append(
-            _build_sandbox_environment_section(
-                has_primitives="primitives" in environments,
-            ),
-        )
-        parts.append(_TOOL_SELECTION)
-        parts.append(_PYTHON_FIRST)
-        parts.append(_EXECUTION_RULES)
-        parts.append(_INCREMENTAL_EXECUTION)
-
-        if has_fm_tools or has_gm_tools:
-            parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
-            if discovery_first_policy:
-                parts.append(_DISCOVERY_FIRST_POLICY)
-
-        if can_store:
-            # A persistent session's consolidation runs per completed turn,
-            # not after a final result the loop never produces — the notice
-            # must describe the schedule the session actually gets.
-            parts.append(
-                _STORAGE_SESSION_NOTICE if persist else _STORAGE_DEFERRED_NOTICE,
-            )
-
-        # ── Per-assistant / dynamic tail ──
-        parts.append(_build_clock_context())
-        parts.append(_build_filesystem_context())
-
-        if rules_and_examples:
-            parts.append(rules_and_examples)
-
-        if guidelines:
-            parts.append(
-                f"### Guidelines\n\n"
-                f"Follow these guidelines throughout this session:\n\n"
-                f"{guidelines}",
-            )
-
-    else:
-        parts.append(
-            "### Role\n\n"
-            "You are an expert agent that solves tasks by discovering and executing "
-            "pre-stored functions from a function library. "
-            "You do NOT write or execute arbitrary code. Instead, you use the "
-            "FunctionManager discovery tools to find relevant stored functions, "
-            "then invoke them via `execute_function`.",
-        )
-
-        if guidelines:
-            parts.append(
-                f"### Guidelines\n\n"
-                f"Follow these guidelines throughout this session:\n\n"
-                f"{guidelines}",
-            )
-
-        if has_fm_tools or has_gm_tools:
-            parts.append(_FUNCTION_AND_GUIDANCE_LIBRARY)
-            if discovery_first_policy:
-                parts.append(_DISCOVERY_FIRST_POLICY)
-
-        parts.append(
-            "### Procedure\n\n"
-            "1. **Discover** stored functions using `FunctionManager_search_functions`,\n"
-            "   `FunctionManager_filter_functions`, or `FunctionManager_list_functions`.\n"
-            "2. **Execute** via `execute_function` — a stored match from discovery,\n"
-            "   or a prompt-documented callable by exact name (see Discovery index\n"
-            "   scope above).\n"
-            "3. Report inability only when neither applies — do NOT write or compose\n"
-            "   code yourself.",
-        )
-
-        if rules_and_examples:
-            parts.append(rules_and_examples)
-
     return "\n\n".join(p for p in parts if p and p.strip())

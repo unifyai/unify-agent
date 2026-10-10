@@ -247,8 +247,8 @@ class IdempotencyCache:
         self.hits += 1
         return entry
 
-    def put(self, key: CacheKey, result: Any, *, tool: str) -> None:
-        self._entries[key] = {"result": result, "tool": tool}
+    def put(self, key: CacheKey, result: Any, *, tool: str, args: str = "") -> None:
+        self._entries[key] = {"result": result, "tool": tool, "args": args}
 
     def invalidate(self, tool_paths: typing.Iterable[str]) -> int:
         """Drop every entry whose tool matches one of *tool_paths*.
@@ -269,7 +269,16 @@ class IdempotencyCache:
         return len(doomed)
 
     def completed_calls(self) -> List[str]:
-        return [str(entry["tool"]) for entry in self._entries.values()]
+        """Each completed dispatch as a call, with the arguments it was given.
+
+        A bare tool name says only that *something* was sent; whoever writes
+        a correction needs to know *what*, both to avoid planning a repeat and
+        to see what shape the data passing through the code actually has.
+        """
+        return [
+            f"{entry['tool']}({entry.get('args', '')})"
+            for entry in self._entries.values()
+        ]
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -306,6 +315,11 @@ class SteeringSession:
         #: retries, so a second correction is written against the code that is
         #: actually executing rather than the version it replaced.
         self.source: str = ""
+        #: How the running source was entered, when the source alone does not
+        #: say. A stored function run directly is a bare definition; its
+        #: arguments live outside it, and a correction about *which* items to
+        #: process cannot be written without seeing what the items look like.
+        self.invocation: str = ""
 
     def bind_source(self, source: str) -> None:
         self.source = source
@@ -468,6 +482,11 @@ def _serialize_args(args: tuple, kwargs: dict) -> str:
     parts = [_short(a) for a in args]
     parts += [f"{k}={_short(v)}" for k, v in sorted(kwargs.items())]
     return ", ".join(parts)
+
+
+def format_call(name: str, args: tuple = (), kwargs: Optional[dict] = None) -> str:
+    """Render a call the way the cache identifies it, for a reader to see."""
+    return f"{name}({_serialize_args(args, kwargs or {})})"
 
 
 # ---------------------------------------------------------------------------
@@ -827,7 +846,7 @@ class _MemoisedNamespace:
                 result = attr(*args, **kwargs)
                 if _inspect_isawaitable(result):
                     result = await result
-                session.cache.put(key, result, tool=tool)
+                session.cache.put(key, result, tool=tool, args=key[1])
                 return result
 
         else:
@@ -838,7 +857,7 @@ class _MemoisedNamespace:
                 if hit is not None:
                     return hit["result"]
                 result = attr(*args, **kwargs)
-                session.cache.put(key, result, tool=tool)
+                session.cache.put(key, result, tool=tool, args=key[1])
                 return result
 
         _copy_signature(attr, _dispatch)
@@ -1046,6 +1065,7 @@ async def run_with_steering(
     *,
     session: SteeringSession,
     max_retries: int = MAX_RETRIES,
+    invocation: Optional[str] = None,
 ) -> Any:
     """Run *source*, splicing in corrections and re-running until it completes.
 
@@ -1060,7 +1080,32 @@ async def run_with_steering(
 
     A stop request ends the call instead: :class:`ExecutionStopped` carries
     the reason out to the caller, with no retry to run.
+
+    *invocation* describes how *source* is being called when the source does
+    not contain the call itself (a bare stored definition). It is shown to
+    whoever writes a correction, and only for the duration of this call.
     """
+    previous = session.invocation
+    if invocation is not None:
+        session.invocation = invocation
+    try:
+        return await _run_with_steering(
+            source,
+            run_source,
+            session=session,
+            max_retries=max_retries,
+        )
+    finally:
+        session.invocation = previous
+
+
+async def _run_with_steering(
+    source: str,
+    run_source: typing.Callable[[str], typing.Awaitable[Any]],
+    *,
+    session: SteeringSession,
+    max_retries: int,
+) -> Any:
     current = source
     attempt = 0
     while True:

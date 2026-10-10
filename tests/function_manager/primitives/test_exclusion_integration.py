@@ -103,6 +103,7 @@ def test_list_functions_excludes_tagged_primitive_ids(fm_factory):
 # ────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_search_functions_excludes_tagged_primitive_ids(fm_factory):
     """search_functions() should not return primitives whose IDs are excluded."""

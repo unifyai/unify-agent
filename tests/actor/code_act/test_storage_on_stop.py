@@ -14,6 +14,7 @@ reason is forwarded to the skill librarian so it can weigh user intent.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -56,8 +57,6 @@ async def test_storage_check_runs_after_stop():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()
@@ -119,8 +118,6 @@ async def test_storage_check_runs_after_stop_no_reason():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()
@@ -186,8 +183,6 @@ async def test_storage_check_incoming_event_has_instructions():
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     actor = MagicMock()
@@ -241,16 +236,96 @@ pytestmark_eval = pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(300)
-async def test_persist_stop_with_memoize_intent_stores_function():
+async def test_persist_stop_with_memoize_intent_stores_function(monkeypatch):
     """A persist=True session stopped with "remember this" stores a function.
 
     The actor executes a reusable utility during a guided session, then is
     stopped with a memoization-intent reason.  The storage review loop
     should detect the pattern and store it in the FunctionManager.
     """
+    from unify.common._async_tool import loop as tool_loop
     from unify.function_manager.function_manager import FunctionManager
 
     fm = FunctionManager(include_primitives=False)
+
+    # The memoize-stop premise requires the actor to have actually
+    # executed the utility before the stop lands — the librarian only
+    # stores code that ran successfully, so stopping a still-empty
+    # trajectory tests nothing. The discovery-first searches complete
+    # first, so wait for a completed ``execute_code`` round-trip
+    # specifically, not for the first tool result of any kind, and one
+    # that succeeded: a cell that raised (the 09184dc6d re-record's only
+    # cell, before the sandbox put ``python`` on PATH) leaves nothing
+    # that ran, so the review rightly stores nothing. And the cell must
+    # be one that defines ``format_currency``: in the 7299344a6
+    # re-record the only cell before the stop was
+    # ``help(functions.add)``, which succeeded, so the stop landed before
+    # the utility existed and the review rightly said "The task stopped
+    # before `format_currency` was implemented or tested".
+    def _succeeded(message: dict) -> bool:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = next(
+                (
+                    part.get("text")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
+                ),
+                "",
+            )
+        try:
+            head = json.loads(content or "")
+        except (TypeError, ValueError):
+            return False
+        return isinstance(head, dict) and not head.get("error")
+
+    def _defines_format_currency(call: dict) -> bool:
+        arguments = call.get("function", {}).get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except ValueError:
+                return "def format_currency" in arguments
+        code = arguments.get("code") if isinstance(arguments, dict) else None
+        return isinstance(code, str) and "def format_currency" in code
+
+    def _execute_code_round_trip_happened(messages) -> bool:
+        msgs = [m for m in (messages or []) if isinstance(m, dict)]
+        exec_call_ids = {
+            call["id"]
+            for m in msgs
+            for call in (m.get("tool_calls") or [])
+            if call.get("function", {}).get("name") == "execute_code"
+            and _defines_format_currency(call)
+        }
+        return any(
+            m.get("role") == "tool"
+            and any(
+                str(m.get("tool_call_id", "")).startswith(call_id)
+                for call_id in exec_call_ids
+            )
+            and _succeeded(m)
+            for m in msgs
+        )
+
+    # The actor's first turn after the cell that defined format_currency is
+    # held (never sent) until the stop cancels it; every other call runs.
+    turn_held = asyncio.Event()
+    dispatch = tool_loop.generate_with_preprocess
+
+    async def _hold_the_turn_after_the_cell(client, preprocess_msgs, **kwargs):
+        if not turn_held.is_set() and _execute_code_round_trip_happened(
+            getattr(client, "messages", None),
+        ):
+            turn_held.set()
+            await asyncio.Event().wait()  # until the stop cancels the turn
+        return await dispatch(client, preprocess_msgs, **kwargs)
+
+    monkeypatch.setattr(
+        tool_loop,
+        "generate_with_preprocess",
+        _hold_the_turn_after_the_cell,
+    )
 
     actor = CodeActActor(
         function_manager=fm,
@@ -270,42 +345,21 @@ async def test_persist_stop_with_memoize_intent_stores_function():
             clarification_enabled=False,
         )
 
-        # The memoize-stop premise requires the actor to have actually
-        # executed the utility before the stop lands — the librarian only
-        # stores code that ran successfully, so stopping a still-empty
-        # trajectory tests nothing. The discovery-first searches complete
-        # first, so wait for a completed ``execute_code`` round-trip
-        # specifically, not for the first tool result of any kind.
-        def _execute_code_round_trip_happened() -> bool:
-            client = getattr(handle._inner, "_client", None)
-            msgs = [
-                m
-                for m in (getattr(client, "messages", []) or [])
-                if isinstance(m, dict)
-            ]
-            exec_call_ids = {
-                call["id"]
-                for m in msgs
-                for call in (m.get("tool_calls") or [])
-                if call.get("function", {}).get("name") == "execute_code"
-            }
-            return any(
-                m.get("role") == "tool"
-                and any(
-                    str(m.get("tool_call_id", "")).startswith(call_id)
-                    for call_id in exec_call_ids
-                )
-                for m in msgs
-            )
-
+        # The stop lands before the actor's next turn goes out: that turn is
+        # held until the stop cancels it, as a stop does with a turn in
+        # flight. Polling the transcript instead raced the turn: with a live
+        # model the stop cancelled it in flight, but a replayed response is
+        # instant, so in a keyless run the turn (never answered, so never
+        # recorded) went out first and missed the cache.
         exec_deadline = asyncio.get_event_loop().time() + 120
-        while not _execute_code_round_trip_happened():
-            if asyncio.get_event_loop().time() > exec_deadline:
+        while not turn_held.is_set():
+            if handle.done() or asyncio.get_event_loop().time() > exec_deadline:
                 pytest.skip(
-                    "Actor did not complete an execute_code call within 120s — "
+                    "Actor did not complete a successful execute_code call "
+                    "defining format_currency within 120s — "
                     "this is an eval-sensitive path",
                 )
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.2)
 
         assert not handle.done(), "persist=True should keep the loop alive"
 

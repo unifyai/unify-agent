@@ -10,7 +10,8 @@ Two embedders produce the vectors:
 
 - ``openai/text-embedding-3-small`` through OpenRouter, the default, on the
   same ``OPENROUTER_API_KEY`` as the LLM. It reads the first 2,048 tokens of
-  a text.
+  a text. ``UNIFY_EMBED_URL`` posts the same requests to another endpoint
+  (for example a proxy that tracks their cost) instead of openrouter.ai.
 - ``BAAI/bge-small-en-v1.5`` in process, when ``UNIFY_LOCAL_EMBEDDINGS`` is
   set. It needs no network once its weights are in the Hugging Face cache,
   but reads only English and the first 512 tokens of a text.
@@ -51,6 +52,7 @@ class Embedder:
 
 
 _OPENROUTER_MODEL = "openai/text-embedding-3-small"
+_OPENROUTER_URL = "https://openrouter.ai/api/v1/embeddings"
 # One vector of a whole long procedure averages its purpose, which comes
 # first, away with its appendices, so a text is embedded from its first 2,048
 # tokens. The API caps a request at 300,000 tokens, which 128 such texts fit.
@@ -71,10 +73,11 @@ def _openrouter(texts: list[str]) -> np.ndarray:
     headers = {
         "Authorization": f"Bearer {unillm.SETTINGS.OPENROUTER_API_KEY.get_secret_value()}",
     }
+    url = SETTINGS.UNIFY_EMBED_URL.strip() or _OPENROUTER_URL
     vectors: list[list[float]] = []
     for start in range(0, len(inputs), _OPENROUTER_BATCH):
         response = httpx.post(
-            "https://openrouter.ai/api/v1/embeddings",
+            url,
             headers=headers,
             json={
                 "model": _OPENROUTER_MODEL,

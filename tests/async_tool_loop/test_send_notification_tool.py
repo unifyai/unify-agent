@@ -16,8 +16,10 @@ from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common.llm_client import new_llm_client
 from tests.helpers import _handle_project
 from tests.async_helpers import first_assistant_tool_call
+from tests.baked_defaults import as_shipped  # noqa: F401
 
-pytestmark = pytest.mark.llm_call
+# as_shipped: deleted in step 5 (notifications)
+pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
 
 
 def make_llm(system_message=None, **llm_kwargs):

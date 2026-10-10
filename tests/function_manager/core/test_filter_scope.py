@@ -8,6 +8,8 @@ onto every read query (``list_functions``, ``filter_functions``,
 
 from __future__ import annotations
 
+import pytest
+
 from tests.helpers import _handle_project
 from unify.function_manager.function_manager import FunctionManager
 
@@ -114,6 +116,7 @@ def test_filter_scope_composes_with_caller_filter():
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.requires_provider_key
 @_handle_project
 def test_filter_scope_filters_search_functions():
     """Search on a scoped instance never returns out-of-scope rows."""

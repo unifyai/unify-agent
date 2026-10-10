@@ -7,6 +7,7 @@ import copy
 from dataclasses import dataclass, field
 
 from typing import (
+    Awaitable,
     Dict,
     Union,
     Callable,
@@ -23,24 +24,18 @@ from ...logger import LOGGER
 from ..tool_spec import ToolSpec, normalise_tools
 from .propagation_mode import ChatContextPropagation
 from .context_tracker import LoopContextState
-from .utils import maybe_await, get_handle_paused_state
 from .event_bus_util import to_event_bus
-from ...events.types.tool_loop import ToolLoopKind
 from .messages import (
     find_unreplied_assistant_entries,
     generate_with_preprocess,
-    acknowledge_helper_call,
 )
 from .message_dispatcher import LoopMessageDispatcher
-from .tools_utils import (
-    create_tool_call_message,
-    ToolCallMetadata,
-)
+from .tools_utils import create_tool_call_message
+from ..llm_client import count_requester_message
 from ..llm_helpers import (
     DEFAULT_TOOL_SCHEMA_STRICT,
     method_to_schema,
     _dumps,
-    short_id,
 )
 from .loop_config import (
     LoopConfig,
@@ -49,27 +44,23 @@ from .loop_config import (
 from .timeout_timer import TimeoutTimer
 from .messages import (
     insert_tool_message_after_assistant,
-    ensure_placeholders_for_pending,
-    forward_handle_call,
-    schedule_missing_for_message,
     is_mutable,
     is_loop_authored_message,
     loop_user_notice,
     extract_substantive_text,
-    compact_reviewed_messages,
-    strip_reasoning_payloads,
-    _rebaseline_watermark_hash,
 )
-from .tools_data import (
-    ToolsData,
-    compute_context_injection,
-)
-from .dynamic_tools_factory import DynamicToolFactory
+from .tools_data import ToolsData
+from . import cache_discipline as _cache_discipline
+from . import loop_stop as _loop_stop_mod
+from . import cell_reply as _cell_reply
+from . import bound_request as _bound_request
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     compress_context,
     _COMPRESSION_SIGNAL,
+    REQUEST_START_KEY,
     context_over_threshold,
+    keep_prefix_enabled,
 )
 from .response_format import (
     NormalizedResponseFormat,
@@ -79,7 +70,6 @@ from ..context_dump import make_messages_safe_for_context_dump
 from ...common.hierarchical_logger import ICONS
 
 if TYPE_CHECKING:
-    from .multi_handle import MultiHandleCoordinator
     from unillm.types import PromptCacheParam
 
 
@@ -97,6 +87,211 @@ class ToolLoopRuntimeState:
     refusals_by_call: Dict[str, int] = field(default_factory=dict)
     refusals_by_complaint: Dict[str, int] = field(default_factory=dict)
     pending_stop_reason: Optional[str] = None
+    # The tool list this session advertises, fixed at
+    # its first call and kept across compression restarts.
+    session_tools_schema: Optional[list] = None
+    # UNIFY_STEP_CAP_REPLY=last_word: the tool-less turns given at the step
+    # limit, and how many of them gave no answer (the draft was used).
+    step_cap_last_word_turns: int = 0
+    step_cap_last_word_fallbacks: int = 0
+    # Replies dropped and sent again because their choice carried a
+    # provider error.
+    provider_error_retries: int = 0
+    # UNIFY_REPLY_CHANNEL=code+text: turns a cell's reply() ended, and those
+    # whose text was a computed value rather than a string literal.
+    replies_from_cell: int = 0
+    replies_from_value: int = 0
+    # UNIFY_STEP_CAP_COMPACT: compactions at the step limit, in all and in
+    # the current request, the ones that failed or ran out of time, and the
+    # compacted context a loop leaves its handle to restart from
+    # (``AsyncToolLoopHandle._compact_context``'s result).
+    step_cap_compactions: int = 0
+    step_cap_compactions_in_request: int = 0
+    step_cap_compaction_failures: int = 0
+    step_cap_compacted: Optional[tuple] = None
+    # Model calls cancelled after they were sent, by cause ("stop", "cancel":
+    # the requester's cancel of the request). The provider bills what it
+    # received; unillm keeps such a call running and reports its charge
+    # when the answer arrives (``_bill_abandoned_call``), so the run's meter
+    # counts it. This is the count of those calls.
+    cancelled_turns: int = 0
+    cancelled_turns_by_cause: Dict[str, int] = field(default_factory=dict)
+    # UNIFY_LOOP_STOP: requests ended for making no progress.
+    loop_stops: int = 0
+    # UNIFY_COMPACTION_KEEP_PREFIX=on: a keep-prefix restart waits for its
+    # first measured call (``keep_prefix_unmeasured``). If that call is still
+    # over the compression threshold, what the restart kept is itself too
+    # large, and the session's next compaction rebuilds as shipped, from the
+    # summary alone (``keep_prefix_shipped_next``), so it cannot compact the
+    # same prefix again and again. Both read the session's own usage only.
+    keep_prefix_unmeasured: bool = False
+    keep_prefix_shipped_next: bool = False
+    keep_prefix_fallbacks: int = 0
+    # UNIFY_COMPACTION_KEEP_PREFIX=on: a persistent loop waited for its next
+    # request, so the next requester message it appends starts one
+    # (``context_compression.REQUEST_START_KEY``).
+    request_starts_next: bool = False
+    # A compaction the context threshold asked for, waiting for its first
+    # measured call (UNIFY_STEP_CAP_COMPACT=continue counts it ineffective
+    # when that call is still over the threshold).
+    compaction_unmeasured: bool = False
+    # UNIFY_STEP_CAP_COMPACT=continue: whether this loop runs in the mode
+    # (the loop sets it; its handle reads it to mark the restart summary as
+    # loop-authored), the step-limit compactions that did not make the
+    # context smaller, in all and in a row in the current request, and the
+    # loop stop's tracker a compacting loop hands to its restart.
+    step_cap_continue: bool = False
+    step_cap_ineffective_compactions: int = 0
+    step_cap_ineffective_in_a_row: int = 0
+    loop_stop_carry: Optional[Any] = None
+
+
+# How long a cancelled request waits for its running calls to stop before it
+# abandons them and still ends in its response (a tool that swallows the
+# cancellation would otherwise hold the response for as long as it runs).
+_CANCEL_GRACE_S = 2.0
+
+# UNIFY_STEP_CAP_COMPACT: how many times one request may be compacted at the
+# step limit; at its next limit the limit stops it as without the switch.
+STEP_CAP_COMPACTIONS = 2
+
+# UNIFY_STEP_CAP_COMPACT=continue: ineffective step-limit compactions in a
+# row that end a request (a compaction is ineffective when the context it
+# rebuilds is not smaller than the one it replaces).
+STEP_CAP_INEFFECTIVE_LIMIT = 2
+
+
+def continue_mode_active(runtime_state: Optional[ToolLoopRuntimeState] = None) -> bool:
+    """Whether ``UNIFY_STEP_CAP_COMPACT=continue`` is set.
+
+    With *runtime_state*, whether the loop that owns it runs in the mode:
+    only the actor's task loop, the one that answers a requester, does.
+    This is the one test the mode's parts share (a compaction rebuild that
+    is on in this mode keys on it).
+    """
+    from unify.settings import SETTINGS
+
+    if getattr(SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") != "continue":
+        return False
+    return runtime_state is None or bool(
+        getattr(runtime_state, "step_cap_continue", False),
+    )
+
+
+def _context_size(messages: list) -> int:
+    """The size a step-limit compaction is judged by: the characters of the
+    messages serialised (the tools and the system prompt sent with them are
+    the same before and after a compaction)."""
+    return len(json.dumps(messages, default=str))
+
+
+@dataclass(frozen=True)
+class _TimeoutStop:
+    """UNIFY_STEP_CAP_COMPACT=continue: the loop's timeout ends the request
+    through the step limit's reply path, with these texts (the attributes
+    ``_end_request_at_step_limit`` reads from a loop stop)."""
+
+    timeout: Any
+    last_word: bool
+    label: str = "Timeout"
+
+    @property
+    def reason(self) -> str:
+        return f"timeout ({self.timeout}s) exceeded"
+
+    @property
+    def cancelled(self) -> str:
+        return (
+            f"Cancelled: the request was stopped ({self.reason}) before this "
+            "call finished."
+        )
+
+    @property
+    def notice(self) -> str:
+        return (
+            f"This request was stopped ({self.reason}): no more tools can be "
+            "called for it. Reply now with your best answer to the request."
+        )
+
+    @property
+    def headline(self) -> str:
+        return (
+            f"🔚 Stopped: {self.reason}, so this request ended before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+
+
+@dataclass(frozen=True)
+class _IneffectiveStop:
+    """UNIFY_STEP_CAP_COMPACT=continue: compactions in a row that left the
+    context over the threshold end the request through the step limit's
+    reply path, with these texts (the attributes
+    ``_end_request_at_step_limit`` reads from a loop stop)."""
+
+    count: int
+    last_word: bool
+    label: str = "Compaction"
+
+    @property
+    def reason(self) -> str:
+        return (
+            f"{self.count} compactions in a row left the context over its " "threshold"
+        )
+
+    @property
+    def cancelled(self) -> str:
+        return (
+            f"Cancelled: the request was stopped ({self.reason}) before this "
+            "call finished."
+        )
+
+    @property
+    def notice(self) -> str:
+        return (
+            f"This request was stopped ({self.reason}): no more tools can be "
+            "called for it. Reply now with your best answer to the request."
+        )
+
+    @property
+    def headline(self) -> str:
+        return (
+            f"🔚 Stopped: {self.reason}, so this request ended before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+
+
+# A reply whose choice carries a provider error is sent again this many
+# times, after 1 s then 2 s (UniLLM's transient retry already ran inside
+# the call: the provider answered HTTP 200, so it saw no failure).
+_PROVIDER_ERROR_RETRIES = 2
+_PROVIDER_ERROR_BACKOFF_S = 1.0
+
+
+def _completion_provider_error(completion: Any) -> Optional[str]:
+    """The provider error a completion's first choice carries, if any.
+
+    OpenRouter reports an upstream failure part-way through a reply as HTTP
+    200 with ``finish_reason: "error"`` and ``choices[0].error`` (e.g. 502
+    "Stream ended before a terminal response event"). LiteLLM maps the
+    finish reason to ``stop`` and keeps the original under the choice's
+    ``provider_specific_fields``; the content is null, partial, or (after
+    UniLLM's postprocessing) the reasoning summary.
+    """
+    try:
+        choice = completion.choices[0]
+    except Exception:
+        return None
+    fields = getattr(choice, "provider_specific_fields", None)
+    if not isinstance(fields, dict):
+        fields = {}
+    error = fields.get("error") or getattr(choice, "error", None)
+    if fields.get("native_finish_reason") != "error" and not error:
+        return None
+    if isinstance(error, dict):
+        return f"{error.get('code', '?')}: {error.get('message', 'error')}"
+    return str(error or "finish_reason error")
 
 
 def _parse_tool_policy_result(
@@ -115,7 +310,9 @@ def _parse_tool_policy_result(
 
     While ``eager=True``, the loop also withholds ``compress_context`` from the
     visible tool schema (except on the forced over-threshold compression path)
-    so gated required policies cannot be bypassed by compressing context.
+    so gated required policies cannot be bypassed by compressing context, and
+    asks for parallel tool calls. ``{"gated": True}`` asks for those two
+    without the eager turn (see ``_policy_gates_turn``).
     """
     if not isinstance(result, (tuple, list)) or len(result) < 2:
         raise TypeError(
@@ -132,18 +329,17 @@ def _parse_tool_policy_result(
     return str(mode), tools, eager
 
 
-def _is_cache_miss_error(exc: BaseException | None) -> bool:
-    """True when *exc* (or anything in its cause/context chain) is a
-    read-only LLM-cache miss (``unillm.caching.CacheMissError``)."""
-    from unillm.caching import CacheMissError
+def _policy_gates_turn(result: Any) -> bool:
+    """Whether a ``tool_policy`` result gates the turn it is evaluated for.
 
-    seen: set[int] = set()
-    while exc is not None and id(exc) not in seen:
-        if isinstance(exc, CacheMissError):
-            return True
-        seen.add(id(exc))
-        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
-    return False
+    A gated turn withholds ``compress_context`` from the visible schema and
+    asks for parallel tool calls, so the required calls are made together
+    and cannot be bypassed by compressing. Eager results gate their turn;
+    ``{"gated": True}`` gates it without the eager turn.
+    """
+    _, _, eager = _parse_tool_policy_result(result)
+    opts = result[2] if len(result) >= 3 else None
+    return eager or (isinstance(opts, dict) and bool(opts.get("gated", False)))
 
 
 def prune_duplicate_tool_calls(tool_calls: list) -> tuple[list, set[str]]:
@@ -183,19 +379,6 @@ def _transform_context_roles(messages: list[dict]) -> list[dict]:
             new_msg["role"] = "outer_assistant"
         transformed.append(new_msg)
     return transformed
-
-
-def _sort_completed_tasks_by_call_id(
-    tasks: Set[asyncio.Task],
-    tools_data: "ToolsData",
-) -> list[asyncio.Task]:
-    """Sort completed tasks by call_id for deterministic processing order."""
-    return sorted(
-        tasks,
-        key=lambda t: (
-            tools_data.info.get(t).call_id if tools_data.info.get(t) else ""
-        ),
-    )
 
 
 def _requeue_at_front(queue: asyncio.Queue, item: Any) -> None:
@@ -362,6 +545,23 @@ def _fingerprint(value: Any) -> str:
     return hashlib.sha256(rendered.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def with_first_message_context(msg: dict, context: str) -> dict:
+    """*msg* as a new message whose content opens with *context*.
+
+    Text content becomes ``context``, a rule, then the text; a list of
+    content blocks gets *context* as a leading text block. Any other content
+    is left as it is.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        content = f"{context}\n\n---\n\n{content}"
+    elif isinstance(content, list):
+        content = [{"type": "text", "text": context}, *content]
+    else:
+        return msg
+    return {**msg, "content": content}
+
+
 async def async_tool_loop_inner(
     client: unillm.AsyncUnify,
     message: str | dict | list[str | dict],
@@ -372,11 +572,8 @@ async def async_tool_loop_inner(
     interject_queue: asyncio.Queue[dict | str],
     cancel_event: asyncio.Event,
     stop_event: asyncio.Event | None = None,
-    pause_event: asyncio.Event,
     max_consecutive_failures: int = 3,
     prune_tool_duplicates: bool = True,
-    interrupt_llm_with_interjections: bool = True,
-    interrupt_llm_on_tool_completion: bool = True,
     propagate_chat_context: ChatContextPropagation = ChatContextPropagation.LLM_DECIDES,
     parent_chat_context: Optional[list[dict]] = None,
     caller_description: Optional[str] = None,
@@ -384,7 +581,6 @@ async def async_tool_loop_inner(
     max_steps: Optional[int] = None,
     timeout: Optional[int] = None,
     raise_on_limit: bool = False,
-    include_class_in_dynamic_tool_names: bool = False,
     tool_policy: Optional[
         Union[
             Callable[
@@ -408,11 +604,8 @@ async def async_tool_loop_inner(
     response_format: Optional[Any] = None,
     max_parallel_tool_calls: Optional[int] = None,
     persist: bool = False,
-    multi_handle_coordinator: Optional["MultiHandleCoordinator"] = None,
     prompt_caching: Optional["PromptCacheParam"] = None,
     time_awareness: bool = False,
-    extra_ask_tools: Optional[Dict[str, Callable]] = None,
-    completed_askable_tools: Optional[Dict[str, dict]] = None,
     enable_compression: bool = True,
     extra_compression_tools: Optional[list[str]] = None,
     clarification_queues: Optional[Tuple["asyncio.Queue", "asyncio.Queue"]] = None,
@@ -420,20 +613,29 @@ async def async_tool_loop_inner(
     on_clarification_answer: Optional[Callable[[str], Any]] = None,
     on_notify: Optional[Callable[[str], Any]] = None,
     runtime_state: Optional[ToolLoopRuntimeState] = None,
+    fixed_tools_schema: Optional[list[dict]] = None,
+    first_message_context: Optional[str] = None,
+    compression_tools_on_demand: bool = False,
+    reply_channel: bool = False,
+    on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
+    bind_request: Any = False,
 ) -> str:
     r"""
-    Run an interactive function-calling dialogue between an LLM and a set of
-    Python callables until the model yields a final plain-text answer.
+    Run a function-calling dialogue between an LLM and a set of Python
+    callables until the model yields a final plain-text answer.
 
-    Every tool call the model requests runs in its own ``asyncio.Task``, so
-    long-running calls advance in parallel and the loop only ever waits for
-    the first one to finish. Setting ``cancel_event`` cancels and awaits every
-    task, then re-raises ``asyncio.CancelledError``; pushing onto
-    ``interject_queue`` injects a user turn before the next LLM step without
-    disturbing running tools. Exceptions inside tools are serialised and shown
-    to the model; ``max_consecutive_failures`` back-to-back crashes abort the
-    loop with ``RuntimeError``. Transport lives outside the loop: the event
-    bus lets a UI or logger observe every message.
+    One model turn runs at a time, and no turn starts while a tool call runs.
+    A turn's tool calls run in call order, each to completion, and their
+    results are appended in that order, each with its own ``tool_call_id``.
+    No message interrupts a model call or a tool call: a message pushed onto
+    ``interject_queue`` (``handle.submit``) is appended at the next turn
+    boundary. Setting ``cancel_event`` (``handle.stop``) cancels the model
+    call or the tool call in flight and ends the loop with
+    ``asyncio.CancelledError``; in a persistent loop the requester's cancel
+    of the request (``handle.cancel_request``) cancels them and ends the
+    request, keeping the session. Exceptions inside tools are
+    serialised and shown to the model; ``max_consecutive_failures``
+    back-to-back crashes abort the loop with ``RuntimeError``.
 
     Parameters
     ----------
@@ -451,13 +653,14 @@ async def async_tool_loop_inner(
         tool schema via :pyfunc:`method_to_schema`.
 
     interject_queue : ``asyncio.Queue[str | dict]``
-        Channel through which the outer application pushes additional user
-        turns at any time. A dict payload has the shape
-        ``{"message": str, "_parent_chat_context_continued": list[dict]}``.
+        The requester's next messages (``{"message": str}`` or a string), read
+        only at a turn boundary, plus the loop's own sentinels: a persistent
+        loop's request cancel (``_cancel_request``), a storage review's note
+        (``_transcript_note``) and its compaction (``_compact_transcript``).
 
     cancel_event : ``asyncio.Event``
-        Set by the outer caller to request graceful shutdown: the loop cancels
-        every running task and propagates ``asyncio.CancelledError``.
+        Set by the outer caller to stop the loop: the model call or tool call
+        in flight is cancelled and ``asyncio.CancelledError`` propagates.
 
     max_consecutive_failures : ``int``, default ``3``
         After this many back-to-back tool exceptions the loop raises
@@ -467,52 +670,38 @@ async def async_tool_loop_inner(
         Drop model-requested tool calls with identical ``function.name`` and
         argument JSON, in place, before they reach chat history or scheduling.
 
-    interrupt_llm_with_interjections : ``bool``, default ``True``
-        When ``True`` an in-flight ``client.generate`` is cancelled the moment
-        a new user turn arrives so the assistant can pivot immediately; when
-        ``False`` the loop waits for the model to finish first.
-
     propagate_chat_context : ``ChatContextPropagation``, default ``LLM_DECIDES``
         Whether a filtered snapshot of this loop's conversation (genuine user
         turns and substantive assistant text only) is threaded into child
         tools that accept a ``_parent_chat_context`` keyword argument.
         ``ALWAYS`` injects on every such call, ``NEVER`` on none, and
         ``LLM_DECIDES`` exposes an ``include_parent_chat_context`` parameter
-        the model may set to ``true`` (omission means no context). The
-        ``_parent_chat_context`` argument itself is injected automatically and
-        never exposed to the LLM.
+        the model may set to ``true`` (omission means no context).
 
     tool_policy : ``Callable | None``, default ``None``
-        Dynamically controls tool exposure and whether a tool call is required
-        on a given turn. Receives the turn index (from ``0``) and the full
+        Controls tool exposure and whether a tool call is required on a given
+        turn. Receives the turn index (from ``0``) and the full
         ``{name → callable}`` mapping, plus optionally the list of previously
         called tool names as a third positional argument. Returns
-        ``(policy, tools)`` or ``(policy, tools, {"eager": bool})``: ``policy``
-        is ``"auto"`` or ``"required"`` (fed straight into ``tool_choice``) and
-        ``tools`` is the possibly-filtered mapping of base tools visible that
-        turn. With ``eager=True`` the loop grants another LLM turn immediately
-        after scheduling tool calls, without waiting for them, for as long as
-        the policy keeps returning ``eager=True``; eager turns also withhold
-        ``compress_context`` from the visible schema (forced over-threshold
-        compression still applies). Omitting ``eager`` keeps the
-        wait-for-results behaviour.
+        ``(policy, tools)`` or ``(policy, tools, opts)``: ``policy`` is
+        ``"auto"`` or ``"required"`` (fed straight into ``tool_choice``) and
+        ``tools`` is the possibly-filtered mapping of tools visible that
+        turn. ``{"eager": True}`` or ``{"gated": True}`` gate the turn:
+        ``compress_context`` is withheld from it (forced over-threshold
+        compression still applies) and parallel tool calls are asked for.
 
     parent_chat_context : ``list[dict] | None``
-        Chat history passed from an outer loop. When a tool call opts into
-        context (or ``propagate_chat_context`` is ``ALWAYS``), the filtered
-        snapshot is forwarded to that inner tool on its first call and later
-        calls receive only the messages added since, to avoid token waste.
+        Chat history passed from an outer caller, shown in the runtime
+        context and forwarded to tools that opt into context.
 
     log_steps : ``bool | str``, default ``True``
         Step logging to ``LOGGER``: ``False`` for none, ``True`` for everything
         except system messages, ``"full"`` for everything.
 
     timeout : ``int | None``, default ``None``
-        Activity-based timeout in seconds; the timer resets after each
-        observable event (LLM response, tool completion, interjection). It
-        guards against hung user-defined tools, not slow LLM inference:
-        providers have their own timeouts, and an in-flight LLM call is
-        awaited before the timeout is checked. ``None`` disables it.
+        Activity-based timeout in seconds; the timer resets after each LLM
+        response and each appended message. A tool call that runs past it is
+        cancelled. ``None`` disables it.
 
     raise_on_limit : ``bool``, default ``False``
         If ``True``, exceeding the timeout or ``max_steps`` raises
@@ -520,16 +709,53 @@ async def async_tool_loop_inner(
         terminates gracefully with a summary message.
 
     persist : ``bool``, default ``False``
-        If ``True``, content without tool calls does not end the loop; it
-        blocks on ``interject_queue`` and grants the LLM another turn when an
-        interjection arrives, so one loop can process many events over time.
-        The loop then ends only via ``cancel_event`` or ``stop_event``.
+        If ``True``, content without tool calls does not end the loop: the
+        turn's response goes to the handle and the loop parks until the next
+        message arrives on ``interject_queue``, so one loop serves many
+        requests. The loop then ends only via ``cancel_event``.
 
     time_awareness : ``bool``, default ``False``
         If ``True``, a time-context system message is injected at the start of
-        the conversation and refreshed after each tool completion, giving the
-        LLM wall-clock time and tool execution durations. If ``False`` the
-        time-context table is omitted and no tool timing is tracked.
+        the conversation and tool results carry their timing.
+
+    fixed_tools_schema : ``list[dict] | None``
+        The exact tool list to send on every call instead of one built from
+        ``tools`` -- a fork sends its parent's list so its requests extend
+        the parent's. A listed tool this loop does not implement is refused
+        when called.
+
+    first_message_context : ``str | None``
+        Text that opens the first user message of this loop (the request, or
+        the first user message of a seeded batch), separated from it by a
+        rule. A compressed session restarts with it again, since its first
+        message is then a new one. ``None`` sends the message as given.
+
+    compression_tools_on_demand : ``bool``, default ``False``
+        ``True`` (the core tool surface): ``compress_context`` and the
+        ``extra_compression_tools`` are offered only on the turn that must
+        compress, and are otherwise left out of the tool list
+        (the session's fixed list included), so the list holds
+        only the caller's tools.
+
+    reply_channel : ``bool``, default ``False``
+        ``True`` (the actor's task loop, ``UNIFY_REPLY_CHANNEL=code+text``): a
+        cell's ``reply(text)`` ends the turn with that text as the reply, as
+        a text reply would, without another model call (``cell_reply.py``).
+        Ignored while the switch is off and in a loop whose answer is a
+        response tool's.
+
+    on_turn_boundary : optional coroutine function, default ``None``
+        Called just before each model call, after every tool result (and any
+        footer) is appended. A non-empty string it returns is appended as one
+        loop-authored user message. Never called while a model call or a tool
+        runs, nor after a turn has ended (the agent record).
+
+    bind_request : ``bool`` or ``RequestSlot``, default ``False``
+        ``True`` (the actor's task loop, ``UNIFY_BIND_REQUEST=on``): the
+        requester's latest message is the current request a cell reads as
+        ``request`` (``bound_request.py``); the handle passes its own slot,
+        which a restart after compression keeps. Ignored while the switch is
+        off; any other loop's cells have no ``request``.
 
     Returns
     -------
@@ -538,10 +764,10 @@ async def async_tool_loop_inner(
         been fed back into the conversation.
     """
     cfg = LoopConfig(loop_id, lineage, TOOL_LOOP_LINEAGE.get([]))
-    # The outer handle shares the loop's resolved label so steering logs
-    # (stop/pause/resume/interject/ask) line up with the tool loop's, and the
-    # resolved lineage so event payloads carry the full parent->child stack
-    # even when emitted outside the tool loop ContextVar scope.
+    # The outer handle shares the loop's resolved label so its logs (stop,
+    # submit, cancel) line up with the tool loop's, and the resolved lineage
+    # so event payloads carry the full parent->child stack even when emitted
+    # outside the tool loop ContextVar scope.
     with suppress(Exception):
         if outer_handle_container and outer_handle_container[0] is not None:
             setattr(outer_handle_container[0], "_log_label", cfg.label)
@@ -567,8 +793,6 @@ async def async_tool_loop_inner(
         return preprocess_msgs
 
     stop_event = stop_event or asyncio.Event()
-
-    _initial_user_message = copy.deepcopy(message)
 
     # Normalize response_format once. LLM-supplied nested tool args may pass a
     # JSON Schema dict / JSON string rather than a Pydantic class; accept those
@@ -600,6 +824,16 @@ async def async_tool_loop_inner(
         )
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
+    # UNIFY_REPLY_CHANNEL=code+text: this loop's slot for a cell's reply,
+    # ``None`` for a loop that takes none; nothing is set while it is off.
+    _reply_token = _cell_reply.bind(
+        reply_channel and _rf_norm is None,
+    )
+    _reply_slot = _cell_reply.current() if _reply_token is not None else None
+    # UNIFY_BIND_REQUEST=on: this loop's current request, which its cells
+    # read as ``request``; ``None`` for a loop that answers no requester.
+    _request_token = _bound_request.bind(bind_request)
+    _request_slot = _bound_request.current() if _request_token is not None else None
 
     # ── runtime guards ────────────────────────────────────────────────────
     # A run with no step ceiling ends only when the model chooses to stop, so
@@ -612,6 +846,55 @@ async def async_tool_loop_inner(
 
         configured_max_steps = _SETTINGS.UNIFY_MAX_TOOL_LOOP_STEPS
         max_steps = configured_max_steps if configured_max_steps > 0 else None
+    # UNIFY_STEP_CAP_REPLY: reaching max_steps in a persistent loop ends the
+    # request, not the loop, and every stop at the limit quotes the latest
+    # draft of the request's answer ("draft"), or the answer the model gives
+    # in one tool-less turn at the limit ("last_word"). Off: as shipped.
+    from unify.settings import SETTINGS as _CAP_SETTINGS
+
+    _step_cap_mode = _CAP_SETTINGS.step_cap_reply()
+    # A task loop that answers a requester with text and that no other loop
+    # started (as UNIFY_PROMPT_ACCURACY's test for a parent): never a
+    # sub-agent's, a review's or its fork's.
+    _requester_loop = (
+        bool(reply_channel)
+        and _rf_norm is None
+        and parent_chat_context is None
+        and len(cfg.lineage) < 2
+    )
+    # UNIFY_STEP_CAP_COMPACT=continue, in the requester's task loop only: the
+    # step budget is counted per request (the request's own messages), the
+    # limit compacts with no bound per request, and every stop that ends a
+    # request goes through UNIFY_STEP_CAP_REPLY's reply path, ``draft``
+    # when that switch is empty.
+    _continue = _requester_loop and continue_mode_active()
+    runtime_state.step_cap_continue = _continue
+    if _continue and not _step_cap_mode:
+        _step_cap_mode = "draft"
+    _step_cap_reply = bool(_step_cap_mode)
+    _step_cap_last_word = _step_cap_mode == "last_word"
+    # UNIFY_STEP_CAP_COMPACT=on: at max_steps a loop that can compress its
+    # context compacts it, and the request goes on from the compacted
+    # context (at most STEP_CAP_COMPACTIONS times a request). Off: as shipped.
+    _step_cap_compact = (
+        (getattr(_CAP_SETTINGS, "UNIFY_STEP_CAP_COMPACT", "") == "on" or _continue)
+        and bool(enable_compression)
+        and bool(max_steps)
+        and not raise_on_limit
+    )
+    # UNIFY_LOOP_STOP: the no-progress calls in a row of the current request.
+    # A stop ends the request as the step limit does; with
+    # UNIFY_STEP_CAP_REPLY off it takes the last word, so it always replies.
+    # Only in the requester's task loop.
+    _loop_stop = (
+        _loop_stop_mod.Tracker(_loop_stop_mod.threshold())
+        if _loop_stop_mod.enabled() and _requester_loop
+        else None
+    )
+    # UNIFY_STEP_CAP_COMPACT=continue: the tracker of the loop this one
+    # restarts after a compaction, whose count carries over.
+    _loop_stop_carried = runtime_state.loop_stop_carry
+    runtime_state.loop_stop_carry = None
 
     timer: TimeoutTimer = TimeoutTimer(
         timeout=timeout,
@@ -620,6 +903,10 @@ async def async_tool_loop_inner(
         client=client,
         message_count_offset=runtime_state.message_count_offset,
     )
+    # UNIFY_STEP_CAP_COMPACT=continue: the budget counts from here, the
+    # request's own message (or, after a compaction, its restart message).
+    if _continue:
+        timer.start_request()
     _msg_dispatcher = LoopMessageDispatcher(client, cfg, timer)
     parent_chat_context_safe = make_messages_safe_for_context_dump(parent_chat_context)
 
@@ -688,8 +975,12 @@ async def async_tool_loop_inner(
     # The parent-context section is added even when empty, so context
     # continuations arriving via interjections can refer to "the initial Parent
     # Chat Context in your system message" without looking fabricated.
+    # UNIFY_PROMPT_ACCURACY: not to a loop that has no parent -- one no other
+    # loop started (its lineage is its own id) and given no parent context --
+    # which no parent conversation exists for, and no continuation can reach.
+    _no_parent = parent_chat_context is None and len(cfg.lineage) < 2
     _has_parent_chat_context = False
-    if propagate_chat_context != ChatContextPropagation.NEVER:
+    if propagate_chat_context != ChatContextPropagation.NEVER and not _no_parent:
         ctx_content = parent_chat_context_safe if parent_chat_context_safe else []
         ctx_content_transformed = _transform_context_roles(ctx_content)
         _has_parent_chat_context = True
@@ -756,6 +1047,9 @@ async def async_tool_loop_inner(
 
     # ── Seeded batch ─────────────────────────────────────────────────────
     seeded_batch = None
+    # UNIFY_BIND_REQUEST=on: the request as the requester wrote it, without
+    # the session context put before it below.
+    _bound_request.record_first(_request_slot, message)
     if isinstance(message, list):
         # A list of content blocks (no 'role') becomes one user message;
         # anything else is a pre-structured list of chat messages/strings.
@@ -766,6 +1060,15 @@ async def async_tool_loop_inner(
                 (m if isinstance(m, dict) else {"role": "user", "content": m})
                 for m in message
             ]
+
+        if first_message_context:
+            for index, msg in enumerate(seeded_batch):
+                if msg.get("role") == "user":
+                    seeded_batch[index] = with_first_message_context(
+                        msg,
+                        first_message_context,
+                    )
+                    break
 
         logger.debug(
             f"[setup +{_setup_elapsed()}] appending seeded batch ({len(seeded_batch)} msgs)",
@@ -797,14 +1100,19 @@ async def async_tool_loop_inner(
         client=client,
         logger=logger,
         time_ctx=time_ctx,
-        extra_ask_tools=extra_ask_tools,
-        completed_askable_tools=completed_askable_tools,
         call_counts=runtime_state.call_counts,
     )
     logger.debug(
         f"[setup +{_setup_elapsed()}] ToolsData ready ({len(tools_data.normalized)} tools)",
     )
-
+    # The handle answers a running call's question on that call's own queue.
+    with suppress(Exception):
+        if outer_handle_container and outer_handle_container[0] is not None:
+            setattr(
+                outer_handle_container[0],
+                "_clarification_channels",
+                tools_data.clarification_channels,
+            )
     _alias_lookup = {
         name: spec.display_label
         for name, spec in tools_data.normalized.items()
@@ -836,437 +1144,686 @@ async def async_tool_loop_inner(
                 1 for p in _sig.parameters.values() if p.kind in _positional_kinds
             )
             _policy_accepts_history = _n_positional >= 3
-    # Outer handles introspect running nested handles through attributes on
-    # this Task: task_info (used by ask/stop helpers), clarification_channels
-    # (so handle-level methods route answers without involving the LLM),
-    # get_ask_tools (so handle.ask() reaches inner handles) and completed
-    # tool metadata including handle refs.
-    with suppress(Exception):
-        _self_task = asyncio.current_task()
-        if _self_task is not None:
-            setattr(_self_task, "task_info", tools_data.info)  # type: ignore[attr-defined]
-            setattr(
-                _self_task,
-                "clarification_channels",
-                tools_data.clarification_channels,
-            )
-            setattr(_self_task, "get_ask_tools", tools_data.get_ask_tools)  # type: ignore[attr-defined]
-            setattr(_self_task, "get_completed_tool_metadata", lambda: dict(tools_data._completed_askable_tools))  # type: ignore[attr-defined]
-
-    # Preflight repair: backfill pre-existing assistant tool_calls without
-    # replies, oldest → newest. Each entry is repaired inside its own
-    # try/except: prune_over_quota_tool_calls may raise (a below-watermark
-    # mutation refused on a resumed client whose watermark carried over), and
-    # one blanket suppress around the whole loop would silently abandon every
-    # entry after the one that raised instead of just skipping it.
-    logger.debug(f"[setup +{_setup_elapsed()}] preflight repair start")
-    with suppress(Exception):
-        unreplied = find_unreplied_assistant_entries(client)
-        if unreplied:
-            for entry in unreplied:
-                try:
-                    amsg = entry["assistant_msg"]
-                    tools_data.prune_over_quota_tool_calls(amsg)
-                    if prune_tool_duplicates and amsg.get("tool_calls"):
-                        unique, pruned = prune_duplicate_tool_calls(amsg["tool_calls"])
-                        if pruned:
-                            amsg["tool_calls"] = unique
-                            entry["missing"] = [
-                                cid for cid in entry["missing"] if cid not in pruned
-                            ]
-                    missing_ids = set(entry["missing"])
-                    if not missing_ids:
-                        continue
-                    await schedule_missing_for_message(
-                        amsg,
-                        missing_ids,
-                        tools_data=tools_data,
-                        context_state=context_state,
-                        propagate_chat_context=propagate_chat_context,
-                        assistant_meta=assistant_meta,
-                        client=client,
-                        msg_dispatcher=_msg_dispatcher,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        f"Preflight repair failed for one assistant entry; "
-                        f"continuing with the rest: {exc}",
-                        prefix="🚨",
-                    )
-
-    # ── Steering: target selection + per-child dispatch ──────────────────
-    def _select_steering_targets(
-        method: str,
-        payload: dict | None,
-    ) -> list[Tuple[asyncio.Task, "ToolCallMetadata"]]:
-        """
-        Choose which child tool calls receive a steering signal:
-          - clarify: the specified call_id only (exact or suffix match)
-          - pause/resume/stop: all children
-          - interject/ask/custom: not auto-forwarded to children
-        """
-        base = str(method or "").lower().strip()
-        payload = payload or {}
-        selected: list[Tuple[asyncio.Task, ToolCallMetadata]] = []
-        if base == "clarify":
-            try:
-                target_call_id = payload.get("call_id")
-            except Exception:
-                target_call_id = None
-            if isinstance(target_call_id, str) and target_call_id:
-                for t, inf in list(tools_data.info.items()):
-                    try:
-                        if str(inf.call_id) == target_call_id or str(
-                            inf.call_id,
-                        ).endswith(target_call_id):
-                            selected.append((t, inf))
-                            break
-                    except Exception:
-                        continue
-            return selected
-        if base in ("pause", "resume", "stop"):
-            for t, inf in list(tools_data.info.items()):
-                try:
-                    # Included even before a handle is adopted, so pause/resume
-                    # can still toggle pause_event.
-                    selected.append((t, inf))
-                except Exception:
-                    continue
-            return selected
-        return selected
-
-    async def _dispatch_steering_to_child(
-        method: str,
-        payload: dict | None,
-        inf: "ToolCallMetadata",
-    ) -> None:
-        """
-        Execute one steering operation on a single child:
-          - interject: prefer the private interject_queue; else handle.interject(...)
-          - ask: not forwarded here (see below)
-          - pause/resume: handle.pause()/resume() when available; else toggle pause_event
-          - stop: handle.stop(...)
-          - clarify: put the answer onto the clarification down-queue (by call_id)
-          - default: best-effort generic forward to the handle
-        """
-        base = str(method or "").lower().strip()
-        args = dict(payload or {})
-        h = getattr(inf, "handle", None)
-        if base == "interject":
-            try:
-                new_text = args.get("content") if isinstance(args, dict) else None
-                if new_text is None and isinstance(args, dict):
-                    new_text = args.get("message")
-            except Exception:
-                new_text = None
-            iq = getattr(inf, "interject_queue", None)
-            if iq is not None:
-                _ctx_cont = (
-                    args.get("_parent_chat_context_cont")
-                    if isinstance(args, dict)
-                    else None
-                )
-                if _ctx_cont is None:
-                    # Bare text when there is no continuation context: many
-                    # simple tools declare `_interject_queue` and just
-                    # `await _interject_queue.get()` expecting the raw string,
-                    # so wrapping unconditionally would break them.
-                    await iq.put(new_text)
-                else:
-                    # Same payload shape as AsyncToolLoopHandle.interject
-                    # (unify/common/async_tool_loop.py), so a call routed
-                    # through this queue shortcut carries the same
-                    # continuation context as one routed through
-                    # handle.interject() below.
-                    await iq.put(
-                        {
-                            "message": new_text,
-                            "_parent_chat_context_continued": _ctx_cont,
-                            "trigger_immediate_llm_turn": (
-                                args.get("trigger_immediate_llm_turn", True)
-                                if isinstance(args, dict)
-                                else True
-                            ),
-                            "suppress_response_notification": (
-                                args.get("suppress_response_notification", False)
-                                if isinstance(args, dict)
-                                else False
-                            ),
-                        },
-                    )
-                return
-            if h is not None:
-                await forward_handle_call(  # type: ignore[name-defined]
-                    h,
-                    "interject",
-                    args if isinstance(args, dict) else {},
-                    fallback_positional_keys=["content", "message"],
-                )
-            return
-        if base == "ask":
-            # The outer ask() starts a dedicated inspection loop and injects
-            # ask_* tool calls that adopt and run nested ask handles;
-            # forwarding here would duplicate those calls.
-            return
-        if base == "pause":
-            if h is not None and hasattr(h, "pause"):
-                await forward_handle_call(  # type: ignore[name-defined]
-                    h,
-                    "pause",
-                    args if isinstance(args, dict) else {},
-                )
-                return
-            ev = getattr(inf, "pause_event", None)
-            if ev is not None:
-                ev.clear()
-            return
-        if base == "resume":
-            if h is not None and hasattr(h, "resume"):
-                await forward_handle_call(  # type: ignore[name-defined]
-                    h,
-                    "resume",
-                    args if isinstance(args, dict) else {},
-                )
-                return
-            ev = getattr(inf, "pause_event", None)
-            if ev is not None:
-                ev.set()
-            return
-        if base == "stop":
-            if h is not None and hasattr(h, "stop"):
-                await forward_handle_call(  # type: ignore[name-defined]
-                    h,
-                    "stop",
-                    args if isinstance(args, dict) else {},
-                    fallback_positional_keys=["reason"],
-                )
-            return
-        if base == "clarify":
-            with suppress(Exception):
-                _cid = str(inf.call_id)
-                _clar_map = tools_data.clarification_channels
-                # Exact id first, then suffix lookup.
-                if _cid in _clar_map:
-                    down_q = _clar_map[_cid][1]
-                else:
-                    down_q = None
-                    for k, (_u, _d) in list(_clar_map.items()):
-                        if str(k).endswith(_cid[-6:]):
-                            down_q = _d
-                            break
-                if down_q is not None:
-                    await down_q.put((args or {}).get("answer"))
-            return
-        # Best-effort generic forward: strip the control keys, then try the
-        # original name, its aliases and finally the base name.
-        if h is not None:
-            try:
-                args.pop("_custom", None)
-                aliases = list(args.pop("_aliases", []) or [])
-            except Exception:
-                aliases = []
-            try:
-                fb_keys = tuple(args.pop("_fallback", ()) or ())
-            except Exception:
-                fb_keys = ()
-            try:
-                original_name = str(method or "")
-            except Exception:
-                original_name = base
-            candidates: list[str] = []
-            if original_name:
-                candidates.append(original_name)
-            for nm in aliases:
-                if isinstance(nm, str) and nm:
-                    candidates.append(nm)
-            if base and base not in candidates:
-                candidates.append(base)
-            for nm in candidates:
-                try:
-                    attr = getattr(h, nm, None)
-                    if not callable(attr):
-                        continue
-                    await forward_handle_call(  # type: ignore[name-defined]
-                        h,
-                        nm,
-                        args if isinstance(args, dict) else {},
-                        fallback_positional_keys=fb_keys,
-                    )
-                    return
-                except Exception:
-                    continue
-
-    async def _synthesize_mirrored_helper_calls(
-        method: str,
-        payload: dict | None = None,
-    ) -> None:
-        """
-        Append an assistant message whose `steer` tool_calls mirror a steering
-        command, ack each one immediately, then forward the steering to the
-        target child handles. No LLM step is involved.
-        """
-        payload = payload or {}
-        # "_inject_only" records the mirror without dispatching, so child
-        # steering already performed elsewhere is not executed twice.
-        inject_only = False
-        try:
-            inject_only = bool(payload.get("_inject_only"))
-        except Exception:
-            inject_only = False
-
-        base = str(method or "").lower().strip()
-
-        # The stop log is deferred until after the first LLM thinking line.
-        if base == "stop":
-            reason_txt = ""
-            try:
-                r = payload.get("reason")
-                if isinstance(r, str) and r:
-                    reason_txt = r
-            except Exception:
-                reason_txt = ""
-            suffix = f" – reason: {reason_txt}" if reason_txt else ""
-            try:
-                logger.defer_after_first_llm(
-                    f"Stop requested{suffix}",
-                    prefix=ICONS["stop_requested"],
-                )
-            except Exception:
-                pass
-
-        targets: list[Tuple[asyncio.Task, ToolCallMetadata]] = _select_steering_targets(
-            method,
-            payload if isinstance(payload, dict) else {},
-        )
-        if not targets:
-            return
-
-        def _steer_payload_for(base_action: str) -> Optional[str]:
-            if base_action == "interject":
-                return payload.get("message") or payload.get("content")
-            if base_action == "ask":
-                return payload.get("question")
-            if base_action == "stop":
-                return payload.get("reason")
-            if base_action == "clarify":
-                return payload.get("answer")
-            return None  # pause/resume carry no payload
-
-        # One assistant message with one `steer` tool_call per target, in the
-        # same structured-args shape the LLM itself emits, so programmatic
-        # steering is acked and dispatched through the same `steer`
-        # schema/transcript convention rather than a parallel one. The full
-        # forward kwargs (minus control keys) are kept aside for dispatch.
-        tool_calls = []
-        args_by_id: dict[str, Any] = {}
-        for _t, inf in targets:
-            try:
-                try:
-                    forward_args = dict(payload or {})
-                except Exception:
-                    forward_args = {}
-                for _k in ("_custom", "_aliases", "_fallback"):
-                    try:
-                        forward_args.pop(_k, None)
-                    except Exception:
-                        pass
-
-                steer_args: dict[str, Any] = {
-                    "call_id": inf.call_id,
-                    "action": base,
-                }
-                _pl = _steer_payload_for(base)
-                if _pl is not None:
-                    steer_args["payload"] = _pl
-
-                call_id = f"mirror_{short_id(6)}"
-                tool_calls.append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "steer",
-                            "arguments": json.dumps(steer_args),
-                        },
-                    },
-                )
-                args_by_id[call_id] = (forward_args, inf)
-            except Exception:
-                continue
-        if not tool_calls:
-            return
-
-        assistant_msg = {"role": "assistant", "content": "", "tool_calls": tool_calls}
-        await _msg_dispatcher.append_msgs([assistant_msg])
-        with suppress(Exception):
-            await to_event_bus(assistant_msg, cfg, kind=ToolLoopKind.STEERING_HELPER)
-        assistant_meta[id(assistant_msg)] = {"results_count": 0}
-
-        # Ack each call, then forward the steering to its target handle.
-        for call in tool_calls:
-            try:
-                cid = call.get("id")
-                if not isinstance(cid, str):
-                    continue
-                args, inf = args_by_id.get(cid, (None, None))
-                with suppress(Exception):
-                    await acknowledge_helper_call(  # type: ignore[name-defined]
-                        assistant_msg,
-                        cid,
-                        "steer",
-                        call["function"].get("arguments", "{}"),
-                        assistant_meta=assistant_meta,
-                        client=client,
-                        msg_dispatcher=_msg_dispatcher,
-                    )
-                if (not inject_only) and (inf is not None):
-                    await _dispatch_steering_to_child(base, args, inf)
-            except Exception:
-                continue
-
     # ── Initial user message (single-message path) ──────────────────────
     if seeded_batch is None:
         if isinstance(message, dict):
             initial_user_msg = message
         else:
             initial_user_msg = {"role": "user", "content": message}
+        if first_message_context:
+            initial_user_msg = with_first_message_context(
+                initial_user_msg,
+                first_message_context,
+            )
         if time_ctx is not None and isinstance(initial_user_msg.get("content"), str):
             initial_user_msg["content"] = time_ctx.prefix_user_message(
                 initial_user_msg["content"],
             )
         await _msg_dispatcher.append_msgs([initial_user_msg])
 
-    async def _handle_limit_reached(reason: str) -> str:
+    # UNIFY_STEP_CAP_COMPACT=continue: a loop restarted after a compaction
+    # goes on counting its request's no-progress calls where the compacted
+    # loop left off, anchored on the compacted context (whose summary is
+    # loop-authored, so it starts no request): a stuck request cannot escape
+    # the loop stop by compacting.
+    if _loop_stop is not None and _loop_stop_carried is not None:
+        _loop_stop.observe(client.messages or [])
+        _loop_stop.count = _loop_stop_carried.count
+        _loop_stop._turns = list(_loop_stop_carried._turns)
+
+    async def _handle_limit_reached(
+        reason: str,
+        draft: Optional[str] = None,
+        *,
+        last_word: bool = False,
+        stop: Optional[_loop_stop_mod.Stop] = None,
+    ) -> str:
         """
         Terminate gracefully when *timeout* or *max_steps* is exceeded and
-        `raise_on_limit` is *False*: stop every pending tool (via
-        handle.stop() when available), cancel the tasks, and append a short
-        assistant notice.
+        `raise_on_limit` is *False*: append a short assistant notice,
+        followed by *draft* when one is given. Every call has been answered
+        by then (``_interrupt_turn`` answers the ones a limit interrupts).
+
+        With *last_word* (UNIFY_STEP_CAP_REPLY=last_word at max_steps) the
+        pending calls are answered as cancelled, the model is given one
+        tool-less turn, and its answer, when it gives one, takes the place
+        of *draft*. A loop stop (UNIFY_LOOP_STOP) passes its *stop* texts.
         """
-        for task in list(tools_data.pending):
-            with suppress(Exception):
-                inf = tools_data.info.get(task)
-                if inf is not None and inf.handle is not None and hasattr(inf.handle, "stop"):  # type: ignore[attr-defined]
-                    await maybe_await(inf.handle.stop())
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tools_data.pending, return_exceptions=True)
-        tools_data.pending.clear()
+        if last_word:
+            await tools_data.cancel_pending_tasks_with_reply(
+                (
+                    stop.cancelled
+                    if stop is not None
+                    else f"Cancelled: the step limit ({reason}) ended the request "
+                    "before this call finished."
+                ),
+                assistant_meta=assistant_meta,
+                msg_dispatcher=_msg_dispatcher,
+            )
+            draft = await _last_word(reason, stop) or draft
+        await tools_data.cancel_pending_tasks(grace=_CANCEL_GRACE_S)
+        await _answer_calls_not_run(reason)
 
         notice = {
             "role": "assistant",
-            "content": f"🔚 Terminating early: {reason}",
+            "content": f"🔚 Terminating early: {reason}"
+            + (f"\n\nBest current answer:\n{draft}" if draft is not None else ""),
         }
         await _msg_dispatcher.append_msgs([notice])
         if log_steps:
             logger.info(f"Early exit – {reason}", prefix=ICONS["early_exit"])
         return notice["content"]
 
-    async def _handle_clarification(
-        src_task: asyncio.Task,
-        question_payload: Any,
+    async def _answer_calls_not_run(reason: str) -> None:
+        """Answer each call the limit came before (one a seeded or resumed
+        transcript carried, or one a model call that ran into the timeout
+        made), so the transcript leaves no call unanswered."""
+        for entry in find_unreplied_assistant_entries(client):
+            for call in entry["assistant_msg"].get("tool_calls") or []:
+                if call.get("id") in entry["missing"] and not _call_answered(
+                    call.get("id"),
+                ):
+                    await _answer_call(
+                        entry["assistant_msg"],
+                        call,
+                        f"Not run: {reason} before this call started.",
+                    )
+
+    def _request_draft() -> Optional[str]:
+        """The latest reply text drafted for the current request, if any.
+
+        Walks back to the request's own message, a genuine user turn (a
+        loop-authored notice is not one), as the empty-final-answer guard
+        does: text before it answered something else.
+        """
+        for _msg in reversed(client.messages or []):
+            _role = _msg.get("role")
+            if _role == "user" and not is_loop_authored_message(_msg):
+                return None
+            if _role == "assistant":
+                _text = extract_substantive_text(_msg.get("content"))
+                if _text:
+                    return _text
+        return None
+
+    async def _last_word(
+        reason: str,
+        stop: Optional[_loop_stop_mod.Stop] = None,
+    ) -> Optional[str]:
+        """UNIFY_STEP_CAP_REPLY=last_word: one tool-less turn at the step limit.
+
+        Every call of the request has been answered. A loop-authored notice
+        says the limit is reached and asks for the best answer now; the
+        model is then called once with no tools offered (no tool_choice is
+        forced). Returns the reply's text, or ``None`` when the call fails,
+        is stopped, runs past the loop's timeout or gives no text: the
+        caller then uses the draft, so the request never ends silent. A
+        loop stop (UNIFY_LOOP_STOP) passes its *stop* texts.
+        """
+        runtime_state.step_cap_last_word_turns += 1
+        await _msg_dispatcher.append_msgs(
+            [
+                loop_user_notice(
+                    (
+                        stop.notice
+                        if stop is not None
+                        else f"The step limit for this request is reached ({reason}): "
+                        "no more tools can be called for it. Reply now with your "
+                        "best answer to the request."
+                    ),
+                ),
+            ],
+        )
+        # The record a fork (storage review, compression) is built from
+        # stays the last request that offered the session's tools.
+        _recorded = _cache_discipline.last_sent_request(client)
+        call = asyncio.create_task(
+            generate_with_preprocess(
+                client,
+                preprocess_msgs,
+                return_full_completion=True,
+                stateful=True,
+                prompt_caching=prompt_caching,
+            ),
+            name="StepCapLastWord",
+        )
+        stopped = asyncio.create_task(cancel_event.wait(), name="CancelEventWait")
+        text: Optional[str] = None
+        why = "no text"
+        try:
+            done, _ = await asyncio.wait(
+                {call, stopped},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if call not in done:
+                why = "stopped" if stopped in done else f"no reply in {timeout}s"
+                call.cancel()
+                await asyncio.gather(call, return_exceptions=True)
+            elif call.exception() is not None:
+                why = f"{type(call.exception()).__name__}: {call.exception()}"
+            else:
+                reply = (client.messages or [{}])[-1]
+                if reply.get("role") == "assistant":
+                    # No tools were offered; a call the reply names anyway
+                    # would be run after the limit, so it is dropped.
+                    if reply.get("tool_calls") and is_mutable(client, reply):
+                        reply.pop("tool_calls", None)
+                    text = extract_substantive_text(reply.get("content"))
+        finally:
+            stopped.cancel()
+            await asyncio.gather(stopped, return_exceptions=True)
+            _cache_discipline.restore_sent_request(client, _recorded)
+        if text is None:
+            runtime_state.step_cap_last_word_fallbacks += 1
+        logger.info(
+            (stop.label if stop is not None else "Step limit")
+            + " – last word: "
+            + ("answered" if text is not None else f"none ({why}); using the draft"),
+            prefix=ICONS["early_exit"],
+        )
+        return text
+
+    async def _end_request_at_step_limit(
+        stop: Optional[_loop_stop_mod.Stop] = None,
     ) -> None:
-        question_text = ""
+        """UNIFY_STEP_CAP_REPLY in a persistent loop: end the request at max_steps.
+
+        The pending calls are cancelled and answered as such, the reply says
+        the request stopped at the step limit and quotes its latest draft,
+        and the loop parks for the next request, whose steps are counted
+        from its own message. The reply also stays in the transcript, so
+        the model reads on the next request where the last one stopped.
+        With ``last_word`` the model first gets one tool-less turn, and its
+        answer is quoted in place of the draft; the transcript then holds
+        the notice and that answer instead of the reply.
+
+        UNIFY_LOOP_STOP ends a request the same way, with its *stop* texts
+        and reply mode; it logs its own line.
+        """
+        reason = (
+            stop.reason if stop is not None else f"max_steps ({max_steps}) exceeded"
+        )
+        draft = _request_draft()
+        await tools_data.cancel_pending_tasks_with_reply(
+            (
+                stop.cancelled
+                if stop is not None
+                else f"Cancelled: the step limit ({reason}) ended the request before "
+                "this call finished."
+            ),
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        last_word = stop.last_word if stop is not None else _step_cap_last_word
+        answer = await _last_word(reason, stop) if last_word else None
+        if answer is not None:
+            draft = answer
+        content = (
+            stop.headline
+            if stop is not None
+            else f"🔚 Stopped at the step limit: {reason}, so this request ended "
+            "before it was finished. The session is still open: the next "
+            "message starts a new request."
+        )
+        if draft is not None:
+            content += f"\n\nBest current answer:\n{draft}"
+        else:
+            content += "\n\nNo reply text was drafted for this request."
+        if answer is None:
+            await _msg_dispatcher.append_msgs(
+                [{"role": "assistant", "content": content}],
+            )
+        if log_steps and stop is None:
+            logger.info(
+                f"Step limit – {reason}; waiting for the next request",
+                prefix=ICONS["early_exit"],
+            )
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        if _outer is not None and hasattr(_outer, "_notification_q"):
+            await _outer._notification_q.put({"type": "response", "content": content})
+        await _park_until_next_request()
+        runtime_state.step_cap_compactions_in_request = 0
+        runtime_state.step_cap_ineffective_in_a_row = 0
+        timer.reset()
+        # Counting per request is UNIFY_STEP_CAP_REPLY's; a loop stop with
+        # it off keeps counting the whole loop, as shipped.
+        if _step_cap_reply:
+            timer.start_request()
+
+    async def _timeout_ends_request() -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: the loop's timeout ends a
+        persistent loop's request, not the loop, through the step limit's
+        reply path; ``True`` when it did (the caller goes on to the next
+        request). Every call is answered first: one still running as
+        cancelled, one that never started as not run."""
+        if not (_continue and persist):
+            return False
+        stop = _TimeoutStop(timeout, last_word=_step_cap_last_word)
+        logger.info(
+            f"{stop.label} – {stop.reason}; ending the request with "
+            + ("the model's last word" if stop.last_word else "its draft"),
+            prefix=ICONS["early_exit"],
+        )
+        await tools_data.cancel_pending_tasks_with_reply(
+            stop.cancelled,
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+            grace=_CANCEL_GRACE_S,
+        )
+        await _answer_calls_not_run(stop.reason)
+        await _end_request_at_step_limit(stop)
+        return True
+
+    async def _timeout_limit() -> str:
+        """The loop's timeout ends the loop: as shipped, or, under
+        UNIFY_STEP_CAP_COMPACT=continue, through the reply path (the draft,
+        or the last word)."""
+        if not _continue:
+            return await _handle_limit_reached(f"timeout ({timeout}s) exceeded")
+        stop = _TimeoutStop(timeout, last_word=_step_cap_last_word)
+        return await _handle_limit_reached(
+            stop.reason,
+            _request_draft(),
+            last_word=stop.last_word,
+            stop=stop,
+        )
+
+    def _can_compact_at_step_limit() -> bool:
+        """UNIFY_STEP_CAP_COMPACT: whether this loop's handle can compact it.
+
+        The handle must be this loop's own (it shares the runtime state), as
+        it restarts the loop from what the compaction returns.
+        """
+        if not _step_cap_compact:
+            return False
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        return getattr(_outer, "_runtime_state", None) is runtime_state and callable(
+            getattr(_outer, "_compact_context", None),
+        )
+
+    def _drop_queued_cancels() -> int:
+        """Take every queued request cancel off the queue, keeping the order
+        of the rest; how many were dropped."""
+        kept, dropped = [], 0
+        while not interject_queue.empty():
+            item = interject_queue.get_nowait()
+            if isinstance(item, dict) and "_cancel_request" in item:
+                dropped += 1
+            else:
+                kept.append(item)
+        for item in kept:
+            interject_queue.put_nowait(item)
+        return dropped
+
+    def _request_cancel_queued() -> bool:
+        """Whether the requester's cancel of the request waits in the queue."""
+        return any(
+            isinstance(item, dict) and "_cancel_request" in item
+            for item in list(getattr(interject_queue, "_queue", None) or ())
+        )
+
+    async def _until_request_cancel() -> None:
+        while not _request_cancel_queued():
+            await asyncio.sleep(0.05)
+
+    async def _compact_at_step_limit() -> str:
+        """UNIFY_STEP_CAP_COMPACT: compact the context at max_steps.
+
+        Returns ``"compacted"`` when the handle's context compression (the
+        one a full context gets) returned a compacted context; the caller
+        then ends this loop with the compression signal, and the handle
+        restarts it from that context, the request going on with its steps
+        counted from there. Calls still running are cancelled and answered
+        as such first, since a restarted loop cannot collect them.
+
+        ``"defer"``: the turn ends without a model call first (a cell's
+        reply() is waiting to be taken, or the requester's cancel of the
+        request is queued), so nothing is compacted for it; the caller goes
+        on with the step. ``"limit"``: the limit applies as without the
+        switch, because the loop cannot compact, the request was compacted
+        STEP_CAP_COMPACTIONS times, or the compaction failed or ran past the
+        loop's timeout. A stop of the loop during the compaction cancels it
+        and stops the loop.
+
+        UNIFY_STEP_CAP_COMPACT=continue: a request is compacted any number
+        of times, but a compaction whose rebuilt context is not smaller than
+        the context it replaces (``_context_size``) is ineffective, and the
+        second ineffective one in a row of a request is not used:
+        ``"limit"``, so the request ends through the reply path. A loop stop
+        that is due at the limit is ``"defer"`` too: it ends the request at
+        the step instead.
+        """
+        if not _can_compact_at_step_limit():
+            return "limit"
+        if (_reply_slot is not None and _reply_slot.replied) or (
+            persist and _request_cancel_queued()
+        ):
+            return "defer"
+        if (
+            not _continue
+            and runtime_state.step_cap_compactions_in_request >= STEP_CAP_COMPACTIONS
+        ):
+            return "limit"
+        # UNIFY_STEP_CAP_COMPACT=continue: the loop stop counts the turns
+        # made since it last looked first, so the count it hands to the
+        # restarted loop is whole; a stop that is due ends the request at
+        # this step instead of a compaction.
+        if (
+            _continue
+            and _loop_stop is not None
+            and _loop_stop.observe(
+                client.messages or [],
+                in_flight=bool(tools_data.pending),
+            )
+        ):
+            return "defer"
+        runtime_state.step_cap_compactions_in_request += 1
+        reason = f"max_steps ({max_steps}) exceeded"
+        await tools_data.cancel_pending_tasks_with_reply(
+            f"Cancelled: the step limit ({reason}) was reached before this "
+            "call finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        logger.info(
+            f"Step limit – {reason}; compacting the conversation "
+            + (
+                f"({runtime_state.step_cap_compactions_in_request} for this " "request)"
+                if _continue
+                else f"({runtime_state.step_cap_compactions_in_request} of "
+                f"{STEP_CAP_COMPACTIONS} for this request)"
+            ),
+            prefix=ICONS["early_exit"],
+        )
+        _size_before = _context_size(client.messages or []) if _continue else 0
+        _outer = outer_handle_container[0]
+        compaction = asyncio.create_task(
+            _outer._compact_context(),
+            name="StepCapCompaction",
+        )
+        stopped = asyncio.create_task(cancel_event.wait(), name="CancelEventWait")
+        watchers = [stopped]
+        if persist:
+            watchers.append(
+                asyncio.create_task(
+                    _until_request_cancel(),
+                    name="RequestCancelWait",
+                ),
+            )
+        try:
+            done, _ = await asyncio.wait(
+                {compaction, *watchers},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (compaction, *watchers):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(compaction, *watchers, return_exceptions=True)
+        if stopped in done:
+            raise asyncio.CancelledError
+        if compaction in done and not compaction.cancelled():
+            if compaction.exception() is None and _continue:
+                if _ineffective_compaction(compaction.result(), _size_before):
+                    return "limit"
+                # The loop stop's count goes on in the restarted loop.
+                runtime_state.loop_stop_carry = _loop_stop
+            if compaction.exception() is None:
+                runtime_state.step_cap_compacted = compaction.result()
+                runtime_state.step_cap_compactions += 1
+                logger.info(
+                    "Step limit – compacted; the request goes on",
+                    prefix=ICONS["early_exit"],
+                )
+                return "compacted"
+            why = f"{type(compaction.exception()).__name__}: {compaction.exception()}"
+        elif any(task in done for task in watchers[1:]):
+            logger.info(
+                "Step limit – compaction stopped: the requester cancelled the "
+                "request",
+                prefix=ICONS["early_exit"],
+            )
+            return "defer"
+        else:
+            why = f"no result in {timeout}s"
+        runtime_state.step_cap_compaction_failures += 1
+        logger.info(
+            f"Step limit – compaction failed ({why}); stopping at the limit",
+            prefix=ICONS["early_exit"],
+        )
+        return "limit"
+
+    def _ineffective_compaction(compacted: tuple, size_before: int) -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: count a compaction that did not
+        make the context smaller; whether it is the second in a row of the
+        request, which is then not used (the request ends instead)."""
+        _, messages, _, restart, _ = compacted
+        restart_msg = (
+            restart if isinstance(restart, dict) else loop_user_notice(restart)
+        )
+        if first_message_context:
+            restart_msg = with_first_message_context(restart_msg, first_message_context)
+        size_after = _context_size([*(messages or []), restart_msg])
+        if size_after < size_before:
+            runtime_state.step_cap_ineffective_in_a_row = 0
+            return False
+        runtime_state.step_cap_ineffective_compactions += 1
+        runtime_state.step_cap_ineffective_in_a_row += 1
+        last = runtime_state.step_cap_ineffective_in_a_row >= STEP_CAP_INEFFECTIVE_LIMIT
+        logger.info(
+            f"Step limit – the compaction did not make the context smaller "
+            f"({size_after} characters, from {size_before}); "
+            + (
+                f"{runtime_state.step_cap_ineffective_in_a_row} in a row, so the "
+                "request ends"
+                if last
+                else "the request goes on"
+            ),
+            prefix=ICONS["early_exit"],
+        )
+        return last
+
+    def _ineffective_threshold_compaction(over: bool, prompt_tokens: int) -> bool:
+        """UNIFY_STEP_CAP_COMPACT=continue: count a compaction the context
+        threshold asked for when the first call after it is still over the
+        threshold (it did not bring the context under it); whether it is the
+        second ineffective compaction in a row of the request, which then
+        ends. Step-limit compactions are counted by their size
+        (``_ineffective_compaction``); both share the count in a row."""
+        if not over:
+            runtime_state.step_cap_ineffective_in_a_row = 0
+            return False
+        runtime_state.step_cap_ineffective_compactions += 1
+        runtime_state.step_cap_ineffective_in_a_row += 1
+        last = runtime_state.step_cap_ineffective_in_a_row >= STEP_CAP_INEFFECTIVE_LIMIT
+        logger.info(
+            "Context threshold – the first call after the compaction is still "
+            f"over it ({prompt_tokens} prompt tokens); "
+            + (
+                f"{runtime_state.step_cap_ineffective_in_a_row} in a row, so the "
+                "request ends"
+                if last
+                else "the request goes on"
+            ),
+            prefix=ICONS["early_exit"],
+        )
+        return last
+
+    async def _end_request_on_cancel(reason: Optional[str]) -> None:
+        """A persistent loop's requester cancelled the running request.
+
+        The step in flight was already cancelled by the wake-up that brought
+        the cancel. The pending calls are cancelled and answered as such (so
+        none is scheduled again), the transcript says the request was
+        cancelled, the request ends in its response (the text drafted for it
+        so far, marked cancelled) and the loop parks for the next request.
+        """
+        draft = _request_draft()
+        await tools_data.cancel_pending_tasks_with_reply(
+            "Cancelled: the requester cancelled the request before this call "
+            "finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+            grace=_CANCEL_GRACE_S,
+        )
+        notice = (
+            "🔚 Cancelled: the requester cancelled this request before it was "
+            "finished. The session is still open: the next message starts a "
+            "new request."
+        )
+        if reason:
+            notice += f"\n\nReason given: {reason}"
+        await _msg_dispatcher.append_msgs([{"role": "assistant", "content": notice}])
+        logger.info(
+            "Request cancelled by the requester; waiting for the next request",
+            prefix=ICONS["early_exit"],
+        )
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        if _outer is not None and hasattr(_outer, "_notification_q"):
+            await _outer._notification_q.put(
+                {"type": "response", "content": draft or "", "cancelled": True},
+            )
+        await _park_until_next_request()
+        runtime_state.step_cap_compactions_in_request = 0
+        runtime_state.step_cap_ineffective_in_a_row = 0
+        timer.reset()
+        if _step_cap_reply:
+            timer.start_request()
+
+    async def _park_until_next_request() -> None:
+        """Park a persistent loop until its next request arrives.
+
+        Returns when an interjection that starts a request is back on the
+        queue, or when the loop is stopped; the caller then resumes at the
+        top of the loop, which processes either.
+        """
+        _outer = outer_handle_container[0] if outer_handle_container else None
+        # UNIFY_REPLY_CHANNEL=code+text: the next request starts with no reply.
+        if _reply_slot is not None:
+            _reply_slot.clear()
+        # The next requester message starts the next request.
+        runtime_state.request_starts_next = True
+
+        # A cancel still queued was sent for the request that has just
+        # ended (it came after that request's last call), so it has nothing
+        # to cancel; a message queued around it is the next request.
+        _dropped = _drop_queued_cancels()
+        if _dropped:
+            logger.info(
+                f"Persist mode: {_dropped} cancel(s) ignored, the request "
+                "they were sent for has ended",
+                prefix=ICONS["pause"],
+            )
+
+        # A parked turn keeps the reasoning payloads of its assistant
+        # messages: shedding them would rewrite every sent message, so the
+        # next call would start cold.
+
+        logger.info(
+            "Persist mode: waiting for next interjection...",
+            prefix=ICONS["pause"],
+        )
+        try:
+            from ...events.manager_event_logging import (
+                publish_persist_session_phase,
+            )
+
+            await publish_persist_session_phase(_outer, "awaiting_input")
+        except Exception:
+            pass
+        while True:
+            cancel_waiter = asyncio.create_task(
+                cancel_event.wait(),
+                name="PersistCancelWait",
+            )
+            interject_waiter = asyncio.create_task(
+                interject_queue.get(),
+                name="PersistInterjectWait",
+            )
+            done, pending = await asyncio.wait(
+                {cancel_waiter, interject_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for p in pending:
+                p.cancel()
+                await asyncio.gather(p, return_exceptions=True)
+
+            # Whatever the waiter took goes back to the head of the
+            # queue; the check after the drain ends the loop.
+            if cancel_event.is_set():
+                if interject_waiter in done:
+                    _requeue_at_front(
+                        interject_queue,
+                        interject_waiter.result(),
+                    )
+                break
+
+            interjection = interject_waiter.result()
+
+            # A cancel with no request running has nothing to end: the
+            # last request already ended in its response.
+            if isinstance(interjection, dict) and "_cancel_request" in interjection:
+                logger.info(
+                    "Persist mode: cancel ignored, no request is running",
+                    prefix=ICONS["pause"],
+                )
+                continue
+
+            # Transcript-note sentinels append the loop-authored note
+            # and stay in persist wait; the model reads it on its next
+            # granted turn.
+            if isinstance(interjection, dict) and "_transcript_note" in interjection:
+                try:
+                    _note = str(
+                        (interjection.get("_transcript_note") or {}).get(
+                            "text",
+                        )
+                        or "",
+                    )
+                    if _note:
+                        await _msg_dispatcher.append_msgs(
+                            [loop_user_notice(_note)],
+                        )
+                except Exception:
+                    pass
+                continue
+
+            # Transcript-compaction sentinels: the covered turns were
+            # consolidated by a storage review. Sent messages are never
+            # edited, so the reviewed span keeps its bytes; stay in persist
+            # wait.
+            if isinstance(interjection, dict) and "_compact_transcript" in interjection:
+                continue
+
+            # The next request goes back to the head of the queue, ahead of
+            # anything sent after it, so the drain takes them in order.
+            try:
+                _requeue_at_front(interject_queue, interjection)
+                logger.info(
+                    "Persist mode: interjection received, resuming loop",
+                    prefix=ICONS["resume"],
+                )
+                from ...events.manager_event_logging import (
+                    publish_persist_session_phase,
+                )
+
+                await publish_persist_session_phase(_outer, "resumed")
+            except Exception:
+                pass
+            break
+
+    def _outer_handle() -> Any:
+        return outer_handle_container[0] if outer_handle_container else None
+
+    async def _deliver_clarification(info: Any, question_payload: Any) -> None:
+        """A running call asks the requester a question.
+
+        It goes to the handle (``next_clarification``), whose
+        ``answer_clarification`` puts the answer on the call's own queue; the
+        call waits for it. The model gets no turn while the call runs.
+        """
         try:
             if isinstance(question_payload, dict):
                 question_text = question_payload.get("question", "")
@@ -1274,50 +1831,26 @@ async def async_tool_loop_inner(
                 question_text = str(question_payload)
         except Exception:
             question_text = str(question_payload)
-
-        call_id = tools_data.info[src_task].call_id
-        tool_name = tools_data.info[src_task].name
-
-        tools_data.info[src_task].waiting_for_clarification = True
-
-        # Coalesce-then-freeze into a [clarification <call_id>] tail message,
-        # never the tool_reply_msg pending stub, which stays byte-frozen once
-        # sent. The model answers off this tail message via steer(clarify).
-        await tools_data.record_clarification(
-            tools_data.info[src_task],
-            call_id,
-            question_text,
-            _msg_dispatcher,
-        )
-
-        try:
+        with suppress(Exception):
             logger.info(
-                f"Clarification requested – {tool_name}: {question_text}",
+                f"Clarification requested – {info.name}: {question_text}",
                 prefix=ICONS["clarification"],
             )
-        except Exception:
-            pass
+        outer = _outer_handle()
+        if outer is not None and hasattr(outer, "_clar_q"):
+            await outer._clar_q.put(
+                {
+                    "type": "clarification",
+                    "call_id": info.call_id,
+                    "tool_name": info.name,
+                    "question": question_text,
+                },
+            )
 
-        # Programmatic clarification event for the outer handle.
+    async def _deliver_notification(info: Any, payload: Any) -> None:
+        """A running call's progress notification, for the handle only
+        (``next_notification``); it never enters the transcript."""
         with suppress(Exception):
-            outer = outer_handle_container[0] if outer_handle_container else None
-            if outer is not None and hasattr(outer, "_clar_q"):
-                await outer._clar_q.put(
-                    {
-                        "type": "clarification",
-                        "call_id": call_id,
-                        "tool_name": tool_name,
-                        "question": question_text,
-                    },
-                )
-
-    async def _handle_notification(src_task: asyncio.Task, payload: Any) -> None:
-        call_id = tools_data.info[src_task].call_id
-        tool_name = tools_data.info[src_task].name
-
-        pretty = ToolsData._pretty_tool_payload(tool_name, payload)
-
-        try:
             if isinstance(payload, dict):
                 _msg_txt = str(
                     payload.get("message") or payload.get("status") or payload,
@@ -1325,340 +1858,349 @@ async def async_tool_loop_inner(
             else:
                 _msg_txt = str(payload)
             logger.info(
-                f"Notification from {tool_name}: {_msg_txt}",
+                f"Notification from {info.name}: {_msg_txt}",
                 prefix=ICONS["notification"],
             )
-        except Exception:
-            pass
+        outer = _outer_handle()
+        if outer is not None and hasattr(outer, "_notification_q"):
+            event_payload = (
+                payload if isinstance(payload, dict) else {"message": str(payload)}
+            )
+            await outer._notification_q.put(
+                {
+                    "type": "notification",
+                    "call_id": info.call_id,
+                    "tool_name": info.name,
+                    **event_payload,
+                },
+            )
 
-        # Coalesce-then-freeze into a separate [progress <call_id>] tail
-        # message, never the tool_reply_msg placeholder, which must stay
-        # byte-frozen once sent: rewriting a placeholder in place, mid-history,
-        # breaks the cached prompt prefix on every turn a sub-agent runs.
-        await tools_data.record_progress(
-            tools_data.info[src_task],
-            call_id,
-            pretty,
+    async def _answer_call(msg: dict, call: dict, content: str) -> None:
+        """Give one tool call of *msg* *content* as its reply."""
+        await insert_tool_message_after_assistant(
+            assistant_meta,
+            msg,
+            create_tool_call_message(
+                name=call["function"]["name"],
+                call_id=call["id"],
+                content=content,
+            ),
+            client,
             _msg_dispatcher,
         )
 
-        # Programmatic notification event for the outer handle.
-        with suppress(Exception):
-            outer = outer_handle_container[0] if outer_handle_container else None
-            if outer is not None and hasattr(outer, "_notification_q"):
-                event_payload = (
-                    payload if isinstance(payload, dict) else {"message": str(payload)}
-                )
-                await outer._notification_q.put(
-                    {
-                        "type": "notification",
-                        "call_id": call_id,
-                        "tool_name": tool_name,
-                        **event_payload,
-                    },
-                )
+    async def _run_tool_call(msg: dict, call: dict, idx: int) -> Optional[str]:
+        """Run one base tool call to completion and append its result.
 
-    async def _ingest_tick(
-        done: Set[asyncio.Task],
-        interject_w: asyncio.Task,
-        clar_waiters: Dict[asyncio.Task, asyncio.Task],
-        notif_waiters: Dict[asyncio.Task, asyncio.Task],
-    ) -> Tuple[bool, bool]:
-        """Take in what one wake-up brought, other than a stop and the LLM's
-        own answer. Section A's wait and a race that section D lets supersede
-        the LLM step both use it, so the transcript does not depend on which
-        of the two observed the tick, and nothing a waiter took off a queue is
-        dropped.
-
-        An interjection goes back on its queue for the drain. Clarifications,
-        then notifications, each in call_id order, are delivered and earn the
-        model a turn. Finished tools are ingested in call_id order, unless an
-        interjection or a clarification came with them: the loop then goes
-        back to the top first, and section C's sweep ingests them there.
-
-        Returns ``(needs_turn, restart)``: whether the model is owed a turn,
-        and whether the caller must go back to the top of the loop.
+        While it runs, only a stop (``cancel_event``), the call's own
+        clarification and notification queues, the loop's timeout and, in a
+        persistent loop, the requester's cancel of the request are watched;
+        a message for the session stays queued for the next boundary.
+        Returns ``None`` once the result is appended, or ``"cancel_request"``
+        or ``"timeout"`` when the call was interrupted (the caller cancels
+        it if it still runs, and answers it). A stop raises
+        ``asyncio.CancelledError``.
         """
-
-        def _source_call_id(item: Tuple[asyncio.Task, asyncio.Task]) -> str:
-            return tools_data.info[item[1]].call_id
-
-        if interject_w in done:
-            await interject_queue.put(interject_w.result())
-        needs_turn = False
-        for waiters, deliver in (
-            (clar_waiters, _handle_clarification),
-            (notif_waiters, _handle_notification),
-        ):
-            for waiter, src in sorted(
-                (item for item in waiters.items() if item[0] in done),
-                key=_source_call_id,
-            ):
-                await deliver(src, waiter.result())
-                needs_turn = True
-        if interject_w in done or done & clar_waiters.keys():
-            return needs_turn, True
-        finished = done & tools_data.pending
-        if finished:
-            logger.debug(
-                f"⏱️ [ToolLoop] {len(finished)} tool task(s) completed, "
-                f"{len(tools_data.pending) - len(finished)} still pending",
+        task = await tools_data.schedule_base_tool_call(
+            msg,
+            name=call["function"]["name"],
+            args_json=call["function"]["arguments"],
+            call_id=call["id"],
+            call_idx=idx,
+            context_state=context_state,
+            propagate_chat_context=propagate_chat_context,
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        if task is None:
+            await _answer_call(
+                msg,
+                call,
+                f"⚠️ Error: '{call['function']['name']}' was not run: its call "
+                "limit is reached.",
             )
-        for task in _sort_completed_tasks_by_call_id(finished, tools_data):
-            if await tools_data.process_completed_task(
-                task=task,
-                consecutive_failures=consecutive_failures,
-                outer_handle_container=outer_handle_container,
-                assistant_meta=assistant_meta,
-                msg_dispatcher=_msg_dispatcher,
-            ):
-                needs_turn = True
-        return needs_turn, False
+            return None
+        info = tools_data.info[task]
+        while not task.done():
+            if timer.has_exceeded_time():
+                return "timeout"
+            watchers: Dict[str, asyncio.Task] = {
+                "cancel": asyncio.create_task(
+                    cancel_event.wait(),
+                    name="CancelEventWait",
+                ),
+            }
+            if info.clar_up_queue is not None:
+                watchers["clarification"] = asyncio.create_task(
+                    info.clar_up_queue.get(),
+                    name="ClarificationQueueGet",
+                )
+            if info.notification_queue is not None:
+                watchers["notification"] = asyncio.create_task(
+                    info.notification_queue.get(),
+                    name="NotificationQueueGet",
+                )
+            if persist:
+                watchers["cancel_request"] = asyncio.create_task(
+                    _until_request_cancel(),
+                    name="RequestCancelWait",
+                )
+            try:
+                await asyncio.wait(
+                    {task, *watchers.values()},
+                    timeout=timer.remaining_time(),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for watcher in watchers.values():
+                    if not watcher.done():
+                        watcher.cancel()
+                await asyncio.gather(*watchers.values(), return_exceptions=True)
 
-    # True whenever the LLM must get an immediate turn before the loop waits
-    # again (user interjection, clarification answer, etc.).
-    llm_turn_required = False
-    # A patient interjection (trigger_immediate_llm_turn=False) arriving while
-    # the LLM is already thinking earns exactly one extra LLM step after the
-    # current one, unless another event triggers a turn anyway.
-    deferred_llm_turn = False
+            def _took(kind: str) -> bool:
+                watcher = watchers.get(kind)
+                return (
+                    watcher is not None
+                    and watcher.done()
+                    and not watcher.cancelled()
+                    and watcher.exception() is None
+                )
+
+            # What a queue waiter took is delivered even when a stop came
+            # with it, so nothing a call sent is lost.
+            if _took("clarification"):
+                await _deliver_clarification(info, watchers["clarification"].result())
+            if _took("notification"):
+                await _deliver_notification(info, watchers["notification"].result())
+            if cancel_event.is_set():
+                raise asyncio.CancelledError
+            if _took("cancel_request"):
+                return "cancel_request"
+        # A cancel that came as the call ended (a cell interrupted for it,
+        # say) still wins: the call is answered as cancelled, as one still
+        # running would be, rather than with what the interruption left.
+        if persist and _request_cancel_queued():
+            return "cancel_request"
+        await tools_data.process_completed_task(
+            task=task,
+            consecutive_failures=consecutive_failures,
+            outer_handle_container=outer_handle_container,
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+        )
+        return None
+
+    async def _interrupt_turn(
+        msg: dict,
+        rest: list[dict],
+        reason: str,
+    ) -> None:
+        """A call of *msg* was interrupted: cancel it and answer it, then
+        answer the calls of the turn that never ran (*rest*)."""
+        await tools_data.cancel_pending_tasks_with_reply(
+            f"Cancelled: {reason} before this call finished.",
+            assistant_meta=assistant_meta,
+            msg_dispatcher=_msg_dispatcher,
+            grace=_CANCEL_GRACE_S,
+        )
+        for later in rest:
+            if _call_answered(later.get("id")):
+                continue
+            await _answer_call(
+                msg,
+                later,
+                f"Not run: {reason} before this call started.",
+            )
+
+    def _call_answered(call_id: Optional[str]) -> bool:
+        if not isinstance(call_id, str):
+            return True
+        if call_id in tools_data.completed_results:
+            return True
+        return any(
+            m.get("role") == "tool" and m.get("tool_call_id") == call_id
+            for m in client.messages or []
+        )
+
+    _INTERRUPT_REASONS = {
+        "cancel_request": "the requester cancelled the request",
+    }
+
+    def _interrupt_reason(status: str) -> str:
+        return _INTERRUPT_REASONS.get(status) or f"the timeout ({timeout}s) was reached"
+
+    async def _run_missing_calls(amsg: dict, missing_ids: set) -> Optional[str]:
+        """Run, in call order, the calls of *amsg* that have no reply yet.
+
+        A call to a tool this loop does not have is answered with an error.
+        Returns the status of an interruption (see ``_run_tool_call``), with
+        the interrupted call and the ones after it answered, or ``None``.
+        """
+        calls = [
+            c
+            for c in (amsg.get("tool_calls") or [])
+            if isinstance(c, dict) and c.get("id") in missing_ids
+        ]
+        for position, call in enumerate(calls):
+            if _call_answered(call.get("id")):
+                continue
+            name = (call.get("function") or {}).get("name")
+            if name not in tools_data.normalized:
+                await _answer_call(
+                    amsg,
+                    call,
+                    f"⚠️ Error: Tool '{name}' is not available. "
+                    "The tool may have been removed or does not exist. "
+                    "Please proceed without using this tool.",
+                )
+                continue
+            idx = (amsg.get("tool_calls") or []).index(call)
+            status = await _run_tool_call(amsg, call, idx)
+            if status is not None:
+                await _interrupt_turn(
+                    amsg,
+                    calls[position + 1 :],
+                    _interrupt_reason(status),
+                )
+                return status
+        return None
+
+    async def _repair_unreplied(entries: list) -> Optional[str]:
+        """Run the unanswered calls of *entries*, oldest first; see
+        ``_run_missing_calls``. Each entry is repaired inside its own
+        try/except: prune_over_quota_tool_calls may raise (a below-watermark
+        mutation refused on a resumed client whose watermark carried over),
+        and one failure must not abandon the entries after it."""
+        for entry in entries:
+            amsg = entry["assistant_msg"]
+            if id(amsg) in assistant_meta:
+                continue
+            try:
+                tools_data.prune_over_quota_tool_calls(amsg)
+                if prune_tool_duplicates and amsg.get("tool_calls"):
+                    unique, pruned = prune_duplicate_tool_calls(amsg["tool_calls"])
+                    if pruned:
+                        amsg["tool_calls"] = unique
+                        entry["missing"] = [
+                            cid for cid in entry["missing"] if cid not in pruned
+                        ]
+            except Exception as exc:
+                logger.error(
+                    f"Repair failed for one assistant entry; continuing with "
+                    f"the rest: {exc}",
+                    prefix="🚨",
+                )
+                continue
+            assistant_meta.setdefault(id(amsg), {"results_count": 0})
+            status = await _run_missing_calls(amsg, set(entry["missing"]))
+            if status is not None:
+                return status
+        return None
+
+    def _queued_message() -> bool:
+        """Whether a message for the session (not a loop sentinel) is queued."""
+        return any(
+            not (
+                isinstance(item, dict)
+                and (
+                    "_cancel_request" in item
+                    or "_transcript_note" in item
+                    or "_compact_transcript" in item
+                )
+            )
+            for item in list(getattr(interject_queue, "_queue", None) or ())
+        )
+
+    # Consecutive replies of this turn dropped for a provider error.
+    _provider_error_retries = 0
     # Bounded retries for a terminal turn that returns empty content with no
     # substantive answer anywhere else in the conversation to fall back on.
     _empty_final_answer_retries = 0
     _MAX_EMPTY_FINAL_ANSWER_RETRIES = 1
 
+    # UNIFY_STEP_CAP_COMPACT=continue: the second compaction in a row that
+    # left the context over its threshold ends the request at the next step.
+    _ineffective_end = False
+
     logger.debug(f"[setup +{_setup_elapsed()}] entering main loop")
 
     try:
         while True:
-            # ── Pause gate ───────────────────────────────────────────────
-            # Tool completions and cancellation are still handled while
-            # paused; the LLM never speaks.
-            if not pause_event.is_set():
-                # Mirror steering sentinels are processed immediately so
-                # control signals (pause/resume/stop) still reach child
-                # handles without waiting for resume.
-                try:
-                    while True:
-                        try:
-                            _extra = interject_queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
-                        if isinstance(_extra, dict) and "_mirror" in _extra:
-                            _ms = _extra.get("_mirror") or {}
-                            _m = _ms.get("method")
-                            _kw = _ms.get("kwargs") or {}
-                            if isinstance(_m, str) and _m:
-                                try:
-                                    merged = dict(_kw if isinstance(_kw, dict) else {})
-                                except Exception:
-                                    merged = {}
-                                try:
-                                    if _ms.get("_custom"):
-                                        merged["_custom"] = True
-                                except Exception:
-                                    pass
-                                try:
-                                    if "_aliases" in _ms:
-                                        merged["_aliases"] = list(
-                                            _ms.get("_aliases") or [],
-                                        )
-                                except Exception:
-                                    pass
-                                try:
-                                    if "_fallback" in _ms:
-                                        merged["_fallback"] = list(
-                                            _ms.get("_fallback") or [],
-                                        )
-                                except Exception:
-                                    pass
-                                await _synthesize_mirrored_helper_calls(_m, merged)
-                            continue
-                        else:
-                            # Non-mirror entries wait until resume.
-                            await interject_queue.put(_extra)
-                            break
-                except Exception:
-                    pass
-                # Unreplied assistant tool_calls are scheduled while paused so
-                # base tools start in the paused state and placeholders appear.
-                with suppress(Exception):
-                    if True:
-                        if unreplied := find_unreplied_assistant_entries(client):
-                            last_problem = unreplied[-1]
-                            amsg = last_problem["assistant_msg"]
-                            missing_ids = set(last_problem["missing"])
-                            if id(amsg) not in assistant_meta:
-                                await schedule_missing_for_message(
-                                    amsg,
-                                    missing_ids,
-                                    tools_data=tools_data,
-                                    context_state=context_state,
-                                    propagate_chat_context=propagate_chat_context,
-                                    assistant_meta=assistant_meta,
-                                    client=client,
-                                    msg_dispatcher=_msg_dispatcher,
-                                    initial_paused=True,
-                                )
-                                await ensure_placeholders_for_pending(
-                                    tools_data=tools_data,
-                                    assistant_meta=assistant_meta,
-                                    client=client,
-                                    msg_dispatcher=_msg_dispatcher,
-                                    time_ctx=time_ctx,
-                                )
-                # Let pending tool tasks finish, or wait until the loop is
-                # resumed / cancelled. Each waiter is a Task because
-                # asyncio.wait() requires them.
-                if tools_data.pending:
-                    pause_waiter = asyncio.create_task(
-                        pause_event.wait(),
-                        name="PauseEventWait",
-                    )
-                    cancel_waiter = asyncio.create_task(
-                        cancel_event.wait(),
-                        name="CancelEventWait",
-                    )
-                    waiters = tools_data.pending | {
-                        pause_waiter,
-                        cancel_waiter,
-                    }
-
-                    done, _ = await asyncio.wait(
-                        waiters,
-                        timeout=0.1,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    # Unused waiters must not dangle.
-                    for w in (pause_waiter, cancel_waiter):
-                        if w not in done and not w.done():
-                            w.cancel()
-                            await asyncio.gather(w, return_exceptions=True)
-
-                    for t in _sort_completed_tasks_by_call_id(
-                        done & tools_data.pending,
-                        tools_data,
-                    ):
-                        await tools_data.process_completed_task(
-                            task=t,
-                            consecutive_failures=consecutive_failures,
-                            outer_handle_container=outer_handle_container,
-                            assistant_meta=assistant_meta,
-                            msg_dispatcher=_msg_dispatcher,
-                        )
-                    # stop() un-pauses before it queues its mirror, so a
-                    # stopped loop leaves the gate like a resumed one: the
-                    # drain records the mirror and the check after it ends
-                    # the loop.
-                    if pause_event.is_set():
-                        continue
-                    if cancel_event.is_set():
-                        # Paused again after stop(): the set cancel_event
-                        # would end every further wait at once.
-                        raise asyncio.CancelledError
-                    continue  # remain paused: do not allow the LLM to speak while paused
-                else:
-                    # Nothing running: schedule any missing tool replies from
-                    # the last assistant turn, then idle until resumed or
-                    # cancelled.
-                    with suppress(Exception):
-                        if unreplied := find_unreplied_assistant_entries(client):
-                            last_problem = unreplied[-1]
-                            amsg = last_problem["assistant_msg"]
-                            missing_ids = set(last_problem["missing"])
-                            if id(amsg) not in assistant_meta:
-                                await schedule_missing_for_message(
-                                    amsg,
-                                    missing_ids,
-                                    tools_data=tools_data,
-                                    context_state=context_state,
-                                    propagate_chat_context=propagate_chat_context,
-                                    assistant_meta=assistant_meta,
-                                    client=client,
-                                    msg_dispatcher=_msg_dispatcher,
-                                    initial_paused=True,
-                                )
-                                await ensure_placeholders_for_pending(
-                                    tools_data=tools_data,
-                                    assistant_meta=assistant_meta,
-                                    client=client,
-                                    msg_dispatcher=_msg_dispatcher,
-                                    time_ctx=time_ctx,
-                                )
-                    done, _ = await asyncio.wait(
-                        {
-                            asyncio.create_task(
-                                pause_event.wait(),
-                                name="PauseEventWait",
-                            ),
-                            asyncio.create_task(
-                                cancel_event.wait(),
-                                name="CancelEventWait",
-                            ),
-                        },
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-
-                    if pause_event.is_set():
-                        continue  # resumed or stopped, as above
-
-                    if cancel_event.is_set():
-                        # Paused again after stop(), as above.
-                        raise asyncio.CancelledError
-                    continue  # top-of-loop, still paused
-
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
             if timer.has_exceeded_msgs():
+                # UNIFY_STEP_CAP_COMPACT: compact and go on, or take the
+                # step that ends the turn first; else the limit applies.
+                _at_limit = (
+                    await _compact_at_step_limit() if _step_cap_compact else "limit"
+                )
+                if _at_limit == "compacted":
+                    return _COMPRESSION_SIGNAL
+                if _at_limit == "limit":
+                    if _step_cap_reply and persist:
+                        await _end_request_at_step_limit()
+                        _persist_response_content = None
+                        _persist_response_emitted = False
+                        continue
+                    return await _handle_limit_reached(
+                        f"max_steps ({max_steps}) exceeded",
+                        _request_draft() if _step_cap_reply else None,
+                        last_word=_step_cap_last_word,
+                    )
+
+            if _ineffective_end:
+                _ineffective_end = False
+                stop = _IneffectiveStop(
+                    runtime_state.step_cap_ineffective_in_a_row,
+                    last_word=_step_cap_last_word,
+                )
+                logger.info(
+                    f"{stop.label} – {stop.reason}; ending the request",
+                    prefix=ICONS["early_exit"],
+                )
+                if persist:
+                    await _end_request_at_step_limit(stop)
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
                 return await _handle_limit_reached(
-                    f"max_steps ({max_steps}) exceeded",
+                    stop.reason,
+                    _request_draft(),
+                    last_word=stop.last_word,
+                    stop=stop,
                 )
 
-            # Outstanding assistant tool_calls missing replies are repaired
-            # before any new user interjection is appended. Only the latest
-            # such assistant message is considered, and only once.
-            with suppress(Exception):
-                if unreplied := find_unreplied_assistant_entries(client):
-                    last_problem = unreplied[-1]
-                    amsg = last_problem["assistant_msg"]
-                    missing_ids = set(last_problem["missing"])
-                    if id(amsg) not in assistant_meta:
-                        await schedule_missing_for_message(
-                            amsg,
-                            missing_ids,
-                            tools_data=tools_data,
-                            context_state=context_state,
-                            propagate_chat_context=propagate_chat_context,
-                            assistant_meta=assistant_meta,
-                            client=client,
-                            msg_dispatcher=_msg_dispatcher,
-                        )
+            # Assistant tool_calls missing replies (a seeded batch or a
+            # resumed transcript) are run, in call order, before anything
+            # queued is appended. Each assistant message is repaired once.
+            _repair_status = await _repair_unreplied(
+                find_unreplied_assistant_entries(client),
+            )
+            if _repair_status == "timeout":
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
-            # ── Drain queued interjections ───────────────────────────────
-            # This must run before waiting on tool completion so a fast
-            # typist can still get a question in while long-running tools
-            # are in flight.
-            _suppress_persist_response = False
-            _had_interjections = False
+            # ── Turn boundary: drain the queue ──────────────────────────
+            # Nothing runs here, so every message the requester sent since
+            # the last boundary is appended now, in the order it was sent.
+            _cancel_request: Optional[dict] = None
             while True:
                 try:
                     extra = interject_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                _is_sentinel = isinstance(extra, dict) and (
-                    "_mirror" in extra
-                    or "_transcript_note" in extra
-                    or "_compact_transcript" in extra
-                    or extra.get("_replay")
-                )
+                # The requester cancelled the running request. What was
+                # queued after the cancel stays queued for the next request.
+                if isinstance(extra, dict) and "_cancel_request" in extra:
+                    _cancel_request = dict(extra.get("_cancel_request") or {})
+                    break
                 # Transcript-note sentinel: a background process (e.g. a
                 # storage review) leaves a loop-authored note in the
-                # transcript without granting an LLM turn — the model reads
-                # it whenever it next speaks.
+                # transcript; the model reads it whenever it next speaks.
                 if isinstance(extra, dict) and "_transcript_note" in extra:
                     try:
                         _note = str(
@@ -1672,144 +2214,15 @@ async def async_tool_loop_inner(
                         pass
                     continue
                 # Transcript-compaction sentinel: a completed storage review
-                # has consolidated the covered turns, so their raw tool
-                # payloads shed their bulk. Processed only at drain points —
-                # never mid-dispatch.
+                # has consolidated the covered turns. Sent messages are never
+                # edited, so the reviewed span keeps its bytes.
                 if isinstance(extra, dict) and "_compact_transcript" in extra:
-                    try:
-                        _n = int(
-                            (extra.get("_compact_transcript") or {}).get(
-                                "reviewed_messages",
-                            )
-                            or 0,
-                        )
-                        if _n > 0:
-                            compact_reviewed_messages(client, _n)
-                    except Exception:
-                        pass
                     continue
-                if not _is_sentinel:
-                    if not _had_interjections:
-                        _had_interjections = True
-                        _suppress_persist_response = True
-                    if not isinstance(extra, dict) or not extra.get(
-                        "suppress_response_notification",
-                        False,
-                    ):
-                        _suppress_persist_response = False
 
-                # "_llm_turn" lets an interjection choose how it schedules the
-                # LLM: "none", "deferred", or the default immediate turn
-                # (which also clears any prior deferral).
-                llm_policy = "immediate"
-                try:
-                    if isinstance(extra, dict):
-                        llm_policy = str(extra.get("_llm_turn") or "immediate")
-                except Exception:
-                    llm_policy = "immediate"
-                if llm_policy == "none":
-                    pass
-                elif llm_policy == "deferred":
-                    try:
-                        deferred_llm_turn = True
-                    except Exception:
-                        pass
-                else:
-                    llm_turn_required = True
-                    try:
-                        deferred_llm_turn = False
-                    except Exception:
-                        pass
-                # Mirrored steering sentinel: synthesize helper tool_calls now.
-                try:
-                    if isinstance(extra, dict) and "_mirror" in extra:
-                        _ms = extra.get("_mirror") or {}
-                        _m = _ms.get("method")
-                        _kw = _ms.get("kwargs") or {}
-                        if isinstance(_m, str) and _m:
-                            try:
-                                merged = dict(_kw if isinstance(_kw, dict) else {})
-                            except Exception:
-                                merged = {}
-                            try:
-                                if _ms.get("_custom"):
-                                    merged["_custom"] = True
-                            except Exception:
-                                pass
-                            try:
-                                if "_aliases" in _ms:
-                                    merged["_aliases"] = list(_ms.get("_aliases") or [])
-                            except Exception:
-                                pass
-                            try:
-                                if "_fallback" in _ms:
-                                    merged["_fallback"] = list(
-                                        _ms.get("_fallback") or [],
-                                    )
-                            except Exception:
-                                pass
-                            await _synthesize_mirrored_helper_calls(_m, merged)
-                            continue
-                except Exception:
-                    pass
-                # Replay sentinel: grant the next LLM turn without appending
-                # any message, preserving transcript fidelity after resume.
-                try:
-                    if isinstance(extra, dict) and extra.get("_replay"):
-                        llm_turn_required = True
-                        continue
-                except Exception:
-                    pass
-                # User-visible history lives on the outer handle; fall back to
-                # the original user prompt if it is unavailable.
-                history_lines: list[str] = []
-                try:
-                    outer_handle = (
-                        outer_handle_container[0] if outer_handle_container else None
-                    )
-                    uvh = (
-                        getattr(outer_handle, "_user_visible_history", [])
-                        if outer_handle
-                        else []
-                    )
-                    for _m in uvh:
-                        role = _m.get("role")
-                        _content = _m.get("content")
-                        if isinstance(_content, dict):
-                            _text = str(_content.get("message", "")).strip()
-                        else:
-                            _text = str(_content or "").strip()
-                        if role in ("user", "assistant") and _text:
-                            history_lines.append(f"{role}: {_text}")
-                except Exception:
-                    try:
-                        first_user = next(
-                            (
-                                m.get("content", "")
-                                for m in client.messages
-                                if m.get("role") == "user"
-                            ),
-                            "",
-                        )
-                        if first_user:
-                            history_lines = [f"user: {first_user}"]
-                    except Exception:
-                        history_lines = []
-
-                # Dict interjections may carry continued parent context.
-                # Interjections are sent as user messages (not system) for
-                # broad provider compatibility; user-visibility context sits
-                # in the topmost system message.
                 if isinstance(extra, dict):
                     _msg_text = str(extra.get("message", "")).strip()
-                    _ctx_cont = extra.get(
-                        "_parent_chat_context_continued",
-                    ) or extra.get(
-                        "_parent_chat_context_continuted",
-                    )
                 else:
                     _msg_text = str(extra)
-                    _ctx_cont = None
 
                 try:
                     logger.info(
@@ -1819,234 +2232,62 @@ async def async_tool_loop_inner(
                 except Exception:
                     pass
 
-                if _ctx_cont:
-                    _ctx_cont = make_messages_safe_for_context_dump(_ctx_cont)
-                    context_state.receive_context_continuation(_ctx_cont)
-                    # Only inner handles that opted into context initially
-                    # receive continuations.
-                    for task, info in tools_data.info.items():
-                        if info.interject_queue is not None and info.context_opted_in:
-                            with suppress(Exception):
-                                info.interject_queue.put_nowait(
-                                    {
-                                        "message": "",  # Empty message, just context update
-                                        "_parent_chat_context_continued": _ctx_cont,
-                                        "_context_only": True,  # Flag to indicate context-only update
-                                    },
-                                )
-                                context_state.mark_cont_forwarded_to_tool(info.call_id)
-
-                # The first interjection injects user-visibility guidance so the
-                # model understands why a user message appears mid-execution
-                # and what the user can and cannot see. record_progress and
-                # record_clarification share the same flag on tools_data, so
-                # the injection is paid for once whichever event comes first.
-                await tools_data._ensure_visibility_guidance_injected(_msg_dispatcher)
-
-                # A context continuation goes in a separate user message tagged
-                # _ctx_header, so the current LLM sees it but it is filtered
-                # out when building cur_msgs for inner tool forwarding.
-                msgs_to_append: list[dict] = []
-                if _ctx_cont:
-                    ctx_cont_transformed = _transform_context_roles(_ctx_cont)
-                    ctx_cont_content = (
-                        "## Parent Chat Context (continued)\n"
-                        "This is the next incremental chunk of the parent conversation since the "
-                        "last context update (either the initial Parent Chat Context in your system "
-                        "message, or the previous continued context chunk). These messages arrived "
-                        "while you have been working on this request and may be relevant. Use this "
-                        "to stay informed of any updates or new information from the parent conversation. "
-                        "As explained in the system message, 'outer_user' and 'outer_assistant' roles "
-                        "indicate messages from the parent conversation.\n\n"
-                        f"{json.dumps(ctx_cont_transformed, indent=2)}"
-                    )
-                    msgs_to_append.append(
-                        loop_user_notice(ctx_cont_content, _ctx_header=True),
-                    )
                 if _msg_text:
+                    # UNIFY_BIND_REQUEST=on: the requester's message is now
+                    # the current request.
+                    _bound_request.record(_request_slot, _msg_text)
+                    # UNIFY_REQUEST_METADATA_HEADERS=on: one more requester
+                    # message, in a loop that answers a requester.
+                    if bind_request:
+                        count_requester_message(client)
                     _user_content = (
                         time_ctx.prefix_user_message(_msg_text)
                         if time_ctx is not None
                         else _msg_text
                     )
-                    msgs_to_append.append(
-                        {
-                            "role": "user",
-                            "_interjection": True,
-                            "content": _user_content,
-                        },
-                    )
-                if msgs_to_append:
-                    await _msg_dispatcher.append_msgs(msgs_to_append)
-                with suppress(Exception):
-                    if outer_handle:
-                        outer_handle._user_visible_history.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    {
-                                        "message": _msg_text,
-                                        "_parent_chat_context_continued": _ctx_cont,
-                                    }
-                                    if isinstance(extra, dict) and _ctx_cont
-                                    else _msg_text
-                                ),
-                            },
-                        )
+                    _requester_msg = {
+                        "role": "user",
+                        "_interjection": True,
+                        "content": _user_content,
+                    }
+                    if runtime_state.request_starts_next:
+                        runtime_state.request_starts_next = False
+                        # UNIFY_COMPACTION_KEEP_PREFIX=on: a compaction keeps
+                        # this request from here, additions included.
+                        if keep_prefix_enabled():
+                            _requester_msg[REQUEST_START_KEY] = True
+                    await _msg_dispatcher.append_msgs([_requester_msg])
 
-            # stop() queues its mirror before setting cancel_event, and the
-            # drain above empties the queue, so a set event means the mirror
-            # has been processed (each child's steer(stop) recorded and
-            # forwarded). The loop ends here: any further turn would be sent
-            # only to be thrown away.
+            # A stop ends the loop here: any further turn would be sent only
+            # to be thrown away.
             if cancel_event.is_set():
                 raise asyncio.CancelledError
 
-            # ── A. Wait for a tool completion, cancellation, interjection,
-            #       clarification or notification ────────────────────────
-            # Skipped entirely when the model already needs to speak.
-            if tools_data.pending and not llm_turn_required:
-                interject_w = asyncio.create_task(
-                    interject_queue.get(),
-                    name="InterjectQueueGet",
+            # A cancelled request ends here and the loop waits for the next.
+            # Only a persistent loop serves more than one request; a loop
+            # that is not persistent is ended with stop().
+            if _cancel_request is not None:
+                if persist:
+                    await _end_request_on_cancel(_cancel_request.get("reason"))
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
+                logger.info(
+                    "Cancel ignored: the loop is not persistent (stop() ends it)",
+                    prefix=ICONS["pause"],
                 )
-                cancel_waiter = asyncio.create_task(
-                    cancel_event.wait(),
-                    name="CancelEventWait",
-                )
-                clar_waiters: Dict[asyncio.Task, asyncio.Task] = {}
-                notif_waiters: Dict[asyncio.Task, asyncio.Task] = {}
-                for _t in tools_data.pending:
-                    # A task already awaiting an answer has
-                    # waiting_for_clarification set; only new questions are
-                    # listened for.
-                    info = tools_data.info[_t]
-                    if info.waiting_for_clarification:
-                        continue
-
-                    if info.clar_up_queue is not None:
-                        w = asyncio.create_task(
-                            info.clar_up_queue.get(),
-                            name="ClarificationQueueGet",
-                        )
-                        clar_waiters[w] = _t
-
-                    if info.notification_queue is not None:
-                        pw = asyncio.create_task(
-                            info.notification_queue.get(),
-                            name="NotificationQueueGet",
-                        )
-                        notif_waiters[pw] = _t
-                waiters = (
-                    tools_data.pending
-                    | set(clar_waiters)
-                    | set(notif_waiters)
-                    | {cancel_waiter, interject_w}
-                )
-
-                if timer.has_exceeded_time():
-                    return await _handle_limit_reached(
-                        f"timeout ({timeout}s) exceeded",
-                    )
-
-                done, _ = await asyncio.wait(
-                    waiters,
-                    timeout=timer.remaining_time(),
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-                # Nothing completed means the wait itself timed out.
-                if not done:
-                    if raise_on_limit:
-                        raise asyncio.TimeoutError(
-                            f"Loop exceeded {timeout}s wall-clock limit",
-                        )
-                    else:
-                        return await _handle_limit_reached(
-                            f"timeout ({timeout}s) exceeded",
-                        )
-
-                # Unused auxiliary waiters must be cancelled and awaited,
-                # otherwise a lingering queue getter consumes the next
-                # interjection invisibly.
-                for aux in (
-                    interject_w,
-                    cancel_waiter,
-                    *clar_waiters.keys(),
-                    *notif_waiters.keys(),
-                ):
-                    if aux not in done and not aux.done():
-                        aux.cancel()
-                        await asyncio.gather(aux, return_exceptions=True)
-
-                # Cancellation wins. A stop queues its mirrored stop before it
-                # sets the cancel event, and the mirror is the only propagation
-                # path to children, so when the mirror was taken alongside the
-                # stop it is re-queued below, and the loop ends once the drain
-                # has dispatched it.
-                if cancel_waiter in done and interject_w not in done:
-                    raise asyncio.CancelledError
-
-                needs_turn, restart = await _ingest_tick(
-                    done,
-                    interject_w,
-                    clar_waiters,
-                    notif_waiters,
-                )
-                if needs_turn:
-                    llm_turn_required = True
-                if restart or tools_data.pending:
-                    continue  # jump to top-of-loop
-
-            # ── B. Wait for remaining tools before asking the LLM again,
-            #       unless the model already deserves a turn ───────────────
-            if tools_data.pending and not llm_turn_required:
-                await ensure_placeholders_for_pending(
-                    tools_data=tools_data,
-                    assistant_meta=assistant_meta,
-                    client=client,
-                    msg_dispatcher=_msg_dispatcher,
-                    time_ctx=time_ctx,
-                )
-                continue  # still waiting for other tool tasks
 
             # ── C. Build this turn's toolkit ─────────────────────────────
-            # Rebuilt fresh every turn so concurrency changes (tasks
-            # finishing, stopping, …) are reflected in what the LLM sees.
-
-            # Yield so just-scheduled tool tasks can run (especially those
-            # that immediately return a SteerableToolHandle, so dynamic
-            # helpers are generated with the handle's docstrings), then ingest
-            # every task that has finished, in call_id order. The whole turn
-            # is built from this one view of what is pending: a result that
-            # has landed in the transcript no longer forces
-            # tool_choice="required", so the request does not depend on
-            # whether a tool finished just before or just after this point.
-            logger.debug(f"[setup +{_setup_elapsed()}] yielding (asyncio.sleep(0))")
-            await asyncio.sleep(0)
-            logger.debug(f"[setup +{_setup_elapsed()}] resumed after yield")
-
-            for task in _sort_completed_tasks_by_call_id(
-                {t for t in tools_data.pending if t.done()},
-                tools_data,
-            ):
-                with suppress(Exception):
-                    await tools_data.process_completed_task(
-                        task=task,
-                        consecutive_failures=consecutive_failures,
-                        outer_handle_container=outer_handle_container,
-                        assistant_meta=assistant_meta,
-                        msg_dispatcher=_msg_dispatcher,
-                    )
-
-            # Tool policy and tool subset for this turn. Eager policies (e.g.
+            # Tool policy and tool subset for this turn. Gated policies (e.g.
             # discovery-first gates) keep the model on a narrow required
             # subset; tracking that keeps compress_context out of the schema
             # as an escape hatch.
             logger.debug(
                 f"[setup +{_setup_elapsed()}] tool policy eval (step={runtime_state.step_index})",
             )
-            _policy_eager = False
+            _policy_gated = False
+            _policy_mask_rules: Dict[str, str] = {}
+            _policy_mask_default: Optional[str] = None
             if tool_policy is not None:
                 _tools_snapshot = {n: s.fn for n, s in tools_data.normalized.items()}
                 try:
@@ -2061,31 +2302,23 @@ async def async_tool_loop_inner(
                             runtime_state.step_index,
                             _tools_snapshot,
                         )
-                    tool_choice_mode, filtered, _policy_eager = (
-                        _parse_tool_policy_result(
-                            _policy_result,
-                        )
+                    tool_choice_mode, filtered, _ = _parse_tool_policy_result(
+                        _policy_result,
+                    )
+                    _policy_gated = _policy_gates_turn(_policy_result)
+                    _policy_mask_rules, _policy_mask_default = (
+                        _cache_discipline.policy_mask_rules(_policy_result)
                     )
                 except Exception as _e:  # never abort the loop on mis-behaving policies
                     logger.error(
                         f"tool_policy raised on turn {runtime_state.step_index}: {_e!r}",
                     )
                     tool_choice_mode, filtered = "auto", _tools_snapshot
-                    _policy_eager = False
+                    _policy_gated = False
                 policy_tools_norm = normalise_tools(filtered)
             else:
                 tool_choice_mode = "auto"
                 policy_tools_norm = tools_data.normalized
-
-            # When tools are in-flight, force tool_choice=required so the LLM
-            # must call a real tool (steer, wait, ask_about_completed_tool,
-            # etc.) rather than ending the loop. The response tool stays in
-            # the schema but is refused at execution time while anything is
-            # pending (see the steer()/response-tool execution branches
-            # below), so "required" still only leaves live options.
-            _has_pending_tools = bool(tools_data.pending)
-            if _has_pending_tools and tool_choice_mode != "required":
-                tool_choice_mode = "required"
 
             logger.debug(
                 f"[setup +{_setup_elapsed()}] building tool schemas ({len(policy_tools_norm)} tools)",
@@ -2097,63 +2330,42 @@ async def async_tool_loop_inner(
             )
 
             if _over_threshold and enable_compression:
-                if _has_pending_tools:
-                    # Over threshold, pending tools → no base tools, no
-                    # compress_context (can't compress mid-flight). Only the
-                    # static surface (wait, steer, ask_about_completed_tool)
-                    # remains visible.
-                    visible_base_tools_schema = []
-                    _threshold_msg = (
-                        "Context window is nearly full. "
-                        "You cannot start new tools. Wait for in-flight tools to complete and then call "
-                        "`compress_context` to free up context."
-                    )
-                    if log_steps == "full":
-                        logger.info(
-                            f"Context over threshold (pending in-flight tools): {_threshold_msg}",
-                            prefix=ICONS["summarize"],
+                # Over threshold → compress_context plus any caller-specified
+                # extra compression tools (pulled from the full tool set so
+                # policy gates are bypassed).
+                visible_base_tools_schema = [_compress_schema]
+                if extra_compression_tools:
+                    visible_base_tools_schema.extend(
+                        method_to_schema(
+                            spec.fn,
+                            name,
+                            expose_context_control=(
+                                propagate_chat_context
+                                == ChatContextPropagation.LLM_DECIDES
+                            ),
+                            has_parent_context=bool(parent_chat_context),
                         )
-                    await _msg_dispatcher.append_msgs(
-                        [loop_user_notice(_threshold_msg)],
+                        for name, spec in tools_data.normalized.items()
+                        if name in extra_compression_tools
                     )
-                else:
-                    # Over threshold, no pending → compress_context plus
-                    # any caller-specified extra compression tools (pulled
-                    # from the full tool set so policy gates are bypassed).
-                    visible_base_tools_schema = [_compress_schema]
-                    if extra_compression_tools:
-                        visible_base_tools_schema.extend(
-                            method_to_schema(
-                                spec.fn,
-                                name,
-                                expose_context_control=(
-                                    propagate_chat_context
-                                    == ChatContextPropagation.LLM_DECIDES
-                                ),
-                                has_parent_context=bool(parent_chat_context),
-                            )
-                            for name, spec in tools_data.normalized.items()
-                            if name in extra_compression_tools
-                        )
-                    tool_choice_mode = "required"
-                    _threshold_msg = (
-                        "Context window is nearly full. "
-                        "You must call `compress_context` now."
+                tool_choice_mode = "required"
+                _threshold_msg = (
+                    "Context window is nearly full. "
+                    "You must call `compress_context` now."
+                )
+                if log_steps == "full":
+                    logger.info(
+                        f"Context over threshold (no pending): {_threshold_msg}",
+                        prefix=ICONS["summarize"],
                     )
-                    if log_steps == "full":
-                        logger.info(
-                            f"Context over threshold (no pending): {_threshold_msg}",
-                            prefix=ICONS["summarize"],
-                        )
-                    await _msg_dispatcher.append_msgs(
-                        [loop_user_notice(_threshold_msg)],
-                    )
+                await _msg_dispatcher.append_msgs(
+                    [loop_user_notice(_threshold_msg)],
+                )
             else:
                 # Schema constancy beats schema minimalism: tools stay visible
-                # even while saturated on max_concurrent/max_total_calls —
-                # a saturated call is refused at execution time instead (see
-                # has_exceeded_concurrent_limit_for_tool / prune_over_quota_tool_calls),
-                # so hitting the cap never changes what the model can see.
+                # even past max_total_calls — an over-quota call is refused at
+                # execution time instead (see prune_over_quota_tool_calls), so
+                # hitting the cap never changes what the model can see.
                 visible_base_tools_schema = [
                     method_to_schema(
                         spec.fn,
@@ -2164,29 +2376,32 @@ async def async_tool_loop_inner(
                         has_parent_context=bool(parent_chat_context),
                     )
                     for name, spec in policy_tools_norm.items()
+                    if not (
+                        compression_tools_on_demand
+                        and name in (extra_compression_tools or ())
+                    )
                 ]
-                # compress_context stays out of eager gated turns so required
+                # compress_context stays out of gated turns so required
                 # discovery/tool policies cannot be satisfied by compressing;
                 # forced over-threshold compression above still applies.
-                if _compress_schema is not None and not _policy_eager:
+                # compression_tools_on_demand: only that forced turn has it.
+                if (
+                    _compress_schema is not None
+                    and not _policy_gated
+                    and not compression_tools_on_demand
+                ):
                     visible_base_tools_schema.append(_compress_schema)
 
             # The response-submission tool is in the schema whenever
-            # response_format is set, regardless of in-flight tools: masking
-            # it in and out on every pending<->idle transition would break
-            # the prompt prefix each time. It means "end the current turn"
-            # (the tool-call analogue of a bare text response); calling it
-            # while tools are pending is refused at execution time, the same
-            # schema-constant-but-execution-gated pattern as concurrency/quota
-            # saturation and steer().
+            # response_format is set. It means "end the current turn" (the
+            # tool-call analogue of a bare text response).
             #
             #   persist=True  → "send_response"  (signals turn completion,
             #                    loop continues waiting for next interjection)
             #   persist=False → "final_response"  (terminates the loop)
             _response_tool_name = "send_response" if persist else "final_response"
             # "Ready" means present in the schema (response_format configured
-            # and injection succeeded), not safe to call right now; safety is
-            # enforced by the pending-tools refusal in the execution branch.
+            # and injection succeeded).
             _structured_response_tool_ready = False
 
             if _rf_norm is not None:
@@ -2237,146 +2452,176 @@ async def async_tool_loop_inner(
             if _structured_response_tool_ready and tool_choice_mode != "required":
                 tool_choice_mode = "required"
 
-            # Multi-handle mode: `final_response` takes a request_id and is
-            # always available (tools may be shared), unlike response_format
-            # mode; `ask_user_clarification` routes questions to one request.
-            if multi_handle_coordinator is not None:
-                visible_base_tools_schema.append(
-                    {
-                        "type": "function",
-                        "strict": DEFAULT_TOOL_SCHEMA_STRICT,
-                        "function": {
-                            "name": "final_response",
-                            "description": (
-                                "Submit the final response for a specific request. "
-                                "Use this to complete a request when you have the result. "
-                                "Each request must be answered exactly once."
-                            ),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "request_id": {
-                                        "type": "integer",
-                                        "description": "The ID of the request being answered (from [Request N] tag).",
-                                    },
-                                    "answer": {
-                                        "type": "string",
-                                        "description": "The final answer text for this request.",
-                                    },
-                                },
-                                "required": ["request_id", "answer"],
-                            },
-                        },
-                    },
-                )
-                visible_base_tools_schema.append(
-                    {
-                        "type": "function",
-                        "strict": DEFAULT_TOOL_SCHEMA_STRICT,
-                        "function": {
-                            "name": "ask_user_clarification",
-                            "description": (
-                                "Ask a specific user for clarification. Use this when you need "
-                                "more information from the user who submitted a particular request."
-                            ),
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "request_id": {
-                                        "type": "integer",
-                                        "description": "The ID of the request whose user should receive the question.",
-                                    },
-                                    "question": {
-                                        "type": "string",
-                                        "description": "The clarification question to ask the user.",
-                                    },
-                                },
-                                "required": ["request_id", "question"],
-                            },
-                        },
-                    },
-                )
+            tmp_tools = list(visible_base_tools_schema)
 
-            dynamic_tool_factory = DynamicToolFactory(tools_data)
-            dynamic_tool_factory.generate()
-            dynamic_tools = dynamic_tool_factory.dynamic_tools
-
-            # A handle adopted mid-loop refreshes capability bookkeeping
-            # (is_interjectable, clarification queue wiring, live-ask
-            # closures). No outer-visible tools are minted per handle:
-            # steer()/wait/ask_about_completed_tool are static.
-            def _refresh_helpers_for_task(task: asyncio.Task) -> None:
-                with suppress(Exception):
-                    dynamic_tool_factory._refresh_task_capabilities(task)
-
-            tools_data._on_handle_adopted = _refresh_helpers_for_task
-
-            # `wait` stays in the schema, byte-stable, even while a
-            # clarification is pending; the deadlock interlock is enforced at
-            # execution time (see the `lname_cf == "wait"` branch below).
-
-            # Every pending call needs a placeholder tool reply before the
-            # assistant speaks again.
-            logger.debug(f"[setup +{_setup_elapsed()}] ensure_placeholders start")
-            await ensure_placeholders_for_pending(
-                tools_data=tools_data,
-                assistant_meta=assistant_meta,
-                client=client,
-                msg_dispatcher=_msg_dispatcher,
-                time_ctx=time_ctx,
+            # What this turn assembled is what it allows; what it advertises
+            # is the session's fixed list. A call
+            # to anything outside the allowed set is refused below, with the
+            # rule that masks it, so the list never changes mid-session.
+            _turn_available = frozenset(
+                _cache_discipline.schema_names(tmp_tools),
             )
-            logger.debug(f"[setup +{_setup_elapsed()}] ensure_placeholders done")
-
-            # Dynamic helpers join the visible toolkit. In LLM_DECIDES mode,
-            # dynamic tools accepting _parent_chat_context (the ask_* tools)
-            # expose include_parent_chat_context so the model can opt out of
-            # context for inspection loops, and steering methods
-            # (ask/interject) on tools that opted into context expose
-            # include_parent_chat_context_cont.
-            _expose_ctx_cont_control = (
-                propagate_chat_context == ChatContextPropagation.LLM_DECIDES
-            )
-            tmp_tools = visible_base_tools_schema + [
-                method_to_schema(
-                    fn,
-                    include_class_name=include_class_in_dynamic_tool_names,
-                    expose_context_control=_expose_ctx_cont_control,
-                    has_parent_context=bool(parent_chat_context),
-                    expose_context_cont_control=(
-                        _expose_ctx_cont_control
-                        and getattr(fn, "__supports_context_propagation__", False)
-                        and getattr(fn, "__context_opted_in__", False)
-                    ),
+            if (
+                runtime_state.session_tools_schema is None
+                and fixed_tools_schema is not None
+            ):
+                runtime_state.session_tools_schema = copy.deepcopy(
+                    list(fixed_tools_schema),
                 )
-                for fn in dynamic_tools.values()
-            ]
+            if runtime_state.session_tools_schema is None:
+                runtime_state.session_tools_schema = (
+                    _cache_discipline.build_session_schema(
+                        base_schemas={
+                            name: method_to_schema(
+                                spec.fn,
+                                name,
+                                expose_context_control=(
+                                    propagate_chat_context
+                                    == ChatContextPropagation.LLM_DECIDES
+                                ),
+                                has_parent_context=bool(parent_chat_context),
+                            )
+                            for name, spec in tools_data.normalized.items()
+                            if not (
+                                compression_tools_on_demand
+                                and name in (extra_compression_tools or ())
+                            )
+                        },
+                        compress_schema=(
+                            None if compression_tools_on_demand else _compress_schema
+                        ),
+                        turn_schemas=[
+                            schema
+                            for schema in tmp_tools
+                            if not compression_tools_on_demand
+                            or _cache_discipline.schema_name(schema)
+                            not in {
+                                "compress_context",
+                                *(extra_compression_tools or ()),
+                            }
+                        ],
+                    )
+                )
+            # compression_tools_on_demand: the turn that must compress
+            # sends its own list (the session's list has no compression
+            # tools); compression starts a new prefix anyway.
+            _on_demand_turn = (
+                compression_tools_on_demand and _over_threshold and enable_compression
+            )
+            if not _on_demand_turn:
+                tmp_tools = runtime_state.session_tools_schema
+            # Set once, before the first request: the key names the
+            # prefix (model, system prompt, this fixed list) unless a
+            # key is already set, as a fork's is.
+            _cache_discipline.ensure_cache_affinity(client, tmp_tools)
+            _session_tool_names = frozenset(
+                _cache_discipline.schema_names(tmp_tools),
+            )
+            _turn_available = _turn_available & _session_tool_names
+            _turn_mask_rules = dict(_policy_mask_rules)
+            _turn_mask_default = _policy_mask_default
+            if _over_threshold and enable_compression:
+                _turn_mask_rules = {}
+                _turn_mask_default = (
+                    "the context window is nearly full, so "
+                    "`compress_context` has to be called now"
+                )
+            elif _policy_gated:
+                _turn_mask_rules.setdefault(
+                    "compress_context",
+                    "compression waits until this turn's required calls "
+                    "have been made",
+                )
 
             # ── D. Ask the LLM what to do next ───────────────────────────
-            # A stop that landed while this turn was being built left its
-            # mirror queued. Back to the drain, which records the mirror and
-            # ends the loop, rather than dispatching a turn only to cancel it.
+            # A stop that landed while this turn was being built ends the
+            # loop rather than dispatching a turn only to cancel it.
             if cancel_event.is_set():
-                continue
+                raise asyncio.CancelledError
+
+            # UNIFY_REPLY_CHANNEL=code+text: a cell called reply(); its text is
+            # this step's assistant message and no model is asked. None
+            # while the switch is off.
+            _cell_reply_msg = _reply_slot.take() if _reply_slot is not None else None
+
+            # UNIFY_LOOP_STOP: K model calls in a row that made no progress
+            # end the request here, as the step limit would, instead of
+            # making another call. Before the boundary hook, so a record
+            # block is never consumed by a call that is not made.
+            if (
+                _loop_stop is not None
+                and _cell_reply_msg is None
+                and (
+                    _loop_stop.observe(
+                        client.messages or [],
+                        in_flight=bool(tools_data.pending),
+                    )
+                    # UNIFY_STEP_CAP_COMPACT=continue: due at the step limit.
+                    or (_continue and _loop_stop.count >= _loop_stop.k)
+                )
+            ):
+                _stop = _loop_stop_mod.Stop(
+                    k=_loop_stop.k,
+                    last_word=_step_cap_mode != "draft",
+                )
+                runtime_state.loop_stops += 1
+                logger.info(
+                    f"Loop stop – {_stop.reason}; ending the request with "
+                    + ("the model's last word" if _stop.last_word else "its draft"),
+                    prefix=ICONS["early_exit"],
+                )
+                _loop_stop.count = 0
+                if persist:
+                    await _end_request_at_step_limit(_stop)
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
+                return await _handle_limit_reached(
+                    _stop.reason,
+                    _request_draft(),
+                    last_word=_stop.last_word,
+                    stop=_stop,
+                )
+
+            # The agent record: what is new in the shared record for this
+            # agent, appended after this turn's tool results. Reached only when
+            # a model call is about to be made, so never after a turn has ended
+            # (a cell's reply() above ends it with no model call).
+            if on_turn_boundary is not None and _cell_reply_msg is None:
+                _record_block = await on_turn_boundary()
+                if _record_block:
+                    await _msg_dispatcher.append_msgs(
+                        [loop_user_notice(_record_block, _record_block=True)],
+                    )
 
             logger.debug(
                 f"[setup +{_setup_elapsed()}] ready for LLM call (step={runtime_state.step_index}, {len(tmp_tools)} tools)",
             )
-            if log_steps:
+            if log_steps and _cell_reply_msg is None:
                 logger.begin_thinking()
 
-            await to_event_bus(
-                {"role": "assistant", "_thinking_in_flight": True},
-                cfg,
-            )
+            if _cell_reply_msg is None:
+                await to_event_bus(
+                    {"role": "assistant", "_thinking_in_flight": True},
+                    cfg,
+                )
 
-            # Set only by patient mode below, to keep hold of the assistant
-            # message this step produced.
-            _patient_asst_msg: Optional[dict] = None
-
-            if interrupt_llm_with_interjections:
-                # ––––– pre-emptive mode: the LLM step races the pending
-                # tools, interjections, cancellation, clarifications and
-                # notifications –––––––––––––––––––––––––––––––––––––––––
+            if _cell_reply_msg is not None:
+                # The reply goes in as the model's text reply would, and the
+                # step goes on from here exactly as for one (section F).
+                client.append_messages([_cell_reply_msg])
+                _full_completion = None
+                runtime_state.replies_from_cell += 1
+                if _cell_reply_msg[_cell_reply.FROM_VALUE_KEY]:
+                    runtime_state.replies_from_value += 1
+                logger.info(
+                    "A cell's reply() ends the turn; no model call",
+                    prefix=ICONS["completed"],
+                )
+            else:
+                # The model call runs to completion; only a stop, or in a
+                # persistent loop the requester's cancel of the request,
+                # cancels it.
                 _gen_kwargs = {
                     "return_full_completion": True,
                     "tools": tmp_tools,
@@ -2386,296 +2631,126 @@ async def async_tool_loop_inner(
                 }
                 if max_parallel_tool_calls is not None:
                     _gen_kwargs["parallel_tool_calls"] = max_parallel_tool_calls > 1
-                elif _policy_eager:
-                    # Discovery-first (and other eager gates) expose multiple
+                elif _policy_gated:
+                    # Discovery-first (and other gated turns) expose multiple
                     # required tools that must be callable in one assistant turn.
                     _gen_kwargs["parallel_tool_calls"] = True
-
-                # The prompt this dispatch sends is about to be snapshotted
-                # from the current transcript, so it provably contains every
-                # result ingested so far — the obligation deferred_llm_turn
-                # exists to enforce is satisfied by this dispatch alone.
-                # Clearing here, not when the step completes, is what keeps
-                # a result that lands *during* this same dispatch's flight
-                # correctly deferred to the turn after it: the set sites run
-                # after this point, so they still land after the clear.
-                deferred_llm_turn = False
 
                 llm_task = asyncio.create_task(
                     generate_with_preprocess(
                         client,
-                        _apply_reasoning_model_compat(_gen_kwargs, tool_choice_mode),
+                        _apply_reasoning_model_compat(
+                            _gen_kwargs,
+                            tool_choice_mode,
+                        ),
                         **_gen_kwargs,
                     ),
                     name="LLMGenerate",
-                )
-                interject_w = asyncio.create_task(
-                    interject_queue.get(),
-                    name="InterjectQueueGet",
                 )
                 cancel_waiter = asyncio.create_task(
                     cancel_event.wait(),
                     name="CancelEventWait",
                 )
-
-                pending_snapshot = set(tools_data.pending)
-                clar_waiters2: Dict[asyncio.Task, asyncio.Task] = {}
-                notif_waiters2: Dict[asyncio.Task, asyncio.Task] = {}
-                for _t in pending_snapshot:
-                    _inf = tools_data.info[_t]
-                    # Only new clarification requests are listened for.
-                    if (
-                        _inf is not None
-                        and not getattr(_inf, "waiting_for_clarification", False)
-                        and _inf.clar_up_queue is not None
-                    ):
-                        cw2 = asyncio.create_task(
-                            _inf.clar_up_queue.get(),
-                            name="ClarificationQueueGet",
+                watchers = [cancel_waiter]
+                if persist:
+                    watchers.append(
+                        asyncio.create_task(
+                            _until_request_cancel(),
+                            name="RequestCancelWait",
+                        ),
+                    )
+                try:
+                    await asyncio.wait(
+                        {llm_task, *watchers},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    for watcher in watchers:
+                        if not watcher.done():
+                            watcher.cancel()
+                    await asyncio.gather(*watchers, return_exceptions=True)
+                    if not llm_task.done():
+                        # A stop, the requester's cancel of the request, or
+                        # the loop's own cancellation. The unanswered
+                        # dispatch leaves the transcript as it was; its cost
+                        # still reaches the run's meter through unillm.
+                        _cause = (
+                            "stop"
+                            if cancel_event.is_set()
+                            else "cancel" if _request_cancel_queued() else "loop"
                         )
-                        clar_waiters2[cw2] = _t
-                    if _inf is not None and _inf.notification_queue is not None:
-                        pw2 = asyncio.create_task(
-                            _inf.notification_queue.get(),
-                            name="NotificationQueueGet",
+                        runtime_state.cancelled_turns += 1
+                        runtime_state.cancelled_turns_by_cause[_cause] = (
+                            runtime_state.cancelled_turns_by_cause.get(_cause, 0) + 1
                         )
-                        notif_waiters2[pw2] = _t
-
-                done, _ = await asyncio.wait(
-                    pending_snapshot
-                    | set(clar_waiters2.keys())
-                    | set(notif_waiters2.keys())
-                    | {llm_task, interject_w, cancel_waiter},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
+                        llm_task.cancel()
+                        await asyncio.gather(llm_task, return_exceptions=True)
 
                 if log_steps:
                     logger.emit_thinking_fallback()
 
-                # Only the auxiliary waiters are cancelled here. llm_task is
-                # deliberately left alone: each branch below decides.
-                # - LLM already answered → the reply wins (see below)
-                # - Tool finished → cancel (needs new context), unless
-                #   ``interrupt_llm_on_tool_completion`` is False
-                # - Immediate interjection → cancel (user wants a response now)
-                # - Patient interjection → do not cancel (let it finish)
-                # - Clarification/notification → cancel (surface the event)
-                # - Cancellation requested → cancel (explicit stop)
-                for tsk in (
-                    interject_w,
-                    cancel_waiter,
-                    *clar_waiters2.keys(),
-                    *notif_waiters2.keys(),
-                ):
-                    if tsk not in done and not tsk.done():
-                        tsk.cancel()
-                await asyncio.gather(
-                    interject_w,
-                    cancel_waiter,
-                    *clar_waiters2.keys(),
-                    *notif_waiters2.keys(),
-                    return_exceptions=True,
-                )
-
-                # The LLM answered in the same wake-up as other events. The
-                # stateful client has already inserted the reply into the
-                # transcript at the index captured at dispatch, so superseding
-                # it would leave it to the unreplied-entry repair, which runs
-                # only base tools and never takes a text reply as the answer.
-                # A cached hit resolves within milliseconds, so in a replay a
-                # tool finishing inside that window is plausible. The reply
-                # wins: every event that would have superseded it is handed
-                # back as if it had arrived just after. Finished tools stay
-                # pending for section A or section C's sweep to ingest, an
-                # interjection is re-queued for the drain, and a clarification
-                # or notification goes back to the front of its tool's queue.
-                # Patient mode never lets a tool result supersede the step, so
-                # its branch below still ingests the result as the step lands.
-                # A stop requested in the same wake-up still wins, and a step
-                # that failed or was cancelled is superseded as before.
-                if (
-                    llm_task in done
-                    and len(done) > 1
-                    and not llm_task.cancelled()
-                    and llm_task.exception() is None
-                    and not (cancel_waiter in done and cancel_event.is_set())
-                ):
-                    logger.debug(
-                        f"⏱️ [ToolLoop] LLM answered in the same wake-up as "
-                        f"{len(done) - 1} other event(s); the reply goes first",
-                    )
-                    if interject_w in done:
-                        await interject_queue.put(interject_w.result())
-                    for cw, src in clar_waiters2.items():
-                        if cw in done:
-                            _requeue_at_front(
-                                tools_data.info[src].clar_up_queue,
-                                cw.result(),
-                            )
-                    for pw, src in notif_waiters2.items():
-                        if pw in done:
-                            _requeue_at_front(
-                                tools_data.info[src].notification_queue,
-                                pw.result(),
-                            )
-                    if interrupt_llm_on_tool_completion:
-                        done = {llm_task}
-                    else:
-                        done = {llm_task} | (done & pending_snapshot)
-
-                _finished = done & pending_snapshot
-                _interjection = interject_w.result() if interject_w in done else None
-                _patient_interjection = isinstance(_interjection, dict) and not (
-                    _interjection.get("trigger_immediate_llm_turn", True)
-                )
-
-                # A tool result (outside patient mode), an immediate
-                # interjection, a clarification or a notification supersedes
-                # the step. It is cancelled, so the next one starts with the
-                # event in context, and the tick is taken in exactly as
-                # section A takes in the same tick, everything that came with
-                # the event included.
-                if (
-                    (_finished and interrupt_llm_on_tool_completion)
-                    or (interject_w in done and not _patient_interjection)
-                    or done & clar_waiters2.keys()
-                    or done & notif_waiters2.keys()
-                ):
-                    if _finished:
-                        logger.debug(
-                            f"⏱️ [ToolLoop] tool(s) finished during LLM race: "
-                            f"{len(_finished)} completed",
-                        )
-                    if not llm_task.done():
-                        llm_task.cancel()
-                        await asyncio.gather(llm_task, return_exceptions=True)
-                    needs_turn, _ = await _ingest_tick(
-                        done,
-                        interject_w,
-                        clar_waiters2,
-                        notif_waiters2,
-                    )
-                    if needs_turn:
-                        llm_turn_required = True
-                    continue
-
-                # Nothing superseded the step, so it finishes and is used, and
-                # the model is owed exactly one further turn after it. A patient
-                # interjection goes back on its queue for the drain.
-                #
-                # Patient mode lets the step finish over a tool result too: the
-                # step already sent its prompt to the provider, which bills it
-                # whether or not the answer is collected, so discarding it to
-                # re-ask with the tool result costs a whole step and buys only
-                # latency. The results still have to be ingested here: leaving
-                # the task pending makes section F read it as work in flight,
-                # and ``cancel_pending_tasks`` drops it without processing,
-                # losing the very result that landed. ``deferred_llm_turn``
-                # then guarantees a further turn, so the model always sees these
-                # results before it can conclude; it reasons one step behind,
-                # never without.
-                #
-                # Order matters. The step is awaited first so its own assistant
-                # message can be captured, because ingesting a result whose
-                # placeholder is no longer at the tail appends a synthetic
-                # assistant/tool status pair, and the loop would otherwise
-                # mistake that pair's tool message for this step's turn.
-                if _finished or interject_w in done:
-                    deferred_llm_turn = True
-                    await asyncio.gather(llm_task, return_exceptions=True)
-                    if interject_w in done:
-                        await interject_queue.put(_interjection)
-                    if _finished:
-                        _patient_asst_msg = client.messages[-1]
-                        for task in _sort_completed_tasks_by_call_id(
-                            {task for task in pending_snapshot if task.done()},
-                            tools_data,
-                        ):
-                            await tools_data.process_completed_task(
-                                task=task,
-                                consecutive_failures=consecutive_failures,
-                                outer_handle_container=outer_handle_container,
-                                assistant_meta=assistant_meta,
-                                msg_dispatcher=_msg_dispatcher,
-                            )
-
-                # Cancellation only escalates when the flag is actually set.
-                if cancel_waiter in done and cancel_event.is_set():
-                    if not llm_task.done():
-                        llm_task.cancel()
-                        await asyncio.gather(llm_task, return_exceptions=True)
-                    raise asyncio.CancelledError
-
-                # The LLM finished.
                 if llm_task.cancelled():
-                    raise asyncio.CancelledError
-                if llm_task.exception():
-                    # Cached-replay determinism: a read-only cache miss while
-                    # tools are still in flight means the live run never
-                    # consumed this step — a tool completion (or steering
-                    # event) superseded it mid-call and the loop re-issued the
-                    # turn with updated context, so no entry was ever
-                    # recorded. Mirror that outcome: discard the step and fall
-                    # back to the tool-wait block, which grants a fresh turn
-                    # once the superseding event lands. The unanswered
-                    # dispatch left the transcript as it found it, so that
-                    # turn is the one the live run recorded. With nothing in
-                    # flight the miss is genuinely fatal and propagates.
-                    if _is_cache_miss_error(llm_task.exception()) and (
-                        tools_data.pending
-                    ):
-                        llm_turn_required = False
+                    if not cancel_event.is_set() and _request_cancel_queued():
+                        # The drain at the top ends the request.
                         continue
+                    raise asyncio.CancelledError
+                if llm_task.exception() is not None:
                     try:
                         llm_task.result()
                     except Exception as e:
                         raise Exception(
                             f"LLM call failed: {type(e).__name__}: {e}",
                         ) from e
-
                 _full_completion = llm_task.result()
+                # A stop that came with the answer still wins: nothing the
+                # answer asks for is run.
+                if cancel_event.is_set():
+                    raise asyncio.CancelledError
 
-            else:
-                # ––––– blocking mode: the LLM step runs to completion –––––
-                try:
-                    _gen_kwargs = {
-                        "return_full_completion": True,
-                        "tools": tmp_tools,
-                        "tool_choice": tool_choice_mode,
-                        "stateful": True,
-                        "prompt_caching": prompt_caching,
-                    }
-                    if max_parallel_tool_calls is not None:
-                        _gen_kwargs["parallel_tool_calls"] = max_parallel_tool_calls > 1
-                    elif _policy_eager:
-                        _gen_kwargs["parallel_tool_calls"] = True
-
-                    # See the matching comment at the interrupt-mode dispatch
-                    # above: clearing here (not at step completion) means the
-                    # prompt this dispatch is about to snapshot provably
-                    # contains everything ingested so far.
-                    deferred_llm_turn = False
-
-                    _full_completion = await generate_with_preprocess(
-                        client,
-                        _apply_reasoning_model_compat(_gen_kwargs, tool_choice_mode),
-                        **_gen_kwargs,
+            # A reply the provider marked as failed (OpenRouter's HTTP 200
+            # with a choice error, which LiteLLM maps to finish_reason
+            # "stop") is not the model's turn: it is dropped and the same
+            # turn is sent again, a bounded number of times.
+            _provider_error = _completion_provider_error(_full_completion)
+            if _provider_error is not None:
+                _failed = (client.messages or [None])[-1]
+                if (
+                    _provider_error_retries < _PROVIDER_ERROR_RETRIES
+                    and isinstance(_failed, dict)
+                    and _failed.get("role") == "assistant"
+                    and is_mutable(client, _failed)
+                ):
+                    _provider_error_retries += 1
+                    runtime_state.provider_error_retries += 1
+                    client.messages.pop()
+                    _backoff = _PROVIDER_ERROR_BACKOFF_S * 2 ** (
+                        _provider_error_retries - 1
                     )
-                    if log_steps:
-                        logger.emit_thinking_fallback()
-                except Exception as e:
-                    raise Exception(
-                        f"LLM call failed: {type(e).__name__}: {e}",
-                    ) from e
+                    logger.error(
+                        f"Provider error in the model's reply ({_provider_error}); "
+                        f"sending the turn again in {_backoff:g}s (retry "
+                        f"{_provider_error_retries}/{_PROVIDER_ERROR_RETRIES})",
+                        prefix=ICONS["early_exit"],
+                    )
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(cancel_event.wait(), _backoff)
+                    continue
+                logger.error(
+                    f"Provider error in the model's reply ({_provider_error}); "
+                    "retries spent, the reply is kept as it is",
+                    prefix=ICONS["early_exit"],
+                )
+            _provider_error_retries = 0
 
-            # Normally the step's assistant message is the tail. Patient mode
-            # ingests tool results after it lands, which can append a synthetic
-            # status pair on top, so it captures the message itself.
-            msg = (
-                _patient_asst_msg
-                if _patient_asst_msg is not None
-                else client.messages[-1]
-            )
+            # The step's assistant message is the tail.
+            msg = client.messages[-1]
+            # UNIFY_REPLY_CHANNEL=code+text: a text reply is recorded as one.
+            if (
+                _reply_slot is not None
+                and not msg.get("tool_calls")
+                and _cell_reply.SOURCE_KEY not in msg
+            ):
+                _cell_reply.stamp(msg, source="text", from_value=False)
             await to_event_bus(msg, cfg)
 
             # Update context threshold from the LLM response usage data.
@@ -2692,6 +2767,30 @@ async def async_tool_loop_inner(
                             0.7,
                             _max_input_tokens,
                         )
+                        if runtime_state.compaction_unmeasured:
+                            runtime_state.compaction_unmeasured = False
+                            if _continue and _ineffective_threshold_compaction(
+                                _over_threshold,
+                                _usage.prompt_tokens,
+                            ):
+                                _ineffective_end = True
+                        if runtime_state.keep_prefix_unmeasured:
+                            runtime_state.keep_prefix_unmeasured = False
+                            if _over_threshold:
+                                runtime_state.keep_prefix_shipped_next = True
+                                logger.info(
+                                    "the first call after a keep-prefix "
+                                    "compaction is still over the threshold "
+                                    f"({_usage.prompt_tokens} prompt tokens); "
+                                    "the next compaction rebuilds as shipped",
+                                )
+
+            with suppress(Exception):
+                _cache_discipline.log_cache_use(
+                    client,
+                    _full_completion,
+                    label=cfg.label,
+                )
 
             # The activity timeout catches hung tools, not slow inference
             # (providers have their own timeouts), so an LLM response resets it.
@@ -2707,20 +2806,17 @@ async def async_tool_loop_inner(
                     )
 
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
-            llm_turn_required = False
             runtime_state.step_index += 1
 
-            # ── E. Launch any new tool calls ─────────────────────────────
+            # ── E. Run the turn's tool calls ─────────────────────────────
             # Each call's arguments are JSON-parsed once here, the loop-owned
-            # tools (response submission, compress_context, wait, steer,
-            # ask_about_completed_tool) are handled inline, and every other
-            # call is scheduled as a Task whose metadata lets its result be
-            # inserted at the right chronological position. Control then
-            # jumps back to branch A to wait for the first completion.
+            # tools (response submission, compress_context) are handled
+            # inline, and every other call runs to completion before the
+            # next one starts, so the results land in call order.
             _persist_response_emitted = False
             _persist_response_content = None  # captured by send_response for surfacing
 
@@ -2774,8 +2870,47 @@ async def async_tool_loop_inner(
                     )
                     await _msg_dispatcher.append_msgs([sys_notice])
 
-                for idx, call in enumerate(msg["tool_calls"]):  # capture index
+                assistant_meta.setdefault(id(msg), {"results_count": 0})
+                _turn_calls = list(msg["tool_calls"])
+                _interrupted: Optional[str] = None
+                for idx, call in enumerate(_turn_calls):  # capture index
                     name = call["function"]["name"]
+
+                    # The step limit counts every message, so this turn's
+                    # own message or its earlier calls' results can reach
+                    # it: the calls from that point are not run, and the
+                    # limit applies at the top of the loop as at any other
+                    # boundary.
+                    if timer.has_exceeded_msgs():
+                        _limit = f"max_steps ({max_steps}) exceeded"
+                        for later in _turn_calls[idx:]:
+                            if not _call_answered(later.get("id")):
+                                await _answer_call(
+                                    msg,
+                                    later,
+                                    f"Not run: the step limit ({_limit}) was "
+                                    "reached before this call started.",
+                                )
+                        break
+
+                    # The session's tool list is fixed, so a tool this turn
+                    # does not allow is refused here, by rule, instead of
+                    # having been left out of the request. A refused call is
+                    # not recorded as called: it must not satisfy a policy
+                    # gate.
+                    if name not in _turn_available:
+                        await _answer_call(
+                            msg,
+                            call,
+                            _cache_discipline.masked_tool_refusal(
+                                name,
+                                advertised=_session_tool_names,
+                                available=_turn_available,
+                                rule=(_turn_mask_rules.get(name) or _turn_mask_default),
+                            ),
+                        )
+                        continue
+
                     runtime_state.called_tools.append(name)
 
                     # Arguments arrive as a JSON string or a dict. A model can
@@ -2791,10 +2926,8 @@ async def async_tool_loop_inner(
                             args = json.loads(_raw_args)
                         except ValueError as exc:
                             logger.error(
-                                "Malformed tool-call arguments for %s (%d chars): %s",
-                                name,
-                                len(_raw_args),
-                                exc,
+                                f"Malformed tool-call arguments for {name} "
+                                f"({len(_raw_args)} chars): {exc}",
                             )
                             refusal = (
                                 f"⚠️ Error: the arguments for '{name}' were not "
@@ -2808,17 +2941,7 @@ async def async_tool_loop_inner(
                                 args=_raw_args,
                                 message=refusal,
                             )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                create_tool_call_message(
-                                    name=name,
-                                    call_id=call["id"],
-                                    content=refusal,
-                                ),
-                                client,
-                                _msg_dispatcher,
-                            )
+                            await _answer_call(msg, call, refusal)
                             stop_reason = consecutive_failures.stop_reason()
                             if stop_reason:
                                 raise RuntimeError(stop_reason)
@@ -2833,33 +2956,6 @@ async def async_tool_loop_inner(
                         and _rf_norm is not None
                     )
                     if _is_response_tool:
-                        if tools_data.pending:
-                            # Execution-time refusal (schema presence is
-                            # unconditional; see the injection comment above).
-                            # The exits are named explicitly: this fires under
-                            # tool_choice="required" (has_pending_tools forces
-                            # it), so a refusal with no way out would be a
-                            # retry loop.
-                            tool_msg = create_tool_call_message(
-                                name=name,
-                                call_id=call["id"],
-                                content=(
-                                    f"⚠️ Cannot call '{name}': "
-                                    f"{len(tools_data.pending)} tool call(s) still "
-                                    "running. Call `wait` to let them finish, or "
-                                    'steer(call_id=<id>, action="stop") one of '
-                                    "them if it's no longer needed — do not retry "
-                                    f"'{name}' until nothing is pending."
-                                ),
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
                         try:
                             payload = (
                                 args.get("answer") if isinstance(args, dict) else None
@@ -2875,18 +2971,10 @@ async def async_tool_loop_inner(
                             else:
                                 payload_for_return = validated_payload
 
-                            tool_msg = create_tool_call_message(
-                                name=name,
-                                call_id=call["id"],
-                                content=_dumps(payload_for_return, indent=4),
-                            )
-
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
+                            await _answer_call(
                                 msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
+                                call,
+                                _dumps(payload_for_return, indent=4),
                             )
 
                             if persist:
@@ -2895,951 +2983,56 @@ async def async_tool_loop_inner(
                                 _persist_response_content = json.dumps(
                                     payload_for_return,
                                 )
+                                _interrupted = "response"
                                 break  # exit the for-loop over tool_calls
                             return json.dumps(payload_for_return)
                         except Exception as _exc:
-                            tool_msg = create_tool_call_message(
-                                name=name,
-                                call_id=call["id"],
-                                content=(
-                                    "⚠️ Validation failed – proceeding with standard formatting step.\n"
-                                    + str(_exc)
-                                ),
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
+                            await _answer_call(
                                 msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
+                                call,
+                                "⚠️ Validation failed – proceeding with standard formatting step.\n"
+                                + str(_exc),
                             )
                             continue
 
                     # A response tool call with no response_format configured is
                     # only reachable when the model hallucinates it.
                     _is_generic_response = (
-                        name in ("final_response", "send_response")
-                        and _rf_norm is None
-                        and multi_handle_coordinator is None
+                        name in ("final_response", "send_response") and _rf_norm is None
                     )
                     if _is_generic_response:
                         answer = args.get("answer") if isinstance(args, dict) else None
                         if answer is None:
                             answer = str(args) if args else ""
 
-                        if tools_data.pending and not persist:
-                            logger.info(
-                                f"{name} called while {len(tools_data.pending)} "
-                                f"task(s) are in-flight. Auto-cancelling to terminate.",
-                                prefix=ICONS["auto_cancel"],
-                            )
-                            await tools_data.cancel_pending_tasks()
-
-                        tool_msg = create_tool_call_message(
-                            name=name,
-                            call_id=call["id"],
-                            content=answer,
-                        )
-
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
-                            msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
-                        )
+                        await _answer_call(msg, call, answer)
 
                         if persist:
                             _persist_response_emitted = True
                             _persist_response_content = answer
+                            _interrupted = "response"
                             break
                         return answer
 
-                    # Multi-handle response tool.
-                    _is_multi_response = (
-                        name == "final_response"
-                        and multi_handle_coordinator is not None
-                    )
-                    if _is_multi_response:
-                        try:
-                            request_id = args.get("request_id")
-                            answer = args.get("answer")
-
-                            if request_id is None:
-                                raise ValueError(
-                                    "Missing 'request_id' in tool arguments.",
-                                )
-                            if answer is None:
-                                raise ValueError("Missing 'answer' in tool arguments.")
-
-                            request_id = int(request_id)
-
-                            error_msg = multi_handle_coordinator.validate_request_id(
-                                request_id,
-                            )
-                            if error_msg:
-                                tool_msg = create_tool_call_message(
-                                    name=name,
-                                    call_id=call["id"],
-                                    content=f"⚠️ Error: {error_msg}",
-                                )
-                                await insert_tool_message_after_assistant(
-                                    assistant_meta,
-                                    msg,
-                                    tool_msg,
-                                    client,
-                                    _msg_dispatcher,
-                                )
-                                continue
-
-                            multi_handle_coordinator.complete_request(
-                                request_id,
-                                str(answer),
-                            )
-
-                            tool_msg = create_tool_call_message(
-                                name=name,
-                                call_id=call["id"],
-                                content=f"Request {request_id} completed successfully.",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-
-                            logger.info(
-                                f"Request {request_id} completed with answer: {answer[:100]}{'...' if len(answer) > 100 else ''}",
-                                prefix=ICONS["completed"],
-                            )
-
-                            # should_terminate() at the next iteration ends the
-                            # loop once every request is done.
-                            continue
-
-                        except Exception as _exc:
-                            tool_msg = create_tool_call_message(
-                                name=name,
-                                call_id=call["id"],
-                                content=f"⚠️ Error processing {name}: {_exc}",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
-
-                    # Multi-handle `ask_user_clarification` tool.
-                    if (
-                        name == "ask_user_clarification"
-                        and multi_handle_coordinator is not None
-                    ):
-                        try:
-                            request_id = args.get("request_id")
-                            question = args.get("question")
-
-                            if request_id is None:
-                                raise ValueError(
-                                    "Missing 'request_id' in tool arguments.",
-                                )
-                            if question is None:
-                                raise ValueError(
-                                    "Missing 'question' in tool arguments.",
-                                )
-
-                            request_id = int(request_id)
-
-                            multi_handle_coordinator.route_clarification_to_request(
-                                request_id,
-                                {
-                                    "type": "clarification",
-                                    "request_id": request_id,
-                                    "question": str(question),
-                                },
-                            )
-
-                            tool_msg = create_tool_call_message(
-                                name="ask_user_clarification",
-                                call_id=call["id"],
-                                content=f"Clarification question sent to request {request_id}. Waiting for user response.",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
-
-                        except Exception as _exc:
-                            tool_msg = create_tool_call_message(
-                                name="ask_user_clarification",
-                                call_id=call["id"],
-                                content=f"⚠️ Error: {_exc}",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
-
                     if name == "compress_context":
-                        tool_msg = create_tool_call_message(
-                            name=name,
-                            call_id=call["id"],
-                            content=(
-                                "Compression initiated. Ending current loop "
-                                "to restart with compressed context."
-                            ),
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
+                        await _answer_call(
                             msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
+                            call,
+                            "Compression initiated. Ending current loop "
+                            "to restart with compressed context.",
                         )
+                        if _continue:
+                            runtime_state.loop_stop_carry = _loop_stop
                         return _COMPRESSION_SIGNAL
-
-                    # Static helpers: `wait` acknowledges without scheduling;
-                    # `steer` dispatches on structured args (stop/interject/
-                    # pause/resume/clarify/call/ask).
-                    lname = str(name or "").strip()
-                    lname_cf = lname.casefold()
-
-                    if lname_cf == "wait" and any(
-                        getattr(_inf, "waiting_for_clarification", False)
-                        for _inf in tools_data.info.values()
-                    ):
-                        # Execution-time deadlock guard: `wait` is always in the
-                        # schema (stable-schema design), so waiting on a tool
-                        # that is itself waiting for an answer is refused here.
-                        _pending_clar_ids = [
-                            _inf.call_id
-                            for _inf in tools_data.info.values()
-                            if getattr(_inf, "waiting_for_clarification", False)
-                        ]
-                        tool_msg = create_tool_call_message(
-                            name="wait",
-                            call_id=call["id"],
-                            content=(
-                                "⚠️ Refused: a clarification is pending on "
-                                f"{_pending_clar_ids} — answer it via "
-                                'steer(call_id=<id>, action="clarify", payload=<answer>) '
-                                "before waiting."
-                            ),
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
-                            msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
-                        )
-                        continue
-
-                    if lname_cf == "wait":
-                        # With pending tools the wait call is pruned to avoid
-                        # transcript clutter; the loop waits for them anyway.
-                        if tools_data.pending:
-                            try:
-                                logger.info(
-                                    "Assistant chose `wait` – no-op; not persisting to transcript.",
-                                    prefix=ICONS["wait"],
-                                )
-                            except Exception:
-                                pass
-
-                            with suppress(Exception):
-                                from .messages import (
-                                    prune_wait_tool_call as _prune_wait,
-                                )
-
-                                await _prune_wait(
-                                    msg,
-                                    call["id"],
-                                    client=client,
-                                    assistant_meta=assistant_meta,
-                                    msg_dispatcher=_msg_dispatcher,
-                                )
-
-                            # The assistant message containing this wait() was
-                            # published to the EventBus before it could be
-                            # inspected, so a matching tool result lets the
-                            # frontend resolve the pending tool-call row.
-                            with suppress(Exception):
-                                await to_event_bus(
-                                    create_tool_call_message(
-                                        "wait",
-                                        call["id"],
-                                        "",
-                                    ),
-                                    cfg,
-                                )
-
-                            # No immediate LLM turn after a wait: the loop now
-                            # waits for pending tools or interjections.
-                            continue
-
-                        # With no pending tools, pruning would loop forever on
-                        # the cache (same conversation → same cached response).
-                        # A factual tool response changes the conversation
-                        # state, prescribes nothing, and stays accurate even if
-                        # interjections arrive later.
-                        try:
-                            logger.info(
-                                "Assistant called `wait` with no pending tools.",
-                                prefix=ICONS["wait"],
-                            )
-                        except Exception:
-                            pass
-
-                        tool_msg = create_tool_call_message(
-                            name="wait",
-                            call_id=call["id"],
-                            content="No tasks are currently running.",
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
-                            msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
-                        )
-                        continue
-
-                    elif lname_cf == "steer":
-                        # Unified steering dispatcher keyed on (call_id, action).
-                        # `args` is the parsed form from above (malformed JSON
-                        # was already refused), so it is reused directly.
-                        _target_call_id = args.get("call_id")
-                        _action = str(args.get("action") or "").strip().lower()
-                        _payload = args.get("payload")
-                        _method = args.get("method")
-
-                        async def _steer_reply(content: str) -> None:
-                            _tm = create_tool_call_message(
-                                name="steer",
-                                call_id=call["id"],
-                                content=content,
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                _tm,
-                                client,
-                                _msg_dispatcher,
-                            )
-
-                        if not isinstance(_target_call_id, str) or not _target_call_id:
-                            await _steer_reply(
-                                "⚠️ steer() requires a string `call_id` identifying "
-                                "which call to steer.",
-                            )
-                            continue
-
-                        tgt_task, tgt_info = tools_data.resolve_call_id(
-                            _target_call_id,
-                        )
-
-                        if tgt_task is None or tgt_info is None:
-                            # "Already completed" and "never existed" are told
-                            # apart so the model can self-correct.
-                            _completed_name = tools_data._completed_tool_names.get(
-                                _target_call_id,
-                            )
-                            if _completed_name is not None:
-                                if _action == "ask":
-                                    _err = (
-                                        f"call_id={_target_call_id!r} "
-                                        f"({_completed_name}) has already completed "
-                                        "and is no longer live. Use "
-                                        f'ask_about_completed_tool(tool_id="{_target_call_id}", '
-                                        "question=...) instead."
-                                    )
-                                else:
-                                    _err = (
-                                        f"Cannot {_action or '<missing action>'} "
-                                        f"call_id={_target_call_id!r} ({_completed_name}): "
-                                        "it has already completed."
-                                    )
-                            else:
-                                _err = (
-                                    f"No live call found for call_id={_target_call_id!r}. "
-                                    "It may never have existed, or is mistyped — check "
-                                    "the call_id shown on the original tool call or on its "
-                                    "[steerable ...]/[progress ...]/[clarification ...] "
-                                    "tail messages."
-                                )
-                            await _steer_reply(f"⚠️ {_err}")
-                            continue
-
-                        _handle = tgt_info.handle
-                        _orig_fn = tgt_info.name
-                        _orig_arg_json = tgt_info.call_dict["function"]["arguments"]
-                        _pretty_name = (
-                            f"steer:{_action or '?'} {_orig_fn}({_orig_arg_json})"
-                        )
-
-                        if _action == "stop":
-                            with suppress(Exception):
-                                await _dispatch_steering_to_child(
-                                    "stop",
-                                    {"reason": _payload} if _payload else {},
-                                    tgt_info,
-                                )
-                            if not tgt_task.done():
-                                tgt_task.cancel()
-                            tools_data.pop_task(tgt_task)
-                            tool_msg = create_tool_call_message(
-                                name=_pretty_name,
-                                call_id=call["id"],
-                                content=f"The call [{_target_call_id}] has been stopped successfully.",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            with suppress(Exception):
-                                await to_event_bus(
-                                    create_tool_call_message(
-                                        _orig_fn,
-                                        _target_call_id,
-                                        json.dumps({"status": "stopped"}),
-                                    ),
-                                    cfg,
-                                )
-                            continue
-
-                        elif _action == "interject":
-                            if not tgt_info.is_interjectable:
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) does "
-                                    "not accept interjections.",
-                                )
-                                continue
-
-                            # _parent_chat_context_cont is forwarded when the
-                            # target's own interject() accepts it and the
-                            # target originally opted into context; steer's
-                            # include_parent_context field is the opt-out.
-                            _interject_accepts_ctx_cont = False
-                            if _handle is not None and hasattr(_handle, "interject"):
-                                with suppress(Exception):
-                                    _ij_sig = inspect.signature(_handle.interject)
-                                    _ij_has_varkw = any(
-                                        p.kind == inspect.Parameter.VAR_KEYWORD
-                                        for p in _ij_sig.parameters.values()
-                                    )
-                                    _interject_accepts_ctx_cont = (
-                                        "_parent_chat_context_cont"
-                                        in _ij_sig.parameters
-                                        or _ij_has_varkw
-                                    )
-
-                            _interject_extra_kwargs, _ = compute_context_injection(
-                                args={
-                                    "include_parent_chat_context_cont": args.get(
-                                        "include_parent_context",
-                                        True,
-                                    ),
-                                },
-                                propagate_chat_context=propagate_chat_context,
-                                context_state=context_state,
-                                client_messages=client.messages,
-                                call_id=f"interject_{_target_call_id}_{call['id']}",
-                                accepts_parent_ctx=False,
-                                accepts_parent_ctx_cont=_interject_accepts_ctx_cont,
-                                target_context_opted_in=tgt_info.context_opted_in,
-                                is_continuation_only=True,
-                            )
-                            _interject_payload: Dict[str, Any] = {"content": _payload}
-                            if "_parent_chat_context_cont" in _interject_extra_kwargs:
-                                _interject_payload["_parent_chat_context_cont"] = (
-                                    _interject_extra_kwargs["_parent_chat_context_cont"]
-                                )
-
-                            with suppress(Exception):
-                                await _dispatch_steering_to_child(
-                                    "interject",
-                                    _interject_payload,
-                                    tgt_info,
-                                )
-                            tool_msg = create_tool_call_message(
-                                name=_pretty_name,
-                                call_id=call["id"],
-                                content=f'Guidance "{_payload}" forwarded to the running tool.',
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
-
-                        elif _action in ("pause", "resume"):
-                            _cap = (
-                                _handle is not None
-                                and hasattr(
-                                    _handle,
-                                    "pause" if _action == "pause" else "resume",
-                                )
-                            ) or (tgt_info.pause_event is not None)
-                            if not _cap:
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) cannot "
-                                    f"be {_action}d.",
-                                )
-                                continue
-                            _paused_state = (
-                                get_handle_paused_state(_handle)
-                                if _handle is not None
-                                else None
-                            )
-                            if (
-                                _paused_state is None
-                                and tgt_info.pause_event is not None
-                                and hasattr(tgt_info.pause_event, "is_set")
-                            ):
-                                with suppress(Exception):
-                                    _paused_state = not tgt_info.pause_event.is_set()
-                            if _action == "pause" and _paused_state is True:
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) is "
-                                    "already paused.",
-                                )
-                                continue
-                            if _action == "resume" and _paused_state is not True:
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) is not "
-                                    "currently paused.",
-                                )
-                                continue
-                            with suppress(Exception):
-                                await _dispatch_steering_to_child(
-                                    _action,
-                                    {},
-                                    tgt_info,
-                                )
-                            _past = "paused" if _action == "pause" else "resumed"
-                            tool_msg = create_tool_call_message(
-                                name=_pretty_name,
-                                call_id=call["id"],
-                                content=f"The call [{_target_call_id}] has been {_past} successfully.",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            with suppress(Exception):
-                                await to_event_bus(
-                                    create_tool_call_message(
-                                        _orig_fn,
-                                        _target_call_id,
-                                        json.dumps({"status": _past}),
-                                    ),
-                                    cfg,
-                                )
-                            continue
-
-                        elif _action == "clarify":
-                            if tgt_info.clar_up_queue is None or not getattr(
-                                tgt_info,
-                                "waiting_for_clarification",
-                                False,
-                            ):
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) has no "
-                                    "pending clarification to answer right now.",
-                                )
-                                continue
-                            with suppress(Exception):
-                                await _dispatch_steering_to_child(
-                                    "clarify",
-                                    {"answer": _payload},
-                                    tgt_info,
-                                )
-                                tgt_info.waiting_for_clarification = False
-                            tool_reply_msg = create_tool_call_message(
-                                name=_pretty_name,
-                                call_id=call["id"],
-                                content=(
-                                    f"Clarification answer sent upstream: {_payload!r}\n"
-                                    "⏳ Waiting for the original tool to finish…"
-                                ),
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_reply_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            # The tool's eventual final result lands on this
-                            # reply, not the tool_reply_msg pending stub nor the
-                            # [clarification <call_id>] tail message that carried
-                            # the question (see record_clarification).
-                            tgt_info.clarify_placeholder = tool_reply_msg
-                            continue
-
-                        elif _action == "ask":
-                            if _handle is None or not hasattr(_handle, "ask"):
-                                await _steer_reply(
-                                    f"⚠️ call_id={_target_call_id!r} ({_orig_fn}) has no "
-                                    "ask capability.",
-                                )
-                                continue
-
-                            _ask_extra_kwargs, _ask_ctx_opted_in = (
-                                compute_context_injection(
-                                    args={
-                                        "include_parent_chat_context": args.get(
-                                            "include_parent_context",
-                                            False,
-                                        ),
-                                    },
-                                    propagate_chat_context=propagate_chat_context,
-                                    context_state=context_state,
-                                    client_messages=client.messages,
-                                    call_id=f"ask_{_target_call_id}_{call['id']}",
-                                    accepts_parent_ctx=True,
-                                    accepts_parent_ctx_cont=False,
-                                    is_continuation_only=False,
-                                )
-                            )
-                            _ask_kwargs: Dict[str, Any] = {"question": _payload}
-                            if "_parent_chat_context" in _ask_extra_kwargs:
-                                _ask_kwargs["_parent_chat_context"] = _ask_extra_kwargs[
-                                    "_parent_chat_context"
-                                ]
-
-                            async def _do_ask(_h=_handle, _kw=_ask_kwargs):
-                                return await forward_handle_call(
-                                    _h,
-                                    "ask",
-                                    _kw,
-                                    fallback_positional_keys=["question"],
-                                )
-
-                            _steer_call_dict = {
-                                "id": call["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": "steer",
-                                    "arguments": call["function"]["arguments"],
-                                },
-                            }
-                            _t = asyncio.create_task(
-                                _do_ask(),
-                                name="ToolCall_steer_ask",
-                            )
-                            tools_data.save_task(
-                                _t,
-                                ToolCallMetadata(
-                                    name=f"{_orig_fn}.ask",
-                                    call_id=call["id"],
-                                    assistant_msg=msg,
-                                    call_dict=_steer_call_dict,
-                                    call_idx=idx,
-                                    is_interjectable=False,
-                                    is_dynamic=True,
-                                    chat_context=_ask_extra_kwargs.get(
-                                        "_parent_chat_context",
-                                    ),
-                                    pause_event=None,
-                                    tool_schema={
-                                        "type": "function",
-                                        "function": {"name": "steer"},
-                                    },
-                                    llm_arguments=_ask_kwargs,
-                                    raw_arguments_json=(_payload or ""),
-                                    context_opted_in=_ask_ctx_opted_in,
-                                ),
-                            )
-                            continue
-
-                        elif _action == "call":
-                            if not _method:
-                                await _steer_reply(
-                                    '⚠️ action="call" requires a `method` name.',
-                                )
-                                continue
-                            _custom_methods = (
-                                DynamicToolFactory._discover_custom_public_methods(
-                                    _handle,
-                                )
-                                if _handle is not None
-                                else {}
-                            )
-                            if _method not in _custom_methods:
-                                await _steer_reply(
-                                    f"⚠️ No custom method {_method!r} on "
-                                    f"call_id={_target_call_id!r} ({_orig_fn}). "
-                                    f"Available: {sorted(_custom_methods)}",
-                                )
-                                continue
-
-                            _bound = _custom_methods[_method]
-                            try:
-                                _parsed_payload = (
-                                    json.loads(_payload) if _payload else {}
-                                )
-                                if not isinstance(_parsed_payload, dict):
-                                    raise ValueError(
-                                        "payload must be a JSON object string",
-                                    )
-                                inspect.signature(_bound).bind(**_parsed_payload)
-                            except Exception as _val_exc:
-                                await _steer_reply(
-                                    f"⚠️ Invalid payload for method={_method!r}: "
-                                    f"{_val_exc}. Expected a JSON object string "
-                                    f"matching signature {inspect.signature(_bound)}.",
-                                )
-                                continue
-
-                            _write_only = set(
-                                getattr(_handle, "write_only_methods", None) or [],
-                            ) | set(
-                                getattr(_handle, "write_only_tools", None) or [],
-                            )
-
-                            async def _invoke_custom(
-                                _m=_method,
-                                _h=_handle,
-                                _kw=_parsed_payload,
-                            ):
-                                return await forward_handle_call(_h, _m, _kw)
-
-                            if _method in _write_only:
-                                tool_msg = create_tool_call_message(
-                                    name=_pretty_name,
-                                    call_id=call["id"],
-                                    content=(
-                                        f"Operation {_method!r} acknowledged and "
-                                        "forwarded to the running tool."
-                                    ),
-                                )
-                                await insert_tool_message_after_assistant(
-                                    assistant_meta,
-                                    msg,
-                                    tool_msg,
-                                    client,
-                                    _msg_dispatcher,
-                                )
-                                with suppress(Exception):
-                                    asyncio.create_task(
-                                        _invoke_custom(),
-                                        name=f"ToolCall_steer_call_{_method}",
-                                    )
-                                continue
-
-                            _steer_call_dict = {
-                                "id": call["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": "steer",
-                                    "arguments": call["function"]["arguments"],
-                                },
-                            }
-                            _t = asyncio.create_task(
-                                _invoke_custom(),
-                                name=f"ToolCall_steer_call_{_method}",
-                            )
-                            tools_data.save_task(
-                                _t,
-                                ToolCallMetadata(
-                                    name=f"{_orig_fn}.{_method}",
-                                    call_id=call["id"],
-                                    assistant_msg=msg,
-                                    call_dict=_steer_call_dict,
-                                    call_idx=idx,
-                                    is_interjectable=False,
-                                    is_dynamic=True,
-                                    chat_context=None,
-                                    pause_event=None,
-                                    tool_schema={
-                                        "type": "function",
-                                        "function": {"name": "steer"},
-                                    },
-                                    llm_arguments=_parsed_payload,
-                                    raw_arguments_json=(_payload or "{}"),
-                                    context_opted_in=False,
-                                ),
-                            )
-                            continue
-
-                        else:
-                            await _steer_reply(
-                                f"⚠️ Unknown action {_action!r}. Valid actions: "
-                                "stop, interject, pause, resume, clarify, call, ask.",
-                            )
-                            continue
 
                     # Over-quota calls were already pruned above; this guards
                     # the remainder.
                     if tools_data.has_exceeded_quota_for_tool(name):
-                        continue
-
-                    # At the per-tool concurrency cap the call is refused with
-                    # a tool-error message and never scheduled.
-                    if tools_data.has_exceeded_concurrent_limit_for_tool(name):
-                        tool_msg = create_tool_call_message(
-                            name=name,
-                            call_id=call["id"],
-                            content=(
-                                f"⚠️ Cannot start '{name}': "
-                                f"max_concurrent={tools_data.normalized[name].max_concurrent} "
-                                "already reached — at capacity. Use `wait` for an "
-                                "existing call to finish, or "
-                                'steer(call_id=<id>, action="stop") one before retrying.'
-                            ),
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
+                        await _answer_call(
                             msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
-                        )
-                        continue
-
-                    elif lname_cf == "ask_about_completed_tool":
-                        # The docstring is frozen; askable ids arrive via
-                        # "[askable <call_id>]" tail messages
-                        # (ToolsData.record_tool_completed_askable).
-                        _tool_id = (
-                            args.get("tool_id") if isinstance(args, dict) else None
-                        )
-                        _question = (
-                            args.get("question") if isinstance(args, dict) else None
-                        )
-
-                        _entry = (
-                            tools_data._completed_askable_tools.get(_tool_id)
-                            if isinstance(_tool_id, str)
-                            else None
-                        )
-                        if _entry is None:
-                            _completed_name = (
-                                tools_data._completed_tool_names.get(_tool_id)
-                                if isinstance(_tool_id, str)
-                                else None
-                            )
-                            if _completed_name is not None:
-                                _err = (
-                                    f"Cannot ask about tool_id={_tool_id!r} "
-                                    f"({_completed_name}). This tool completed "
-                                    "successfully but was not steerable — it "
-                                    "executed as a direct function call with no "
-                                    "inner reasoning trajectory to inspect. Its "
-                                    "result is already visible in the outer "
-                                    "transcript above."
-                                )
-                            else:
-                                _available = list(
-                                    tools_data._completed_askable_tools.keys(),
-                                )
-                                _err = (
-                                    f"No tool found with tool_id={_tool_id!r}. "
-                                    "This ID does not match any completed tool "
-                                    "call. Available tool_ids for retrospective "
-                                    f"inspection: {_available}"
-                                )
-                            tool_msg = create_tool_call_message(
-                                name="ask_about_completed_tool",
-                                call_id=call["id"],
-                                content=f"⚠️ {_err}",
-                            )
-                            await insert_tool_message_after_assistant(
-                                assistant_meta,
-                                msg,
-                                tool_msg,
-                                client,
-                                _msg_dispatcher,
-                            )
-                            continue
-
-                        _completed_handle = _entry.get("handle")
-                        _aact_extra_kwargs, _aact_ctx_opted_in = (
-                            compute_context_injection(
-                                args={},
-                                propagate_chat_context=propagate_chat_context,
-                                context_state=context_state,
-                                client_messages=client.messages,
-                                call_id=f"ask_{_tool_id}_{call['id']}",
-                                accepts_parent_ctx=True,
-                                accepts_parent_ctx_cont=False,
-                                is_continuation_only=False,
-                            )
-                        )
-                        _aact_kwargs: Dict[str, Any] = {"question": _question}
-                        if "_parent_chat_context" in _aact_extra_kwargs:
-                            _aact_kwargs["_parent_chat_context"] = _aact_extra_kwargs[
-                                "_parent_chat_context"
-                            ]
-
-                        async def _do_completed_ask(
-                            _h=_completed_handle,
-                            _kw=_aact_kwargs,
-                        ):
-                            return await forward_handle_call(
-                                _h,
-                                "ask",
-                                _kw,
-                                fallback_positional_keys=["question"],
-                            )
-
-                        _aact_call_dict = {
-                            "id": call["id"],
-                            "type": "function",
-                            "function": {
-                                "name": "ask_about_completed_tool",
-                                "arguments": call["function"]["arguments"],
-                            },
-                        }
-                        _t = asyncio.create_task(
-                            _do_completed_ask(),
-                            name="ToolCall_ask_about_completed_tool",
-                        )
-                        tools_data.save_task(
-                            _t,
-                            ToolCallMetadata(
-                                name=f"{_entry.get('name', '?')}.ask",
-                                call_id=call["id"],
-                                assistant_msg=msg,
-                                call_dict=_aact_call_dict,
-                                call_idx=idx,
-                                is_interjectable=False,
-                                is_dynamic=True,
-                                chat_context=_aact_extra_kwargs.get(
-                                    "_parent_chat_context",
-                                ),
-                                pause_event=None,
-                                tool_schema={
-                                    "type": "function",
-                                    "function": {"name": "ask_about_completed_tool"},
-                                },
-                                llm_arguments=_aact_kwargs,
-                                raw_arguments_json=call["function"]["arguments"],
-                                context_opted_in=_aact_ctx_opted_in,
-                            ),
+                            call,
+                            f"⚠️ Error: '{name}' was not run: its call limit is "
+                            "reached.",
                         )
                         continue
 
@@ -3848,163 +3041,71 @@ async def async_tool_loop_inner(
                     # tool response so the transcript stays valid; an
                     # unresolved tool_call would make later LLM calls fail.
                     if name not in policy_tools_norm:
-                        tool_msg = create_tool_call_message(
-                            name=name,
-                            call_id=call["id"],
-                            content=(
-                                f"⚠️ Error: Tool '{name}' is not available. "
-                                "The tool may have been removed or does not exist. "
-                                "Please proceed without using this tool."
-                            ),
-                        )
-                        await insert_tool_message_after_assistant(
-                            assistant_meta,
+                        await _answer_call(
                             msg,
-                            tool_msg,
-                            client,
-                            _msg_dispatcher,
+                            call,
+                            f"⚠️ Error: Tool '{name}' is not available. "
+                            "The tool may have been removed or does not exist. "
+                            "Please proceed without using this tool.",
                         )
                         continue
 
-                    await tools_data.schedule_base_tool_call(
-                        msg,
-                        name=name,
-                        args_json=call["function"]["arguments"],
-                        call_id=call["id"],
-                        call_idx=idx,
-                        context_state=context_state,
-                        propagate_chat_context=propagate_chat_context,
-                        assistant_meta=assistant_meta,
-                        msg_dispatcher=_msg_dispatcher,
-                        initial_paused=not pause_event.is_set(),
-                    )
+                    _status = await _run_tool_call(msg, call, idx)
+                    if _status is not None:
+                        await _interrupt_turn(
+                            msg,
+                            _turn_calls[idx + 1 :],
+                            _interrupt_reason(_status),
+                        )
+                        _interrupted = _status
+                        break
 
-                if _persist_response_emitted:
-                    pass  # fall through to section F → persist wait
+                if _interrupted == "response":
+                    # The turn's response is sent; a call after it never runs.
+                    for later in _turn_calls[idx + 1 :]:
+                        if not _call_answered(later.get("id")):
+                            await _answer_call(
+                                msg,
+                                later,
+                                "Not run: the response was sent before this "
+                                "call started.",
+                            )
+                elif _interrupted == "timeout":
+                    if await _timeout_ends_request():
+                        continue
+                    return await _timeout_limit()
                 else:
-                    assistant_meta[id(msg)] = {
-                        "results_count": 0,
-                    }
-
-                    # Placeholder tool replies go in immediately so API
-                    # ordering holds even if an interjection arrives instantly.
-                    try:
-                        await ensure_placeholders_for_pending(
-                            assistant_msg=msg,
-                            tools_data=tools_data,
-                            assistant_meta=assistant_meta,
-                            client=client,
-                            msg_dispatcher=_msg_dispatcher,
-                            time_ctx=time_ctx,
-                        )
-                    except Exception as _ph_exc:
-                        logger.error(
-                            f"Failed to insert immediate placeholders: {_ph_exc!r}",
-                        )
-
-                    # Eager policies: if gates are still unsatisfied after the
-                    # calls just scheduled, grant another LLM turn now
-                    # (overlapping in-flight tools) instead of waiting. The
-                    # re-evaluation uses the updated called_tools so eagerness
-                    # ends as soon as the policy stops requesting it, and only
-                    # runs when this turn was already eager: non-eager policies
-                    # must not get an extra same-step callback.
-                    if tool_policy is not None and _policy_eager:
-                        try:
-                            _eager_snapshot = {
-                                n: s.fn for n, s in tools_data.normalized.items()
-                            }
-                            if _policy_accepts_history:
-                                _eager_result = tool_policy(
-                                    runtime_state.step_index,
-                                    _eager_snapshot,
-                                    list(runtime_state.called_tools),
-                                )
-                            else:
-                                _eager_result = tool_policy(
-                                    runtime_state.step_index,
-                                    _eager_snapshot,
-                                )
-                            _, _, _still_eager = _parse_tool_policy_result(
-                                _eager_result,
-                            )
-                            if _still_eager:
-                                llm_turn_required = True
-                        except Exception as _eager_exc:
-                            logger.error(
-                                f"tool_policy eager re-check failed: {_eager_exc!r}",
-                            )
-
-                    continue  # finished scheduling tools, back to the very top
+                    # Every call has its result (a cancelled request is ended
+                    # at the next boundary): back to the very top.
+                    continue
 
             # ── F. No new tool calls ─────────────────────────────────────
-            # Three cases reach here:
-            #   • pending non-empty, not all blocked on clarification →
-            #     older tools are still in flight (persist mode loops back
-            #     to wait; otherwise they are cancelled and the text wins).
-            #   • pending non-empty, all blocked on clarification → the LLM
-            #     ended without answering; the blocked tasks are cancelled
-            #     so the loop exits instead of deadlocking.
-            #   • pending empty → a plain assistant message; return it.
-            if tools_data.pending:
-                blocked_on_clar = [
-                    t
-                    for t in tools_data.pending
-                    if getattr(
-                        tools_data.info.get(t),
-                        "waiting_for_clarification",
-                        False,
-                    )
-                ]
-                not_blocked = [
-                    t for t in tools_data.pending if t not in blocked_on_clar
-                ]
-
-                if blocked_on_clar and not not_blocked:
-                    logger.info(
-                        f"LLM returned content while {len(blocked_on_clar)} task(s) "
-                        f"await clarification. Cancelling blocked tasks to exit.",
-                        prefix=ICONS["auto_cancel"],
-                    )
-                    for t in blocked_on_clar:
-                        t.cancel()
-                    await asyncio.gather(*blocked_on_clar, return_exceptions=True)
-                    for t in blocked_on_clar:
-                        tools_data.pending.discard(t)
-                    # Fall through to return the final answer
-                else:
-                    if persist:
-                        # A bare text response never cancels in-flight tools
-                        # in persist mode; branch A races tool completions,
-                        # notifications, interjections and cancellation.
-                        continue
-                    # A text-only response with tools in flight is a valid
-                    # termination signal.
-                    logger.info(
-                        f"LLM returned text-only response while {len(not_blocked)} "
-                        f"task(s) are in-flight. Auto-cancelling to terminate.",
-                        prefix=ICONS["auto_cancel"],
-                    )
-                    await tools_data.cancel_pending_tasks()
-                    # Fall through to return the final answer
-
-            # A patient interjection from the last LLM step, or anything still
-            # queued, is processed before returning.
-            try:
-                if deferred_llm_turn or not interject_queue.empty():
-                    deferred_llm_turn = False
-                    continue  # drain interjections at top-of-loop; grants one extra LLM turn
-            except Exception:
-                pass
+            # A plain assistant message (or the response a persistent loop's
+            # response tool sent): nothing is running. A message the
+            # requester sent during the model call is part of the request
+            # in a loop that ends here, so the model gets a turn for it; a
+            # persistent loop answers this request first and takes the
+            # message as its next one when it parks.
+            if not persist and _queued_message():
+                continue
 
             if timer.has_exceeded_time():
-                return await _handle_limit_reached(
-                    f"timeout ({timeout}s) exceeded",
-                )
+                if await _timeout_ends_request():
+                    continue
+                return await _timeout_limit()
 
-            if timer.has_exceeded_msgs():
+            # UNIFY_STEP_CAP_COMPACT: a reply given at the limit is the
+            # request's answer; a loop that can compact goes on to give it.
+            if timer.has_exceeded_msgs() and not _can_compact_at_step_limit():
+                if _step_cap_reply and persist:
+                    await _end_request_at_step_limit()
+                    _persist_response_content = None
+                    _persist_response_emitted = False
+                    continue
                 return await _handle_limit_reached(
                     f"max_steps ({max_steps}) exceeded",
+                    _request_draft() if _step_cap_reply else None,
+                    last_word=_step_cap_last_word,
                 )
 
             final_content = extract_substantive_text(msg["content"])
@@ -4012,10 +3113,11 @@ async def async_tool_loop_inner(
             # An empty/whitespace-only terminal turn must never override a
             # substantive answer already in the transcript: a model with
             # nothing left to add can still return empty content on a later
-            # turn. Multi-handle and the plain return both read final_content
-            # after this point, so it is resolved once here. Persist mode is
-            # exempt because it never finalizes here: an empty turn surfaces
-            # an empty response and re-enters the persist wait, and with
+            # turn. The persist response and the plain return both read
+            # final_content after this point, so it is resolved once here.
+            # Persist mode is exempt because it never finalizes here: an
+            # empty turn surfaces an empty response and re-enters the
+            # persist wait, and with
             # response_format the turn's answer is the response-tool payload
             # rather than text, so the nudge/loud-fail below would inject
             # spurious turns and then end a loop that only an explicit stop
@@ -4076,23 +3178,6 @@ async def async_tool_loop_inner(
                     )
                     return notice["content"]
 
-            # ── Multi-handle mode ────────────────────────────────────────
-            if multi_handle_coordinator is not None:
-                if multi_handle_coordinator.should_terminate():
-                    # All requests completed/cancelled and persist=False.
-                    logger.info(
-                        "Multi-handle mode: all requests completed, terminating loop.",
-                        prefix=ICONS["completed"],
-                    )
-                    multi_handle_coordinator.close()
-                    return final_content
-                else:
-                    logger.info(
-                        f"Multi-handle mode: {multi_handle_coordinator.registry.pending_count()} request(s) still pending.",
-                        prefix=ICONS["pending"],
-                    )
-                    continue
-
             # ── Persist mode: wait for the next interjection ─────────────
             if persist:
                 # The turn-complete response reaches the outer handle so the
@@ -4108,11 +3193,7 @@ async def async_tool_loop_inner(
                     else final_content
                 )
                 _outer = outer_handle_container[0] if outer_handle_container else None
-                if (
-                    _outer is not None
-                    and hasattr(_outer, "_notification_q")
-                    and not _suppress_persist_response
-                ):
+                if _outer is not None and hasattr(_outer, "_notification_q"):
                     await _outer._notification_q.put(
                         {
                             "type": "response",
@@ -4122,146 +3203,13 @@ async def async_tool_loop_inner(
                 _persist_response_content = None
                 _persist_response_emitted = False
 
-                # A parked turn's chain of thought is never consulted again:
-                # the next dispatch starts from a fresh user interjection, so
-                # provider reasoning payloads (encrypted blobs, reasoning
-                # summaries) on every completed assistant message are pure
-                # re-billed bulk from here on. Shed them now rather than
-                # waiting for a storage review to cover the span — reviews
-                # lag turns, and the lag is paid on every call in between.
-                try:
-                    _shed = 0
-                    for _m in client.messages or []:
-                        if isinstance(_m, dict) and _m.get("role") == "assistant":
-                            _shed += strip_reasoning_payloads(_m)
-                    if _shed:
-                        _rebaseline_watermark_hash(client)
-                except Exception:
-                    pass
-
-                logger.info(
-                    "Persist mode: waiting for next interjection...",
-                    prefix=ICONS["pause"],
-                )
-                try:
-                    from ...events.manager_event_logging import (
-                        publish_persist_session_phase,
-                    )
-
-                    await publish_persist_session_phase(_outer, "awaiting_input")
-                except Exception:
-                    pass
-                while True:
-                    cancel_waiter = asyncio.create_task(
-                        cancel_event.wait(),
-                        name="PersistCancelWait",
-                    )
-                    interject_waiter = asyncio.create_task(
-                        interject_queue.get(),
-                        name="PersistInterjectWait",
-                    )
-                    done, pending = await asyncio.wait(
-                        {cancel_waiter, interject_waiter},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for p in pending:
-                        p.cancel()
-                        await asyncio.gather(p, return_exceptions=True)
-
-                    # stop() queues its mirror before it sets cancel_event,
-                    # so the waiter may already have taken it. Whatever the
-                    # waiter took goes back to the head of the queue, where
-                    # the drain records the mirror and the check after the
-                    # drain ends the loop.
-                    if cancel_event.is_set():
-                        if interject_waiter in done:
-                            _requeue_at_front(
-                                interject_queue,
-                                interject_waiter.result(),
-                            )
-                        break
-
-                    interjection = interject_waiter.result()
-
-                    # Transcript-note sentinels append the loop-authored note
-                    # and stay in persist wait; the model reads it on its next
-                    # granted turn.
-                    if (
-                        isinstance(interjection, dict)
-                        and "_transcript_note" in interjection
-                    ):
-                        try:
-                            _note = str(
-                                (interjection.get("_transcript_note") or {}).get(
-                                    "text",
-                                )
-                                or "",
-                            )
-                            if _note:
-                                await _msg_dispatcher.append_msgs(
-                                    [loop_user_notice(_note)],
-                                )
-                        except Exception:
-                            pass
-                        continue
-
-                    # Transcript-compaction sentinels: the covered turns were
-                    # consolidated by a storage review; shed their raw tool
-                    # payloads and stay in persist wait.
-                    if (
-                        isinstance(interjection, dict)
-                        and "_compact_transcript" in interjection
-                    ):
-                        try:
-                            _n = int(
-                                (interjection.get("_compact_transcript") or {}).get(
-                                    "reviewed_messages",
-                                )
-                                or 0,
-                            )
-                            if _n > 0:
-                                compact_reviewed_messages(client, _n)
-                        except Exception:
-                            pass
-                        continue
-
-                    # Mirror sentinels are transcript-only (no user message).
-                    # Process them in-place and stay in persist wait — resuming
-                    # the full loop would trigger an LLM call with a trailing
-                    # assistant message, which strict models reject.
-                    if isinstance(interjection, dict) and "_mirror" in interjection:
-                        try:
-                            _ms = interjection.get("_mirror") or {}
-                            _m = _ms.get("method")
-                            _kw = _ms.get("kwargs") or {}
-                            if isinstance(_m, str) and _m:
-                                merged = dict(_kw if isinstance(_kw, dict) else {})
-                                for _key in ("_custom", "_aliases", "_fallback"):
-                                    if _key in _ms:
-                                        merged[_key] = _ms[_key]
-                                await _synthesize_mirrored_helper_calls(_m, merged)
-                        except Exception:
-                            pass
-                        continue
-
-                    # A real interjection goes back on the queue for the
-                    # normal drain path.
-                    try:
-                        await interject_queue.put(interjection)
-                        logger.info(
-                            "Persist mode: interjection received, resuming loop",
-                            prefix=ICONS["resume"],
-                        )
-                        from ...events.manager_event_logging import (
-                            publish_persist_session_phase,
-                        )
-
-                        await publish_persist_session_phase(_outer, "resumed")
-                    except Exception:
-                        pass
-                    break
+                await _park_until_next_request()
+                runtime_state.step_cap_compactions_in_request = 0
+                runtime_state.step_cap_ineffective_in_a_row = 0
 
                 timer.reset()
+                if _step_cap_reply:
+                    timer.start_request()
                 continue  # Back to top of loop to process the interjection
 
             # final_content is non-empty here (or the loop returned earlier
@@ -4275,6 +3223,8 @@ async def async_tool_loop_inner(
         await tools_data.cancel_pending_tasks()
         raise
     finally:
+        _cell_reply.unbind(_reply_token)
+        _bound_request.unbind(_request_token)
         # A loop stopped before its first LLM step still logs its stop.
         if log_steps:
             logger.flush_deferred()

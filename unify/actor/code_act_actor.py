@@ -5,7 +5,9 @@ import functools
 import inspect
 import json
 import re
+import textwrap
 import traceback
+import types
 import uuid
 import weakref
 from secrets import token_hex as _token_hex
@@ -24,25 +26,31 @@ from typing import (
 from pydantic import BaseModel
 
 from unify.actor.base import BaseCodeActActor
+from unify.common._async_tool import cell_reply
+from unify.actor import core_surface
 from unify.common.context_dump import make_messages_safe_for_context_dump
-from unify import environment
+from unify import environment, transcripts
+from unify.actor.workspace_tools import workspace_tools as _workspace_tools
+from unify.actor.grants import CALLER_GRANTS, ActorGrants
 from unify.actor.execution import (
     ExecutionResult,
     PythonExecutionSession,
     SessionExecutor,
     SessionKey,
+    _CAN_CLARIFY,
     _CURRENT_ENVIRONMENTS,
     _CURRENT_SANDBOX,
     _PARENT_CHAT_CONTEXT,
     _validate_execution_params,
 )
+from unify.actor.execution.session import inventory_enabled
 from unify.common.async_tool_loop import (
     AsyncToolLoopHandle,
-    SteerableToolHandle,
+    ToolLoopHandle,
     start_async_tool_loop,
 )
 from unify.events.event_bus import EVENT_BUS, Event
-from unify.common.llm_client import new_llm_client
+from unify.common.llm_client import fork_llm_client, new_llm_client
 from unify.common.llm_meter import RunMeter, current_run_meter, new_run_meter
 from unify.common.act_llm_profiles import (
     CURRENT_ACT_LLM_PROFILE,
@@ -50,9 +58,13 @@ from unify.common.act_llm_profiles import (
 )
 from unify.common.llm_helpers import methods_to_tool_dict
 from unify.common.tool_spec import ToolSpec, llm_soft_required
-from unify.function_manager.base import BaseFunctionManager
+from unify.function_manager import escape_drift as _escape_drift
+from unify.function_manager import instance_lint as _instance_lint
 from unify.function_manager.primitives.registry import get_registry
-from unify.actor.prompt_builders import build_code_act_prompt
+from unify.actor.prompt_builders import (
+    build_code_act_prompt,
+    first_message_clock_line,
+)
 from unify.events.manager_event_logging import log_manager_call
 from unify.common._async_tool.loop_config import TOOL_LOOP_LINEAGE, _PENDING_LOOP_SUFFIX
 from unify.common.hierarchical_logger import log_boundary_event
@@ -83,27 +95,7 @@ to request immediate follow-up LLM turns while the policy remains eager
 """
 
 _USE_DEFAULT: object = object()
-"""Sentinel indicating 'use the built-in discovery-first tool policy'."""
-
-# Tools visible while discovery-first gates are still open. Write/mutate tools
-# stay hidden until every present library family has been touched once.
-_DISCOVERY_GATE_TOOLS: frozenset[str] = frozenset(
-    {
-        "FunctionManager_search_functions",
-        "FunctionManager_filter_functions",
-        "FunctionManager_list_functions",
-        "GuidanceManager_search",
-        "GuidanceManager_filter",
-        "GuidanceManager_get_guidance",
-    },
-)
-
-# Prefer one search discovery tool per family while the gate is open
-# so hard tool_choice=required + eager follow-up turns map onto a small set.
-_DISCOVERY_PREFERRED_TOOLS: dict[str, str] = {
-    "FunctionManager_": "FunctionManager_search_functions",
-    "GuidanceManager_": "GuidanceManager_search",
-}
+"""Sentinel indicating 'use the default tool policy' (the static filters only)."""
 
 _UNSET: object = object()
 """Sentinel indicating 'parameter was not explicitly provided'."""
@@ -130,208 +122,46 @@ class _ActiveWorkNotificationQueue:
         return getattr(self._target, name)
 
 
-def _discovery_tools_for_prefix(
-    filtered: Dict[str, Any],
-    prefix: str,
-) -> Dict[str, Any]:
-    """Return the preferred discovery tool for *prefix*, with family fallback."""
-    family = {
-        k: v
-        for k, v in filtered.items()
-        if k in _DISCOVERY_GATE_TOOLS and k.startswith(prefix)
-    }
-    preferred = _DISCOVERY_PREFERRED_TOOLS.get(prefix)
-    if preferred is not None and preferred in family:
-        return {preferred: family[preferred]}
-    return family
+def _library_counts(
+    function_manager: Any,
+    guidance_manager: Any,
+) -> tuple[Optional[int], Optional[int]]:
+    """The stored functions and guidance entries in scope now.
 
-
-# Keys must be the tool's own parameter names: the tool loop refuses a call
-# carrying an argument its tool does not take, so a misnamed one fails the
-# appended search instead of running it.
-_DISCOVERY_PREFERRED_ARGS: dict[str, dict[str, Any]] = {
-    "FunctionManager_search_functions": {"query": "relevant functions", "n": 5},
-    "GuidanceManager_search": {"references": {"content": "relevant guidance"}, "k": 5},
-}
-
-
-def _tool_names_from_openai_tools(tools: Any) -> list[str]:
-    names: list[str] = []
-    for tool in tools or []:
-        if not isinstance(tool, dict) or tool.get("type") != "function":
-            continue
-        function = tool.get("function") or {}
-        name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(name, str) and name:
-            names.append(name)
-    return names
-
-
-def _is_discovery_gate_schema(tool_names: list[str]) -> bool:
-    """True when the visible schema is only discovery-read tools (+ loop extras)."""
-    if not tool_names:
-        return False
-    names = set(tool_names)
-    extras = {"compress_context"}
-    core = {n for n in names if n not in extras and not n.startswith("check_status_")}
-    if not core or not core.issubset(_DISCOVERY_GATE_TOOLS):
-        return False
-    families = sum(
-        1
-        for prefix in _DISCOVERY_PREFERRED_TOOLS
-        if any(n.startswith(prefix) for n in core)
-    )
-    return families >= 2
-
-
-def _discovery_preferred_for_schema(tool_names: list[str]) -> list[tuple[str, dict]]:
-    """Return [(tool_name, args), ...] for each family present in *tool_names*."""
-    preferred_calls: list[tuple[str, dict]] = []
-    for prefix, preferred in _DISCOVERY_PREFERRED_TOOLS.items():
-        family = [n for n in tool_names if n.startswith(prefix)]
-        if not family:
-            continue
-        tool_name = preferred if preferred in family else family[0]
-        args = dict(_DISCOVERY_PREFERRED_ARGS.get(tool_name, {}))
-        preferred_calls.append((tool_name, args))
-    return preferred_calls
-
-
-def _build_discovery_parallel_mutator() -> Any:
-    """Complete partial discovery-gate turns with missing family tool calls.
-
-    Hard OpenRouter hosts still sometimes serialize discovery families under
-    ``tool_choice="required"`` even with ``parallel_tool_calls=True``. This
-    Unify-local mutator appends the missing preferred discovery calls so the
-    first tool-calling turn covers every present family in parallel.
+    Functions exclude primitives; guidance counts the built-in entries only
+    where ``UNIFY_BUILTIN_GUIDANCE`` shows them. A count a manager cannot
+    give (no manager, no counter, a failed read) is ``None``: unknown.
     """
-    from unillm.clients.completion_mutator import CompletionMutatorContext
 
-    def _mutator(completion: Any, context: CompletionMutatorContext) -> Any:
-        if context.original_tool_choice != "required":
-            return completion
-        tool_names = _tool_names_from_openai_tools(context.request_kw.get("tools"))
-        if not _is_discovery_gate_schema(tool_names):
-            return completion
+    def _count(manager: Any) -> Optional[int]:
+        counter = getattr(manager, "_num_items", None) if manager else None
+        if not callable(counter):
+            return None
+        try:
+            return int(counter())
+        except Exception as exc:
+            logger.debug(f"library count unavailable: {type(exc).__name__}: {exc}")
+            return None
 
-        msg = completion.choices[0].message
-        existing = list(msg.tool_calls or [])
-        if not existing:
-            return completion
-
-        called_names: list[str] = []
-        for tc in existing:
-            if isinstance(tc, dict):
-                fn = tc.get("function") or {}
-                name = fn.get("name") if isinstance(fn, dict) else None
-            else:
-                fn = getattr(tc, "function", None)
-                name = getattr(fn, "name", None) if fn is not None else None
-            if isinstance(name, str) and name:
-                called_names.append(name)
-
-        missing: list[tuple[str, dict]] = []
-        for tool_name, args in _discovery_preferred_for_schema(tool_names):
-            prefix = next(
-                (p for p in _DISCOVERY_PREFERRED_TOOLS if tool_name.startswith(p)),
-                None,
-            )
-            if prefix is None:
-                continue
-            if any(n.startswith(prefix) for n in called_names):
-                continue
-            missing.append((tool_name, args))
-        if not missing:
-            return completion
-
-        from openai.types.chat.chat_completion_message_tool_call import (
-            ChatCompletionMessageToolCall,
-            Function,
-        )
-
-        for index, (tool_name, args) in enumerate(missing):
-            existing.append(
-                ChatCompletionMessageToolCall(
-                    id=f"call_discovery_{index}",
-                    type="function",
-                    function=Function(
-                        name=tool_name,
-                        arguments=json.dumps(args),
-                    ),
-                ).model_dump(warnings=False),
-            )
-        msg.tool_calls = existing
-        msg.content = None
-        completion.choices[0].finish_reason = "tool_calls"
-        return completion
-
-    return _mutator
+    return _count(function_manager), _count(guidance_manager)
 
 
-def _default_tool_policy(
+def _library_snapshot_line(
+    counts: tuple[Optional[int], Optional[int]],
+    *,
     has_fm_tools: bool,
     has_gm_tools: bool,
-    filter_tools: Callable[[Dict[str, Any]], Dict[str, Any]],
-) -> ToolPolicyFn:
-    """Build the default *discovery-first* tool policy.
-
-    Until each present gate among ``FunctionManager_*`` and
-    ``GuidanceManager_*`` has been called at least once, the LLM is
-    restricted to only those families' discovery/read tools (with
-    ``tool_choice="required"``). Write tools and non-library tools such as
-    ``execute_code`` stay hidden. Once all present gates are satisfied the
-    full (statically-filtered) tool set is returned with ``"auto"`` mode.
-
-    While gates remain open the policy also sets ``eager=True``, so the async
-    tool loop grants another LLM turn immediately after each partial discovery
-    call is scheduled (without waiting for that call's result).  That way a
-    model that only fires one of the required discovery tools on the first
-    turn is prompted for the missing family right away, overlapping the
-    in-flight search.
-
-    When only a subset of the manager tool families is present, those families
-    act as the gates.  When none are present the policy is a no-op pass-through.
-
-    Parameters
-    ----------
-    has_fm_tools:
-        Whether the base tool set contains any ``FunctionManager_*`` tools.
-    has_gm_tools:
-        Whether the base tool set contains any ``GuidanceManager_*`` tools.
-    filter_tools:
-        The static-filter callable (``_filter_tools``) that enforces
-        ``can_compose`` / ``can_store``.
-    """
-
-    def _policy(
-        step: int,
-        tools: Dict[str, Any],
-        called_tools: list[str],
-    ) -> tuple[str, Dict[str, Any]] | tuple[str, Dict[str, Any], dict]:
-        filtered = filter_tools(tools)
-
-        fm_satisfied = (not has_fm_tools) or any(
-            t.startswith("FunctionManager_") for t in called_tools
-        )
-        gm_satisfied = (not has_gm_tools) or any(
-            t.startswith("GuidanceManager_") for t in called_tools
-        )
-
-        if fm_satisfied and gm_satisfied:
-            return "auto", filtered
-
-        # Expose one preferred discovery tool per unsatisfied gate family.
-        gated: Dict[str, Any] = {}
-        if not fm_satisfied:
-            gated.update(_discovery_tools_for_prefix(filtered, "FunctionManager_"))
-        if not gm_satisfied:
-            gated.update(_discovery_tools_for_prefix(filtered, "GuidanceManager_"))
-
-        if gated:
-            return "required", gated, {"eager": True}
-        return "auto", filtered
-
-    return _policy
+) -> Optional[str]:
+    """``UNIFY_LIBRARY_SNAPSHOT``: one line giving the library's size at task start."""
+    functions, guidance = counts
+    parts: list[str] = []
+    if has_fm_tools and functions is not None:
+        parts.append(f"{functions} stored function{'' if functions == 1 else 's'}")
+    if has_gm_tools and guidance is not None:
+        parts.append(f"{guidance} guidance entr{'y' if guidance == 1 else 'ies'}")
+    if not parts:
+        return None
+    return f"Library at task start: {', '.join(parts)}."
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +411,267 @@ _STORAGE_WHAT_CAN_BE_STORED = (
     "pinned as loosely as the trajectory justifies.\n\n"
 )
 
+
+def _environment_method_kinds(namespaces: tuple[Any, ...]) -> str:
+    """Which registered environment methods are asynchronous, read from the callables.
+
+    A method is asynchronous when calling it gives an awaitable
+    (``environment.is_async_method``); every other method returns its value
+    directly, so ``await`` on it raises ``TypeError``.
+    """
+    from unify.function_manager.primitives.environment import is_async_method
+
+    sync_only: list[str] = []
+    async_only: list[str] = []
+    mixed: list[str] = []
+    for namespace in namespaces:
+        kinds = {m.name: is_async_method(m) for m in namespace.methods}
+        label = f"`primitives.{namespace.name}`"
+        if not any(kinds.values()):
+            sync_only.append(label)
+        elif all(kinds.values()):
+            async_only.append(label)
+        else:
+            # Name the smaller group, so the sentence stays short.
+            is_async = sum(kinds.values()) <= len(kinds) / 2
+            named = sorted(name for name, kind in kinds.items() if kind is is_async)
+            listed = ", ".join(f"`{name}`" for name in named)
+            verb = "is" if len(named) == 1 else "are"
+            if is_async:
+                mixed.append(
+                    f"In {label}, {listed} {verb} asynchronous (`await` "
+                    f"{'it' if len(named) == 1 else 'them'}) and the other "
+                    "methods are synchronous.",
+                )
+            else:
+                mixed.append(
+                    f"In {label}, {listed} {verb} synchronous (no `await`) "
+                    "and the other methods are asynchronous.",
+                )
+    if not async_only and not mixed:
+        return (
+            "Every method of these namespaces is synchronous: it returns its "
+            "value directly, so call it without `await`."
+        )
+    if not sync_only and not mixed:
+        return "Every method of these namespaces is asynchronous: `await` it."
+    sentences: list[str] = []
+    if sync_only:
+        sentences.append(
+            f"The methods of {', '.join(sync_only)} are synchronous: call "
+            "them without `await`.",
+        )
+    if async_only:
+        sentences.append(
+            f"The methods of {', '.join(async_only)} are asynchronous: "
+            "`await` them.",
+        )
+    sentences.extend(mixed)
+    return " ".join(sentences)
+
+
+def _storage_environment_note() -> str:
+    """The storage review's note on the environment's namespaces and the storage check.
+
+    It always states the storage check, and adds the environment's
+    namespaces (``UNIFY_ENV_NAMESPACES``) and the verification before
+    storing (``UNIFY_STORE_VERIFY``) when they are set.
+    """
+    from unify.function_manager.primitives.environment import environment_surface
+
+    surface = environment_surface()
+    parts: list[str] = []
+    if surface is not None and surface.namespaces:
+        names = ", ".join(f"`primitives.{n.name}`" for n in surface.namespaces)
+        parts.append(
+            "This environment registered its own namespaces beside "
+            f"`primitives.actor`: {names}. Code calls them exactly so "
+            "(`primitives.<namespace>.<method>(...)`), and a stored function "
+            "that does is recorded and injected like `primitives.actor`: it "
+            "needs no import and no dependency for them. No other "
+            "`primitives.*` name exists.",
+        )
+        # The minimal rulebook says to await only what is asynchronous;
+        # this says which of the environment's methods are.
+        parts.append(_environment_method_kinds(surface.namespaces))
+        if surface.globals:
+            listed = ", ".join(f"`{g}`" for g in sorted(surface.globals))
+            parts.append(f"The environment also binds the sandbox globals {listed}.")
+        if surface.modules:
+            listed = ", ".join(f"`{m}`" for m in sorted(surface.modules))
+            parts.append(
+                f"Modules it supplies ({listed}) are importable wherever a "
+                "stored function runs; never declare them as `dependencies`.",
+            )
+    parts.append(
+        "`FunctionManager_add_functions` checks each function before "
+        "storing it: every name it reads and every `primitives.*` "
+        "reference must exist where it will run, and it must load. A "
+        "function that fails is not stored, and the error names what "
+        "failed; fix the function and add it again.",
+    )
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        parts.append(store_verify.doctrine())
+    if not parts:
+        return ""
+    return "### This environment\n\n" + " ".join(parts) + "\n\n"
+
+
+# UNIFY_REPLY_CHANNEL=code+text: execute_function runs a stored function,
+# which returns its result rather than replying.
+_REPLY_REFUSED_IN_FUNCTION = (
+    "reply() cannot be called through execute_function, which runs a stored "
+    "function: call reply() in an execute_code cell"
+)
+_EXECUTE_CODE_REPLY_DOC = """
+Replying from a cell
+--------------------
+``reply(text)`` sends ``text`` (a str) as your reply and ends your turn,
+as replying with that text would; the cell stops there. For example
+``reply(answer)`` when the answer is in a variable."""
+
+
+def _storage_review_client(actor: "CodeActActor", *, origin: str) -> Any:
+    """A standalone storage review's client: the actor's model, as shipped."""
+    return new_llm_client(
+        actor._model,
+        purpose="planning",
+        origin=origin,
+    )
+
+
+def _review_gate_client(actor: "CodeActActor", session_client: Any = None) -> Any:
+    """The ``UNIFY_REVIEW_GATE`` call's client: the review's model, at the
+    effort the session ran at.
+
+    Effort is a fixed condition of a run, never the harness's to change: with
+    the session's client, the gate's request carries that client's reasoning
+    effort (none when it has none); without one, the effort the standalone
+    review's client gets from the actor's model."""
+    from unify.actor import review_gate
+
+    client = _storage_review_client(actor, origin=review_gate.ORIGIN)
+    if session_client is not None:
+        client.set_reasoning_effort(getattr(session_client, "reasoning_effort", None))
+    # Its prompt carries the checked outcome: never where a cell can read it.
+    return transcripts.mark_internal(client)
+
+
+# UNIFY_CURATION_DOCTRINE=compose: how the library is built and kept.
+GUIDANCE_ENTRY_TARGET_CHARS = 2000
+
+_STORAGE_COMPOSE_DOCTRINE = (
+    "## Building The Library\n\n"
+    "A finished trajectory usually holds at least one reusable unit: a step "
+    "that ran successfully and that another task of the same kind would "
+    "perform again. Store it. A pass that changes nothing is right only "
+    "when nothing in the trajectory ran successfully or when everything "
+    "reusable is already in the library; say which in your summary.\n\n"
+    "- **Small units, composed.** Break the work into the smallest units "
+    "that each do one thing, and expose as parameters what varies between "
+    "tasks (inputs, names, thresholds, identifiers). When the trajectory "
+    "solved a whole procedure, also store a root function that calls the "
+    "stored units in order, so the next task runs the procedure in one "
+    "call. A unit already in the library is called, not copied.\n"
+    "- **Only what ran.** Store code the trajectory executed and whose "
+    "result it observed; a unit that worked inside a task that failed "
+    "overall still qualifies.\n"
+    "- **Named for behaviour.** A name, signature and docstring describe "
+    "what the unit does for any caller. Values specific to one instance "
+    "(an id, a file name, a literal answer) are parameters or are left "
+    "out. Ask of each entry: would a different task of this kind call "
+    "this as it stands?\n"
+    "- **Never break what works.** A patch must keep the entry's behaviour "
+    "on the inputs it already handled: fix a defect, widen what it "
+    "accepts, or clarify it. When the behaviour itself must change, store "
+    "the new behaviour under a new name and retire the old entry (delete "
+    "it, or say in its docstring which entry replaces it), because callers "
+    "and guidance written against the old behaviour still expect it.\n"
+    f"- **Short guidance.** Keep a guidance entry under about "
+    f"{GUIDANCE_ENTRY_TARGET_CHARS:,} characters and to one subject. When "
+    "a lesson would grow an entry past that, or is about a different "
+    "subject, write a new focused entry and link it, rather than "
+    "appending. Do not add run-by-run narrative to an entry.\n"
+    "- **Cost.** Prefer units that replace several reasoning steps or tool "
+    "calls with one call; a unit the next task would not call is clutter."
+    "\n\n"
+)
+
+
+def _storage_compose_note() -> str:
+    """The compose doctrine."""
+    return _STORAGE_COMPOSE_DOCTRINE
+
+
+# UNIFY_CURATION_DOCTRINE=minimal: the rulebook keeps what storage needs --
+# what can be stored and how it runs, the compose rules, dependencies -- and
+# drops what was written for an office assistant (user notifications,
+# recurring weekly deliverables, specialist sub-agents, model-choice trials,
+# logging markers, the distillation essay).
+_STORAGE_MINIMAL_WHAT = (
+    "## What Can Be Stored\n\n"
+    "Code that ran successfully in this trajectory can be stored as a "
+    "function with `FunctionManager_add_functions`. The `primitives.*` "
+    "namespaces and the stored functions it calls are detected from its "
+    "source and injected when it runs, so it needs no imports for them. A "
+    "step that judged meaning in the trajectory (classifying, extracting, "
+    "drafting) stays a `query_llm(...)` call in the stored function. "
+    "Await only what is asynchronous: `query_llm(...)`, the "
+    "`primitives.actor` methods and stored functions defined with "
+    "`async def`; a function that awaits one is itself `async def`. A "
+    "synchronous method returns its value directly, and awaiting that "
+    "value raises `TypeError`, so call it without `await`. The runtime "
+    "owns the event loop: synchronous code that must run a coroutine uses "
+    "the injected `run_coro_sync(factory)`, not `asyncio.run`. A function "
+    "that imports a third-party "
+    "package is stored with `dependencies` set to the pip specifiers "
+    "`install_python_packages` used; `FunctionManager_add_functions` "
+    "refuses it without them.\n\n"
+)
+_STORAGE_MINIMAL_GUIDANCE = (
+    "Guidance (`GuidanceManager_add_guidance`, linked to the functions it "
+    "uses through `function_ids`) is short prose for what code cannot "
+    "carry: a composition that would be hard to rediscover, or an approach "
+    "that failed in a non-obvious way and what worked instead. A function "
+    "whose docstring covers its use needs no guidance entry.\n\n"
+)
+
+
+def _storage_doctrine_sections() -> str:
+    """The rulebook sections before the instructions (the minimal rulebook)."""
+    return (
+        f"{_STORAGE_MINIMAL_WHAT}"
+        f"{_STORAGE_MINIMAL_GUIDANCE}"
+        f"{_storage_environment_note()}"
+        f"{_storage_compose_note()}"
+        f"{_storage_update_first_note()}"
+    )
+
+
+def _storage_update_first_note() -> str:
+    """The review's update-before-add order."""
+    return (
+        "### Update before you add\n\n"
+        "When the trajectory shows a stored entry that was wrong, "
+        "incomplete or failed, (1) patch the entry the trajectory used "
+        "(`FunctionManager_patch_function` / "
+        "`GuidanceManager_patch_guidance`) when the fix keeps its "
+        "behaviour on the inputs it already handled; (2) otherwise add a "
+        "new focused entry, under a new name when the behaviour changes. "
+        "Do not move a fix into a broader entry the trajectory did not "
+        "use. A patch replaces excerpts of the entry: read its current "
+        "text first, copy each `old` with enough context to occur once, "
+        "and say `why`. Make several changes to one entry in one call as "
+        "`edits` (`[{old, new}, ...]`, applied in order, all or none). "
+        "The entry keeps its id, precondition, dependencies and links, a "
+        "patched function is checked like any function you add, and the "
+        "replaced version is kept in history. Rewrite a whole function "
+        "with `overwrite=True` only when most of it changes.\n\n"
+    )
+
+
 _STORAGE_TWO_STORES = (
     "## Two Stores\n\n"
     "### Function Store — the *what*\n\n"
@@ -701,23 +792,28 @@ _STORAGE_SUB_AGENT_PATTERNS = (
     "right tool selection, scoping, or behavioral guidelines.\n\n"
 )
 
-_STORAGE_RECURRING_DELIVERABLE = (
-    "## Recurring Deliverables\n\n"
-    "A deliverable can be recurring: the requester hands the job over once "
-    '("every week, ...") and simply asks again each time, with the '
-    "conversation as the trigger. The first successful production is the "
-    "evidence for a stored function named after the deliverable: skeleton "
-    "in deterministic code, each judging substep at its own notch on the "
-    "dial. Stated-but-dormant requirements belong in the function — a rule "
-    'the requester stated ("if X ever happens, do Y") is evidence even '
-    "unexercised — but never freeze structure neither stated nor observed; "
-    "outside that envelope the function raises or returns early rather "
-    "than guessing. Later instances refine the same function in place "
-    "(`FunctionManager_add_functions` with `overwrite=True`), never "
-    "near-duplicates. Then say so in your summary — name, numeric "
-    "`function_id`, and calling convention — so the live session executes "
-    "the stored function next time instead of re-deriving the procedure.\n\n"
+
+_STORAGE_COMPOSE_STEP_3 = (
+    "3. Decide what would improve the library: new units and the root that "
+    "composes them, patches that keep existing behaviour, new names for "
+    "changed behaviour, and the retirement of entries they supersede. A "
+    "clean library is one whose every entry is small, general and correct, "
+    "not one with few entries. Add guidance when a composition is "
+    "genuinely non-obvious or when the requester specified a multi-phase "
+    "procedure with decision points, and factor any durable shared rule "
+    "into a single linked guidance entry per the Shared rules section.\n"
 )
+
+
+def _storage_base_instructions() -> str:
+    start = _STORAGE_BASE_INSTRUCTIONS.index("3. Decide")
+    end = _STORAGE_BASE_INSTRUCTIONS.index("4. **Delete")
+    return (
+        _STORAGE_BASE_INSTRUCTIONS[:start]
+        + _STORAGE_COMPOSE_STEP_3
+        + _STORAGE_BASE_INSTRUCTIONS[end:]
+    )
+
 
 _STORAGE_BASE_INSTRUCTIONS = (
     "## Instructions\n\n"
@@ -749,6 +845,178 @@ _STORAGE_BASE_INSTRUCTIONS = (
 # Shared tool docstrings
 # ---------------------------------------------------------------------------
 
+# No delegation through primitives.actor: execute_function's docs do not
+# offer the sub-actor primitive as their example of a primitive.
+_SUB_ACTOR_EXAMPLES_DOC = (
+    (
+        re.compile(r"a primitive\s+\(``primitives\.actor\.act``\) or a stored"),
+        "a primitive or a stored",
+    ),
+    (
+        re.compile(
+            r"\(dotted path for primitives, e\.g\.\s+``\"primitives\.actor\.act\"``\)",
+        ),
+        "(dotted path for primitives)",
+    ),
+)
+
+
+# The lean profile: the code tools describe what they do, without
+# preferring one over the other, and the install tool says why installs go
+# through it instead of ordering it.
+_LEAN_TOOL_DOCS = (
+    (
+        re.compile(
+            r"\*\*IMPORTANT — single-call rule\*\*: If the task requires only a"
+            r"\s+single function or primitive call with no surrounding logic,"
+            r"\s+use ``execute_function`` instead\. ``execute_code`` is for"
+            r"\s+\*\*multi-step composition\*\* — conditional logic, loops, or"
+            r"\s+combining multiple primitives/functions where intermediate"
+            r"\s+results are needed within the same code block\.\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"\*\*This is the preferred tool for any task that maps to a single"
+            r"\s+function or primitive call\*\* — (?P<what>.*?)\. It"
+            r"\s+\*\*structurally guarantees\*\* the returned handle is exposed to"
+            r"\s+the outer loop for steering \(ask, stop, pause, resume,"
+            r"\s+interject\); inside ``execute_code`` a handle is only adopted"
+            r"\s+if it happens to be the last expression\. Use ``execute_code``"
+            r"\s+only for genuine multi-step composition \(conditional logic,"
+            r"\s+loops, combining intermediate results\)\.",
+            re.DOTALL,
+        ),
+        lambda m: (
+            "It runs one callable -- "
+            + " ".join(m.group("what").split())
+            + " -- and exposes the handle it returns to the outer loop for "
+            "steering (ask, stop, pause, resume, interject)."
+        ),
+    ),
+)
+_LEAN_INSTALL_DOC = (
+    re.compile(
+        r"\*\*You MUST use this tool whenever you need a Python package that is not"
+        r"\s+already available\.\*\* Never install via ``execute_code`` \(``!pip install``,"
+        r"\s+``subprocess\.run\(\[\"pip\", \.\.\.\]\)``, ``uv pip install``, or any other"
+        r"\s+shell-based method\) — direct installs bypass the managed environment and"
+        r"\s+leave it in an inconsistent state\.",
+    ),
+    "Packages that are not already available are installed with this tool. "
+    "An install from ``execute_code`` (``pip``, ``uv``, a subprocess) bypasses "
+    "the managed environment and leaves it inconsistent.",
+)
+
+
+# UNIFY_PROMPT_TRIM, no environment in the ``primitives`` namespace: the
+# code tools name no primitive and no handle only a primitive returns.
+# Applied after the other rewrites, so each pattern takes the shipped form
+# and the forms they leave.
+_TRIM_NO_PRIMITIVES_DOC = (
+    (
+        re.compile(r"a primitive(?:\s+\(``primitives\.actor\.act``\))?\s+or a stored"),
+        "a stored",
+    ),
+    (re.compile(r"function or primitive"), "function"),
+    (re.compile(r"primitives/functions"), "functions"),
+    (re.compile(r"function\s+or primitive call"), "function call"),
+    (
+        re.compile(
+            r"\s*\(dotted path for primitives(?:, e\.g\.\s+``\"primitives\.actor\.act\"``)?\)",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r"It runs one callable -- (?P<what>.*?) -- and exposes the handle it"
+            r" returns to the outer loop for steering \(ask, stop, pause, resume,"
+            r" interject\)\.",
+            re.DOTALL,
+        ),
+        lambda m: f"It runs one callable: {m.group('what')}.",
+    ),
+    (
+        re.compile(
+            r"It\s+\*\*structurally guarantees\*\* the returned handle is exposed to"
+            r"\s+the outer loop for steering \(ask, stop, pause, resume,"
+            r"\s+interject\); inside ``execute_code`` a handle is only adopted"
+            r"\s+if it happens to be the last expression\.\s+",
+        ),
+        "",
+    ),
+    (
+        re.compile(
+            r",(?P<ws>\s+)at the top of every loop body, and before\s+every"
+            r" ``primitives\.\*`` call\.",
+        ),
+        lambda m: f" and{m.group('ws')}at the top of every loop body.",
+    ),
+)
+
+
+_TRIM_STORE_SKILLS_EXAMPLE = re.compile(
+    r"a non-obvious\s+configuration of primitives\.actor\.act,\s+",
+)
+
+
+def _correct_tool_docs(
+    tools: Dict[str, Any],
+    *,
+    environments: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Correct the docstrings (tool descriptions) of *tools* in place, per the switches.
+
+    The tools are built per actor, so a rewrite never reaches another actor.
+    With the switches off the docstrings are as shipped.
+    """
+    from unify.actor import placeholder_note
+
+    rewrites: list = []
+    rewrites.extend(_SUB_ACTOR_EXAMPLES_DOC)
+    rewrites.extend(_LEAN_TOOL_DOCS)
+    rewrites.append(_LEAN_INSTALL_DOC)
+    if "primitives" not in (environments or {}):
+        rewrites.extend(_TRIM_NO_PRIMITIVES_DOC)
+    for name in ("execute_code", "execute_function", "install_python_packages"):
+        tool = tools.get(name)
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is None or not fn.__doc__:
+            continue
+        doc = fn.__doc__
+        for pattern, replacement in rewrites:
+            doc = pattern.sub(replacement, doc)
+        if name == "execute_function":
+            doc = placeholder_note.correct_doc(doc)
+        fn.__doc__ = doc
+    if "primitives" not in (environments or {}):
+        tool = tools.get("store_skills")
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is not None and fn.__doc__:
+            fn.__doc__ = _TRIM_STORE_SKILLS_EXAMPLE.sub("", fn.__doc__, count=1)
+
+
+def _hide_parent_chat_context(tools: Dict[str, Any]) -> None:
+    """UNIFY_PROMPT_TRIM without a primitives environment: the conversation a
+    code tool is given reaches only the primitives it forwards to, so the
+    code tools do not offer ``include_parent_chat_context``. The parameter is
+    left out of the signature the loop reads; the functions are unchanged."""
+    for name in ("execute_code", "execute_function"):
+        tool = tools.get(name)
+        fn = tool.fn if isinstance(tool, ToolSpec) else tool
+        if fn is None:
+            continue
+        sig = inspect.signature(fn)
+        if "_parent_chat_context" not in sig.parameters:
+            continue
+        fn.__signature__ = sig.replace(
+            parameters=[
+                p for p in sig.parameters.values() if p.name != "_parent_chat_context"
+            ],
+        )
+
+
 # One contract for the package-install tool.
 _INSTALL_PYTHON_PACKAGES_DOC = """Install Python packages into the workspace environment.
 
@@ -772,7 +1040,10 @@ Parameters
 packages : list[str]
     pip/uv specifiers, e.g. ``"pandas"``, ``"pandas==2.1.0"``,
     ``"pandas>=2.0,<3.0"``, ``"pandas[sql]"``,
-    ``"git+https://github.com/user/repo.git"``, ``"./path/to/wheel.whl"``.
+    ``"/abs/path/in/workspace/pkg-1.0-py3-none-any.whl"``. It installs
+    wheels only (from the package index, or an absolute path to a .whl file
+    in the workspace): a package with no wheel for this platform, a git URL
+    or a local source directory fails, as does any other host.
 
 Returns
 -------
@@ -937,15 +1208,10 @@ def _prepare_trajectory_for_storage_review(
 def _build_storage_tools(
     *,
     actor: "CodeActActor",
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
-) -> tuple[Dict[str, Callable], list[str], list[str]]:
+) -> Dict[str, Callable]:
     """Build the tool dict shared by both post-processing and proactive storage loops.
 
-    Returns ``(tools, storage_active_lines, dormant_lines)`` so callers can
-    reference which inner tools are still actively reviewing skills and
-    which completed tools can be queried. Tool docstrings deliberately stay
-    static — per-run listings belong in the (volatile tail of the) system
+    Tool docstrings deliberately stay static — per-run listings belong in the (volatile tail of the) system
     prompt so the serialized tool schemas are byte-identical across loops
     and stay prompt-cache-friendly.
     """
@@ -968,6 +1234,27 @@ def _build_storage_tools(
         gm.reconcile_dependencies,
     ]
 
+    # UNIFY_STORE_VERIFY: the review checks a function on a held-out task
+    # before add_functions will store it; unset, the tools are as shipped.
+    from unify.function_manager import store_verify
+
+    if store_verify.enabled():
+        storage_methods.append(fm.check_function)
+    # UNIFY_FUNCTION_PATCH: the review can fix an entry in place by replacing
+    # excerpts. Simulated managers have none.
+    storage_methods.extend(
+        method
+        for method in (
+            getattr(fm, "patch_function", None),
+            getattr(gm, "patch_guidance", None),
+        )
+        if method is not None
+    )
+    # UNIFY_FUNCTION_CASES: the review can retire a recorded case that a
+    # change no longer reproduces.
+    if hasattr(fm, "retire_case"):
+        storage_methods.append(fm.retire_case)
+
     tools: Dict[str, Callable] = {
         **methods_to_tool_dict(
             *storage_methods,
@@ -975,131 +1262,7 @@ def _build_storage_tools(
         ),
     }
 
-    # ── Wire ask_about_completed_tool from snapshot ───────────────────
-
-    _meta = completed_tool_metadata or {}
-    storage_active_lines: list[str] = []
-    storage_active_handles: Dict[str, Any] = {}
-    dormant_lines: list[str] = []
-    for name, fn in ask_tools.items():
-        entry = None
-        for _cid, _m in _meta.items():
-            if _m.get("ask_fn") is fn:
-                entry = _m
-                break
-        handle = entry.get("handle") if entry else None
-        if handle is not None and hasattr(handle, "done") and not handle.done():
-            storage_active_lines.append(f"- `{name}` [storage-active]")
-            storage_active_handles[name] = handle
-        else:
-            dormant_lines.append(f"- `{name}`")
-
-    if ask_tools:
-
-        async def ask_about_completed_tool(
-            tool_name: str,
-            question: str,
-        ) -> str:
-            """Ask a follow-up question about a completed tool from the trajectory.
-
-            Use this to inspect a completed tool's internal reasoning or
-            results. The available tool names are listed in the Completed
-            Tools section of this prompt.
-            """
-            fn = ask_tools.get(tool_name)
-            if fn is None:
-                return (
-                    f"Tool '{tool_name}' not found. Available: {list(ask_tools.keys())}"
-                )
-            handle = await fn(question=question)
-            if hasattr(handle, "result"):
-                result = handle.result
-                if callable(result):
-                    result = result()
-                if inspect.isawaitable(result):
-                    result = await result
-                return str(result)
-            return str(handle)
-
-        tools["ask_about_completed_tool"] = ask_about_completed_tool
-
-    # ── Wire steering tools for storage-active inner handles ──────────
-
-    if storage_active_handles:
-        _sa_handles = storage_active_handles
-
-        def _resolve_handle(tool_name: str) -> tuple[Any | None, str | None]:
-            h = _sa_handles.get(tool_name)
-            if h is None:
-                avail = list(_sa_handles.keys())
-                return None, (
-                    f"Tool '{tool_name}' not found or no longer storage-active. "
-                    f"Available: {avail}"
-                )
-            if hasattr(h, "done") and h.done():
-                return None, (
-                    f"Tool '{tool_name}' has already finished its storage review."
-                )
-            return h, None
-
-        async def stop_inner_storage(tool_name: str, reason: str) -> str:
-            """Stop an inner storage loop, preventing it from storing anything further.
-
-            Use this when you have determined that the inner agent's storage
-            would be redundant (e.g. you are storing a comprehensive function
-            that already covers the inner agent's scope).
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.stop(reason=reason)
-            return f"Stopped inner storage for '{tool_name}': {reason}"
-
-        async def interject_inner_storage(tool_name: str, message: str) -> str:
-            """Inject a directive into an inner storage loop's conversation.
-
-            Use this to provide context that should influence the inner
-            loop's storage decisions (e.g. "The parent is storing a
-            comprehensive function — only store yours if it is genuinely
-            independent and reusable in isolation").
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.interject(message)
-            return f"Interjected into inner storage for '{tool_name}'."
-
-        async def pause_inner_storage(tool_name: str) -> str:
-            """Temporarily pause an inner storage loop.
-
-            Use this to halt an inner loop while you make decisions,
-            then resume it with ``resume_inner_storage``. The inner loop
-            will not proceed until resumed (or until its timeout expires).
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.pause()
-            return f"Paused inner storage for '{tool_name}'."
-
-        async def resume_inner_storage(tool_name: str) -> str:
-            """Resume a previously paused inner storage loop.
-
-            Call this after ``pause_inner_storage`` to let the inner
-            loop continue its skill review.
-            """
-            h, err = _resolve_handle(tool_name)
-            if err:
-                return err
-            await h.resume()
-            return f"Resumed inner storage for '{tool_name}'."
-
-        tools["stop_inner_storage"] = stop_inner_storage
-        tools["interject_inner_storage"] = interject_inner_storage
-        tools["pause_inner_storage"] = pause_inner_storage
-        tools["resume_inner_storage"] = resume_inner_storage
-
-    return tools, storage_active_lines, dormant_lines
+    return tools
 
 
 # ---------------------------------------------------------------------------
@@ -1111,20 +1274,374 @@ def _build_storage_tools(
 # then reads the trajectory as one finished piece of work, not as an interrupted one.
 SESSION_ENDED = "session ended"
 
+# What a persistent session's result() returns when it is ended by a stop
+# (unify/common/async_tool_loop.py), and what the review reads when the
+# agent's last reply had no text.
+_STOPPED_NOTICE = "processed stopped early, no result"
+_EMPTY_REPLY = "(the agent's last reply had no text)"
+
+
+def review_final_result(
+    original_result: Any,
+    *,
+    last_reply: Optional[str],
+    stop_reason: Optional[str],
+    reply_at_outcome: Optional[str],
+) -> str:
+    """The "Final Result" a session's storage review reads.
+
+    Pure: the live handle and a replay of a recorded session decide alike.
+    ``original_result`` is what the session's task loop returned (for a
+    persistent session ended by a stop, ``_STOPPED_NOTICE``); ``last_reply``
+    the content of its latest ``response`` notification (None before the
+    first); ``stop_reason`` the reason of the stop that ended it (None when
+    nothing stopped it); ``reply_at_outcome`` the reply an outcome arrived
+    after.
+
+    It is the reply the outcome arrived after or, with no outcome, the last
+    reply in place of the stop notice; otherwise the session's result.
+    """
+    result = str(original_result)
+    if reply_at_outcome is not None:
+        return reply_at_outcome or _EMPTY_REPLY
+    if result == _STOPPED_NOTICE and last_reply is not None:
+        return last_reply or _EMPTY_REPLY
+    return result
+
+
+# The largest admission verdict read; anything bigger is not a verdict.
+_STORE_ADMISSION_MAX_BYTES = 65536
+
+
+def _store_admission_path() -> str:
+    """The verdict file named by ``UNIFY_STORE_ADMISSION``; empty when unset."""
+    from unify.settings import SETTINGS
+
+    return str(SETTINGS.UNIFY_STORE_ADMISSION or "").strip()
+
+
+# ``UNIFY_STORE_ADMISSION=never``: a frozen library. Writes are withheld as
+# for any admission-gated run, and no review is ever admitted, so no verdict
+# file is read.
+_STORE_ADMISSION_NEVER = "never"
+_STORE_ADMISSION_NEVER_REASON = (
+    "admission is never granted (UNIFY_STORE_ADMISSION=never: the library is "
+    "frozen for this run)"
+)
+
+
+def _store_admission_never(path: Optional[str] = None) -> bool:
+    """Whether ``UNIFY_STORE_ADMISSION`` says no review is ever admitted."""
+    value = _store_admission_path() if path is None else path
+    return value.strip().lower() == _STORE_ADMISSION_NEVER
+
+
+def _load_store_admission(path: str) -> tuple[Optional[dict], str]:
+    """The admission verdict object at *path*, or ``None`` and why there is none."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(_STORE_ADMISSION_MAX_BYTES + 1)
+    except FileNotFoundError:
+        return None, f"no admission verdict at {path}"
+    except OSError as exc:
+        return None, f"admission verdict unreadable: {type(exc).__name__}: {exc}"
+    if len(raw) > _STORE_ADMISSION_MAX_BYTES:
+        return None, "admission verdict larger than 64 KiB"
+    try:
+        verdict = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        return None, f"admission verdict is not JSON: {type(exc).__name__}"
+    if not isinstance(verdict, dict):
+        return None, "admission verdict is not a JSON object"
+    return verdict, ""
+
+
+def _admission_why(verdict: dict) -> str:
+    why = verdict.get("reason")
+    return f" ({str(why)[:200]})" if why else ""
+
+
+def _read_store_admission(path: str) -> tuple[bool, str]:
+    """Whether an external check of the session's outcome admits its review.
+
+    The file must hold a JSON object whose ``admit`` is ``true``. Every other
+    state -- no file, one that cannot be read, is too large, is not JSON, is
+    not an object, or has any other ``admit`` -- does not admit (fail-closed).
+    Returns ``(admitted, reason)``; the reason names what was found.
+    """
+    verdict, failure = _load_store_admission(path)
+    if verdict is None:
+        return False, failure
+    why = _admission_why(verdict)
+    if verdict.get("admit") is True:
+        return True, f"admitted{why}"
+    return False, f"not admitted{why}"
+
+
+def _storage_review_outcome_note(outcome: Optional[dict] = None) -> str:
+    """The storage review's section on the session's checked outcome.
+
+    Filled from the outcome the environment posted (:mod:`unify.outcome`).
+    Empty when there is none, so the review is then the shipped text.
+    """
+    from unify import outcome as outcome_mod
+
+    return outcome_mod.render(outcome)
+
+
+# UNIFY_REVIEW_FRAMING=unified: the fork is the agent's own curation step.
+_REVIEW_FORK_ROLE_UNIFIED = (
+    "## Curating The Library\n\n"
+    "The task above is finished. This is the curation step that follows "
+    "it: you did this work, so turn what it taught you into library "
+    "entries a future task can reuse. The conversation above -- what was "
+    "asked, what you did and what came of it -- is the trajectory the "
+    "rules below refer to.\n\n"
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+
+_REVIEW_CLOSING_UNIFIED = (
+    "\n\n## Now\n\n"
+    "Review the trajectory and store any reusable functions and "
+    "compositional guidance, following the rules above. Then reply with a "
+    "brief summary naming what changed (function names, guidance titles) "
+    "or, if nothing qualified, why."
+)
+
+
+# What the fork's tools do, for a core session.
+_REVIEW_FORK_TOOLS = (
+    "Your tool list is the one the task used, but only the function and "
+    "guidance library tools work now; any other tool is refused. Library "
+    "writes that were read-only during the task are available to you now.\n\n"
+)
+_REVIEW_FORK_TOOLS_CORE = (
+    "Your tool list is the one the task used. `execute_code` now runs each "
+    "cell in the review's own sandbox, which holds only the `functions` and "
+    "`guidance` libraries, awaited as in the task (`await "
+    "functions.search(...)`, `await functions.add(...)`, `await "
+    "guidance.add(...)`): the task's environment, files and variables are "
+    "not in it, and stored functions are not run. Any other tool is refused. "
+    "Library writes that were read-only during the task are available to you "
+    "now.\n\n"
+)
+
+_REVIEW_FORK_MASK_RULE_CORE = (
+    "the storage review runs only execute_code, in a sandbox that holds the "
+    "function and guidance libraries; the task's other tools are not "
+    "available to it"
+)
+
+
+def _review_fork_role(*, core: bool = False) -> str:
+    role = _review_fork_role_shipped()
+    if core:
+        role = role.replace(_REVIEW_FORK_TOOLS, _REVIEW_FORK_TOOLS_CORE)
+    return role
+
+
+def _review_fork_role_shipped() -> str:
+    return _REVIEW_FORK_ROLE_UNIFIED
+
+
+_LATE_SESSION_MESSAGE_REFUSAL = (
+    "The session has ended, so this message was not delivered: it would have "
+    "reached the storage review, which does not take the session's messages. "
+    "Start a new session to continue."
+)
+
+_REVIEW_FORK_MASK_RULE = (
+    "the storage review can call only the function and guidance library "
+    "tools; the task's other tools are not available to it"
+)
+
+
+def _review_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+) -> tuple[Optional[dict], Optional[str]]:
+    """What a forked storage review continues from, or why it cannot fork.
+
+    Returns ``(source, None)`` for a fork, and ``(None, reason)`` when the
+    review has to run standalone. The fork reuses the session's fixed tool
+    list and needs its last request as recorded; it is refused when the
+    session was compressed, when its history no longer starts with that request (something rewrote it), or
+    when it ends with unanswered tool calls, which the review loop would try
+    to run with its own tools.
+    """
+    from unify.common._async_tool import cache_discipline
+
+    # The review stores through the list's execute_code, in a sandbox holding
+    # only the libraries (the core surface).
+    source, why = _session_fork_source(inner, actor)
+    if source is None:
+        return None, why
+    why = core_surface.review_fork_refusal(
+        cache_discipline.schema_names(source["tools"]),
+    )
+    if why is not None:
+        return None, why
+    return {**source, "core": True}, None
+
+
+def _session_fork_source(
+    inner: Any,
+    actor: "CodeActActor",
+) -> tuple[Optional[dict], Optional[str]]:
+    """The session's conversation for a fork, or why it cannot be continued.
+
+    The source holds the session's ``client``, its raw ``messages``, the
+    ``tools`` and ``tool_choice`` of its last request, and ``sent_messages``:
+    its history as that request sent it (system prompt first, preprocessed)
+    followed by what came after, so a fork that sends them unchanged starts
+    with the last request's bytes.
+    """
+    from unify.common._async_tool import cache_discipline
+    from unify.common._async_tool.messages import find_unreplied_assistant_entries
+
+    client = getattr(inner, "_client", None)
+    if client is None:
+        return None, "the session has no LLM client"
+    if getattr(getattr(inner, "_compression", None), "count", 0):
+        return None, "the session's history was compressed"
+    last = cache_discipline.last_sent_request(client)
+    if last is None or not last.get("messages"):
+        return None, "the session recorded no request"
+    if not last.get("tools"):
+        return None, "the session's last request carried no tools"
+
+    raw = copy.deepcopy(list(getattr(client, "messages", None) or []))
+    as_sent = raw
+    preprocess = getattr(actor, "_preprocess_msgs", None)
+    if preprocess is not None:
+        try:
+            as_sent = preprocess(copy.deepcopy(raw)) or as_sent
+        except Exception:
+            return None, "the session's message preprocessor failed on its history"
+    system = getattr(client, "system_message", None)
+    if system and not (as_sent and as_sent[0].get("role") == "system"):
+        as_sent = [{"role": "system", "content": system}, *as_sent]
+    sent = last["messages"]
+
+    def _bytes(messages: list) -> list[str]:
+        return [json.dumps(m, default=str) for m in messages]
+
+    if _bytes(as_sent[: len(sent)]) != _bytes(sent):
+        return None, "the session's history changed after its last request"
+    if find_unreplied_assistant_entries(types.SimpleNamespace(messages=raw)):
+        return None, "the session ended with unanswered tool calls"
+    return (
+        {
+            "client": client,
+            "messages": raw,
+            "sent_messages": as_sent,
+            "tools": last["tools"],
+            "tool_choice": last.get("tool_choice"),
+        },
+        None,
+    )
+
+
+def _start_storage_review_fork(
+    *,
+    fork_source: dict,
+    actor: "CodeActActor",
+    tools: Dict[str, Callable],
+    message: str,
+    parent_lineage: list[str] | None,
+    mask_rule: str = _REVIEW_FORK_MASK_RULE,
+) -> "AsyncToolLoopHandle":
+    """Start the storage review as a fork of the session's conversation.
+
+    Its first request is the session's system prompt, messages, last tools
+    and tool choice -- as the session sent them -- plus *message*, so the
+    provider serves all but that message from the session's cache. The loop
+    adds nothing else: no runtime-context header, no parent context, no
+    compression. Library tools the list advertises run as the review's own;
+    everything else in the list is refused by rule.
+    """
+    from unify.common._async_tool.propagation_mode import ChatContextPropagation
+
+    client = fork_llm_client(
+        fork_source["client"],
+        origin="StorageCheck",
+        purpose="planning",
+        messages=fork_source["messages"],
+    )
+    # The review is harness-internal (its message carries the checked
+    # outcome): transcribed where no cell can read it.
+    transcripts.mark_internal(client)
+    first_choice = fork_source.get("tool_choice")
+    first_choice = first_choice if isinstance(first_choice, str) else "auto"
+    review_tools = dict(tools)
+
+    opts: dict = {"mask_rule": mask_rule}
+
+    def _review_policy(step: int, visible: Dict[str, Any]):
+        return (
+            first_choice if step == 0 else "auto",
+            visible,
+            dict(opts),
+        )
+
+    return start_async_tool_loop(
+        client=client,
+        message=message,
+        tools=review_tools,
+        loop_id="StorageCheck(CodeActActor.act)",
+        parent_lineage=parent_lineage,
+        tool_policy=_review_policy,
+        propagate_chat_context=ChatContextPropagation.NEVER,
+        caller_description="",
+        preprocess_msgs=getattr(actor, "_preprocess_msgs", None),
+        prompt_caching=getattr(actor, "_prompt_caching", None),
+        enable_compression=False,
+        fixed_tools_schema=fork_source["tools"],
+    )
+
+
+def _close_with_result(handle: Any, close: Callable[[], Awaitable[None]]) -> None:
+    """Run *close* once *handle*'s result has been awaited, however it ends."""
+    original = handle.result
+
+    async def _result_then_close() -> Any:
+        try:
+            return await original()
+        finally:
+            try:
+                await close()
+            except Exception as exc:  # cleanup never masks the review's result
+                logger.warning(
+                    f"StorageCheck sandbox close failed: {type(exc).__name__}: {exc}",
+                )
+
+    handle.result = _result_then_close
+
 
 def _start_storage_check_loop(
     *,
     trajectory: list[dict],
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
     actor: "CodeActActor",
     original_result: str,
     parent_lineage: list[str] | None = None,
     stop_reason: str | None = None,
     proactive_summaries: list[str] | None = None,
     live_session: bool = False,
+    fork_source: dict | None = None,
+    outcome: dict | None = None,
+    origin_note: str = "",
 ) -> "AsyncToolLoopHandle | None":
     """Start a loop that reviews a completed trajectory for reusable knowledge.
+
+    *outcome* is the session's checked outcome (:mod:`unify.outcome`), shown in
+    its own section before the final result.
+
+    With *fork_source* (see :func:`_review_fork_source`) the review is a fork
+    of the session's own conversation, and the rulebook arrives as one
+    appended user message instead of a system prompt around a trajectory
+    dump.
 
     With ``live_session=True`` the trajectory belongs to a persistent
     session that is still running: the review covers the turns completed
@@ -1146,11 +1663,13 @@ def _start_storage_check_loop(
     gm = actor.guidance_manager
     if fm is None or gm is None:
         return None
-    tools, storage_active_lines, dormant_lines = _build_storage_tools(
-        actor=actor,
-        ask_tools=ask_tools,
-        completed_tool_metadata=completed_tool_metadata,
-    )
+    generalise_note = ""
+    # UNIFY_STORE_FROM_SESSION: a function the session ran may be stored by name.
+    from unify.function_manager import session_source
+
+    generalise_note += session_source.review_note()
+    tools = _build_storage_tools(actor=actor)
+    outcome_note = _storage_review_outcome_note(outcome)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -1158,38 +1677,6 @@ def _start_storage_check_loop(
         _prepare_trajectory_for_storage_review(trajectory),
         default=str,
     )
-
-    completed_tools_section = ""
-    if storage_active_lines or dormant_lines:
-        listing = "\n".join([*storage_active_lines, *dormant_lines])
-        completed_tools_section = (
-            "## Completed Tools\n\n"
-            "These completed tools from the trajectory can be queried via "
-            "`ask_about_completed_tool` (entries marked [storage-active] "
-            "are still running their own background skill review):\n\n"
-            f"{listing}\n\n"
-        )
-
-    # Build optional section about inner storage loops.
-    inner_storage_section = ""
-    if storage_active_lines:
-        inner_storage_section = (
-            "## Inner Storage Loops\n\n"
-            "Some inner tools from this trajectory are currently running "
-            "their own background skill-review loops:\n\n"
-            + "\n".join(storage_active_lines)
-            + "\n\n"
-            "These inner loops may be storing functions independently at a "
-            "finer granularity. You can:\n"
-            "- Query them via `ask_about_completed_tool`\n"
-            "- Inject directives via `interject_inner_storage`\n"
-            "- Stop them via `stop_inner_storage`\n"
-            "- Pause/resume them via `pause_inner_storage` / "
-            "`resume_inner_storage`\n\n"
-            "Use these to coordinate storage decisions (e.g. stop an inner "
-            "loop that would store something redundant, or interject context "
-            "about what you plan to store at the higher level).\n\n"
-        )
 
     # ── Proactive storage awareness ───────────────────────────────────
     proactive_storage_section = ""
@@ -1211,7 +1698,7 @@ def _start_storage_check_loop(
             "call — that the proactive passes may have missed.\n\n"
         )
 
-    instructions = _STORAGE_BASE_INSTRUCTIONS
+    instructions = _storage_base_instructions()
     if proactive_summaries:
         instructions = (
             "## Instructions\n\n"
@@ -1287,18 +1774,18 @@ def _start_storage_check_loop(
 
     role_line = (
         (
-            "You are a skill librarian. A CodeActActor is running a "
-            "persistent interactive session and has just completed a "
-            "request turn. Your job is to review the session trajectory so "
-            "far and decide whether anything is worth persisting for future "
-            "reuse. Often nothing is — that is perfectly fine.\n\n"
+            "You are the agent running the persistent interactive "
+            "session below, and you have just completed a request turn. "
+            "This is the curation step that follows it: turn what the "
+            "latest work taught you into library entries a future "
+            "request can reuse.\n\n"
         )
         if live_session
         else (
-            "You are a skill librarian. A CodeActActor has just completed a task. "
-            "Your job is to review the execution trajectory and decide whether "
-            "anything is worth persisting for future reuse. Often nothing is — "
-            "that is perfectly fine.\n\n"
+            "You are the agent that just completed the task below. This "
+            "is the curation step that follows it: turn what the work "
+            "taught you into library entries a future task can reuse."
+            "\n\n"
         )
     )
     trajectory_header = (
@@ -1310,30 +1797,94 @@ def _start_storage_check_loop(
         "## Latest Turn Response\n\n" if live_session else "## Final Result\n\n"
     )
 
+    if fork_source is not None and fork_source.get("core"):
+        # A core session: the same message, naming the libraries as
+        # the sandbox does; the review stores through execute_code, whose
+        # cells run in a sandbox of their own. The final result is the
+        # session's, unchanged.
+        review_sandbox = core_surface.ReviewSandbox(
+            actor,
+            core_surface.review_policy(),
+        )
+        # The outcome section as the rulebook carries it, renamed with it.
+        from unify import outcome as outcome_mod
+
+        outcome_mod.remember(core_surface.python_names(outcome_note))
+        rulebook = core_surface.python_names(
+            f"{_review_fork_role(core=True)}"
+            f"{_storage_doctrine_sections()}"
+            f"{instructions}"
+            "\n\n"
+            f"{stop_context_section}"
+            f"{proactive_storage_section}"
+            f"{generalise_note}"
+            f"{origin_note}"
+            f"{outcome_note}"
+            f"{result_header}",
+        )
+        closing = core_surface.python_names(
+            _REVIEW_CLOSING_UNIFIED,
+        )
+        handle = _start_storage_review_fork(
+            fork_source=fork_source,
+            actor=actor,
+            tools={"execute_code": review_sandbox.execute_code},
+            message=f"{rulebook}{original_result}{closing}",
+            parent_lineage=parent_lineage,
+            mask_rule=_REVIEW_FORK_MASK_RULE_CORE,
+        )
+        _close_with_result(handle, review_sandbox.close)
+        return handle
+
+    if fork_source is not None:
+        # The conversation is the trajectory. The completed-tool and inner
+        # storage sections name tools the fork's list does not carry.
+        return _start_storage_review_fork(
+            fork_source=fork_source,
+            actor=actor,
+            tools=tools,
+            message=(
+                f"{_review_fork_role()}"
+                f"{_storage_doctrine_sections()}"
+                f"{instructions}"
+                "\n\n"
+                f"{stop_context_section}"
+                f"{proactive_storage_section}"
+                f"{generalise_note}"
+                f"{origin_note}"
+                f"{outcome_note}"
+                f"{result_header}"
+                f"{original_result}"
+                f"{_REVIEW_CLOSING_UNIFIED}"
+            ),
+            parent_lineage=parent_lineage,
+        )
+
     # Static doctrine first, volatile trajectory last: every storage loop
     # shares the same byte-identical prefix (role + doctrine + instructions),
     # so provider prompt caching only pays cold tokens for the per-run tail.
     system_prompt = (
         f"{role_line}"
-        f"{_STORAGE_WHAT_CAN_BE_STORED}"
-        f"{_STORAGE_TWO_STORES}"
-        f"{_STORAGE_SUB_AGENT_PATTERNS}"
-        f"{_STORAGE_RECURRING_DELIVERABLE}"
+        f"{_storage_doctrine_sections()}"
         f"{instructions}"
         "\n\n"
         f"{stop_context_section}"
         f"{live_session_section}"
-        f"{inner_storage_section}"
-        f"{completed_tools_section}"
         f"{proactive_storage_section}"
+        f"{generalise_note}"
         f"{trajectory_header}"
         f"{trajectory_json}\n\n"
+        f"{origin_note}"
+        f"{outcome_note}"
         f"{result_header}"
         f"{original_result}"
     )
 
-    client = new_llm_client(actor._model, purpose="planning", origin="StorageCheck")
+    client = _storage_review_client(actor, origin="StorageCheck")
     client.set_system_message(system_prompt)
+    # The review is harness-internal (its prompt carries the checked
+    # outcome): transcribed where no cell can read it.
+    transcripts.mark_internal(client)
 
     return start_async_tool_loop(
         client=client,
@@ -1355,8 +1906,6 @@ def _start_storage_check_loop(
 def _start_proactive_storage_loop(
     *,
     trajectory: list[dict],
-    ask_tools: dict,
-    completed_tool_metadata: dict | None = None,
     actor: "CodeActActor",
     request: str,
     parent_lineage: list[str] | None = None,
@@ -1377,11 +1926,7 @@ def _start_proactive_storage_loop(
     if fm is None or gm is None:
         return None
 
-    tools, storage_active_lines, dormant_lines = _build_storage_tools(
-        actor=actor,
-        ask_tools=ask_tools,
-        completed_tool_metadata=completed_tool_metadata,
-    )
+    tools = _build_storage_tools(actor=actor)
 
     # ── Build prompt ──────────────────────────────────────────────────
 
@@ -1389,37 +1934,6 @@ def _start_proactive_storage_loop(
         _prepare_trajectory_for_storage_review(trajectory),
         default=str,
     )
-
-    completed_tools_section = ""
-    if storage_active_lines or dormant_lines:
-        listing = "\n".join([*storage_active_lines, *dormant_lines])
-        completed_tools_section = (
-            "## Completed Tools\n\n"
-            "These completed tools from the trajectory can be queried via "
-            "`ask_about_completed_tool` (entries marked [storage-active] "
-            "are still running their own background skill review):\n\n"
-            f"{listing}\n\n"
-        )
-
-    inner_storage_section = ""
-    if storage_active_lines:
-        inner_storage_section = (
-            "## Inner Storage Loops\n\n"
-            "Some inner tools from this trajectory are currently running "
-            "their own background skill-review loops:\n\n"
-            + "\n".join(storage_active_lines)
-            + "\n\n"
-            "These inner loops may be storing functions independently at a "
-            "finer granularity. You can:\n"
-            "- Query them via `ask_about_completed_tool`\n"
-            "- Inject directives via `interject_inner_storage`\n"
-            "- Stop them via `stop_inner_storage`\n"
-            "- Pause/resume them via `pause_inner_storage` / "
-            "`resume_inner_storage`\n\n"
-            "Use these to coordinate storage decisions (e.g. stop an inner "
-            "loop that would store something redundant, or interject context "
-            "about what you plan to store at the higher level).\n\n"
-        )
 
     instructions = (
         "## Instructions\n\n"
@@ -1438,26 +1952,28 @@ def _start_proactive_storage_loop(
 
     # Static doctrine first, volatile trajectory last — same prompt-cache
     # prefix as the post-run storage check.
+    proactive_role = (
+        "You are the agent executing the task below, and you asked to "
+        "store skills before finishing it. This is that curation step: "
+        "store the requested skill(s) for future reuse.\n\n"
+    )
     system_prompt = (
-        "You are a skill librarian. A CodeActActor is currently executing "
-        "a task and has proactively requested skill storage. Your job is "
-        "to review the execution trajectory so far and store the "
-        "requested skill(s) for future reuse. Often nothing is worth "
-        "storing — that is perfectly fine.\n\n"
+        f"{proactive_role}"
         f"{_STORAGE_WHAT_CAN_BE_STORED}"
+        f"{_storage_environment_note()}"
         f"{_STORAGE_TWO_STORES}"
+        f"{_storage_compose_note()}"
+        f"{_storage_update_first_note()}"
         f"{_STORAGE_SUB_AGENT_PATTERNS}"
         f"{instructions}"
         "\n\n"
-        f"{inner_storage_section}"
-        f"{completed_tools_section}"
         "## Storage Request\n\n"
         f"{request}\n\n"
         "## Trajectory So Far\n\n"
         f"{trajectory_json}"
     )
 
-    client = new_llm_client(actor._model, purpose="planning", origin="ProactiveStorage")
+    client = _storage_review_client(actor, origin="ProactiveStorage")
     client.set_system_message(system_prompt)
 
     return start_async_tool_loop(
@@ -1473,19 +1989,19 @@ def _start_proactive_storage_loop(
     )
 
 
-class _StorageCheckHandle(SteerableToolHandle):
+class _StorageCheckHandle(ToolLoopHandle):
     """Wraps an inner handle and runs a storage check after task completion.
 
     Lifecycle phases:
 
-    * **task** -- the inner tool loop is running.  All steering methods
-      forward to the inner handle.  Notifications from the inner handle
-      are relayed to consumers.
+    * **task** -- the inner tool loop is running.  ``submit``, ``stop`` and
+      ``cancel_request`` forward to the inner handle.  Notifications from
+      the inner handle are relayed to consumers.
     * **storage** -- the task has completed.  ``result()`` has already
       resolved with the original task result.  A second loop reviews the
-      trajectory for reusable skills.  The handle remains live: steering
-      methods (ask, interject, stop, pause, resume) operate on the
-      storage loop, and ``done()`` returns ``False``.
+      trajectory for reusable skills.  The handle remains live: ``submit``
+      and ``stop`` operate on the storage loop, and ``done()`` returns
+      ``False``.
     * **done** -- both phases have completed (or were stopped/skipped).
       ``done()`` returns ``True``.
 
@@ -1503,10 +2019,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         actor: "CodeActActor",
         meter: Optional[RunMeter] = None,
         turn_reviews_enabled: bool = False,
+        persist: bool = False,
     ) -> None:
         self._inner = inner
         self._actor = actor
         self._meter = meter
+        self._persist = bool(persist)
         self._notification_q: asyncio.Queue[dict] = asyncio.Queue()
         self._task_done_event = asyncio.Event()
         self._completion_event = asyncio.Event()
@@ -1533,29 +2051,43 @@ class _StorageCheckHandle(SteerableToolHandle):
         self._latest_turn_response: str = ""
         self._reviewed_tool_msg_count: int = 0
 
+        # The environment's checked outcome for this session, posted under
+        # ``outcome_session_id`` (unify/outcome.py), and the agent's replies
+        # it is read against.
+        self.outcome_session_id: str = uuid.uuid4().hex
+        self._outcome: Optional[dict] = None
+        self._last_reply: Optional[str] = None
+        self._reply_at_outcome: Optional[str] = None
+        from unify import outcome as outcome_mod
+
+        outcome_mod.register(self.outcome_session_id, self)
+
         # Start the two-phase lifecycle manager.
         self._lifecycle_task = asyncio.create_task(self._run_lifecycle())
 
     @property
     def run_stats(self) -> dict[str, Any]:
         """Token accounting for the execution row (planning tokens for an agentic run)."""
-        if self._meter is None:
-            return {}
-        return {"tokens": self._meter.snapshot()["tokens"]}
+        stats = (
+            {} if self._meter is None else {"tokens": self._meter.snapshot()["tokens"]}
+        )
+        # UNIFY_REPLY_CHANNEL=code+text: the turns a cell's reply() ended.
+        if cell_reply.enabled():
+            runtime_state = getattr(self._inner, "_runtime_state", None)
+            stats.update(cell_reply.run_stats(runtime_state))
+        # UNIFY_LOOP_STOP: the requests ended for making no progress.
+        from unify.common._async_tool import loop_stop
+
+        if loop_stop.enabled():
+            runtime_state = getattr(self._inner, "_runtime_state", None)
+            stats.update(loop_stop.run_stats(runtime_state))
+        return stats
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     @property
-    def _pause_event(self):
-        """Delegate to the active inner handle so get_handle_paused_state works."""
-        handle = self._active_handle
-        if handle is not None:
-            return getattr(handle, "_pause_event", None)
-        return None
-
-    @property
-    def _active_handle(self) -> Optional["SteerableToolHandle"]:
-        """The currently active inner handle for steering delegation."""
+    def _active_handle(self) -> Optional["AsyncToolLoopHandle"]:
+        """The currently active inner handle the caller's calls go to."""
         if self._phase == "task":
             return self._inner
         if self._phase == "storage":
@@ -1564,7 +2096,7 @@ class _StorageCheckHandle(SteerableToolHandle):
 
     async def _relay_notifications_from(
         self,
-        source: "SteerableToolHandle",
+        source: "ToolLoopHandle",
     ) -> None:
         """Forward notifications from *source* into our queue until cancelled.
 
@@ -1576,6 +2108,8 @@ class _StorageCheckHandle(SteerableToolHandle):
         try:
             while True:
                 notif = await source.next_notification()
+                if isinstance(notif, dict) and notif.get("type") == "response":
+                    self._last_reply = str(notif.get("content") or "")
                 await self._notification_q.put(notif)
                 if (
                     self._turn_reviews_enabled
@@ -1587,6 +2121,38 @@ class _StorageCheckHandle(SteerableToolHandle):
             pass
         except Exception:
             pass
+
+    def receive_outcome(self, outcome: dict) -> None:
+        """Take the session's checked outcome (see :func:`unify.outcome.post`).
+
+        The agent's latest reply is kept with it: an environment posts the
+        outcome once the task is over and before any closing message, so that
+        reply is the one the task ended on, and the review reads it as the
+        final result. The latest outcome wins; once the session has ended it
+        is too late and the outcome is refused.
+        """
+        from unify import outcome as outcome_mod
+
+        if self._task_done_event.is_set():
+            raise outcome_mod.OutcomeError(
+                "the session has already ended; its review has started",
+            )
+        self._outcome = dict(outcome)
+        self._reply_at_outcome = self._last_reply
+        logger.info(
+            "StorageCheck outcome received: solved="
+            f"{outcome.get('solved')} score={outcome.get('score')} "
+            f"source={outcome.get('source')}",
+        )
+
+    def _review_final_result(self) -> str:
+        """The "Final Result" the storage review reads (see :func:`review_final_result`)."""
+        return review_final_result(
+            self._original_result,
+            last_reply=self._last_reply,
+            stop_reason=self._stop_reason,
+            reply_at_outcome=self._reply_at_outcome,
+        )
 
     def _note_turn_boundary(self, latest_response: str) -> None:
         """Schedule a mid-session storage review for a completed turn.
@@ -1651,21 +2217,6 @@ class _StorageCheckHandle(SteerableToolHandle):
         *,
         reviewed_messages: int,
     ) -> None:
-        ask_tools: dict = {}
-        try:
-            ask_tools = getattr(self._inner._task, "get_ask_tools", lambda: {})()
-        except Exception:
-            pass
-        completed_tool_metadata: dict = {}
-        try:
-            completed_tool_metadata = getattr(
-                self._inner._task,
-                "get_completed_tool_metadata",
-                lambda: {},
-            )()
-        except Exception:
-            pass
-
         proactive_summaries: list[str] = []
         _ctx = _CURRENT_AGENT_CONTEXT.get(None)
         if _ctx is not None:
@@ -1693,8 +2244,6 @@ class _StorageCheckHandle(SteerableToolHandle):
             )
             storage_handle = _start_storage_check_loop(
                 trajectory=trajectory,
-                ask_tools=ask_tools,
-                completed_tool_metadata=completed_tool_metadata,
                 actor=self._actor,
                 original_result=self._latest_turn_response,
                 parent_lineage=_tr_parent_lineage,
@@ -1866,36 +2415,16 @@ class _StorageCheckHandle(SteerableToolHandle):
             await self._cancel_relay()
             self._task_done_event.set()
 
-            # Snapshot trajectory and ask tools (client/messages are still
-            # valid after result() returns -- cleanup only resets context
-            # vars and releases the semaphore).
+            # Snapshot the trajectory (client/messages are still valid after
+            # result() returns -- cleanup only resets context vars and
+            # releases the semaphore).
             trajectory: list[dict] = []
-            ask_tools: dict = {}
             try:
                 client = getattr(self._inner, "_client", None)
                 if client is not None:
                     trajectory = make_messages_safe_for_context_dump(
                         list(getattr(client, "messages", []) or []),
                     )
-            except Exception:
-                pass
-            try:
-                _get_ask = getattr(
-                    self._inner._task,
-                    "get_ask_tools",
-                    lambda: {},
-                )
-                ask_tools = _get_ask()
-            except Exception:
-                pass
-            completed_tool_metadata: dict = {}
-            try:
-                _get_meta = getattr(
-                    self._inner._task,
-                    "get_completed_tool_metadata",
-                    lambda: {},
-                )
-                completed_tool_metadata = _get_meta()
             except Exception:
                 pass
 
@@ -1907,6 +2436,32 @@ class _StorageCheckHandle(SteerableToolHandle):
             if self._task_failure is not None:
                 return
 
+            # With an admission file configured, the review runs only when an
+            # external check of the session's outcome admits it, read now that
+            # the session has ended; anything else skips it.
+            admission_path = _store_admission_path()
+            if admission_path and _store_admission_never(admission_path):
+                logger.info(f"StorageCheck skipped: {_STORE_ADMISSION_NEVER_REASON}")
+                await self._notification_q.put(
+                    {
+                        "type": "storage_review_skipped",
+                        "message": _STORE_ADMISSION_NEVER_REASON,
+                    },
+                )
+                return
+            if admission_path:
+                admitted, admission_reason = _read_store_admission(admission_path)
+                if not admitted:
+                    logger.info(f"StorageCheck skipped: {admission_reason}")
+                    await self._notification_q.put(
+                        {
+                            "type": "storage_review_skipped",
+                            "message": admission_reason,
+                        },
+                    )
+                    return
+                logger.info(f"StorageCheck {admission_reason}")
+
             self._phase = "storage"
 
             # A mid-session turn review still in flight finishes first: its
@@ -1916,6 +2471,46 @@ class _StorageCheckHandle(SteerableToolHandle):
             turn_task = self._turn_review_task
             if turn_task is not None and not turn_task.done():
                 await asyncio.gather(turn_task, return_exceptions=True)
+
+            # UNIFY_REVIEW_GATE: one tool-free yes/no call decides whether the
+            # review runs; a failed or unreadable gate runs it as shipped. While
+            # the library holds nothing, the gate is not asked: the review runs.
+            from unify.actor import review_gate
+
+            ask_gate = True
+            if review_gate.library_is_empty(
+                _library_counts(
+                    getattr(self._actor, "function_manager", None),
+                    getattr(self._actor, "guidance_manager", None),
+                ),
+            ):
+                logger.info(
+                    "StorageCheck gate not asked: the library is empty; reviewing",
+                )
+                ask_gate = False
+            if ask_gate:
+                gate_outcome_note = _storage_review_outcome_note(self._outcome)
+                decision = await review_gate.decide(
+                    client_factory=lambda: _review_gate_client(
+                        self._actor,
+                        getattr(self._inner, "_client", None),
+                    ),
+                    trajectory=trajectory,
+                    final_result=self._review_final_result(),
+                    outcome_note=gate_outcome_note,
+                )
+                logger.info(
+                    f"StorageCheck gate: review={decision.review} "
+                    f"decided={decision.decided} ({decision.reason})",
+                )
+                if not decision.review:
+                    await self._notification_q.put(
+                        {
+                            "type": "storage_review_skipped",
+                            "message": f"review gate: {decision.reason}",
+                        },
+                    )
+                    return
 
             _sc_suffix = _token_hex(2)
             _sc_call_id = new_call_id()
@@ -1929,6 +2524,9 @@ class _StorageCheckHandle(SteerableToolHandle):
             ]
             _sc_lineage_token = TOOL_LOOP_LINEAGE.set(_sc_hierarchy)
             _sc_suffix_token = _PENDING_LOOP_SUFFIX.set(_sc_suffix)
+            # UNIFY_ESCAPE_DRIFT_CHECK: the review's writes are checked against
+            # the session's own cells.
+            _sc_drift_token = _escape_drift.enter(trajectory)
 
             try:
                 review_display_label = _DEFAULT_STORAGE_REVIEW_LABEL
@@ -1953,16 +2551,33 @@ class _StorageCheckHandle(SteerableToolHandle):
                 except Exception:
                     pass
 
-                storage_handle = _start_storage_check_loop(
-                    trajectory=trajectory,
-                    ask_tools=ask_tools,
-                    completed_tool_metadata=completed_tool_metadata,
-                    actor=self._actor,
-                    original_result=str(self._original_result),
-                    parent_lineage=_sc_parent_lineage,
-                    stop_reason=self._stop_reason,
-                    proactive_summaries=proactive_summaries or None,
+                # Continue the session's own conversation when it can be
+                # continued exactly; otherwise say why not.
+                fork_source, fork_skipped = _review_fork_source(
+                    self._inner,
+                    self._actor,
                 )
+                if fork_skipped:
+                    logger.info(
+                        f"StorageCheck fork skipped: {fork_skipped}; running "
+                        "the standalone review",
+                    )
+
+                # UNIFY_STORE_FROM_SESSION: the review's tools inherit the
+                # session's cells, so a function it names is stored as it ran.
+                from unify.function_manager import session_source as _session_source
+
+                with _session_source.reviewing(trajectory):
+                    storage_handle = _start_storage_check_loop(
+                        trajectory=trajectory,
+                        actor=self._actor,
+                        original_result=self._review_final_result(),
+                        parent_lineage=_sc_parent_lineage,
+                        stop_reason=self._stop_reason,
+                        proactive_summaries=proactive_summaries or None,
+                        fork_source=fork_source,
+                        outcome=self._outcome,
+                    )
 
                 if storage_handle is None:
                     await publish_manager_method_event(
@@ -1986,7 +2601,6 @@ class _StorageCheckHandle(SteerableToolHandle):
                         logger.warning(
                             f"StorageCheck failed: {type(exc).__name__}: {exc}",
                         )
-
                     await publish_manager_method_event(
                         _sc_call_id,
                         "CodeActActor",
@@ -2009,6 +2623,7 @@ class _StorageCheckHandle(SteerableToolHandle):
             finally:
                 _PENDING_LOOP_SUFFIX.reset(_sc_suffix_token)
                 TOOL_LOOP_LINEAGE.reset(_sc_lineage_token)
+                _escape_drift.leave(_sc_drift_token)
 
         except asyncio.CancelledError:
             pass
@@ -2019,101 +2634,39 @@ class _StorageCheckHandle(SteerableToolHandle):
             self._task_done_event.set()
             self._completion_event.set()
 
-    # ── Steering: phase-aware forwarding ──────────────────────────────
+    # ── The caller's side: phase-aware forwarding ─────────────────────
 
-    async def ask(
-        self,
-        question: str,
-        *,
-        _parent_chat_context: list[dict] | None = None,
-        **kwargs,
-    ) -> "SteerableToolHandle":
-        # Task and done phases: ask about the completed/running task.
-        if self._phase != "storage":
-            return await self._inner.ask(
-                question,
-                _parent_chat_context=_parent_chat_context,
-                **kwargs,
+    async def submit(self, text: str) -> None:
+        """Queue *text* for the active loop's next turn boundary."""
+        if self._refuses_late_session_message():
+            logger.info(
+                "Message not delivered: the persistent session's task loop "
+                "has ended, so the message has no session to go to, and the "
+                "storage review does not take the session's messages "
+                f"({len(text)} chars)",
             )
-
-        # ── Storage phase: thin routing loop ──────────────────────────
-        inner_ref = self._inner
-        storage_ref = self._storage_handle
-        pcc = _parent_chat_context
-
-        async def ask_about_task(question: str) -> str:
-            """Ask a question about the **completed task** itself.
-
-            Use this for anything related to:
-            - What the task was and what the agent did to accomplish it
-            - The reasoning, tool calls, or intermediate steps taken
-            - The final result or output of the task
-            - Errors or issues encountered during execution
-
-            This queries the full execution trajectory of the finished
-            task, NOT the skill-storage process that is running now.
-            """
-            h = await inner_ref.ask(question, _parent_chat_context=pcc)
-            return await h.result()
-
-        async def ask_about_skill_storage(question: str) -> str:
-            """Ask a question about the **ongoing skill storage** process.
-
-            Use this for anything related to:
-            - Which functions are being considered for storage
-            - What the skill librarian has stored, merged, or deleted so far
-            - Progress or status of the skill consolidation review
-            - Decisions about whether a function is worth keeping
-
-            This queries the live storage-check loop that is reviewing
-            the completed trajectory for reusable patterns, NOT the
-            original task itself.
-            """
-            if storage_ref is not None:
-                h = await storage_ref.ask(question, _parent_chat_context=pcc)
-                return await h.result()
-            return "Skill storage has not started yet."
-
-        routing_tools: Dict[str, Callable] = {
-            "ask_about_task": ask_about_task,
-            "ask_about_skill_storage": ask_about_skill_storage,
-        }
-
-        routing_client = new_llm_client(purpose="planning", origin="StorageCheck.ask")
-        routing_client.set_system_message(
-            "You are answering a question about an agent that has completed "
-            "its primary task and is now reviewing its execution trajectory "
-            "to store reusable skills.\n\n"
-            "You have two tools:\n"
-            "- ask_about_task: for questions about the completed task, its "
-            "approach, reasoning, or result\n"
-            "- ask_about_skill_storage: for questions about the ongoing "
-            "skill consolidation process\n\n"
-            "Route the question to the appropriate tool. If the question "
-            "spans both topics, call both tools and synthesize the answers.",
-        )
-
-        return start_async_tool_loop(
-            client=routing_client,
-            message=question,
-            tools=routing_tools,
-            loop_id="Question(StorageCheck.routing)",
-        )
-
-    async def interject(
-        self,
-        message: str,
-        *,
-        _parent_chat_context_cont: list[dict] | None = None,
-        **kwargs,
-    ) -> None:
+            await self._notification_q.put(
+                {
+                    "type": "interjection_refused",
+                    "message": _LATE_SESSION_MESSAGE_REFUSAL,
+                },
+            )
+            return None
         handle = self._active_handle
         if handle is not None:
-            return await handle.interject(
-                message,
-                _parent_chat_context_cont=_parent_chat_context_cont,
-                **kwargs,
-            )
+            return await handle.submit(text)
+
+    def _refuses_late_session_message(self) -> bool:
+        """Whether a message arrives after a persistent session ended.
+
+        A persistent session takes each follow-up as its next request. Once
+        its task loop has ended (at a step or time limit, or by a stop), a
+        follow-up has no session to go to, and forwarded to the storage
+        review it is read there as a user message the review must answer, so
+        it is refused instead. A handle that was not persistent forwards it to
+        the review, which reads it at its next boundary.
+        """
+        return self._persist and self._task_done_event.is_set()
 
     async def stop(self, reason: Optional[str] = None, **kwargs) -> None:
         self._stopped = True
@@ -2122,17 +2675,12 @@ class _StorageCheckHandle(SteerableToolHandle):
         if handle is not None:
             await handle.stop(reason=reason, **kwargs)
 
-    async def pause(self, **kwargs) -> Optional[str]:
-        handle = self._active_handle
-        if handle is not None:
-            return await handle.pause(**kwargs)
-        return None
-
-    async def resume(self, **kwargs) -> Optional[str]:
-        handle = self._active_handle
-        if handle is not None:
-            return await handle.resume(**kwargs)
-        return None
+    async def cancel_request(self, reason: Optional[str] = None) -> bool:
+        # Only the task loop serves requests; the storage review that runs
+        # after the session has none to cancel.
+        if self._phase != "task":
+            return False
+        return await self._inner.cancel_request(reason)
 
     # ── Completion ────────────────────────────────────────────────────
 
@@ -2262,6 +2810,29 @@ def _synthesize_python_call(
     return f"{preamble}{call_expr}"
 
 
+async def _end_agents_request(
+    agents_binding,
+    *,
+    reply: Optional[str] = None,
+    reason: str = "",
+) -> None:
+    """End the main agent's request in its agent record.
+
+    With a reply, the reply is recorded and running helpers are stopped;
+    without one, the helpers are stopped with ``reason``. Only the main agent
+    ends a request, and a failure here never costs the caller its result.
+    """
+    if agents_binding is None or agents_binding.name != "root":
+        return
+    try:
+        if reply is not None:
+            await agents_binding.pool.finish_request(reply)
+        else:
+            await agents_binding.pool.close(reason)
+    except Exception:
+        logger.warning("could not end the request in the agent record", exc_info=True)
+
+
 class CodeActActor(BaseCodeActActor):
     """
     An actor that uses a conversational tool loop and a stateful code execution
@@ -2318,9 +2889,9 @@ class CodeActActor(BaseCodeActActor):
                 appended after these, so the constructor value acts as a baseline
                 and ``act()`` adds task-specific refinements on top.
             tool_policy: Controls per-turn dynamic tool filtering and tool-choice mode.
-                - ``_USE_DEFAULT`` (default): uses the built-in "discovery-first"
-                  policy that requires both a FunctionManager and a GuidanceManager
-                  discovery call before unlocking the full tool set.
+                - ``_USE_DEFAULT`` (default): the static filters only, as
+                  ``None``, and the prompt leaves the library searches to the
+                  model.
                 - A custom ``ToolPolicyFn`` callable: receives ``(step, tools)`` and
                   returns ``(mode, filtered_tools)``.  Static filters (``can_compose``,
                   ``can_store``, etc.) are always applied before the custom policy sees
@@ -2517,6 +3088,12 @@ class CodeActActor(BaseCodeActActor):
                     )
             elif session_id is None:
                 session_id = 0
+        # UNIFY_STATEFUL_CELLS: one session, so read_only reads it.
+        if state_mode == "read_only" and session_id is None and not session_name:
+            from unify.actor import cell_state
+
+            if cell_state.enabled():
+                session_id = 0
 
         # If name + id are both set but not registered yet, register alias.
         if state_mode == "stateful" and session_name and session_id is not None:
@@ -2569,23 +3146,22 @@ class CodeActActor(BaseCodeActActor):
         *,
         clarification_up_q: asyncio.Queue[str] | None,
         clarification_down_q: asyncio.Queue[str] | None,
-        interject_q: asyncio.Queue | None = None,
         notification_q: asyncio.Queue | None = None,
-        pause_event: asyncio.Event | None = None,
     ):
         """Bind one tool call's channels onto the live sandbox.
 
-        Two channels, both per-call and both restored on exit:
+        Both per-call and both restored on exit:
 
         * clarification queues, so nested manager clarifications write into the
           outer tool's ``clar_up_queue`` (mailbox A) watched by the async tool
           loop
-        * a :class:`SteeringChannel`, so checkpoints inside the running block
-          can observe interjections aimed at this call and suspend for a
-          decision
+        * a :class:`SteeringSession` with no correction channel: nothing
+          interrupts the running block, and its checkpoints only record how
+          far it got (reported when the block fails) and carry its progress
+          notifications
 
-        Yields the steering channel so the caller can report progress once
-        execution ends, however it ended.
+        Yields the session so the caller can report progress once execution
+        ends, however it ended.
         """
         from contextlib import contextmanager
 
@@ -2594,7 +3170,6 @@ class CodeActActor(BaseCodeActActor):
             restore_sandbox_clarification_queues,
         )
         from unify.function_manager.steering import SteeringSession, use_session
-        from unify.function_manager.steering_patcher import build_patch_author
 
         @contextmanager
         def _binding():
@@ -2611,16 +3186,15 @@ class CodeActActor(BaseCodeActActor):
                     clarification_up_q,
                     clarification_down_q,
                 )
-
-            # The patch author only matters when there is a channel to be
-            # corrected through; without one nothing can interrupt, so the
-            # LLM client is never built.
-            steering = SteeringSession(
-                interject_q=interject_q,
-                notification_q=notification_q,
-                patch_author=build_patch_author() if interject_q is not None else None,
-                pause_event=pause_event,
+            # The core tool surface: the cell's request_clarification is the
+            # session's (or absent where it cannot ask); None otherwise.
+            core_clarification = core_surface.bind_clarification(
+                sb.global_state,
+                clarification_up_q,
+                clarification_down_q,
             )
+
+            steering = SteeringSession(notification_q=notification_q)
             # Carried by context rather than installed on this sandbox:
             # stateless cells build a fresh sandbox per call that would
             # never see anything installed here.
@@ -2628,6 +3202,8 @@ class CodeActActor(BaseCodeActActor):
                 with use_session(steering):
                     yield steering
             finally:
+                if core_clarification is not None:
+                    core_clarification()
                 if clar_token is not None:
                     restore_sandbox_clarification_queues(sb.global_state, clar_token)
 
@@ -2653,9 +3229,8 @@ class CodeActActor(BaseCodeActActor):
             _notification_up_q: asyncio.Queue[dict] | None = None,
             _clarification_up_q: asyncio.Queue[str] | None = None,
             _clarification_down_q: asyncio.Queue[str] | None = None,
-            _interject_queue: asyncio.Queue | None = None,
-            _pause_event: asyncio.Event | None = None,
             _parent_chat_context: list[dict] | None = None,
+            _language: str = "python",
         ) -> Any:
             """
             Execute arbitrary Python code in a specified state mode.
@@ -2689,24 +3264,8 @@ class CodeActActor(BaseCodeActActor):
             ------
             An ExecutionResult with: ``stdout`` / ``stderr`` (rich
             List[TextPart | ImagePart]), ``result`` (last expression's
-            value — a steerable handle as the last expression is
-            automatically adopted by the outer loop for mid-flight
-            steering), ``error``, ``state_mode``, ``session_id``,
+            value), ``error``, ``state_mode``, ``session_id``,
             ``session_name``, ``session_created``, ``duration_ms``.
-
-            Steering while the block runs
-            -----------------------------
-            Blocks are steerable in flight: checkpoints sit between
-            top-level statements, at the top of every loop body, and before
-            every ``primitives.*`` call. On a correction the block suspends
-            and you get a turn with a progress report:
-            ``stop_execute_code_<call_id>`` abandons the block (choose when
-            the correction changes the remaining work); interjecting again
-            resumes it as written. Generated code may read
-            ``steering.messages`` to adapt without being abandoned. A
-            checkpoint only runs when the block yields — synchronous
-            blocking calls hold execution, so prefer async calls in work
-            that may need correcting partway through.
             """
             _ = thought  # Thought is logged by the LLM; not used programmatically.
             if state_mode is None:
@@ -2774,6 +3333,9 @@ class CodeActActor(BaseCodeActActor):
                     "thought": thought[:500],
                 },
             )
+            # The agent record: nothing reaches the model while its cell
+            # runs, so neither the heartbeat nor in-cell progress is wired.
+            _notification_up_q = None
             heartbeat_task: asyncio.Task[None] | None = None
             try:
                 heartbeat_task = asyncio.create_task(
@@ -2796,15 +3358,23 @@ class CodeActActor(BaseCodeActActor):
                     with self._sandbox_call_binding(
                         clarification_up_q=_clarification_up_q,
                         clarification_down_q=_clarification_down_q,
-                        interject_q=_interject_queue,
                         notification_q=notification_q,
-                        pause_event=_pause_event,
                     ) as _steering:
+                        # The workspace tools route another language here
+                        # (see _workspace_tools).
+                        _lang_kw = (
+                            {"language": _language} if _language != "python" else {}
+                        )
+                        # UNIFY_VARIABLE_INVENTORY: a cell that keeps what it
+                        # binds ends its result with the session's variables.
+                        if _language == "python" and inventory_enabled():
+                            _lang_kw["inventory"] = True
                         try:
                             out = await self._session_executor.execute(
                                 code=code,
                                 state_mode=state_mode,  # type: ignore[arg-type]
                                 session_id=session_id,
+                                **_lang_kw,
                             )
                         except Exception as e:
                             exec_exc = e
@@ -2888,6 +3458,15 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     pass
 
+        # UNIFY_REPLY_CHANNEL=code+text: the description says a cell can reply.
+        if cell_reply.enabled():
+            execute_code.__doc__ = (
+                execute_code.__doc__.rstrip()
+                + "\n\n"
+                + textwrap.indent(_EXECUTE_CODE_REPLY_DOC.strip("\n"), " " * 12)
+                + "\n"
+            )
+
         # ───────────────────────── Package installation tool ────────────────── #
 
         async def install_python_packages(
@@ -2904,161 +3483,7 @@ class CodeActActor(BaseCodeActActor):
                 display_label="Installing Python packages",
             ),
         }
-
-        # FunctionManager read tools: thin wrappers that inject callables
-        # into the sandbox and return only metadata to the LLM. Docstrings
-        # are inherited from the base class (the single source of truth).
-        if self.function_manager:
-
-            async def FunctionManager_search_functions(
-                query: str = "",
-                n: int = 5,
-                include_implementations: bool = True,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.search_functions(
-                    query=query,
-                    n=n,
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            FunctionManager_search_functions.__doc__ = (
-                BaseFunctionManager.search_functions.__doc__
-            )
-
-            async def FunctionManager_filter_functions(
-                filter: Optional[str] = None,
-                offset: int = 0,
-                limit: int = 100,
-                include_implementations: bool = True,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.filter_functions(
-                    filter=filter,
-                    offset=offset,
-                    limit=limit,
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            FunctionManager_filter_functions.__doc__ = (
-                BaseFunctionManager.filter_functions.__doc__
-            )
-
-            async def FunctionManager_list_functions(
-                include_implementations: bool = False,
-                _return_callable: bool = False,
-                _namespace: Optional[Dict[str, Any]] = None,
-                _also_return_metadata: bool = False,
-            ) -> Any:
-                sb = _CURRENT_SANDBOX.get()
-                before = set(sb.global_state.keys())
-                result = self.function_manager.list_functions(
-                    include_implementations=include_implementations,
-                    _return_callable=True,
-                    _namespace=sb.global_state,
-                    _also_return_metadata=True,
-                )
-                new_keys = set(sb.global_state.keys()) - before
-                if new_keys:
-                    self._session_executor.register_fm_globals(
-                        {k: sb.global_state[k] for k in new_keys},
-                    )
-                return result["metadata"]
-
-            FunctionManager_list_functions.__doc__ = (
-                BaseFunctionManager.list_functions.__doc__
-            )
-
-            tools["FunctionManager_search_functions"] = ToolSpec(
-                fn=FunctionManager_search_functions,
-                display_label="Searching for relevant skills",
-            )
-            tools["FunctionManager_filter_functions"] = ToolSpec(
-                fn=FunctionManager_filter_functions,
-                display_label="Filtering saved skills",
-            )
-            tools["FunctionManager_list_functions"] = ToolSpec(
-                fn=FunctionManager_list_functions,
-                display_label="Listing existing skills",
-            )
-
-            fm = self.function_manager
-            tools.update(
-                methods_to_tool_dict(
-                    ToolSpec(
-                        fn=fm.add_functions,
-                        display_label="Adding functions to the library",
-                    ),
-                    ToolSpec(
-                        fn=fm.delete_function,
-                        display_label="Deleting functions from the library",
-                    ),
-                    ToolSpec(
-                        fn=fm.reconcile_dependencies,
-                        display_label="Checking function dependencies",
-                    ),
-                    include_class_name=True,
-                ),
-            )
-
-        # FunctionManager read tools (search/filter/list) use custom wrappers
-        # that inject callables into the sandbox. All other FM/GM tools below
-        # are plain CRUD with no sandbox side-effects.
-        if self.guidance_manager:
-            gm = self.guidance_manager
-            tools.update(
-                methods_to_tool_dict(
-                    ToolSpec(
-                        fn=gm.search,
-                        display_label="Searching for relevant guidance",
-                    ),
-                    ToolSpec(fn=gm.filter, display_label="Filtering saved guidance"),
-                    ToolSpec(
-                        fn=gm.get_guidance,
-                        display_label="Reading a full guidance entry",
-                    ),
-                    ToolSpec(fn=gm.add_guidance, display_label="Saving new guidance"),
-                    ToolSpec(
-                        fn=gm.update_guidance,
-                        display_label="Updating saved guidance",
-                    ),
-                    ToolSpec(
-                        fn=gm.delete_guidance,
-                        display_label="Deleting saved guidance",
-                    ),
-                    ToolSpec(
-                        fn=gm.reconcile_dependencies,
-                        display_label="Checking guidance dependencies",
-                    ),
-                    include_class_name=True,
-                ),
-            )
+        tools.update(_workspace_tools(execute_code))
 
         # ── Proactive skill storage tool ──────────────────────────────
         if self.function_manager and self.guidance_manager:
@@ -3106,18 +3531,6 @@ class CodeActActor(BaseCodeActActor):
                     else []
                 )
 
-                _task = getattr(handle, "_task", None)
-                _ask_tools = (
-                    _task.get_ask_tools()
-                    if _task and hasattr(_task, "get_ask_tools")
-                    else {}
-                )
-                _completed_meta = (
-                    _task.get_completed_tool_metadata()
-                    if _task and hasattr(_task, "get_completed_tool_metadata")
-                    else {}
-                )
-
                 _ps_call_id = new_call_id()
                 _ps_parent = TOOL_LOOP_LINEAGE.get([])
                 _ps_parent_lineage = (
@@ -3141,8 +3554,6 @@ class CodeActActor(BaseCodeActActor):
 
                 storage_handle = _start_proactive_storage_loop(
                     trajectory=_trajectory,
-                    ask_tools=_ask_tools,
-                    completed_tool_metadata=_completed_meta,
                     actor=_actor_ref,
                     request=request,
                     parent_lineage=_ps_parent_lineage,
@@ -3184,464 +3595,6 @@ class CodeActActor(BaseCodeActActor):
                 return storage_handle
 
             tools["store_skills"] = store_skills
-
-        if self.function_manager:
-
-            @llm_soft_required(thought="")
-            async def execute_function(
-                thought: Annotated[
-                    str,
-                    "A brief, first-person, one-sentence explanation of what "
-                    "this call does and why you are making it right now (e.g. "
-                    '"Reading the five most recent inbox messages so I can '
-                    'summarise them."). Shown to the user as the rationale for '
-                    "this step; always provide it.",
-                ],
-                function_name: str,
-                call_kwargs: Optional[Dict[str, Any]] = None,
-                *,
-                state_mode: str = "stateless",
-                session_id: int | None = None,
-                session_name: str | None = None,
-                _notification_up_q: asyncio.Queue[dict] | None = None,
-                _clarification_up_q: asyncio.Queue[str] | None = None,
-                _clarification_down_q: asyncio.Queue[str] | None = None,
-                _interject_queue: asyncio.Queue | None = None,
-                _pause_event: asyncio.Event | None = None,
-                _parent_chat_context: list[dict] | None = None,
-            ) -> Any:
-                """
-                Execute a single function or primitive by name.
-
-                **This is the preferred tool for any task that maps to a single
-                function or primitive call** — a primitive
-                (``primitives.actor.act``) or a stored function discovered via
-                FunctionManager. It
-                **structurally guarantees** the returned handle is exposed to
-                the outer loop for steering (ask, stop, pause, resume,
-                interject); inside ``execute_code`` a handle is only adopted
-                if it happens to be the last expression. Use ``execute_code``
-                only for genuine multi-step composition (conditional logic,
-                loops, combining intermediate results).
-
-                Resolution order: the current sandbox namespace first, then
-                the FunctionManager store by exact name; otherwise a
-                ``NameError`` is raised. ``state_mode`` / ``session_id`` /
-                ``session_name`` keep ``execute_code`` semantics, except
-                ``state_mode`` here defaults to ``"stateless"``.
-
-                Parameters
-                ----------
-                thought : str
-                    One-sentence, first-person rationale for this call, shown
-                    to the user. Always provide it.
-                function_name : str
-                    Exact name of the function or primitive to execute
-                    (dotted path for primitives, e.g.
-                    ``"primitives.actor.act"``).
-                call_kwargs : dict, optional
-                    Keyword arguments to pass. Values keep the callee's own
-                    types — a plain keyword-argument mapping, not a string
-                    map: numbers, booleans, lists, and objects unquoted,
-                    exactly as the target signature declares them
-                    (``{"max_results": 5}``, not ``{"max_results": "5"}``,
-                    which fails type validation at the callee).
-
-                Steering while the function runs
-                -------------------------------
-                Steerable in flight, like ``execute_code`` — checkpoints are
-                placed inside a stored implementation's own body, so a long
-                loop can be corrected partway through. A correction suspends
-                the call and gives you a turn:
-                ``stop_execute_function_<call_id>`` abandons it, interjecting
-                again resumes it.
-
-                Returns
-                -------
-                dict | ExecutionResult
-                    Same shape as ``execute_code`` output.
-                """
-                _ = thought  # Thought is logged by the LLM; not used programmatically.
-                call_kwargs = call_kwargs or {}
-                function_data: dict[str, Any] | None = None
-                get_function_data = getattr(
-                    self.function_manager,
-                    "_get_function_data_by_name",
-                    None,
-                )
-                if callable(get_function_data):
-                    function_data = get_function_data(name=function_name)
-                if function_data is None:
-                    get_stored_primitive = getattr(
-                        self.function_manager,
-                        "_get_stored_primitive_data_by_name",
-                        None,
-                    )
-                    if callable(get_stored_primitive):
-                        function_data = get_stored_primitive(name=function_name)
-                if isinstance(function_data, dict) and function_data.get(
-                    "dependencies",
-                ):
-                    # The synthesized call runs the stored implementation
-                    # in the sandbox, so its packages must be importable
-                    # before the cell starts.
-                    await asyncio.to_thread(
-                        environment.ensure,
-                        list(function_data["dependencies"]),
-                    )
-
-                # The synthesized-call path prepends the raw implementation
-                # and runs it in the sandbox, shadowing any boundary-wrapped
-                # callable — so the usage trace is fed here, where the row
-                # is in hand, or this invocation would go unremembered.
-                if isinstance(function_data, dict):
-                    note_use = getattr(
-                        self.function_manager,
-                        "_note_function_use",
-                        None,
-                    )
-                    if callable(note_use):
-                        try:
-                            note_use(function_data)
-                        except Exception:  # noqa: BLE001 - never break a call
-                            pass
-
-                import time as _ef_time
-                import logging as _ef_logging
-
-                _ef_t0 = _ef_time.perf_counter()
-                _ef_log = _ef_logging.getLogger("unify")
-                _ef_fn_log = _ef_logging.getLogger(
-                    f"unify.execute_function.{function_name}",
-                )
-
-                def _ef_ms():
-                    return f"{(_ef_time.perf_counter() - _ef_t0) * 1000:.0f}ms"
-
-                _ef_log.debug(
-                    f"⏱️ [execute_function +{_ef_ms()}] entered: {function_name}",
-                )
-                _ef_fn_log.info(
-                    "START execute_function.%s params=%s",
-                    function_name,
-                    {
-                        k: (
-                            v
-                            if isinstance(v, (int, float, bool, type(None)))
-                            else repr(v)[:80]
-                        )
-                        for k, v in (call_kwargs or {}).items()
-                        if not str(k).startswith("_")
-                    },
-                )
-                _ef_fn_t0 = _ef_time.monotonic()
-
-                # ── Synthesize the code string ────────────────────────────
-                code = _synthesize_python_call(
-                    function_name=function_name,
-                    call_kwargs=call_kwargs,
-                    function_manager=self.function_manager,
-                )
-                _ef_log.debug(
-                    f"⏱️ [execute_function +{_ef_ms()}] code synthesized",
-                )
-
-                # ── Lineage boundary ─────────────────────────────────────
-                _ef_suffix = _token_hex(2)
-                _ef_call_id = new_call_id()
-                _ef_parent = TOOL_LOOP_LINEAGE.get([])
-                _ef_parent_lineage = (
-                    list(_ef_parent) if isinstance(_ef_parent, list) else []
-                )
-                _ef_hierarchy = [
-                    *_ef_parent_lineage,
-                    f"execute_function({function_name})({_ef_suffix})",
-                ]
-                _ef_lineage_token = TOOL_LOOP_LINEAGE.set(_ef_hierarchy)
-
-                async def _ef_pub_safe(**payload: Any) -> None:
-                    try:
-                        await publish_manager_method_event(
-                            _ef_call_id,
-                            "CodeActActor",
-                            "execute_function",
-                            hierarchy=_ef_hierarchy,
-                            display_label=f"Running: {function_name}",
-                            **payload,
-                        )
-                    except Exception as e:
-                        log_boundary_event(
-                            "->".join(_ef_hierarchy),
-                            f"Warning: failed to publish event: {type(e).__name__}: {e}",
-                            icon="⚠️",
-                            level="warning",
-                        )
-
-                _ef_log.debug(
-                    f"⏱️ [execute_function +{_ef_ms()}] lineage boundary (incoming) start",
-                )
-                try:
-                    await _ef_pub_safe(phase="incoming")
-                except Exception:
-                    pass
-                _ef_log.debug(
-                    f"⏱️ [execute_function +{_ef_ms()}] lineage boundary (incoming) done",
-                )
-                log_boundary_event(
-                    "->".join(_ef_hierarchy),
-                    f"Executing function {function_name}...",
-                    icon="🛠️",
-                )
-
-                # ── Session resolution + execution (shared with execute_code) ──
-                out: dict[str, Any] | None = None
-                tb_str: str | None = None
-                exec_exc: Exception | None = None
-
-                active_work = ACTIVE_WORK.begin(
-                    label="execute_function",
-                    metadata={
-                        "function_name": function_name,
-                        "state_mode": state_mode,
-                        "session_id": session_id,
-                        "session_name": session_name,
-                    },
-                )
-                heartbeat_task: asyncio.Task[None] | None = None
-                try:
-                    heartbeat_task = asyncio.create_task(
-                        self._run_active_work_heartbeat(
-                            active_work,
-                            _notification_up_q,
-                        ),
-                    )
-                    notification_q = (
-                        _ActiveWorkNotificationQueue(_notification_up_q, active_work)
-                        if _notification_up_q is not None
-                        else None
-                    )
-                    session_id = self._resolve_session(
-                        state_mode=state_mode,
-                        session_id=session_id,
-                        session_name=session_name,
-                    )
-
-                    _ef_steering = None
-                    with self._sandbox_call_binding(
-                        clarification_up_q=_clarification_up_q,
-                        clarification_down_q=_clarification_down_q,
-                        interject_q=_interject_queue,
-                        notification_q=notification_q,
-                        pause_event=_pause_event,
-                    ) as _ef_steering:
-                        _ef_log.debug(
-                            f"⏱️ [execute_function +{_ef_ms()}] sandbox.execute start",
-                        )
-                        _pcc_token = _PARENT_CHAT_CONTEXT.set(_parent_chat_context)
-                        try:
-                            try:
-                                out = await self._session_executor.execute(
-                                    code=code,
-                                    state_mode=state_mode,  # type: ignore[arg-type]
-                                    session_id=session_id,
-                                )
-                                _ef_log.debug(
-                                    f"⏱️ [execute_function +{_ef_ms()}] sandbox.execute done",
-                                )
-                            except Exception as e:
-                                exec_exc = e
-                                tb = traceback.format_exc()
-                                tb_str = tb
-                                out = {
-                                    "stdout": "",
-                                    "stderr": "",
-                                    "result": None,
-                                    "error": tb,
-                                    "state_mode": state_mode,
-                                    "session_id": session_id,
-                                    "session_name": session_name,
-                                    "session_created": False,
-                                    "duration_ms": 0,
-                                }
-                        finally:
-                            _PARENT_CHAT_CONTEXT.reset(_pcc_token)
-
-                    # Enrich with session name.
-                    if out.get("session_id") is not None:
-                        out["session_name"] = self._get_session_name(
-                            session_id=int(out["session_id"]),
-                        )
-                    else:
-                        out["session_name"] = None
-
-                    # Wrap in ExecutionResult.
-                    if isinstance(out.get("stdout"), list):
-                        out = ExecutionResult(**out)
-
-                    _ef_result_for_log = (
-                        out.get("result")
-                        if isinstance(out, dict)
-                        else getattr(out, "result", None)
-                    )
-                    _ef_error_for_log = (
-                        out.get("error")
-                        if isinstance(out, dict)
-                        else getattr(out, "error", None)
-                    )
-                    if _ef_error_for_log:
-                        _ef_fn_log.error(
-                            "FAIL execute_function.%s after %.1fs error=%s",
-                            function_name,
-                            _ef_time.monotonic() - _ef_fn_t0,
-                            _ef_error_for_log,
-                        )
-                    else:
-                        _ef_result_repr = repr(_ef_result_for_log)
-                        if len(_ef_result_repr) > 240:
-                            _ef_result_repr = _ef_result_repr[:237] + "..."
-                        _ef_fn_log.info(
-                            "END execute_function.%s after %.1fs result=%s",
-                            function_name,
-                            _ef_time.monotonic() - _ef_fn_t0,
-                            _ef_result_repr,
-                        )
-                        if isinstance(_ef_result_for_log, dict):
-                            _ef_status = str(
-                                _ef_result_for_log.get("status") or "",
-                            ).lower()
-                            if (
-                                "fail" in _ef_status
-                                or _ef_result_for_log.get("error")
-                                or _ef_result_for_log.get("partial_error")
-                            ):
-                                _ef_fn_log.error(
-                                    "SOFT_FAIL execute_function.%s status=%r "
-                                    "error=%r partial_error=%r",
-                                    function_name,
-                                    _ef_result_for_log.get("status"),
-                                    _ef_result_for_log.get("error"),
-                                    _ef_result_for_log.get("partial_error"),
-                                )
-
-                    # When the execution produced a bare SteerableToolHandle
-                    # with no meaningful side output, return the handle directly
-                    # so the core loop adopts it via the bare-handle path
-                    # (no intermediate LLM turn required).
-                    _ef_result_val = _ef_result_for_log
-                    if isinstance(_ef_result_val, SteerableToolHandle):
-                        _ef_stdout = (
-                            out.get("stdout")
-                            if isinstance(out, dict)
-                            else getattr(out, "stdout", None)
-                        )
-                        _ef_stderr = (
-                            out.get("stderr")
-                            if isinstance(out, dict)
-                            else getattr(out, "stderr", None)
-                        )
-                        _ef_error = (
-                            out.get("error")
-                            if isinstance(out, dict)
-                            else getattr(out, "error", None)
-                        )
-                        _has_side_output = bool(
-                            (
-                                _ef_stdout
-                                and (
-                                    isinstance(_ef_stdout, str)
-                                    and _ef_stdout.strip()
-                                    or isinstance(_ef_stdout, list)
-                                    and _ef_stdout
-                                )
-                            )
-                            or (
-                                _ef_stderr
-                                and (
-                                    isinstance(_ef_stderr, str)
-                                    and _ef_stderr.strip()
-                                    or isinstance(_ef_stderr, list)
-                                    and _ef_stderr
-                                )
-                            )
-                            or _ef_error,
-                        )
-                        if not _has_side_output:
-                            _ef_log.debug(
-                                f"⏱️ [execute_function +{_ef_ms()}] "
-                                f"returning bare handle (no side output)",
-                            )
-                            return _ef_result_val
-
-                    # Same contract as execute_code: report only when something
-                    # actually steered this call. The bare-handle return above
-                    # is exempt — that value is a handle the loop adopts, and
-                    # steering continues through it rather than ending here.
-                    if _ef_steering is not None and _ef_steering.messages:
-                        if isinstance(out, dict):
-                            out["steering"] = _ef_steering.progress()
-                        else:
-                            out.steering = _ef_steering.progress()
-
-                    _ef_log.debug(
-                        f"⏱️ [execute_function +{_ef_ms()}] returning result",
-                    )
-                    return out
-                finally:
-                    active_work.end()
-                    if heartbeat_task is not None and not heartbeat_task.done():
-                        heartbeat_task.cancel()
-                        try:
-                            await heartbeat_task
-                        except (asyncio.CancelledError, Exception):
-                            pass
-                    _ef_log.debug(
-                        f"⏱️ [execute_function +{_ef_ms()}] lineage boundary (outgoing) start",
-                    )
-                    try:
-                        _out_err = (
-                            (
-                                out.get("error")
-                                if isinstance(out, dict)
-                                else getattr(out, "error", None)
-                            )
-                            if out is not None
-                            else None
-                        )
-                        if _out_err:
-                            await _ef_pub_safe(
-                                phase="outgoing",
-                                status="error",
-                                error=str(_out_err),
-                                error_type=(
-                                    type(exec_exc).__name__
-                                    if exec_exc is not None
-                                    else "Error"
-                                ),
-                                traceback=(tb_str or "")[:2000],
-                            )
-                        else:
-                            await _ef_pub_safe(phase="outgoing", status="ok")
-                    except Exception:
-                        pass
-                    _ef_log.debug(
-                        f"⏱️ [execute_function +{_ef_ms()}] lineage boundary (outgoing) done",
-                    )
-                    try:
-                        TOOL_LOOP_LINEAGE.reset(_ef_lineage_token)
-                    except Exception:
-                        pass
-
-            def _ef_display_label(tc: dict) -> str:
-                try:
-                    args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                    return args.get("function_name", "execute_function")
-                except Exception:
-                    return "execute_function"
-
-            tools["execute_function"] = ToolSpec(
-                fn=execute_function,
-                display_label=_ef_display_label,
-            )
 
         # ───────────────────────── Session management tools ────────────────── #
 
@@ -3745,23 +3698,10 @@ class CodeActActor(BaseCodeActActor):
                     "error": f"Session {resolved} not found",
                     "error_type": "validation",
                 }
-            names: list[str] = []
-            full_map: dict[str, str] = {}
-            for k, v in sb.global_state.items():
-                if not isinstance(k, str) or k.startswith("_"):
-                    continue
-                if callable(v) or isinstance(v, type):
-                    continue
-                names.append(k)
-                if detail == "full":
-                    try:
-                        s = repr(v)
-                        if len(s) > 500:
-                            s = s[:500] + "..."
-                    except Exception:
-                        s = f"<{type(v).__name__}>"
-                    full_map[k] = s
-            names = sorted(names)
+            # The variables live in the session's worker.
+            in_worker = await sb.worker_variables()
+            full_map: dict[str, str] = dict(in_worker)
+            names = sorted(in_worker)
             state_obj = {
                 "variables": full_map if detail == "full" else names,
                 "functions": [],
@@ -3881,6 +3821,15 @@ class CodeActActor(BaseCodeActActor):
             display_label="Closing all sessions",
         )
 
+        _correct_tool_docs(tools, environments=self.environments)
+        # UNIFY_PROMPT_TRIM: only primitives read the conversation a code
+        # tool is given.
+        if "primitives" not in self.environments:
+            _hide_parent_chat_context(tools)
+        from unify.actor import cell_state
+
+        if cell_state.enabled():
+            cell_state.correct_tools(tools)
         return tools
 
     @functools.wraps(BaseCodeActActor.act, updated=())
@@ -3906,7 +3855,7 @@ class CodeActActor(BaseCodeActActor):
         can_compose: Optional[bool] = None,
         can_store: Optional[bool] = None,
         llm_profile: Optional[str] = None,
-    ) -> SteerableToolHandle:
+    ) -> ToolLoopHandle:
         if not self._main_event_loop:
             self._main_event_loop = asyncio.get_running_loop()
 
@@ -3923,10 +3872,20 @@ class CodeActActor(BaseCodeActActor):
             self.can_compose if can_compose is None else bool(can_compose)
         )
         effective_can_store = self.can_store if can_store is None else bool(can_store)
+        # UNIFY_MEMORY_V2=on: no storage review and no library writes.
+        from unify.memory_v2.integration import hooks as _mv2
+
+        effective_can_store = _mv2.can_store(effective_can_store)
+        # UNIFY_STORE_ADMISSION: the post-session review is the only writer,
+        # and it runs only when an external check of the outcome admits it.
+        admission_gated = effective_can_store and bool(_store_admission_path())
         act_llm_profile = resolve_act_llm_profile(llm_profile)
 
         # can_compose=False requires a FunctionManager so the LLM has execute_function
         # and the discovery tools available. Without it there are no usable tools.
+        # The core tool surface: refuse what cannot run confined.
+        core_surface.require_prerequisites(can_compose=effective_can_compose)
+
         if not effective_can_compose and self.function_manager is None:
             raise RuntimeError(
                 "CodeActActor cannot run with can_compose=False: "
@@ -3938,6 +3897,17 @@ class CodeActActor(BaseCodeActActor):
             "This is an interactive session. Acknowledge that you are ready and "
             "wait for the user to provide instructions via interjection."
         )
+
+        # The agent record: this act() joins its run's shared record, as the
+        # main agent or as the helper a pool started.
+        from unify.agents.binding import bind_for_act
+
+        _agents = bind_for_act(
+            request=str(request or ""),
+            user_reads=bool(clarification_enabled),
+        )
+        # A question to the requester is a record post.
+        clarification_enabled = False
 
         # Clarification queues for sandbox env injection (managers called from
         # execute_code). Separate from the tool-loop clarification_queues below:
@@ -4025,12 +3995,21 @@ class CodeActActor(BaseCodeActActor):
             f"⏱️ [CodeActActor.act +{_act_ms()}] actor slot ready, creating sandbox",
         )
         # Packages installed by earlier tasks and sessions are importable
-        # before the first cell runs.
-        environment.activate()
+        # before the first cell runs: the sandboxed worker puts them on its
+        # own path.
         sandbox = PythonExecutionSession(environments=sandbox_envs)
         token = _CURRENT_SANDBOX.set(sandbox)
         env_token = _CURRENT_ENVIRONMENTS.set(sandbox_envs)
+        can_clarify_token = _CAN_CLARIFY.set(bool(clarification_enabled))
         llm_profile_token = CURRENT_ACT_LLM_PROFILE.set(act_llm_profile)
+        # What this run may do; every sub-actor it starts is bounded by it.
+        grants_token = CALLER_GRANTS.set(
+            ActorGrants.of_actor(
+                self,
+                can_compose=effective_can_compose,
+                can_store=effective_can_store,
+            ),
+        )
 
         # Set agent context for depth tracking and handle access
         parent_ctx = _CURRENT_AGENT_CONTEXT.get()
@@ -4057,7 +4036,15 @@ class CodeActActor(BaseCodeActActor):
             except Exception:
                 pass
             try:
+                _CAN_CLARIFY.reset(can_clarify_token)
+            except Exception:
+                pass
+            try:
                 CURRENT_ACT_LLM_PROFILE.reset(llm_profile_token)
+            except Exception:
+                pass
+            try:
+                CALLER_GRANTS.reset(grants_token)
             except Exception:
                 pass
             try:
@@ -4080,15 +4067,15 @@ class CodeActActor(BaseCodeActActor):
             "execute_code",
             "install_python_packages",
         }
-        _store_only_tools = {
-            "store_skills",
-            "FunctionManager_add_functions",
-            "FunctionManager_delete_function",
-            "FunctionManager_reconcile_dependencies",
-            "GuidanceManager_reconcile_dependencies",
-        }
+        _store_only_tools = {"store_skills"}
+        # Admission-gated sessions write nothing in-session either.
+        _admission_withheld_tools = _store_only_tools
 
-        def _filter_tools(tool_dict: Dict[str, Any]) -> Dict[str, Any]:
+        def _filter_tools(
+            tool_dict: Dict[str, Any],
+            *,
+            withhold_admission: bool = True,
+        ) -> Dict[str, Any]:
             """Apply static per-call filters (can_compose, can_store)."""
             out = dict(tool_dict)
             if not effective_can_compose:
@@ -4099,77 +4086,104 @@ class CodeActActor(BaseCodeActActor):
             if not effective_can_store:
                 for name in _store_only_tools:
                     out.pop(name, None)
+            if admission_gated and withhold_admission:
+                for name in _admission_withheld_tools:
+                    out.pop(name, None)
             return out
 
-        base_tools = _filter_tools(self.get_tools("act"))
+        _act_tools = self.get_tools("act")
+        base_tools = _filter_tools(_act_tools)
 
-        # When execute_code is masked (can_compose=False), strip any
-        # execute_code references from execute_function's docstring so the
-        # LLM has no awareness that a code sandbox exists.
-        if "execute_function" in base_tools and "execute_code" not in base_tools:
-            _ef = base_tools["execute_function"]
-            (_ef.fn if isinstance(_ef, ToolSpec) else _ef).__doc__ = (
-                "Execute a known function by name and return its result.\n"
-                "\n"
-                "The function is resolved from the sandbox namespace or looked up\n"
-                "in the FunctionManager by exact name. Functions discovered via the\n"
-                "FunctionManager discovery tools are automatically available.\n"
-                "\n"
-                "Steps\n"
-                "-----\n"
-                "1. Discover stored functions via ``FunctionManager_search_functions``,\n"
-                "   ``FunctionManager_filter_functions``, or\n"
-                "   ``FunctionManager_list_functions``.\n"
-                "2. Call ``execute_function`` with a stored match or a\n"
-                "   prompt-documented callable by exact name (primitives are\n"
-                "   excluded from discovery).\n"
-                "\n"
-                "Key concepts\n"
-                "------------\n"
-                "- **state_mode**:\n"
-                '  - ``"stateless"``: no session; clean execution; no persistence\n'
-                '  - ``"stateful"``: persistent session; state accumulates\n'
-                '  - ``"read_only"``: reads from an existing session but does not\n'
-                "    persist changes\n"
-                "- **session_id / session_name**: only meaningful for\n"
-                "  stateful / read_only\n"
-                "\n"
-                "Parameters\n"
-                "----------\n"
-                "function_name : str\n"
-                "    Exact name of the function to execute.\n"
-                "call_kwargs : dict, optional\n"
-                "    Keyword arguments to pass to the function. Values keep\n"
-                "    the callee's declared types — numbers/booleans unquoted\n"
-                '    (``{"max_results": 5}``, not ``{"max_results": "5"}``).\n'
-                'state_mode : str, default ``"stateless"``\n'
-                "    Execution state mode.\n"
-                "session_id : int | None\n"
-                "    Session ID for stateful/read_only modes.\n"
-                "session_name : str | None\n"
-                "    Human-friendly session alias.\n"
-                "\n"
-                "Returns\n"
-                "-------\n"
-                "dict | ExecutionResult\n"
-                "    Same shape as code execution output (stdout, stderr, result,\n"
-                "    error, state_mode, session_id, session_name,\n"
-                "    session_created, duration_ms).\n"
+        # The core tool surface: execute_code is the only JSON tool; the
+        # libraries, install, read_file and grep are objects in the sandbox,
+        # whose writes refuse at call time what this session may not do.
+        from unify.settings import SETTINGS as _CORE_SETTINGS
+
+        _core_reviews = effective_can_store and not admission_gated
+        core_session = core_surface.start_session(
+            self,
+            sandbox=sandbox,
+            tools=base_tools,
+            policy=core_surface.WritePolicy(
+                can_store=effective_can_store,
+                admission_gated=admission_gated,
+            ),
+            store_skills=_core_reviews,
+            clarification_enabled=clarification_enabled,
+            caller_queues=(
+                (env_clarification_up_q, env_clarification_down_q)
+                if caller_supplied_clarification_queues
+                else None
+            ),
+            # Defined below, before the loop can call them.
+            on_clarification_request=lambda q: (
+                _on_clar_req(q) if _on_clar_req is not None else None
+            ),
+            on_clarification_answer=lambda a: (
+                _on_clar_ans(a) if _on_clar_ans is not None else None
+            ),
+            structured=response_format is not None,
+            turn_reviews=(
+                _core_reviews
+                and bool(persist)
+                and bool(_CORE_SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
+            ),
+        )
+        base_tools = dict(core_session.tools)
+
+        # UNIFY_CODE_PROJECTION=notebook: execute_code takes one field, the
+        # cell, whose first-line magics map onto the same function's
+        # arguments; the session tools' data is the %sessions magic.
+        from unify.actor import notebook_cells
+
+        if notebook_cells.enabled() and "execute_code" in base_tools:
+            from unify.actor.prompt_builders import _injects_actor_primitives
+            from unify.actor.workspace_tools import _network_text
+
+            base_tools = notebook_cells.project_tools(
+                base_tools,
+                caps=notebook_cells.Capabilities(bash=True),
+                structured=response_format is not None,
+                parent_context=_injects_actor_primitives(sandbox_envs),
+                resolve_session_name=self._resolve_session_name,
+                session_tools=_act_tools,
+                network=_network_text(),
             )
 
         effective_guidelines = (
             "\n\n".join(filter(None, [self._base_guidelines, guidelines])) or None
         )
 
+        from unify.settings import SETTINGS
+
+        # The default policy leaves the library searches to the model (no
+        # gated or forced turn).
+        default_policy = self.tool_policy is _USE_DEFAULT
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] building system prompt")
         system_prompt = build_code_act_prompt(
             environments=sandbox_envs,
-            tools=base_tools,
-            can_store=effective_can_store,
+            core=core_session.prompt,
+            # An admission-gated session has no in-session storage tools to
+            # describe; it is told the libraries are read-only instead.
+            can_store=effective_can_store and not admission_gated,
             guidelines=effective_guidelines,
-            discovery_first_policy=self.tool_policy is _USE_DEFAULT,
             persist=bool(persist),
+            library_read_only=admission_gated,
         )
+        if notebook_cells.enabled() and "execute_code" in base_tools:
+            # UNIFY_CODE_PROJECTION=notebook: the magics, where the prompt
+            # named the session fields and tools.
+            system_prompt = notebook_cells.rewrite_prompt(system_prompt)
+        # UNIFY_MEMORY_V2=on: the memory index ends the cached system prompt.
+        system_prompt = _mv2.system_prompt(system_prompt)
+        # What opens the session's first user message (first_message_context),
+        # in this order: the host clock (UNIFY_CLOCK_PLACEMENT=first_message),
+        # the library's size (UNIFY_LIBRARY_SNAPSHOT), then a rule and the
+        # request.
+        first_message_parts: list[str] = []
+        if core_session is not None or "execute_code" in base_tools:
+            # Where the system prompt would have carried it.
+            first_message_parts.append(first_message_clock_line())
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] prompt built "
             f"({len(system_prompt)} chars, {len(base_tools)} tools)",
@@ -4178,27 +4192,12 @@ class CodeActActor(BaseCodeActActor):
         # Tool policy controls which tools are visible per turn, and whether a
         # tool call is required.  The static _filter_tools (can_compose,
         # can_store) is always applied regardless of the dynamic policy.
-        if self.tool_policy is None:
+        if self.tool_policy is None or default_policy:
             # No dynamic policy -- only static filtering on every turn.
             def _static_only_policy(step: int, tools: Dict[str, Any]):
                 return "auto", _filter_tools(tools)
 
             tool_policy: Optional[ToolPolicyFn] = _static_only_policy
-        elif self.tool_policy is _USE_DEFAULT:
-            # Default discovery-first policy (FM + GM gates).
-            _has_fm_tools = any(
-                isinstance(k, str) and k.startswith("FunctionManager_")
-                for k in base_tools.keys()
-            )
-            _has_gm_tools = any(
-                isinstance(k, str) and k.startswith("GuidanceManager_")
-                for k in base_tools.keys()
-            )
-            tool_policy = _default_tool_policy(
-                _has_fm_tools,
-                _has_gm_tools,
-                _filter_tools,
-            )
         else:
             # Custom caller-provided policy.  Wrap it so that _filter_tools
             # is always applied first (static filters are never bypassed).
@@ -4221,34 +4220,23 @@ class CodeActActor(BaseCodeActActor):
         if system_prompt:
             client.set_system_message(system_prompt)
 
-        # Soft/partial discovery hosts often serialize families under
-        # tool_choice=required. Inject a Unify-local completion mutator that
-        # appends missing preferred discovery calls for the gated schema.
-        if self.tool_policy is _USE_DEFAULT:
-            _discovery_mutator = _build_discovery_parallel_mutator()
-            _orig_generate = client.generate
-
-            def _generate_with_discovery_mutator(*args: Any, **kwargs: Any) -> Any:
-                kwargs.setdefault("completion_mutator", _discovery_mutator)
-                return _orig_generate(*args, **kwargs)
-
-            client.generate = _generate_with_discovery_mutator  # type: ignore[method-assign]
+        # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
+        # libraries are at task start.
+        snapshot = _library_snapshot_line(
+            _library_counts(self.function_manager, self.guidance_manager),
+            has_fm_tools=core_session.prompt.functions,
+            has_gm_tools=core_session.prompt.guidance,
+        )
+        if snapshot:
+            first_message_parts.append(snapshot)
 
         tools = dict(base_tools)
 
         # Build event bus callbacks for clarification and notification tools
         # (the loop creates the tools; we just provide the event hooks).
-        _clar_queues = None
         _on_clar_req = None
         _on_clar_ans = None
         if clarification_enabled:
-            # (None, None) still injects request_clarification; the tool then
-            # uses per-call hidden queues so CM sees handle._clar_q events.
-            _clar_queues = (
-                (env_clarification_up_q, env_clarification_down_q)
-                if caller_supplied_clarification_queues
-                else (None, None)
-            )
 
             async def _on_clar_req(q: str):
                 try:
@@ -4284,50 +4272,84 @@ class CodeActActor(BaseCodeActActor):
                 except Exception:
                     pass
 
-        async def _on_notify(message: str):
-            try:
-                await EVENT_BUS.publish(
-                    Event(
-                        type="ManagerMethod",
-                        calling_id=_call_id,
-                        payload={
-                            "manager": "CodeActActor",
-                            "method": "act",
-                            "action": "notification",
-                            "message": message,
-                        },
-                    ),
-                )
-            except Exception:
-                pass
-
         logger.debug(f"⏱️ [CodeActActor.act +{_act_ms()}] starting async tool loop")
         run_meter = new_run_meter()
         meter_token = current_run_meter.set(run_meter)
+        # UNIFY_STORE_INSTANCE_LINT: the task loop, its tools and its storage
+        # review inherit the identifiers of this request (set until the handle
+        # is built); a sub-agent keeps those of the task it works for.
+        instance_token = _instance_lint.enter(request)
+        core_token = core_session.enter()
         try:
+            # The library entries closest to the request, after the snapshot line.
+            from unify.actor.library_shortlist import shortlist_block
+
+            shortlist = shortlist_block(
+                self.function_manager,
+                self.guidance_manager,
+                request,
+                functions=core_session.prompt.functions,
+                guidance=core_session.prompt.guidance,
+                # The listed functions are bound as a read binds them, and
+                # the header says how to call.
+                bind=core_session.listed_binder(sandbox),
+            )
+            if shortlist:
+                first_message_parts.append(shortlist)
+            sandbox.global_state.update(_agents.globals())
+            if isinstance(getattr(sandbox, "core_globals", None), dict):
+                sandbox.core_globals.update(_agents.globals())
+            first_message_parts.append(_agents.prompt_section())
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
                 tools,
                 loop_id=f"CodeActActor.act",
-                parent_chat_context=_parent_chat_context,
-                interrupt_llm_with_interjections=True,
+                # The record carries what a helper is told, so no parent
+                # chat context reaches the loop.
+                parent_chat_context=None,
                 log_steps=True,
                 tool_policy=tool_policy,
                 response_format=response_format,
                 persist=persist,
+                # UNIFY_REPLY_CHANNEL=code+text: a cell's reply() ends a turn.
+                reply_channel=True,
+                # UNIFY_BIND_REQUEST=on: a cell reads the request as ``request``.
+                bind_request=True,
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(
-                    ["store_skills"] if effective_can_store else None
+                    ["store_skills"]
+                    if effective_can_store and not admission_gated
+                    else None
                 ),
-                clarification_queues=_clar_queues,
+                # request_clarification is the sandbox's (the core surface),
+                # and there is no send_notification tool.
+                clarification_queues=None,
                 on_clarification_request=_on_clar_req,
                 on_clarification_answer=_on_clar_ans,
-                on_notify=_on_notify,
+                # No notification channel: nothing reads progress
+                # notifications under the agent record.
+                on_notify=None,
+                compression_tools_on_demand=True,
+                on_turn_boundary=_agents.on_turn_boundary,
+                **(
+                    {
+                        "first_message_context": "\n\n".join(
+                            part for part in first_message_parts if part
+                        ),
+                    }
+                    if any(first_message_parts)
+                    else {}
+                ),
             )
+        except BaseException:
+            _instance_lint.leave(instance_token)
+            raise
         finally:
             current_run_meter.reset(meter_token)
+            if core_token is not None:
+                core_surface.Session.leave(core_token)
         handle.run_meter = run_meter  # type: ignore[attr-defined]
         logger.debug(
             f"⏱️ [CodeActActor.act +{_act_ms()}] loop started, returning handle",
@@ -4335,10 +4357,30 @@ class CodeActActor(BaseCodeActActor):
 
         # Wrap result() to run cleanup when the loop finishes
         _original_result = handle.result
+        _loop_handle = handle
 
         async def _result_with_cleanup() -> str:
             try:
-                return await _original_result()
+                try:
+                    result = await _original_result()
+                except BaseException:
+                    await _end_agents_request(
+                        _agents,
+                        reason="the main agent's run failed",
+                    )
+                    raise
+                # The agent record: the main agent's answer ends its request;
+                # helpers still running are stopped and checked to have ended. A
+                # stopped run or a finished session has no answer to record.
+                stop_event = getattr(_loop_handle, "_stop_event", None)
+                if persist or (stop_event is not None and stop_event.is_set()):
+                    await _end_agents_request(
+                        _agents,
+                        reason="the main agent's session ended or was stopped",
+                    )
+                else:
+                    await _end_agents_request(_agents, reply=str(result))
+                return result
             finally:
                 await _cleanup()
 
@@ -4346,6 +4388,7 @@ class CodeActActor(BaseCodeActActor):
 
         # Update agent context with handle reference
         new_ctx.handle = handle
+        handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
 
         # Wrap in StorageCheckHandle for post-completion function review. A
         # persistent session is reviewed once, when it ends (its stop is a
@@ -4360,15 +4403,20 @@ class CodeActActor(BaseCodeActActor):
                 meter=run_meter,
                 turn_reviews_enabled=(
                     effective_can_store
+                    and not admission_gated
                     and bool(persist)
                     and bool(SETTINGS.UNIFY_TURN_STORAGE_REVIEWS)
                 ),
+                persist=bool(persist),
             )
             # Tracked so ``close()`` can end a review still in flight. The
             # set is weak: a finished handle the caller has dropped must not
             # be kept alive by this bookkeeping.
             self._live_storage_handles.add(handle)
 
+        _instance_lint.leave(instance_token)
+        # The handle the caller holds (the storage wrapper by default).
+        handle.agents_pool = _agents.pool  # type: ignore[attr-defined]
         return handle
 
     async def close(self):

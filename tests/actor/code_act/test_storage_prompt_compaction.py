@@ -17,6 +17,7 @@ bounded and prompt-cache-friendly:
 from unittest.mock import MagicMock, patch
 
 from unify.actor.code_act_actor import (
+    _STORAGE_MINIMAL_WHAT,
     _STORAGE_WHAT_CAN_BE_STORED,
     _prepare_trajectory_for_storage_review,
     _start_proactive_storage_loop,
@@ -255,21 +256,20 @@ def test_storage_check_prompt_puts_doctrine_before_trajectory():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], ["- `some_tool`"]),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_storage_check_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             original_result="all done",
         )
         prompt = _built_system_prompt(mock_client)
         assert mock_loop.called
 
-    doctrine_at = prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40])
+    doctrine_at = prompt.index(_STORAGE_MINIMAL_WHAT[:40])
     instructions_at = prompt.index("## Instructions")
     trajectory_at = prompt.index("## Completed Trajectory")
     assert doctrine_at < instructions_at < trajectory_at
@@ -277,8 +277,8 @@ def test_storage_check_prompt_puts_doctrine_before_trajectory():
     assert "x" * 100 not in prompt
     assert "System prompt omitted" in prompt
     assert "distinctive-user-request" in prompt
-    assert "## Completed Tools" in prompt
-    assert "`some_tool`" in prompt
+    # The review's ask-about-completed-tool section went with the ask tools.
+    assert "## Completed Tools" not in prompt
     assert prompt.index("## Final Result") > trajectory_at
 
 
@@ -290,20 +290,20 @@ def test_proactive_storage_prompt_puts_doctrine_before_trajectory():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_proactive_storage_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             request="store the fetch helper",
         )
         prompt = _built_system_prompt(mock_client)
         assert mock_loop.called
 
+    # The proactive loop builds the full rulebook, not the minimal one.
     doctrine_at = prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40])
     request_at = prompt.index("## Storage Request")
     trajectory_at = prompt.index("## Trajectory So Far")
@@ -323,14 +323,13 @@ def test_storage_check_prompt_live_session_framing():
     with (
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
         patch("unify.actor.code_act_actor.new_llm_client") as mock_client,
         patch("unify.actor.code_act_actor.start_async_tool_loop") as mock_loop,
     ):
         _start_storage_check_loop(
             trajectory=trajectory,
-            ask_tools={},
             actor=_mock_actor(),
             original_result="Filed week 2.",
             live_session=True,
@@ -347,8 +346,9 @@ def test_storage_check_prompt_live_session_framing():
     assert "## Latest Turn Response" in prompt
     assert "## Completed Trajectory" not in prompt
     assert "## Final Result" not in prompt
-    assert "## Recurring Deliverables" in prompt
+    # The minimal rulebook (baked in) has no recurring-deliverables section.
+    assert "## Recurring Deliverables" not in prompt
     # Doctrine still precedes the volatile tail.
-    assert prompt.index(_STORAGE_WHAT_CAN_BE_STORED[:40]) < prompt.index(
+    assert prompt.index(_STORAGE_MINIMAL_WHAT[:40]) < prompt.index(
         "## Session Trajectory So Far",
     )

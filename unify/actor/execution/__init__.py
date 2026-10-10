@@ -33,6 +33,7 @@ from .session import (
     SessionExecutor,
     SessionKey,
     StateMode,
+    _CAN_CLARIFY,
     _CURRENT_ENVIRONMENTS,
     _CURRENT_SANDBOX,
     _PARENT_CHAT_CONTEXT,
@@ -60,6 +61,7 @@ __all__ = [
     # session
     "StateMode",
     "SessionKey",
+    "_CAN_CLARIFY",
     "_CURRENT_ENVIRONMENTS",
     "_CURRENT_SANDBOX",
     "_PARENT_CHAT_CONTEXT",

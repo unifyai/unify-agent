@@ -1,193 +1,9 @@
 import asyncio
-from unittest.mock import MagicMock
 
 import pytest
 
-from tests.actor.code_act.conftest import make_fm_mock
 from unify.actor.code_act_actor import CodeActActor
 from unify.function_manager.function_manager import FunctionManager
-
-# ---------------------------------------------------------------------------
-# can_compose=False — symbolic tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(30)
-async def test_code_act_can_compose_false_requires_function_manager():
-    """
-    can_compose=False without a function_manager should raise RuntimeError
-    because there would be no usable tools (no execute_code, no execute_function).
-    """
-    actor = CodeActActor(
-        timeout=30,
-    )
-    # The ManagerRegistry provides a default FM, so override it to None.
-    actor.function_manager = None
-    try:
-        with pytest.raises(RuntimeError, match="function_manager is required"):
-            await actor.act("Do something", can_compose=False)
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# can_compose=False — eval tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_compose_false_executes_best_matching_function():
-    """
-    When can_compose=False, the LLM should discover stored functions via
-    FunctionManager discovery tools and invoke them via execute_function.
-    It must NOT use execute_code.
-
-    execute_function synthesises a code snippet and runs it through the
-    sandbox.  We verify that (a) the function implementation was looked up
-    via the FunctionManager, and (b) the synthesised code actually executed
-    (the implementation prints a sentinel so we can check stdout).
-    """
-    _fn_impl = "def my_task():\n    print('SENTINEL_OK')\n    return 'OK'"
-    _fn_metadata = [
-        {
-            "function_id": 123,
-            "name": "my_task",
-            "docstring": "Does the thing requested by the user",
-        },
-    ]
-    _fn_data_full = {
-        **_fn_metadata[0],
-        "implementation": _fn_impl,
-    }
-    fm = make_fm_mock()
-    fm.search_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm.filter_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm.list_functions = MagicMock(return_value={"metadata": _fn_metadata})
-    fm._get_function_data_by_name = MagicMock(return_value=_fn_data_full)
-    fm._get_primitive_data_by_name = MagicMock(return_value=None)
-    fm._include_primitives = False
-
-    actor = CodeActActor(
-        function_manager=fm,
-        environments=[],
-        timeout=120,
-        # Isolate can_compose execute_function routing from discovery-first gating.
-        tool_policy=None,
-    )
-    actor.guidance_manager = None
-    try:
-        handle = await actor.act(
-            "Do the thing using the stored my_task function via execute_function. "
-            "Do not ask clarifying questions.",
-            can_compose=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        await asyncio.wait_for(handle.result(), timeout=120)
-
-        # The function implementation should have been looked up.
-        fm._get_function_data_by_name.assert_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_compose_false_no_functions_match():
-    """
-    When can_compose=False and no stored functions match the query, the LLM
-    should report the failure gracefully without invoking execute_function.
-    """
-    fm = make_fm_mock()
-    fm.search_functions = MagicMock(return_value={"metadata": []})
-    fm.filter_functions = MagicMock(return_value={"metadata": []})
-    fm.list_functions = MagicMock(return_value={"metadata": []})
-    fm._get_function_data_by_name = MagicMock(return_value=None)
-    fm._include_primitives = False
-
-    actor = CodeActActor(
-        function_manager=fm,
-        environments=[],
-        timeout=120,
-        # Isolate can_compose routing from discovery-first gating.
-        tool_policy=None,
-    )
-    # BaseActor auto-wires a GM from the registry when omitted; drop it so
-    # the agent cannot wander through discovery/read tools forever.
-    actor.guidance_manager = None
-    try:
-        handle = await actor.act(
-            "Do something completely unique. No matching function will exist. "
-            "Do not keep searching — report that you cannot fulfill the request.",
-            can_compose=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        await asyncio.wait_for(handle.result(), timeout=120)
-
-        # No matching function found — the LLM should not have attempted
-        # to look up function data for execution.
-        fm._get_function_data_by_name.assert_not_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# can_store=False
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_code_act_can_store_false_blocks_add_functions_tool():
-    """
-    When can_store=False, the FunctionManager_add_functions tool should not be available.
-    We validate this by instructing the agent to call it; the loop should fail gracefully
-    rather than executing the tool.
-    """
-    fm = make_fm_mock()
-    fm.add_functions.return_value = {"x": "added"}
-
-    actor = CodeActActor(
-        function_manager=fm,
-        timeout=30,
-        tool_policy=lambda *args: ("auto", {}),
-    )
-
-    try:
-        handle = await actor.act(
-            "Call the tool FunctionManager_add_functions with implementations='async def x():\\n    return 1'. "
-            "Do not call execute_code.",
-            can_store=False,
-            persist=False,
-            clarification_enabled=False,
-        )
-        out = await asyncio.wait_for(handle.result(), timeout=60)
-        # The tool should be unavailable; we accept any clear failure surface.
-        assert "FunctionManager_add_functions" in str(out)
-        fm.add_functions.assert_not_called()
-    finally:
-        try:
-            await actor.close()
-        except Exception:
-            pass
-
 
 # ---------------------------------------------------------------------------
 # can_store=True — deferred storage via post-completion review loop
@@ -271,7 +87,7 @@ async def test_can_store_true_defers_storage_to_review_loop():
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(300)
-async def test_can_store_true_merges_redundant_functions():
+async def test_can_store_true_merges_redundant_functions(monkeypatch):
     """
     The storage review loop should recognise overlapping functions in the
     store and merge them: add a unified version and delete the old ones.
@@ -282,9 +98,28 @@ async def test_can_store_true_merges_redundant_functions():
     The storage review should detect the overlap, store the merged
     version, and delete the now-redundant entries.
 
+    The review gate is answered "review" here, so the review it opens runs
+    as shipped. The gate itself would skip it when the session already
+    stored ``greet`` (a known limitation of the frozen review; FREEZE-TODO),
+    and this test is of the review's merge, not of the gate.
+
     result() resolves after the task phase; storage runs in the background.
     The test waits for done() to confirm the storage loop has completed.
     """
+    from unify.actor import review_gate
+
+    gate_asked: list[bool] = []
+
+    async def _review(**_kwargs):
+        gate_asked.append(True)
+        return review_gate.GateDecision(
+            review=True,
+            reason="test: the merge review runs",
+            decided=True,
+        )
+
+    monkeypatch.setattr(review_gate, "decide", _review)
+
     fm = FunctionManager(include_primitives=False)
 
     # Seed the store with two narrow, overlapping greeting functions.
@@ -322,6 +157,9 @@ async def test_can_store_true_merges_redundant_functions():
             if asyncio.get_event_loop().time() > deadline:
                 raise TimeoutError("Storage loop did not complete in time")
             await asyncio.sleep(0.5)
+
+        # The library held entries, so the gate was asked (and said review).
+        assert gate_asked == [True]
 
         # The merged function should have been stored.
         final = fm.filter_functions()

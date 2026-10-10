@@ -10,15 +10,12 @@ from unify.common.image_content import sniff_image_mime, to_image_content_block
 ASSET_JPEG = Path(__file__).parent.parent / "images" / "gcp_homepage.jpg"
 
 
-def test_sniff_image_mime_detects_jpeg_and_png():
+def test_sniff_image_mime_detects_jpeg_and_png(tmp_path):
     assert sniff_image_mime(ASSET_JPEG.read_bytes()) == "image/jpeg"
 
-    png_path = Path(__file__).parent / "_tmp_sniff.png"
+    png_path = tmp_path / "sniff.png"
     Image.new("RGB", (4, 4), color=(255, 0, 0)).save(png_path, format="PNG")
-    try:
-        assert sniff_image_mime(png_path.read_bytes()) == "image/png"
-    finally:
-        png_path.unlink(missing_ok=True)
+    assert sniff_image_mime(png_path.read_bytes()) == "image/png"
 
 
 def test_to_image_content_block_from_local_jpeg_path():

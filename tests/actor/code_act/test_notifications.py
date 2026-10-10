@@ -5,8 +5,11 @@ import pytest
 
 from unify.actor.code_act_actor import CodeActActor
 from unify.events.active_work import ACTIVE_WORK
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 
+# as_shipped: deleted in step 5 (notifications, replaced by the agent record)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(120)
@@ -143,7 +146,7 @@ async def test_execute_code_clears_active_work_after_exception_timeout_and_cance
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
-async def test_execute_code_fallback_progress():
+async def test_execute_code_sends_no_fallback_progress_under_the_record():
     ACTIVE_WORK.clear()
 
     actor = CodeActActor()
@@ -160,9 +163,8 @@ async def test_execute_code_fallback_progress():
             state_mode="stateless",
             _notification_up_q=notification_q,
         )
-        fallback = await asyncio.wait_for(notification_q.get(), timeout=1.0)
-        assert fallback["source"] == "active_work"
-        assert "Still working" in fallback["message"]
+        # Under the agent record (baked) nothing reaches the model while its
+        # cell runs (29b3a3d12): no heartbeat fallback is sent.
         assert notification_q.empty()
     finally:
         ACTIVE_WORK.clear()

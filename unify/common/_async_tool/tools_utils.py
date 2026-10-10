@@ -14,40 +14,18 @@ class ToolCallMetadata:
     call_idx: int
     chat_context: Any
     assistant_msg: dict
-    is_interjectable: bool
     tool_schema: dict
     llm_arguments: dict
     raw_arguments_json: str
-    waiting_for_clarification: bool = False
-    tool_reply_msg: dict | None = None
-    clarify_placeholder: dict | None = None
-    # Coalesce-then-freeze progress delivery: the current [progress <call_id>]
-    # tail message, tracked separately from tool_reply_msg so the final
-    # result never shares a slot with transient progress text.
-    progress_msg: dict | None = None
-    # Coalesce-then-freeze clarification-question delivery: the current
-    # [clarification <call_id>] tail message. Separate from tool_reply_msg
-    # (the pending stub, never rewritten) and progress_msg (status-only,
-    # not something the model is expected to answer).
-    clarify_msg: dict | None = None
-    handle: Any | None = None
-    interject_queue: asyncio.Queue[dict | str] | None = None
     clar_up_queue: asyncio.Queue[str] | None = None
     clar_down_queue: asyncio.Queue[str] | None = None
     # Optional notification stream emitted by tools; payload is a dict with arbitrary fields
     notification_queue: asyncio.Queue[dict] | None = None
-    pause_event: asyncio.Event | None = None
     # Monotonic time when tool was scheduled (uses perf_counter for monkey-patchability)
     scheduled_time: float = field(default_factory=lambda: time_context.perf_counter())
     # Whether the LLM opted in to receive parent chat context for this tool.
     # When False, context continuations should NOT be forwarded to this tool.
     context_opted_in: bool = True
-    # True for dynamically generated steering tools (stop_*, interject_*, etc.)
-    # Used by time awareness to skip metadata wrapping for these tools.
-    is_dynamic: bool = False
-    # Multi-handle support: shared state and label for handles from a composite return.
-    _multi_handle_state: Any | None = None
-    _multi_handle_label: str | None = None
 
 
 class ToolCallMessage(TypedDict):

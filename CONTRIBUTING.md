@@ -13,10 +13,10 @@ pip install uv && uv sync --all-groups
 cp .env.example .env      # add one LLM provider key
 ```
 
-This installs Unify and `unillm` (linked via `[tool.uv.sources]` in `pyproject.toml`). Then chat with the assistant:
+This installs Unify and `unillm` (linked via `[tool.uv.sources]` in `pyproject.toml`). Then hand the actor a request:
 
 ```bash
-.venv/bin/python -m unify
+.venv/bin/python -m unify act "Count the rows in ~/exports/run-42.csv"
 ```
 
 ## Running tests
@@ -88,7 +88,7 @@ For PRs that touch a specific subsystem, the table below is a rough guide to who
 | Area | Reviewers (rough) |
 |---|---|
 | `unify/actor/` (CodeAct Actor) | @YushaArif99, @djl11 |
-| `unify/conversation_manager/` (the interaction loop) | @djl11, @vedpatwardhan, @juliagsy |
+| `unify/legacy/conversation_manager/` (the interaction loop) | @djl11, @vedpatwardhan, @juliagsy |
 | `unify/db.py` (the local store) | @djl11 |
 | `unify/function_manager/` | @djl11, @YushaArif99, @juliagsy |
 | `unify/guidance_manager/` | @djl11 |

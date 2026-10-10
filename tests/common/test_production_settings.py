@@ -41,6 +41,19 @@ class TestLLMProviderValidation:
         effort = ProductionSettings.model_fields["UNIFY_REASONING_EFFORT"]
         assert effort.default == "high"
 
+    def test_reasoning_effort_is_one_unillm_forwards(self):
+        """A misspelt effort fails at load, not as a provider error mid-run."""
+        for value in ("", "none", "minimal", "low", "medium", "high", "xhigh", "max"):
+            settings = ProductionSettings(UNIFY_REASONING_EFFORT=value)
+            assert settings.UNIFY_REASONING_EFFORT == value
+        assert (
+            ProductionSettings(UNIFY_REASONING_EFFORT=" Medium ").UNIFY_REASONING_EFFORT
+            == "medium"
+        )
+        for value in ("med", "hgih", "default", "2"):
+            with pytest.raises(ValueError, match="UNIFY_REASONING_EFFORT"):
+                ProductionSettings(UNIFY_REASONING_EFFORT=value)
+
     def test_validation_fails_when_no_credential_resolved(self, resolved_keys):
         """Validation raises RuntimeError when unillm resolved no key."""
         resolved_keys()

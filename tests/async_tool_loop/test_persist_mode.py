@@ -82,7 +82,7 @@ async def test_persist_mode_waits_for_interjection(llm_config):
     assert not handle.done(), "Persist loop should not terminate after first response"
 
     # Now interject to give it something to process
-    await handle.interject("Now say goodbye.")
+    await handle.submit("Now say goodbye.")
 
     # Wait for a second assistant response
     async def _has_two_responses() -> bool:
@@ -131,7 +131,7 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
     await _wait_for_condition(_has_response, poll=0.05, timeout=30.0)
 
     # First interjection - ask it to add
-    await handle.interject(
+    await handle.submit(
         "Use the add tool to compute 2 + 3, then tell me the result.",
     )
 
@@ -168,7 +168,7 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
     assert any("5" in msg for msg in assistant_msgs), "Should have computed 2+3=5"
 
     # Second interjection
-    await handle.interject("Now add 10 and 20.")
+    await handle.submit("Now add 10 and 20.")
 
     # Wait for second tool call
     async def _has_second_tool_call() -> bool:
@@ -180,6 +180,21 @@ async def test_persist_mode_processes_multiple_interjections(llm_config):
         return len(tool_calls) >= 2
 
     await _wait_for_condition(_has_second_tool_call, poll=0.05, timeout=30.0)
+
+    # Wait for the reply to the second result before stopping. A stop sent
+    # while that model call is in flight cancels it on a live run, so it is
+    # never recorded, and a replay that reaches it first finds no response.
+    async def _has_second_result_response() -> bool:
+        msgs = client.messages or []
+        tool_idxs = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+        if len(tool_idxs) < 2:
+            return False
+        return any(
+            m.get("role") == "assistant" and m.get("content")
+            for m in msgs[tool_idxs[1] + 1 :]
+        )
+
+    await _wait_for_condition(_has_second_result_response, poll=0.05, timeout=30.0)
 
     # Stop and verify
     await handle.stop()
@@ -357,7 +372,7 @@ async def test_persist_mode_does_not_terminate_on_send_response(llm_config):
     )
 
     # Interject and get a second response.
-    await handle.interject("Now greet me in French and pick a different number.")
+    await handle.submit("Now greet me in French and pick a different number.")
 
     # Wait for the LLM to produce a second send_response call
     async def _has_second_send_response() -> bool:
@@ -435,7 +450,7 @@ async def test_persist_mode_response_format_with_tools(llm_config):
     ), "Persist loop should NOT terminate after send_response with tools."
 
     # 4. Second turn: interject with another computation
-    await handle.interject("Now what is 10 + 20?")
+    await handle.submit("Now what is 10 + 20?")
 
     # Wait for second add call
     async def _has_second_add() -> bool:
@@ -531,72 +546,6 @@ async def test_non_persist_response_format_uses_final_response(llm_config):
     ), "Legacy 'final_answer' name should not appear in tool calls."
 
 
-# --------------------------------------------------------------------------- #
-#  PERSIST MODE: handle.ask() should not break persist wait                   #
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-@_handle_project
-async def test_persist_mode_survives_ask_mirror(llm_config):
-    """Calling handle.ask() while in persist wait must not crash the loop.
-
-    handle.ask() enqueues a _mirror sentinel to record the ask in the
-    transcript. This sentinel wakes the persist wait, but because it
-    carries no user message, the loop must not proceed to an LLM call
-    with a trailing assistant message — models like Claude 4.6 Opus
-    reject that with a BadRequestError ("does not support assistant
-    message prefill").
-
-    The loop should process the mirror for transcript fidelity, then
-    return to the persist wait until a real interjection arrives.
-    """
-    client = new_llm_client(**llm_config)
-
-    handle = start_async_tool_loop(
-        client,
-        message="Say hello and nothing else.",
-        tools={"echo": echo},
-        persist=True,
-        timeout=60,
-    )
-
-    # Wait for initial assistant response (loop enters persist wait after this)
-    async def _has_assistant_response() -> bool:
-        return any(
-            m.get("role") == "assistant" and m.get("content")
-            for m in (client.messages or [])
-        )
-
-    await _wait_for_condition(_has_assistant_response, poll=0.05, timeout=30.0)
-    await asyncio.sleep(0.3)
-    assert not handle.done(), "Loop should be in persist wait"
-
-    # Dispatch an ask — this puts a _mirror sentinel into the queue
-    ask_handle = await handle.ask("What tools do you have?")
-
-    # Wait for the ask sub-loop to complete (it runs independently)
-    ask_result = await ask_handle.result()
-    assert ask_result, "Ask sub-loop should produce a response"
-
-    # The outer loop must still be alive in persist wait — not crashed
-    await asyncio.sleep(0.5)
-    assert not handle.done(), (
-        "Persist loop should survive handle.ask() without crashing. "
-        "If this fails, the mirror sentinel likely triggered an invalid "
-        "LLM call with a trailing assistant message."
-    )
-
-    # A real interjection should still work normally after the ask
-    await handle.interject("Now use the echo tool with 'test'.")
-    await _wait_for_tool_request(client, "echo")
-
-    await asyncio.sleep(0.3)
-    assert not handle.done(), "Loop should still be alive after real interjection"
-
-    await handle.stop()
-    result = await handle.result()
-    assert result == "processed stopped early, no result"
-
-
 @pytest.mark.asyncio
 @_handle_project
 async def test_persist_mode_transcript_note_appends_without_llm_turn(llm_config):
@@ -667,7 +616,7 @@ async def test_persist_mode_transcript_note_appends_without_llm_turn(llm_config)
     assert not handle.done(), "Loop should still be in persist wait"
 
     # A real interjection still works, and the model can now see the note.
-    await handle.interject("Now use the echo tool with 'test'.")
+    await handle.submit("Now use the echo tool with 'test'.")
     await _wait_for_tool_request(client, "echo")
 
     await handle.stop()
@@ -677,89 +626,3 @@ async def test_persist_mode_transcript_note_appends_without_llm_turn(llm_config)
 async def big_result() -> str:
     """Return a large blob of text."""
     return "DATA-" + ("y" * 2000)
-
-
-@pytest.mark.asyncio
-@_handle_project
-async def test_persist_mode_compact_sentinel_stubs_reviewed_tool_results(llm_config):
-    """A ``_compact_transcript`` sentinel stubs reviewed tool payloads in
-    place without granting an LLM turn.
-
-    The mid-session storage review sends this after consolidating a turn:
-    the covered tool results shed their bulk while the loop stays in
-    persist wait, and message identity/pairing survives so the next real
-    interjection proceeds normally.
-    """
-    client = new_llm_client(**llm_config)
-
-    handle = start_async_tool_loop(
-        client,
-        message="Call the big_result tool once, then tell me it is done.",
-        tools={"big_result": big_result},
-        persist=True,
-        timeout=60,
-    )
-
-    await _wait_for_tool_request(client, "big_result")
-
-    async def _turn_complete() -> bool:
-        msgs = client.messages or []
-        tool_idx = next(
-            (i for i, m in enumerate(msgs) if m.get("role") == "tool"),
-            -1,
-        )
-        if tool_idx < 0:
-            return False
-        return any(
-            m.get("role") == "assistant" and m.get("content")
-            for m in msgs[tool_idx + 1 :]
-        )
-
-    await _wait_for_condition(_turn_complete, poll=0.05, timeout=30.0)
-    await asyncio.sleep(0.3)
-    assert not handle.done(), "Loop should be in persist wait"
-
-    # Parking a completed turn sheds provider reasoning payloads — the next
-    # dispatch starts from a fresh interjection, so they are re-billed bulk.
-    for m in client.messages:
-        if isinstance(m, dict) and m.get("role") == "assistant":
-            assert not m.get("provider_specific_fields")
-            assert not m.get("reasoning_details")
-
-    tool_msg = next(m for m in client.messages if m.get("role") == "tool")
-    original_len = len(str(tool_msg.get("content")))
-    assert original_len > 1000
-    assistant_count_before = sum(
-        1 for m in (client.messages or []) if m.get("role") == "assistant"
-    )
-
-    handle._queue.put_nowait(
-        {"_compact_transcript": {"reviewed_messages": 50}},
-    )
-
-    async def _compacted() -> bool:
-        return "[compacted after skill review:" in str(tool_msg.get("content"))
-
-    await _wait_for_condition(_compacted, poll=0.05, timeout=10.0)
-    assert len(str(tool_msg.get("content"))) < original_len
-
-    # No LLM turn fires for the compaction.
-    await asyncio.sleep(1.0)
-    assistant_count_after = sum(
-        1 for m in (client.messages or []) if m.get("role") == "assistant"
-    )
-    assert assistant_count_after == assistant_count_before
-    assert not handle.done()
-
-    # The loop still works normally afterwards.
-    await handle.interject("Now use the echo tool... actually just say 'ack'.")
-
-    async def _acked() -> bool:
-        return (
-            sum(1 for m in (client.messages or []) if m.get("role") == "assistant")
-            > assistant_count_before
-        )
-
-    await _wait_for_condition(_acked, poll=0.05, timeout=30.0)
-    await handle.stop()
-    await handle.result()

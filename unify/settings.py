@@ -8,16 +8,21 @@ All settings can be overridden via environment variables or the ``.env`` file
 in the working directory.
 """
 
-from typing import Any
+import os
+import re
+from typing import Any, Optional
 
 import unillm
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from unify.actor.settings import ActorSettings
-from unify.conversation_manager.settings import ConversationSettings
 from unify.function_manager.settings import FunctionSettings
 from unify.guidance_manager.settings import GuidanceSettings
+
+# The reasoning efforts unillm forwards to providers (it maps them per
+# provider, e.g. DeepSeek's high/max), with "" for "as shipped".
+_REASONING_EFFORTS = ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _parse_bool(v: Any) -> bool:
@@ -29,8 +34,67 @@ def _parse_bool(v: Any) -> bool:
     return bool(v)
 
 
+def _step_cap_reply_mode(v: Any) -> Optional[str]:
+    """``UNIFY_STEP_CAP_REPLY`` as ``""``, ``"draft"`` or ``"last_word"``.
+
+    The switch was a bool, so the bool spellings keep their meaning (true is
+    ``"draft"``). ``None`` for anything else.
+    """
+    if isinstance(v, bool) or v is None:
+        return "draft" if v else ""
+    value = str(v).strip().lower()
+    if value in ("", "false", "0", "no", "off"):
+        return ""
+    if value in ("draft", "true", "1", "yes", "on"):
+        return "draft"
+    if value == "last_word":
+        return "last_word"
+    return None
+
+
+class ConversationSettings(BaseSettings):
+    """The conversation-layer settings (env prefix ``UNIFY_CONVERSATION_``).
+
+    Defined here, not in the legacy conversation manager
+    (``unify/legacy/conversation_manager/settings.py`` holds the same class),
+    because the slow-brain model resolver in ``unify.common.llm_client`` and
+    the manager registry read ``SETTINGS.conversation``, and nothing on the
+    actor or CLI path may import ``unify.legacy``.
+
+    Attributes:
+        IMPL: Implementation type - "real" or "simulated".
+        SLOW_BRAIN_MODEL: Shared ConversationManager slow-brain model. Empty
+            falls back to the global shared model (UNIFY_MODEL / assistant
+            default resolution). Override via
+            UNIFY_CONVERSATION_SLOW_BRAIN_MODEL.
+        SLOW_BRAIN_REASONING_EFFORT: Reasoning effort paired with
+            SLOW_BRAIN_MODEL when that setting is non-empty. Empty leaves
+            call-site effort intact. Override via
+            UNIFY_CONVERSATION_SLOW_BRAIN_REASONING_EFFORT.
+    """
+
+    SLOW_BRAIN_MODEL: str = "openai/gpt-5.6-terra@openrouter"
+    SLOW_BRAIN_REASONING_EFFORT: str = "high"
+    IMPL: str = "real"
+
+    model_config = SettingsConfigDict(
+        env_prefix="UNIFY_CONVERSATION_",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+
 class ProductionSettings(BaseSettings):
-    """Runtime settings; test settings (TestingSettings) inherit from this class."""
+    """Runtime settings; test settings (TestingSettings) inherit from this class.
+
+    The code freeze (7 Oct 2026) made the chosen configuration the only code
+    path: the lean-all recipe, Python tool mode (the core tool surface, with
+    Python in the sandboxed worker) and the shared agent record. What remains
+    here is configuration and the switches still in progress (listed in
+    WIP_SWITCHES.md at the repository root); in the comments below, "as
+    shipped" names upstream's behaviour, which a WIP switch's off value
+    selects.
+    """
 
     # ─────────────────────────────────────────────────────────────────────────
     # Local Workspace
@@ -47,6 +111,14 @@ class ProductionSettings(BaseSettings):
     # Reasoning effort paired with UNIFY_MODEL when no per-assistant default is
     # set. Empty leaves per-call-site effort levels untouched.
     UNIFY_REASONING_EFFORT: str = "high"
+    # The LLM endpoints model-written code may name (the ``query_llm``,
+    # ``list_llms`` and ``unillm`` globals of a cell, unify/common/cell_models.py).
+    # Empty: only the session's configured model (the act profile's model, or
+    # what ``model=None`` resolves to). ``any``: every endpoint, as before.
+    # Otherwise a comma list of ``model@provider`` endpoints allowed besides
+    # the session's model. Harness calls (the actor's loop, reviews,
+    # compression) never read it.
+    UNIFY_CELL_LLM_MODELS: str = ""
     # Ceiling on output tokens for one actor turn. Unset, the provider ceiling
     # applies (128k on current OpenAI models), so a turn that degenerates into
     # repetition bills and blocks for the full window — observed at eight
@@ -62,6 +134,117 @@ class ProductionSettings(BaseSettings):
     # that genuinely needs more can pass ``max_steps`` explicitly. Set to 0 to
     # restore unbounded iteration.
     UNIFY_MAX_TOOL_LOOP_STEPS: int = 300
+    # Reaching ``max_steps`` ends the loop with a stop notice, so a persistent
+    # session (``unify act --persist``) that reaches it takes no further
+    # messages. Set true and, in a persistent session, the limit ends only
+    # the current request: the reply says the session stopped at its step
+    # limit and quotes the latest reply text it drafted for the request, the
+    # pending tool calls are cancelled and answered as such, and the next
+    # message starts a request with its own ``max_steps`` (the limit then
+    # counts the messages of one request instead of the whole session). A
+    # loop that is not persistent still ends at the limit, its stop notice
+    # followed by that draft. Off: as shipped.
+    # ``draft`` (also ``true``/``1``/``yes``/``on``, as when this was a bool)
+    # is the behaviour above. ``last_word``: the same, except that before the
+    # reply the model is given one model call with no tools offered, after a
+    # notice that the request's step limit is reached and it should reply now
+    # with its best answer; the stop reply carries that answer in place of
+    # the draft, and the draft when the call fails or returns no text.
+    # Empty (also ``false``/``0``/``no``/``off``): as shipped.
+    UNIFY_STEP_CAP_REPLY: str = ""
+    # ``on``: a loop that can compress its context (the actor's task loop)
+    # compacts it when it reaches ``max_steps`` instead of stopping, with the
+    # same compression a full context gets, and the same request goes on in
+    # the same loop, its steps counted from the compacted conversation. Calls
+    # still running are cancelled and answered as such first. A request is
+    # compacted at most twice; at its third limit, or when the compaction
+    # fails or runs past the loop's timeout, the limit stops it as it would
+    # without this switch (with UNIFY_STEP_CAP_REPLY's reply when that is on).
+    # A reply the request has already given (a text reply, or a cell's
+    # reply()) is given, not compacted for. A loop without compression is
+    # unchanged. ``continue``: one long-horizon mode for the actor's task
+    # loop (the one that answers the requester; any other loop runs as
+    # shipped). The step budget (``max_steps``, a count of messages) is
+    # counted per request, from the request's own message, and afresh after
+    # each compaction. At the limit the conversation is compacted as under
+    # ``on``, with no bound on compactions per request, and the request goes
+    # on; the compaction's summary is a loop-authored message, so it starts
+    # no request (UNIFY_LOOP_STOP's count carries across it). A compaction
+    # whose rebuilt context is not smaller than the one it replaced
+    # (serialised message characters) is ineffective, and a second
+    # ineffective one in a row in a request ends it. That end, a failed
+    # compaction, a loop stop and the loop's timeout all end the request
+    # through UNIFY_STEP_CAP_REPLY's reply path, in its ``draft`` mode when
+    # that switch is empty: the requester always gets an answer and a
+    # persistent session waits for its next request. Empty (also ``off``):
+    # as shipped.
+    UNIFY_STEP_CAP_COMPACT: str = ""
+    # ``on``: a context compaction (at the context threshold, on the model's
+    # own ``compress_context`` call, or at ``max_steps`` under
+    # UNIFY_STEP_CAP_COMPACT) rebuilds the conversation so that it starts
+    # with what the session already sent, byte for byte, instead of with the
+    # system prompt alone: the system prompt, the session's first user
+    # message, then every requester message of the current request (a user
+    # message the loop did not author), each unchanged and in its original
+    # order, and only then the summary, as one loop-authored user message
+    # (the compressed-context header, the summary, "Context was compressed.
+    # Continue from where you left off." and the transcript's path). The
+    # current request is read from the session's own messages: it starts at
+    # the latest requester message, together with the requester messages
+    # just before it that no model turn separates from it, as
+    # UNIFY_LOOP_STOP's tracker counts a request; earlier requests of a
+    # persistent session are in the summary. The summary is asked for as
+    # shipped (a fork of the last request). The tools and their order stay
+    # the same, the fallback compactor's rebuild included: it then neither
+    # rewrites the system prompt nor adds ``unpack_messages``, and its
+    # compressed entries are the summary. "Byte for byte" covers the system
+    # prompt, the first message and the kept requester messages; the loop's
+    # own runtime-context system messages are rebuilt at the restart (the
+    # same bytes for the actor, not for a nested loop given a
+    # ``parent_chat_context``, which a restart drops). When the first call
+    # after such a compaction is still over the threshold, what was kept is
+    # too large on its own, and the next compaction rebuilds as shipped, so a
+    # request is never compacted around the same prefix twice in a row.
+    # Empty (also ``off``): as shipped.
+    UNIFY_COMPACTION_KEEP_PREFIX: str = ""
+    # Where the actor's session states the host clock. Empty (also
+    # ``system``): as shipped, a "Current Time" section near the end of the
+    # system prompt, which tells the model to resolve "today" against it and
+    # to prefer it over a clock read in ``execute_code``. ``first_message``:
+    # the system prompt has no clock section, and the session's first user
+    # message opens with one line, "The host clock reads <time>. Dates stated
+    # in the request or in the files and records you work with take
+    # precedence.", the time sampled once when the session starts (the
+    # moment the system prompt would have sampled it), before the library's
+    # size and the rest of the first message's context. The line is in the
+    # first user message only: a persistent session's later requests do not
+    # repeat it, and a session restarted after context compression opens its
+    # new first message with the same line. The system prompt, and so the
+    # cache affinity key derived from it, is then the same for every session
+    # of one configuration whenever it starts.
+    UNIFY_CLOCK_PLACEMENT: str = ""
+    # ``on``: a request to the actor's task loop (the one that answers the
+    # requester; never a sub-agent's, a review's or its fork's) whose tool
+    # calls stop making progress ends early. A
+    # model call makes no progress when every tool call it makes either runs
+    # a Python cell that does nothing (only ``pass``, comments, prints of
+    # constant text, bare constants; magics ignored) or repeats one of the
+    # two calls before it in the request (tool and arguments without the
+    # thought; a cell's code without comments, whitespace or magics; string
+    # and number literals ignored) and gets the same result (times, ids and
+    # durations ignored). A result not known yet never counts, nor does a
+    # call made while other calls are still running. UNIFY_LOOP_STOP_K such
+    # calls in a row end the request as the step limit does under
+    # UNIFY_STEP_CAP_REPLY: ``draft`` quotes the request's latest draft;
+    # ``last_word``, and also an empty UNIFY_STEP_CAP_REPLY, first gives the
+    # model one tool-less turn to reply with its best answer. A persistent
+    # session then waits for the next request. Any other model call, and
+    # every requester message, starts the count again. Empty (also ``off``):
+    # as shipped.
+    UNIFY_LOOP_STOP: str = ""
+    # How many no-progress model calls in a row UNIFY_LOOP_STOP allows: a
+    # whole number, at least 1.
+    UNIFY_LOOP_STOP_K: int = 10
 
     # Fail init when unillm holds no provider key. The keys live only in
     # unillm's settings, which read them from the environment, ``.env`` and, on
@@ -81,6 +264,267 @@ class ProductionSettings(BaseSettings):
     # network once its weights (134 MB) are downloaded, but reads only English
     # and the first 512 tokens of each text.
     UNIFY_LOCAL_EMBEDDINGS: bool = False
+    # The endpoint OpenRouter-style embedding requests are posted to, for
+    # example a proxy that tracks their cost. Empty posts to openrouter.ai.
+    UNIFY_EMBED_URL: str = ""
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Environment Namespaces and the Storage Check
+    # ─────────────────────────────────────────────────────────────────────────
+    # ``package.module:factory`` entries, comma-separated: factories that
+    # register the environment's own callable surface as ``primitives.<name>``
+    # namespaces at start-up (unify/function_manager/primitives/environment.py).
+    # Empty registers nothing.
+    UNIFY_ENV_NAMESPACES: str = ""
+    # ``code+text``: model code in a cell can send the turn's reply with
+    # ``reply(text)`` (in the sandboxed worker).
+    # It takes only a ``str``, ends the cell at once (its output so far is
+    # kept), and the turn ends with exactly that text as the reply, as if the
+    # model had replied with it, without another model call (UniLLM strips
+    # the whitespace around a model's text; reply() keeps it). A second
+    # reply() in one turn, reply() inside a stored function or through
+    # execute_function, in a session that is not answering a requester (the
+    # storage review) or in a request whose answer is a ``final_response``
+    # call is refused with the reason.
+    # The prompt states it in one sentence where it states the reply rule,
+    # and the code tool's description mentions it. Which kind of reply ended
+    # a turn is recorded on its final assistant message (``_reply_source``:
+    # "cell" or "text"; ``_reply_from_value``: whether reply()'s argument was
+    # computed rather than a string literal), never sent to the model, and
+    # counted in the CLI's run stats (``replies_from_cell``,
+    # ``replies_from_value``) (unify/common/_async_tool/cell_reply.py).
+    # Empty: replies are text only, as shipped.
+    UNIFY_REPLY_CHANNEL: str = ""
+    # ``on``: model code in a cell reads the current request as ``request``
+    # (in the sandboxed worker): ``request.text``
+    # is the requester's latest message, the request or a later message of a
+    # persistent session, as the model reads it (without the session context
+    # the harness opens the first message with); ``request.data`` is the
+    # list of JSON objects and arrays found in that text, in order of
+    # appearance, parsed with the standard json module. Nothing else is
+    # parsed. Each cell gets a fresh, read-only ``request`` (its attributes
+    # cannot be set; a cell's changes to ``request.data`` last for that cell
+    # only). A variable of the model's own named ``request`` is never
+    # replaced; after ``del request`` the next cell has the current request
+    # again. A loop that answers no requester
+    # (the storage review) has none. The prompt says so in one sentence in
+    # its Sandbox Environment section; the tools are unchanged
+    # (unify/common/_async_tool/bound_request.py). Empty: as shipped.
+    UNIFY_BIND_REQUEST: str = ""
+    # ``on``: an ``execute_code`` cell that ran in a persistent session ends
+    # its result with one line naming the variables that session's cells
+    # have bound, each with its type and a short shape (length, rows x
+    # columns of a list of equal rows, key count, an array's shape and
+    # dtype; a scalar's or short string's value, truncated), most recently
+    # bound first: at most 12 names and 400 characters, then "…and N more".
+    # It comes only when those names or their shapes changed since the last
+    # line shown, and never when there are none; a stateless or read-only
+    # cell keeps nothing, so its result has none. Names a cell did not bind
+    # are left out (primitives, request, reply, the libraries, injected
+    # stored functions), as are modules and names starting with ``_``. No
+    # value is printed whole. It is computed where the cell ran (the sandboxed
+    # worker), is the tool's own
+    # result, and the prompt and tools are unchanged (unify/actor/execution/worker_child.py
+    # ``Inventory``). Empty: results as shipped.
+    UNIFY_VARIABLE_INVENTORY: str = ""
+    # Path of a JSON file in which an external check of the session's outcome
+    # admits (``{"admit": true}``) the review that runs when a session ends.
+    # A missing, unreadable or malformed file, or any other ``admit``, skips
+    # that review. While set, the session's own library write tools are
+    # withheld and turn-level reviews are off, so the libraries change only
+    # through an admitted review. ``never`` is a frozen library: writes are
+    # withheld the same way, no review is ever admitted and no file is read.
+    # Empty reviews every session as shipped.
+    UNIFY_STORE_ADMISSION: str = ""
+    # ``package.module:factory``: a verifier for the storage review. A
+    # function is stored only after its exact source has passed a run on a
+    # held-out task of the same kind (FunctionManager_check_function, offered
+    # to the review only while this is set) and static checks against request
+    # details and credentials (unify/function_manager/store_verify.py). Needs
+    # UNIFY_STORE_ADMISSION. The verifier loads and calls candidates in this
+    # process, so with Python in the sandboxed worker it is refused and
+    # start-up stops. Empty stores without the check.
+    UNIFY_STORE_VERIFY: str = ""
+    # Memory v2's dialogue capture (applies only with UNIFY_MEMORY_V2 on;
+    # parsed by unify/memory_v2/integration/switch.py): ``env`` also records
+    # each request's dialogue actions (every turn-ending reply's action with
+    # the counterpart's next message) on the channel ``env``, so a benchmark
+    # whose actions are text in the replies (Continual-ARC) leaves coverable
+    # actions. Empty (also ``off``): episodes as shipped.
+    UNIFY_MEMORY_V2_DIALOGUE: str = ""
+    # Memory v2 (continual-harness-research docs/design/memory-redesign-spec.md):
+    # ``on`` replaces the storage review, the ``functions``/``guidance``
+    # objects and the library shortlist with a per-request export of the
+    # memory repo (``<UNIFY_HOME>/memory``) on the worker's import path and
+    # its index at the end of the system prompt (unify/memory_v2/integration).
+    # Needs the sandboxed worker and the core tool surface. Empty or ``off``:
+    # as shipped. The companions (parsed by unify/memory_v2/integration/
+    # switch.py) apply only when it is on: ``_E`` is the experience budget in
+    # tokens at which a batched consolidation pass becomes due; ``_SOL_MODEL``
+    # runs the passes, at the actor's reasoning effort for the run;
+    # ``_SOL_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
+    # pass's USD; ``_SOL_RUN_GUARD_USD`` (a decimal string, empty for none)
+    # stops further passes once the run's Sol USD plus the next cap would
+    # exceed it. ``_SOL_BASE_URL`` and ``_SOL_TOKEN`` (both or neither) send
+    # Sol's calls to a route of their own (a proxy listener with its own
+    # token); empty, they go as shipped. They are checked when a pass starts
+    # (a settings error would print the value), the token is a SecretStr and
+    # leaves this process's environment once read (below). ``_SOL_TOKEN_FD``
+    # (instead of ``_SOL_TOKEN``, never both) names an inherited descriptor
+    # holding the token: read once when settings are settled (below), then
+    # closed; the token never enters the environment. ``_SOL_EFFORT`` is
+    # ``actor`` (Sol's effort is the actor's for the run) or a fixed
+    # ``low``/``medium``/``high`` for a declared mismatch ablation.
+    # ``_SOL_EFFORT_SCALE`` (``low:1,medium:2,high:5``) multiplies a pass's
+    # USD cap and ``_SOL_MAX_CALLS`` (``low:40,medium:80,high:80``) bounds its
+    # calls, each by the pass's Sol effort. The v2.1
+    # surfacing switches (same parser; each default is
+    # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
+    # per-function index in the prompt, nothing generated in the export) or
+    # ``catalogue`` (a constant guide in the prompt; generated
+    # README, catalogue and ``memory`` helper in the export; input shapes
+    # recorded per commit); ``_DOCSTRINGS`` ``off``/``on`` is the gate's lean
+    # docstring standard and examples run; ``_SOFT_BUDGET`` ``off``/``on``
+    # turns G4's 4,000-token index refusal into a hygiene note.
+    # ``_SOL_USAGE`` (empty/off or on) ends each pass's first message with
+    # the table of how requests used each library function.
+    UNIFY_MEMORY_V2: str = ""
+    UNIFY_MEMORY_V2_E: int = 150000
+    UNIFY_MEMORY_V2_SOL_MODEL: str = "openai/gpt-6-sol"
+    UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
+    UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD: str = ""
+    # Memory v2.1 r5 (RUNTIME B1): a v2.1 pass with a Sol route runs with no pass cap, bounded in flight only by the
+    # route's ceilings; point this only at a proxy with a spend ceiling (the runner's Sol lane, the replay proxy),
+    # never at an uncapped relay.
+    UNIFY_MEMORY_V2_SOL_BASE_URL: str = ""
+    UNIFY_MEMORY_V2_SOL_TOKEN: SecretStr = SecretStr("")
+    UNIFY_MEMORY_V2_SOL_TOKEN_FD: str = ""
+    UNIFY_MEMORY_V2_SOL_EFFORT: str = "actor"
+    UNIFY_MEMORY_V2_SOL_EFFORT_SCALE: str = "low:1,medium:2,high:5"
+    UNIFY_MEMORY_V2_SOL_MAX_CALLS: str = "low:40,medium:80,high:80"
+    UNIFY_MEMORY_V2_SURFACING: str = "index"
+    UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
+    UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
+    UNIFY_MEMORY_V2_SOL_USAGE: str = ""
+    # Memory v2.1 (unify/memory_v2; spec docs memory-v2.1-spec.md): ``off``
+    # (default; empty means it) or ``on``. On: the writer reads a batch
+    # map and bounded views, and finish waits for coverage. Off: v2 as built.
+    UNIFY_MEMORY_V21: str = "off"
+    # Memory v2.1 P9: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_V21), a
+    # ``{"checker": {"label": ...}}`` stdin line records the verdict the bed
+    # showed the actor as an agent-visible checker signal. Off: refused.
+    UNIFY_MEMORY_V21_CHECKER_VISIBLE: str = "off"
+    # Memory v2.1 P7: E (D43: 100k recorded tokens), one pass's wall-clock bound (s), and the Sol route
+    # proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
+    UNIFY_MEMORY_V21_E: int = 100000
+    # Memory v2.1: the writer's reader calls per pass (PassConfig.max_reads).
+    UNIFY_MEMORY_V21_MAX_READS: int = 400
+    # Memory v2.1: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
+    # namespace ends with the controller); ``off`` (default): the request returns at once.
+    UNIFY_MEMORY_V21_WAIT_SLOT: str = "off"
+    # Memory v2.1 design r5: ``on`` forks the actor's conversation once at each episode's end, in a confined process
+    # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
+    UNIFY_MEMORY_V21_FORK: str = "off"
+    # Memory v2.1 design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer (staging);
+    # ``off`` (default): none.
+    UNIFY_MEMORY_V21_ANALYSTS: str = "off"
+    # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
+    UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
+    UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
+    UNIFY_MEMORY_V2_SOL_JOURNAL: str = ""
+    # Stage-5 test checks in the memory v2 gate (unify/memory_v2/qa.py), each
+    # off by default and read only while UNIFY_MEMORY_V2 is on: ``_QA_FIXTURES``
+    # (``on``/``strict``) draws seeded random recorded inputs per new function;
+    # ``_QA_MUTATION`` mutation-tests it, refusing below
+    # ``_QA_MUTATION_MIN_KILL`` (a decimal string share, 0.5); ``_QA_DETERMINISM``
+    # pins clock and randomness and runs new tests twice; ``_QA_REPLAY`` refuses
+    # stand-in environments; ``_QA_FIXTURE_SIZE`` bounds test files and
+    # references recorded payloads by blob id.
+    UNIFY_MEMORY_V2_QA_FIXTURES: str = ""
+    UNIFY_MEMORY_V2_QA_MUTATION: str = ""
+    UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL: str = "0.5"
+    UNIFY_MEMORY_V2_QA_DETERMINISM: str = ""
+    UNIFY_MEMORY_V2_QA_REPLAY: str = ""
+    UNIFY_MEMORY_V2_QA_FIXTURE_SIZE: str = ""
+    # When a provider refuses a forced tool choice ("required", "any" or one
+    # named tool) with HTTP 400 because the model does not support it, retry
+    # that call once with tool_choice "auto" and an instruction to make the
+    # required call first (re-prompting once if the reply makes none), and
+    # send later forced calls to that model this way for the rest of the
+    # process (unify/common/tool_choice_fallback.py). Off: the error
+    # propagates as shipped.
+    UNIFY_TOOL_CHOICE_FALLBACK: bool = False
+    # ``stored``: a guidance search without reference text returns the stored
+    # guidance entries, newest first, instead of the built-in catalogue (whose
+    # hash-derived ids otherwise sort ahead of every stored entry). Empty
+    # searches as shipped.
+    UNIFY_GUIDANCE_EMPTY_QUERY: str = ""
+    # execute_code takes state_mode (an untyped optional string), session_id
+    # and session_name, and four tools manage sessions. An omitted mode runs
+    # the cell in session 0, the task's persistent session, but a model that
+    # fills in every argument writes a mode into every cell, and next to
+    # execute_function (whose own default is "stateless") and inspect_state
+    # ("run stateless") it writes "stateless": nothing a cell computed is
+    # there for the next. On: execute_code has no state_mode or session
+    # argument and every cell runs in session 0, like a notebook;
+    # list_sessions, inspect_state, close_session and close_all_sessions are
+    # not offered; execute_function keeps its state_mode (stateless by
+    # default; stateful and read_only use session 0) and has no session
+    # argument; the prompt names no cell mode and no session tool
+    # (unify/actor/cell_state.py). Off: as shipped.
+    UNIFY_STATEFUL_CELLS: bool = False
+    # A cell runs as the body of an async wrapper function, and a name it
+    # binds reaches the session only if the wrapper declares it global. On:
+    # the declaration is every name Python's symbol table finds the cell's
+    # own scope binding (under if/for/while/with/try/except/match, a walrus,
+    # also in a comprehension, del, nested def and class), and an annotated
+    # assignment there drops its annotation (an annotated name cannot be
+    # declared global, so today the whole cell is a SyntaxError); nested
+    # functions, classes, lambdas and comprehensions keep their own names.
+    # This is what the prompt promises ("a notebook"). If the symbol table
+    # cannot be built, the declaration is as shipped. A `del primitives` is
+    # renamed like an assignment to it (`del _primitives_local`), so a cell
+    # cannot delete the injected global. Off: only names bound
+    # by top-level assignments, imports, defs and classes are kept; any other
+    # is lost when the cell ends (a later cell gets NameError), as shipped.
+    # Read per cell; in-process and worker cells alike.
+    UNIFY_CELL_SCOPE_FIX: bool = True
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Workspace Sandbox
+    # ─────────────────────────────────────────────────────────────────────────
+    # Bash cells, every subprocess a Python cell starts, and the Python worker
+    # that runs every cell are confined by bubblewrap (unify/sandbox.py,
+    # unify/actor/execution/worker.py); without bubblewrap they are refused,
+    # never run unconfined.
+    # ``proxy``: the sandbox's only network is one loopback port forwarded to
+    # the proxy listening on 127.0.0.1:UNIFY_WORKSPACE_PROXY_PORT on the host.
+    # Empty: no network at all.
+    UNIFY_WORKSPACE_NETWORK: str = ""
+    UNIFY_WORKSPACE_PROXY_PORT: int = 0
+    # Variables of the harness's environment a sandboxed command (the Python
+    # worker that runs every cell, a bash cell) gets besides the built-in
+    # allow-list (unify/sandbox.py, CELL_ENV_NAMES and CELL_ENV_PATTERNS): a
+    # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
+    # variables. A credential's name or a key-shaped value is never passed.
+    UNIFY_CELL_ENV_ALLOW: str = ""
+    # What the model is asked to fill in to run a cell. Empty (or "legacy"):
+    # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
+    # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
+    # workspace) as fields, the session JSON tools, and a JSON envelope
+    # before each cell's output. "notebook": the tool takes one field,
+    # ``code``, and where a cell runs is written in it as Jupyter magics on
+    # its first lines -- ``%%bash``, ``%pip install PKG``, ``%%scratch``
+    # (stateless), ``%%what_if`` (read-only), ``%%session NAME`` and
+    # ``%sessions`` (the session tools' data) -- mapped onto the unchanged
+    # function behind the tool; an unknown or misplaced magic is refused
+    # with what to write instead. The cell's first comment (or first code
+    # line) becomes its ``thought``; its result reads as a notebook cell
+    # (stdout, ``[stderr]``, ``Out: <repr>``, the traceback), the
+    # ``ExecutionResult`` object being unchanged; the session JSON tools are
+    # not offered and the prompt names the magics where it named the fields
+    # (unify/actor/notebook_cells.py). On both tool surfaces.
+    UNIFY_CODE_PROJECTION: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Builtins Catalogue
@@ -97,6 +541,25 @@ class ProductionSettings(BaseSettings):
     # When set, logs are written to {UNIFY_LOG_DIR}/unify.log
     # Default: None (console only)
     UNIFY_LOG_DIR: str = ""
+    # ``on``: every model call carries four HTTP headers, so a proxy in front
+    # of the provider can attribute it (for example, measure the cache hits of
+    # each session's first call and of the calls after a compaction):
+    # ``X-Unify-Session``, a random id per model client (a fork gets its own,
+    # plus ``X-Unify-Parent``, its parent's); ``X-Unify-Request``, how many
+    # requester messages the loop answering a requester had received when
+    # the call was made (1 for the first request, 0 where no such loop drives
+    # the client; a fork starts from its parent's count); ``X-Unify-Call-Kind``,
+    # the client's ``origin`` label; and ``X-Unify-Msg-Count``, the number of
+    # messages in the request. Every value is random or counted by the
+    # harness, matches ``[A-Za-z0-9_.:-]{1,64}`` and is never request
+    # content. The request body is unchanged, so the provider's prompt cache
+    # is not affected; unillm's response cache (UNILLM_CACHE) keys on the
+    # headers, so a recorded response is not replayed for a call that
+    # carries them. With no proxy in front that strips them, the headers
+    # reach the model provider (harmless, but they do). Empty (or ``off``):
+    # no header is added and the call's arguments are as shipped
+    # (unify/common/llm_client.py).
+    UNIFY_REQUEST_METADATA_HEADERS: str = ""
 
     # ─────────────────────────────────────────────────────────────────────────
     # Terminal Logging
@@ -123,17 +586,251 @@ class ProductionSettings(BaseSettings):
         "UNIFY_VALIDATE_LLM_PROVIDERS",
         "UNIFY_TURN_STORAGE_REVIEWS",
         "UNIFY_LOCAL_EMBEDDINGS",
+        "UNIFY_TOOL_CHOICE_FALLBACK",
+        "UNIFY_CELL_SCOPE_FIX",
         mode="before",
     )
     @classmethod
     def parse_bool_fields(cls, v: Any) -> bool:
         return _parse_bool(v)
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=True,
-        extra="ignore",
+    @field_validator("UNIFY_REASONING_EFFORT", mode="before")
+    @classmethod
+    def parse_reasoning_effort(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in _REASONING_EFFORTS:
+            raise ValueError(
+                "UNIFY_REASONING_EFFORT must be empty or one of "
+                f"{', '.join(_REASONING_EFFORTS[1:])}, not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_LOOP_STOP", mode="before")
+    @classmethod
+    def parse_loop_stop(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(f"UNIFY_LOOP_STOP must be empty, 'off' or 'on', not {v!r}")
+        return value
+
+    @field_validator("UNIFY_LOOP_STOP_K", mode="before")
+    @classmethod
+    def parse_loop_stop_k(cls, v: Any) -> int:
+        if v is None or v == "":
+            return 10
+        value: Any = v
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            value = int(value.strip())
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"UNIFY_LOOP_STOP_K must be a whole number of at least 1, not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_STEP_CAP_REPLY", mode="before")
+    @classmethod
+    def parse_step_cap_reply(cls, v: Any) -> str:
+        value = _step_cap_reply_mode(v)
+        if value is None:
+            raise ValueError(
+                "UNIFY_STEP_CAP_REPLY must be empty, 'draft' or 'last_word' "
+                f"(or a boolean, true meaning 'draft'), not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_STEP_CAP_COMPACT", mode="before")
+    @classmethod
+    def parse_step_cap_compact(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on", "continue"):
+            raise ValueError(
+                "UNIFY_STEP_CAP_COMPACT must be empty, 'off', 'on' or 'continue', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator(
+        "UNIFY_MEMORY_V2",
+        "UNIFY_MEMORY_V2_E",
+        "UNIFY_MEMORY_V2_SOL_MODEL",
+        "UNIFY_MEMORY_V2_SOL_ALLOWANCE_USD_PER_TOKENS",
+        "UNIFY_MEMORY_V2_SOL_RUN_GUARD_USD",
+        "UNIFY_MEMORY_V2_SOL_BASE_URL",
+        "UNIFY_MEMORY_V2_SOL_TOKEN",
+        "UNIFY_MEMORY_V2_SOL_TOKEN_FD",
+        "UNIFY_MEMORY_V2_SOL_EFFORT",
+        "UNIFY_MEMORY_V2_SOL_EFFORT_SCALE",
+        "UNIFY_MEMORY_V2_SOL_MAX_CALLS",
+        "UNIFY_MEMORY_V2_SURFACING",
+        "UNIFY_MEMORY_V2_DOCSTRINGS",
+        "UNIFY_MEMORY_V2_SOFT_BUDGET",
+        "UNIFY_MEMORY_V2_SOL_USAGE",
+        "UNIFY_MEMORY_V21",
+        "UNIFY_MEMORY_V21_CHECKER_VISIBLE",
+        "UNIFY_MEMORY_V21_E",
+        "UNIFY_MEMORY_V21_MAX_READS",
+        "UNIFY_MEMORY_V21_WAIT_SLOT",
+        "UNIFY_MEMORY_V21_FORK",
+        "UNIFY_MEMORY_V21_ANALYSTS",
+        "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
+        "UNIFY_MEMORY_V21_PASS_WALL_S",
+        "UNIFY_MEMORY_V2_SOL_JOURNAL",
+        "UNIFY_MEMORY_V2_QA_FIXTURES",
+        "UNIFY_MEMORY_V2_QA_MUTATION",
+        "UNIFY_MEMORY_V2_QA_MUTATION_MIN_KILL",
+        "UNIFY_MEMORY_V2_QA_DETERMINISM",
+        "UNIFY_MEMORY_V2_QA_REPLAY",
+        "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE",
+        mode="before",
     )
+    @classmethod
+    def parse_memory_v2(cls, v: Any, info: Any) -> Any:
+        from unify.memory_v2.integration import switch
+
+        return switch.PARSERS[info.field_name](v)
+
+    @field_validator("UNIFY_COMPACTION_KEEP_PREFIX", mode="before")
+    @classmethod
+    def parse_compaction_keep_prefix(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_COMPACTION_KEEP_PREFIX must be empty, 'off' or 'on', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_MEMORY_V2_DIALOGUE", mode="before")
+    @classmethod
+    def parse_memory_v2_dialogue(cls, v: Any) -> str:
+        from unify.memory_v2.integration import switch
+
+        return switch.parse_dialogue(v)
+
+    @field_validator("UNIFY_GUIDANCE_EMPTY_QUERY", mode="before")
+    @classmethod
+    def parse_guidance_empty_query(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "stored"):
+            raise ValueError(
+                f"UNIFY_GUIDANCE_EMPTY_QUERY must be empty or 'stored', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_BIND_REQUEST", mode="before")
+    @classmethod
+    def parse_bind_request(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_BIND_REQUEST must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REQUEST_METADATA_HEADERS", mode="before")
+    @classmethod
+    def parse_request_metadata_headers(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                "UNIFY_REQUEST_METADATA_HEADERS must be empty, 'off' or 'on', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_VARIABLE_INVENTORY", mode="before")
+    @classmethod
+    def parse_variable_inventory(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "off" else value
+        if value not in ("", "on"):
+            raise ValueError(
+                f"UNIFY_VARIABLE_INVENTORY must be empty, 'off' or 'on', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_REPLY_CHANNEL", mode="before")
+    @classmethod
+    def parse_reply_channel(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "text" else value
+        if value not in ("", "code+text"):
+            raise ValueError(
+                "UNIFY_REPLY_CHANNEL must be empty, 'text' or 'code+text', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CELL_LLM_MODELS", mode="before")
+    @classmethod
+    def parse_cell_llm_models(cls, v: Any) -> str:
+        text = str(v or "").strip()
+        if text.lower() == "any":
+            return "any"
+        endpoints = [part.strip() for part in text.split(",") if part.strip()]
+        for endpoint in endpoints:
+            model, _, provider = endpoint.rpartition("@")
+            if endpoint.lower() == "any" or not model or not provider:
+                raise ValueError(
+                    "UNIFY_CELL_LLM_MODELS must be empty, 'any' or a comma list "
+                    f"of 'model@provider' endpoints, not {v!r}",
+                )
+        return ",".join(endpoints)
+
+    @field_validator("UNIFY_CELL_ENV_ALLOW", mode="before")
+    @classmethod
+    def parse_cell_env_allow(cls, v: Any) -> str:
+        entries = [part.strip() for part in str(v or "").split(",") if part.strip()]
+        for entry in entries:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\*?", entry):
+                raise ValueError(
+                    "UNIFY_CELL_ENV_ALLOW must be a comma list of variable names "
+                    f"and PREFIX_* patterns, not {v!r}",
+                )
+        return ",".join(entries)
+
+    @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
+    @classmethod
+    def parse_workspace_network(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        if value not in ("", "proxy"):
+            raise ValueError(
+                f"UNIFY_WORKSPACE_NETWORK must be empty or 'proxy', not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CODE_PROJECTION", mode="before")
+    @classmethod
+    def parse_code_projection(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "legacy" else value
+        if value not in ("", "notebook"):
+            raise ValueError(
+                "UNIFY_CODE_PROJECTION must be empty, 'legacy' or 'notebook', "
+                f"not {v!r}",
+            )
+        return value
+
+    @field_validator("UNIFY_CLOCK_PLACEMENT", mode="before")
+    @classmethod
+    def parse_clock_placement(cls, v: Any) -> str:
+        value = str(v or "").strip().lower()
+        value = "" if value == "system" else value
+        if value not in ("", "first_message"):
+            raise ValueError(
+                "UNIFY_CLOCK_PLACEMENT must be empty, 'system' or "
+                f"'first_message', not {v!r}",
+            )
+        return value
+
+    def step_cap_reply(self) -> str:
+        """The ``UNIFY_STEP_CAP_REPLY`` mode: ``""``, ``"draft"`` or ``"last_word"``."""
+        return _step_cap_reply_mode(self.UNIFY_STEP_CAP_REPLY) or ""
 
     def validate_llm_providers(self) -> None:
         """Validate that unillm holds a key it can reach an LLM provider with.
@@ -156,3 +853,13 @@ class ProductionSettings(BaseSettings):
 
 # Singleton instance for production code
 SETTINGS = ProductionSettings()
+# UNIFY_MEMORY_V2_SOL_TOKEN lives in SETTINGS (this, the controller process)
+# only: every case variant is removed from the environment once read, so no
+# subprocess inherits it, and its value stays registered with the value-based
+# redactors. With UNIFY_MEMORY_V2_SOL_TOKEN_FD set, this first settle reads the
+# token from that inherited descriptor and closes it, before the CLI or any
+# controller code can spawn a child. The CLI checks again after loading .env.
+# Unset, nothing changes.
+from unify.memory_v2.integration.switch import settle_sol_route_env  # noqa: E402
+
+settle_sol_route_env(os.environ, SETTINGS)

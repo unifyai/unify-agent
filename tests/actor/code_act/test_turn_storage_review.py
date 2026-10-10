@@ -46,8 +46,6 @@ def _make_inner_handle(
     inner._client = mock_client
 
     mock_task = MagicMock()
-    mock_task.get_ask_tools = MagicMock(return_value={})
-    mock_task.get_completed_tool_metadata = MagicMock(return_value={})
     inner._task = mock_task
 
     inner._queue = asyncio.Queue()
@@ -371,7 +369,7 @@ def test_session_end_review_frames_the_whole_session():
         ),
         patch(
             "unify.actor.code_act_actor._build_storage_tools",
-            return_value=({}, [], []),
+            return_value={},
         ),
     ):
         for reason in (SESSION_ENDED, "user cancelled"):
@@ -380,7 +378,6 @@ def test_session_end_review_frames_the_whole_session():
                     {"role": "user", "content": "do work"},
                     {"role": "tool", "content": "worked"},
                 ],
-                ask_tools={},
                 actor=_mock_actor(),
                 original_result="done",
                 stop_reason=reason,

@@ -5,6 +5,11 @@ keeps: stored ``functions`` and the read-only ``primitives`` catalogue seeded
 from the code (read together through the ``all_functions`` view), the user's
 ``guidance`` and the ``builtin_guidance`` seeded from the committed snapshot
 (read together through ``all_guidance``), and the chat ``messages``.
+With ``UNIFY_FUNCTION_PATCH`` on, ``function_history`` and
+``guidance_history`` keep each row as it was before an overwrite; nothing
+removes their rows, :func:`clear` included. With ``UNIFY_FUNCTION_CASES`` on,
+``function_cases`` holds a few recorded calls per stored function; deleting
+the function deletes them too.
 
 Managers issue SQL through :func:`execute`, :func:`query` and
 :func:`query_one`. Clauses written by the model run through
@@ -85,6 +90,44 @@ CREATE VIEW IF NOT EXISTS all_guidance AS
     FROM guidance
     UNION ALL
     SELECT guidance_id, title, content, '[]', '[]', 1 FROM builtin_guidance;
+CREATE TABLE IF NOT EXISTS function_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    previous TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS guidance_history (
+    history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guidance_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    previous TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    replaced_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS function_cases (
+    case_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    function_id INTEGER NOT NULL
+        REFERENCES functions(function_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    args_hash TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    call TEXT,
+    args_shown TEXT NOT NULL DEFAULT '',
+    result TEXT,
+    error TEXT,
+    trace TEXT NOT NULL DEFAULT '[]',
+    trace_complete INTEGER NOT NULL DEFAULT 1,
+    session TEXT,
+    outcome TEXT,
+    retired_why TEXT,
+    retired_at TEXT,
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS function_cases_by_function
+    ON function_cases (function_id, status, kind);
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     role TEXT NOT NULL,
@@ -94,7 +137,8 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 """
 
-# Tables that hold the user's own rows; the seeded catalogues are not listed.
+# Tables that hold the user's own rows; the seeded catalogues are not listed,
+# nor the history tables, which are append-only.
 USER_TABLES = ("functions", "guidance", "messages")
 
 FUNCTION_COLUMNS = (
@@ -159,8 +203,18 @@ def store_path() -> str:
     return str(store_home() / "store.sqlite")
 
 
+def utc_now() -> datetime:
+    """The store's clock: the current UTC time, timezone-aware.
+
+    Every timestamp the store writes (function and guidance rows, usage
+    traces, history, trust and case records) reads this one function, so a
+    test can freeze it in one place.
+    """
+    return datetime.now(timezone.utc)
+
+
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now().isoformat()
 
 
 def _json_default(value: Any) -> Any:
@@ -212,6 +266,18 @@ class _Connection:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        _add_missing_columns(self.conn)
+
+
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = ()
+"""Columns added to a table after it first shipped: a store created earlier gets them on open."""
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, column, declaration in _ADDED_COLUMNS:
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in present:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
 _STATE: _Connection | None = None
@@ -356,4 +422,5 @@ __all__ = [
     "store_home",
     "store_path",
     "transaction",
+    "utc_now",
 ]

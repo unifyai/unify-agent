@@ -1,0 +1,947 @@
+"""SQLite evidence store (spec §3, D5): a derived index over the episodes and memory repos."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from collections.abc import Iterable
+from typing import TYPE_CHECKING
+
+from .episodes import Episode
+from .experience import experience_tokens
+
+if TYPE_CHECKING:
+    from .signals import Signal
+
+# Input-shape descriptors kept per function in a commit's snapshot (the catalogue's ``input_shapes``).
+MAX_INPUT_SHAPES = 16
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS episodes(seq INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT UNIQUE, commit_sha TEXT,
+  started_at TEXT, regime TEXT, memory_main TEXT, request TEXT);
+CREATE TABLE IF NOT EXISTS env_touch(episode_id TEXT, channel TEXT, n_calls INTEGER, PRIMARY KEY(episode_id, channel));
+CREATE TABLE IF NOT EXISTS signals(signal_id TEXT PRIMARY KEY, episode_id TEXT, source TEXT, label TEXT, ts TEXT,
+  refers_to TEXT, regime TEXT, revealed INTEGER, reveal_p TEXT);
+CREATE TABLE IF NOT EXISTS item_evidence(item TEXT, episode_id TEXT, role TEXT, PRIMARY KEY(item, episode_id, role));
+CREATE TABLE IF NOT EXISTS covers(item TEXT, episode_id TEXT, action_index INTEGER,
+  PRIMARY KEY(item, episode_id, action_index));
+CREATE TABLE IF NOT EXISTS passes(pass_id TEXT PRIMARY KEY, kind TEXT, channel TEXT, parent TEXT, candidate TEXT,
+  passed INTEGER, reasons TEXT, usd TEXT, patch_blob TEXT, merged TEXT, items_merged TEXT, items_refused TEXT);
+CREATE TABLE IF NOT EXISTS cursors(channel TEXT PRIMARY KEY, seq INTEGER);
+CREATE TABLE IF NOT EXISTS experience(episode_id TEXT PRIMARY KEY, tokens INTEGER, counter TEXT);
+CREATE TABLE IF NOT EXISTS item_use(item TEXT, episode_id TEXT, PRIMARY KEY(item, episode_id));
+"""
+# The input-shape snapshots of ``UNIFY_MEMORY_V2_SURFACING=catalogue`` (:mod:`.shape_rows`), created by the
+# first write, so a store that never freezes a snapshot (``index``, the default) keeps the v2 schema.
+_SHAPE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS shape_commits(commit_sha TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, shapes TEXT, backfilled INTEGER,
+  PRIMARY KEY(commit_sha, item));
+"""
+# Spec v2.1 §5 (P9): the checker signals the bed showed the actor, created by the first such signal, so a store
+# that never records one (every bed without UNIFY_MEMORY_V21_CHECKER_VISIBLE) keeps the schema above.
+_VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
+
+# Memory v2.1 (spec §8.4, §9.2): one row per v2.1 pass (its rounds, the blob ids of each refused round's full
+# gate result and of its final one), created by the first write, so a store that never runs a v2.1 pass keeps
+# the v2 schema (as with _SHAPE_SCHEMA).
+_ROUNDS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS pass_rounds(pass_id TEXT PRIMARY KEY, role TEXT, rounds INTEGER, "
+    "round_blobs TEXT, gate_blob TEXT)"
+)
+
+# memory v2.1 (P4 Amendment C): the typed covers of landed items, created lazily on the first v2.1 merge
+_TYPED_COVERS_SCHEMA = (
+    "CREATE TABLE IF NOT EXISTS typed_covers(item TEXT, episode_id TEXT, cover_json TEXT, "
+    "PRIMARY KEY(item, episode_id, cover_json))"
+)
+
+# Memory v2.1 CURATE (spec §10.3-10.4, P6): the fingerprints each CURATE pass was shown, and the aliases,
+# retirements and dropped aliases each landed CURATE pass made (P5 reads them for alias_of and deprecated).
+# Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
+_CURATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);
+CREATE TABLE IF NOT EXISTS curations(seq INTEGER PRIMARY KEY AUTOINCREMENT, pass_id TEXT, commit_sha TEXT,
+  item TEXT, action TEXT, target TEXT, reason TEXT, UNIQUE(pass_id, item, action))
+"""
+CURATION_ACTIONS = ("alias", "retire", "drop_alias")
+
+
+def _json_as(raw: object, default: list | dict) -> list | dict:
+    """*raw* parsed as JSON of *default*'s type; *default* for NULL, unparsable or another type."""
+    try:
+        value = json.loads(raw) if isinstance(raw, str) and raw else default
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+# The item_use counts, in column order. Each is added to a store that lacks it (a store opened before
+# the column existed), as ``INTEGER NOT NULL DEFAULT 0``, or ``DEFAULT 1`` for :data:`_UNKNOWN_BY_DEFAULT`.
+_USE_COUNTS = (
+    "imported",
+    "called",
+    "refused",
+    "errored",
+    "refused_accepted",
+    "referenced",
+    "guarded",
+    "unknown_calls",
+    "shown",
+    "channel_shown",
+    "modified",
+    "refused_modified",
+    "errored_modified",
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
+    "outcome_unknown",
+    "prompt_unconfirmed",
+)
+# Added with ``DEFAULT 1``: a row indexed before the column existed reads as unknown (its outcomes and
+# where its shown lists came from), never as known. Every insert sets every column, so the default only
+# ever fills the rows already there when an old store is migrated.
+_UNKNOWN_BY_DEFAULT = frozenset({"outcome_unknown", "exposure_unknown"})
+# Where a record's shown lists came from (``analysis.use``'s ``exposure_source``); a record without one
+# (from before the field) counts as ``unknown``.
+_EXPOSURE_SOURCES = ("record", "legacy_text", "unknown")
+# The item_use columns :meth:`EvidenceStore.request_flags` counts requests by (a request counts when any
+# of its rows has it). All but ``outcome_unknown`` hold one value per request; ``outcome_unknown`` is per
+# item (the items a cell with an unknown outcome could reach).
+_REQUEST_FLAGS = (
+    "exposure_record",
+    "exposure_legacy_text",
+    "exposure_unknown",
+    "outcome_unknown",
+    "prompt_unconfirmed",
+)
+# Per-item sums over the requests whose outcome for the item was known (``outcome_unknown = 0``).
+_KNOWN_SUMS = (
+    ("refused_known", "SUM(CASE WHEN outcome_unknown=0 THEN refused ELSE 0 END)"),
+    ("errored_known", "SUM(CASE WHEN outcome_unknown=0 THEN errored ELSE 0 END)"),
+    (
+        "refused_accepted_known",
+        "SUM(CASE WHEN outcome_unknown=0 THEN refused_accepted ELSE 0 END)",
+    ),
+    (
+        "requests_refusing_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND refused>0 THEN 1 ELSE 0 END)",
+    ),
+    (
+        "requests_erroring_known",
+        "SUM(CASE WHEN outcome_unknown=0 AND errored>0 THEN 1 ELSE 0 END)",
+    ),
+)
+_IN_CHUNK = 500
+
+
+def _migrate_item_use(db: sqlite3.Connection) -> None:
+    """Add the item_use columns a store lacks. Rows already there read ``outcome_unknown = 1`` and
+    ``exposure_unknown = 1`` (:data:`_UNKNOWN_BY_DEFAULT`): what they did not record is unknown.
+    """
+    have = {r[1] for r in db.execute("PRAGMA table_info(item_use)")}
+    with db:
+        for col in _USE_COUNTS:
+            if col not in have:
+                default = 1 if col in _UNKNOWN_BY_DEFAULT else 0
+                db.execute(
+                    f"ALTER TABLE item_use ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}",
+                )
+
+
+def _exposure_source(use: dict) -> str:
+    """The record's ``exposure_source``; a record from before the field (``version`` below 4) whose
+    legacy reading found a section is ``legacy_text``, any other record without one ``unknown``.
+    """
+    source = use.get("exposure_source")
+    if source in _EXPOSURE_SOURCES:
+        return source
+    version, section = use.get("version"), use.get("memory_section_shown")
+    if (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version < 4
+        and isinstance(section, dict)
+        and section.get("shown") is True
+    ):
+        return "legacy_text"
+    return "unknown"
+
+
+def _unknown_items(use: dict, items: set[str]) -> set[str]:
+    """The items whose outcome the record leaves unknown: its ``items_outcome_unknown`` (every item when
+    that list was cut short), or, for a record without the list (an older or failed record), every item
+    unless ``outcomes_known`` is true."""
+    listed = use.get("items_outcome_unknown")
+    if isinstance(listed, list):
+        count = use.get("items_outcome_unknown_count")
+        if (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and count > len(listed)
+        ):
+            return set(items)
+        return {v for v in listed if isinstance(v, str)}
+    return set() if use.get("outcomes_known") is True else set(items)
+
+
+def _use_rows(eid: str, use: dict) -> list[tuple]:
+    """One ``item_use`` row per item at the episode's pin (an exposure, zeros included) and per item the
+    record counts, in :data:`_USE_COUNTS` order. ``unknown_calls`` is the dynamic calls on the item's
+    channel plus on ``env`` itself; ``shown`` whether the item's own line was in the prompt's memory
+    section, ``channel_shown`` whether its channel was; ``modified`` whether the request edited its
+    channel's files (its refusals and errors are then in the ``_modified`` columns only). What the cells
+    asked the library helper to show (``cell_exposure``: ``memory.catalog``/``describe`` and ``help`` on
+    a memory object) counts as shown too, an item's channel with it, whatever the exposure source;
+    ``exposure_<source>`` is 1 in the column of the record's ``exposure_source`` (the harness's record of
+    what the prompt showed, the legacy reading of the prompt's text, or unknown); ``prompt_unconfirmed``
+    is 1 when the shown lists came from the record but no recorded system prompt ends with its text;
+    ``outcome_unknown`` is 1 for the items a cell with an unknown outcome could reach in this request
+    (``items_outcome_unknown``; for a record without that list, every item unless ``outcomes_known``),
+    and that row's refusal and error columns are then lower bounds.
+    """
+
+    def listed(key: str) -> set[str]:
+        value = use.get(key)
+        return (
+            {v for v in value if isinstance(v, str)}
+            if isinstance(value, list)
+            else set()
+        )
+
+    rows = use.get("items") if isinstance(use.get("items"), dict) else {}
+    pinned = listed("items_at_pin")
+    shown, channels, changed = (
+        listed("shown_items"),
+        listed("shown_channels"),
+        listed("modified_channels"),
+    )
+    # in-cell exposure (analysis.use cell_exposure): what the cells looked up counts as shown
+    cell = (
+        use.get("cell_exposure") if isinstance(use.get("cell_exposure"), dict) else {}
+    )
+    cell_items, cell_channels = cell.get("items"), cell.get("channels")
+    looked_up = {
+        v
+        for v in (cell_items if isinstance(cell_items, list) else [])
+        if isinstance(v, str) and v.startswith("env/")
+    }
+    shown |= looked_up
+    channels |= {
+        v
+        for v in (cell_channels if isinstance(cell_channels, list) else [])
+        if isinstance(v, str)
+    }
+    channels |= {i.split(":", 1)[0].removeprefix("env/") for i in looked_up}
+    unknown = (
+        use.get("unknown_calls") if isinstance(use.get("unknown_calls"), dict) else {}
+    )
+    source = _exposure_source(use)
+    exposure = tuple(int(source == s) for s in _EXPOSURE_SOURCES)
+    section = use.get("memory_section_shown")
+    unconfirmed = int(
+        source == "record"
+        and isinstance(section, dict)
+        and section.get("prompt_confirmed") is False,
+    )
+
+    def n(value: object) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    every = pinned | {k for k in rows if isinstance(k, str)}
+    unknown_items = _unknown_items(use, every)
+    out = []
+    for item in sorted(every):
+        r = rows.get(item) if isinstance(rows.get(item), dict) else {}
+        channel = item.split(":", 1)[0].removeprefix("env/")
+        out.append(
+            (
+                item,
+                eid,
+                n(r.get("imported")),
+                n(r.get("called")),
+                n(r.get("refused")),
+                n(r.get("errored")),
+                n(r.get("refused_then_accepted")),
+                n(r.get("referenced")),
+                n(r.get("guarded")),
+                n(unknown.get(channel)) + n(unknown.get("*")),
+                int(item in shown),
+                int(channel in channels),
+                int(channel in changed),
+                n(r.get("refused_modified")),
+                n(r.get("errored_modified")),
+                *exposure,
+                int(item in unknown_items),
+                unconfirmed,
+            ),
+        )
+    return out
+
+
+# A pass row's columns. Per-item admission (stage 7) added the last three: the commit that landed (the
+# candidate or its reduction), the items merged (a JSON list) and the items refused (a JSON object of
+# value-free codes); stores made before them gain them, empty, when opened.
+_PASS_COLUMNS = (
+    "pass_id",
+    "kind",
+    "channel",
+    "parent",
+    "candidate",
+    "passed",
+    "reasons",
+    "usd",
+    "patch_blob",
+    "merged",
+    "items_merged",
+    "items_refused",
+)
+
+
+class EvidenceStore:
+    def __init__(self, path: Path, timeout_s: float | None = None) -> None:
+        # memory v2.1: a pass worker and a request share the store, so the worker waits longer on a busy lock;
+        # None keeps sqlite3's default (5 s), as in v2
+        self.db = (
+            sqlite3.connect(str(path))
+            if timeout_s is None
+            else sqlite3.connect(str(path), timeout=float(timeout_s))
+        )
+        self.db.executescript(_SCHEMA)
+        _migrate_item_use(self.db)
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(passes)")}
+        with self.db:
+            for col in _PASS_COLUMNS:
+                if col not in have:
+                    self.db.execute(f"ALTER TABLE passes ADD COLUMN {col} TEXT")
+
+    def index_episode(self, ep: Episode, commit_sha: str) -> int:
+        with self.db:
+            cur = self.db.execute(
+                "INSERT INTO episodes(episode_id, commit_sha, started_at, regime, memory_main, request) VALUES(?,?,?,?,?,?)",
+                (
+                    ep.episode_id,
+                    commit_sha,
+                    ep.started_at,
+                    ep.regime,
+                    ep.memory_main,
+                    "\n".join(ep.request),
+                ),
+            )
+            counts: dict[str, int] = {}
+            for a in ep.actions:
+                counts[a.channel] = counts.get(a.channel, 0) + 1
+            self.db.executemany(
+                "INSERT INTO env_touch VALUES(?,?,?)",
+                [(ep.episode_id, ch, n) for ch, n in counts.items()],
+            )
+            tokens, how = experience_tokens(ep)
+            self.db.execute(
+                "INSERT INTO experience VALUES(?,?,?)",
+                (ep.episode_id, tokens, how),
+            )
+            use = getattr(ep, "memory_use", None)
+            if isinstance(use, dict):
+                cols = ", ".join(("item", "episode_id", *_USE_COUNTS))
+                marks = ",".join("?" * (2 + len(_USE_COUNTS)))
+                self.db.executemany(
+                    f"INSERT OR REPLACE INTO item_use({cols}) VALUES({marks})",
+                    _use_rows(ep.episode_id, use),
+                )
+            return int(cur.lastrowid)
+
+    # -- item use (memory v2.1 telemetry) --------------------------------------------------------------
+
+    def item_use(
+        self,
+        eids: list[str] | None = None,
+        item: str | None = None,
+    ) -> dict[str, dict]:
+        """Per item (only *item* when given), the summed ``item_use`` counts over *eids* (every indexed
+        episode when None).
+
+        Each entry: ``requests`` (episodes whose pin held the item), ``used_requests`` (of those, the ones
+        with a call site), the sums of :data:`_USE_COUNTS` (``shown`` and ``channel_shown`` are then
+        the requests whose memory section showed the item's line and its channel; ``outcome_unknown`` the
+        requests in which a cell with an unknown outcome could reach the item), and the sums of
+        :data:`_KNOWN_SUMS` over the requests whose outcome for the item was known. Items are in id order.
+        """
+        cols = ", ".join(
+            [f"SUM({c})" for c in _USE_COUNTS] + [expr for _, expr in _KNOWN_SUMS],
+        )
+        known_keys = [k for k, _ in _KNOWN_SUMS]
+        base = (
+            f"SELECT item, COUNT(*), SUM(CASE WHEN called > 0 THEN 1 ELSE 0 END), {cols} "
+            "FROM item_use"
+        )
+        out: dict[str, dict] = {}
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            where: list[str] = []
+            params: list[str] = []
+            if item is not None:
+                where.append("item=?")
+                params.append(item)
+            if chunk is not None:
+                where.append(f"episode_id IN ({','.join('?' * len(chunk))})")
+                params.extend(chunk)
+            clause = f" WHERE {' AND '.join(where)}" if where else ""
+            rows = self.db.execute(f"{base}{clause} GROUP BY item", params).fetchall()
+            for r in rows:
+                cur = out.setdefault(
+                    r[0],
+                    {
+                        "requests": 0,
+                        "used_requests": 0,
+                        **dict.fromkeys(_USE_COUNTS, 0),
+                        **dict.fromkeys(known_keys, 0),
+                    },
+                )
+                cur["requests"] += int(r[1] or 0)
+                cur["used_requests"] += int(r[2] or 0)
+                for c, v in zip([*_USE_COUNTS, *known_keys], r[3:]):
+                    cur[c] += int(v or 0)
+        return dict(sorted(out.items()))
+
+    def request_flags(self, eids: list[str] | None = None) -> dict[str, int]:
+        """Per column of :data:`_REQUEST_FLAGS`, how many requests among *eids* (every indexed one when
+        None) have it set on any of their rows (``outcome_unknown``: some item's outcome was unknown); a
+        request counts when its pin held at least one item."""
+        out = dict.fromkeys(_REQUEST_FLAGS, 0)
+        cols = ", ".join(f"MAX({c})" for c in _REQUEST_FLAGS)
+        if eids is None:
+            chunks: list[list[str] | None] = [None]
+        else:
+            uniq = sorted(set(eids))
+            chunks = [uniq[i : i + _IN_CHUNK] for i in range(0, len(uniq), _IN_CHUNK)]
+        for chunk in chunks:
+            clause, params = "", []
+            if chunk is not None:
+                clause = f" WHERE episode_id IN ({','.join('?' * len(chunk))})"
+                params = list(chunk)
+            rows = self.db.execute(
+                f"SELECT episode_id, {cols} FROM item_use{clause} GROUP BY episode_id",
+                params,
+            ).fetchall()
+            for r in rows:
+                for c, v in zip(_REQUEST_FLAGS, r[1:]):
+                    out[c] += int(bool(v))
+        return out
+
+    def last_call_seq(self, item: str) -> int | None:
+        """The ``seq`` of the latest indexed episode with a call site of *item*, or None."""
+        row = self.db.execute(
+            "SELECT MAX(e.seq) FROM item_use u JOIN episodes e ON e.episode_id=u.episode_id "
+            "WHERE u.item=? AND u.called > 0",
+            (item,),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    def latest_seq(self) -> int:
+        """The ``seq`` of the latest indexed episode (0 when none)."""
+        row = self.db.execute("SELECT MAX(seq) FROM episodes").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def seq_of(self, eid: str) -> int:
+        row = self.db.execute(
+            "SELECT seq FROM episodes WHERE episode_id=?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(eid)
+        return int(row[0])
+
+    def episode_ref(self, eid: str) -> tuple[str, str]:
+        """``(commit_sha, started_at)`` of an indexed episode; ``KeyError`` when absent."""
+        row = self.db.execute(
+            "SELECT commit_sha, started_at FROM episodes WHERE episode_id=?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(eid)
+        return str(row[0]), str(row[1])
+
+    def regime_of(self, eid: str) -> str:
+        row = self.db.execute(
+            "SELECT regime FROM episodes WHERE episode_id=?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(eid)
+        return str(row[0])
+
+    def episode_exists(self, eid: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM episodes WHERE episode_id=?",
+                (eid,),
+            ).fetchone()
+            is not None
+        )
+
+    def episode_ids_since(self, channel: str, after_seq: int) -> list[str]:
+        rows = self.db.execute(
+            "SELECT e.episode_id FROM episodes e JOIN env_touch t ON t.episode_id=e.episode_id "
+            "WHERE t.channel=? AND e.seq>? ORDER BY e.seq",
+            (channel, after_seq),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def experience_of(self, eid: str) -> tuple[int, str]:
+        """(experience tokens, counter) recorded for *eid* (:mod:`.experience`); KeyError if none."""
+        row = self.db.execute(
+            "SELECT tokens, counter FROM experience WHERE episode_id=?",
+            (eid,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(eid)
+        return int(row[0]), str(row[1])
+
+    def experience_since(self, after_seq: int) -> list[tuple[str, int]]:
+        """(episode id, experience tokens) of every episode after *after_seq*, in order (0 if unknown)."""
+        rows = self.db.execute(
+            "SELECT e.episode_id, COALESCE(x.tokens, 0) FROM episodes e "
+            "LEFT JOIN experience x ON x.episode_id=e.episode_id WHERE e.seq>? ORDER BY e.seq",
+            (after_seq,),
+        ).fetchall()
+        return [(r[0], int(r[1])) for r in rows]
+
+    def channels_of(self, eid: str) -> list[str]:
+        return [
+            r[0]
+            for r in self.db.execute(
+                "SELECT channel FROM env_touch WHERE episode_id=? ORDER BY channel",
+                (eid,),
+            )
+        ]
+
+    def add_signal(self, sig: "Signal") -> None:
+        """Raw index write, used by ``signals.post_signal`` and by ``rebuild``.
+
+        It performs no regime-mask check; all harness code must post signals
+        through ``signals.post_signal``.
+        """
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO signals VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    sig.signal_id,
+                    sig.episode_id,
+                    sig.source,
+                    sig.label,
+                    sig.ts,
+                    sig.refers_to,
+                    sig.regime,
+                    int(sig.revealed),
+                    sig.reveal_p,
+                ),
+            )
+            if sig.visible_to_actor:
+                # Spec v2.1 §5 (P9): the table exists only once a visible signal is posted, so a store that
+                # never had one keeps the schema it had before.
+                self.db.execute(_VISIBLE_TABLE)
+                self.db.execute(
+                    "INSERT OR REPLACE INTO signal_visible VALUES(?)",
+                    (sig.signal_id,),
+                )
+
+    def _visible_ids(self, eid: str) -> set[str]:
+        """The ids of *eid*'s signals that the bed showed the actor (none when the table was never made)."""
+        made = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='signal_visible'",
+        ).fetchone()
+        if not made:
+            return set()
+        rows = self.db.execute(
+            "SELECT v.signal_id FROM signal_visible v JOIN signals s ON s.signal_id=v.signal_id "
+            "WHERE s.episode_id=?",
+            (eid,),
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def signals_for(self, eid: str) -> list["Signal"]:
+        from .signals import Signal
+
+        rows = self.db.execute(
+            "SELECT * FROM signals WHERE episode_id=? ORDER BY ts, signal_id",
+            (eid,),
+        ).fetchall()
+        visible = self._visible_ids(eid)
+        return [
+            Signal(
+                r[0],
+                r[1],
+                r[2],
+                r[3],
+                r[4],
+                r[5],
+                r[6],
+                bool(r[7]),
+                r[8],
+                visible_to_actor=r[0] in visible,
+            )
+            for r in rows
+        ]
+
+    def add_item_evidence(self, item: str, eid: str, role: str) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO item_evidence VALUES(?,?,?)",
+                (item, eid, role),
+            )
+
+    def item_episodes(self, item: str) -> list[str]:
+        return [
+            r[0]
+            for r in self.db.execute(
+                "SELECT DISTINCT episode_id FROM item_evidence WHERE item=? ORDER BY episode_id",
+                (item,),
+            )
+        ]
+
+    def items_citing(self, eid: str) -> list[str]:
+        return [
+            r[0]
+            for r in self.db.execute(
+                "SELECT DISTINCT item FROM item_evidence WHERE episode_id=? ORDER BY item",
+                (eid,),
+            )
+        ]
+
+    def add_cover(self, item: str, eid: str, action_index: int) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO covers VALUES(?,?,?)",
+                (item, eid, action_index),
+            )
+
+    def covered(self) -> set[tuple[str, int]]:
+        return {
+            (r[0], int(r[1]))
+            for r in self.db.execute("SELECT episode_id, action_index FROM covers")
+        }
+
+    def write_commit_shapes(self, commit: str, rows: dict[str, dict]) -> bool:
+        """Freeze the input-shape snapshot of memory commit *commit* (:mod:`.shape_rows`): item ->
+        ``{"body": digest, "shapes": [...], "backfilled": bool}``. A commit's snapshot is written once and
+        never changed, so every export of that commit renders the same catalogue; False if it existed.
+        """
+        with self.db:
+            for ddl in _SHAPE_SCHEMA.split(";"):
+                if ddl.strip():
+                    self.db.execute(ddl)
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO shape_commits VALUES(?)",
+                (commit,),
+            )
+            if cur.rowcount == 0:
+                return False
+            self.db.executemany(
+                "INSERT INTO commit_shapes VALUES(?,?,?,?,?)",
+                [
+                    (
+                        commit,
+                        item,
+                        row["body"],
+                        json.dumps(row["shapes"], sort_keys=True, ensure_ascii=False),
+                        int(bool(row.get("backfilled"))),
+                    )
+                    for item, row in sorted(rows.items())
+                ],
+            )
+        return True
+
+    def commit_shapes(self, commit: str) -> dict[str, dict] | None:
+        """The frozen snapshot of *commit*, or None when it has none."""
+        if not self._has_shape_tables():
+            return None
+        if (
+            self.db.execute(
+                "SELECT 1 FROM shape_commits WHERE commit_sha=?",
+                (commit,),
+            ).fetchone()
+            is None
+        ):
+            return None
+        return {
+            r[0]: {"body": r[1], "shapes": json.loads(r[2]), "backfilled": bool(r[3])}
+            for r in self.db.execute(
+                "SELECT item, body, shapes, backfilled FROM commit_shapes WHERE commit_sha=? "
+                "ORDER BY item",
+                (commit,),
+            )
+        }
+
+    def _has_shape_tables(self) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shape_commits'",
+            ).fetchone()
+            is not None
+        )
+
+    def covers_of(self, item: str) -> list[tuple[str, int]]:
+        """The validated covers recorded for *item* by every landed merge, sorted."""
+        return [
+            (r[0], int(r[1]))
+            for r in self.db.execute(
+                "SELECT episode_id, action_index FROM covers WHERE item=? "
+                "ORDER BY episode_id, action_index",
+                (item,),
+            )
+        ]
+
+    def covers(self) -> set[tuple[str, str, int]]:
+        """Every recorded cover as ``(item, episode_id, action_index)``."""
+        return {
+            (r[0], r[1], int(r[2]))
+            for r in self.db.execute(
+                "SELECT item, episode_id, action_index FROM covers",
+            )
+        }
+
+    def cover_counts(self) -> dict[str, int]:
+        """Recorded covers per item (the gate adds them when it merges a pass)."""
+        return {
+            r[0]: int(r[1])
+            for r in self.db.execute("SELECT item, COUNT(*) FROM covers GROUP BY item")
+        }
+
+    def refused_passes(self, limit: int) -> list[tuple[str, str | None, list]]:
+        """``(pass_id, channel, reasons)`` of the *limit* most recently recorded passes that refused anything,
+        newest first: a refused pass, or one that landed after refusing some of its items (per-item
+        admission; its reasons then hold the ``item refused:`` lines).
+
+        Reasons that do not parse as a JSON list read as ``[]``.
+        """
+        out = []
+        for pass_id, channel, raw in self.db.execute(
+            "SELECT pass_id, channel, reasons FROM passes WHERE passed=0 OR "
+            "(items_refused IS NOT NULL AND items_refused NOT IN ('', '{}')) ORDER BY rowid DESC LIMIT ?",
+            (int(limit),),
+        ):
+            try:
+                reasons = json.loads(raw) if raw else []
+            except ValueError:
+                reasons = []
+            out.append((pass_id, channel, reasons if isinstance(reasons, list) else []))
+        return out
+
+    def record_pass(self, row: dict) -> None:
+        with self.db:
+            self.db.execute(
+                f"INSERT OR REPLACE INTO passes({', '.join(_PASS_COLUMNS)}) "
+                f"VALUES({', '.join('?' for _ in _PASS_COLUMNS)})",
+                tuple(row.get(k) for k in _PASS_COLUMNS),
+            )
+
+    def _curate_tables(self) -> None:
+        for ddl in _CURATE_SCHEMA.split(";"):
+            if ddl.strip():
+                self.db.execute(ddl)
+
+    def record_curate_seen(self, pass_id: str, fingerprints: Iterable[str]) -> int:
+        """Record the fingerprints CURATE pass *pass_id* was shown (:mod:`.curate`); returns how many were new."""
+        with self.db:
+            self._curate_tables()
+            n = 0
+            for fp in sorted(set(fingerprints)):
+                n += self.db.execute(
+                    "INSERT OR IGNORE INTO curate_seen VALUES(?,?)",
+                    (fp, pass_id),
+                ).rowcount
+        return n
+
+    def curate_seen(self) -> set[str]:
+        """Every fingerprint some CURATE pass was shown."""
+        if not self._has_table("curate_seen"):
+            return set()
+        return {r[0] for r in self.db.execute("SELECT fingerprint FROM curate_seen")}
+
+    def record_curations(self, pass_id: str, commit: str, rows: list[dict]) -> int:
+        """Record what landed CURATE pass *pass_id* (commit *commit*) did: ``alias``, ``retire`` or ``drop_alias``
+        rows with ``item``, ``target`` and ``reason``. Returns the rows written; a pass's rows are written once.
+        """
+        with self.db:
+            self._curate_tables()
+            n = 0
+            for r in rows:
+                if r.get("action") not in CURATION_ACTIONS:
+                    raise ValueError(f"unknown curation action {r.get('action')!r}")
+                n += self.db.execute(
+                    "INSERT OR IGNORE INTO curations(pass_id, commit_sha, item, action, target, reason) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        pass_id,
+                        commit,
+                        r["item"],
+                        r["action"],
+                        r.get("target"),
+                        r.get("reason") or "",
+                    ),
+                ).rowcount
+        return n
+
+    def curations(self) -> list[dict]:
+        """Every curation row, oldest first."""
+        if not self._has_table("curations"):
+            return []
+        return [
+            {
+                "pass_id": r[0],
+                "commit": r[1],
+                "item": r[2],
+                "action": r[3],
+                "target": r[4],
+                "reason": r[5],
+            }
+            for r in self.db.execute(
+                "SELECT pass_id, commit_sha, item, action, target, reason FROM curations ORDER BY seq",
+            )
+        ]
+
+    def aliases(self) -> dict[str, dict]:
+        """The live aliases: old item -> ``{"target", "pass_id", "commit"}`` of the landed pass that added it,
+        until a later landed CURATE pass dropped or retired it."""
+        live: dict[str, dict] = {}
+        for r in self.curations():
+            if r["action"] == "alias":
+                live[r["item"]] = {
+                    "target": r["target"],
+                    "pass_id": r["pass_id"],
+                    "commit": r["commit"],
+                }
+            else:
+                live.pop(r["item"], None)
+        return live
+
+    def record_pass_rounds(self, row: dict) -> bool:
+        """Record a v2.1 pass's rounds (``pass_id``, ``role``, ``rounds`` or None when unknown, ``round_blobs``
+        as a JSON list, ``gate_blob``); the first record of a pass wins. False if one existed.
+        """
+        with self.db:
+            self.db.execute(_ROUNDS_SCHEMA)
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO pass_rounds(pass_id, role, rounds, round_blobs, gate_blob) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    row["pass_id"],
+                    row.get("role", "write"),
+                    row.get("rounds"),
+                    row.get("round_blobs") or "[]",
+                    row.get("gate_blob"),
+                ),
+            )
+        return cur.rowcount == 1
+
+    def pass_rounds(self, role: str = "write") -> list[dict]:
+        """Every recorded v2.1 pass of *role*, oldest first, joined with its pass row (its D13 ``patch_blob``,
+        ``passed``, ``items_merged`` and ``items_refused``); [] when no v2.1 pass ran.
+        """
+        if not self._has_table("pass_rounds"):
+            return []
+        out = []
+        for (
+            pid,
+            rounds,
+            rblobs,
+            gblob,
+            patch,
+            passed,
+            merged,
+            refused,
+        ) in self.db.execute(
+            "SELECT r.pass_id, r.rounds, r.round_blobs, r.gate_blob, p.patch_blob, p.passed, p.items_merged, "
+            "p.items_refused FROM pass_rounds r LEFT JOIN passes p ON p.pass_id = r.pass_id "
+            "WHERE r.role = ? ORDER BY r.rowid",
+            (role,),
+        ):
+            out.append(
+                {
+                    "pass_id": pid,
+                    "rounds": rounds,
+                    "round_blobs": _json_as(rblobs, []),
+                    "gate_blob": gblob,
+                    "patch_blob": patch,
+                    "passed": passed,
+                    "items_merged": [
+                        i for i in _json_as(merged, []) if isinstance(i, str)
+                    ],
+                    "items_refused": _json_as(refused, {}),
+                },
+            )
+        return out
+
+    def _has_table(self, name: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (name,),
+            ).fetchone()
+            is not None
+        )
+
+    def add_typed_cover(self, item: str, eid: str, cover_json: str) -> None:
+        """Record a typed cover of a landed v2.1 item (:func:`.procedures.cover_raw`, as canonical JSON)."""
+        with self.db:
+            self.db.execute(_TYPED_COVERS_SCHEMA)
+            self.db.execute(
+                "INSERT OR IGNORE INTO typed_covers VALUES(?,?,?)",
+                (item, eid, cover_json),
+            )
+
+    def typed_covers(self) -> list[tuple[str, str, str]]:
+        """Every recorded typed cover as ``(item, episode_id, cover_json)``, sorted; [] before any v2.1 merge."""
+        if not self._has_table("typed_covers"):
+            return []
+        return [
+            (r[0], r[1], r[2])
+            for r in self.db.execute(
+                "SELECT item, episode_id, cover_json FROM typed_covers ORDER BY item, episode_id, cover_json",
+            )
+        ]
+
+    def add_pass_notes(self, pass_id: str, notes: list[str]) -> None:
+        """Append *notes* to a recorded pass's reasons (after the gate's); KeyError if it is not recorded."""
+        if not notes:
+            return
+        with self.db:
+            row = self.db.execute(
+                "SELECT reasons FROM passes WHERE pass_id=?",
+                (pass_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(pass_id)
+            reasons = json.loads(row[0]) if row[0] else []
+            self.db.execute(
+                "UPDATE passes SET reasons=? WHERE pass_id=?",
+                (json.dumps(list(reasons) + list(notes)), pass_id),
+            )
+
+    def pass_exists(self, pass_id: str) -> bool:
+        return (
+            self.db.execute(
+                "SELECT 1 FROM passes WHERE pass_id=?",
+                (pass_id,),
+            ).fetchone()
+            is not None
+        )
+
+    def cursor(self, channel: str) -> int:
+        row = self.db.execute(
+            "SELECT seq FROM cursors WHERE channel=?",
+            (channel,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def set_cursor(self, channel: str, seq: int) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO cursors VALUES(?,?)",
+                (channel, seq),
+            )

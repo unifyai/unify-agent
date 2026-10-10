@@ -25,10 +25,6 @@ class ToolLoopKind(str, Enum):
     TOOL_CALL = "tool_call"
     RESPONSE = "response"
     TOOL_RESULT = "tool_result"
-    STEERING_PAUSE = "steering_pause"
-    STEERING_RESUME = "steering_resume"
-    STEERING_STOP = "steering_stop"
-    STEERING_HELPER = "steering_helper"
 
     # ── Noise (filtered from stream) ───────────────────────────────────
     RUNTIME_CONTEXT = "runtime_context"
@@ -41,13 +37,6 @@ class ToolLoopKind(str, Enum):
     SYSTEM_NOTICE = "system_notice"
 
 
-_STEERING_ACTION_MAP: dict[str, ToolLoopKind] = {
-    "pause": ToolLoopKind.STEERING_PAUSE,
-    "resume": ToolLoopKind.STEERING_RESUME,
-    "stop": ToolLoopKind.STEERING_STOP,
-}
-
-
 def classify_tool_loop_message(msg: dict) -> ToolLoopKind:
     """Derive the canonical :class:`ToolLoopKind` from a raw message dict.
 
@@ -57,9 +46,6 @@ def classify_tool_loop_message(msg: dict) -> ToolLoopKind:
     role = msg.get("role", "")
 
     if role == "system":
-        if msg.get("_steering"):
-            action = str(msg.get("_steering_action", "")).lower()
-            return _STEERING_ACTION_MAP.get(action, ToolLoopKind.STEERING_PAUSE)
         if msg.get("_visibility_guidance"):
             return ToolLoopKind.VISIBILITY_GUIDANCE
         if msg.get("_time_explanation"):
@@ -142,3 +128,44 @@ class ToolLoopPayload(BaseModel):
         default=None,
         description="Sparse mapping of tool_name -> human-readable label for tool calls in this event only",
     )
+
+
+class ToolLoopCancelledTurnPayload(BaseModel):
+    """A model turn the tool loop cancelled after sending it.
+
+    The provider bills a request it has received whether or not its answer
+    is read, so each of these is a paid turn that produced nothing. Published
+    with ``phase="cancelled"`` when the loop cancels the turn, and again with
+    ``phase="billed"`` (same ``turn_id``) if unillm later reports what the
+    provider charged; a turn with no ``billed`` event has an unknown cost.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    turn_id: str = Field(description="Identifies one cancelled turn across phases")
+    phase: str = Field(description='"cancelled" or "billed"')
+    loop_id: str = Field(description="Public method that spawned this loop")
+    hierarchy_label: Optional[str] = Field(
+        default=None,
+        description="The loop's lineage label",
+    )
+    step_index: int = Field(description="The loop step the turn was sent at")
+    cause: str = Field(
+        description=(
+            'What superseded the turn: "tool_result", "interjection", '
+            '"clarification", "notification" or "stop"'
+        ),
+    )
+    cancelled_turns: int = Field(
+        description="Turns this loop has cancelled so far, this one included",
+    )
+    pending_tools: int = Field(
+        description="Tool calls still running when the turn was cancelled",
+    )
+    provider_cost_usd: Optional[str] = Field(
+        default=None,
+        description='What the provider charged, as a decimal string ("billed" only)',
+    )
+    prompt_tokens: Optional[int] = Field(default=None)
+    cached_prompt_tokens: Optional[int] = Field(default=None)
+    completion_tokens: Optional[int] = Field(default=None)

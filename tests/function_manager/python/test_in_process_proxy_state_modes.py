@@ -21,6 +21,15 @@ from unify.function_manager.function_manager import (
     _InProcessFunctionProxy,
 )
 
+
+@pytest.fixture(autouse=True)
+def _python_in_process(monkeypatch):
+    """Python in process (the function manager's in-process mode, for non-actor callers): the in-process proxy exists only where stored functions are loaded into this process. With the
+    sandboxed worker a read binds them by source and nothing runs here (tests/actor/code_act/test_bind_load_confinement.py).
+    """
+    monkeypatch.setattr("unify.actor.execution.worker.enabled", lambda: False)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Sample Functions
 # ────────────────────────────────────────────────────────────────────────────
@@ -32,17 +41,25 @@ async def set_var(value):
     return f"Set my_var to {value}"
 """.strip()
 
+# The storage check refuses a function that reads a global it cannot
+# resolve. A function that reads session state therefore declares it as
+# module state it assigns (``global x; x = x``): the check accepts it, and
+# the read still fails where the state does not exist.
 GET_VAR_FUNC = """
 async def get_var():
+    global my_var
+    my_var = my_var
     return my_var
 """.strip()
 
 CHECK_VAR_FUNC = """
 async def check_var():
+    global my_var
     try:
-        return my_var
+        my_var = my_var
     except NameError:
         return "NOT_DEFINED"
+    return my_var
 """.strip()
 
 INCREMENT_FUNC = """

@@ -20,8 +20,6 @@ import re
 import typing
 from typing import Any, Dict
 
-import unillm
-
 try:
     import pydantic
     from pydantic import BaseModel, Field
@@ -47,6 +45,26 @@ ENVIRONMENT_MODULES: frozenset[str] = frozenset(
 Used by ``detect_third_party_imports`` to distinguish between packages that
 must be recorded as dependencies and packages that the runtime already supplies.
 """
+
+SANDBOX_RUNTIME_NAMES: frozenset[str] = frozenset(
+    {
+        "display",
+        "request_clarification",
+    },
+)
+"""Globals the actor's sandbox binds per execution, beyond
+``create_execution_globals()`` (``unify/actor/execution/session.py`` and
+``unify/actor/environments/base.py``). A stored function may use them."""
+
+
+def environment_modules() -> frozenset[str]:
+    """``ENVIRONMENT_MODULES`` plus the modules a registered environment supplies."""
+    from unify.function_manager.primitives.environment import (
+        environment_modules as registered_modules,
+    )
+
+    registered = registered_modules()
+    return ENVIRONMENT_MODULES | registered if registered else ENVIRONMENT_MODULES
 
 
 def create_base_globals() -> Dict[str, Any]:
@@ -216,8 +234,10 @@ def create_execution_globals() -> Dict[str, Any]:
       sandbox with none refuses `primitives.<namespace>` and says why.
     - Steerable handle infrastructure for functions that return handles
       (SteerableToolHandle)
-    - The `unillm` module for advanced direct LLM usage
-    - The `query_llm` helper for focused one-shot LLM queries
+    - `unillm` for advanced direct LLM usage (client constructors for the
+      endpoints UNIFY_CELL_LLM_MODELS allows)
+    - The `query_llm` helper for focused one-shot LLM queries (and
+      `list_llms`), held to the same endpoints
     - The `run_coro_sync` helper for sync façades that must drive async work
       under an already-running event loop (offline Jobs / actor sandboxes)
 
@@ -241,13 +261,26 @@ def create_execution_globals() -> Dict[str, Any]:
     # that the execution layer can detect and wire up for steering operations.
     from unify.common.async_tool_loop import SteerableToolHandle
     from unify.common.asyncio_compat import run_coro_sync
-    from unify.common.reasoning import list_llms, query_llm
+    from unify.common.cell_models import cell_list_llms, cell_query_llm, cell_unillm
 
     globals_dict["SteerableToolHandle"] = SteerableToolHandle
-    globals_dict["query_llm"] = query_llm
-    globals_dict["list_llms"] = list_llms
+    # Cell-scoped: each refuses an endpoint UNIFY_CELL_LLM_MODELS does not
+    # allow (unify/common/cell_models.py); the harness's own query_llm,
+    # list_llms and unillm are unchanged.
+    globals_dict["query_llm"] = cell_query_llm
+    globals_dict["list_llms"] = cell_list_llms
     globals_dict["run_coro_sync"] = run_coro_sync
-    globals_dict["unillm"] = unillm
+    globals_dict["unillm"] = cell_unillm
+
+    # Globals a registered environment binds beside its namespaces; never in
+    # place of one of the above. While a feature that observes environment
+    # calls is on, each is a proxy whose calls reach the observers
+    # (primitives/observers.py); otherwise the registered object itself.
+    from unify.function_manager.primitives.environment import environment_globals
+    from unify.function_manager.primitives.observers import observed_globals
+
+    for name, value in observed_globals(environment_globals()).items():
+        globals_dict.setdefault(name, value)
 
     return globals_dict
 

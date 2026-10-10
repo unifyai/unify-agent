@@ -4,9 +4,11 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import unillm
 from pydantic import BaseModel
+from unify import transcripts
 from unify.common.llm_client import new_llm_client
 from unify.common.token_utils import count_tokens
 from unify.function_manager.execution_env import create_base_globals
@@ -21,6 +23,12 @@ def context_over_threshold(
 
 
 _COMPRESSED_HEADER = "## Compressed Prior Context\n"
+
+#: A compression asks for its summary as a fork of the conversation first
+#: (``AsyncToolLoopHandle._summarise_as_fork``), and rebuilds with
+#: :func:`compress_and_rebuild` only when the fork returns nothing. Fixed at
+#: the code freeze, where it was ``UNIFY_CACHE_DISCIPLINE``'s choice.
+FORK_SUMMARY = True
 
 
 @dataclass
@@ -37,10 +45,16 @@ class CompressionState:
 
 @dataclass
 class RebuildResult:
-    """Everything the handle needs to restart a loop after compression."""
+    """Everything the handle needs to restart a loop after compression.
+
+    ``messages`` (``UNIFY_COMPACTION_KEEP_PREFIX=on`` only): the kept user
+    messages and the summary, which the restarted loop starts with after
+    ``system_msgs``; ``None`` as shipped.
+    """
 
     system_msgs: list[dict]
     tools: dict[str, callable]
+    messages: Optional[list[dict]] = None
 
 
 COMPRESSION_PROMPT = (
@@ -131,6 +145,107 @@ COMPRESSION_MULTI_PASS_ADDENDUM = (
 
 # Returned by the loop in place of a result when compression is requested.
 _COMPRESSION_SIGNAL = object()
+
+
+# ── UNIFY_COMPACTION_KEEP_PREFIX ─────────────────────────────────────────────
+
+#: The line after the summary that tells the model to carry on.
+RESTART_NOTICE = "Context was compressed. Continue from where you left off."
+
+
+def keep_prefix_enabled() -> bool:
+    """Whether ``UNIFY_COMPACTION_KEEP_PREFIX=on``."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_COMPACTION_KEEP_PREFIX", "") == "on"
+
+
+def _is_requester_message(msg: Any) -> bool:
+    from .messages import is_loop_authored_message
+
+    return (
+        isinstance(msg, dict)
+        and msg.get("role") == "user"
+        and not is_loop_authored_message(msg)
+    )
+
+
+#: Marks the requester message that started a persistent session's request:
+#: the first one appended after the loop waited for its next request. An
+#: underscore key, so unillm strips it before the cache key and the request
+#: are built: the bytes sent are the same. Set only with the switch on.
+REQUEST_START_KEY = "_request_start"
+
+
+def current_request_messages(messages: list[dict]) -> list[dict]:
+    """The requester messages of the current request, oldest first.
+
+    A requester message is a user message the loop did not author
+    (``is_loop_authored_message``). The current request is read from the
+    session's own messages alone. When a requester message carries
+    :data:`REQUEST_START_KEY` (a persistent session marks the one that
+    arrived while it waited for its next request), the request starts at
+    the latest such message and holds every requester message after it,
+    the requester's additions while it ran included. Otherwise it starts at
+    the latest requester message, as ``loop_stop.Tracker`` reads it: the
+    requester messages just before that one, with only user messages
+    between them and it (no model turn, tool result or system message),
+    arrived together with it (a seeded batch, or several messages queued
+    for one turn boundary) and are part of it too. Anything a model turn
+    separates from it is an earlier request, or the start of this one,
+    which the summary covers; the session's first user message is kept
+    separately. Returns the message dicts themselves, not copies; empty
+    when there is no requester message.
+    """
+    history = list(messages or [])
+    for i in range(len(history) - 1, -1, -1):
+        if _is_requester_message(history[i]) and history[i].get(REQUEST_START_KEY):
+            return [m for m in history[i:] if _is_requester_message(m)]
+    anchor = None
+    for i in range(len(history) - 1, -1, -1):
+        if _is_requester_message(history[i]):
+            anchor = i
+            break
+    if anchor is None:
+        return []
+    start = anchor
+    while start > 0:
+        previous = history[start - 1]
+        if not (isinstance(previous, dict) and previous.get("role") == "user"):
+            break
+        start -= 1
+    return [m for m in history[start : anchor + 1] if _is_requester_message(m)]
+
+
+def kept_prefix(messages: list[dict]) -> tuple[list[dict], list[dict]]:
+    """``(system, kept)``: what a keep-prefix rebuild starts with.
+
+    *system* is the conversation's leading system message, chosen as the
+    shipped rebuild chooses it. *kept* is the session's first user message,
+    then every requester message of the current request
+    (:func:`current_request_messages`) that is not that same message, in
+    their original order. Both hold the session's own message dicts, so
+    every kept message is sent with the bytes it was sent with before.
+    """
+    history = list(messages or [])
+    system = [
+        m for m in history[:1] if isinstance(m, dict) and m.get("role") == "system"
+    ]
+    first = next(
+        (m for m in history if isinstance(m, dict) and m.get("role") == "user"),
+        None,
+    )
+    kept = [] if first is None else [first]
+    kept += [m for m in current_request_messages(history) if m is not first]
+    return system, kept
+
+
+def restart_text(summary: str, pointer: Optional[str] = None) -> str:
+    """The text of the summary message a keep-prefix rebuild ends with."""
+    text = f"{_COMPRESSED_HEADER}{summary}\n\n{RESTART_NOTICE}"
+    if pointer:
+        text += "\n\n" + pointer
+    return text
 
 
 def compress_context() -> str:
@@ -469,13 +584,29 @@ async def compress_and_rebuild(
     all_messages: list[dict],
     endpoint: str,
     original_tools: dict[str, callable],
+    *,
+    keep_prefix: bool = False,
 ) -> RebuildResult:
     """Archive messages, compress, and prepare everything for a loop restart.
 
     Mutates *state* in place (archives, entries, image registry, counters).
     Returns the rebuilt system messages and augmented tools dict needed to
     start a new loop iteration.
+
+    *keep_prefix* (``UNIFY_COMPACTION_KEEP_PREFIX=on``): the compressed
+    entries become the summary of a keep-prefix rebuild instead. The result
+    keeps the leading system message as it is and the tools as given (no
+    ``unpack_messages``, which the session's fixed tool list could not
+    offer), and its ``messages`` are the kept user messages
+    (:func:`kept_prefix`) and one loop-authored message carrying the
+    entries.
     """
+    # With UNIFY_TRANSCRIPTS on, the session whose history this is gets
+    # everything not yet on disk before that history is replaced.
+    session = transcripts.session_for_messages(all_messages)
+    if session is not None:
+        session.sync()
+    live_messages = all_messages
     all_messages = copy.deepcopy(all_messages)
     state.raw_archives.append(all_messages)
     archive_base = sum(len(a) for a in state.raw_archives[:-1])
@@ -505,14 +636,16 @@ async def compress_and_rebuild(
         else None
     )
 
-    compressed = await compress_messages(
-        tagged_messages,
-        endpoint,
-        image_blocks=live_images,
-        prior_entries=state.entries or None,
-        raw_archives=state.raw_archives,
-        new_indices=new_msg_global_indices,
-    )
+    # The compressor's own loop is a child of the session it compacts.
+    with transcripts.as_current(session):
+        compressed = await compress_messages(
+            tagged_messages,
+            endpoint,
+            image_blocks=live_images,
+            prior_entries=state.entries or None,
+            raw_archives=state.raw_archives,
+            new_indices=new_msg_global_indices,
+        )
 
     if live_images:
         state.live_image_ids = compressed.surviving_image_ids
@@ -550,6 +683,14 @@ async def compress_and_rebuild(
     state.entries = conversation_entries
 
     body = "\n".join(f"[{idx}] {content}" for idx, content in state.entries)
+    if keep_prefix:
+        return _keep_prefix_rebuild(
+            state,
+            live_messages,
+            body,
+            session,
+            original_tools,
+        )
     combined = _COMPRESSED_HEADER + body
 
     _instructions = (
@@ -558,6 +699,8 @@ async def compress_and_rebuild(
         "retrieve the full original content. Pass `n` to "
         "retrieve a range of consecutive messages."
     )
+    if session is not None:
+        _instructions += "\n\n" + session.pointer_line()
 
     if state.live_image_ids:
         content_blocks: list[dict] = [
@@ -585,5 +728,53 @@ async def compress_and_rebuild(
     tools["unpack_messages"] = _make_archive_lookup_tool(state.raw_archives)
 
     state.count += 1
+    transcripts.record_compaction(
+        session,
+        archived=len(all_messages),
+        pass_number=state.count,
+        context=system_msgs,
+    )
 
     return RebuildResult(system_msgs=system_msgs, tools=tools)
+
+
+def _keep_prefix_rebuild(
+    state: CompressionState,
+    live_messages: list[dict],
+    body: str,
+    session: Optional[transcripts.TranscriptSession],
+    original_tools: dict[str, callable],
+) -> RebuildResult:
+    """``compress_and_rebuild``'s result with ``keep_prefix``: the session's
+    own system message and kept user messages, then the entries as the
+    summary. The summary is marked ``_compressed_message`` as the shipped
+    compressed context is, so a later compactor pass reads it from the prior
+    entries instead of compressing it again."""
+    from .messages import loop_user_notice
+
+    system, kept = kept_prefix(live_messages)
+    text = restart_text(
+        body,
+        session.pointer_line() if session is not None else None,
+    )
+    if state.live_image_ids:
+        content: Any = [{"type": "text", "text": text}]
+        for img_id in sorted(state.live_image_ids):
+            if img_id in state.image_registry:
+                content.append({"type": "text", "text": f"[img:{img_id}]"})
+                content.append(state.image_registry[img_id])
+    else:
+        content = text
+    summary = loop_user_notice(content, _compressed_message=True)
+    state.count += 1
+    transcripts.record_compaction(
+        session,
+        archived=len(live_messages),
+        pass_number=state.count,
+        context=[*system, *kept, summary],
+    )
+    return RebuildResult(
+        system_msgs=system,
+        tools=dict(original_tools),
+        messages=[*kept, summary],
+    )

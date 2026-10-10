@@ -7,6 +7,8 @@ Eval tests verify end-to-end actor execution with a real LLM.
 
 from __future__ import annotations
 
+from unify.actor import core_surface
+from unify.actor.core_surface import PromptSurface
 import asyncio
 import inspect
 
@@ -17,7 +19,8 @@ from unify.actor.code_act_actor import CodeActActor
 from unify.actor.environments.actor import ActorEnvironment, _ActorRunner
 from unify.actor.execution import PythonExecutionSession, _CURRENT_SANDBOX
 from unify.actor.prompt_builders import build_code_act_prompt
-from unify.common.async_tool_loop import SteerableToolHandle
+from unify.common.async_tool_loop import ToolLoopHandle
+from tests.baked_defaults import as_shipped  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Symbolic tests — environment installation and gating
@@ -64,7 +67,10 @@ def test_prompt_includes_actor_guidance_when_env_present():
         timeout=30,
     )
     tools = dict(actor.get_tools("act"))
-    prompt = build_code_act_prompt(environments=actor.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=actor.environments,
+        core=PromptSurface(),
+    )
 
     assert "Actor Delegation" in prompt
     assert "primitives.actor.act" in prompt
@@ -80,7 +86,10 @@ def test_prompt_excludes_actor_guidance_when_env_absent():
         timeout=30,
     )
     tools = dict(actor.get_tools("act"))
-    prompt = build_code_act_prompt(environments=actor.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=actor.environments,
+        core=PromptSurface(),
+    )
 
     assert "Actor Delegation" not in prompt
 
@@ -235,22 +244,24 @@ def test_actor_accessible_via_primitives_class():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
-async def test_actor_act_returns_steerable_handle():
-    """actor.act() should return a SteerableToolHandle, not a plain string."""
+async def test_actor_act_returns_a_loop_handle():
+    """actor.act() should return a ToolLoopHandle, not a plain string."""
     runner = _ActorRunner()
     handle = await runner.act(
         request="What is 1+1?",
         timeout=10,
     )
     try:
-        assert isinstance(handle, SteerableToolHandle)
+        assert isinstance(handle, ToolLoopHandle)
         assert callable(handle.result)
         assert callable(handle.stop)
-        assert callable(handle.pause)
-        assert callable(handle.resume)
+        assert callable(handle.submit)
+        assert not hasattr(handle, "pause") and not hasattr(handle, "interject")
     finally:
         await handle.stop()
         try:
@@ -259,6 +270,8 @@ async def test_actor_act_returns_steerable_handle():
             pass
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.asyncio
 @pytest.mark.llm_call
 @pytest.mark.timeout(60)
@@ -430,6 +443,12 @@ _DELEGATING_FUNCTION = (
     '    """Hand the request to a sub-actor."""\n'
     "    return await primitives.actor.act(request=request)\n"
 )
+# A stored function the child can keep, which a search for sub-actors finds.
+_HANDOFF_FUNCTION = (
+    "async def delegate(request: str):\n"
+    '    """Hand the request to a sub-actor."""\n'
+    "    return request\n"
+)
 
 
 def _build_child(*, can_spawn_sub_agents: bool, prompt_functions=None):
@@ -471,28 +490,36 @@ def _record_spawns(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return spawned
 
 
+@pytest.mark.requires_provider_key
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project
 async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
-    """With can_spawn_sub_agents=False the child's search, filter and list
-    never return primitives.actor.act, and its prompt never offers it."""
+    """With can_spawn_sub_agents=False the child cannot store a call to
+    primitives.actor.act, its search, filter and list never return it, and its
+    prompt never offers it."""
     child = _build_child(can_spawn_sub_agents=False)
-    child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
-    tools = child.get_tools("act")
+    # The store check finds no primitives.actor where the function would run.
+    with pytest.raises(ValueError, match=r"`primitives\.actor` does not exist"):
+        child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
+    child.function_manager.add_functions(implementations=_HANDOFF_FUNCTION)
+    # The child's library as its cells reach it (the core surface's
+    # ``functions`` object; the JSON FunctionManager_* tools are gone).
+    functions = core_surface.sandbox_objects(
+        child,
+        policy=core_surface.WritePolicy(can_store=False),
+    )[core_surface.FUNCTIONS]
 
     sandbox = PythonExecutionSession(environments=child.environments)
     token = _CURRENT_SANDBOX.set(sandbox)
     try:
-        searched = await tools["FunctionManager_search_functions"](
+        searched = await functions.search(
             query="spawn a sub-actor for a focused sub-task",
             n=10,
         )
-        filtered = await tools["FunctionManager_filter_functions"]()
-        by_name = await tools["FunctionManager_filter_functions"](
-            filter=f"name = '{_ACTOR_ACT}'",
-        )
-        listed = await tools["FunctionManager_list_functions"]()
+        filtered = await functions.filter()
+        by_name = await functions.filter(filter=f"name = '{_ACTOR_ACT}'")
+        listed = await functions.list()
     finally:
         _CURRENT_SANDBOX.reset(token)
 
@@ -503,47 +530,11 @@ async def test_child_without_sub_agents_cannot_discover_the_actor_primitive():
     assert _ACTOR_ACT not in child.function_manager.list_function_name_to_ids()
 
     assert "primitives" not in child.environments
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
+    prompt = build_code_act_prompt(
+        environments=child.environments,
+        core=PromptSurface(),
+    )
     assert "primitives.actor" not in prompt
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-@_handle_project
-async def test_child_without_sub_agents_refuses_the_actor_primitive(monkeypatch):
-    """With can_spawn_sub_agents=False, execute_function, execute_code and a
-    stored function that calls primitives.actor.act are all refused with the
-    reason, and no sub-actor starts."""
-    spawned = _record_spawns(monkeypatch)
-    child = _build_child(can_spawn_sub_agents=False)
-    child.function_manager.add_functions(implementations=_DELEGATING_FUNCTION)
-    tools = child.get_tools("act")
-
-    sandbox = PythonExecutionSession(environments=child.environments)
-    token = _CURRENT_SANDBOX.set(sandbox)
-    try:
-        results = [
-            await tools["execute_function"](
-                thought="Delegating the sum to a sub-actor.",
-                function_name=_ACTOR_ACT,
-                call_kwargs={"request": "What is 2 + 2?"},
-            ),
-            await tools["execute_code"](
-                thought="Delegating the sum to a sub-actor.",
-                code="await primitives.actor.act(request='What is 2 + 2?')",
-            ),
-            await tools["execute_function"](
-                thought="Delegating the sum through the stored function.",
-                function_name="delegate",
-                call_kwargs={"request": "What is 2 + 2?"},
-            ),
-        ]
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-
-    for result in results:
-        assert _REFUSAL in (_result_error(result) or "")
-    assert spawned == []
 
 
 @pytest.mark.timeout(30)
@@ -559,44 +550,6 @@ def test_child_without_sub_agents_rejects_the_actor_primitive_as_prompt_function
     spawn sub-actors; the call fails and names the flag that would allow it."""
     with pytest.raises(ValueError, match="can_spawn_sub_agents is False"):
         _build_child(can_spawn_sub_agents=False, prompt_functions=[pattern])
-
-
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-@_handle_project
-async def test_child_with_sub_agents_spawns_through_the_actor_primitive(monkeypatch):
-    """With can_spawn_sub_agents=True the child's prompt documents
-    primitives.actor.act, and execute_function and code both reach it."""
-    spawned = _record_spawns(monkeypatch)
-    child = _build_child(can_spawn_sub_agents=True)
-    tools = child.get_tools("act")
-
-    assert "primitives" in child.environments
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
-    assert "**`async def primitives.actor.act(request" in prompt
-    assert "`await primitives.actor.act(...)` spawns a sub-actor" in prompt
-    # The prompt documents it, so discovery leaves it out rather than
-    # listing it twice.
-    assert _ACTOR_ACT not in child.function_manager.list_functions()
-
-    sandbox = PythonExecutionSession(environments=child.environments)
-    token = _CURRENT_SANDBOX.set(sandbox)
-    try:
-        handle = await tools["execute_function"](
-            thought="Delegating the sum to a sub-actor.",
-            function_name=_ACTOR_ACT,
-            call_kwargs={"request": "first"},
-        )
-        coded = await tools["execute_code"](
-            thought="Delegating the sum to a sub-actor.",
-            code="await primitives.actor.act(request='second')",
-        )
-    finally:
-        _CURRENT_SANDBOX.reset(token)
-
-    assert isinstance(handle, SteerableToolHandle)
-    assert _result_error(coded) is None
-    assert spawned == ["first", "second"]
 
 
 # ---------------------------------------------------------------------------
@@ -618,24 +571,28 @@ _TRIPLING_FUNCTION = (
 @pytest.mark.asyncio
 @pytest.mark.timeout(60)
 @_handle_project
-async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
-    """A stored function named in prompt_functions is documented in the
-    child's prompt and left out of its discovery, and the child's code can
-    still call it."""
+async def test_with_python_in_the_worker_a_prompt_function_never_runs_in_the_harness(
+    monkeypatch,
+):
+    """The child's ``functions`` namespace is a harness object the worker
+    reaches remotely, so its stored functions would run in the harness: they
+    are bound by source, and a call is refused there. Running them in the
+    worker needs a design choice (FREEZE-TODO.md, Security)."""
     from unify.function_manager.function_manager import FunctionManager
 
+    executed: list[str] = []
+    create = FunctionManager._create_in_process_callable
+
+    def watched(self, func_data, *args, **kwargs):
+        executed.append(func_data.get("name"))
+        return create(self, func_data, *args, **kwargs)
+
+    monkeypatch.setattr(FunctionManager, "_create_in_process_callable", watched)
     FunctionManager(include_primitives=False).add_functions(
         implementations=[_DOUBLING_FUNCTION, _TRIPLING_FUNCTION],
     )
     child = _build_child(can_spawn_sub_agents=False, prompt_functions=["double"])
     tools = child.get_tools("act")
-
-    prompt = build_code_act_prompt(environments=child.environments, tools=tools)
-    assert "**`functions.double(x: int) -> int`**" in prompt
-    assert list(child.function_manager.list_functions()) == ["triple"]
-    filtered = child.function_manager.filter_functions()
-    assert [row["name"] for row in filtered] == ["triple"]
-
     sandbox = PythonExecutionSession(environments=child.environments)
     token = _CURRENT_SANDBOX.set(sandbox)
     try:
@@ -645,9 +602,10 @@ async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
         )
     finally:
         _CURRENT_SANDBOX.reset(token)
+        await sandbox.close()
 
-    assert _result_error(coded) is None
-    assert coded.result == 42
+    assert "runs only in the sandboxed worker" in str(_result_error(coded))
+    assert executed == []
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +613,8 @@ async def test_child_calls_the_stored_prompt_function_its_discovery_hides():
 # ---------------------------------------------------------------------------
 
 
+# as_shipped: deleted in step 5 (primitives.actor delegation)
+@pytest.mark.usefixtures("as_shipped")
 @pytest.mark.eval
 @pytest.mark.asyncio
 @pytest.mark.llm_call
@@ -685,77 +645,3 @@ async def test_actor_completes_simple_task():
             await actor.close()
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# Eval test — stored function with primitives.actor.act dependency re-execution
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.eval
-@pytest.mark.asyncio
-@pytest.mark.llm_call
-@pytest.mark.timeout(300)
-async def test_stored_actor_function_reexecutes_successfully():
-    """A stored compositional function that calls primitives.actor.act() works when re-executed.
-
-    This is the end-to-end test for the "store then re-execute" pipeline:
-
-    1. Programmatically store a function that calls primitives.actor.act(...)
-    2. Retrieve it and prepare it via _inject_callables_for_functions
-       (which calls _inject_dependencies -> construct_sandbox_root("primitives"))
-    3. Call the resulting callable with a trivially simple request
-    4. Verify the inner actor (freshly constructed _ActorRunner) runs an
-       LLM loop to completion and returns a meaningful result
-
-    This exercises the chain:
-    stored function -> _inject_dependencies -> construct_sandbox_root("primitives")
-    -> Primitives() -> .actor -> _ActorRunner.act() -> inner CodeActActor -> result
-    """
-    from unify.function_manager.function_manager import FunctionManager
-    from unify.function_manager.execution_env import create_base_globals
-
-    @_handle_project
-    async def _inner():
-        fm = FunctionManager(include_primitives=False)
-
-        source = (
-            "async def quick_compute(request: str):\n"
-            '    """Delegate a computation to a sub-agent."""\n'
-            "    handle = await primitives.actor.act(\n"
-            "        request=request,\n"
-            "        timeout=60,\n"
-            "    )\n"
-            "    return await handle.result()\n"
-        )
-
-        result = fm.add_functions(implementations=source)
-        assert result == {"quick_compute": "added"}
-
-        func_data = fm._get_function_data_by_name(name="quick_compute")
-        assert func_data is not None
-        assert "primitives.actor.act" in func_data.get("depends_on", [])
-
-        namespace = create_base_globals()
-        callables = fm._inject_callables_for_functions(
-            [func_data],
-            namespace=namespace,
-        )
-
-        assert len(callables) == 1
-        assert "primitives" in namespace
-        assert hasattr(namespace["primitives"], "actor")
-        assert isinstance(namespace["primitives"].actor, _ActorRunner)
-        assert "quick_compute" in namespace
-
-        fn = namespace["quick_compute"]
-        result = await asyncio.wait_for(
-            fn("What is 2 + 2? Reply with just the number."),
-            timeout=120,
-        )
-        result_str = str(result)
-        assert (
-            "4" in result_str
-        ), f"Expected '4' in inner actor result, got: {result_str}"
-
-    await _inner()

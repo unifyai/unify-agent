@@ -13,6 +13,7 @@ credentials beyond an LLM provider key, and no shared state between sessions.
 - [Test Philosophy](#test-philosophy-symbolic--eval-spectrum)
 - [Parallel Runner Reference](#parallel-runner-reference)
 - [Stores](#stores)
+- [Sandbox and Time Limits](#sandbox-and-time-limits)
 - [Common Workflows](#common-workflows)
 - [Worktree Support](#worktree-support)
 - [Troubleshooting](#troubleshooting)
@@ -225,6 +226,45 @@ records afresh.
 
 ---
 
+## Sandbox and Time Limits
+
+Tests drive real models, and the code a model writes runs inside the pytest
+process. So on Linux every pytest process, however it is started (directly or
+by `parallel_run.sh`), re-executes itself inside a
+[bubblewrap](https://github.com/containers/bubblewrap) sandbox before it imports
+anything (`tests/_test_sandbox.py`, called from the root `conftest.py`). Inside:
+
+- the system directories are read-only; the home directory, `/mnt` (the
+  Windows drives under WSL), `/run` and `/sys` are absent, apart from the paths
+  below; `~/.ssh`, `~/.config` and other credential files are out of reach;
+- the checkout is read-only except `logs/` and `.pytest_cache/`; the
+  interpreter, editable installs outside the checkout, `uv` and `rg` are
+  read-only; the checkout's `.env` is readable; a worktree's git metadata is
+  replaced by an empty repository;
+- the shared LLM cache (`.cache.ndjson*` in the main checkout of a worktree)
+  is writable; everything else in that directory is hidden;
+- `/tmp` is private, except `/tmp/unity_test_home` and `/tmp/data-gym-cache`;
+- PID, IPC and hostname namespaces are private, and everything a test starts
+  dies with the pytest process.
+
+What it does not do: the network is shared (tests call model providers), and
+model code runs in the same process as the harness, so it can read the provider
+keys in the environment and `.env`. A key that is only in Google Secret Manager
+is not available inside: unillm's fallback needs `~/.config/gcloud`.
+
+`UNIFY_TEST_SANDBOX=auto` (default) confines where bubblewrap is installed and
+warns elsewhere; `required` refuses to run unconfined; `off` disables it.
+
+Each test phase (setup, call, teardown) has a time limit: its
+`@pytest.mark.timeout(N)`, else `UNIFY_TEST_TIMEOUT` seconds (900; `0` means
+none). At the limit the test fails; `UNIFY_TEST_TIMEOUT_GRACE` seconds later
+(60) the process prints every thread's stack and exits, even if the test's code
+never yields (`tests/_test_timeouts.py`). `UNIFY_TEST_TIMEOUTS=off` or `--pdb`
+disables both. A test marked `@pytest.mark.fresh_llm_calls` never reads the
+UniLLM cache.
+
+---
+
 ## Common Workflows
 
 ### Run tests and watch progress
@@ -317,12 +357,15 @@ This lets you browse **all logs from all worktrees** in one place (the main repo
 | `--session-timeout` has no effect on macOS | `brew install coreutils` (provides `timeout`) |
 | `create window failed: fork failed: Device not configured` | The machine is out of pseudo-terminals, usually held by failed sessions from earlier runs: `kill_failed --all` |
 | Every model-reaching test fails with a 403 `Key limit exceeded` | The OpenRouter key hit its spending limit; the code is not at fault |
+| `bubblewrap cannot start the test sandbox` | Install bubblewrap and allow unprivileged user namespaces, or set `UNIFY_TEST_SANDBOX=off` to run unconfined |
+| A test fails with `Timeout: the call of ...` | It exceeded its `timeout` marker (or `UNIFY_TEST_TIMEOUT`); a `Timeout (h:mm:ss)!` stack dump means it was killed |
 
 ---
 
 ## Requirements
 
 - **tmux**: `brew install tmux`
+- **bubblewrap** (Linux): `apt install bubblewrap` — confines each pytest process (see [Sandbox and Time Limits](#sandbox-and-time-limits))
 - **coreutils** (macOS): `brew install coreutils` — provides `timeout` for the per-session hang guard and helper scripts
 - **Python virtualenv**: Repo-local `.venv/` (create/sync via `uv sync --all-groups`)
 - **Environment**: Optional `.env` file at repo root for the LLM provider key and other settings

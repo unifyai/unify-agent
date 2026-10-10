@@ -161,7 +161,9 @@ class TestHelperScripts:
             [str(script), "--help"],
             capture_output=True,
             text=True,
-            timeout=5,
+            # A hang guard, not a bound: the script's start is not what
+            # the test proves, and on a loaded host it can take seconds.
+            timeout=60,
         )
         assert "--all" in result.stdout, "kill_failed.sh should support --all flag"
 
@@ -172,7 +174,9 @@ class TestHelperScripts:
             [str(script), "--help"],
             capture_output=True,
             text=True,
-            timeout=5,
+            # A hang guard, not a bound: the script's start is not what
+            # the test proves, and on a loaded host it can take seconds.
+            timeout=60,
         )
         assert "--all" in result.stdout, "watch_tests.sh should support --all flag"
 

@@ -1,8 +1,8 @@
 """Execution sessions and the unified SessionExecutor.
 
-Provides PythonExecutionSession (in-process stateful sandbox),
-SessionExecutor (the orchestrator over the in-process sessions), and the
-validation of execution parameters.
+Provides PythonExecutionSession (a stateful session whose cells run in its
+sandboxed worker), SessionExecutor (the orchestrator over the sessions), and
+the validation of execution parameters.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import asyncio
 import ast
 import contextvars
 import logging
+import symtable
 import sys
 import time
 import traceback
@@ -27,6 +28,7 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from unify.common._async_tool import time_context
 from unify.common.hierarchical_logger import DEFAULT_ICON
 from unify.common.tool_errors import ToolInputError
 
@@ -46,13 +48,15 @@ from .types import TextPart
 if TYPE_CHECKING:
     from unify.actor.environments.base import BaseEnvironment
 
+    from .shell import BashSession
+    from .worker import PythonWorker
+
 # Handles spawned by manager primitives during an in-process sandbox
-# ``execute`` call.  When the LLM fire-and-forgets a steerable handle
-# (awaits the call that *returns* the handle but never ``await
-# handle.result()`` and does not return the handle as the last
-# expression), the outer loop never adopts it and the mutation is
-# cancelled when ``execute_code`` returns.  Draining this bucket at the
-# end of ``execute`` awaits those orphans so side effects land.
+# ``execute`` call.  When the LLM fire-and-forgets a handle (awaits the
+# call that *returns* the handle but never ``await handle.result()``),
+# nothing owns it once ``execute_code`` returns, returned as the last
+# expression or not: the loop adopts no handle.  Draining this bucket at
+# the end of ``execute`` awaits them so side effects land.
 _SANDBOX_SPAWNED_HANDLES: contextvars.ContextVar[list[Any] | None] = (
     contextvars.ContextVar("_SANDBOX_SPAWNED_HANDLES", default=None)
 )
@@ -65,54 +69,16 @@ def register_sandbox_spawned_handle(handle: Any) -> None:
         bucket.append(handle)
 
 
-def _collect_handles(obj: Any) -> list[Any]:
-    """Collect ``SteerableToolHandle`` instances reachable from *obj*."""
-    from unify.common.async_tool_loop import SteerableToolHandle
+async def _await_orphan_sandbox_handles(*, spawned: list[Any]) -> None:
+    """Await the handles a cell spawned in-sandbox, returned or not.
 
-    found: list[Any] = []
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, SteerableToolHandle):
-            found.append(node)
-            return
-        if isinstance(node, dict):
-            for v in node.values():
-                _walk(v)
-            return
-        if isinstance(node, (list, tuple, set)):
-            for v in node:
-                _walk(v)
-            return
-        try:
-            from pydantic import BaseModel
-
-            if isinstance(node, BaseModel):
-                for field_name in node.model_fields:
-                    _walk(getattr(node, field_name))
-        except Exception:
-            return
-
-    _walk(obj)
-    return found
-
-
-async def _await_orphan_sandbox_handles(
-    *,
-    spawned: list[Any],
-    result: Any,
-) -> None:
-    """Await steerable handles spawned in-sandbox that were not returned.
-
-    Membership is by object identity: spawned handles need not be hashable
-    (logging wrappers and test doubles often are not), and ``in`` on a set
-    would raise ``TypeError`` for those.
+    The loop adopts no handle a cell returns (a turn's calls run to
+    completion), so one left running would have no owner: the cell's call
+    ends only once every handle it started has finished.
     """
     if not spawned:
         return
-    returned_ids = {id(h) for h in _collect_handles(result)}
     for handle in spawned:
-        if id(handle) in returned_ids:
-            continue
         try:
             done = handle.done()
             if asyncio.iscoroutine(done) or asyncio.isfuture(done):
@@ -125,6 +91,13 @@ async def _await_orphan_sandbox_handles(
 
 
 logger = logging.getLogger(__name__)
+
+
+def inventory_enabled() -> bool:
+    """UNIFY_VARIABLE_INVENTORY=on: a cell's result lists the session's variables."""
+    from unify.settings import SETTINGS
+
+    return SETTINGS.UNIFY_VARIABLE_INVENTORY == "on"
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +124,14 @@ _PARENT_CHAT_CONTEXT: contextvars.ContextVar[list | None] = contextvars.ContextV
 _CURRENT_ENVIRONMENTS: contextvars.ContextVar[dict] = contextvars.ContextVar(
     "code_act_current_environments",
     default={},
+)
+
+# Whether the actor running the current sandbox can ask its caller
+# (``clarification_enabled``); ``None`` outside any actor. A sub-actor it
+# starts inherits it under UNIFY_PROMPT_ACCURACY.
+_CAN_CLARIFY: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "code_act_can_clarify",
+    default=None,
 )
 
 
@@ -363,6 +344,60 @@ def _validate_execution_params(
     return None
 
 
+class _Unannotate(ast.NodeTransformer):
+    """Drop the annotation of each assignment to a plain name in the cell's
+    own scope: ``x: T = v`` becomes ``x = v`` and ``x: T`` (which binds
+    nothing) becomes ``pass``. Python refuses to declare an annotated name
+    global, so these are the cell's only bindings the wrapper could not keep.
+    Nested functions, classes and lambdas are left as written."""
+
+    changed = False
+
+    def _leave(self, node: ast.AST) -> ast.AST:
+        return node
+
+    visit_FunctionDef = visit_AsyncFunctionDef = _leave  # noqa: N815
+    visit_ClassDef = visit_Lambda = _leave  # noqa: N815
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:  # noqa: N802
+        if not isinstance(node.target, ast.Name):
+            return node
+        self.changed = True
+        if node.value is None:
+            return ast.copy_location(ast.Pass(), node)
+        return ast.copy_location(
+            ast.Assign(targets=[node.target], value=node.value),
+            node,
+        )
+
+
+def _cell_bound_names(body: str) -> set[str] | None:
+    """Every name *body* binds in its own scope when run as the body of
+    ``__exec_wrapper``, as Python's symbol table sees it.
+
+    That is what has to be declared global for the names to outlive the
+    cell: assignments anywhere in the cell's scope (under if/for/while/with/
+    try/match, as a for, with or except target, a walrus, also one inside a
+    comprehension), del, imports, defs and classes. A name the cell itself
+    declares global is not local and is left to its own statement. On
+    Python 3.12+ a comprehension's loop variable is reported here too (its
+    scope is inlined); declaring it global changes nothing, since the
+    comprehension still binds it in its own scope. ``None`` when the table
+    cannot be built (the cell does not compile as a wrapper body).
+    """
+    source = "async def __exec_wrapper():\n" + "".join(
+        f"    {ln}\n" for ln in body.splitlines()
+    )
+    try:
+        table = symtable.symtable(source, "<cell>", "exec")
+    except (SyntaxError, ValueError):
+        return None
+    for child in table.get_children():
+        if child.get_name() == "__exec_wrapper":
+            return {sym.get_name() for sym in child.get_symbols() if sym.is_local()}
+    return None
+
+
 # ---------------------------------------------------------------------------
 # PythonExecutionSession
 # ---------------------------------------------------------------------------
@@ -406,6 +441,23 @@ class PythonExecutionSession:
         # Expose sandbox metadata to user code (best-effort; callers may ignore).
         self.global_state["__sandbox_id__"] = self.id
 
+        # UNIFY_REPLY_CHANNEL=code+text: reply(text) sends the turn's reply.
+        from unify.common._async_tool import cell_reply
+
+        if cell_reply.enabled():
+            from .worker_child import Reply
+
+            self.global_state["reply"] = Reply(precheck=cell_reply.precheck)
+
+        # Cells run in this sandboxed child process and ``global_state``
+        # holds only what the harness provides them.
+        self._worker: Optional["PythonWorker"] = None
+
+        # The core tool surface: the harness objects of the act() this
+        # sandbox belongs to (``functions``, ``guidance``, ``install``, ...),
+        # which its other sessions get too (SessionExecutor._inject_fm_globals).
+        self.core_globals: Dict[str, Any] = {}
+
         if environments:
             for namespace, env in environments.items():
                 try:
@@ -429,6 +481,9 @@ class PythonExecutionSession:
         - This method is safe to call multiple times.
         """
         try:
+            if self._worker is not None:
+                worker, self._worker = self._worker, None
+                await worker.close()
             sys.modules.pop(self._module_name, None)
             self.global_state.clear()
         except Exception as e:
@@ -440,7 +495,33 @@ class PythonExecutionSession:
             except Exception:
                 pass
 
-    async def execute(self, code: str, *, timeout: float | None = None) -> dict:
+    def _python_worker(self) -> "PythonWorker":
+        """This session's sandboxed worker, started on first use."""
+        from unify import sandbox
+
+        from . import worker as worker_mod
+
+        sandbox.require_bwrap()
+        if self._worker is None:
+            self._worker = worker_mod.PythonWorker()
+        return self._worker
+
+    async def worker_variables(self) -> Dict[str, str]:
+        """The worker's variables (name -> short repr). Waits for a running
+        cell, like another cell would."""
+        if self._worker is None:
+            return {}
+        async with self._execution_lock:
+            return await self._worker.variables()
+
+    async def execute(
+        self,
+        code: str,
+        *,
+        timeout: float | None = None,
+        scratch: bool = False,
+        inventory: bool = False,
+    ) -> dict:
         """
         Executes a string of Python code within the sandbox's stateful environment.
 
@@ -453,6 +534,15 @@ class PythonExecutionSession:
             stderr: list[OutputPart] - structured error output parts
             result: Any - return value of the last expression
             error: str | None - traceback if an exception occurred
+
+        ``scratch`` (worker sessions only) runs the cell against a shallow copy
+        of the worker's namespace and discards it, which is what
+        ``state_mode="read_only"`` means there.
+
+        ``inventory`` (UNIFY_VARIABLE_INVENTORY): the result also carries
+        ``inventory``, the line naming the variables this session's cells
+        have bound, when it changed since the last one (not for a scratch
+        cell, which keeps nothing).
         """
         queued_at = time.perf_counter()
         async with self._execution_lock:
@@ -463,23 +553,52 @@ class PythonExecutionSession:
                     self.id,
                     lock_wait_ms,
                 )
-            return await self._execute_exclusively(code, timeout=timeout)
+            return await self._execute_exclusively(
+                code,
+                timeout=timeout,
+                scratch=scratch,
+                inventory=inventory and not scratch,
+            )
 
     async def _execute_exclusively(
         self,
         code: str,
         *,
         timeout: float | None,
+        scratch: bool = False,
+        inventory: bool = False,
     ) -> dict:
         """Run one cell in the sandbox; the caller holds ``_execution_lock``."""
+        from unify.common._async_tool import bound_request, cell_reply
+
+        from .worker import KILLED_NOTE, WorkerCellError
+        from .worker_child import CellReply
+
         result = None
         error = None
+        # UNIFY_VARIABLE_INVENTORY: the line for this cell, if any.
+        listed: Optional[str] = None
+        worker = self._python_worker()
 
         with capture_sandbox_output() as (stdout_parts, stderr_parts, display_fn):
             # Inject display function into globals
             self.global_state["display"] = display_fn
+            # UNIFY_BIND_REQUEST=on: a fresh ``request`` for the running
+            # loop's current request (none in a loop without one).
+            bound_request.install(self.global_state)
 
             try:
+                from unify.settings import SETTINGS
+
+                # UNIFY_CELL_SCOPE_FIX: keep every name the cell binds, as a
+                # notebook does. Off: only top-level bindings, as shipped.
+                scope_fix = SETTINGS.UNIFY_CELL_SCOPE_FIX
+                # With it on, a cell's `del` reaches the session's globals,
+                # so the guard below renames deletions as well as
+                # assignments: `del primitives` deletes the cell's own
+                # `_primitives_local`, never the injected `primitives`.
+                guarded = (ast.Store, ast.Del) if scope_fix else (ast.Store,)
+
                 # Guardrails: prevent agent code from accidentally shadowing critical
                 # injected environment globals (common failure mode in LLM-generated code).
                 #
@@ -496,11 +615,9 @@ class PythonExecutionSession:
                         }
 
                         def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
-                            # Only rewrite *assignments* (Store context). Loads are preserved.
-                            if (
-                                isinstance(node.ctx, ast.Store)
-                                and node.id in self._REMAP
-                            ):
+                            # Only rewrite *assignments* (Store context, and Del
+                            # with UNIFY_CELL_SCOPE_FIX). Loads are preserved.
+                            if isinstance(node.ctx, guarded) and node.id in self._REMAP:
                                 return ast.copy_location(
                                     ast.Name(id=self._REMAP[node.id], ctx=node.ctx),
                                     node,
@@ -529,6 +646,11 @@ class PythonExecutionSession:
                     # Best-effort only; if rewriting fails, proceed with original code.
                     pass
 
+                # UNIFY_REPLY_CHANNEL=code+text: a reply of a literal string
+                # is marked, so the turn records whether its text was computed.
+                if cell_reply.enabled():
+                    code = cell_reply.mark_literal_replies(code)
+
                 is_empty_or_comment_only = all(
                     line.strip() == "" or line.strip().startswith("#")
                     for line in code.splitlines()
@@ -537,6 +659,12 @@ class PythonExecutionSession:
                     code += "\npass"
 
                 tree = ast.parse(code)
+                if scope_fix:
+                    unannotate = _Unannotate()
+                    tree = unannotate.visit(tree)
+                    if unannotate.changed:
+                        ast.fix_missing_locations(tree)
+                        code = ast.unparse(tree)
                 top_level_assign_targets = set()
                 for node in tree.body:
                     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
@@ -572,6 +700,11 @@ class PythonExecutionSession:
                     tree.body[-1] = ast.Return(value=tree.body[-1].value)
                     ast.fix_missing_locations(tree)
                     code = ast.unparse(tree)
+
+                if scope_fix:
+                    bound = _cell_bound_names(code)
+                    if bound is not None:
+                        top_level_assign_targets = bound
 
                 # Steering only exists while a call is in flight. The session
                 # arrives by context rather than on this object, because the
@@ -682,6 +815,19 @@ class PythonExecutionSession:
                 spawned_handles: list[Any] = []
                 spawned_token = _SANDBOX_SPAWNED_HANDLES.set(spawned_handles)
 
+                async def _exec_wrapped(wrapped: str) -> Any:
+                    """Run the cell defined by *wrapped* in the worker."""
+                    return await worker.run_cell(
+                        wrapped,
+                        self.global_state,
+                        timeout=timeout,
+                        scratch=scratch,
+                        stdout=stdout_parts,
+                        stderr=stderr_parts,
+                        display=display_fn,
+                        **({"inventory": True} if inventory else {}),
+                    )
+
                 async def _run_once(body: str) -> Any:
                     """Compile and run one attempt at this block."""
                     source = body
@@ -692,23 +838,11 @@ class PythonExecutionSession:
                                 tool_namespaces=set(DEFAULT_TOOL_NAMESPACES),
                             ),
                         )
-                    exec(_wrap_for_execution(source), self.global_state)
-                    execution = self.global_state["__exec_wrapper"]()
-                    if timeout is None:
-                        return await execution
-                    return await asyncio.wait_for(execution, timeout=timeout)
+                    return await _exec_wrapped(_wrap_for_execution(source))
 
                 try:
                     if steering is None:
-                        exec(async_code, self.global_state)
-                        execution = self.global_state["__exec_wrapper"]()
-                        if timeout is None:
-                            result = await execution
-                        else:
-                            result = await asyncio.wait_for(
-                                execution,
-                                timeout=timeout,
-                            )
+                        result = await _exec_wrapped(async_code)
                     else:
                         # A correction rewrites `code` and re-runs; already
                         # completed dispatches replay from the session cache
@@ -719,11 +853,10 @@ class PythonExecutionSession:
                             _run_once,
                             session=steering,
                         )
-                    await _await_orphan_sandbox_handles(
-                        spawned=spawned_handles,
-                        result=result,
-                    )
+                    await _await_orphan_sandbox_handles(spawned=spawned_handles)
                 finally:
+                    if inventory:
+                        listed = worker.inventory
                     _SANDBOX_SPAWNED_HANDLES.reset(spawned_token)
                     if _orig_prims is not None:
                         self.global_state["primitives"] = _orig_prims
@@ -732,20 +865,30 @@ class PythonExecutionSession:
 
             except ExecutionStopped as stopped:
                 result = stopped.outcome
+            except CellReply as replied:
+                # UNIFY_REPLY_CHANNEL=code+text: the cell ends here, its output
+                # kept; the loop sends the reply unless it is refused.
+                result = None
+                error = cell_reply.deliver(replied.text, replied.from_value)
             except asyncio.TimeoutError:
-                error = f"Python execution timed out after {timeout}s"
+                error = f"Python execution timed out after {timeout}s" + KILLED_NOTE
+            except WorkerCellError as failed:
+                error = failed.traceback
             except Exception:
                 error = traceback.format_exc()
             finally:
                 if "__exec_wrapper" in self.global_state:
                     del self.global_state["__exec_wrapper"]
 
-        return {
+        out = {
             "stdout": stdout_parts,
             "stderr": stderr_parts,
             "result": result,
             "error": error,
         }
+        if listed is not None:
+            out["inventory"] = listed
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +915,8 @@ class SessionExecutor:
 
         self._python_sessions: Dict[int, PythonExecutionSession] = {}
         self._python_session_meta: Dict[int, dict[str, str]] = {}
+        # Persistent bash sessions, keyed like the Python ones.
+        self._shell_sessions: Dict[int, "BashSession"] = {}
 
         self._fm_globals: Dict[str, Any] = {}
 
@@ -781,6 +926,11 @@ class SessionExecutor:
     def _inject_fm_globals(self, sb: PythonExecutionSession) -> None:
         if self._fm_globals:
             sb.global_state.update(self._fm_globals)
+        # The core tool surface: a stateless or named session holds the
+        # running act()'s sandbox objects as its own session 0 does.
+        bound = _CURRENT_SANDBOX.get(None)
+        if bound is not None and bound is not sb and bound.core_globals:
+            sb.global_state.update(bound.core_globals)
 
     def _new_session(self) -> PythonExecutionSession:
         return PythonExecutionSession(environments=self._environments)
@@ -821,8 +971,11 @@ class SessionExecutor:
         key = int(session_id)
         sb = self._python_sessions.pop(key, None)
         self._python_session_meta.pop(key, None)
+        shell = self._shell_sessions.pop(key, None)
+        if shell is not None:
+            await shell.close()
         if sb is None:
-            return False
+            return shell is not None
         try:
             await sb.close()
         except Exception:
@@ -837,6 +990,65 @@ class SessionExecutor:
                 pass
         self._python_sessions.clear()
         self._python_session_meta.clear()
+        for shell in list(self._shell_sessions.values()):
+            await shell.close()
+        self._shell_sessions.clear()
+
+    async def _execute_shell(
+        self,
+        *,
+        code: str,
+        state_mode: StateMode,
+        session_id: int | None,
+    ) -> Dict[str, Any]:
+        """Run a bash cell inside the workspace sandbox."""
+        from unify import sandbox
+        from .shell import DEFAULT_SHELL_TIMEOUT_S, BashSession
+
+        if state_mode == "read_only":
+            _refuse(
+                message="state_mode='read_only' applies to Python sessions only.",
+                suggestion="Use state_mode='stateful' or 'stateless' for bash.",
+                state_mode=state_mode,
+                session_id=session_id,
+                session_name=None,
+            )
+        sandbox.require_bwrap()
+        policy = sandbox.build_policy()
+        timeout = self._timeout or DEFAULT_SHELL_TIMEOUT_S
+        started = time_context.perf_counter()
+        created = False
+        if state_mode == "stateless":
+            shell = BashSession(policy=policy)
+            try:
+                res = await shell.execute(code, timeout=timeout)
+            finally:
+                await shell.close()
+            session_id = None
+        else:
+            key = int(session_id or 0)
+            shell = self._shell_sessions.get(key)
+            if shell is None:
+                shell = self._shell_sessions[key] = BashSession(policy=policy)
+                created = True
+            res = await shell.execute(code, timeout=timeout)
+            session_id = key
+        output, error = res["output"], res["error"]
+        note = sandbox.annotate_refusals(output, policy)
+        if note and error:
+            error = f"{error}\n{note}"
+        elif note:
+            output = f"{output}\n[{note}]"
+        return {
+            "stdout": [TextPart(text=output)] if output else [],
+            "stderr": [],
+            "result": res["exit_code"],
+            "error": error,
+            "state_mode": state_mode,
+            "session_id": session_id,
+            "session_created": created,
+            "duration_ms": int((time_context.perf_counter() - started) * 1000),
+        }
 
     async def execute(
         self,
@@ -844,7 +1056,27 @@ class SessionExecutor:
         code: str,
         state_mode: StateMode,
         session_id: int | None,
+        language: str = "python",
+        prepare: Optional[Callable[[Dict[str, Any]], None]] = None,
+        inventory: bool = False,
     ) -> Dict[str, Any]:
+        """Run ``code`` in the session ``state_mode`` and ``session_id`` name.
+
+        ``prepare``, when given, is called with
+        the namespace the cell runs in before it runs, to define names there:
+        they stay where the state mode keeps what a cell defines.
+
+        ``inventory`` (``UNIFY_VARIABLE_INVENTORY``): a stateful cell's result
+        carries ``inventory`` when the session's variables changed since the
+        line last shown; a stateless or read-only cell keeps nothing, so its
+        result never does.
+        """
+        if language == "bash":
+            return await self._execute_shell(
+                code=code,
+                state_mode=state_mode,
+                session_id=session_id,
+            )
         import time as _se_time
         import logging as _se_logging
 
@@ -859,24 +1091,40 @@ class SessionExecutor:
             f"(state_mode={state_mode}, session_id={session_id})",
         )
 
-        started = datetime.now(timezone.utc)
-        t0 = started.timestamp()
+        # The loop's monotonic clock, the one tool-call timings read.
+        t0 = time_context.perf_counter()
 
         def _duration_ms() -> int:
-            return int((datetime.now(timezone.utc).timestamp() - t0) * 1000)
+            return int((time_context.perf_counter() - t0) * 1000)
 
         async def _execute_in_python_session(
             sb: PythonExecutionSession,
+            scratch: bool = False,
+            listing: bool = False,
         ) -> Dict[str, Any]:
-            return await sb.execute(code, timeout=self._timeout)
+            from unify import sandbox
+
+            listing_kw = {"inventory": True} if listing else {}
+            # The cell is confined whole in its worker; this confines what the
+            # harness objects it calls start.
+            with sandbox.confined_subprocesses(sandbox.build_policy()):
+                if scratch:
+                    return await sb.execute(
+                        code,
+                        timeout=self._timeout,
+                        scratch=True,
+                    )
+                return await sb.execute(code, timeout=self._timeout, **listing_kw)
 
         bound = self._bound_sandbox(session_id)
         if state_mode == "stateful" and bound is not None:
             self._inject_fm_globals(bound)
+            if prepare is not None:
+                prepare(bound.global_state)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox (session 0), executing",
             )
-            res = await _execute_in_python_session(bound)
+            res = await _execute_in_python_session(bound, listing=inventory)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] bound sandbox done",
             )
@@ -887,7 +1135,7 @@ class SessionExecutor:
                 "session_created": False,
                 "duration_ms": _duration_ms(),
             }
-        # Stateless: fresh in-process sandbox per call.
+        # Stateless: a fresh session per call.
         if state_mode == "stateless":
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] creating stateless sandbox",
@@ -897,6 +1145,8 @@ class SessionExecutor:
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] sandbox created, injecting globals",
             )
             self._inject_fm_globals(sb)
+            if prepare is not None:
+                prepare(sb.global_state)
             _se_log.debug(
                 f"⏱️ [SessionExecutor.execute +{_se_ms()}] globals injected, executing code",
             )
@@ -921,7 +1171,7 @@ class SessionExecutor:
         # Persistent sessions.
         if session_id is None:
             raise ValueError(
-                "session_id is required for in-process stateful/read_only execution",
+                "session_id is required for stateful/read_only execution",
             )
 
         key = int(session_id)
@@ -937,7 +1187,9 @@ class SessionExecutor:
                 }
             sb = self._python_sessions[key]
             self._inject_fm_globals(sb)
-            res = await _execute_in_python_session(sb)
+            if prepare is not None:
+                prepare(sb.global_state)
+            res = await _execute_in_python_session(sb, listing=inventory)
             meta = self._python_session_meta.get(key)
             if meta is not None:
                 meta["last_used"] = datetime.now(timezone.utc).isoformat()
@@ -950,23 +1202,37 @@ class SessionExecutor:
             }
 
         if state_mode == "read_only":
-            # Create a throwaway sandbox seeded with current state.
+            # A cell on a copy of the session's namespace, in its worker.
             base = self.python_session(session_id=key)
             if base is None:
                 raise ValueError(
                     f"Session {key} not found for read_only execution",
                 )
-            sb = self._new_session()
-            try:
-                # Shallow copy globals to allow read access while avoiding persistence.
-                sb.global_state.update(dict(base.global_state))
-                self._inject_fm_globals(sb)
-                res = await _execute_in_python_session(sb)
-            finally:
+            # The session's variables live in its worker: the cell runs
+            # there against a copy of its namespace.
+            self._inject_fm_globals(base)
+            if prepare is None:
+                res = await _execute_in_python_session(base, scratch=True)
+            else:
+                # What prepare defines is the cell's, not the session's:
+                # the session's own bindings come back afterwards.
+                before = dict(base.global_state)
+                prepare(base.global_state)
+                defined = {
+                    name: value
+                    for name, value in base.global_state.items()
+                    if name not in before or before[name] is not value
+                }
                 try:
-                    await sb.close()
-                except Exception:
-                    pass
+                    res = await _execute_in_python_session(base, scratch=True)
+                finally:
+                    for name, value in defined.items():
+                        if base.global_state.get(name) is not value:
+                            continue
+                        if name in before:
+                            base.global_state[name] = before[name]
+                        else:
+                            del base.global_state[name]
             return {
                 **res,
                 "state_mode": state_mode,
@@ -975,6 +1241,4 @@ class SessionExecutor:
                 "duration_ms": _duration_ms(),
             }
 
-        raise ValueError(
-            f"Unsupported state_mode for in-process execution: {state_mode}",
-        )
+        raise ValueError(f"Unsupported state_mode: {state_mode}")

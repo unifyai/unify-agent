@@ -51,18 +51,3 @@ def format_llm_response_for_log(msg: dict) -> str:
         if fn.get("name") == "execute_code" and isinstance(fn.get("arguments"), dict):
             _add_code_delimiters(fn["arguments"])
     return format_json_for_log(msg)
-
-
-def get_handle_paused_state(handle) -> bool | None:
-    """Whether a steerable handle is paused, read from its ``_pause_event``
-    (set = running, cleared = paused). A handle that tracks pause state
-    another way exposes ``_pause_event`` as a proxy with ``is_set()``.
-    Returns None when the handle has no such event.
-    """
-    try:
-        pev = getattr(handle, "_pause_event", None)
-        if pev is not None and hasattr(pev, "is_set"):
-            return not pev.is_set()
-    except Exception:
-        pass
-    return None

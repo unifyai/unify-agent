@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -55,6 +56,12 @@ def pytest_ignore_collect(collection_path, config):
         return None
     invoked = [Path(str(arg).split("::")[0]).resolve() for arg in config.args]
     return not any(p == tree or tree in p.parents for p in invoked)
+
+
+#: A hang guard for one tmux command, not a bound: a tmux client's start on a
+#: loaded host can take seconds, and a timed-out ``ls`` would read as no
+#: sessions.
+TMUX_TIMEOUT_S = 60
 
 
 def get_unity_sockets() -> List[str]:
@@ -133,7 +140,7 @@ def list_tmux_sessions(socket: Optional[str] = None) -> List[TmuxSession]:
                 ["tmux", "-L", sock, "ls"],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode != 0:
                 continue
@@ -179,7 +186,7 @@ def kill_tmux_session(name: str, socket: Optional[str] = None) -> bool:
             result = subprocess.run(
                 ["tmux", "-L", sock, "kill-session", "-t", name],
                 capture_output=True,
-                timeout=5,
+                timeout=TMUX_TIMEOUT_S,
             )
             if result.returncode == 0:
                 return True
@@ -316,7 +323,7 @@ def _kill_tmux_server(socket: str) -> None:
         subprocess.run(
             ["tmux", "-L", socket, "kill-server"],
             capture_output=True,
-            timeout=5,
+            timeout=TMUX_TIMEOUT_S,
         )
     except Exception:
         pass
@@ -340,6 +347,17 @@ def clean_tmux_sessions():
     yield
 
 
+def unique_socket(suffix: str = "") -> str:
+    """A tmux socket name no other runner shares.
+
+    The pid alone is not unique: under per-test PID namespaces every test
+    process is pid 2, so runners of concurrent tests would share a tmux
+    server and a log directory, and one runner's cleanup would end the
+    other's sessions.
+    """
+    return f"unity_test_{os.getpid()}_{uuid.uuid4().hex[:8]}{suffix}"
+
+
 class ParallelRunner:
     """Helper class to run parallel_run.sh with various arguments."""
 
@@ -353,7 +371,7 @@ class ParallelRunner:
         self._created_sessions: List[tuple[str, str]] = []  # (socket, session_name)
         # Generate a unique socket name for this runner instance so all runs
         # within the same test use the same socket (enables collision detection)
-        self._socket_name = socket_name or f"unity_test_{os.getpid()}"
+        self._socket_name = socket_name or unique_socket()
 
     def run(
         self,
@@ -650,7 +668,7 @@ def runner(clean_tmux_sessions):
 @pytest.fixture
 def second_runner(clean_tmux_sessions):
     """A ParallelRunner on a socket of its own, for runs that overlap ``runner``'s."""
-    r = ParallelRunner(socket_name=f"unity_test_{os.getpid()}_second")
+    r = ParallelRunner(socket_name=unique_socket("_second"))
     yield r
     r.cleanup()
 

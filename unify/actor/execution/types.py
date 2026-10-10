@@ -170,6 +170,13 @@ class ExecutionResult(BaseModel):
     #: when an interjection actually reached this execution, so an ordinary
     #: run carries no extra weight in the transcript.
     steering: Optional[Dict[str, Any]] = None
+    #: A note about the call's arguments (``UNIFY_PLACEHOLDER_NOTE``); set only
+    #: when there is one.
+    note: Optional[str] = None
+    #: The line naming the session's variables (``UNIFY_VARIABLE_INVENTORY``);
+    #: set only when they changed since the line last shown. It ends the
+    #: result, before anything the loop appends (a budget footer).
+    inventory: Optional[str] = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -187,6 +194,8 @@ class ExecutionResult(BaseModel):
             meta["result"] = self.result
         if self.error is not None:
             meta["error"] = self.error
+        if self.note is not None:
+            meta["note"] = self.note
         if self.state_mode is not None:
             meta["state_mode"] = self.state_mode
         if self.session_id is not None:
@@ -237,6 +246,10 @@ class ExecutionResult(BaseModel):
                         compacted.append(part)
                 blocks.append({"type": "text", "text": "\n--- stderr ---\n"})
                 blocks.extend(parts_to_llm_content(compacted))
+
+        if self.inventory is not None:
+            text = f"\n{self.inventory}" if blocks else self.inventory
+            blocks.append({"type": "text", "text": text})
 
         # Ensure we always return at least something
         if not blocks:

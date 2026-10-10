@@ -328,69 +328,50 @@ async def test_timeout_graceful_termination(llm_config):
 
 
 @pytest.mark.asyncio
-async def test_max_steps_graceful_termination(llm_config):
-    """No exception; pending tool is cancelled when max_steps is exceeded."""
+async def test_max_steps_graceful_termination():
+    """No exception; a call the limit comes before is answered, not run.
+
+    The step limit counts messages and applies at a turn boundary, so a
+    call that is already running runs to completion (the timeout and stop()
+    bound it, see test_timeout_graceful_termination). Here the limit is
+    reached before the preseeded call starts: it is never run, and the
+    transcript the loop ends with answers it. No model call is made.
+    """
+    from tests import cache_discipline_helpers as h
+
     cancel_flag = {}
-    client = new_llm_client(**llm_config)
-    # Instruct real LLM to call the tool once and keep running; max_steps will stop it
-    client.set_system_message(
-        'You are running inside an automated test. In your FIRST assistant turn, call `long_tool` with {"seconds": 5}. '
-        "Keep waiting afterwards.",
-    )
-    _preseed_tool_call(
-        client,
-        call_id="call_preseed_steps",
-        tool_name="long_tool",
-        args_json='{"seconds": 5}',
-    )
+    started: list = []
+    long_tool = _make_long_tool(cancel_flag)
 
-    handle = start_async_tool_loop(
-        client,
-        message="go",
-        tools={"long_tool": _make_long_tool(cancel_flag)},
-        max_steps=3,  # real small cap – after backfill + user message, limit will be hit
-        timeout=5,
-        raise_on_limit=False,
-    )
-    result = await handle.result()
-    assert "Terminating early" in result
+    async def tracked_long_tool(seconds: int):
+        started.append(seconds)
+        return await long_tool(seconds)
 
-    # Robust assertions not relying on coroutine body execution timing.
-    # 1) The preseeded tool call must be present in assistant tool_calls.
-    assert any(
-        m.get("role") == "assistant"
-        and m.get("tool_calls")
-        and any(tc.get("id") == "call_preseed_steps" for tc in m["tool_calls"])
+    with h.scripted(()):
+        client = h.new_client()
+        _preseed_tool_call(
+            client,
+            call_id="call_preseed_steps",
+            tool_name="long_tool",
+            args_json='{"seconds": 5}',
+        )
+        handle = start_async_tool_loop(
+            client,
+            message="go",
+            tools={"long_tool": tracked_long_tool},
+            max_steps=2,  # the preseeded call and the request reach it
+            timeout=5,
+            raise_on_limit=False,
+        )
+        result = await handle.result()
+    assert result.startswith("🔚 Terminating early: max_steps (2) exceeded")
+    assert started == []
+    (reply,) = [
+        m
         for m in client.messages
-    )
-
-    # 2) The tool must not have produced a successful final result.
-    assert not any(
-        m.get("role") == "tool"
-        and m.get("tool_call_id") == "call_preseed_steps"
-        and "finished" in str(m.get("content") or "")
-        for m in client.messages
-    )
-
-    # 3) White-box: the scheduled asyncio.Task for the call-id is cancelled.
-    loop_task = getattr(handle, "_task", None)
-    task_info = getattr(loop_task, "task_info", {}) if loop_task is not None else {}
-    found_cancelled = False
-    if isinstance(task_info, dict):
-        for t, meta in task_info.items():
-            if getattr(meta, "call_id", None) == "call_preseed_steps":
-                if t.cancelled():
-                    found_cancelled = True
-                    break
-                if t.done():
-                    try:
-                        exc = t.exception()
-                    except Exception:
-                        exc = None
-                    if isinstance(exc, asyncio.CancelledError):
-                        found_cancelled = True
-                        break
-    assert found_cancelled
+        if m.get("role") == "tool" and m.get("tool_call_id") == "call_preseed_steps"
+    ]
+    assert reply["content"].startswith("Not run: max_steps (2) exceeded")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -630,106 +611,6 @@ async def test_policy_legacy_two_arg_still_works(llm_config):
     await handle.result()
 
     assert flag["called"] is True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 8. eager tool_policy: immediate LLM turn while gated tools are in flight
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_policy_eager_grants_immediate_turn_while_gate_pending(llm_config):
-    """Eager policies must grant another LLM turn before gated tools finish.
-
-    Without ``{"eager": True}``, the loop waits for ``gate_a`` to complete
-    before the next assistant message.  With eager, after ``gate_a`` is
-    scheduled the policy still reports unsatisfied gates → the loop takes
-    another LLM turn while ``gate_a`` is still in flight.
-
-    This asserts on transcript shape (a second assistant tool-call message
-    appears before ``gate_a`` finishes), not on which tool the model picks
-    on that eager turn — pending-tool helpers like ``wait`` may also be
-    visible, and models vary in which required tool they choose.
-    """
-
-    gate_a_started = asyncio.Event()
-    allow_a_finish = asyncio.Event()
-    call_log: list[str] = []
-
-    async def gate_a():
-        call_log.append("a_start")
-        gate_a_started.set()
-        await allow_a_finish.wait()
-        call_log.append("a_done")
-        return "gate_a done"
-
-    async def gate_b():
-        call_log.append("b")
-        return "gate_b done"
-
-    async def tool_final():
-        call_log.append("final")
-        return "COMPLETE — do not call any more tools."
-
-    # Ordered gates: expose only the next unsatisfied tool so turn 0 is
-    # forced onto gate_a (with tool_choice="required").
-    GATE_ORDER = ("gate_a", "gate_b")
-
-    def eager_gate_policy(
-        step: int,
-        tools: Dict[str, Callable],
-        called_tools: list[str],
-    ):
-        called_set = set(called_tools)
-        for name in GATE_ORDER:
-            if name not in called_set and name in tools:
-                return "required", {name: tools[name]}, {"eager": True}
-        return "auto", tools
-
-    client = new_llm_client(**llm_config)
-    handle = start_async_tool_loop(
-        client,
-        (
-            "You are part of a test. Call whichever tool is currently available "
-            "when a tool call is required. Once `tool_final` appears, call it "
-            "once and then stop."
-        ),
-        {"gate_a": gate_a, "gate_b": gate_b, "tool_final": tool_final},
-        tool_policy=eager_gate_policy,
-        enable_compression=False,
-        timeout=90,
-    )
-
-    await asyncio.wait_for(gate_a_started.wait(), timeout=60)
-
-    # Prove a second assistant turn happened while gate_a is blocked.
-    # Count assistant messages (not tool_calls): pending-tool helpers like
-    # ``wait`` may be pruned from the visible tool_calls list after ack.
-    async def _second_turn_while_a_pending() -> bool:
-        if "a_done" in call_log:
-            return False
-        assistant_turns = [
-            m for m in handle.get_history() if m.get("role") == "assistant"
-        ]
-        return len(assistant_turns) >= 2
-
-    deadline = asyncio.get_event_loop().time() + 60
-    while not await _second_turn_while_a_pending():
-        if asyncio.get_event_loop().time() > deadline:
-            raise TimeoutError(
-                "Expected a second LLM tool-call turn while gate_a was still "
-                f"in flight; call_log={call_log!r}",
-            )
-        await asyncio.sleep(0.05)
-
-    assert "a_done" not in call_log
-
-    allow_a_finish.set()
-    await handle.result()
-
-    assert "a_done" in call_log
-    assert "b" in call_log
-    assert "final" in call_log
 
 
 # ── 9. timeout resets after LLM response (activity-based) ─────────────────────

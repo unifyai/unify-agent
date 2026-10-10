@@ -8,12 +8,21 @@ This subpackage provides:
 - `Primitives` - Scoped runtime interface for accessing primitives
 - `get_primitive_callable` - Resolve primitive metadata to callables
 - `collect_primitives` / `compute_primitives_hash` - Module-level convenience functions
+- `EnvironmentSurface` / `register_environment` - Namespaces an environment
+  registers beside Unify's own (``UNIFY_ENV_NAMESPACES``)
 """
 
 from unify.function_manager.primitives.scope import (
     PrimitiveScope,
     VALID_MANAGER_ALIASES,
     default_runtime_scope,
+    valid_manager_aliases,
+)
+from unify.function_manager.primitives.environment import (
+    EnvironmentMethod,
+    EnvironmentNamespace,
+    EnvironmentSurface,
+    register_environment,
 )
 from unify.function_manager.primitives.registry import (
     ManagerSpec,
@@ -35,6 +44,12 @@ __all__ = [
     "PrimitiveScope",
     "VALID_MANAGER_ALIASES",
     "default_runtime_scope",
+    "valid_manager_aliases",
+    # Environment namespaces
+    "EnvironmentMethod",
+    "EnvironmentNamespace",
+    "EnvironmentSurface",
+    "register_environment",
     # Registry
     "ManagerSpec",
     "ToolSurfaceRegistry",

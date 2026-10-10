@@ -5,10 +5,7 @@ import time
 import re
 import pytest
 
-from unify.common.async_tool_loop import (
-    start_async_tool_loop,
-    AsyncToolLoopHandle,
-)
+from unify.common.async_tool_loop import start_async_tool_loop
 from unify.events.event_bus import EVENT_BUS
 from unify.common.llm_client import new_llm_client, PendingThinkingLog
 
@@ -31,8 +28,10 @@ async def test_nested_logging_hierarchy_labels(llm_config):
         time.sleep(0.1)
         return "inner-ok"
 
-    # ── outer tool: launches a nested loop and returns its handle ──────────
-    async def outer_tool() -> AsyncToolLoopHandle:
+    # ── outer tool: runs a nested loop to completion and returns its reply ──
+    # The loop no longer adopts a handle a tool returns (it stops it and
+    # sends the handle's repr, a memory address), so the tool awaits it.
+    async def outer_tool() -> str:
         inner_client = new_llm_client(**llm_config)
         inner_client.set_system_message(
             "You are running inside an automated test.\n"
@@ -41,7 +40,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
             "3️⃣  Reply with exactly 'done'.",
         )
 
-        return start_async_tool_loop(
+        inner = start_async_tool_loop(
             client=inner_client,
             message="start",
             tools={"inner_tool": inner_tool},
@@ -49,6 +48,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
             max_steps=10,
             timeout=120,
         )
+        return await inner.result()
 
     outer_tool.__name__ = "outer_tool"
     outer_tool.__qualname__ = "outer_tool"
@@ -58,8 +58,7 @@ async def test_nested_logging_hierarchy_labels(llm_config):
     client.set_system_message(
         "You are running inside an automated test. Perform the steps exactly:\n"
         "1️⃣  Call `outer_tool` with no arguments.\n"
-        "2️⃣  Continue running this tool call, when given the option.\n"
-        "3️⃣  Once it is completed, respond with exactly 'outer done'.",
+        "2️⃣  Once it is completed, respond with exactly 'outer done'.",
     )
 
     handle = start_async_tool_loop(
@@ -216,8 +215,7 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
 
 
 @pytest.mark.asyncio
-@pytest.mark.llm_call
-async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
+async def test_inline_log_file_paths(unify_logs, tmp_path):
     """
     Verify that when UNILLM_LOG_DIR is set, the async tool loop emits a
     combined "LLM thinking… → /path" line that merges the thinking indicator
@@ -230,7 +228,12 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
        a "→ …/path.txt" reference — all in one line
     4. Asserts the referenced file actually exists on disk
     5. Asserts no separate 📝 filepath lines exist (they are combined now)
+
+    The model is scripted (``tests/cache_discipline_helpers``), so the call
+    runs with the LLM cache off: its pending file is ``{base}.pending.txt``
+    (``{base}.cache_pending.txt`` with the cache on).
     """
+    from tests import cache_discipline_helpers as h
     import unillm.logger as unillm_logger
 
     log_dir = tmp_path / "unillm_logs"
@@ -243,19 +246,20 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
         def noop_tool() -> str:
             return "ok"
 
-        client = new_llm_client(**llm_config)
-        client.set_system_message("Call noop_tool, then reply 'done'.")
-
-        handle = start_async_tool_loop(
-            client=client,
-            message="start",
-            tools={"noop_tool": noop_tool},
-            loop_id="LogFileTest",
-            max_steps=5,
-            timeout=60,
-        )
-
-        await handle.result()
+        replies = [
+            lambda: h.completion(calls=[("noop_tool", {})]),
+            lambda: h.completion(content="done"),
+        ]
+        with h.scripted(replies):
+            handle = start_async_tool_loop(
+                client=h.new_client("Call noop_tool, then reply 'done'."),
+                message="start",
+                tools={"noop_tool": noop_tool},
+                loop_id="LogFileTest",
+                max_steps=5,
+                timeout=60,
+            )
+            await handle.result()
 
         logged_lines = unify_logs.text.splitlines()
 
@@ -282,9 +286,10 @@ async def test_inline_log_file_paths(llm_config, unify_logs, tmp_path):
                 str(log_dir) in path_str
             ), f"Log file {path_str} is not under expected dir {log_dir}"
 
-            # The pending path (.cache_pending.txt) gets renamed after the LLM
-            # call completes. Verify a finalized file with the same base exists.
-            base = os.path.basename(path_str).split(".cache_pending.")[0]
+            # The pending path ({base}.pending.txt, or .cache_pending.txt with
+            # the cache on) is renamed after the call completes. Verify a
+            # finalized file with the same base exists.
+            base = re.split(r"\.(?:cache_)?pending\.", os.path.basename(path_str))[0]
             finalized = [
                 f
                 for f in os.listdir(log_dir)
