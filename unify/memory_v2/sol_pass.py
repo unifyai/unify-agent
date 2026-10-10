@@ -720,6 +720,10 @@ class PassConfig:
     # memory v2.1 ROUND_RESERVE (spec §15), once offline replay calibrates it; None: the pass's own median
     # round cost (repair.round_reserve)
     round_reserve_usd: Decimal | None = None
+    # memory v2.1 r5: where readers leave staging (<state>/memory-staging; None: a scratch dir in the pass), and
+    # arm C's analysts ("off" or "sol", UNIFY_MEMORY_V21_ANALYSTS)
+    staging_root: str | None = None
+    analysts: str = "off"
 
 
 @dataclass
@@ -753,6 +757,8 @@ class PassOutcome:
     # finish, listed no item and no deletion: the writer's explicit decision that the batch holds nothing to store
     finished: bool = False
     nothing_to_store: bool = False
+    # r5 arm C: one row per Sol analyst (episode, status, flags, turns, usd, files); their spend is in usd too
+    analysts: list[dict] = field(default_factory=list)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1692,6 +1698,10 @@ class SolPass:
         self._shown_full: dict[str, tuple[str, str]] = {}
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
+        # r5: S0's facts for the analysts' flags (Task 5 fills them): episodes in a cluster, shapes seen before
+        self._s0_clustered: set[str] = set()
+        self._s0_seen: set[str] = set()
+        self._analyst_rows: list[dict] = []
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -1928,6 +1938,66 @@ class SolPass:
         )
         write_files(box, files)
         return files
+
+    async def _staging_v21(
+        self,
+        req,
+        inputs: Path,
+        box: Path,
+        roots,
+        required,
+        sizes,
+        spend,
+    ) -> None:
+        """r5 §4: Sol analysts per flagged episode (``analysts == "sol"``; their spend joins the pass's), then each
+        batch episode's staging copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is
+        untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run.
+        """
+        from . import analysts as _analysts
+        from . import staging as _staging
+
+        eps = {e: self.load(e) for e in req.episodes}
+        root = (
+            Path(self.cfg.staging_root)
+            if self.cfg.staging_root
+            else Path(inputs).parent / "staging-local"
+        )
+        if self.cfg.analysts == "sol":
+            flags = {
+                e: _analysts.flagged(ep, self._s0_clustered, self._s0_seen)
+                for e, ep in eps.items()
+            }
+            scratch = _views.Coverage(
+                required,
+                sizes,
+            )  # analysts' reads never credit the writer's coverage
+
+            async def reader(name: str, args: dict) -> str:
+                return await self._v21_tool(name, args, roots, scratch, eps)
+
+            self._analyst_rows = await _analysts.run(
+                flags,
+                model_turn=self.turn,
+                reader=reader,
+                reader_tools=sol_tools(v21=True),
+                index_view=self._library_message_v21(box),
+                root=root,
+                step_guard=STEP_GUARD,
+            )
+            for row in self._analyst_rows:
+                usd = _analysts._usd(row.get("usd"))
+                if usd is not None:
+                    spend.usd += usd
+                spend.unknown += int(row.get("unknown_cost_calls", 0) or 0)
+        path = Path(inputs) / "batch_map.json"
+        bmap = json.loads(path.read_text())
+        for row in bmap.get("episodes", []):
+            eid = row["episode_id"]
+            row["staging"] = _staging.export(
+                _staging.read(root, eid),
+                Path(inputs) / "staging" / eid,
+            )
+        path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
 
     @staticmethod
     def _library_message_v21(box: Path) -> str:
@@ -2379,6 +2449,7 @@ class SolPass:
         self.fixtures_made = {}
         self._shown_full = {}
         self._shared = {}
+        self._analyst_rows = []
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -2541,6 +2612,21 @@ class SolPass:
             if self.cfg.v21:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
+                o.analysts = [
+                    {
+                        k: r.get(k)
+                        for k in (
+                            "episode",
+                            "status",
+                            "flags",
+                            "turns",
+                            "usd",
+                            "unknown_cost_calls",
+                        )
+                    }
+                    | {"files": len(r.get("files") or [])}
+                    for r in self._analyst_rows
+                ]
                 o.nothing_to_store = bool(
                     phase["finish_accepted"] and phase["nothing_to_store"],
                 )
@@ -2589,6 +2675,17 @@ class SolPass:
                 # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (P2's gate inputs replace previous_gate.json)
                 self._v21_generated = self._stage_library_v21(box, parent)
+                if req.kind != "curate":
+                    # r5: arm C's analysts (when on), then every batch episode's staging, read-only for Sol
+                    await self._staging_v21(
+                        req,
+                        inputs,
+                        box,
+                        roots,
+                        required,
+                        sizes,
+                        spend,
+                    )
                 if req.kind == "curate":
                     # memory v2.1 CURATE (P6): the library view, then what the trigger found
                     first = (

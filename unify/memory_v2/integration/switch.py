@@ -637,6 +637,9 @@ V21_WAIT_SLOT = "UNIFY_MEMORY_V21_WAIT_SLOT"
 #: Design r5 (lead, 10 Oct): at each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 V21_FORK = "UNIFY_MEMORY_V21_FORK"
+#: Design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer, writing staging
+#: (analysts.py); ``off`` (default): none, as built.
+V21_ANALYSTS = "UNIFY_MEMORY_V21_ANALYSTS"
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -724,6 +727,18 @@ def parse_v21_fork(v: Any) -> str:
 
 def v21_fork(settings: Any) -> bool:
     return parse_v21_fork(getattr(settings, V21_FORK, "") or "") == "on"
+
+
+def parse_v21_analysts(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
+    s = str(v or "").strip().lower() or "off"
+    if s not in ("off", "sol"):
+        raise ValueError(f"{V21_ANALYSTS} must be off or sol, got {v!r}")
+    return s
+
+
+def v21_analysts(settings: Any) -> str:
+    return parse_v21_analysts(getattr(settings, V21_ANALYSTS, "") or "")
 
 
 def v21_max_reads(settings: Any) -> int:
@@ -874,6 +889,7 @@ PARSERS = {
     V21_MAX_READS: parse_v21_max_reads,
     V21_WAIT_SLOT: parse_v21_wait_slot,
     V21_FORK: parse_v21_fork,
+    V21_ANALYSTS: parse_v21_analysts,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

@@ -125,6 +125,7 @@ from .switch import (
     checker_visible,
     surfacing_options,
     v21_enabled,
+    v21_analysts,
     v21_max_reads,
 )
 
@@ -1044,6 +1045,15 @@ async def run_due_passes(
         max_calls=STEP_GUARD if cfg.v21 else max_calls,
         deadline_s=supervise.pass_deadline_s if supervise is not None else DEADLINE_S,
         max_usd=None if cfg.v21 else cap,
+        # r5: staging lives beside the fork's (fork.staging_dir), and arm C's analysts follow their switch
+        **(
+            {
+                "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
+                "analysts": v21_analysts(settings),
+            }
+            if cfg.v21
+            else {}
+        ),
         show_usage=cfg.show_usage,
         v21=cfg.v21,
         # memory v2.1: the writer's reader calls (UNIFY_MEMORY_V21_MAX_READS); off, PassConfig's default as before
