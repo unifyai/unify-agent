@@ -419,6 +419,9 @@ class ProductionSettings(BaseSettings):
     # Memory v2.1: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
     # namespace ends with the controller); ``off`` (default): the request returns at once.
     UNIFY_MEMORY_V21_WAIT_SLOT: str = "off"
+    # Memory v2.1 design r5: ``on`` forks the actor's conversation once at each episode's end, in a confined process
+    # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
+    UNIFY_MEMORY_V21_FORK: str = "off"
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
@@ -652,6 +655,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V21_E",
         "UNIFY_MEMORY_V21_MAX_READS",
         "UNIFY_MEMORY_V21_WAIT_SLOT",
+        "UNIFY_MEMORY_V21_FORK",
         "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
         "UNIFY_MEMORY_V21_PASS_WALL_S",
         "UNIFY_MEMORY_V2_SOL_JOURNAL",

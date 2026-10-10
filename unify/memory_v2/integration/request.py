@@ -22,6 +22,7 @@ everything else at once, so no checker text reaches an episode, the evidence, So
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import datetime as dt
 import json
@@ -792,12 +793,14 @@ class RequestRun:
         consolidate: bool = True,
     ) -> None:
         """Record the request and run the due passes (blocking; under ``UNIFY_MEMORY_V21=on`` a due pass starts
-        in a detached worker and the request returns at once); never raises. *handle* is unused: the
-        transcript is the record. With *consolidate* False (a driver's ``{"quit": true, "consolidate":
-        false}``) the episode is recorded and no pass starts; due passes stay due, and one ``held`` event
-        says so."""
+        in a detached worker and the request returns at once); never raises. The transcript is the record;
+        *handle* is read only by the episode-end fork (``UNIFY_MEMORY_V21_FORK=on``, design r5), which starts
+        after the episode is recorded and changes nothing in it. With *consolidate* False (a driver's
+        ``{"quit": true, "consolidate": false}``) the episode is recorded and no pass starts; due passes stay
+        due, and one ``held`` event says so."""
         if self._closed:
             return
+        fork = None
         try:
             self._close_scope()
             try:
@@ -805,6 +808,7 @@ class RequestRun:
             except Exception as exc:  # noqa: BLE001
                 self._error("episode", exc, progress)
                 return
+            fork = self._start_fork(handle, eid, progress)
             if consolidate:
                 await self._consolidate(eid, sha, progress, emit)
             else:
@@ -827,6 +831,34 @@ class RequestRun:
                 relay=getattr(self, "_relay", None),
                 events_from=getattr(self, "_events_from", 0),
             )
+        if fork is not None:
+            from unify.settings import SETTINGS
+
+            from . import fork as _fork
+
+            # after the reply and the lock: hand over the request, and wait where the host needs it
+            await asyncio.to_thread(_fork.finish, fork, SETTINGS, progress)
+
+    def _start_fork(
+        self,
+        handle: Any,
+        eid: str,
+        progress: Callable[[str], None],
+    ) -> Any:
+        """Design r5: the episode-end fork, only under ``UNIFY_MEMORY_V21_FORK=on``; never raises."""
+        from unify.settings import SETTINGS
+
+        from .switch import v21_enabled, v21_fork
+
+        if not (v21_enabled(SETTINGS) and v21_fork(SETTINGS)):
+            return None
+        try:
+            from . import fork as _fork
+
+            return _fork.start(self.paths, handle, eid, SETTINGS, progress=progress)
+        except Exception as exc:  # noqa: BLE001
+            self._error("fork", exc, progress)
+            return None
 
     def _record_episode(self) -> tuple[str, str]:
         from unify import transcripts
