@@ -356,3 +356,70 @@ def test_wait_slot_relays_the_slots_pass_events_once_in_order(tmp_path):
     finally:
         _stop(rec)
     assert seen == [r for r in rows if r["phase"] in ("start", "end")]
+
+
+TOKEN_CHILD = """
+import hashlib, json, os, sys
+home = sys.argv[sys.argv.index("--home") + 1]
+fd = int(os.environ["UNIFY_MEMORY_V2_SOL_TOKEN_FD"])
+data = os.read(fd, 4096)
+out = {
+    "read": hashlib.sha256(data).hexdigest(),
+    "names": sorted(k for k in os.environ if "SOL_TOKEN" in k.upper()),
+    "values": [hashlib.sha256(v.encode()).hexdigest() for v in os.environ.values()],
+}
+json.dump(out, open(os.path.join(home, "token-child.json"), "w"))
+"""
+
+
+def test_the_route_token_reaches_the_worker_through_a_pipe_only(tmp_path, monkeypatch):
+    """0f, 10 Oct: the parent removed Sol's token from its environment, so the worker gets it over a fresh pipe
+    named by UNIFY_MEMORY_V2_SOL_TOKEN_FD: never in argv, the environment or a file."""
+    import hashlib
+    import json as _json
+
+    token = "test-route-token-0123456789abcdef"  # a stand-in, never a real credential
+    monkeypatch.setenv(
+        "UNIFY_MEMORY_V2_SOL_TOKEN",
+        token,
+    )  # a stray name the worker must not see
+    paths = Paths.under(tmp_path)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    rec = ap.spawn(
+        paths,
+        "e1",
+        "1" * 40,
+        "low",
+        wall_s=60,
+        argv_prefix=[sys.executable, "-c", TOKEN_CHILD],
+        route_token=token,
+    )
+    try:
+        out, deadline = tmp_path / "token-child.json", time.monotonic() + 20
+        while time.monotonic() < deadline and not (
+            out.exists() and out.read_text().endswith("]}")
+        ):
+            time.sleep(0.1)
+        got = _json.loads(out.read_text())
+    finally:
+        _stop(rec)
+    assert got["read"] == hashlib.sha256((token + "\n").encode()).hexdigest()
+    assert got["names"] == ["UNIFY_MEMORY_V2_SOL_TOKEN_FD"]
+    assert hashlib.sha256(token.encode()).hexdigest() not in got["values"]
+
+
+def test_without_a_route_token_the_worker_starts_as_before(tmp_path):
+    seen = {}
+
+    class _Proc:
+        pid = os.getpid()
+
+    def popen(argv, **kw):
+        seen.update(kw)
+        return _Proc()
+
+    paths = Paths.under(tmp_path)
+    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    ap.spawn(paths, "e1", "1" * 40, "low", wall_s=60, popen=popen)
+    assert "env" not in seen and len(seen["pass_fds"]) == 1
+    ap.inflight_path(paths).unlink()

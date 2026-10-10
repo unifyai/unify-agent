@@ -253,7 +253,9 @@ def test_import_graph_resolves_absolute_relative_and_package_imports(tmp_path):
     assert graph == {
         "memory.text": {"memory.text.parse"},
         "memory.text.dates": {"memory.text", "memory.text.parse"},
-        "memory.text.parse": set(),
+        "memory.text.parse": {
+            "memory.text",
+        },  # review B1: a module runs its package init first
         "memory.text.report": {"memory.text", "memory.text.dates"},
         "memory.web.fetch": {"memory.text"},
     }

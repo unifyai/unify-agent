@@ -323,18 +323,21 @@ def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_
 
 @needs_bwrap
 def test_an_alias_with_fewer_than_two_recorded_inputs_is_refused(world21):
+    """The probe also reads recorded inputs of the pass's own episodes, so this fixture has two; the alias's probe
+    is cut to one to pin the fail-closed rule."""
     mem, ev, blobs, gate = world21
-    parent = _parent_without_alias_tests(
-        mem,
-        ev,
-        blobs,
-        [(ACCOUNT, "e2", 0)],
-    )  # the target has no cover
-    res = gate(role="curate").check(
-        parent,
-        _candidate(mem, {IDS: ALIAS_IDS}),
-        _curate_man(),
-    )
+    parent = _parent_without_alias_tests(mem, ev, blobs, [(ACCOUNT, "e2", 0)])
+    g = gate(role="curate")
+    real = g._probe
+
+    def one_case(run, item, recorded, **kw):
+        pr = real(run, item, recorded, **kw)
+        if item == ACCOUNT:
+            pr.cases = pr.cases[:1]
+        return pr
+
+    g._probe = one_case
+    res = g.check(parent, _candidate(mem, {IDS: ALIAS_IDS}), _curate_man())
     assert not res.passed
     assert any(
         r.startswith(

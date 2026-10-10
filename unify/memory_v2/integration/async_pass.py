@@ -324,15 +324,39 @@ def spawn(
     popen: Callable[..., Any] = subprocess.Popen,
     argv_prefix: list[str] | None = None,
     clock: Callable[[], float] = time.time,
+    route_token: str | None = None,
 ) -> InFlight | None:
     """Start the worker in its own session, holding the pass lock through an inherited descriptor; None when the
     lock is held (a worker is running, starting or ending). Credentials never enter argv.
+
+    *route_token* (Sol's own route, which the parent read once and removed from its environment): handed to the
+    worker through a fresh pipe named by ``UNIFY_MEMORY_V2_SOL_TOKEN_FD``, which the worker's settings read once and
+    close. The worker's environment is the parent's without any Sol token name; the token is never in argv, the
+    environment or a file. Without one the worker starts exactly as before.
     """
     fd = try_lock(lock_path(paths))
     if fd is None:
         return None
     log = None
+    token_r: int | None = None
+    more: dict = {}
     try:
+        if route_token:
+            from .switch import SOL_TOKEN, SOL_TOKEN_FD
+
+            token_r, token_w = os.pipe()
+            try:
+                os.write(token_w, (route_token + "\n").encode("latin-1"))
+            finally:
+                os.close(token_w)
+            os.set_inheritable(token_r, True)
+            env = {
+                k: v
+                for k, v in os.environ.items()
+                if k.upper() not in (SOL_TOKEN, SOL_TOKEN_FD)
+            }
+            env[SOL_TOKEN_FD] = str(token_r)
+            more = {"env": env}
         log = open(Path(paths.state_dir) / "pass-worker.log", "ab")
         argv = [
             *(argv_prefix or [sys.executable, "-m", WORKER_MODULE]),
@@ -353,8 +377,9 @@ def spawn(
             stdout=log,
             stderr=log,
             start_new_session=True,
-            pass_fds=(fd,),
+            pass_fds=(fd,) if token_r is None else (fd, token_r),
             close_fds=True,
+            **more,
         )
         now = clock()
         rec = InFlight(
@@ -373,6 +398,10 @@ def spawn(
         return rec
     finally:
         os.close(fd)  # the worker keeps the lock on the descriptor it inherited
+        if token_r is not None:
+            os.close(
+                token_r,
+            )  # the worker holds its own copy; no later child of this process inherits it
         if log is not None:
             log.close()
 
@@ -425,6 +454,7 @@ def maybe_spawn(
             wall_s=wall_s,
             popen=popen,
             argv_prefix=argv_prefix,
+            route_token=_route_token(settings),
         )
         if rec is None:
             event = {
@@ -450,6 +480,22 @@ def maybe_spawn(
     ) as exc:  # noqa: BLE001 - a request's end never fails on consolidation
         _error(stores, f"spawn: {type(exc).__name__}: {exc}")
         return {"phase": "error"}
+
+
+def _route_token(settings: Any) -> str | None:
+    """Sol's own route token as this process holds it (read once from its descriptor, or the setting), or None
+    when Sol uses no route of its own."""
+    from .switch import SOL_BASE_URL, sol_token
+
+    if not str(getattr(settings, SOL_BASE_URL, "") or "").strip():
+        return None
+    token = sol_token(settings)
+    value = (
+        token.get_secret_value()
+        if hasattr(token, "get_secret_value")
+        else str(token or "")
+    )
+    return value.strip() or None
 
 
 # --- results (the next request) ----------------------------------------------------------------------------

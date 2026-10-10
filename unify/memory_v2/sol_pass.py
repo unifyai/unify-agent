@@ -2180,7 +2180,7 @@ class SolPass:
         """The v2.1 system message: the CURATE brief for a CURATE pass (P6: the request's role), else WRITE."""
         from .prompts_v21 import curate_brief_now, write_brief_now
 
-        if self._role == "curate":
+        if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
             return curate_brief_now()
         return write_brief_now()
 
