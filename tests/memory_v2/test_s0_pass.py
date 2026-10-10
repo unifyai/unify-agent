@@ -95,3 +95,49 @@ def test_s0_failure_does_not_stop_the_pass(tmp_path, monkeypatch):
     sol.load = EPS.__getitem__
     out = asyncio.run(sol.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     assert out.s0 and "error" in out.s0 and out.coverage is not None
+
+
+def test_s0_runs_on_every_pass_when_the_loader_is_bound_to_the_calling_thread(
+    tmp_path,
+    monkeypatch,
+):
+    """M3c/M4 (11 Oct): S0 died on every pass after the first. The pass's loader reaches a SQLite connection that
+    belongs to the calling thread, and S0 runs in a worker thread; with history to load it raised. RED on
+    f31f504a6."""
+    import sqlite3
+
+    monkeypatch.setattr(
+        mining_behaviour,
+        "in_box",
+        lambda *a, **k: {"box_error": "no box in this test"},
+    )
+    conn = sqlite3.connect(":memory:")  # created here: other threads may not use it
+
+    def load(eid):
+        conn.execute("SELECT 1").fetchone()
+        return EPS[eid]
+
+    outs = []
+    for pass_id, batch in (("p1", ["e0"]), ("p2", ["e1"])):
+        model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
+        _, _, sol = _sol(
+            tmp_path / pass_id,
+            model,
+            v21=True,
+            max_calls=4,
+            s0_cache=str(tmp_path / "cache"),
+        )
+        sol.load = load
+        seen = ["e0"] if pass_id == "p2" else []
+        monkeypatch.setattr(
+            sol.ev,
+            "experience_since",
+            lambda after, _s=seen: [(e, 0) for e in _s],
+        )
+        outs.append(
+            asyncio.run(
+                sol.run(PassRequest("incremental", "svc", batch, False), pass_id),
+            ),
+        )
+    for out in outs:
+        assert out.s0 is not None and "error" not in out.s0, out.s0

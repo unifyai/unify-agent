@@ -2077,9 +2077,12 @@ class SolPass:
             history = (
                 [e for e, _ in since(0) if e not in batch] if since is not None else []
             )
+            # the loader reaches the evidence store, whose SQLite connection belongs to this thread: load every
+            # episode S0 reads here and hand the worker thread a plain dict (M3c/M4 qualification, 11 Oct)
+            loaded = {e: self.load(e) for e in dict.fromkeys([*history, *req.episodes])}
             got = await asyncio.to_thread(
                 _s0.run,
-                self.load,
+                loaded.__getitem__,
                 list(req.episodes),
                 history,
                 Path(inputs) / "s0",
