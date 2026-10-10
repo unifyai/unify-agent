@@ -56,14 +56,15 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
     long = (
         "x" * 9000
     )  # over one view: e3's request is shown in part, so it is not "shown complete"
-    EPS["e3"], EPS["e4"] = _episode("e3", request=(long,)), _episode(
+    # the same long observation (an identical request would now be one shared block, shown whole: r5 T2)
+    EPS["e3"], EPS["e4"] = _episode("e3", request=("first", long)), _episode(
         "e4",
-        request=(long,),
+        request=("second", long),
     )
     try:
         turns = [
-            _call("a", "read_episode", {"episode": "e3", "part": "request"}),
-            _call("b", "read_episode", {"episode": "e4", "part": "request"}),
+            _call("a", "read_episode", {"episode": "e3", "part": "observation:0"}),
+            _call("b", "read_episode", {"episode": "e4", "part": "observation:0"}),
         ]
         out, model = _pass(tmp_path, turns, eids=("e3", "e4"), max_calls=10)
     finally:

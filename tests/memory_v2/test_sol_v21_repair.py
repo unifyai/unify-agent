@@ -164,7 +164,8 @@ def test_budget_cut_skips_the_check_and_merges_once(tmp_path):
     assert calls == {"check": 0, "merge": 1}
     assert out.rounds == 1 and out.round_results == []
     assert (
-        "repair: no round 1: 0.10 USD left, below the round reserve of 0.60 USD"
+        # d39a434ac: the first repair round is priced on round 0's write phase, not its reading
+        "repair: no round 1: 0.10 USD left, below the round reserve of 0.30 USD"
         in out.reasons
     )
     # the gate (no action lookup here) refuses: per-item admission ran in the one merge, and the patch is a draft

@@ -437,6 +437,9 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21", "on")
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V21_FORK", "off")
     spawned = []
+    real_start = (
+        fork_mod.start
+    )  # the spy below replaces it for the request; the real one is checked after
     monkeypatch.setattr(fork_mod, "start", lambda *a, **k: spawned.append(a))
     run = _begin(mv2, "Double 21.")
     _transcript(run)
@@ -445,7 +448,7 @@ def test_f6_off_is_off_no_process_no_staging_dir(mv2, monkeypatch):  # noqa: F81
     assert not (Path(mv2.paths.state_dir) / "memory-staging").exists()
     off = SimpleNamespace(UNIFY_MEMORY_V21="on", UNIFY_MEMORY_V21_FORK="off")
     assert (
-        fork_mod.start(
+        real_start(
             mv2.paths,
             None,
             "e",

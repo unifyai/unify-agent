@@ -189,13 +189,13 @@ def test_rendered_from_the_constants_that_enforce_them():
         "unify.memory_v2.library_index",
     ).INDEX_VIEW_TOKENS
     pytest.importorskip("unify.memory_v2.curate")
-    from unify.memory_v2 import qa, sol_pass, views
+    from unify.memory_v2 import qa, views
     from unify.memory_v2.gate import _PYTEST_ENV
 
     text = pv.write_brief_now()
     assert f"at most {views.VIEW_BYTES} bytes" in text
-    assert f"at most {sol_pass.MAX_CHECKS} times per pass" in text
-    assert f"up to {repair.REPAIR_ROUNDS} of them" in text
+    # r5 S6: the v2.1 briefs state no check or repair-round counts (the pass enforces none)
+    assert "times per pass" not in text and "while the pass budget lasts" not in text
     assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
     assert f"text of {code_lint.LINT_MIN} or more characters" in text
     assert f"at least {pv._pct(qa.MUTATION_MIN)}% of small mutations" in text
