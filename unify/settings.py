@@ -432,6 +432,9 @@ class ProductionSettings(BaseSettings):
     # Memory v2.1 design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer (staging);
     # ``off`` (default): none.
     UNIFY_MEMORY_V21_ANALYSTS: str = "off"
+    # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo
+    # refs/heads/pool) until the writer closes it; ``off`` (default): none.
+    UNIFY_MEMORY_V21_POOL: str = "off"
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
@@ -669,6 +672,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V21_FORK_BASE_URL",
         "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
         "UNIFY_MEMORY_V21_ANALYSTS",
+        "UNIFY_MEMORY_V21_POOL",
         "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
         "UNIFY_MEMORY_V21_PASS_WALL_S",
         "UNIFY_MEMORY_V2_SOL_JOURNAL",

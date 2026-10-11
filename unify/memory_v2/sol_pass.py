@@ -625,8 +625,11 @@ def sol_tools(
     docstrings: bool = False,
     soft_budget: bool = False,
     v21: bool = False,
+    pool: bool = False,
 ) -> list[dict]:
-    """Sol's tools under the v2.1 switches; all off, v2's byte for byte (only ``check``'s text varies)."""
+    """Sol's tools under the v2.1 switches; all off, v2's byte for byte (only ``check``'s text varies). *pool*
+    (UNIFY_MEMORY_V21_POOL): ``dismiss`` takes an optional ``defer``, which keeps the episode in the candidate pool.
+    """
     description = (
         "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
         "provenance and scope, "
@@ -646,6 +649,13 @@ def sol_tools(
             tool["function"]["description"] = description
     if v21:
         tools += copy.deepcopy(_V21_TOOL_TEMPLATES)
+        if pool:
+            for tool in tools:
+                if tool["function"]["name"] == "dismiss":
+                    tool["function"]["parameters"]["properties"]["defer"] = {
+                        "type": "boolean",
+                        "description": "true: keep the episode in the candidate pool for a later pass",
+                    }
     return tools
 
 
@@ -745,6 +755,16 @@ class PassConfig:
     # r5 (r4 §4): S0 at pass start (its cache folder; None: no S0) and the run's worktree repo (office replays)
     s0_cache: str | None = None
     worktree_git: str | None = None
+    # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_V21_POOL; pool.py): proposals persist across passes
+    pool: bool = False
+
+
+def _json_file(path: Path, default):
+    """*path*'s JSON, or *default* when it is missing or unreadable."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
 
 
 @dataclass
@@ -784,6 +804,8 @@ class PassOutcome:
     s0: dict | None = None
     # r5: the batch's staging by source (fork, sol_analyst, replay_fork, none); None with v21 off
     staging: dict | None = None
+    # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
+    pool: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1732,6 +1754,14 @@ class SolPass:
             None  # the pass's /inputs on the host, once staged
         )
         self._staging_counts: dict | None = None
+        # the candidate pool: loaded at staging, fed and saved at the pass's end (pool.py)
+        self._pool = None
+        self._pool_open: int | None = None
+        self._pool_error: str | None = None
+        self._pool_staging: list = []
+        self._pool_s0: tuple = ([], {})
+        self._deferred: dict[str, str] = {}
+        self._pool_manifest: object = None
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
         self._v21_generated: dict[str, bytes] = (
@@ -2046,6 +2076,74 @@ class SolPass:
             ],
         )
 
+    def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
+        """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed
+        them, retired when finish was accepted), then, on a WRITE pass, its staging, S0 clusters, deferrals and its
+        draft when nothing landed; one commit on refs/heads/pool. Never raises: a failure is recorded and the pass's
+        result stands."""
+        from . import pool as _pool_mod
+
+        try:
+            p = self._pool
+            changed = _pool_mod.apply_block(
+                p,
+                self._pool_manifest,
+                pass_id,
+                landed=set(out.items_merged or []),
+                finished=bool(out.finished),
+            )
+            new: list = []
+            if req.kind != "curate":
+                for eid, view in self._pool_staging:
+                    new += _pool_mod.from_staging(eid, view)
+                new += _pool_mod.from_clusters(*self._pool_s0)
+                new += [
+                    _pool_mod.deferred(e, r) for e, r in sorted(self._deferred.items())
+                ]
+                if not out.passed:
+                    new += self._pool_draft(pass_id)
+            added = 0
+            for e in new:
+                e.add_provenance([], [pass_id], [])
+                added += e.id not in p.entries
+                p.upsert(e, pass_id)
+            return {
+                "open": len(p.open_entries()),
+                "added": added,
+                "changed": changed,
+                "commit": p.save(pass_id),
+            }
+        except Exception as exc:  # noqa: BLE001 - the pool never fails a pass
+            return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+    def _pool_draft(self, pass_id: str) -> list:
+        """This pass's draft for the pool (its patch and gate result), [] when it recorded no (or an empty) patch."""
+        from . import pool as _pool_mod
+
+        row = next(
+            (r for r in self.ev.pass_rounds() if r.get("pass_id") == pass_id),
+            None,
+        )
+        blobs = getattr(self.gate, "blobs", None)
+        if not row or not row.get("patch_blob") or blobs is None:
+            return []
+        patch = blobs.get(row["patch_blob"]).decode("utf-8", "replace")
+        if not patch.strip():  # nothing was drafted
+            return []
+        res = (
+            blobs.get(row["gate_blob"]).decode("utf-8", "replace")
+            if row.get("gate_blob")
+            else ""
+        )
+        return [
+            _pool_mod.draft(
+                pass_id,
+                patch,
+                res,
+                sorted(row.get("items_refused") or {}),
+            ),
+        ]
+
     async def _staging_v21(
         self,
         req,
@@ -2103,6 +2201,11 @@ class SolPass:
             self._s0_clustered = set(got.get("clustered") or [])
             self._s0_seen = set(got.get("seen") or [])
             self._s0_summary = {k: v for k, v in got.items() if k != "seen"}
+            if self._pool is not None:
+                self._pool_s0 = (
+                    _json_file(Path(inputs) / "s0" / "clusters.json", []),
+                    _json_file(Path(inputs) / "s0" / "behaviour.json", {}),
+                )
         if self.cfg.analysts == "sol":
             flags = {
                 e: _analysts.flagged(ep, self._s0_clustered, self._s0_seen)
@@ -2135,10 +2238,10 @@ class SolPass:
         counts: dict[str, int] = {}
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
-            row["staging"] = _staging.export(
-                _staging.read(root, eid),
-                Path(inputs) / "staging" / eid,
-            )
+            view = _staging.read(root, eid)
+            if view is not None and self._pool is not None:
+                self._pool_staging.append((eid, view))
+            row["staging"] = _staging.export(view, Path(inputs) / "staging" / eid)
             src = row["staging"].get("source", "none")
             counts[src] = counts.get(src, 0) + 1
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
@@ -2331,6 +2434,9 @@ class SolPass:
         No refusal when the manifest parses. A manifest the host cannot read yet (the final check restores access
         first) is left to the final check rather than refused here.
         """
+        self._pool_manifest = (
+            None  # only an accepted finish's manifest changes the pool
+        )
         found, manifest, problem = _read_manifest(box)
         if not found:
             return (
@@ -2345,6 +2451,13 @@ class SolPass:
             )
         except _manifest.ManifestError as exc:
             return _redact(f"G1: malformed manifest: {exc}")[:600], False
+        if self._pool is not None:
+            from .pool import block_problems
+
+            probs = block_problems(manifest, self._pool, self._role)
+            if probs:
+                return _redact(f"G1: {probs[0]}")[:600], False
+            self._pool_manifest = manifest
         return None, not man.items and not man.deleted
 
     async def _v21_tool(
@@ -2372,10 +2485,15 @@ class SolPass:
                     offset,
                 )
             if name == "dismiss":
-                return cov.dismiss(
+                out = cov.dismiss(
                     str(args.get("episode", "")),
                     str(args.get("reason", "")),
                 )
+                if out == "ok" and self.cfg.pool and args.get("defer") is True:
+                    self._deferred[str(args.get("episode", ""))] = str(
+                        args.get("reason", ""),
+                    )
+                return out
             eid = str(args.get("episode", ""))
             if eid not in eps:
                 return f"refused: {eid!r} is not in this batch"[:300]
@@ -2599,6 +2717,9 @@ class SolPass:
         self._s0_clustered, self._s0_seen = set(), set()
         self._staging_counts = None
         self._inputs_dir = None
+        self._pool, self._pool_open, self._pool_error = None, None, None
+        self._pool_staging, self._pool_s0 = [], ([], {})
+        self._deferred, self._pool_manifest = {}, None
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -2624,7 +2745,14 @@ class SolPass:
         parent = self.mem.head()
         spend = _Spend()
         try:
-            return await self._run(req, pass_id, parent, spend)
+            out = await self._run(req, pass_id, parent, spend)
+            if self.cfg.v21 and self.cfg.pool:
+                out.pool = (
+                    self._pool_update(req, pass_id, out)
+                    if self._pool is not None
+                    else {"error": self._pool_error or "not loaded"}
+                )
+            return out
         except BaseException as exc:  # cancellation and interrupts included
             if not self.ev.pass_exists(pass_id):  # the gate records its own errors
                 reason = _redact(f"pass error: {type(exc).__name__}: {exc}")[:500]
@@ -2821,11 +2949,26 @@ class SolPass:
                 docstrings=switches["docstrings"],
                 soft_budget=switches["soft_budget"],
                 v21=self.cfg.v21,
+                pool=bool(self.cfg.v21 and self.cfg.pool),
             )
             if self.cfg.v21:
                 # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (P2's gate inputs replace previous_gate.json)
                 self._v21_generated = self._stage_library_v21(box, parent)
+                if self.cfg.pool:
+                    # the lead, 11 Oct: every open proposal of earlier passes, read-only for Sol
+                    from . import pool as _pool_mod
+
+                    try:
+                        self._pool = _pool_mod.Pool(self.mem).load()
+                        self._pool_open = self._pool.stage(Path(inputs) / "pool")
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 - the pool never stops a pass
+                        self._pool = None
+                        self._pool_error = (
+                            f"load: {type(exc).__name__}: {str(exc)[:200]}"
+                        )
                 if req.kind != "curate":
                     # r5: arm C's analysts (when on), then every batch episode's staging, read-only for Sol
                     await self._staging_v21(
@@ -2878,6 +3021,13 @@ class SolPass:
                 first += "\n\n" + drafts_message(
                     self._drafts,
                     (inputs / "gate" / "previous.md").is_file(),
+                )
+            if self.cfg.v21 and self._pool is not None:
+                first += (
+                    f"\n\nCandidate pool: {self._pool_open} open entries (/inputs/pool/INDEX.md; each entry's "
+                    "files under /inputs/pool/<id>/): proposals earlier passes left open. Your manifest may close "
+                    'entries with `"pool": {"merged": {"<id>": "<item>"}, "superseded": {"<id>": "<id or item>"}, '
+                    '"retired": {"<id>": "<reason>"}}`; `dismiss(..., defer=true)` keeps an episode open in it.'
                 )
             messages: list[dict] = [
                 # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each

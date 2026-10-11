@@ -646,6 +646,9 @@ V21_FORK = "UNIFY_MEMORY_V21_FORK"
 #: Design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer, writing staging
 #: (analysts.py); ``off`` (default): none, as built.
 V21_ANALYSTS = "UNIFY_MEMORY_V21_ANALYSTS"
+#: The lead, 11 Oct: the candidate pool (pool.py): ``on`` keeps every proposal (staging, S0 clusters, drafts,
+#: deferrals) open across passes on the memory repo's refs/heads/pool until the writer closes it; ``off``: none.
+V21_POOL = "UNIFY_MEMORY_V21_POOL"
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -822,6 +825,15 @@ def fork_lane_route() -> tuple[tuple[str, str] | None, str | None]:
     return (_FORK_BASE + "/chat/completions", _FORK_TOKEN), None
 
 
+def parse_v21_pool(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_POOL``: ``off`` (also for empty) or ``on``."""
+    return _on_off(V21_POOL, v)
+
+
+def v21_pool(settings: Any) -> bool:
+    return parse_v21_pool(getattr(settings, V21_POOL, "") or "") == "on"
+
+
 def parse_v21_analysts(v: Any) -> str:
     """``UNIFY_MEMORY_V21_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
     s = str(v or "").strip().lower() or "off"
@@ -985,6 +997,7 @@ PARSERS = {
     V21_FORK_BASE_URL: parse_v21_fork_base_url,
     V21_FORK_TOKEN_FD: parse_v21_fork_token_fd,
     V21_ANALYSTS: parse_v21_analysts,
+    V21_POOL: parse_v21_pool,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

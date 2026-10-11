@@ -126,6 +126,7 @@ from .switch import (
     surfacing_options,
     v21_enabled,
     v21_analysts,
+    v21_pool,
     v21_max_reads,
 )
 
@@ -793,6 +794,7 @@ def _end_event(
                 "analysts": list(outcome.analysts),
                 "staging": outcome.staging,
                 "s0": outcome.s0,
+                **({"pool": outcome.pool} if outcome.pool is not None else {}),
             }
             if outcome is not None and outcome.coverage is not None
             else {}
@@ -1069,6 +1071,7 @@ async def run_due_passes(
             {
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
                 "analysts": v21_analysts(settings),
+                "pool": v21_pool(settings),
                 "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
                 "worktree_git": (
                     str(stores.paths.worktree_git)
