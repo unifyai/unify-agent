@@ -602,17 +602,30 @@ _COMPACT_STUB = "[compacted: "
 
 def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) -> int:
     """Cache-preserving compaction (MAIN 11 Oct; the rehearsal's HIGH pass re-sent its whole history on each of 286
-    calls). When the conversation's serialized size passes *at*, the oldest tool results (never the system message,
+    calls). When the conversation's prompt text (:func:`_prompt_chars`) passes *at*, and the old tool results it may
+    move hold at least half of *at* (a real drop, so a compaction is rare), the oldest tool results (never the system message,
     the request, Sol's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
     are saved under *out_dir*/compacted/ and replaced by a pointer to re-open them with ``read``, until the size is at
     most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
     the number of results moved. RUNTIME's defence in depth (MAIN 11 Oct): nothing is compacted when *out_dir* or its
     ``compacted/`` is a link or not a directory, and each file is created new, never through a link (a result whose
     file cannot be made that way stays in the conversation)."""
-    sizes = [len(json.dumps(m, default=str)) for m in messages]
+    # m4k-c2 (the rehearsal-2 diagnosis ab734c1e): the size is the prompt text, never the provider's opaque fields
+    # (provider_specific_fields, reasoning blobs), which made every call "over size" and compacted once per call
+    sizes = [_prompt_chars(m) for m in messages]
     total = sum(sizes)
     if total <= at:
         return 0
+    eligible = [
+        i
+        for i, m in enumerate(messages[: max(0, len(messages) - COMPACT_KEEP_LAST)])
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and isinstance(m.get("content"), str)
+        and not m["content"].startswith(_COMPACT_STUB)
+    ]
+    if sum(sizes[i] for i in eligible) < at // 2:
+        return 0  # no real drop to be had: a compaction would only break the cache
     folder = out_dir / "compacted"
     if out_dir.is_symlink() or not out_dir.is_dir():
         return 0
@@ -620,16 +633,11 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
         return 0
     folder.mkdir(exist_ok=True)
     moved = 0
-    for i, m in enumerate(messages[: max(0, len(messages) - COMPACT_KEEP_LAST)]):
+    for i in eligible:
         if total <= at // 2:
             break
-        content = m.get("content") if isinstance(m, dict) else None
-        if (
-            m.get("role") != "tool"
-            or not isinstance(content, str)
-            or content.startswith(_COMPACT_STUB)
-        ):
-            continue
+        m = messages[i]
+        content = m["content"]
         name = (
             re.sub(r"[^A-Za-z0-9_.-]", "_", str(m.get("tool_call_id") or f"m{i}"))[:80]
             or f"m{i}"
@@ -649,10 +657,27 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
             f"{_COMPACT_STUB}this result ({len(content)} characters) was moved out of the conversation to keep it "
             f'short; read it again with read(path="/outputs/compacted/{target.name}")]'
         )
-        new = len(json.dumps(m, default=str))
+        new = _prompt_chars(m)
         total += new - sizes[i]
         moved += 1
     return moved
+
+
+def _prompt_chars(m: object) -> int:
+    """A message's prompt text: its content and its tool calls' names and arguments; never provider fields."""
+    if not isinstance(m, dict):
+        return 0
+    c = m.get("content")
+    n = (
+        len(c)
+        if isinstance(c, str)
+        else (len(json.dumps(c, default=str)) if c is not None else 0)
+    )
+    for tc in m.get("tool_calls") or []:
+        f = tc.get("function") if isinstance(tc, dict) else None
+        if isinstance(f, dict):
+            n += len(str(f.get("name") or "")) + len(str(f.get("arguments") or ""))
+    return n
 
 
 def _finish_refusal(cov: Any, missing: list[str]) -> str:
@@ -692,6 +717,14 @@ def _staged_candidates(entry: dict) -> list[dict]:
     return out
 
 
+def _gist(src: object, lines: int = 3, width: int = 100) -> str:
+    """m4k-c2: what a cluster's code is, at a glance: its first non-empty lines (a reference without it read as boilerplate)."""
+    if not isinstance(src, str):
+        return ""
+    got = [ln.rstrip()[:width] for ln in src.splitlines() if ln.strip()][:lines]
+    return "\n".join(got)
+
+
 def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
     """Each episode's S0 clusters: (tier a) code shapes it shares with other episodes, (tier b) behaviour groups; with
     their size, this episode's cells, the file holding them and the pool entry id the pool keeps them under.
@@ -707,6 +740,8 @@ def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
                 {
                     "tier": "a",
                     "key": str(c.get("key", ""))[:16],
+                    "gist": _gist(c.get("template")),
+                    "instances": len(at),
                     "episodes": len(eps),
                     "cells": sorted(
                         {a.get("cell") for a in at if a.get("episode") == eid},
@@ -724,6 +759,8 @@ def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
             out.setdefault(eid, []).append(
                 {
                     "tier": "b",
+                    "gist": _gist(us[0].get("src") if us else ""),
+                    "instances": len(us),
                     "shapes": len(akeys),
                     "episodes": len(eps),
                     "cells": sorted(
