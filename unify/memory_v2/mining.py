@@ -384,11 +384,20 @@ def _maximal(clusters: list[Cluster]) -> list[Cluster]:
 # --- reading recorded episodes from a git copy (the script) ------------------------------------------------
 
 
+def helper_env() -> dict[str, str]:
+    """The whole environment of every S0 / S2 helper process (git, tar, the box's bwrap): ``PATH`` and a scratch
+    ``HOME`` only. They run under the pass worker, whose environment holds the Sol route; nothing of it may reach a
+    helper (the runner's live token audit stopped M3b on a ``tar`` and a ``bwrap`` holding the base URL, 10 Oct).
+    """
+    return {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent"}
+
+
 def _git(repo: str, *args: str) -> bytes:
     return subprocess.run(
         ["git", "--git-dir", repo, *args],
         capture_output=True,
         check=True,
+        env=helper_env(),
     ).stdout
 
 

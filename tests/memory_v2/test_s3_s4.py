@@ -30,3 +30,44 @@ def test_write_asks_for_a_linked_when_to_use_note_without_rules_about_ids():
         in text
     )
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+
+
+def test_write_points_lifted_functions_to_replay_without_requiring_it():
+    """MAIN 10 Oct: S2 went unused in the stage-1 replay; WRITE now says how to verify a lifted function."""
+    text = pv.write_brief_now()
+    assert (
+        "listing in its manifest entry the code it `replaces` and calling `replay`"
+        in text
+    )
+    assert (
+        "must" not in text.split("can be verified by listing")[1].split("\n")[0]
+    )  # informs, never forces
+    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+    assert "calling `replay`" not in pv.curate_brief_now()
+
+
+def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar():
+    """M4h (MAIN, 11 Oct): the live stage-25 writer read the old generality sentence as "only cross-task, verified
+    knowledge" and dismissed recurring solved tasks. The wording now encourages generality and values a rule for one
+    kind of request that comes back; the replay sentence offers verification, it does not require it.
+    """
+    text = pv.write_brief_now()
+    notes = text.split("A note states its rule")[1].split("\n")[0]
+    assert "worth keeping when that kind of request comes back" in notes
+    assert (
+        "beyond the episodes it came from" not in text
+        and "only" not in notes
+        and "must" not in notes
+    )
+    replay = text.split("A function lifted from the working model's cells")[1].split(
+        "\n",
+    )[0]
+    assert (
+        replay.startswith(" can be verified")
+        and "only" not in replay
+        and "must" not in replay
+    )
+    assert (
+        "Store anything that repeats or is likely to repeat" in text
+    )  # rule 1 unchanged
+    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []

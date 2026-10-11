@@ -17,13 +17,13 @@ import stat
 import subprocess
 from pathlib import Path
 
-from .gitio import _ENV, _HARD, GIT_TIMEOUT_S, GitError, Repo
+from .gitio import _ENV, _HARD, GIT_TIMEOUT_S, GitError, Repo, git_base_env
 from .manifest import ManifestError, safe_rel
 from .memory_repo import _all_names, _front_matter, _sections, _slug
 
 
 def _git_bytes(repo: Repo, args: list[str], input: bytes | None = None) -> bytes:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = git_base_env()
     env.update(_ENV)
     try:
         proc = subprocess.run(

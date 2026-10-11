@@ -425,9 +425,16 @@ class ProductionSettings(BaseSettings):
     # Memory v2.1 design r5: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
     UNIFY_MEMORY_V21_FORK: str = "off"
+    # The fork lane's route (fork-lane design, RUNTIME C3): the key proxy's /fork/v1 base URL and the inherited
+    # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
+    UNIFY_MEMORY_V21_FORK_BASE_URL: str = ""
+    UNIFY_MEMORY_V21_FORK_TOKEN_FD: str = ""
     # Memory v2.1 design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer (staging);
     # ``off`` (default): none.
     UNIFY_MEMORY_V21_ANALYSTS: str = "off"
+    # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo
+    # refs/heads/pool) until the writer closes it; ``off`` (default): none.
+    UNIFY_MEMORY_V21_POOL: str = "off"
     # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
     UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_V21_PASS_WALL_S: int = 2700
@@ -673,7 +680,10 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_V21_MAX_READS",
         "UNIFY_MEMORY_V21_WAIT_SLOT",
         "UNIFY_MEMORY_V21_FORK",
+        "UNIFY_MEMORY_V21_FORK_BASE_URL",
+        "UNIFY_MEMORY_V21_FORK_TOKEN_FD",
         "UNIFY_MEMORY_V21_ANALYSTS",
+        "UNIFY_MEMORY_V21_POOL",
         "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN",
         "UNIFY_MEMORY_V21_PASS_WALL_S",
         "UNIFY_MEMORY_V2_SOL_JOURNAL",
@@ -863,3 +873,7 @@ SETTINGS = ProductionSettings()
 from unify.memory_v2.integration.switch import settle_sol_route_env  # noqa: E402
 
 settle_sol_route_env(os.environ, SETTINGS)
+# The fork lane's token likewise (RUNTIME C3): read once from its descriptor, both route names out of the environment.
+from unify.memory_v2.integration.switch import settle_fork_route_env  # noqa: E402
+
+settle_fork_route_env(os.environ, SETTINGS)

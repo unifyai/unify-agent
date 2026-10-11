@@ -203,8 +203,23 @@ _HARD = (
 GIT_TIMEOUT_S = 120
 
 
+def git_base_env() -> dict[str, str]:
+    """The environment every memory git process starts from: the caller's, without ``GIT_*`` and without any
+    harness-only route name (:data:`.sandbox_run.HARNESS_ONLY_ENV`: Sol's and the fork lane's). git hands what it is
+    given to every process it starts; a local push runs ``git-receive-pack`` under ``sh -c``, so a route name kept
+    here reached a shell (the runner's live token audit, M4 qualification on w174, 11 Oct).
+    """
+    from .sandbox_run import HARNESS_ONLY_ENV
+
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("GIT_") and k.upper() not in HARNESS_ONLY_ENV
+    }
+
+
 def _git(args: list[str], input: str | None = None, cwd: Path | None = None) -> str:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env = git_base_env()
     env.update(_ENV)
     try:
         proc = subprocess.run(

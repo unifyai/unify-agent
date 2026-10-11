@@ -66,9 +66,18 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
             _call("a", "read_episode", {"episode": "e3", "part": "observation:0"}),
             _call("b", "read_episode", {"episode": "e4", "part": "observation:0"}),
         ]
-        out, model = _pass(tmp_path, turns, eids=("e3", "e4"), max_calls=10)
+        # three unrelated episodes keep the long text in under half the batch: not shared text (M4)
+        for e in ("e5", "e6", "e7"):
+            EPS[e] = _episode(e, request=(f"other {e}",))
+        out, model = _pass(
+            tmp_path,
+            turns,
+            eids=("e3", "e4", "e5", "e6", "e7"),
+            max_calls=10,
+        )
     finally:
-        del EPS["e3"], EPS["e4"]
+        for e in ("e3", "e4", "e5", "e6", "e7"):
+            EPS.pop(e, None)
     assert not model.outputs["b"].startswith("identical to")
     assert "identical_parts" not in out.coverage
 

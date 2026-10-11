@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
-from ..gitio import GitError
+from ..gitio import GitError, git_base_env
 
 _HARD = (
     "-c",
@@ -29,7 +28,7 @@ def git(
     cwd: Path | None = None,
     timeout: float = 120.0,
 ) -> bytes:
-    e = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    e = git_base_env()
     e.update(
         {
             "GIT_CONFIG_NOSYSTEM": "1",

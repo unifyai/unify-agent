@@ -19,6 +19,9 @@ import hashlib
 import re
 
 MIN_CHARS = 200
+# M4 (MAIN, 10 Oct: MED's repeated read text 6.7-7.8%): a single line shared by most episodes is shared too, inside
+# a block that also holds episode-specific lines, and in observations; floor, not a budget
+MIN_LINE = 40
 _BLOCKS = re.compile(r"\n[ \t]*\n")
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS request_blocks(block TEXT PRIMARY KEY, episodes INTEGER, text TEXT)",
@@ -35,8 +38,21 @@ def block_id(block: str) -> str:
     return hashlib.sha256(block.encode()).hexdigest()[:12]
 
 
-def update_counts(ev, eid: str, request_text: str) -> None:
-    """Count *eid*'s request blocks once (a second call for the same episode changes nothing)."""
+def units(texts) -> set[str]:
+    """The countable units of *texts*: blocks of at least MIN_CHARS and lines of at least MIN_LINE."""
+    out: set[str] = set()
+    for text in texts:
+        out |= {b for b in blocks(text or "") if len(b) >= MIN_CHARS}
+        out |= {
+            ln.strip()
+            for ln in (text or "").splitlines()
+            if len(ln.strip()) >= MIN_LINE
+        }
+    return out
+
+
+def update_counts(ev, eid: str, request_text: str, observations=()) -> None:
+    """Count *eid*'s request and observation units once (a second call for the same episode changes nothing)."""
     with ev.db:
         for stmt in _SCHEMA:
             ev.db.execute(stmt)
@@ -46,9 +62,7 @@ def update_counts(ev, eid: str, request_text: str) -> None:
         ).fetchone():
             return
         ev.db.execute("INSERT INTO request_seen VALUES(?)", (eid,))
-        for b in set(blocks(request_text)):
-            if len(b) < MIN_CHARS:
-                continue
+        for b in units([request_text, *[str(o) for o in observations]]):
             ev.db.execute(
                 "INSERT INTO request_blocks VALUES(?,1,?) ON CONFLICT(block) DO UPDATE SET episodes=episodes+1",
                 (block_id(b), b),
@@ -68,7 +82,8 @@ def shared(ev) -> dict[str, str]:
 
 
 def marker(bid: str) -> str:
-    return f"[shared request text {bid}: read_episode part 'shared:{bid}', also /inputs/shared/{bid}.txt]"
+    """Short on purpose (M4): batch_map.json's ``shared_blocks`` says once what a marker stands for."""
+    return f"[shared:{bid}]"
 
 
 def mark(text: str, shared_blocks: dict[str, str]) -> str:
@@ -77,6 +92,20 @@ def mark(text: str, shared_blocks: dict[str, str]) -> str:
         return text or ""
     by_text = {t: b for b, t in shared_blocks.items()}
     parts = re.split(r"(\n[ \t]*\n)", text)
-    return "".join(
+    text = "".join(
         marker(by_text[p.strip("\n")]) if p.strip("\n") in by_text else p for p in parts
     )
+    lines = text.splitlines(keepends=True)
+    out = []
+    for ln in lines:
+        body = ln.rstrip("\n")
+        key = body.strip()
+        if len(key) >= MIN_LINE and key in by_text:
+            out.append(
+                body[: len(body) - len(body.lstrip())]
+                + marker(by_text[key])
+                + ln[len(body) :],
+            )
+        else:
+            out.append(ln)
+    return "".join(out)

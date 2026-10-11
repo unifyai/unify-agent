@@ -49,6 +49,7 @@ def _export_tree(worktree: str, sha: str, dest: Path) -> Path | None:
         ["git", "--git-dir", worktree, "archive", sha],
         capture_output=True,
         timeout=300,
+        env=_mining.helper_env(),
     )
     if data.returncode:
         return None
@@ -58,6 +59,7 @@ def _export_tree(worktree: str, sha: str, dest: Path) -> Path | None:
         ["tar", "x", "-C", str(tmp)],
         input=data.stdout,
         capture_output=True,
+        env=_mining.helper_env(),
     ).returncode:
         return None
     tmp.rename(dest)

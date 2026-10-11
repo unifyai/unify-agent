@@ -172,8 +172,9 @@ _WRITE = (
     "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown of any kind (a fact, a pitfall, a how-to, or "
     "how to combine functions), starting with front matter: `title`, `description` (one line, shown in the "
     "index) and `uses` (the ids of the functions it uses). A link is written only in a note's `uses` or a "
-    "function's `Notes:` line, and must name an item that exists. A note is most useful when it states the rule, "
-    "procedure, fact or pitfall in general terms, so it applies beyond the episodes it came from. A function's "
+    "function's `Notes:` line, and must name an item that exists. A note states its rule, procedure, fact or "
+    "pitfall in general terms where it can; a rule for one kind of request is worth keeping when that kind of "
+    "request comes back. A function's "
     "linked note says when to use it, its preconditions and its known failures.\n"
     "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
     "standard library, with fixtures under `memory/<package>/tests/data/`.\n"
@@ -201,7 +202,9 @@ _WRITE = (
     "Generalise it: values that vary become parameters, and the function raises "
     '`MemoryInputError("<what was expected>")` on an input it was not built for. Check shapes, not observed '
     "values: a function may restrict a field's values only by declaring the field's type in the item's "
-    "`field_types`, one of: <<semantic_types>>.\n"
+    "`field_types`, one of: <<semantic_types>>. A function lifted from the working model's cells can be verified "
+    "by listing in its manifest entry the code it `replaces` and calling `replay`: the instances that replay "
+    "become its test.\n"
     "3. Use every signal the records hold: a verdict the working model was shown, an error, a retry, an early "
     "end, a change in a returned count or score, or no signal at all. Prefer work from episodes with positive "
     'signals. Work whose episodes show only negative signals becomes a note ("X was tried and failed because Y; '

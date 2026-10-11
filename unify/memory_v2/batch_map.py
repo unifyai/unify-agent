@@ -283,6 +283,10 @@ def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> s
             obj = mark(obj, shared)
     elif part.startswith("observation:"):
         obj = _observations(ep)[int(part[12:])]
+        if shared and isinstance(obj, str):  # M4: observations' shared lines too
+            from .shared_text import mark
+
+            obj = mark(obj, shared)
     elif part == "diff":
         obj = ep.worktree_diff or ""
     elif part.startswith("cell:"):
@@ -401,9 +405,9 @@ def _errors(ep: Episode) -> list[dict]:
 
 def _shared_parts(ep: Episode, shared: dict[str, str]) -> list[str]:
     """``shared:<id>`` for each shared block *ep*'s request holds (RUNTIME B2: shown once, never only a marker)."""
-    from .shared_text import blocks
+    from .shared_text import units
 
-    held = set(blocks(ep.request[0] if ep.request else ""))
+    held = units([str(t) for t in ep.request])
     return [f"shared:{b}" for b, text in sorted(shared.items()) if text in held]
 
 

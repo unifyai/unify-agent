@@ -108,6 +108,9 @@ def test_the_overview_credits_the_end_parts_it_shows_in_full(tmp_path):
 
 def test_the_notes_sentence_is_in_write_and_passes_the_guards():
     text = pv.write_brief_now()
-    assert "in general terms, so it applies beyond the episodes it came from" in text
+    assert (
+        "in general terms where it can; a rule for one kind of request is worth keeping"
+        in text
+    )
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
     assert "in general terms, so it applies" not in pv.curate_brief_now()
