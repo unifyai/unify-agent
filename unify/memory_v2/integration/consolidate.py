@@ -128,6 +128,7 @@ from .switch import (
     v21_analysts,
     v21_pool,
     v21_compact,
+    v21_coverage,
     v21_max_reads,
 )
 
@@ -774,6 +775,12 @@ def _end_event(
         **(
             {
                 "coverage": outcome.coverage,
+                # UNIFY_MEMORY_V21_COVERAGE=optional only (absent otherwise): measures, read by no gate
+                **(
+                    {"coverage_measures": outcome.coverage_measures}
+                    if getattr(outcome, "coverage_measures", None) is not None
+                    else {}
+                ),
                 "reads": int(outcome.reads),
                 "exported_bytes": outcome.exported_bytes,
                 # design r2 §3: the gate checks that refused the pass and the first reason line; §5: Sol's last
@@ -1074,6 +1081,7 @@ async def run_due_passes(
                 "analysts": v21_analysts(settings),
                 "pool": v21_pool(settings),
                 "compact": v21_compact(settings),
+                "coverage_rule": v21_coverage(settings),
                 "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
                 "worktree_git": (
                     str(stores.paths.worktree_git)

@@ -700,6 +700,57 @@ def _finish_refusal(cov: Any, missing: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _coverage_measures(
+    coverage: dict,
+    opened: list[str],
+    rows: list[dict],
+    merged: list[str],
+) -> dict:
+    """UNIFY_MEMORY_V21_COVERAGE=optional: what the writer read and left, as measures only (MAIN 11 Oct, the
+    subtractive note 38c0bd35: M1 read share and episodes opened; M2 unread episodes whose batch-map row carries
+    evidence; M3 an empty pass. M4, the unread backlog, is the pool's ``unread_open``; M5, the outcome, is the
+    pass's merged items and the library's use). Nothing reads these back: no gate, no prompt.
+    """
+    unread = list(coverage.get("missing") or [])
+    need = int(coverage.get("bytes_required") or 0)
+    share = round(int(coverage.get("bytes_read") or 0) / need, 4) if need else None
+    evidence: dict[str, list[str]] = {}
+    for r in rows:
+        eid = r.get("episode_id")
+        if eid not in unread:
+            continue
+        staging = r.get("staging") if isinstance(r.get("staging"), dict) else {}
+        kinds = [
+            k
+            for k, held in (
+                ("function", r.get("functions")),
+                (
+                    "cell_error",
+                    any(
+                        isinstance(s, dict) and s.get("kind") == "cell_error"
+                        for s in r.get("signals") or []
+                    ),
+                ),
+                ("s0", r.get("s0_clusters")),
+                ("pool", r.get("pool_entries")),
+                ("staging", staging.get("candidates")),
+            )
+            if held
+        ]
+        if kinds:
+            evidence[eid] = kinds
+    return {
+        "read_share": share,
+        "bytes_read": int(coverage.get("bytes_read") or 0),
+        "bytes_required": need,
+        "episodes": int(coverage.get("episodes") or 0),
+        "episodes_opened": len(opened),
+        "unread": len(unread),
+        "unread_with_evidence": evidence,
+        "empty_pass": bool(share is not None and share < 0.05 and not merged),
+    }
+
+
 def _staged_candidates(entry: dict) -> list[dict]:
     """A batch-map staging entry's candidate functions, each with its cases file (or None)."""
     files = set(entry.get("files") or [])
@@ -979,6 +1030,9 @@ class PassConfig:
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_V21_COMPACT moves old tool results out of
     # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
+    # MAIN 11 Oct (prepared; "required" until the lead decides): UNIFY_MEMORY_V21_COVERAGE. "optional": finish never
+    # needs coverage, the episodes left are recorded as unread, and the pass reports coverage measures (no gate)
+    coverage_rule: str = "required"
 
 
 def _json_file(path: Path, default):
@@ -1028,6 +1082,8 @@ class PassOutcome:
     staging: dict | None = None
     # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
     pool: dict | None = None
+    # UNIFY_MEMORY_V21_COVERAGE=optional: :func:`_coverage_measures` (measures only); None otherwise
+    coverage_measures: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -2327,6 +2383,19 @@ class SolPass:
                         new.append(_pool_mod.deferred(e, r))
                     elif p.add_evidence(target, e, r, pass_id):
                         extended.append(target)
+                if self.cfg.coverage_rule == "optional" and self._cov is not None:
+                    done = self._cov.summary()
+                    for e in done[
+                        "missing"
+                    ]:  # neither covered nor dismissed: kept as unread, never dropped
+                        if e not in self._deferred:
+                            new.append(
+                                _pool_mod.unread(
+                                    e,
+                                    self._cov.parts_read(e),
+                                    len(self._cov.required.get(e, [])),
+                                ),
+                            )
                 if not out.passed:
                     new += self._pool_draft(pass_id)
             added = 0
@@ -2334,13 +2403,20 @@ class SolPass:
                 e.add_provenance([], [pass_id], [])
                 added += e.id not in p.entries
                 p.upsert(e, pass_id)
-            return {
+            res = {
                 "open": len(p.open_entries()),
                 "added": added,
                 "extended": sorted(set(extended)),
                 "changed": changed,
                 "commit": p.save(pass_id),
             }
+            if (
+                self.cfg.coverage_rule == "optional"
+            ):  # M4: the backlog of unread episodes (a measure, no gate)
+                res["unread_open"] = sum(
+                    1 for e in p.open_entries() if e.kind == "unread"
+                )
+            return res
         except Exception as exc:  # noqa: BLE001 - the pool never fails a pass
             return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
 
@@ -2939,7 +3015,7 @@ class SolPass:
             + (S0_INPUT,) * bool(self.cfg.s0_cache)
             + (POOL_INPUT,) * pool
         )
-        return {"extra_inputs": extra, "pool": pool}
+        return {"extra_inputs": extra, "pool": pool, "coverage": self.cfg.coverage_rule}
 
     def _keep_cancelled_work(
         self,
@@ -2996,6 +3072,7 @@ class SolPass:
         self._pool, self._pool_open, self._pool_error = None, None, None
         self._pool_staging, self._pool_s0 = [], ([], {})
         self._deferred, self._pool_manifest = {}, None
+        self._cov, self._bmap_rows = None, []
         self._live, self._cancel_patch = None, (None, [])
         self._role = "curate" if req.kind == "curate" else "write"
         if req.kind == "curate" and (not self.cfg.v21 or self.curate_state is None):
@@ -3162,6 +3239,18 @@ class SolPass:
                 reads,
                 self._exported_bytes,
             )
+            if (
+                self.cfg.v21
+                and self.cfg.coverage_rule == "optional"
+                and cov is not None
+            ):
+                o.coverage = {**(o.coverage or {}), "unread": cov.missing()}
+                o.coverage_measures = _coverage_measures(
+                    o.coverage,
+                    cov.opened(),
+                    self._bmap_rows,
+                    list(merged or []),
+                )
             if self.cfg.v21:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
@@ -3216,6 +3305,7 @@ class SolPass:
                     for part in ps
                 }
                 cov = _views.Coverage(required, sizes)
+                self._cov, self._bmap_rows = cov, list(bmap["episodes"])
                 outputs = Path(tmp) / "outputs"
                 outputs.mkdir()
                 roots = {"/inputs": inputs, "/memory": box, "/outputs": outputs}
@@ -3559,7 +3649,11 @@ class SolPass:
                     elif finished:
                         content = "not run: pass finished"
                     elif name == "finish":
-                        missing = cov.missing() if cov is not None else []
+                        missing = (
+                            cov.missing()
+                            if cov is not None and self.cfg.coverage_rule != "optional"
+                            else []
+                        )
                         g1, empty = (
                             self._finish_manifest_problem(box)
                             if self.cfg.v21

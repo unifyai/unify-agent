@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 POOL_REF = "pool"
-KINDS = ("candidate", "lesson", "cluster", "draft", "deferred")
+KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread")
 STATUSES = ("open", "merged", "superseded", "retired")
 _ID = re.compile(r"[0-9a-f]{16}")
 
@@ -514,6 +514,19 @@ def deferred(eid: str, reason: str) -> Entry:
         kind="deferred",
         title=f"episode {eid} deferred: {reason[:100]}",
         data={"reason": reason},
+    )
+    e.add_provenance([eid], [], ["writer"])
+    return e
+
+
+def unread(eid: str, parts_read: int, parts_required: int) -> Entry:
+    """UNIFY_MEMORY_V21_COVERAGE=optional: an episode a WRITE pass left neither covered nor dismissed; kept, never
+    dropped, until a writer closes it."""
+    e = Entry(
+        id=entry_id("unread", eid),
+        kind="unread",
+        title=f"episode {eid} unread ({parts_read} of {parts_required} required parts read)",
+        data={"parts_read": parts_read, "parts_required": parts_required},
     )
     e.add_provenance([eid], [], ["writer"])
     return e

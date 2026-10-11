@@ -1163,6 +1163,34 @@ def test_v21_reaches_the_pass_and_its_end_event_records_coverage(tmp_path, monke
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
     assert end["coverage"] == out.coverage
     assert end["reads"] == 0 and end["exported_bytes"] == 0
+    assert "coverage_measures" not in end and "unread" not in end["coverage"]
+
+
+def test_v21_optional_coverage_reaches_the_pass_and_its_end_event_records_the_measures(
+    tmp_path,
+    monkeypatch,
+):
+    fake = FakeSol()  # finishes every turn: under "optional" coverage never refuses it
+    monkeypatch.setattr(consolidate, "unillm_turn", fake)
+    stores = _stores(tmp_path)
+    sha, _ = _record(stores, "e1")
+    settings = _v21_settings("on")
+    settings.UNIFY_MEMORY_V21_COVERAGE = "optional"
+    (out,) = asyncio.run(
+        run_due_passes(
+            stores,
+            "e1",
+            sha,
+            State(stores.paths.state),
+            effort="low",
+            settings=settings,
+            emit=None,
+        ),
+    )
+    assert out.coverage["unread"] == ["e1"] and out.coverage_measures["unread"] == 1
+    end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
+    assert end["coverage"] == out.coverage
+    assert end["coverage_measures"] == out.coverage_measures
 
 
 def test_v21_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):

@@ -281,6 +281,17 @@ class Coverage:
     def part_done(self, eid: str, part: str) -> bool:
         return self._part_done(eid, part)
 
+    def opened(self) -> list[str]:
+        """The episodes with any required part shown (in full or in part, or credited as identical)."""
+        return [
+            e
+            for e, ps in self.required.items()
+            if any(self._part_done(e, p) or self._bytes_read(e, p) > 0 for p in ps)
+        ]
+
+    def parts_read(self, eid: str) -> int:
+        return sum(self._part_done(eid, p) for p in self.required.get(eid, []))
+
     def missing_parts(self, eid: str) -> list[str]:
         """*eid*'s required parts not yet shown in full (m4k: named in finish's refusal)."""
         return [p for p in self.required.get(eid, []) if not self._part_done(eid, p)]

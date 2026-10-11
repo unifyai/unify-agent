@@ -652,6 +652,11 @@ V21_POOL = "UNIFY_MEMORY_V21_POOL"
 #: MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the writer's
 #: conversation once it passes a size (sol_pass._compact); ``off``: the conversation is never changed.
 V21_COMPACT = "UNIFY_MEMORY_V21_COMPACT"
+#: MAIN 11 Oct (prepared; ``required`` until the lead decides): ``required`` keeps the batch rule (finish needs every
+#: episode covered or dismissed, spec v2.1 §7.4); ``optional``: finish never needs it, and an episode left neither
+#: covered nor dismissed is recorded as unread (the pass's coverage and, with the pool, an ``unread`` entry).
+V21_COVERAGE = "UNIFY_MEMORY_V21_COVERAGE"
+V21_COVERAGE_VALUES = ("required", "optional")
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -846,6 +851,20 @@ def v21_compact(settings: Any) -> bool:
     return parse_v21_compact(getattr(settings, V21_COMPACT, "") or "") == "on"
 
 
+def parse_v21_coverage(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_COVERAGE``: ``required`` (also for empty) or ``optional``."""
+    value = _stripped(v).lower() or "required"
+    if value not in V21_COVERAGE_VALUES:
+        raise ValueError(
+            f"{V21_COVERAGE} must be empty, 'required' or 'optional', not {v!r}"[:200],
+        )
+    return value
+
+
+def v21_coverage(settings: Any) -> str:
+    return parse_v21_coverage(getattr(settings, V21_COVERAGE, "") or "")
+
+
 def parse_v21_analysts(v: Any) -> str:
     """``UNIFY_MEMORY_V21_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
     s = str(v or "").strip().lower() or "off"
@@ -1011,6 +1030,7 @@ PARSERS = {
     V21_ANALYSTS: parse_v21_analysts,
     V21_POOL: parse_v21_pool,
     V21_COMPACT: parse_v21_compact,
+    V21_COVERAGE: parse_v21_coverage,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

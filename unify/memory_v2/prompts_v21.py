@@ -164,7 +164,7 @@ _WRITE = (
     "`read_episode`: its request, every observation (an identical one counts once), every signal segment, "
     "every cell or diff hunk that defines a function, and every reply the working model sent and every action "
     "that changed something, with the cell it came from. "
-    "`finish` is refused while any episode is neither covered nor dismissed. Scan the episodes cheaply with code "
+    "<<finish_coverage>>Scan the episodes cheaply with code "
     "first, then read in full what may be worth keeping, and decide each episode on what it holds.\n"
     "\n"
     "# What to write\n"
@@ -252,7 +252,7 @@ _WRITE = (
     "round.\n"
     "\n" + _REPAIR + "\n"
     "# Done\n"
-    "You are done when every episode in the batch is <<episode_done>>, and every item you wrote has passed "
+    "You are done when <<episodes_done>>every item you wrote has passed "
     "the gate or is kept as a draft with its failure. Then call `finish(summary)`.\n"
 )
 
@@ -368,18 +368,32 @@ def write_brief(
     input_forms: Mapping[str, str] = INPUT_FORMS_V21,
     extra_inputs: tuple[str, ...] = (),
     pool: bool = False,
+    coverage: str = "required",
 ) -> str:
     """The WRITE brief with its numbers filled in. *extra_inputs* are whole input bullets that an optional switch
-    adds (P8; constant per run); *pool* (UNIFY_MEMORY_V21_POOL) adds attaching to a pool entry to the end condition.
+    adds (P8; constant per run); *pool* (UNIFY_MEMORY_V21_POOL) adds attaching to a pool entry to the end condition;
+    *coverage* (UNIFY_MEMORY_V21_COVERAGE) ``optional`` states that finish does not need coverage, and drops it from
+    the end condition (``required``: the text as before, byte for byte).
     """
+    optional = coverage == "optional"
+    episode_done = (
+        "covered, dismissed with a reason, or attached to a pool entry"
+        if pool
+        else "covered or dismissed with a reason"
+    )
     return _fill(
         _WRITE,
         {
             "extra_inputs": "".join(extra_inputs),
-            "episode_done": (
-                "covered, dismissed with a reason, or attached to a pool entry"
-                if pool
-                else "covered or dismissed with a reason"
+            "finish_coverage": (
+                FINISH_COVERAGE_OPTIONAL
+                if optional
+                else "`finish` is refused while any episode is neither covered nor dismissed. "
+            ),
+            "episodes_done": (
+                ""
+                if optional
+                else f"every episode in the batch is {episode_done}, and "
             ),
             "view_bytes": view_bytes,
             **_limits(max_checks, repair_rounds),
@@ -439,7 +453,19 @@ POOL_INPUT = (
 )
 
 
-def write_brief_now(extra_inputs: tuple[str, ...] = (), pool: bool = False) -> str:
+#: UNIFY_MEMORY_V21_COVERAGE=optional: what finish does with an episode the writer leaves (a statement of the
+#: contract, nothing about how much to read)
+FINISH_COVERAGE_OPTIONAL = (
+    "`finish` does not need coverage: an episode left neither covered nor dismissed is recorded as unread, "
+    "and its records stay as they are. "
+)
+
+
+def write_brief_now(
+    extra_inputs: tuple[str, ...] = (),
+    pool: bool = False,
+    coverage: str = "required",
+) -> str:
     """The WRITE brief from the constants that enforce each number (imported here: they import this module's
     callers)."""
     from . import code_lint, manifest, qa, views
@@ -456,6 +482,7 @@ def write_brief_now(extra_inputs: tuple[str, ...] = (), pool: bool = False) -> s
         semantic_types=manifest.describe_semantic_types(),
         extra_inputs=extra_inputs,
         pool=pool,
+        coverage=coverage,
     )
 
 
