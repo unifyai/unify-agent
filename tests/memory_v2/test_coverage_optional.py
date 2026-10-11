@@ -166,3 +166,21 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
     assert (
         sol_pass._coverage_measures({"missing": []}, [], [], [])["read_share"] is None
     )
+
+
+def test_a_measures_failure_never_fails_the_pass(tmp_path, monkeypatch):
+    _finish_with(monkeypatch, EMPTY)
+
+    def broken(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sol_pass, "_coverage_measures", broken)
+    out, _ = _pass(
+        tmp_path,
+        FINISH,
+        eids=("e2",),
+        max_calls=3,
+        coverage_rule="optional",
+    )
+    assert out.finished and out.coverage["unread"] == ["e2"]
+    assert out.coverage_measures == {"error": "RuntimeError: boom"}

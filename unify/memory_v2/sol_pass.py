@@ -3245,12 +3245,17 @@ class SolPass:
                 and cov is not None
             ):
                 o.coverage = {**(o.coverage or {}), "unread": cov.missing()}
-                o.coverage_measures = _coverage_measures(
-                    o.coverage,
-                    cov.opened(),
-                    self._bmap_rows,
-                    list(merged or []),
-                )
+                try:  # measures only (RUNTIME 21:12Z): they never fail a pass
+                    o.coverage_measures = _coverage_measures(
+                        o.coverage,
+                        cov.opened(),
+                        self._bmap_rows,
+                        list(merged or []),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    o.coverage_measures = {
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                    }
             if self.cfg.v21:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
