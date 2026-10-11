@@ -82,7 +82,8 @@ def test_finish_needs_coverage_only_when_required(tmp_path, monkeypatch):
         max_calls=3,
         coverage_rule="optional",
     )
-    assert omodel.outputs["f"] == "ok" and opt.finished
+    # accepted at its first call: the pass ended there, so no refusal was ever fed back to the model
+    assert opt.finished and "f" not in omodel.outputs and "fin" not in omodel.outputs
     assert opt.coverage["unread"] == ["e2"] and opt.coverage["missing"] == ["e2"]
     m = opt.coverage_measures
     assert m["unread"] == 1 and m["episodes"] == 1 and m["episodes_opened"] == 0
