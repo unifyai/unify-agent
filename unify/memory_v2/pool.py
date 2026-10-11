@@ -17,12 +17,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 POOL_REF = "pool"
 KINDS = ("candidate", "lesson", "cluster", "draft", "deferred")
 STATUSES = ("open", "merged", "superseded", "retired")
+_ID = re.compile(r"[0-9a-f]{16}")
+
+
+def safe_rel(rel: str) -> bool:
+    """A payload path the pool may hold: relative, its parts plain names (no ``..``, ``.`` or empty part), no
+    backslash or NUL (RUNTIME H-P1: the host writes these under /inputs/pool)."""
+    if not rel or rel.startswith("/") or "\\" in rel or "\0" in rel:
+        return False
+    return all(part not in ("", ".", "..") for part in rel.split("/"))
 
 
 def entry_id(kind: str, key: str) -> str:
@@ -87,9 +98,13 @@ class Pool:
         self.repo = repo
         self.entries: dict[str, Entry] = {}
         self.head: str | None = None
+        self.skipped: list[str] = []  # entries load() refused (H-P1)
 
     # -- read ------------------------------------------------------------------------------------------------
     def load(self) -> "Pool":
+        """Read ``refs/heads/pool``. RUNTIME H-P1: only well-formed entries are loaded (``pool/<kind>/<id>/``,
+        a known kind, a sha16 id equal to its ``entry.json``'s, plain relative file names, regular blobs only);
+        anything else is skipped and listed in :attr:`skipped`, never staged."""
         try:
             self.head = (
                 self.repo.run(
@@ -102,38 +117,59 @@ class Pool:
             )
         except Exception:  # noqa: BLE001 - no pool yet
             self.head = None
-        self.entries = {}
+        self.entries, self.skipped = {}, []
         if not self.head:
             return self
-        names = [
-            n
-            for n in self.repo.run(
-                "ls-tree",
-                "-r",
-                "--name-only",
-                self.head,
-            ).splitlines()
-            if n
-        ]
-        by_dir: dict[str, list[str]] = {}
-        for n in names:
-            parts = n.split("/")
-            if len(parts) >= 4 and parts[0] == "pool":
-                by_dir.setdefault("/".join(parts[:3]), []).append("/".join(parts[3:]))
-        for d, rels in sorted(by_dir.items()):
-            if "entry.json" not in rels:
+        by_dir: dict[tuple[str, str], list[str]] = {}
+        bad: set[tuple[str, str]] = set()
+        for rec in self.repo.run("ls-tree", "-r", "-z", self.head).split("\0"):
+            if not rec:
                 continue
-            meta = json.loads(self.repo.show(self.head, f"{d}/entry.json").decode())
+            head, _, path = rec.partition("\t")
+            mode, typ = (head.split() + ["", ""])[:2]
+            parts = path.split("/")
+            if len(parts) < 4 or parts[0] != "pool":
+                self.skipped.append(f"outside pool/<kind>/<id>/: {path[:120]!r}")
+                continue
+            key, rel = (parts[1], parts[2]), "/".join(parts[3:])
+            if parts[1] not in KINDS or not _ID.fullmatch(parts[2]):
+                self.skipped.append(f"bad kind or id: {path[:120]!r}")
+                continue
+            if mode != "100644" or typ != "blob" or not safe_rel(rel):
+                self.skipped.append(f"not a plain file: {path[:120]!r} ({mode} {typ})")
+                bad.add(key)
+                continue
+            by_dir.setdefault(key, []).append(rel)
+        for (kind, eid), rels in sorted(by_dir.items()):
+            d = f"pool/{kind}/{eid}"
+            if (kind, eid) in bad or "entry.json" not in rels:
+                self.skipped.append(f"entry {d} skipped (a bad file or no entry.json)")
+                continue
+            try:
+                meta = json.loads(self.repo.show(self.head, f"{d}/entry.json").decode())
+            except ValueError:
+                meta = None
+            if (
+                not isinstance(meta, dict)
+                or meta.get("id") != eid
+                or meta.get("kind") != kind
+            ):
+                self.skipped.append(f"entry {d} skipped (entry.json does not name it)")
+                continue
             files = {
                 r: self.repo.show(self.head, f"{d}/{r}").decode("utf-8", "replace")
                 for r in rels
                 if r != "entry.json"
             }
             e = Entry(
-                id=meta["id"],
-                kind=meta["kind"],
-                title=meta.get("title", ""),
-                status=meta.get("status", "open"),
+                id=eid,
+                kind=kind,
+                title=str(meta.get("title", "")),
+                status=(
+                    meta.get("status", "open")
+                    if meta.get("status") in STATUSES
+                    else "open"
+                ),
                 status_detail=meta.get("status_detail") or {},
                 provenance=meta.get("provenance")
                 or {"episodes": [], "passes": [], "sources": []},
@@ -246,9 +282,30 @@ class Pool:
 
     # -- the writer's view -----------------------------------------------------------------------------------
     def stage(self, dest: Path) -> int:
-        """``/inputs/pool``: INDEX.md (every open entry, one line each, deterministic) and each entry's files."""
-        dest.mkdir(parents=True, exist_ok=True)
-        rows = self.open_entries()
+        """``/inputs/pool``: INDEX.md (every open entry, one line each, deterministic) and each entry's files.
+
+        RUNTIME H-P1: *dest* must not exist yet (a fresh directory, never one reached through a link); every file is
+        created new, never through a link, and must resolve under *dest*."""
+        dest = Path(dest)
+        dest.mkdir(parents=True, exist_ok=False)
+        root = dest.resolve()
+
+        def write(rel: str, text: str) -> None:
+            if not safe_rel(rel):
+                raise ValueError(f"pool: unsafe path {rel[:120]!r}")
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            if not out.parent.resolve().is_relative_to(root):
+                raise ValueError(f"pool: {rel[:120]!r} leaves /inputs/pool")
+            fd = os.open(
+                out,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+            )
+            with os.fdopen(fd, "w") as fh:
+                fh.write(text)
+
+        rows = [e for e in self.open_entries() if _ID.fullmatch(e.id)]
         lines = [
             "# Candidate pool: open entries",
             "",
@@ -261,18 +318,16 @@ class Pool:
             lines.append(
                 f"- `{e.id}` {e.kind}: {e.title} ({n} episode(s); opened in {e.opened_in})",
             )
-            d = dest / e.id
-            d.mkdir(exist_ok=True)
-            (d / "entry.json").write_text(
+            write(
+                f"{e.id}/entry.json",
                 json.dumps(e.meta(), indent=1, sort_keys=True, default=str) + "\n",
             )
-            for rel, text in e.files.items():
-                out = d / rel
-                out.parent.mkdir(parents=True, exist_ok=True)
-                out.write_text(text)
+            for rel, text in sorted(e.files.items()):
+                if safe_rel(rel) and rel != "entry.json":
+                    write(f"{e.id}/{rel}", text)
         if not rows:
             lines.append("(no open entries)")
-        (dest / "INDEX.md").write_text("\n".join(lines) + "\n")
+        write("INDEX.md", "\n".join(lines) + "\n")
         return len(rows)
 
 
@@ -308,6 +363,24 @@ def block_problems(manifest: object, pool: Pool, kind: str = "write") -> list[st
                 out.append(
                     f"pool.{key}: {eid} needs {'a reason' if key == 'retired' else 'a value'}",
                 )
+    # RUNTIME 11 Oct: one decision per entry, and a supersession keeps its replacement open
+    named: dict[str, str] = {}
+    for key in ("merged", "superseded", "retired"):
+        val = block.get(key)
+        for eid in val if isinstance(val, dict) else {}:
+            if str(eid) in named:
+                out.append(
+                    f"pool: {str(eid)[:20]} is named in both {named[str(eid)]} and {key}",
+                )
+            named.setdefault(str(eid), key)
+    sup = block.get("superseded")
+    for eid, by in (sup if isinstance(sup, dict) else {}).items():
+        if by == eid:
+            out.append(f"pool.superseded: {eid} cannot supersede itself")
+        elif isinstance(by, str) and by in named:
+            out.append(
+                f"pool.superseded: {eid}'s replacement {by} is closed by this block too",
+            )
     return out
 
 

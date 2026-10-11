@@ -5,7 +5,10 @@ persistence, accumulation, status only from the writer, dedup, isolation, determ
 
 import asyncio
 import json
+import os
 import subprocess
+
+import pytest
 
 from unify.memory_v2 import pool, sol_pass
 from unify.memory_v2.blobs import BlobStore
@@ -432,3 +435,99 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
         seen[name] = [json.dumps(m, sort_keys=True) for m in model.seen[:2]]
     assert seen["default"] == seen["off"]
     assert sol_tools(v21=True) == sol_tools(v21=True, pool=False)
+
+
+# --- RUNTIME H-P1: a crafted pool commit never writes outside /inputs/pool ---------------------------------------
+
+
+class _Crafted:
+    """A memory repo whose pool commit holds the given (mode, type, path) -> content records."""
+
+    def __init__(self, records):
+        self.records = records
+
+    def run(self, *args, input=None):
+        if args[0] == "rev-parse":
+            return "c" * 40
+        assert args[:3] == ("ls-tree", "-r", "-z"), args
+        return "".join(f"{m} {t} {'0' * 40}\t{path}\0" for (m, t, path) in self.records)
+
+    def show(self, rev, path):
+        return next(c for (m, t, p), c in self.records.items() if p == path)
+
+
+def _meta(eid, kind):
+    return json.dumps(
+        {"id": eid, "kind": kind, "title": "t", "status": "open"},
+    ).encode()
+
+
+def test_a_crafted_pool_commit_never_writes_outside_inputs_pool(tmp_path):
+    good, trav, link, other = (
+        pool.entry_id("deferred", e) for e in ("e1", "e2", "e3", "e4")
+    )
+    records = {
+        ("100644", "blob", f"pool/deferred/{good}/entry.json"): _meta(good, "deferred"),
+        ("100644", "blob", f"pool/deferred/{trav}/entry.json"): _meta(trav, "deferred"),
+        ("100644", "blob", f"pool/deferred/{trav}/../../../x"): b"escaped",
+        ("100644", "blob", f"pool/candidate/{link}/entry.json"): _meta(
+            link,
+            "candidate",
+        ),
+        ("120000", "blob", f"pool/candidate/{link}/candidate.py"): b"/etc/passwd",
+        ("100644", "blob", "pool/lesson/../entry.json"): _meta("..", "lesson"),
+        ("100644", "blob", "pool/lesson/NOT-AN-ID/entry.json"): _meta(
+            "NOT-AN-ID",
+            "lesson",
+        ),
+        ("100644", "blob", f"pool/lesson/{other}/entry.json"): _meta(
+            good,
+            "lesson",
+        ),  # names another entry
+        ("100644", "blob", f"pool/deferred/{other}/a\\..\\y"): b"escaped",
+        ("100644", "blob", "pool/x.json"): b"{}",
+    }
+    p = pool.Pool(_Crafted(records)).load()
+    assert set(p.entries) == {good} and len(p.skipped) >= 7
+    p.entries["../../z"] = pool.Entry(id="../../z", kind="lesson", title="t")
+    p.entries[good].files = {
+        "../../w": "escaped",
+        "/abs": "escaped",
+        "ok/f.txt": "fine",
+    }
+    dest = tmp_path / "inputs" / "pool"
+    assert p.stage(dest) == 1
+    written = {str(f.relative_to(tmp_path)) for f in tmp_path.rglob("*") if f.is_file()}
+    assert written == {
+        "inputs/pool/INDEX.md",
+        f"inputs/pool/{good}/entry.json",
+        f"inputs/pool/{good}/ok/f.txt",
+    }
+
+
+def test_the_pool_is_staged_only_into_a_fresh_directory(tmp_path):
+    p = pool.Pool(None)
+    (tmp_path / "elsewhere").mkdir()
+    os.symlink(tmp_path / "elsewhere", tmp_path / "link")
+    with pytest.raises(FileExistsError):
+        p.stage(tmp_path / "link")
+    with pytest.raises(FileExistsError):
+        p.stage(tmp_path / "elsewhere")
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+
+
+def test_a_block_decides_each_entry_once_and_keeps_a_replacement_open(tmp_path):
+    p = pool.Pool(Repo.init_bare(tmp_path / "mem.git")).load()
+    a = p.upsert(pool.deferred("e1", "r"), "p1").id
+    b = p.upsert(pool.deferred("e2", "r"), "p1").id
+    both = {**EMPTY, "pool": {"superseded": {a: b}, "retired": {b: "gone"}}}
+    assert pool.block_problems(both, p) == [
+        f"pool.superseded: {a}'s replacement {b} is closed by this block too",
+    ]
+    twice = {**EMPTY, "pool": {"superseded": {a: b}, "retired": {a: "gone"}}}
+    assert pool.block_problems(twice, p) == [
+        f"pool: {a} is named in both superseded and retired",
+    ]
+    assert pool.block_problems({**EMPTY, "pool": {"superseded": {a: a}}}, p) == [
+        f"pool.superseded: {a} cannot supersede itself",
+    ]
