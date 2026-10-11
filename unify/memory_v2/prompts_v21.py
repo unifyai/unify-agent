@@ -104,8 +104,7 @@ _REPAIR = (
     "# Repair\n"
     "If the gate refuses anything, its full result (every check, every failing test's output and every note) is "
     "written to /inputs/gate/result-<round>.md and you get a repair round<<repair_limit>>. Fix what it refused, "
-    "keep the manifest current, and call `finish` again. <<repair_end>>, the items that pass land and the rest is "
-    "kept as a draft for a later pass.\n"
+    "keep the manifest current, and call `finish` again. <<repair_end>> kept as a draft for a later pass.\n"
 )
 
 _TRUST = (
@@ -123,11 +122,17 @@ _WRITE = (
     "with no network.\n"
     "\n"
     "# Inputs\n"
-    "- /inputs/batch_map.json: one row per episode in this batch, with pointers and facts, not summaries: the "
-    "episode id, the library commit it ran on, its request text, step counts, the library items it used, the "
-    "tools and functions it called, each error with the call that followed it, each recorded signal with its "
-    "regime, the functions the working model defined (and whether each ran cleanly), the parts you must read "
-    "(`required_parts`) and the sizes of the raw records.\n"
+    '- /inputs/batch_map.json: pointers and facts, not summaries, as `{"version": 1, "episodes": [row, ...], '
+    '"shared_blocks": [{"id", "chars", "file"}, ...]}`. Each row: `episode_id` (str), `memory_main` (str: the '
+    "library commit it ran on), `regime` (str), `request` (str: the request text, a shared block as "
+    "`[shared:<id>]`), `observations`, `cells`, `actions` (int counts), `observation_copies` (dict), `items_used` "
+    "(the library items it used), `calls` (dict: `channel.method` -> count), `errors` (list of `{action, error, "
+    "next_call}`), `signals` (list of `{kind, cell, action}`), `functions` (list: the functions the working model "
+    "defined, each with its `name`, `source`, `cell` and whether it ran cleanly), `diff_unparsed`, `required_parts` "
+    "(list of str: the parts you must read), `staging` (dict: `status`, `source`, `files`, `path`, `candidates`: "
+    "list of `{name, file, cases}`), `s0_clusters` (list: the S0 clusters this episode's code is in, each with "
+    "`tier`, `episodes`, `cells`, `file`, `pool_entry`) and `pool_entries` (list of `{id, kind, title}`: the open "
+    "pool entries that cite it).\n"
     "- /inputs/episodes/<episode>.json: each episode's full record: its request and observations, every code "
     "cell (code, output, error, language), every action with its response, the work-tree diff and the "
     'library-use record. A large value appears as {"__blob__": "<id>", "bytes": n}; read_episode shows it '
@@ -334,9 +339,9 @@ def _limits(max_checks: int | None, repair_rounds: int | None) -> dict[str, str]
             else ""
         ),
         "repair_end": (
-            "When the rounds or the budget run out"
+            "When the rounds or the budget run out, the items that pass land and the rest is"
             if repair_rounds is not None
-            else "When the pass's time runs out"
+            else "The items that pass land, and the rest is"
         ),
     }
 

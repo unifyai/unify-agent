@@ -227,7 +227,8 @@ def test_read_episode_parts_share_one_page(tmp_path):
     assert rest.endswith(
         '== observation:0 ==\nnot shown (page full): read again with parts=["observation:0"]',
     )
-    assert model.outputs["many"] == "refused: at most 8 parts per call"
+    # m4k: more than 8 parts page instead of refusing; the rest is named for the next call
+    assert model.outputs["many"].endswith('next: parts=["request"]]')
     s = out.coverage
     assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1
 

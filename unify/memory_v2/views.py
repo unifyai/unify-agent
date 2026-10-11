@@ -281,6 +281,10 @@ class Coverage:
     def part_done(self, eid: str, part: str) -> bool:
         return self._part_done(eid, part)
 
+    def missing_parts(self, eid: str) -> list[str]:
+        """*eid*'s required parts not yet shown in full (m4k: named in finish's refusal)."""
+        return [p for p in self.required.get(eid, []) if not self._part_done(eid, p)]
+
     def missing(self) -> list[str]:
         return [
             e for e in self.required if not self._covered(e) and e not in self.dismissed

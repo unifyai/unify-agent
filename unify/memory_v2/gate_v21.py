@@ -636,7 +636,9 @@ class V21Checks:
                 "G3",
                 f"[v21:exact] {it.item}'s tests hold no exact assertion of its result, on a recorded fixture, "
                 "against a trust 1-3 value (a recorded response, a value a successful episode used, or one "
-                "recorded across episodes)",
+                "recorded across episodes). A form that passes: the test loads a fixture made with `fixture` and "
+                "asserts `assert f(load(fixture)) == <the value as the recording holds it>`, the value written out "
+                "as a literal copied from the recorded episode, not computed by the function or its expression",
                 it.item,
             )
 

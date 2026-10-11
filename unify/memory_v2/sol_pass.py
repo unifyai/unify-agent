@@ -577,8 +577,9 @@ def _parts_from_text(args: dict) -> dict:
     if not isinstance(raw, str):
         return args
     text = raw.strip()
-    if text.startswith("parts="):
-        text, several = text[len("parts=") :].strip(), True
+    for prefix in ("parts=", "parts:"):
+        if text.startswith(prefix):
+            text, several = text[len(prefix) :].strip(), True
     if not several and not text.startswith("[") and "," not in text:
         return args  # one part's name
     try:
@@ -589,6 +590,87 @@ def _parts_from_text(args: dict) -> dict:
         val = [x.strip().strip("'\"") for x in text.strip("[]").split(",")]
     out = {k: v for k, v in args.items() if k not in ("part", "parts")}
     out["parts"] = [v for v in val if not (isinstance(v, str) and not v.strip())]
+    return out
+
+
+def _finish_refusal(cov: Any, missing: list[str]) -> str:
+    """m4k: the refusal names each uncovered episode's unread required parts and what is already dismissed, so one
+    call can act on it (the rehearsal's writer re-called finish six times on one named episode).
+    """
+    lines = [f"not finished: {len(missing)} episode(s) neither covered nor dismissed:"]
+    for eid in missing:
+        parts = cov.missing_parts(eid)
+        lines.append(
+            f"- {eid}: not yet read in full: {', '.join(parts) if parts else '(none)'}",
+        )
+    lines.append(
+        "Read those parts with read_episode, or dismiss the episode with a reason. Dismissed so far: "
+        + (", ".join(sorted(cov.dismissed)) or "(none)")
+        + ".",
+    )
+    return "\n".join(lines)
+
+
+def _staged_candidates(entry: dict) -> list[dict]:
+    """A batch-map staging entry's candidate functions, each with its cases file (or None)."""
+    files = set(entry.get("files") or [])
+    base = entry.get("path", "")
+    out = []
+    for f in sorted(files):
+        if f.startswith("candidates/") and f.endswith(".py"):
+            name = f[len("candidates/") : -3]
+            case = f"cases/{name}.json"
+            out.append(
+                {
+                    "name": name,
+                    "file": f"{base}/{f}",
+                    "cases": f"{base}/{case}" if case in files else None,
+                },
+            )
+    return out
+
+
+def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
+    """Each episode's S0 clusters: (tier a) code shapes it shares with other episodes, (tier b) behaviour groups; with
+    their size, this episode's cells, the file holding them and the pool entry id the pool keeps them under.
+    """
+    from .pool import entry_id
+
+    out: dict[str, list[dict]] = {}
+    for c in tier_a if isinstance(tier_a, list) else []:
+        at = [a for a in c.get("at") or [] if isinstance(a, dict)]
+        eps = sorted({a.get("episode") for a in at})
+        for eid in eps:
+            out.setdefault(eid, []).append(
+                {
+                    "tier": "a",
+                    "key": str(c.get("key", ""))[:16],
+                    "episodes": len(eps),
+                    "cells": sorted(
+                        {a.get("cell") for a in at if a.get("episode") == eid},
+                    ),
+                    "file": "/inputs/s0/clusters.json",
+                    "pool_entry": entry_id("cluster", f"a:{c.get('key')}"),
+                },
+            )
+    units = (tier_b or {}).get("units") or {} if isinstance(tier_b, dict) else {}
+    for c in (tier_b or {}).get("clusters") or [] if isinstance(tier_b, dict) else []:
+        us = [units[m] for m in c.get("units") or [] if m in units]
+        eps = sorted({u.get("episode") for u in us})
+        akeys = sorted(c.get("akeys") or [])
+        for eid in eps:
+            out.setdefault(eid, []).append(
+                {
+                    "tier": "b",
+                    "shapes": len(akeys),
+                    "episodes": len(eps),
+                    "cells": sorted(
+                        {u.get("cell") for u in us if u.get("episode") == eid},
+                    ),
+                    "file": "/inputs/s0/behaviour.json",
+                    "pool_entry": entry_id("cluster", "b:" + ",".join(akeys)),
+                },
+            )
     return out
 
 
@@ -2274,12 +2356,26 @@ class SolPass:
         path = Path(inputs) / "batch_map.json"
         bmap = json.loads(path.read_text())
         counts: dict[str, int] = {}
+        # m4k (MAIN 11 Oct, the rehearsal diagnosis): each row points at what else this pass holds about its
+        # episode, where the writer reads: staged candidates, S0 clusters its code is in, open pool entries citing it
+        s0_refs = _s0_by_episode(
+            _json_file(Path(inputs) / "s0" / "clusters.json", []),
+            _json_file(Path(inputs) / "s0" / "behaviour.json", {}),
+        )
+        open_pool = self._pool.open_entries() if self._pool is not None else []
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
             view = _staging.read(root, eid)
             if view is not None and self._pool is not None:
                 self._pool_staging.append((eid, view))
             row["staging"] = _staging.export(view, Path(inputs) / "staging" / eid)
+            row["staging"]["candidates"] = _staged_candidates(row["staging"])
+            row["s0_clusters"] = s0_refs.get(eid, [])
+            row["pool_entries"] = [
+                {"id": e.id, "kind": e.kind, "title": e.title}
+                for e in open_pool
+                if eid in (e.provenance.get("episodes") or [])
+            ]
             src = row["staging"].get("source", "none")
             counts[src] = counts.get(src, 0) + 1
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
@@ -2422,8 +2518,11 @@ class SolPass:
         """
         if not isinstance(parts, list) or not parts:
             return "refused: parts must be a non-empty list"
-        if len(parts) > READ_PARTS_PER_CALL:
-            return f"refused: at most {READ_PARTS_PER_CALL} parts per call"
+        rest: list = []
+        if (
+            len(parts) > READ_PARTS_PER_CALL
+        ):  # m4k: page, never refuse (the rest is named for the next call)
+            parts, rest = parts[:READ_PARTS_PER_CALL], parts[READ_PARTS_PER_CALL:]
         items: list[tuple[str, int, bytes]] = []
         for item in parts:  # every item is checked before anything is shown or credited
             name, off = (
@@ -2463,7 +2562,13 @@ class SolPass:
                 _shown_complete(shown, cov, eid, canon, data)
             left -= b - a
             out.append(f"== {name} ==\n{text}")
-        return "\n\n".join(out)
+        text = "\n\n".join(out)
+        if rest:
+            text += (
+                f"\n\n[{len(rest)} more part(s) not read in this call ({READ_PARTS_PER_CALL} per call); "
+                f"next: parts={json.dumps(rest)}]"
+            )
+        return text
 
     def _finish_manifest_problem(self, box: Path) -> tuple[str | None, bool]:
         """Design r2 §3 (RUNTIME P6): (the G1 refusal ``finish`` would meet, from the gate's own manifest parser;
@@ -3358,12 +3463,7 @@ class SolPass:
                             ] += 1  # bounded: past it the final check refuses by name
                             content = f"not finished: {g1}"
                         elif missing:
-                            content = (
-                                f"not finished: {len(missing)} episode(s) neither covered nor dismissed: "
-                                + ", ".join(missing[:20])
-                                + (" …" if len(missing) > 20 else "")
-                                + ". Use read_episode on each required part, or dismiss with a reason."
-                            )
+                            content = _finish_refusal(cov, missing)
                         else:
                             summary, finished = str(args.get("summary", "")), True
                             phase.update(finish_accepted=True, nothing_to_store=empty)

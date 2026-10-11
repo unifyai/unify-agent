@@ -87,7 +87,11 @@ def test_repair_without_a_usd_figure_has_no_round_count():
 def test_the_v21_briefs_state_no_count_limits_but_numbers_still_render_when_given():
     text = prompts_v21.write_brief_now()
     assert "times per pass" not in text and "while the pass budget lasts" not in text
-    assert "When the pass's time runs out" in text
+    # m4k (MAIN 11 Oct): no sentence about the pass's time (it fed the writer's economy worry); the deadline holds
+    assert (
+        "time runs out" not in text
+        and "The items that pass land, and the rest is kept as a draft" in text
+    )
     numbered = prompts_v21.write_brief(
         view_bytes=8000,
         max_checks=7,
