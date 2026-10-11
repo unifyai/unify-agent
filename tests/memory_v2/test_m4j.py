@@ -8,9 +8,15 @@ import json
 from unify.memory_v2 import batch_map, pool, prompts_v21 as pv, sol_pass
 from unify.memory_v2.sol_pass import sol_tools
 from unify.memory_v2.views import Coverage
+from tests.memory_v2.test_gate import _candidate
+from tests.memory_v2.test_gate_v21 import (
+    _files_and_fixtures,
+    _man,
+    world21,
+)  # noqa: F401 (a fixture)
 from tests.memory_v2.test_pool import EMPTY, INDEX, _defer, _finish_with, _Stores
 from unify.memory_v2.episodes import Cell
-from tests.memory_v2.test_sol_pass import _call
+from tests.memory_v2.test_sol_pass import _call, _sol
 from tests.memory_v2.test_sol_v21_tools import EPS, _episode, _pass
 
 # --- (a) the open index in the first message ------------------------------------------------------------------
@@ -211,3 +217,225 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
         json.dumps(sol_pass._parts_from_text({"parts": "[request, 'cell:0']"})["parts"])
         == '["request", "cell:0"]'
     )
+
+
+# --- m4k folded into m4j (MAIN for the lead, 11 Oct; writer audit writer-audit-m4i-20261011T1238Z) ---------------
+
+
+from unify.memory_v2 import fixtures as fx  # noqa: E402
+from unify.memory_v2.manifest import ManifestError, parse_manifest  # noqa: E402
+
+ALL_INPUTS = (pv.STAGING_INPUT, pv.S0_INPUT, pv.POOL_INPUT)
+
+
+def _brief_of(tmp_path, **cfg):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    _, _, sol = _sol(tmp_path, None, v21=True, **cfg)
+    return sol._brief_v21()
+
+
+def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
+    full = _brief_of(
+        tmp_path / "a",
+        staging_root=str(tmp_path),
+        s0_cache=str(tmp_path),
+        pool=True,
+    )
+    for bullet in ALL_INPUTS:
+        assert bullet in full
+    inputs = full.split("# Inputs\n")[1].split("\n# Tools")[0]
+    assert (
+        inputs.index("/inputs/gate/previous.md")
+        < inputs.index("/inputs/staging/")
+        < inputs.index(
+            "/inputs/s0/",
+        )
+        < inputs.index("/inputs/pool/")
+    )
+    plain = _brief_of(tmp_path / "b")
+    assert plain == pv.write_brief_now() and not any(b in plain for b in ALL_INPUTS)
+    fork_off = _brief_of(
+        tmp_path / "c",
+        staging_root=str(tmp_path),
+        s0_cache=str(tmp_path),
+    )
+    assert pv.POOL_INPUT not in fork_off and pv.STAGING_INPUT in fork_off
+    # byte-stable within a run: the same configuration gives the same bytes
+    assert full == _brief_of(
+        tmp_path / "d",
+        staging_root=str(tmp_path),
+        s0_cache=str(tmp_path),
+        pool=True,
+    )
+
+
+def test_the_new_input_bullets_keep_the_brief_guards():
+    text = pv.write_brief_now(extra_inputs=ALL_INPUTS, pool=True)
+    assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
+    for marker in pv.CURATE_ONLY:
+        assert marker not in text.lower()
+    for bullet in ALL_INPUTS:
+        low = bullet.lower()
+        assert (
+            " must " not in low
+            and " only " not in low
+            and "task" not in low
+            and "answer" not in low
+        )
+    assert all(b not in pv.curate_brief_now() for b in ALL_INPUTS)
+
+
+def test_the_end_condition_does_not_make_dismissing_everything_the_easy_path():
+    off, on = pv.write_brief_now(), pv.write_brief_now(pool=True)
+    assert (
+        "every episode in the batch is covered or dismissed with a reason, and every item"
+        in off
+    )
+    assert (
+        "every episode in the batch is covered, dismissed with a reason, or attached to a pool entry"
+        in on
+    )
+    for text in (off, on):
+        assert "dismiss the rest" not in text and "holding nothing to store" not in text
+        assert (
+            "read in full what may be worth keeping, and decide each episode on what it holds"
+            in text
+        )
+        assert "kept as a draft" in text  # the drafts rule's phrase stays (RULES)
+
+
+def test_a_note_takes_a_minimal_manifest_entry_and_the_brief_shows_it():
+    text = pv.write_brief_now()
+    assert (
+        '{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}'
+        in text
+    )
+    man = parse_manifest(
+        {
+            "items": [
+                {
+                    "item": "notes/arc/fill.md",
+                    "kind": "note",
+                    "source_episodes": ["e1"],
+                },
+            ],
+        },
+        v21=True,
+    )
+    assert [(i.item, i.kind) for i in man.items] == [("notes/arc/fill.md", "note")]
+    try:
+        parse_manifest(
+            {
+                "items": [
+                    {
+                        "item": "notes/arc/fill.md",
+                        "kind": "note",
+                        "covers": [["e1", 0]],
+                    },
+                ],
+            },
+            v21=True,
+        )
+    except ManifestError as exc:
+        assert "only functions cover recorded work" in str(exc)
+    else:
+        raise AssertionError("a note with covers was accepted")
+
+
+def test_support_may_declare_a_shared_module_of_the_package():
+    man = parse_manifest(
+        {
+            "items": [],
+            "support": ["memory/arc/common.py", "memory/arc/tests/helpers.py"],
+        },
+        v21=True,
+    )
+    assert man.support == ["memory/arc/common.py", "memory/arc/tests/helpers.py"]
+    for bad in ("notes/arc/x.md", "memory/common.py", "memory/arc/tests/data/x.json"):
+        try:
+            parse_manifest({"items": [], "support": [bad]}, v21=True)
+        except ManifestError as exc:
+            assert "is not a test helper" in str(exc)
+        else:
+            raise AssertionError(f"{bad} was accepted as support")
+    assert (
+        "a shared module `memory/<package>/<module>.py` that the package's items import"
+        in pv.write_brief_now()
+    )
+
+
+def test_a_fixture_slice_refusal_names_the_valid_range():
+    try:
+        fx._cut(b"x" * 1950, [0, 3831])
+    except fx.FixtureError as exc:
+        msg = str(exc)
+    else:
+        raise AssertionError("an out-of-range slice was accepted")
+    assert msg.startswith("slice [0, 3831] is outside the 1950 recorded bytes")
+    assert "0 <= start < end <= 1950; [0, 1950] or no slice copies all of it" in msg
+    assert fx._cut(b"abc", [0, 3]) == b"abc"
+    tool = next(t for t in sol_tools(v21=True) if t["function"]["name"] == "fixture")
+    assert (
+        "keeps bytes start to end-1 of the recorded value's UTF-8 bytes"
+        in tool["function"]["description"]
+    )
+    assert "byte offsets into the recorded value's UTF-8 bytes" in pv.write_brief_now()
+
+
+HELPER = '''"""Shared account helpers."""
+
+
+class MemoryInputError(ValueError):
+    pass
+
+
+def _need(observation):
+    if not isinstance(observation, dict) or "user_id" not in observation:
+        raise MemoryInputError("an acct.me response with a user_id field is needed")
+    return observation
+'''
+USERS = '''"""Accounts."""
+
+from memory.acct.common import MemoryInputError, _need
+
+
+def user_id(observation):
+    """The account's user id.
+
+    Effect: read
+    Input: observation
+    """
+    return _need(observation)["user_id"]
+'''
+
+
+def test_a_shared_module_lands_when_declared_as_support_and_is_refused_when_not(
+    world21,
+):
+    """Live m4i: the writer's shared `memory/arc/errors.py` was refused as an undeclared change, so every module
+    re-implemented its parser and MemoryInputError."""
+    mem, _, blobs, gate = world21
+    files, fixtures = _files_and_fixtures(blobs)
+    files = {**files, "memory/acct/users.py": USERS, "memory/acct/common.py": HELPER}
+    undeclared = gate().merge(
+        mem.head(),
+        _candidate(mem, files),
+        _man(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
+    assert not undeclared.passed and any(
+        "undeclared change memory/acct/common.py" in r for r in undeclared.reasons
+    )
+    declared = gate().merge(
+        mem.head(),
+        _candidate(mem, files),
+        {**_man(fixtures), "support": ["memory/acct/common.py"]},
+        "p2",
+        "write",
+        None,
+        "0.01",
+    )
+    assert declared.passed, declared.reasons

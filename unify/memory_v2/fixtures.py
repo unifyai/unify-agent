@@ -140,7 +140,8 @@ def _cut(data: bytes, cut: object) -> bytes:
     a, b = cut
     if not 0 <= a < b <= len(data):
         raise FixtureError(
-            f"slice [{a}, {b}] is outside the {len(data)} recorded bytes",
+            f"slice [{a}, {b}] is outside the {len(data)} recorded bytes: offsets are bytes of the recorded "
+            f"value, 0 <= start < end <= {len(data)}; [0, {len(data)}] or no slice copies all of it",
         )
     return data[a:b]
 

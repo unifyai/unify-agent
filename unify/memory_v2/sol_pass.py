@@ -451,7 +451,8 @@ _V21_TOOL_TEMPLATES = [
                 "Copy recorded bytes of a batch episode into a test fixture under memory/<package>/tests/data/. "
                 "action is an action index (its recorded response, or a work-tree action's file), 'args:<i>' (the "
                 "arguments that action was called with) or 'request:<j>' (a user message: the request, then the "
-                "observations). slice [start, end] keeps those bytes only. append=true adds one line "
+                "observations). slice [start, end] keeps bytes start to end-1 of the recorded value's UTF-8 bytes "
+                "(0 <= start < end <= its length; omit it for the whole value). append=true adds one line "
                 '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
                 "tests/data/<module>.<function>.inputs.jsonl. The gate accepts only fixtures made this way, "
                 "unchanged."
@@ -2713,7 +2714,19 @@ class SolPass:
 
         if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
             return curate_brief_now()
-        return write_brief_now()
+        return write_brief_now(**self._write_inputs())
+
+    def _write_inputs(self) -> dict:
+        """m4j: the WRITE brief names each input this pass's configuration prepares (constant per run)."""
+        from .prompts_v21 import POOL_INPUT, S0_INPUT, STAGING_INPUT
+
+        pool = bool(self.cfg.pool)
+        extra = (
+            (STAGING_INPUT,) * bool(self.cfg.staging_root)
+            + (S0_INPUT,) * bool(self.cfg.s0_cache)
+            + (POOL_INPUT,) * pool
+        )
+        return {"extra_inputs": extra, "pool": pool}
 
     def _keep_cancelled_work(
         self,

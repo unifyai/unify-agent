@@ -532,9 +532,12 @@ def _parse_v21(manifest: dict) -> Manifest:
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]
     for p in out.support:
-        if layout.classify(p) != "test_helper":
+        # m4j: a shared module the package's items import (private helpers, the package's MemoryInputError) is
+        # declared here too; any public function in it is still an item, which the manifest must list
+        if layout.classify(p) not in ("test_helper", "module"):
             raise ManifestError(
-                f"support file {p} is not a test helper under memory/<package>/tests/",
+                f"support file {p} is not a test helper under memory/<package>/tests/ or a module "
+                "memory/<package>/<module>.py",
             )
     out.deleted = _str_list(manifest.get("deleted"), "deleted")
     out.unlisted = _str_list(manifest.get("unlisted"), "unlisted")

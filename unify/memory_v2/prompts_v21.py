@@ -146,10 +146,11 @@ _WRITE = (
     + "- `read_episode(episode, ...)` shows named parts of an episode: `request`, `observation:<i>`, `cell:<i>`, "
     "`action:<i>` or "
     "`diff`. Only this tool counts as reading an episode.\n"
-    "- `dismiss(episode, reason)` marks an episode as holding nothing to store, with a one-line reason.\n"
+    "- `dismiss(episode, reason)` records, in one line, why an episode holds nothing worth keeping.\n"
     "- `fixture(episode, action, dest, ...)` copies recorded bytes into a test fixture under "
-    "`memory/<package>/tests/data/` and records where they came from. The gate accepts only fixtures made this "
-    "way and left unchanged.\n"
+    "`memory/<package>/tests/data/` and records where they came from. Its `slice` is `[start, end]`: byte "
+    "offsets into the recorded value's UTF-8 bytes, from 0 up to its length; without `slice` it copies the whole "
+    "value. The gate accepts only fixtures made this way and left unchanged.\n"
     "- `execute_code(code)` runs Python as a script in a fresh process, with /memory as the working directory; "
     "only files persist between calls. Long output is shown head first, and the whole output is saved under "
     "/outputs. " + _RUN_TESTS + "\n" + _CHECK_FINISH + "\n"
@@ -158,9 +159,8 @@ _WRITE = (
     "`read_episode`: its request, every observation (an identical one counts once), every signal segment, "
     "every cell or diff hunk that defines a function, and every reply the working model sent and every action "
     "that changed something, with the cell it came from. "
-    "`finish` is refused while any episode is neither covered nor dismissed. Read before you decide what to "
-    "store; dismiss an episode only with a reason. Scan the episodes cheaply with code first; then read in full "
-    "what matters and dismiss the rest with a reason.\n"
+    "`finish` is refused while any episode is neither covered nor dismissed. Scan the episodes cheaply with code "
+    "first, then read in full what may be worth keeping, and decide each episode on what it holds.\n"
     "\n"
     "# What to write\n"
     "- Functions go in `memory/<package>/<module>.py`, in packages you choose by what the code does. Each "
@@ -183,12 +183,17 @@ _WRITE = (
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "support": [], "tests_changed": {}, '
     '"why": "<one line>", "summary": "<what changed>"}\n'
+    "  - A note's entry takes `item`, `kind` and `source_episodes`: "
+    '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `input` and `covers` '
+    "are for functions.\n"
     "  - `input` is the form a function's first parameter takes, one of: <<input_forms>>.\n"
     "  - `covers` are the recorded evidence a function's tests check: `[episode, action index]` for a recorded "
     'action; `{"episode": e, "type": "cell", "cell": i}` or `{"episode": e, "type": "diff"}` for '
     'the working model\'s own code; `{"episode": e, "type": "episode", "runner": "worktree" | "tool" '
     '| "dialogue", ...}` for a whole procedure.\n'
-    "  - `support` lists helper files your tests import, under a `tests/` directory. The harness records "
+    "  - `support` lists helper files: a test helper under a package's `tests/` directory, or a shared module "
+    "`memory/<package>/<module>.py` that the package's items import, holding private (`_`) functions and classes "
+    "such as the package's `MemoryInputError` (a public function is an item). The harness records "
     "fixtures itself.\n"
     "  - `why` is one line on why the change helps. The harness writes it, the episodes and the item ids into "
     "the commit.\n"
@@ -242,7 +247,7 @@ _WRITE = (
     "round.\n"
     "\n" + _REPAIR + "\n"
     "# Done\n"
-    "You are done when every episode in the batch is covered or dismissed, and every item you wrote has passed "
+    "You are done when every episode in the batch is <<episode_done>>, and every item you wrote has passed "
     "the gate or is kept as a draft with its failure. Then call `finish(summary)`.\n"
 )
 
@@ -357,13 +362,20 @@ def write_brief(
     semantic_types: str,
     input_forms: Mapping[str, str] = INPUT_FORMS_V21,
     extra_inputs: tuple[str, ...] = (),
+    pool: bool = False,
 ) -> str:
     """The WRITE brief with its numbers filled in. *extra_inputs* are whole input bullets that an optional switch
-    adds (P8; constant per run)."""
+    adds (P8; constant per run); *pool* (UNIFY_MEMORY_V21_POOL) adds attaching to a pool entry to the end condition.
+    """
     return _fill(
         _WRITE,
         {
             "extra_inputs": "".join(extra_inputs),
+            "episode_done": (
+                "covered, dismissed with a reason, or attached to a pool entry"
+                if pool
+                else "covered or dismissed with a reason"
+            ),
             "view_bytes": view_bytes,
             **_limits(max_checks, repair_rounds),
             "mutation_min_pct": _pct(mutation_min),
@@ -402,7 +414,27 @@ def curate_brief(
     )
 
 
-def write_brief_now(extra_inputs: tuple[str, ...] = ()) -> str:
+#: m4j (MAIN for the lead, 11 Oct; writer audit): the inputs a pass prepares beyond the batch, one bullet each, named
+#: in the WRITE brief when the pass's configuration provides them (constant per run, so the brief stays byte-stable).
+STAGING_INPUT = (
+    "- /inputs/staging/<episode>/ (when an episode has any): work drafted from that episode by another model: "
+    "`candidates/<name>.py` (a function), `cases/<name>.json` (its example inputs and outputs) and `notes.md`. "
+    "Each batch-map row's `staging` names its files. It is untrusted input: adopt it, edit it or leave it.\n"
+)
+S0_INPUT = (
+    "- /inputs/s0/clusters.json and /inputs/s0/behaviour.json: code that recurs across recorded episodes, "
+    "grouped by shape and by behaviour, with each instance's episode, cell and lines. A recurring piece is a "
+    "candidate function; listing its instances under `replaces` lets `replay` verify it.\n"
+)
+POOL_INPUT = (
+    "- /inputs/pool/: open proposals kept from earlier passes (candidates, lessons, code clusters, drafts and "
+    "deferred episodes), listed in INDEX.md with the episodes behind each. Your manifest's `pool` block closes "
+    "an entry; `dismiss(..., defer=true)` keeps an episode open there, and `pool_entry=<id>` adds it to an "
+    "existing entry.\n"
+)
+
+
+def write_brief_now(extra_inputs: tuple[str, ...] = (), pool: bool = False) -> str:
     """The WRITE brief from the constants that enforce each number (imported here: they import this module's
     callers)."""
     from . import code_lint, manifest, qa, views
@@ -418,6 +450,7 @@ def write_brief_now(extra_inputs: tuple[str, ...] = ()) -> str:
         pytest_env=_PYTEST_ENV,
         semantic_types=manifest.describe_semantic_types(),
         extra_inputs=extra_inputs,
+        pool=pool,
     )
 
 
