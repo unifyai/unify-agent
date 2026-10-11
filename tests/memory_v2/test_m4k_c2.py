@@ -37,17 +37,25 @@ def test_the_rehearsal_pass_that_thrashed_never_compacts_call_after_call(tmp_pat
     "over size" from call ~50 on, so compaction fired on every call; now it fires only for a real drop.
     """
     rows = json.loads(SIZES.read_text())["rows"]
-    msgs, events, old_over, calls = [], [], 0, 0
-    for i, (role, content, args, psf, reasoning) in enumerate(rows):
-        if role == "assistant":
-            calls += 1
-            if sum(len(json.dumps(m)) for m in msgs) > sol_pass.COMPACT_AT_CHARS:
-                old_over += 1  # m4k-c's measure: a compaction on this call
-            if sol_pass._compact(msgs, tmp_path, sol_pass.COMPACT_AT_CHARS):
-                events.append(calls)
-        msgs.append(_message(role, content, args, psf, reasoning, i))
-    assert old_over >= 10  # the scenario that thrashed
-    assert len(events) <= 2 and all(b - a > 5 for a, b in zip(events, events[1:]))
+    for at in (
+        240_000,
+        sol_pass.COMPACT_AT_CHARS,
+    ):  # m4k-c's recorded value, and today's
+        msgs, events, old_over, calls = [], [], 0, 0
+        (tmp_path / str(at)).mkdir()
+        for i, (role, content, args, psf, reasoning) in enumerate(rows):
+            if role == "assistant":
+                calls += 1
+                if sum(len(json.dumps(m)) for m in msgs) > at:
+                    old_over += 1  # m4k-c's measure: a compaction on this call
+                if sol_pass._compact(msgs, tmp_path / str(at), at):
+                    events.append(calls)
+            msgs.append(_message(role, content, args, psf, reasoning, i))
+        assert old_over >= 10  # the scenario that thrashed
+        assert len(events) <= 2 and all(b - a > 5 for a, b in zip(events, events[1:]))
+        assert sum(sol_pass._prompt_chars(m) for m in msgs) <= at + 2 * max(
+            r[1] + r[2] for r in rows
+        )
 
 
 def test_provider_fields_and_reasoning_are_not_prompt_text():

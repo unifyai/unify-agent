@@ -593,9 +593,11 @@ def _parts_from_text(args: dict) -> dict:
     return out
 
 
-#: UNIFY_MEMORY_V21_COMPACT: the conversation size (serialized characters, about 4 per token) that triggers a
-#: compaction, and the messages at its end that are never touched. A trigger on size, never on a stream or step count.
-COMPACT_AT_CHARS = 240_000
+#: UNIFY_MEMORY_V21_COMPACT: the conversation size (prompt text, :func:`_prompt_chars`) that triggers a compaction,
+#: and the messages at its end that are never touched. A trigger on size, never on a stream or step count. m4k-c2: the
+#: replay of rehearsal 2's writer conversations measured 1.48 prompt characters per billed token (ARC grids are
+#: token-dense), so the intended ~60k tokens is ~90k characters; 240k let the context reach ~150k tokens.
+COMPACT_AT_CHARS = 90_000
 COMPACT_KEEP_LAST = 6
 _COMPACT_STUB = "[compacted: "
 
