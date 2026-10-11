@@ -606,11 +606,19 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
     the request, Sol's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
     are saved under *out_dir*/compacted/ and replaced by a pointer to re-open them with ``read``, until the size is at
     most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
-    the number of results moved."""
+    the number of results moved. RUNTIME's defence in depth (MAIN 11 Oct): nothing is compacted when *out_dir* or its
+    ``compacted/`` is a link or not a directory, and each file is created new, never through a link (a result whose
+    file cannot be made that way stays in the conversation)."""
     sizes = [len(json.dumps(m, default=str)) for m in messages]
     total = sum(sizes)
     if total <= at:
         return 0
+    folder = out_dir / "compacted"
+    if out_dir.is_symlink() or not out_dir.is_dir():
+        return 0
+    if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
+        return 0
+    folder.mkdir(exist_ok=True)
     moved = 0
     for i, m in enumerate(messages[: max(0, len(messages) - COMPACT_KEEP_LAST)]):
         if total <= at // 2:
@@ -626,9 +634,17 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
             re.sub(r"[^A-Za-z0-9_.-]", "_", str(m.get("tool_call_id") or f"m{i}"))[:80]
             or f"m{i}"
         )
-        target = out_dir / "compacted" / f"{i:04d}-{name}.txt"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target = folder / f"{i:04d}-{name}.txt"
+        try:
+            fd = os.open(
+                target,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+            )
+        except OSError:
+            continue  # it exists already, or is a link: this result stays in the conversation
+        with os.fdopen(fd, "w") as fh:
+            fh.write(content)
         m["content"] = (
             f"{_COMPACT_STUB}this result ({len(content)} characters) was moved out of the conversation to keep it "
             f'short; read it again with read(path="/outputs/compacted/{target.name}")]'

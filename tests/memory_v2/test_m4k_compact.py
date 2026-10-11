@@ -126,3 +126,51 @@ def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
         assert "UNIFY_MEMORY_V21_COMPACT" in str(exc)
     else:
         raise AssertionError("an unknown value was accepted")
+
+
+# --- RUNTIME's defence in depth (MAIN 11 Oct) -------------------------------------------------------------------
+
+
+def test_a_linked_compacted_folder_is_refused_and_nothing_is_written_through_it(
+    tmp_path,
+):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    out = tmp_path / "outputs"
+    out.mkdir()
+    (out / "compacted").symlink_to(elsewhere)
+    msgs = _conv(10, 3_000)
+    before = json.dumps(msgs)
+    assert sol_pass._compact(msgs, out, at=20_000) == 0 and json.dumps(msgs) == before
+    assert list(elsewhere.iterdir()) == []
+    linked_out = tmp_path / "linked-outputs"
+    linked_out.symlink_to(out)
+    assert (
+        sol_pass._compact(msgs, linked_out, at=20_000) == 0
+        and json.dumps(msgs) == before
+    )
+
+
+def test_an_existing_file_or_link_is_never_overwritten_or_followed(tmp_path):
+    out = tmp_path / "outputs"
+    (out / "compacted").mkdir(parents=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    msgs = _conv(10, 3_000)
+    (out / "compacted" / "0003-c0.txt").symlink_to(
+        victim,
+    )  # where the first result would go
+    (out / "compacted" / "0005-c1.txt").write_text(
+        "already here",
+    )  # where the second would go
+    first, second = msgs[3]["content"], msgs[5]["content"]
+    moved = sol_pass._compact(msgs, out, at=20_000)
+    assert moved > 0
+    assert (
+        msgs[3]["content"] == first and msgs[5]["content"] == second
+    )  # both stay in the conversation
+    assert (
+        victim.read_text() == "keep me"
+        and (out / "compacted" / "0005-c1.txt").read_text() == "already here"
+    )
+    assert msgs[7]["content"].startswith("[compacted: ")  # the next ones still move
