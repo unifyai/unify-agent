@@ -9,7 +9,11 @@ from unify.memory_v2 import pool, prompts_v21 as pv, sol_pass
 from unify.memory_v2.batch_map import build_batch_map
 from unify.memory_v2.views import Coverage
 from tests.memory_v2.test_gate import _candidate
+from unify.memory_v2 import fixtures as fx
 from tests.memory_v2.test_gate_v21 import (
+    E1,
+    ITEM_ID,
+    TEST,
     WEAK_TEST,
     _files_and_fixtures,
     _man,
@@ -167,4 +171,56 @@ def test_the_exact_assertion_refusal_shows_a_form_that_passes(world21):
     files, fixtures = _files_and_fixtures(blobs, test=WEAK_TEST)
     res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
     reason = next(r for r in res.reasons if "[v21:exact]" in r)
-    assert "A form that passes" in reason and "assert f(load(fixture)) ==" in reason
+    # RUNTIME 18:17Z: the passing form loads the expected value from a fixture (no literal answer in code)
+    assert (
+        "A form that passes" in reason
+        and "assert f(load(fixture_in)) == load(fixture_out)" in reason
+    )
+    assert "literal" not in reason.split("A form that passes")[1]
+
+
+FIXTURE_FORM_TEST = TEST.replace(
+    '''    observation = json.loads((DATA / "me.json").read_text())
+    assert user_id(observation) == "u-1"''',
+    """    observation = json.loads((DATA / "me.json").read_text())
+    expected = json.loads((DATA / "expected.json").read_text())
+    assert user_id(observation) == expected""",
+)
+
+
+def test_the_fixture_form_the_refusal_shows_passes_g3(world21):
+    """MAIN 11 Oct: the form G3's refusal shows must pass the gate itself. Both sides are harness-recorded fixtures (the
+    expected value a byte slice of the recorded response), with no literal in the test.
+    """
+    assert (
+        FIXTURE_FORM_TEST != TEST
+        and '"u-1"'
+        not in FIXTURE_FORM_TEST.split("def test_reads")[1].split("@pytest")[0]
+    )
+    mem, ev, blobs, gate = world21
+    files, fixtures = _files_and_fixtures(blobs, test=FIXTURE_FORM_TEST)
+    whole = files["memory/acct/tests/data/me.json"].encode()
+    at = whole.index(b'"u-1"')
+    out, entry = fx.make(
+        E1,
+        0,
+        "memory/acct/tests/data/expected.json",
+        blob=blobs.get,
+        cut=[at, at + 5],
+    )
+    assert json.loads(out) == "u-1"
+    files["memory/acct/tests/data/expected.json"] = out.decode()
+    fixtures["memory/acct/tests/data/expected.json"] = entry
+    res = gate().merge(
+        mem.head(),
+        _candidate(mem, files),
+        _man(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
+    assert res.passed, res.reasons
+    assert (
+        res.verification[ITEM_ID]["exact_assertions"] == 2
+    )  # the fixture-form assertion counts, as the literal did

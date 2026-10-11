@@ -668,7 +668,11 @@ def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
                         {u.get("cell") for u in us if u.get("episode") == eid},
                     ),
                     "file": "/inputs/s0/behaviour.json",
-                    "pool_entry": entry_id("cluster", "b:" + ",".join(akeys)),
+                    # the pool's own keying (pool.from_clusters): a witness group (S0 contract 2) is "b2:"
+                    "pool_entry": entry_id(
+                        "cluster",
+                        ("b2:" if c.get("witness") else "b:") + ",".join(akeys),
+                    ),
                 },
             )
     return out
