@@ -127,6 +127,7 @@ from .switch import (
     v21_enabled,
     v21_analysts,
     v21_pool,
+    v21_compact,
     v21_max_reads,
 )
 
@@ -1072,6 +1073,7 @@ async def run_due_passes(
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
                 "analysts": v21_analysts(settings),
                 "pool": v21_pool(settings),
+                "compact": v21_compact(settings),
                 "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),
                 "worktree_git": (
                     str(stores.paths.worktree_git)

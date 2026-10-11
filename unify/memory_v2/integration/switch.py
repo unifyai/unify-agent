@@ -649,6 +649,9 @@ V21_ANALYSTS = "UNIFY_MEMORY_V21_ANALYSTS"
 #: The lead, 11 Oct: the candidate pool (pool.py): ``on`` keeps every proposal (staging, S0 clusters, drafts,
 #: deferrals) open across passes on the memory repo's refs/heads/pool until the writer closes it; ``off``: none.
 V21_POOL = "UNIFY_MEMORY_V21_POOL"
+#: MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the writer's
+#: conversation once it passes a size (sol_pass._compact); ``off``: the conversation is never changed.
+V21_COMPACT = "UNIFY_MEMORY_V21_COMPACT"
 V21_MAX_READS_DEFAULT = 400
 #: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
 V21_SOL_USD_PER_TOKEN = "UNIFY_MEMORY_V21_SOL_USD_PER_TOKEN"
@@ -834,6 +837,15 @@ def v21_pool(settings: Any) -> bool:
     return parse_v21_pool(getattr(settings, V21_POOL, "") or "") == "on"
 
 
+def parse_v21_compact(v: Any) -> str:
+    """``UNIFY_MEMORY_V21_COMPACT``: ``off`` (also for empty) or ``on``."""
+    return _on_off(V21_COMPACT, v)
+
+
+def v21_compact(settings: Any) -> bool:
+    return parse_v21_compact(getattr(settings, V21_COMPACT, "") or "") == "on"
+
+
 def parse_v21_analysts(v: Any) -> str:
     """``UNIFY_MEMORY_V21_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
     s = str(v or "").strip().lower() or "off"
@@ -998,6 +1010,7 @@ PARSERS = {
     V21_FORK_TOKEN_FD: parse_v21_fork_token_fd,
     V21_ANALYSTS: parse_v21_analysts,
     V21_POOL: parse_v21_pool,
+    V21_COMPACT: parse_v21_compact,
     V21_SOL_USD_PER_TOKEN: parse_v21_sol_usd_per_token,
     V21_PASS_WALL_S: parse_v21_pass_wall_s,
     SOL_JOURNAL: parse_sol_journal,

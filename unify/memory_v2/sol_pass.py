@@ -593,6 +593,52 @@ def _parts_from_text(args: dict) -> dict:
     return out
 
 
+#: UNIFY_MEMORY_V21_COMPACT: the conversation size (serialized characters, about 4 per token) that triggers a
+#: compaction, and the messages at its end that are never touched. A trigger on size, never on a stream or step count.
+COMPACT_AT_CHARS = 240_000
+COMPACT_KEEP_LAST = 6
+_COMPACT_STUB = "[compacted: "
+
+
+def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) -> int:
+    """Cache-preserving compaction (MAIN 11 Oct; the rehearsal's HIGH pass re-sent its whole history on each of 286
+    calls). When the conversation's serialized size passes *at*, the oldest tool results (never the system message,
+    the request, Sol's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
+    are saved under *out_dir*/compacted/ and replaced by a pointer to re-open them with ``read``, until the size is at
+    most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
+    the number of results moved."""
+    sizes = [len(json.dumps(m, default=str)) for m in messages]
+    total = sum(sizes)
+    if total <= at:
+        return 0
+    moved = 0
+    for i, m in enumerate(messages[: max(0, len(messages) - COMPACT_KEEP_LAST)]):
+        if total <= at // 2:
+            break
+        content = m.get("content") if isinstance(m, dict) else None
+        if (
+            m.get("role") != "tool"
+            or not isinstance(content, str)
+            or content.startswith(_COMPACT_STUB)
+        ):
+            continue
+        name = (
+            re.sub(r"[^A-Za-z0-9_.-]", "_", str(m.get("tool_call_id") or f"m{i}"))[:80]
+            or f"m{i}"
+        )
+        target = out_dir / "compacted" / f"{i:04d}-{name}.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        m["content"] = (
+            f"{_COMPACT_STUB}this result ({len(content)} characters) was moved out of the conversation to keep it "
+            f'short; read it again with read(path="/outputs/compacted/{target.name}")]'
+        )
+        new = len(json.dumps(m, default=str))
+        total += new - sizes[i]
+        moved += 1
+    return moved
+
+
 def _finish_refusal(cov: Any, missing: list[str]) -> str:
     """m4k: the refusal names each uncovered episode's unread required parts and what is already dismissed, so one
     call can act on it (the rehearsal's writer re-called finish six times on one named episode).
@@ -875,6 +921,9 @@ class PassConfig:
     worktree_git: str | None = None
     # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_V21_POOL; pool.py): proposals persist across passes
     pool: bool = False
+    # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_V21_COMPACT moves old tool results out of
+    # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
+    compact: bool = False
 
 
 def _json_file(path: Path, default):
@@ -3390,6 +3439,8 @@ class SolPass:
                     cause(CODE_DEADLINE)
                     break
                 calls += 1
+                if self.cfg.v21 and self.cfg.compact:
+                    _compact(messages, Path(tmp) / "outputs", COMPACT_AT_CHARS)
                 try:
                     msg, usd = await asyncio.wait_for(
                         self.turn(messages, tools),
