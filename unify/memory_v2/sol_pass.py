@@ -567,6 +567,30 @@ def _shown_complete(
         shown.setdefault(hashlib.sha256(data).hexdigest(), (eid, part))
 
 
+def _parts_from_text(args: dict) -> dict:
+    """m4j: ``read_episode``'s parts given as text are read as the list they name: ``parts`` as a string (a JSON
+    list, ``parts=[...]`` or names separated by commas), or a ``part`` naming several parts that way.
+    """
+    several = "parts" in args
+    raw = args.get("parts") if several else args.get("part")
+    if not isinstance(raw, str):
+        return args
+    text = raw.strip()
+    if text.startswith("parts="):
+        text, several = text[len("parts=") :].strip(), True
+    if not several and not text.startswith("[") and "," not in text:
+        return args  # one part's name
+    try:
+        val = json.loads(text)
+    except ValueError:
+        val = None
+    if not isinstance(val, list):
+        val = [x.strip().strip("'\"") for x in text.strip("[]").split(",")]
+    out = {k: v for k, v in args.items() if k not in ("part", "parts")}
+    out["parts"] = [v for v in val if not (isinstance(v, str) and not v.strip())]
+    return out
+
+
 def _with_fixtures(manifest: object, made: dict) -> object:
     """The harness's fixture provenance replaces whatever the manifest says under ``fixtures`` (spec v2.1 §7.4)."""
     if not isinstance(manifest, dict):
@@ -655,6 +679,13 @@ def sol_tools(
                     tool["function"]["parameters"]["properties"]["defer"] = {
                         "type": "boolean",
                         "description": "true: keep the episode in the candidate pool for a later pass",
+                    }
+                    tool["function"]["parameters"]["properties"]["pool_entry"] = {
+                        "type": "string",
+                        "description": (
+                            "with defer=true, optional: the id of an open pool entry this episode is more evidence "
+                            "for; the episode and reason are added to that entry instead of opening a new one"
+                        ),
                     }
     return tools
 
@@ -1760,7 +1791,9 @@ class SolPass:
         self._pool_error: str | None = None
         self._pool_staging: list = []
         self._pool_s0: tuple = ([], {})
-        self._deferred: dict[str, str] = {}
+        self._deferred: dict[str, tuple[str, str | None]] = (
+            {}
+        )  # episode -> (reason, the entry it extends)
         self._pool_manifest: object = None
         # v2.1: the open drafts the last _stage_inputs staged (spec §8.4); always [] with v21 off
         self._drafts: list[dict] = []
@@ -2093,13 +2126,16 @@ class SolPass:
                 finished=bool(out.finished),
             )
             new: list = []
+            extended: list[str] = []
             if req.kind != "curate":
                 for eid, view in self._pool_staging:
                     new += _pool_mod.from_staging(eid, view)
                 new += _pool_mod.from_clusters(*self._pool_s0)
-                new += [
-                    _pool_mod.deferred(e, r) for e, r in sorted(self._deferred.items())
-                ]
+                for e, (r, target) in sorted(self._deferred.items()):
+                    if target is None:
+                        new.append(_pool_mod.deferred(e, r))
+                    elif p.add_evidence(target, e, r, pass_id):
+                        extended.append(target)
                 if not out.passed:
                     new += self._pool_draft(pass_id)
             added = 0
@@ -2110,6 +2146,7 @@ class SolPass:
             return {
                 "open": len(p.open_entries()),
                 "added": added,
+                "extended": sorted(set(extended)),
                 "changed": changed,
                 "commit": p.save(pass_id),
             }
@@ -2485,18 +2522,31 @@ class SolPass:
                     offset,
                 )
             if name == "dismiss":
+                defer = bool(self.cfg.pool and args.get("defer") is True)
+                target = args.get("pool_entry") if self.cfg.pool else None
+                target = str(target).strip() if target not in (None, "") else None
+                if target is not None:
+                    # the lead, 11 Oct (m4j): a revisit adds evidence to an entry the writer names
+                    if not defer:
+                        return "refused: pool_entry needs defer=true; nothing was dismissed"
+                    if self._pool is None or not any(
+                        e.id == target for e in self._pool.open_entries()
+                    ):
+                        return f"refused: {target[:40]!r} is not an open pool entry; nothing was dismissed"
                 out = cov.dismiss(
                     str(args.get("episode", "")),
                     str(args.get("reason", "")),
                 )
-                if out == "ok" and self.cfg.pool and args.get("defer") is True:
-                    self._deferred[str(args.get("episode", ""))] = str(
-                        args.get("reason", ""),
+                if out == "ok" and defer:
+                    self._deferred[str(args.get("episode", ""))] = (
+                        str(args.get("reason", "")),
+                        target,
                     )
                 return out
             eid = str(args.get("episode", ""))
             if eid not in eps:
                 return f"refused: {eid!r} is not in this batch"[:300]
+            args = _parts_from_text(args)
             if "parts" not in args and str(args.get("part", "")) == "overview":
                 # r5 (r4 §5): end first, then every step's handle; credits the end parts only when all of it shows
                 text_, end_parts = _bm.solution_first(eps[eid], self._shared)
@@ -3023,11 +3073,16 @@ class SolPass:
                     (inputs / "gate" / "previous.md").is_file(),
                 )
             if self.cfg.v21 and self._pool is not None:
+                # m4j: the index's first page is shown here (paged like any view; the rest is read at the marker)
+                index = (Path(inputs) / "pool" / "INDEX.md").read_bytes()
                 first += (
-                    f"\n\nCandidate pool: {self._pool_open} open entries (/inputs/pool/INDEX.md; each entry's "
-                    "files under /inputs/pool/<id>/): proposals earlier passes left open. Your manifest may close "
-                    'entries with `"pool": {"merged": {"<id>": "<item>"}, "superseded": {"<id>": "<id or item>"}, '
-                    '"retired": {"<id>": "<reason>"}}`; `dismiss(..., defer=true)` keeps an episode open in it.'
+                    f"\n\nCandidate pool: {self._pool_open} open entries: proposals earlier passes left open "
+                    "(each entry's files under /inputs/pool/<id>/). Your manifest may close entries with "
+                    '`"pool": {"merged": {"<id>": "<item>"}, "superseded": {"<id>": "<id or item>"}, '
+                    '"retired": {"<id>": "<reason>"}}`; `dismiss(..., defer=true)` keeps an episode open in it, '
+                    "and `dismiss(..., defer=true, pool_entry=<id>)` adds it to an open entry it is more evidence "
+                    "for. The index (/inputs/pool/INDEX.md; read it at a marker's offset for more):\n\n"
+                    + _views.view(index)
                 )
             messages: list[dict] = [
                 # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each

@@ -220,6 +220,20 @@ class Pool:
             have.last_changed_in = pass_id
         return have
 
+    def add_evidence(self, eid: str, episode: str, reason: str, pass_id: str) -> bool:
+        """m4j: the writer's ``dismiss(defer=true, pool_entry=<eid>)``: *episode* and its reason join entry *eid*
+        (its status is unchanged). False when there is no such entry."""
+        e = self.entries.get(eid)
+        if e is None:
+            return False
+        e.add_provenance([episode], [pass_id], ["writer"])
+        ev = e.data.setdefault("evidence", [])
+        row = {"episode": episode, "reason": reason, "pass": pass_id}
+        if row not in ev:
+            ev.append(row)
+        e.last_changed_in = pass_id
+        return True
+
     def set_status(self, eid: str, status: str, detail: dict, pass_id: str) -> None:
         e = self.entries[eid]
         e.status, e.status_detail, e.last_changed_in = (
@@ -314,9 +328,10 @@ class Pool:
             "",
         ]
         for e in rows:
-            n = len(e.provenance.get("episodes", []))
+            eps = e.provenance.get("episodes", [])
             lines.append(
-                f"- `{e.id}` {e.kind}: {e.title} ({n} episode(s); opened in {e.opened_in})",
+                f"- `{e.id}` {e.kind}: {e.title} ({len(eps)} episode(s): {', '.join(eps) or '-'}; "
+                f"opened in {e.opened_in})",
             )
             write(
                 f"{e.id}/entry.json",

@@ -249,7 +249,11 @@ class Coverage:
         self._ranges[(eid, part)] = merged
 
     def _part_done(self, eid: str, part: str) -> bool:
-        n = self.sizes[(eid, part)]
+        n = self.sizes.get((eid, part))
+        if (
+            n is None
+        ):  # not a required part (an overview's end cell may not be): never "done"
+            return False
         r = self._ranges.get((eid, part), [])
         return n == 0 or (len(r) == 1 and r[0][0] <= 0 and r[0][1] >= n)
 

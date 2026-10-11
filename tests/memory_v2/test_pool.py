@@ -173,7 +173,10 @@ def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkey
     assert first.splitlines()[0].startswith(
         'Pass p2: {"kind": "incremental"',
     )  # the fakes read the ids here
-    assert "\n\nCandidate pool: 1 open entries (/inputs/pool/INDEX.md;" in first
+    assert (
+        "\n\nCandidate pool: 1 open entries: proposals earlier passes left open"
+        in first
+    )
     defer = next(
         t for t in sol_tools(v21=True, pool=True) if t["function"]["name"] == "dismiss"
     )
