@@ -230,7 +230,8 @@ async def test_litellm_logs_are_suppressed(llm_config, caplog):
             message="start",
             tools={"noop_tool": noop_tool},
             loop_id="LiteLLMTest",
-            max_steps=5,
+            # Room for the tool call, its result and the final reply.
+            max_steps=10,
             timeout=60,
         )
 
@@ -405,7 +406,8 @@ async def test_thinking_log_fallback_without_log_dir(llm_config, unify_logs):
                 message="start",
                 tools={"noop_tool": noop_tool},
                 loop_id="FallbackTest",
-                max_steps=5,
+                # Room for the tool call, its result and the final reply.
+                max_steps=10,
                 timeout=60,
             )
 
