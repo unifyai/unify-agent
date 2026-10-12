@@ -360,23 +360,46 @@ def counts(blocks: list[dict]) -> dict:
     return c
 
 
-def ledger(
-    blocks: list[dict],
-    *,
-    episode: str | None = None,
-    reply_sha256: str | None = None,
-) -> dict:
-    """The ``fork-blocks.json`` document: every block without its content, and the counts (blocks found = parsed +
-    refused + dropped). A reply without blocks says so in ``note``."""
-    rows = [{k: v for k, v in b.items() if k != "content"} for b in blocks]
+def ledger(blocks: list[dict]) -> dict:
+    """The hop record of *blocks*: every block without its content, and the counts (blocks found = parsed + refused
+    + dropped). A reply without blocks says so in ``note``. :func:`write_record` adds the episode and the reply's
+    digest to make ``fork-blocks.json``."""
     doc = {
-        "episode": episode,
-        "reply_sha256": reply_sha256,
-        "blocks": rows,
+        "blocks": [{k: v for k, v in b.items() if k != "content"} for b in blocks],
         "counts": counts(blocks),
     }
     if not blocks:
         doc["note"] = "no blocks"
+    return doc
+
+
+def write_record(
+    staging: Path | str,
+    episode_id: str | None,
+    reply_text: str,
+    hop_record: dict,
+    replies: list[dict] | None = None,
+) -> dict:
+    """Write the raw reply (``fork-reply.json``) and the block ledger (``fork-blocks.json``) inside the episode's
+    staging dir *staging*, which lives under the state dir, outside Git. ``reply_sha256`` is the sha256 of
+    *reply_text* (the reply's message contents joined by ``"\\n"``); ``reply_file_sha256`` is that of the
+    ``fork-reply.json`` bytes, which also keep the reply's messages (*replies*, tool calls included) when given.
+    Returns the ``fork-blocks.json`` document."""
+    staging = Path(staging)
+    raw_doc: dict = {"episode": episode_id, "text": reply_text}
+    if replies is not None:
+        raw_doc["replies"] = replies
+    raw = (json.dumps(raw_doc, indent=1, sort_keys=True, default=str) + "\n").encode("utf-8", "surrogatepass")
+    fd = os.open(staging / REPLY_JSON, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(raw)
+    doc = {
+        "episode": episode_id,
+        "reply_sha256": _sha(reply_text),
+        "reply_file_sha256": hashlib.sha256(raw).hexdigest(),
+        **hop_record,
+    }
+    atomic_json(staging / BLOCKS_JSON, doc)
     return doc
 
 
@@ -389,12 +412,13 @@ def parse_reply(text: str) -> tuple[list[dict], dict]:
     without the path line, the fence lines and leading or trailing blank lines), ``lines`` (that content's line
     range ``[a, b)`` in *text* split on newlines), ``content`` (the file's text with a final newline; None unless
     parsed), ``source``, and where they apply ``renamed_from``, ``marker``, ``unclosed`` and ``refusal``. *record*
-    is the block ledger (:func:`ledger`) with the text's sha256 as ``reply_sha256``.
+    is the hop record (:func:`ledger`): ``blocks`` without their content, ``counts``, and ``note`` when there are no
+    blocks; :func:`write_record` adds the episode and the reply's digest.
     """
     text = text if isinstance(text, str) else ""
     blocks = _decide(_scan(text), "text")
     _supersede(blocks)
-    return blocks, ledger(blocks, reply_sha256=_sha(text))
+    return blocks, ledger(blocks)
 
 
 # --- the reply's messages -----------------------------------------------------------------------------------------
@@ -648,18 +672,9 @@ def run(
         doc["status"] = "ok: operational quota reached"
     usd = usage.pop("_usd", None) if usage else None
     doc["usage"], doc["usd"] = usage, (str(usd) if usd is not None else None)
-    raw = (
-        json.dumps({"episode": req.get("episode"), "replies": replies}, indent=1, sort_keys=True)
-        + "\n"
-    ).encode("utf-8")
-    reply_sha = hashlib.sha256(raw).hexdigest()
-    with open(staging / REPLY_JSON, "wb") as fh:
-        fh.write(raw)
-    atomic_json(
-        staging / BLOCKS_JSON,
-        ledger(blocks, episode=req.get("episode"), reply_sha256=reply_sha),
-    )
-    doc["reply_sha256"], doc["blocks"] = reply_sha, counts(blocks)
+    text = "\n".join(message_text(m) for m in replies)
+    record = write_record(staging, req.get("episode"), text, ledger(blocks), replies)
+    doc["reply_sha256"], doc["blocks"] = record["reply_sha256"], counts(blocks)
     atomic_json(staging / FORK_JSON, doc)
     return doc
 

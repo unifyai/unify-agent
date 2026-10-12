@@ -170,10 +170,23 @@ def request_doc(
     source, why = _session_fork_source(inner, getattr(handle, "_actor", None))
     if source is None:
         return None, why
+    if not _model(source["client"]):
+        return None, "the session's client names no model"
+    return request_from_source(eid, source, url, key), None
+
+
+def request_from_source(episode_id: str, source: dict, base_url: str, token: str) -> dict:
+    """The fork's request document from a conversation *source* (``client``, ``sent_messages``, ``tools`` and
+    optionally ``tool_choice``, as the actor's session reader gives them): the messages and tool schemas unchanged,
+    then :func:`fork_instruction`. *base_url* is the fork lane's URL (``/chat/completions`` is added when it is not
+    already there); *token* goes only into the headers, which reach the worker on its stdin."""
+    eid = episode_id
+    url = base_url if base_url.rstrip("/").endswith("/chat/completions") else base_url.rstrip("/") + "/chat/completions"
+    key = token
     client = source["client"]
     model = _model(client)
     if not model:
-        return None, "the session's client names no model"
+        raise ValueError("the session's client names no model")
     body: dict = {
         "model": model,
         "messages": [
@@ -196,7 +209,7 @@ def request_doc(
         "x-unify-session": f"fork.{eid}",
         "x-unify-parent": eid,
     }
-    return {"episode": eid, "url": url, "headers": headers, "body": body}, None
+    return {"episode": eid, "url": url, "headers": headers, "body": body}
 
 
 def _record(staging: Path, eid: str, status: str, detail: str | None = None) -> None:
@@ -283,12 +296,28 @@ def _age_s(path: Path) -> float:
 
 
 def settled(root: Path | str, eid: str) -> bool:
-    """Whether *eid*'s fork has settled under *root* (``<state>/memory-staging``), recording ``"lost"`` or
-    ``"timeout"`` where the process is gone or past every bound. An episode with no staging dir had no fork and
-    is settled."""
+    """Whether *eid*'s fork has settled under *root* (``<state>/memory-staging``): first :func:`resolve` (which records
+    ``"lost"`` or ``"timeout"`` for a fork that can no longer settle itself), then the pure rule
+    :func:`..trigger.admit_settled`."""
+    from ..trigger import admit_settled
+
+    resolve(root, eid)
+    return bool(admit_settled(root, [eid])[0])
+
+
+def resolve(root: Path | str, eid: str) -> None:
+    """Record ``"lost"`` when *eid*'s fork process is gone without its record (its lock is free) or was never
+    started, and ``"timeout"`` when its lock is still held past :data:`STALE_S`; otherwise leave it alone."""
     from ..staging import STATUS_FILES
 
-    d = Path(root) / eid
+    try:
+        _resolve(Path(root), eid, STATUS_FILES)
+    except OSError:
+        pass  # unreadable state: nothing recorded; the pure rule decides on the files as they are
+
+
+def _resolve(root: Path, eid: str, status_files: Any) -> bool:
+    d = root / eid
     try:
         st = os.lstat(d)
     except FileNotFoundError:
@@ -297,7 +326,7 @@ def settled(root: Path | str, eid: str) -> bool:
         return True
     if not stat.S_ISDIR(st.st_mode):
         return True  # a link or a file is never read as staging
-    if any(os.path.lexists(d / name) for name in STATUS_FILES):
+    if any(os.path.lexists(d / name) for name in status_files):
         return True
     try:
         fd = os.open(d / LOCK_FILE, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)

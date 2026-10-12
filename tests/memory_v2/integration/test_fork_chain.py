@@ -63,7 +63,7 @@ def test_every_labelled_file_is_recovered_with_its_path_and_content():
         blocks, record = fw.parse_reply(e["text"])
         c = record["counts"]
         assert c["blocks"] == len(blocks) == c["parsed"] + c["refused"] + c["dropped"], rid
-        assert record["reply_sha256"] == e["text_sha256"]
+        assert set(record) <= {"blocks", "counts", "note"}  # the episode and digest come from write_record
         if not e["files"]:
             assert blocks == [] and record["note"] == "no blocks", rid
             continue
@@ -213,8 +213,9 @@ def test_the_worker_writes_the_ledger_and_the_raw_reply_with_its_digest(tmp_path
     doc = fw.run(_req(), tmp_path, post=lambda u, h, b: _reply(content=text))
     ledger = json.loads((tmp_path / fw.BLOCKS_JSON).read_text())
     raw = (tmp_path / fw.REPLY_JSON).read_bytes()
-    assert ledger["reply_sha256"] == hashlib.sha256(raw).hexdigest() == doc["reply_sha256"]
-    assert json.loads(raw)["replies"][0]["content"] == text
+    assert ledger["reply_sha256"] == hashlib.sha256(text.encode()).hexdigest() == doc["reply_sha256"]
+    assert ledger["reply_file_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert json.loads(raw)["replies"][0]["content"] == json.loads(raw)["text"] == text
     assert ledger["counts"] == doc["blocks"] == {"blocks": 3, "parsed": 1, "refused": 1, "dropped": 1}
     assert [f["path"] for f in doc["files"]] == ["candidates/double.py"]  # files written = parsed
     assert ledger["episode"] == "e1" and all("content" not in b for b in ledger["blocks"])
@@ -458,3 +459,44 @@ def test_the_fork_request_keeps_the_tools_but_never_a_forcing_choice(monkeypatch
     doc, why = fork_mod.request_doc(SimpleNamespace(), "e1", "http://127.0.0.1:9/v1", "t")
     assert why is None and doc["body"]["tools"] == tools and doc["body"]["tool_choice"] == "auto"
     assert doc["body"]["messages"][-1] == {"role": "user", "content": fork_mod.fork_instruction()}
+
+
+def test_write_record_keeps_the_raw_reply_and_the_ledger_in_the_staging_dir(tmp_path):
+    text = "```path: notes.md\nA lesson.\n```\n```path: x.txt\ny\n```"
+    blocks, hop = fw.parse_reply(text)
+    doc = fw.write_record(tmp_path, "e9", text, hop)
+    assert json.loads((tmp_path / fw.BLOCKS_JSON).read_text()) == doc
+    assert doc["episode"] == "e9" and doc["reply_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+    assert doc["counts"] == {"blocks": 2, "parsed": 1, "refused": 1, "dropped": 0}
+    assert json.loads((tmp_path / fw.REPLY_JSON).read_text())["text"] == text
+    (tmp_path / "fork.json").write_text('{"status": "ok"}')
+    view = staging.read(tmp_path.parent, tmp_path.name)
+    assert view.files == {} and [r["path"] for r in view.refused] == ["x.txt"]  # record files are never content
+
+
+def test_admit_settled_is_the_pure_rule(tmp_path):
+    from unify.memory_v2.trigger import admit_settled
+
+    for eid, status in (("a", "ok"), ("b", None), ("c", "timeout"), ("d", "lost")):
+        (tmp_path / eid).mkdir()
+        if status:
+            (tmp_path / eid / "fork.json").write_text(json.dumps({"status": status}))
+    assert admit_settled(tmp_path, ["b", "a", "c", "d", "e"]) == (["a", "c", "d", "e"], ["b"])
+    assert not (tmp_path / "b" / "fork.json").exists()  # pure: nothing recorded
+
+
+def test_request_from_source_builds_the_fork_request_directly():
+    source = {
+        "client": SimpleNamespace(endpoint="provider/model@route", reasoning_effort="max"),
+        "sent_messages": [{"role": "user", "content": "double 21"}],
+        "tools": [{"type": "function", "function": {"name": "execute_code", "parameters": {}}}],
+        "tool_choice": "required",
+    }
+    doc = fork_mod.request_from_source("e1", source, "http://127.0.0.1:9/fork/v1", "tok")
+    assert doc["url"] == "http://127.0.0.1:9/fork/v1/chat/completions"
+    assert doc["headers"]["Authorization"] == "Bearer tok" and doc["headers"]["x-unify-session"] == "fork.e1"
+    body = doc["body"]
+    assert body["model"] == "provider/model" and body["tool_choice"] == "auto" and body["reasoning_effort"] == "xhigh"
+    assert body["messages"] == [*source["sent_messages"], {"role": "user", "content": fork_mod.fork_instruction()}]
+    same = fork_mod.request_from_source("e1", source, doc["url"], "tok")
+    assert same["url"] == doc["url"]
