@@ -1002,6 +1002,30 @@ def _curate_state(
     return state if state.fired else None
 
 
+def _curate_settled(
+    stores: Stores,
+    pass_id: str,
+    state: _curate.CurateState,
+    outcome: Any,
+    writer: Any,
+) -> list[str]:
+    """The fingerprints of the reasons CURATE pass *pass_id* dealt with (:func:`..curate.settled`): from what the
+    gate landed (its items and curation rows) and the ``kept`` block of the writer's accepted manifest
+    (``WriterPass.final_manifest``; None when the pass never finished, so nothing counts as kept)."""
+    manifest = getattr(writer, "final_manifest", None)
+    landed = bool(
+        outcome is not None and outcome.passed and getattr(outcome, "commit", None),
+    )
+    changed = _curate.changed_items(
+        pass_id,
+        landed,
+        list(getattr(outcome, "items_merged", None) or []),
+        stores.evidence.curations(),
+        manifest,
+    )
+    return _curate.settled(state, changed, _curate.kept(manifest))
+
+
 async def run_due_passes(
     stores: Stores,
     eid: str,
@@ -1290,8 +1314,12 @@ async def run_due_passes(
             if stores.evidence.pass_exists(pass_id):
                 recorded.append(pass_id)
                 if curating:
-                    # shown once (:mod:`..curate`): these reasons fire again only once their content changes
-                    stores.evidence.record_curate_seen(pass_id, curate_state.fired)
+                    # settled, not merely shown (:mod:`..curate`): a reason the pass neither changed an item of
+                    # nor kept with a reason fires again next time
+                    stores.evidence.record_curate_seen(
+                        pass_id,
+                        _curate_settled(stores, pass_id, curate_state, outcome, writer),
+                    )
                 else:
                     trig.mark_done(req)
                     if hasattr(state, "drift"):
