@@ -315,3 +315,17 @@ def test_the_brief_states_closed_entries_and_the_row_key():
     assert '`"reopened": {"<id>": "<reason>"}` opens a closed entry again' in text
     assert "`related_closed`" not in lp.write_brief_now(staging=True, pool=False)
     assert f"the first {pool.RELATED_PAGE} as" in text
+
+
+def test_an_unreadable_links_file_is_said_never_shown_as_no_links(tmp_path):
+    _, new, _, pdir, box = _staged_pool(tmp_path)
+    (pdir / pool.RELATED_FILE).write_text("{not json")
+    shown = wt.pool({"op": "show", "id": new}, pdir, box).text
+    assert "related_closed.json could not be read" in shown
+    got = wt.pool({"op": "filter", "related": new}, pdir, box)
+    assert "could not be read" in got.text
+    (pdir / pool.RELATED_FILE).unlink()  # a pool staged without links: none to show
+    assert (
+        "Related closed entries: 0"
+        in wt.pool({"op": "show", "id": new}, pdir, box).text
+    )

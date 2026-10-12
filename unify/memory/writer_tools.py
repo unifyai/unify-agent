@@ -305,7 +305,7 @@ POOL = ToolSpec(
         "or 'any' (the default with related is 'any'). A closed entry is linked to an entry or a batch episode when "
         "their code shares a normalised code unit (as `similar` compares code: variable names renamed in order of "
         "use, literals lifted) or when they cite the same episode. "
-        f"op='show': one entry's entry.json, the paths of its files and the closed entries linked to it, "
+        "op='show': one entry's entry.json, the paths of its files and the closed entries linked to it, "
         f"{_pool.RELATED_PAGE} at a time from offset. op='decide': records a decision in "
         "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
         "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
@@ -800,14 +800,21 @@ def _entries(pool_dir: Path) -> list[dict]:
     return out
 
 
-def _related(pool_dir: Path) -> dict:
-    """/inputs/pool/related_closed.json: ``{"entries": {id: [link]}, "episodes": {episode: [link]}}``."""
-    raw = _fx._read_plain(Path(pool_dir) / _pool.RELATED_FILE, 64 * 1024 * 1024)
+_RELATED_UNREADABLE = f"/inputs/pool/{_pool.RELATED_FILE} could not be read, so the links are unknown"
+
+
+def _related(pool_dir: Path) -> dict | None:
+    """/inputs/pool/related_closed.json: ``{"entries": {id: [link]}, "episodes": {episode: [link]}}``; {} when the
+    pool has no such file, None when it cannot be read."""
+    path = Path(pool_dir) / _pool.RELATED_FILE
+    if not path.exists() and not path.is_symlink():
+        return {}
+    raw = _fx._read_plain(path)
     try:
-        val = json.loads(raw.decode()) if raw else {}
+        val = json.loads(raw.decode()) if raw is not None else None
     except (UnicodeDecodeError, ValueError, RecursionError):
-        val = {}
-    return val if isinstance(val, dict) else {}
+        val = None
+    return val if isinstance(val, dict) else None
 
 
 def _closing(e: dict) -> str:
@@ -951,6 +958,8 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
                 ]
             if related:
                 links = _related(Path(pool_dir))
+                if links is None:
+                    return Reply(_RELATED_UNREADABLE, paths=listed)
                 got = (links.get("entries") or {}).get(related) or (
                     links.get("episodes") or {}
                 ).get(related) or []
@@ -988,16 +997,19 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
         if e is None:
             return refused("pool", "unknown_entry", listed, id=eid[:40])
         files = [f"/inputs/pool/{eid}/{rel}" for rel in e.get("files") or []]
+        found = _related(Path(pool_dir))
         links = [
             x
-            for x in (_related(Path(pool_dir)).get("entries") or {}).get(eid) or []
+            for x in ((found or {}).get("entries") or {}).get(eid) or []
             if isinstance(x, dict)
         ]
         size = _pool.RELATED_PAGE
         related = f"\nRelated closed entries: {len(links)}" + (
             "".join("\n" + _link_line(x) for x in links[off : off + size])
         )
-        if off + size < len(links):
+        if found is None:
+            related = f"\nRelated closed entries: {_RELATED_UNREADABLE}"
+        elif off + size < len(links):
             related += f"\n[… related {off}–{off + size} of {len(links)}; next: offset={off + size}]"
         text = (
             json.dumps(e, indent=1, sort_keys=True)
