@@ -4,8 +4,8 @@
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
 * ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, the
   verification and use records (None without item records) and the subjects of the commits that changed it;
-* ``.memory/find.json``: the listed functions with their recorded input shapes, keyed by body digest
-  (:mod:`.shape_rows`);
+* ``.memory/find.json``: the listed functions with the recorded shapes of their example calls' arguments, each
+  naming its parameter, keyed by body digest (:mod:`.shape_rows`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
@@ -183,7 +183,12 @@ def find_data(
     shapes: ShapeLookup | None,
     records: Mapping[str, dict] | None = None,
 ) -> dict:
-    """``.memory/find.json``: each listed function with the recorded input shapes of its current body."""
+    """``.memory/find.json``: each listed function with the recorded input shapes of its current body.
+
+    ``input_shapes`` are the shapes of the arguments its example calls returned on, each naming its parameter
+    (``"param"``; a row recorded before arguments were shaped has none). *records* are accepted for the export's
+    signature and not read: a function's shapes come only from *shapes*.
+    """
     bodies = function_bodies(tree) if shapes is not None else {}
     out: list[dict] = []
     for f in lib.functions:
@@ -194,9 +199,8 @@ def find_data(
             "module": f.module,
             "name": f.name,
             "signature": f.signature,
-            "input": ((records or {}).get(f.item_id) or {}).get("input") or "",
             "summary": f.summary,
-        }  # input: the item record's form
+        }
         if shapes is not None and f.item_id in bodies:
             found = shapes(f.item_id, body_digest(bodies[f.item_id]))
             if found and found[0]:

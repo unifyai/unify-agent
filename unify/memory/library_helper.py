@@ -8,11 +8,12 @@ and the harness's data under ``.memory/``. In a cell::
     print(memory.index())                          # the whole index
     print(memory.index("<package>"))               # one package's section ("notes/<topic>" for notes)
     print(memory.show("memory.<package>.<module>:<name>"))   # source, links, status, records, history
-    memory.find(value)                             # functions built on recorded inputs shaped like value
+    memory.find(value)                             # functions whose tests call them on arguments shaped like value
 
 ``find`` matches structured data only: a dict, a list of records, JSON text, or a structured file such as a
-CSV with a header. It compares key paths and types with the shapes of the inputs each function was admitted
-on, never words, so it cannot match plain text.
+CSV with a header. It compares key paths and types with the shapes of the arguments each function's tests
+call it on, and names the parameter that matched; it never compares words, so it cannot match plain text, and
+a function whose arguments are all numbers or plain text is never found (``memory.index()`` lists it).
 
 Imported as the package ``memory``, it also wraps each public function of every library module as that
 module is imported (:class:`_CallFinder`), so that each call raises the audit event ``memory.call`` with
@@ -110,12 +111,12 @@ class _Text(str):
 
 
 class Found(NamedTuple):
-    """One function :func:`find` lists: its id, how to call it and how its inputs matched."""
+    """One function :func:`find` lists: its id, how to call it, and which of its parameters the value fits."""
 
     name: str  # memory.<package>.<module>:<name>
     signature: str
-    input: str
-    match: str  # exact | structure | weak (a single named key)
+    param: str  # the parameter whose recorded arguments matched ("" for a shape recorded without one)
+    match: str  # exact | structure | weak (a single named key, or a whole shape without named keys)
     summary: str
     reason: str  # the keys or columns that matched
 
@@ -279,11 +280,28 @@ def _candidates(m: Any, value: Any, exts: list[str]) -> list[dict]:
     return out
 
 
+def _param(desc: dict) -> str:
+    p = desc.get("param")
+    return p if isinstance(p, str) else ""
+
+
+def _match(m: Any, mine: dict, recorded: dict) -> Any:
+    """v2's match; else, for two shapes without a named key (a grid, a list of numbers),
+    their exact equality as the weakest match, so such an argument is still found, after every v2 match."""
+    found = m.match(mine, recorded)
+    if found is None and m.signature(mine) and m.same_shape(mine, recorded):
+        return 0, 0.0, []
+    return found
+
+
 def find(value: Any) -> list[Found]:
-    """The functions whose recorded inputs have the shape of *value*, best match first: v2's input-shape
-    matcher and ranking, unchanged (level, then share of named keys matched, then how many recorded shapes
-    match, then name; at most five). An empty list means that no listed function was built on data of this
-    shape, or that the value has too little structure (plain text has none)."""
+    """The functions whose tests call them on an argument with the shape of *value*, best match first, each
+    with the parameter that argument was passed as. v2's input-shape matcher and ranking, unchanged (level,
+    then share of named keys matched, then how many recorded shapes match, then name; at most five). A shape
+    without named keys (a grid) matches only an identical one, ranked weak and below every named match. A
+    function's best-matching shape names the parameter, the first in recorded order on a tie. An empty list
+    means that no listed function's tests call it on data of this shape, or that the value has too little
+    structure (plain text has none)."""
     m = _matcher()
     entries = _json(FIND_FILE).get("functions", [])
     exts = sorted(
@@ -299,13 +317,15 @@ def find(value: Any) -> list[Found]:
     for e in entries:
         best = None
         count = 0
+        param = ""
         for d in e.get("input_shapes", []):
-            hits = [x for x in (m.match(v, d) for v in mine) if x is not None]
+            shape = {k: v for k, v in d.items() if k != "param"}
+            hits = [x for x in (_match(m, v, shape) for v in mine) if x is not None]
             if not hits:
                 continue
             top = max(hits, key=lambda x: (x[0], x[1]))
             if best is None or top[:2] > best[:2]:
-                best, count = top, 1
+                best, count, param = top, 1, _param(d)
             elif top[:2] == best[:2]:
                 count += 1
         if best is None:
@@ -316,12 +336,14 @@ def find(value: Any) -> list[Found]:
             "matched "
             + ", ".join(shown[:8])
             + (f" and {len(shown) - 8} more" if len(shown) > 8 else "")
+            if shown
+            else "matched the whole shape (it has no named keys)"
         )
         name = e["id"]
         found = Found(
             name,
             e.get("signature", ""),
-            e.get("input", ""),
+            param,
             _LEVELS[level],
             e.get("summary", ""),
             reason,

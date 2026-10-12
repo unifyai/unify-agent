@@ -1,14 +1,17 @@
 """The recorded input shapes each memory commit's catalogue shows, frozen per commit (library-mode surfacing).
 
-A function's input shapes are the shapes of the recorded inputs the gate admitted it on
-(:func:`descriptor`, with :mod:`.memory_helper`'s ``file_shape`` and ``value_shape``). They are kept as a
+A function's input shapes are the shapes of the recorded inputs the gate admitted it on (with
+:mod:`.memory_helper`'s ``file_shape`` and ``value_shape``). In library mode they are the shapes of the arguments
+its example calls returned on (:func:`arg_descriptors`): each descriptor names the parameter it was passed as
+(``"param"``), so ``memory.find`` can say which parameter a value fits. Rows recorded before that (shapes of a
+function's covers, :func:`descriptor`) have no ``"param"``; they are kept and still found. Shapes are kept as a
 **snapshot per memory commit** in the evidence store (``commit_shapes``): item -> ``{"body": digest,
 "shapes": [...], "backfilled": bool}``, written once and never changed. So exporting any commit again, a
 pinned replay of an old one included, renders byte-identical catalogue files.
 
 * **A landed merge** (:meth:`.gate.Gate.merge`) writes the candidate's snapshot (:func:`snapshot_rows`):
-  for every environment function in the candidate, the parent's shapes for the same body, plus the shapes
-  of the covers this merge validated for that body.
+  for every function in the candidate, the parent's shapes for the same body, plus the shapes this merge
+  recorded for that body (in library mode, of its example calls' arguments).
 * **An export** (:func:`shapes_at`) reads the snapshot of its commit, else of its nearest first-parent
   ancestor that has one (a hide commit only removes functions), keeping only rows whose body digest still
   matches. A function with no row there, such as one merged before snapshots existed, is **backfilled**:
@@ -23,13 +26,17 @@ Descriptors whose canonical JSON holds a key-shaped string are dropped (:data:`.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from .admission import is_rejection
+from .analysis.shapes import PARSE_LIMIT
 from .catalogue import body_digest
 from .evidence import MAX_INPUT_SHAPES
+from .example_calls import ExampleCall
 from .held_out import _blob_sha
 from .memory_helper import file_shape, value_shape
 from .memory_repo import items
@@ -88,6 +95,92 @@ def descriptors(actions: list[Any], input_kind: str | None, blobs: Any) -> list[
     return merge_shapes(out)
 
 
+def _tree_file(tree: Path, rel: str) -> bytes | None:
+    """The first ``PARSE_LIMIT + 1`` bytes of the regular file *rel* names inside *tree*, else None.
+
+    *rel* comes from a call record written beside model-written tests, so it is untrusted: an absolute path, a
+    ``..`` part, a link out of the tree or anything but a regular file gives None.
+    """
+    parts = rel.split("/")
+    if not rel or rel.startswith("/") or ".." in parts or "" in parts:
+        return None
+    root = Path(tree).resolve()
+    path = root / rel
+    try:
+        if not path.resolve().is_relative_to(root):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    with os.fdopen(fd, "rb") as fh:
+        try:
+            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                return None
+            return fh.read(PARSE_LIMIT + 1)
+        except OSError:
+            return None
+
+
+def arg_descriptors(
+    calls: list[ExampleCall],
+    tree: Path,
+    *,
+    note: Callable[[str], None] | None = None,
+) -> list[dict]:
+    """The argument shapes of *calls* (a function's example calls), each naming its parameter as ``"param"``.
+
+    Per call that returned and per argument: a path argument (one naming a file of *tree*, the candidate's
+    files) is shaped from that file's bytes (``file_shape``), any other from its recorded JSON form
+    (``value_shape``). A scalar or plain text has no shape and adds nothing; a call that refused or raised adds
+    nothing. Descriptors holding a key-shaped string are dropped, as are arguments too large to be recorded and
+    descriptors past :data:`.evidence.MAX_INPUT_SHAPES`; *note* is told how many, and which path arguments named
+    no readable file of the tree. Never raises: shapes are a catalogue aid, never a reason.
+    """
+    out: list[dict] = []
+    dropped = 0
+    unreadable: set[str] = set()
+    for call in calls:
+        if call.outcome != "returned":
+            continue
+        for arg in call.args:
+            desc: dict | None = None
+            try:
+                if arg.path is not None:
+                    data = _tree_file(tree, arg.path)
+                    if data is None:
+                        unreadable.add(arg.path)
+                        continue
+                    desc = file_shape(arg.path, data)
+                elif arg.cut:
+                    dropped += 1
+                    continue
+                else:
+                    desc = value_shape(arg.json)
+            except Exception:  # noqa: BLE001 - shapes are a catalogue aid, never a failure
+                desc = None
+            if desc is None:
+                continue
+            desc = {**desc, "param": arg.name}
+            if KEY_SHAPED.search(json.dumps(desc, sort_keys=True)):
+                dropped += 1
+                continue
+            out.append(desc)
+    distinct = {json.dumps(d, sort_keys=True, ensure_ascii=False) for d in out}
+    dropped += max(0, len(distinct) - MAX_INPUT_SHAPES)
+    if note is not None:
+        item = ", ".join(sorted({c.item for c in calls}))
+        if dropped:
+            note(
+                f"G2 shapes: {dropped} argument shapes of {item} dropped (key-shaped or over the size bound)",
+            )
+        if unreadable:
+            note(
+                f"G2 shapes: {len(unreadable)} path arguments of {item} name no regular file of the library "
+                "(" + ", ".join(sorted(unreadable)) + "); no shape is taken from them",
+            )
+    return merge_shapes(out)
+
+
 def _functions(
     tree: Path,
     library_mode: bool = False,
@@ -122,7 +215,11 @@ def snapshot_rows(
     *,
     library_mode: bool = False,
 ) -> Rows:
-    """A candidate's snapshot: per function, the parent's shapes for the same body plus this merge's."""
+    """A candidate's snapshot: per function, the parent's shapes for the same body plus this merge's.
+
+    *new* maps an item to (body digest, descriptors); in library mode the descriptors are
+    :func:`arg_descriptors`' (with ``"param"``), and a parent's rows without ``"param"`` are carried as they are.
+    """
     out: Rows = {}
     for item, (digest, _) in sorted(_functions(tree, library_mode).items()):
         old = prev.get(item)
