@@ -379,7 +379,7 @@ def _replay(window: int) -> dict:
     }
 
 
-#: the window unillm registers for the configured models (gpt-6-sol, gpt-6-luna on openrouter); the run reads it at run time
+#: the window unillm registers for the configured writer and helper models; a run reads it from unillm at run time
 REPLAY_WINDOW = 1_050_000
 
 
