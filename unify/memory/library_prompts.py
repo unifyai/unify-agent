@@ -124,8 +124,9 @@ INPUT_FORMS_LIBRARY: dict[str, str] = {
 #: drafts to the shared library and generalising them is the writer's work.
 CANDIDATE_CONTRACT = (
     "Draft from what you saw: code that worked, the cases it ran on (values as they were recorded), and notes. "
-    "The library writer, who alone commits to the shared library, builds from these drafts: it fits them to the "
-    "library and generalises them, so a draft need not be general or library-ready."
+    "Where you can, write a reusable function or lesson in general form, with the values that vary as "
+    "parameters. Where your work is specific to this case, still write it down as it is: the library writer, who "
+    "alone commits to the shared library, builds from these drafts and may generalise them with other episodes."
 )
 
 #: The keys of a batch-map row as :func:`.batch_map.build_batch_map` writes them, each with its type and meaning.
@@ -751,8 +752,9 @@ def write_brief(
         )
         + "\n"
         "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
-        "where it ended and so where an outcome, if any, was shown. Any recorded episode can be read, in this "
-        "batch or not, whenever a closer look helps: `overview` and `read_episode` take any recorded id"
+        "where it ended and so where an outcome, if any, was shown. At any point in the pass, you can open any "
+        "recorded episode, in this batch or not and from earlier passes too, whenever you need to investigate or "
+        "dig deeper: `overview` and `read_episode` take any recorded id"
         + (", and `similar` finds others with matching code" if has("similar") else "")
         + ".\n"
         + decide

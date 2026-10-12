@@ -99,7 +99,10 @@ def test_the_fork_and_the_helpers_are_told_the_function_contract_the_gate_enforc
         helpers.helper_brief(True),
     ):
         assert lp.CANDIDATE_CONTRACT in text
-        assert "need not be general or library-ready" in text
+        assert (
+            "Where you can, write a reusable function or lesson in general form" in text
+            and "still write it down as it is" in text
+        )
         assert "first parameter takes one recorded form" not in text
 
 
@@ -111,10 +114,13 @@ def test_the_write_brief_states_the_material_and_the_reach_as_facts():
         lp.write_brief_now(),
     ):
         assert (
-            "They are not the only material: functions and notes can also come from any recorded episode"
+            "Proposals are not the only material: functions and notes can also come from any recorded episode"
             in brief
         )
-        assert "Any recorded episode can be read, in this batch or not" in brief
+        assert (
+            "At any point in the pass, you can open any recorded episode, in this batch or not and from earlier passes too"
+            in brief
+        )
         assert "`overview` and `read_episode` take any recorded id" in brief
     assert "`similar` finds others with matching code" in lp.write_brief_now(
         similar=True,

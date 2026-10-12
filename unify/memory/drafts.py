@@ -89,6 +89,10 @@ def stage_drafts(
                 f"the full gate result of pass {last['pass_id']}",
             ),
         )
+    else:  # the brief points at this file: it is always there
+        (gate_dir / "previous.md").write_text(
+            "No earlier pass has a gate result yet.\n",
+        )
     staged: list[dict] = []
     skipped: list[str] = []
     for row in rows:
@@ -103,12 +107,12 @@ def stage_drafts(
         (d / "patch.diff").write_bytes(_blob(blobs, row["patch_blob"], "patch"))
         (d / "gate.md").write_bytes(_blob(blobs, row["gate_blob"], "gate result"))
         staged.append({"pass_id": pid, "items": sorted(row["items_refused"])})
-    if staged or skipped:
-        (Path(inputs) / "drafts").mkdir(exist_ok=True)
-        index = {"open": staged, **({"skipped": skipped} if skipped else {})}
-        (Path(inputs) / "drafts" / "index.json").write_text(
-            json.dumps(index, indent=1) + "\n",
-        )
+    # always written, so the brief's pointer to it never leads to a refusal; "open" is empty when there is none
+    (Path(inputs) / "drafts").mkdir(exist_ok=True)
+    index = {"open": staged, **({"skipped": skipped} if skipped else {})}
+    (Path(inputs) / "drafts" / "index.json").write_text(
+        json.dumps(index, indent=1) + "\n",
+    )
     return staged
 
 

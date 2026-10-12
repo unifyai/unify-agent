@@ -307,7 +307,7 @@ def test_the_brief_puts_adopts_on_each_item():
     assert '"covers": [...], "adopts": [...]}]' in template
     assert '"renames": {}, "adopts"' not in template
     assert (
-        "that item's `adopts`" in brief
+        "each item's `adopts` the drafts it drew on and how" in brief
         and "The manifest itself has no `adopts`" in brief
     )
     plain = lp.write_brief_now()

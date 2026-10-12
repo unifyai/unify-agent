@@ -165,3 +165,17 @@ def test_a_corrupt_blob_is_marked_never_staged_as_whole(tmp_path):
         _blob(blobs, "0" * 64, "patch")
         == f"(patch {'0' * 64} is not in the blob store)\n".encode()
     )
+
+
+def test_with_no_earlier_pass_both_pointed_files_still_exist(tmp_path):
+    """The brief points at the drafts index and the last gate result; neither pointer leads to a refusal."""
+    ev = EvidenceStore(tmp_path / "e.sqlite")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    assert stage_drafts(ev, BlobStore(tmp_path / "b"), inputs) == []
+    assert json.loads((inputs / "drafts" / "index.json").read_text()) == {"open": []}
+    assert (
+        (inputs / "gate" / "previous.md")
+        .read_text()
+        .startswith("No earlier pass has a gate result yet")
+    )
