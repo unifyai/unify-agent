@@ -395,7 +395,8 @@ _V21_TOOL_TEMPLATES = [
                 "'diff'. Reading every part the batch map lists as required covers the episode. parts=[...] reads up "
                 "to 8 parts on one page: 8000 bytes of content in all, each part marked and credited for what is shown. "
                 "'overview' shows the episode's end first (its last working cell, last action and last observation) "
-                "and then every step, newest first, with the part name that reads it."
+                "and then every step, newest first, with the part name that reads it. 'parts' lists the episode's "
+                "parts with their sizes, which are required and which are read."
             ),
             "parameters": {
                 "type": "object",
@@ -696,6 +697,42 @@ def _finish_refusal(cov: Any, missing: list[str]) -> str:
         "Read those parts with read_episode, or dismiss the episode with a reason. Dismissed so far: "
         + (", ".join(sorted(cov.dismissed)) or "(none)")
         + ".",
+    )
+    return "\n".join(lines)
+
+
+def _parts_list(
+    ep: Any,
+    eid: str,
+    cov: Any,
+    shared: dict[str, str] | None = None,
+) -> str:
+    """``read_episode(part="parts")``: every part name of *ep* with its size, and for each required one whether it
+    is read; it shows no content and credits nothing."""
+    required = list(cov.required.get(eid, [])) if cov is not None else []
+    names = (
+        ["request"]
+        + [f"observation:{i}" for i in range(max(0, len(ep.request) - 1))]
+        + [f"cell:{c.index}" for c in ep.cells]
+        + [f"action:{i}" for i in range(len(ep.actions))]
+        + (["diff"] if ep.worktree_diff else [])
+        + [p for p in required if p.startswith("shared:")]
+    )
+    lines = [f"{eid}: {len(names)} part(s), {len(required)} required"]
+    for name in names:
+        try:
+            size = len(_bm.part_text(ep, name, shared).encode())
+        except (KeyError, ValueError, IndexError, StopIteration):
+            continue
+        canon = _bm.canonical_part(ep, name)
+        line = f"- {name}: {size} bytes"
+        if canon != name:
+            line += f", identical to {canon}"
+        elif name in required:
+            line += f", required, {cov.progress(eid, name)}"
+        lines.append(line)
+    lines.append(
+        f"Read parts with parts=[...] ({READ_PARTS_PER_CALL} per call) or one with part=<name>.",
     )
     return "\n".join(lines)
 
@@ -2837,6 +2874,9 @@ class SolPass:
             if eid not in eps:
                 return f"refused: {eid!r} is not in this batch"[:300]
             args = _parts_from_text(args)
+            if "parts" not in args and str(args.get("part", "")).strip() == "parts":
+                # rehearsal 3 (0f 50352fbb): the writer asks for the list itself; answer it (credits nothing)
+                return _parts_list(eps[eid], eid, cov, self._shared)
             if "parts" not in args and str(args.get("part", "")) == "overview":
                 # r5 (r4 §5): end first, then every step's handle; credits the end parts only when all of it shows
                 text_, end_parts = _bm.solution_first(eps[eid], self._shared)

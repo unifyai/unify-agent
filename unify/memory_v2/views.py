@@ -289,6 +289,12 @@ class Coverage:
             if any(self._part_done(e, p) or self._bytes_read(e, p) > 0 for p in ps)
         ]
 
+    def progress(self, eid: str, part: str) -> str:
+        """A required part's state: ``read`` (in full, or credited as identical), ``partly read`` or ``not read``."""
+        if self._part_done(eid, part):
+            return "read"
+        return "partly read" if self._ranges.get((eid, part)) else "not read"
+
     def parts_read(self, eid: str) -> int:
         return sum(self._part_done(eid, p) for p in self.required.get(eid, []))
 
