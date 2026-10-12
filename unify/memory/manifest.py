@@ -508,10 +508,85 @@ def _input(raw: object, item: str, kind: str) -> str | None:
     return raw
 
 
+#: The keys a library-mode manifest item takes; any other key is refused, never dropped.
+LIBRARY_ITEM_FIELDS: tuple[str, ...] = (
+    "item",
+    "kind",
+    "source_episodes",
+    "tests",
+    "covers",
+    "field_types",
+    "adopts",
+    "replaces",
+)
+#: The top-level keys a library-mode manifest takes; any other key is refused, never dropped. ``fixtures`` is
+#: always rewritten by the harness; the other keys this parser does not read are read by the gate's library checks,
+#: the pool, the curate pass and the pass itself.
+LIBRARY_MANIFEST_FIELDS: tuple[str, ...] = (
+    "items",
+    "support",
+    "deleted",
+    "unlisted",
+    "deleted_tests",
+    "skeleton",
+    "fixtures",
+    "tests_changed",
+    "renames",
+    "pool",
+    "why",
+    "summary",
+    "kept",
+    "retired",
+    "aliases",
+)
+_KEY_REPR_MAX = 100
+
+
+def _key_repr(key: object) -> str:
+    """The repr of a manifest key for a refusal, bounded so a long key cannot fill the message."""
+    text = repr(key)
+    return text if len(text) <= _KEY_REPR_MAX else text[: _KEY_REPR_MAX - 2] + "…"
+
+
+def _library_field_types(raw: object, item: str, kind: str) -> dict[str, str]:
+    """``{"<fixture path>#<field>": semantic type}``: a function's declared field types, each from SEMANTIC_TYPES.
+    The path is a fixture of the item's own package (``memory/<package>/tests/data/...``); the field is named as
+    the held-out check names it (a JSON or YAML key path, a CSV column or ``#3``).
+    """
+    if raw is None:
+        return {}
+    if kind != "function":
+        raise ManifestError(f"{item}: only functions declare field types")
+    if not isinstance(raw, dict):
+        raise ManifestError(f"{item}: field_types must be an object")
+    package = item.split(".")[1] if item.count(".") >= 2 else ""
+    data_dir = f"memory/{package}/tests/data/"
+    for key, typ in raw.items():
+        path, sep, name = key.partition("#") if isinstance(key, str) else ("", "", "")
+        ok = bool(sep) and bool(name) and len(name) <= _FIELD_NAME_MAX and "\n" not in name
+        try:
+            ok = ok and safe_rel(path).startswith(data_dir) and len(path) > len(data_dir)
+        except ManifestError:
+            ok = False
+        if not ok:
+            raise ManifestError(
+                f"{item}: field_types key {_key_repr(key)} is not <fixture path>#<field> with the path under "
+                "memory/<package>/tests/data/",
+            )
+        if not isinstance(typ, str) or typ not in SEMANTIC_TYPES:
+            raise ManifestError(
+                f"{item}: unknown semantic type {_key_repr(typ)}; the fixed list is "
+                f"{', '.join(SEMANTIC_TYPES)}",
+            )
+    return dict(raw)
+
+
 def _parse_library_mode(manifest: dict) -> Manifest:
     """The library-mode manifest: ``function`` items ``memory.<package>.<module>:<name>`` and
     ``note`` items ``notes/<topic>/<slug>.md``, tests under ``memory/<package>/tests/``, test helpers as
-    ``support``, and covers that are action covers ``[episode, index]`` or typed covers (:mod:`.procedures`).
+    ``support``, and typed covers (:mod:`.procedures`: a cell, a diff or an episode). A function takes any
+    arguments: its examples are the calls its listed tests make, so it lists at least one test, and it declares
+    no input form. Keys outside :data:`LIBRARY_MANIFEST_FIELDS` and :data:`LIBRARY_ITEM_FIELDS` are refused.
     The ``fixtures`` and ``tests_changed`` keys are read by the gate (:mod:`.library_checks`).
     """
     from . import layout
@@ -523,6 +598,11 @@ def _parse_library_mode(manifest: dict) -> Manifest:
         raise ManifestError(
             "adopts belongs on each item that came from a proposal, not on the manifest",
         )
+    for key in manifest:
+        if key not in LIBRARY_MANIFEST_FIELDS:
+            raise ManifestError(
+                f"unknown manifest field {_key_repr(key)}; the manifest takes {', '.join(LIBRARY_MANIFEST_FIELDS)}",
+            )
 
     def item_id(entry: object) -> bool:
         return isinstance(entry, str) and any(p.match(entry) for p in patterns.values())
@@ -548,34 +628,44 @@ def _parse_library_mode(manifest: dict) -> Manifest:
         if item in seen:
             raise ManifestError(f"{item} is listed twice")
         seen.add(item)
+        if "input" in raw:
+            raise ManifestError(
+                f"{item}: input is no longer read: a function takes any arguments and its examples are the calls "
+                "its tests make on fixtures; remove input",
+            )
+        for key in raw:
+            if key not in LIBRARY_ITEM_FIELDS:
+                raise ManifestError(
+                    f"{item}: unknown field {_key_repr(key)}; an item takes {', '.join(LIBRARY_ITEM_FIELDS)}",
+                )
         kind = raw.get("kind")
         if kind not in patterns:
             raise ManifestError(f"{item}: unknown or unsupported kind {kind!r}"[:200])
         if not patterns[kind].match(item):
             raise ManifestError(f"{item!r}: not a {kind} id"[:200])
         tests = tests_of(raw.get("tests"), f"{item}: tests")
+        if kind == "function" and not tests:
+            raise ManifestError(
+                f"{item}: a function lists the tests that hold its examples (tests is empty)",
+            )
         raw_covers = raw.get("covers")
         if raw_covers is not None and not isinstance(raw_covers, list):
             raise ManifestError(f"{item}: covers must be a list")
-        covers: list[tuple[str, int]] = []
+        if raw_covers and kind != "function":
+            raise ManifestError(f"{item}: only functions cover recorded work")
         typed: list = []
         for raw_cover in raw_covers or []:
             try:
                 c = parse_cover(raw_cover)
             except ValueError as exc:
                 raise ManifestError(f"{item}: {exc}"[:300]) from exc
-            (covers if isinstance(c, tuple) else typed).append(c)
-        if (covers or typed) and kind != "function":
-            raise ManifestError(f"{item}: only functions cover recorded work")
-        form = raw.get("input")
-        if form is not None and (
-            kind != "function" or not isinstance(form, str) or form not in INPUT_KINDS
-        ):
-            raise ManifestError(
-                f"{item}: a function's input is one of {', '.join(INPUT_KINDS)}"[:300],
-            )
-        if raw.get("field_types") is not None:
-            raise ManifestError(f"{item}: field_types is a v2 field")
+            if isinstance(c, tuple):
+                raise ManifestError(
+                    f"{item}: the action cover {raw_cover!r} is no longer read: list the tests that call it on "
+                    "fixtures made with fixture (covers takes only cell, diff and episode covers)",
+                )
+            typed.append(c)
+        field_types = _library_field_types(raw.get("field_types"), item, kind)
         out.items.append(
             ManifestItem(
                 item,
@@ -583,9 +673,9 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 layout.item_path(item),
                 _str_list(raw.get("source_episodes"), f"{item}: source_episodes"),
                 tests,
-                covers,
-                {},
-                form,
+                [],
+                field_types,
+                None,
                 typed,
                 _adopts(raw.get("adopts"), item),
             ),
