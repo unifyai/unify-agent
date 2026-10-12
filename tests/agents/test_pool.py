@@ -48,11 +48,7 @@ async def test_spawn_posts_the_task_and_the_reply_comes_back_to_the_spawner():
 
 
 @pytest.mark.asyncio
-async def test_only_the_main_agent_spawns_and_only_when_allowed():
-    pool = _pool(_replies("x"))
-    await pool.spawn("root", REQUEST)
-    with pytest.raises(PermissionError, match="only the main agent"):
-        await pool.spawn("h1", REQUEST)
+async def test_spawning_is_refused_only_when_not_allowed():
     refused = Pool(
         Record(None, options=Options()),
         start_helper=_replies("x"),
@@ -64,6 +60,43 @@ async def test_only_the_main_agent_spawns_and_only_when_allowed():
     off = _pool(_replies("x"), max_total=0)
     with pytest.raises(PermissionError, match="off"):
         await off.spawn("root", REQUEST)
+
+
+@pytest.mark.asyncio
+async def test_a_helper_starts_helpers_under_the_records_limits():
+    gate = asyncio.Event()
+
+    async def start(name, spawner, request, request_seq):
+        await gate.wait()
+        return f"done for {spawner}"
+
+    pool = _pool(start, max_live=16, max_total=64)
+    assert await pool.spawn("root", REQUEST) == "h1"
+    # A helper (a teammate) starts its own helper; the record shows who did.
+    assert await pool.spawn("h1", REQUEST) == "h2"
+    assert pool.record.participants["h2"].spawner == "h1"
+    assert pool.list("h1") == [
+        {"name": "h2", "state": "running", "request_seq": 2, "last_seq": None},
+    ]
+    task_entry = pool.record.entries[-1]
+    assert (task_entry.author, task_entry.mentions) == ("h1", ("h2",))
+    for _ in range(14):
+        await pool.spawn("h2", REQUEST)
+    # 16 running: the 17th is refused, whoever asks.
+    with pytest.raises(RuntimeError, match="16 helpers are running"):
+        await pool.spawn("h1", REQUEST)
+    with pytest.raises(RuntimeError, match="16 helpers are running"):
+        await pool.spawn("root", REQUEST)
+    gate.set()
+    await asyncio.sleep(0.05)
+    got = await pool.record.wait_for("h1", timeout=5)
+    assert ("h2", "reply", "done for h1") in [(e.author, e.kind, e.text) for e in got]
+    for _ in range(64 - 16):
+        await pool.spawn("h3", REQUEST)
+        await asyncio.sleep(0.01)
+    # 64 started in all: the 65th is refused.
+    with pytest.raises(RuntimeError, match="limit of 64 helpers"):
+        await pool.spawn("h1", REQUEST)
     await pool.close("test over")
 
 

@@ -10,6 +10,7 @@ throwaway test file and check how it ends.
 
 from __future__ import annotations
 
+import ast
 import os
 import pwd
 import shutil
@@ -342,3 +343,174 @@ async def test_execute_code_measures_its_duration_on_the_real_clock(monkeypatch)
     assert res["error"] is None, res["error"]
     assert isinstance(res["duration_ms"], int)
     assert 50 <= res["duration_ms"] < 60_000
+
+
+# ── live provider markers ───────────────────────────────────────────────────
+#
+# Read from the test sources, so these rules run without a model or a key:
+# a mark is ``pytest.mark.<name>`` (called or not, or a module-level name
+# bound to one) on the test, its class, or a ``pytestmark`` of either.
+
+LOOP_TESTS = REPO_ROOT / "tests" / "async_tool_loop"
+
+
+def _mark_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Name):
+        return aliases.get(target.id)
+    if (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Attribute)
+        and target.value.attr == "mark"
+        and isinstance(target.value.value, ast.Name)
+        and target.value.value.id == "pytest"
+    ):
+        return target.attr
+    return None
+
+
+def _marks_of(value: ast.AST, aliases: dict[str, str]) -> set[str]:
+    items = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+    return {name for name in (_mark_name(v, aliases) for v in items) if name}
+
+
+def _pytestmark(body: list[ast.stmt], aliases: dict[str, str]) -> set[str]:
+    marks: set[str] = set()
+    for node in body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "pytestmark"
+        ):
+            marks |= _marks_of(node.value, aliases)
+    return marks
+
+
+def marks_by_test(source: str) -> dict[str, set[str]]:
+    """Each test in *source* (``Class::name`` or ``name``) and its marks."""
+    tree = ast.parse(source)
+    aliases: dict[str, str] = {}
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id != "pytestmark"
+        ):
+            mark = _mark_name(node.value, {})
+            if mark:
+                aliases[node.targets[0].id] = mark
+    out: dict[str, set[str]] = {}
+
+    def visit(body: list[ast.stmt], inherited: set[str], prefix: str) -> None:
+        for node in body:
+            own = {
+                m
+                for d in getattr(node, "decorator_list", [])
+                for m in _marks_of(d, aliases)
+            }
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("test"):
+                    out[prefix + node.name] = inherited | own
+            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                marks = inherited | own | _pytestmark(node.body, aliases)
+                visit(node.body, marks, f"{prefix}{node.name}::")
+
+    visit(tree.body, _pytestmark(tree.body, aliases), "")
+    return out
+
+
+def _marks_in(path: Path) -> dict[str, set[str]]:
+    return marks_by_test(path.read_text(encoding="utf-8"))
+
+
+def test_the_mark_reader_sees_module_class_and_test_marks():
+    source = textwrap.dedent(
+        """
+        import pytest
+
+        pytestmark = [pytest.mark.eval, pytest.mark.usefixtures("x")]
+        live = pytest.mark.live_provider
+
+        @pytest.mark.llm_call
+        @live
+        async def test_a(llm_config):
+            pass
+
+        def test_b():
+            pass
+
+        @pytest.mark.timeout(5)
+        class TestC:
+            pytestmark = pytest.mark.llm_call
+
+            def test_d(self):
+                pass
+
+        def helper():
+            pass
+        """,
+    )
+    assert marks_by_test(source) == {
+        "test_a": {"eval", "usefixtures", "llm_call", "live_provider"},
+        "test_b": {"eval", "usefixtures"},
+        "TestC::test_d": {"eval", "usefixtures", "timeout", "llm_call"},
+    }
+
+
+def test_every_live_provider_test_is_also_marked_llm_call():
+    """A test whose subject is the live provider reaches a model, so the
+    selections that leave model calls out (``--deterministic-only``) leave
+    it out too."""
+    missing = [
+        f"{path.relative_to(REPO_ROOT)}::{name}"
+        for path in sorted((REPO_ROOT / "tests").rglob("test_*.py"))
+        for name, marks in _marks_in(path).items()
+        if "live_provider" in marks and "llm_call" not in marks
+    ]
+    assert missing == []
+
+
+def test_a_loop_test_that_reaches_a_model_is_marked_live_provider():
+    """In tests/async_tool_loop a model is either scripted (no marker) or the
+    live provider is the subject (``live_provider`` with ``llm_call``): no
+    test there answers to whatever a shared recording happens to hold."""
+    unmarked = [
+        f"{path.name}::{name}"
+        for path in sorted(LOOP_TESTS.glob("test_*.py"))
+        for name, marks in _marks_in(path).items()
+        if "llm_call" in marks and "live_provider" not in marks
+    ]
+    assert unmarked == []
+
+
+# ── the keyless guard ───────────────────────────────────────────────────────
+
+
+def _guard_on() -> bool:
+    import unillm.clients.uni_llm as uni_llm
+
+    return getattr(uni_llm.litellm.acompletion, "__name__", "") == "refuse_async"
+
+
+@pytest.mark.asyncio
+async def test_the_keyless_guard_names_the_cause_of_a_provider_call():
+    """With the guard on, a request that reaches unillm's provider call fails
+    with an error that says what to do, instead of the provider's 401."""
+    if not _guard_on():
+        pytest.skip("the keyless guard is off in this session")
+    from unify.common.llm_client import new_llm_client
+
+    client = new_llm_client(cache=False)
+    with pytest.raises(Exception) as raised:
+        await client.generate(
+            messages=[{"role": "user", "content": "Say hi."}],
+            stateful=False,
+        )
+    chain, error = [], raised.value
+    while error is not None and len(chain) < 10:
+        chain.append(str(error))
+        error = error.__cause__ or error.__context__
+    assert any("reached the provider without a script" in text for text in chain)
+

@@ -1,4 +1,4 @@
-"""Helpers: started by the main agent, answered through the record, stopped with the request."""
+"""Helpers: started by any agent, answered through the record, stopped with the request."""
 
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ class Pool:
         name: Optional[str] = None,
     ) -> str:
         rec, opts = self.record, self.record.options
-        if spawner != rec.root:
-            raise PermissionError("only the main agent can start helpers in this run")
+        # Any agent may start helpers; the record's limits (live and total)
+        # bound them all, whoever starts them.
         if not self._spawn_allowed:
             raise PermissionError(self._spawn_refusal)
         if opts.max_total == 0:

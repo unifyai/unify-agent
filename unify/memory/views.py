@@ -8,7 +8,6 @@ import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 VIEW_BYTES = 8000
 _LINE_CHARS = 300
@@ -84,85 +83,87 @@ class PatternProblem(ValueError):
     """A grep that cannot run as asked (its text says why); the tool layer answers it as a refusal."""
 
 
-#: grep_bounded's child exit codes for a pattern problem and a path outside the roots (the reason on stdout)
-_EXIT_PATTERN, _EXIT_OUTSIDE = 3, 4
+#: grep_bounded's child exit code for a pattern problem (the reason on stdout)
+_EXIT_PATTERN = 3
 
 
-def resolve(vpath: str, roots: dict[str, Path]) -> Path:
-    for prefix, root in roots.items():
-        if vpath == prefix or vpath.startswith(prefix + "/"):
-            real_root = Path(os.path.realpath(root))
-            real = Path(os.path.realpath(Path(root) / vpath[len(prefix) :].lstrip("/")))
-            if real == real_root or real_root in real.parents:
-                return real
-            break
-    raise PermissionError("outside the readable roots")
+class SearchFailed(RuntimeError):
+    """The bounded grep's child ended in a way other than a pattern problem; the tool layer answers it with a fixed
+    text (the child's own output can name host paths, so none of it is shown)."""
+
+
+def _roots(roots):
+    from . import safe_paths
+
+    return safe_paths.using(roots)
+
+
+def read_entry(
+    vpath: str,
+    roots,
+    offset: int = 0,
+    length: int = VIEW_BYTES,
+) -> tuple[str, str]:
+    """``(page, mode)``: the same page as ``view`` of the file's bytes, reading only the page (and a few bytes
+    around it) from disk, mode ``read``; or a directory's listing, mode ``list``. *roots*: a
+    :class:`.safe_paths.Roots` or a mapping of box prefixes to host directories. The path is opened from the root
+    descriptor one component at a time, never through a link (:mod:`.safe_paths`)."""
+    from . import safe_paths
+
+    with _roots(roots) as r:
+        fd, _, _ = safe_paths.open_path(r, vpath)
+        try:
+            if safe_paths.is_dir_fd(fd):
+                names = safe_paths.listing(fd)
+                return view("\n".join(names).encode(), offset, length), "list"
+            return _read_fd(fd, offset, length), "read"
+        finally:
+            os.close(fd)
 
 
 def read(
     vpath: str,
-    roots: dict[str, Path],
+    roots,
     offset: int = 0,
     length: int = VIEW_BYTES,
 ) -> str:
-    """The same page as ``view`` of the file's bytes, reading only the page (and a few bytes around it) from disk;
-    a directory is listed."""
-    p = resolve(vpath, roots)
-    if p.is_dir():
-        names = sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir())
-        return view("\n".join(names).encode(), offset, length)
-    n = p.stat().st_size
-    with p.open("rb") as f:
-        if _is_binary(f.read(8192)):
-            f.seek(0)
-            sha = hashlib.sha256()
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                sha.update(chunk)
-            return _binary_line(n, sha.hexdigest())
-        lo = max(0, min(int(offset), n))
-        f.seek(lo)
-        buf = f.read(VIEW_BYTES + 8)
-        a, b = _bounds(lambda i: buf[i - lo], min(n, lo + len(buf)), offset, length)
-        if a == len(buf) + lo:  # the window held only continuation bytes past the end
-            a = b = min(n, a)
-        return _page(buf[a - lo : b - lo].decode("utf-8", errors="replace"), a, b, n)
+    """:func:`read_entry`'s page."""
+    return read_entry(vpath, roots, offset, length)[0]
 
 
-def _virtual(p: Path, roots: dict[str, Path]) -> str:
-    for prefix, root in roots.items():
-        real_root = Path(os.path.realpath(root))
-        if p == real_root or real_root in p.parents:
-            return prefix + "/" + str(p.relative_to(real_root))
-    return str(p)
+def _read_fd(fd: int, offset: int, length: int) -> str:
+    n = os.fstat(fd).st_size
+    if _is_binary(os.pread(fd, 8192, 0)):
+        sha = hashlib.sha256()
+        at = 0
+        while chunk := os.pread(fd, 1 << 20, at):
+            sha.update(chunk)
+            at += len(chunk)
+        return _binary_line(n, sha.hexdigest())
+    lo = max(0, min(int(offset), n))
+    buf = os.pread(fd, VIEW_BYTES + 8, lo)
+    a, b = _bounds(lambda i: buf[i - lo], min(n, lo + len(buf)), offset, length)
+    if a == len(buf) + lo:  # the window held only continuation bytes past the end
+        a = b = min(n, a)
+    return _page(buf[a - lo : b - lo].decode("utf-8", errors="replace"), a, b, n)
 
 
-def grep(
-    pattern: str,
-    vpath: str,
-    roots: dict[str, Path],
-    offset: int = 0,
-    max_hits: int = 50,
-) -> str:
+def _compile(pattern: str) -> "re.Pattern[str]":
     if len(pattern) > _PATTERN_MAX:
         raise PatternProblem(f"pattern longer than {_PATTERN_MAX} characters")
     try:
-        rx = re.compile(pattern)
+        return re.compile(pattern)
     except re.error as exc:
         raise PatternProblem(f"invalid pattern: {exc}"[:300]) from None
-    base = resolve(vpath, roots)
-    files = (
-        [base] if base.is_file() else sorted(x for x in base.rglob("*") if x.is_file())
-    )
+
+
+def _search(rx: "re.Pattern[str]", files, offset: int = 0, max_hits: int = 50) -> str:
+    """The page of hits of *rx* in *files* (``(box path, bytes)`` pairs, in order) from hit *offset*."""
     hits: list[str] = []
-    for f in files:
-        try:
-            real = resolve(_virtual(Path(os.path.realpath(f)), roots), roots)
-        except PermissionError:
-            continue
-        data = real.read_bytes()
+    for vp, data in files:
         if _is_binary(data):
             continue
-        vp, at = _virtual(real, roots), 0
+        at = 0
         for i, raw in enumerate(data.split(b"\n"), 1):
             line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
             if rx.search(line):
@@ -185,55 +186,90 @@ def grep(
     return out
 
 
+def _files(roots, vpath: str, deadline: float | None = None) -> list[tuple[str, bytes]]:
+    """The regular files at or under *vpath*, opened from the root descriptors and never through a link."""
+    from . import safe_paths
+
+    with _roots(roots) as r:
+        return list(safe_paths.iter_files(r, vpath, deadline=deadline))
+
+
+def grep(
+    pattern: str,
+    vpath: str,
+    roots,
+    offset: int = 0,
+    max_hits: int = 50,
+) -> str:
+    """The page of hits of *pattern* in the files at or under *vpath*, in this process (see :func:`grep_bounded`)."""
+    rx = _compile(pattern)
+    return _search(rx, _files(roots, vpath), offset, max_hits)
+
+
+def _frame(pattern: str, offset: int, files: list[tuple[str, bytes]]) -> bytes:
+    """The child's input: one JSON header line (pattern, offset, each file's box path and size), then the bytes."""
+    head = {
+        "pattern": pattern,
+        "offset": offset,
+        "files": [[vp, len(data)] for vp, data in files],
+    }
+    return json.dumps(head).encode() + b"\n" + b"".join(data for _, data in files)
+
+
+def _unframe(raw: bytes) -> tuple[str, int, list[tuple[str, bytes]]]:
+    head, _, body = raw.partition(b"\n")
+    job = json.loads(head)
+    files, at = [], 0
+    for vp, n in job["files"]:
+        files.append((str(vp), body[at : at + int(n)]))
+        at += int(n)
+    return str(job["pattern"]), int(job["offset"]), files
+
+
 def grep_bounded(
     pattern: str,
     vpath: str,
-    roots: dict[str, Path],
+    roots,
     offset: int = 0,
     timeout_s: float | None = None,
 ) -> str:
-    """:func:`grep` in a child Python process (``-I``; this file alone, standard library only), killed after
-    *timeout_s* (default :data:`GREP_TIMEOUT_S`). The writer's pattern never runs in the pass's own process.
+    """:func:`grep` with the pattern run in a child Python process (``-I``; this file alone, standard library
+    only), killed after *timeout_s* (default :data:`GREP_TIMEOUT_S`, which also bounds the walk). The writer's
+    pattern never runs in the pass's own process. The host opens and reads the files from the root descriptors
+    (:mod:`.safe_paths`); the child is handed their bytes and box paths, never a host path.
     """
+    import time
+
+    if len(pattern) > _PATTERN_MAX:  # a length check runs no pattern
+        raise PatternProblem(f"pattern longer than {_PATTERN_MAX} characters")
     limit = GREP_TIMEOUT_S if timeout_s is None else timeout_s
-    job = {
-        "pattern": pattern,
-        "vpath": vpath,
-        "roots": {k: str(r) for k, r in roots.items()},
-        "offset": offset,
-    }
+    timed_out = f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
+    deadline = time.monotonic() + limit
+    try:
+        files = _files(roots, vpath, deadline)
+    except TimeoutError:
+        return timed_out
     try:
         r = subprocess.run(
             [sys.executable, "-I", "-S", os.path.abspath(__file__)],
-            input=json.dumps(job).encode(),
+            input=_frame(pattern, offset, files),
             capture_output=True,
-            timeout=limit,
+            timeout=max(0.1, deadline - time.monotonic()),
             env={},
         )
     except subprocess.TimeoutExpired:
-        return f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
+        return timed_out
+    if r.returncode == _EXIT_PATTERN:
+        raise PatternProblem(r.stdout.decode("utf-8", errors="replace")[:300])
     if r.returncode != 0:
-        last = " ".join(r.stderr.decode(errors="replace").strip().splitlines()[-1:])
-        if r.returncode == _EXIT_OUTSIDE:
-            raise PermissionError(r.stdout.decode("utf-8", errors="replace")[:300])
-        if r.returncode == _EXIT_PATTERN:
-            raise PatternProblem(r.stdout.decode("utf-8", errors="replace")[:300])
-        raise PatternProblem(f"grep failed ({last})"[:300])
+        raise SearchFailed("the search process failed")
     return r.stdout.decode("utf-8", errors="replace")
 
 
 if __name__ == "__main__":  # grep_bounded's child: one job on stdin, the page on stdout
-    _job = json.loads(sys.stdin.read())
+    _pattern, _offset, _files_in = _unframe(sys.stdin.buffer.read())
     try:
-        _out = grep(
-            _job["pattern"],
-            _job["vpath"],
-            {k: Path(r) for k, r in _job["roots"].items()},
-            int(_job["offset"]),
-        )
-    except PermissionError as _exc:
-        sys.stdout.write(str(_exc))
-        sys.exit(_EXIT_OUTSIDE)
+        _out = _search(_compile(_pattern), _files_in, _offset)
     except PatternProblem as _exc:
         sys.stdout.write(str(_exc))
         sys.exit(_EXIT_PATTERN)

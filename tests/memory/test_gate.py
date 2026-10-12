@@ -9,7 +9,7 @@ import pytest
 from unify.memory.blobs import BlobStore
 from unify.memory.episodes import Action
 from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import Gate
+from unify.memory.gate import NOT_RED_HINT, Gate
 from unify.memory.gitio import Repo
 from unify.memory.snapshot import blob_id, listing, materialise, tree_listing
 from unify.memory.sandbox_run import PytestOutcome
@@ -192,6 +192,11 @@ def test_gate_red_run_copies_support_so_existing_code_is_not_red(world):
     res = gate.check(parent, cand, MAN)
     assert not res.checks["G3"]
     assert any("already pass on the parent" in r for r in res.reasons)
+    # the refusal says what would satisfy the rule, and the line is attributed to the item that lists the test
+    assert any(r.endswith(NOT_RED_HINT) for r in res.reasons)
+    assert any(
+        "already pass on the parent" in r for r in res.item_reasons["env/venmo:me"]
+    )
 
 
 # --- G1 --------------------------------------------------------------------------------------------------

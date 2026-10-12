@@ -18,8 +18,8 @@ and suspect flags) is what ``memory.catalog()`` prints in the cell, read from th
 ``.memory/catalog.json`` (:mod:`..catalogue`, :mod:`..memory_helper`); a suspect channel's refusals say so
 in the cell's error (:func:`.hooks.cell_error`).
 
-The index of ``index`` is a pure function of the exported commit, the export's fixed path under
-``UNIFY_HOME`` and the harness's suspect set; it grows by one line per function and is left out over its
+The index of ``index`` is a pure function of the exported commit, the export's fixed in-sandbox path
+and the harness's suspect set; it grows by one line per function and is left out over its
 4,000-token budget, unless ``UNIFY_MEMORY_SOFT_BUDGET`` is on (then the gate never refuses growth, so
 the request renders it whole).
 """
@@ -46,8 +46,12 @@ INDEX_BUDGET_TOKENS = 4000
 
 
 def export_line(checkout: Path) -> str:
+    """Names the copy where the cells' sandbox binds it (``unify.sandbox.LIBRARY_MOUNT``), never *checkout*,
+    the host path, which can name the run."""
+    from unify.sandbox import LIBRARY_MOUNT
+
     return (
-        f"These files are a scratch copy of the library at `{checkout}`, first on the import "
+        f"These files are a scratch copy of the library at `{LIBRARY_MOUNT}`, first on the import "
         "path; anything written there is discarded when the request ends.\n"
     )
 
@@ -124,7 +128,11 @@ def render_catalogue(checkout: Path, shown_before: bool = False) -> tuple[str, d
 
 
 def location_line(checkout: Path) -> str:
-    return f"Library files: `{checkout}`, holding INDEX.md, links.json, memory/ and notes/.\n"
+    """Names the copy where the cells' sandbox binds it (``unify.sandbox.LIBRARY_MOUNT``), never *checkout*,
+    the host path, which can name the run."""
+    from unify.sandbox import LIBRARY_MOUNT
+
+    return f"Library files: `{LIBRARY_MOUNT}`, holding INDEX.md, links.json, memory/ and notes/.\n"
 
 
 def _actor_index_setting() -> str:
@@ -159,7 +167,7 @@ def render_memory_library_mode(
     """
     from ..analysis.use import record_shown
     from ..layout import INDEX_FILE
-    from ..library_index import INDEX_VIEW_TOKENS, index_view, listed, packages_of
+    from ..library_index import INDEX_VIEW_TOKENS, index_view, listed, packages_of, prompt_view_head
 
     checkout = Path(checkout)
     mode = _actor_index_setting() if actor_index is None else actor_index
@@ -182,8 +190,12 @@ def render_memory_library_mode(
     text = ""
     if listed(index):
         budget = INDEX_VIEW_TOKENS if budget_tokens is None else budget_tokens
+        # with tools called from code, the guide and the index head are their in-code forms
         text = (
-            GUIDE_LIBRARY + location_line(checkout) + "\n" + index_view(index, budget)
+            _prompts_library_mode.guide_library()
+            + location_line(checkout)
+            + "\n"
+            + prompt_view_head(index_view(index, budget))
         )
     # per-item exposure comes from the use records; the record keeps the packages and the digest
     return text, record_shown(

@@ -52,9 +52,11 @@ def _run_for(home, tmp_path) -> SimpleNamespace:
 
 
 async def _first_request(request: str = "Say hi.", **script):
-    """One act() on a fresh actor (``can_store`` at its default, True) with a stored function."""
+    """One act() on a fresh actor (``can_store`` at its default, True) with a stored function; under
+    ``UNIFY_MEMORY=on`` the actor has no function store at all, so there is none to add."""
     actor = new_actor()
-    actor.function_manager.add_functions(implementations=[DOUBLE])
+    if actor.function_manager is not None:
+        actor.function_manager.add_functions(implementations=[DOUBLE])
     model = ScriptedModel(**(script or {"actor": [reply("ok")]}))
     try:
         with scripted(model):

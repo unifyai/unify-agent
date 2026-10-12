@@ -339,6 +339,7 @@ def _installer(
         # sandbox's root).
         readonly=[Path(p) for p in (shutil.which(argv[0]),) if p],
         egress=egress,
+        env=env,
     )
     return wrapped, env, str(venv)
 

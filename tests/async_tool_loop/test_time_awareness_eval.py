@@ -12,7 +12,7 @@ from unify.common.async_tool_loop import start_async_tool_loop
 from unify.common._async_tool.time_context import TimeContext
 
 # Module-level marker: all tests in this file are eval tests
-pytestmark = [pytest.mark.eval, pytest.mark.llm_call]
+pytestmark = [pytest.mark.eval, pytest.mark.llm_call, pytest.mark.live_provider]
 
 
 # --------------------------------------------------------------------------- #

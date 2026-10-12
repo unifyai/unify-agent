@@ -29,6 +29,7 @@ import secrets
 import stat
 from pathlib import Path
 
+from . import safe_paths as _safe
 from .layout import DATA_DIR, GENERATED_ROOT_FILES
 from unify.common import tool_registry as _registry
 
@@ -40,9 +41,10 @@ FLAG = _registry.EDIT_FLAG
 #: the mode every written file gets
 FILE_MODE = 0o644
 _DIR_MODE = 0o755
-_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-_TEMP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+# the open flags every descriptor-relative host handler shares (:mod:`.safe_paths`)
+_DIR_FLAGS = _safe.DIR_FLAGS
+_READ_FLAGS = _safe.READ_FLAGS
+_TEMP_FLAGS = _safe.TEMP_FLAGS
 
 # The tools' definitions live in the shared registry (unify/common/tool_registry.py).
 WRITE = _registry.WRITE
@@ -105,11 +107,11 @@ def memory_path(path: object) -> list[str]:
 def _openat(name: str, flags: int, dir_fd: int, mode: int = 0o777) -> int:
     """``openat(dir_fd, name, flags)``: the one place a component is opened (tests stand in here to change the tree
     between the check and the open)."""
-    return os.open(name, flags, mode, dir_fd=dir_fd)
+    return _safe.openat(name, flags, dir_fd, mode)
 
 
 def _what(exc: OSError) -> str:
-    return errno.errorcode.get(exc.errno or 0, type(exc).__name__)
+    return _safe.errno_name(exc)
 
 
 def _parent(root_fd: int, parts: list[str], shown: str, create: bool) -> int:
@@ -152,12 +154,7 @@ def _parent(root_fd: int, parts: list[str], shown: str, create: bool) -> int:
         raise
 
 
-def _is_link(dir_fd: int, name: str) -> bool:
-    """Whether the entry *name* in *dir_fd* is a link (read after a refused open, only to name the refusal)."""
-    try:
-        return stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
-    except OSError:
-        return False
+_is_link = _safe.is_link
 
 
 def _leaf_kind(dir_fd: int, leaf: str) -> int | None:

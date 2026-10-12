@@ -575,7 +575,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
                 *tail,
                 {
                     "role": "user",
-                    "content": _cache_discipline.COMPRESSION_FORK_INSTRUCTION,
+                    "content": _cache_discipline.compression_fork_instruction(),
                 },
             ],
             "stateful": False,

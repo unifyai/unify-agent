@@ -53,11 +53,13 @@ from .tools_data import ToolsData
 from . import cache_discipline as _cache_discipline
 from . import loop_stop as _loop_stop_mod
 from . import cell_reply as _cell_reply
+from . import in_code_texts as _in_code_texts
 from . import bound_request as _bound_request
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
     COMPACTION_THRESHOLD,
     compress_context,
+    compress_context_tool,
     _COMPRESSION_SIGNAL,
     context_over_threshold,
 )
@@ -2019,9 +2021,7 @@ async def async_tool_loop_inner(
                 await _answer_call(
                     amsg,
                     call,
-                    f"⚠️ Error: Tool '{name}' is not available. "
-                    "The tool may have been removed or does not exist. "
-                    "Please proceed without using this tool.",
+                    _in_code_texts.unknown_tool_text(name),
                 )
                 continue
             idx = (amsg.get("tool_calls") or []).index(call)
@@ -2287,7 +2287,7 @@ async def async_tool_loop_inner(
                 f"[setup +{_setup_elapsed()}] building tool schemas ({len(policy_tools_norm)} tools)",
             )
             _compress_schema = (
-                method_to_schema(compress_context, "compress_context")
+                method_to_schema(compress_context_tool(), "compress_context")
                 if enable_compression
                 else None
             )
@@ -2369,14 +2369,7 @@ async def async_tool_loop_inner(
 
             if _rf_norm is not None and not _in_code:
                 if persist:
-                    _response_tool_desc = (
-                        "Submit your structured response for the current "
-                        "request in the required JSON format. This signals "
-                        "that you have completed the current work and are "
-                        "ready for the next instruction. Do not use this "
-                        "for progress updates — those should be sent via "
-                        "notifications while work is still ongoing."
-                    )
+                    _response_tool_desc = _in_code_texts.send_response_description()
                 else:
                     _response_tool_desc = (
                         "Submit your final response in the required JSON "
@@ -3003,9 +2996,7 @@ async def async_tool_loop_inner(
                         await _answer_call(
                             msg,
                             call,
-                            f"⚠️ Error: Tool '{name}' is not available. "
-                            "The tool may have been removed or does not exist. "
-                            "Please proceed without using this tool.",
+                            _in_code_texts.unknown_tool_text(name),
                         )
                         continue
 

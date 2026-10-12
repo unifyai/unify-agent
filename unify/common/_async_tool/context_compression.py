@@ -283,6 +283,31 @@ def compress_context() -> str:
     return "compression acknowledged"
 
 
+def _compress_context_in_code() -> str:
+    """Compress the conversation history to free up context window space.
+
+    When the context window is nearly full, this becomes the **only**
+    available tool and you **must** call it.
+
+    Cannot be called while other tools are in-flight -- finish or stop all
+    running tools first.
+    """
+    return "compression acknowledged"
+
+
+_compress_context_in_code.__name__ = "compress_context"
+_compress_context_in_code.__qualname__ = "compress_context"
+
+
+def compress_context_tool():
+    """The ``compress_context`` function the loop describes to the model: with tools called from code
+    (``UNIFY_TOOLS_IN_CODE=on``) its description leaves out that it is always visible, since it is offered only
+    over the compaction point."""
+    from unify.common import in_code_switch
+
+    return _compress_context_in_code if in_code_switch.tools_in_code() else compress_context
+
+
 def tag_images_in_messages(
     messages: list[dict],
     start_id: int = 0,
@@ -716,18 +741,16 @@ async def compress_and_rebuild(
         )
     combined = _COMPRESSED_HEADER + body
 
-    _instructions = (
-        "When you need details from a compressed message, call "
-        "`unpack_messages(index)` with its `[N]` index to "
-        "retrieve the full original content. Pass `n` to "
-        "retrieve a range of consecutive messages."
-    )
+    # The session's tool list is fixed when it starts, so the archive lookup
+    # added below is never offered to the model; the text names no tool,
+    # only the transcript when there is one.
+    text = combined
     if session is not None:
-        _instructions += "\n\n" + session.pointer_line()
+        text += "\n\n" + session.pointer_line()
 
     if state.live_image_ids:
         content_blocks: list[dict] = [
-            {"type": "text", "text": f"{combined}\n\n{_instructions}"},
+            {"type": "text", "text": text},
         ]
         for img_id in sorted(state.live_image_ids):
             if img_id in state.image_registry:
@@ -737,7 +760,7 @@ async def compress_and_rebuild(
                 content_blocks.append(state.image_registry[img_id])
         compressed_content: str | list[dict] = content_blocks
     else:
-        compressed_content = f"{combined}\n\n{_instructions}"
+        compressed_content = text
 
     system_msgs.append(
         {

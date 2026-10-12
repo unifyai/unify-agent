@@ -318,6 +318,7 @@ BASE = {
 }
 #: Refusal forms added since the base (each under its tool) and the tools that are new.
 ADDED_FORMS = {
+    "grep": ["search_failed"],
     "finish": ["answered", "bad_answer"],
     "delegate": ["bad_name", "not_main_agent", "record_full", "short_request", "spawn_off", "too_large"],
     "send": ["record_full", "too_fast", "too_large"],

@@ -50,6 +50,25 @@ def test_the_brief_states_the_episode_rule_as_the_gate_checks_it():
         assert words in lp.EPISODES_RULE, words
 
 
+def test_the_brief_for_tools_called_from_code_states_the_same_episode_rule(monkeypatch):
+    from unify.common import in_code_switch
+
+    monkeypatch.setattr(in_code_switch, "tools_in_code", lambda: True)
+    for brief in (
+        lp.write_brief_now(),
+        lp.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+    ):
+        assert lp.EPISODES_RULE_IN_CODE in brief and lp.EPISODES_RULE not in brief
+        assert "at least 2" not in brief and "lacks only another episode" not in brief
+    for words in (
+        "one episode is enough",
+        "never required",
+        "in this batch or not",
+        "A call that refuses or raises counts for nothing",
+    ):
+        assert words in lp.EPISODES_RULE_IN_CODE, words
+
+
 def test_the_pool_text_gives_no_second_episode_reason_to_defer():
     brief = lp.write_brief_now(pool=True)
     assert "lacks only another episode" not in brief

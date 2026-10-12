@@ -374,7 +374,9 @@ async def test_off_the_fallback_rebuild_is_as_shipped(keep_prefix):
     # in a system message of their own, and a restart notice.
     assert [m["role"] for m in after.messages] == ["system", "system", "user"]
     assert after.messages[1]["content"].startswith(_COMPRESSED_HEADER)
-    assert "unpack_messages" in after.messages[1]["content"]
+    # The session's tool list never offers the archive lookup, so the
+    # rebuild names no such tool.
+    assert "unpack_messages" not in after.messages[1]["content"]
     assert after.messages[2]["content"] == RESTART_NOTICE
     assert client.system_message is None
 

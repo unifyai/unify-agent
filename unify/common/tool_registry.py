@@ -133,6 +133,10 @@ class _EarlierJson:
         }
 
 
+#: grep's answer when its search process fails for a reason other than the pattern (a fixed text: the process's
+#: own output can name host paths)
+SEARCH_FAILED = "the search did not complete; nothing is shown (narrow the pattern or the path and search again)"
+
 # --- the episode readers, the writer's actions and its end (moved from unify/memory/writer_tools.py) ---
 
 def _obj(props: dict, required: list[str] | None = None) -> dict:
@@ -247,6 +251,7 @@ GREP = RegisteredTool(
         "outside_box": "{path} is outside /inputs, /memory and /work",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
     },
     summary="search files with a regular expression (default under /inputs).",
 )
@@ -908,6 +913,7 @@ _HELPER_GREP = _EarlierJson(
         "not_found": "{path} does not exist",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
     },
 )
 
@@ -1650,7 +1656,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
 #: record, the roots the request's workspace, and finish answers the request): name -> blocking.
 _ACTOR_HANDLED = {
     "read": True,
-    "grep": True,
+    "grep": False,
     "install": True,
     "send": True,
     "messages": True,

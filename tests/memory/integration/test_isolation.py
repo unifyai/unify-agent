@@ -132,14 +132,15 @@ async def test_a_cell_sees_the_export_and_no_store(world, monkeypatch):  # noqa:
 
     o = _open_run(world, monkeypatch)
     stores = [str(p) for p in _stores(o.paths)]
-    transcripts_dir = str(transcripts.transcripts_dir())
+    # The worker's sandbox shows the transcripts and the export at fixed paths.
+    transcripts_dir = sandbox.TRANSCRIPTS_MOUNT
     ex = SessionExecutor(environments={})
     try:
         out = await _cell(
             ex,
             "import os\n"
             f"t = {transcripts_dir!r}\n"
-            f"[os.path.isdir({str(o.paths.checkout)!r}), "
+            f"[os.path.isdir({sandbox.LIBRARY_MOUNT!r}), "
             f"[os.path.exists(p) for p in {stores!r}], "
             "sorted(os.listdir(t)) if os.path.isdir(t) else []]",
         )

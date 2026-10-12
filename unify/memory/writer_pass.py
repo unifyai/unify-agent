@@ -65,6 +65,7 @@ from . import curate as _curate
 from . import messaging as _messaging
 from . import qa as _qa
 from . import repair as _repair
+from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from . import edit_tools as _et
@@ -420,7 +421,7 @@ async def compact_by_summary(
     from unify.common._async_tool import context_compression as _cc
     from unify.common._async_tool.messages import loop_user_notice
 
-    request = [*messages, {"role": "user", "content": _cd.COMPRESSION_FORK_INSTRUCTION}]
+    request = [*messages, {"role": "user", "content": _cd.compression_fork_instruction()}]
     reply, usd = await turn(request, tools)
     summary = (
         _cd.completion_text(reply.get("content")) if isinstance(reply, dict) else ""
@@ -652,8 +653,11 @@ def writer_tools(
     helper: bool = False,
     similar: bool = False,
     edit_tools: bool = False,
+    in_code: bool | None = None,
 ) -> list[dict]:
-    """The writer's tool JSON. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
+    """The writer's tool JSON. *in_code* (library mode): False gives the tools one by one whatever
+    ``UNIFY_TOOLS_IN_CODE`` says (a pass with tools in code takes its allow-list from them); None follows the
+    setting. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
     (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
     need the candidate pool, *helper* (a helper lane exists) ``delegate``, *similar* (the similar-code index
     exists) ``similar`` and *edit_tools* the ``write`` and ``edit`` file tools. With *library_mode* off: the original
@@ -667,6 +671,7 @@ def writer_tools(
         return agent_profiles.tool_json(
             "curator" if role == "curate" else "writer",
             flags,
+            in_code=in_code,
         )
     description = (
         "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
@@ -868,6 +873,11 @@ class PassOutcome:
     # model's context window as the compaction trigger reads it (None: unknown, so it never compacts)
     max_prompt_tokens: int | None = None
     context_window: int | None = None
+    # library mode, uncapped: the refusals the gate repeated for the same reason in repair.STUCK_REPEATS consecutive
+    # rounds, so no further round was offered for them (repair.StuckRefusals.report: "repeats", "stopped" (every
+    # refusal of a round was stuck, so repair ended there) and one {"check", "item", "reason", "rounds"} row each);
+    # None when none became stuck
+    repair_stuck: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1507,67 +1517,44 @@ def _stage_memlab(lab: Path) -> None:
 # --- the box's tree ----------------------------------------------------------------------------------------
 
 
-def _unlock(path: Path, st: os.stat_result) -> os.stat_result:
-    """Give the owner read (and, on directories, write and search) permission; never through a link.
-
-    The box runs as this user, so it can ``chmod`` what it wrote; the host restores its own access before
-    measuring or copying. Called only on an entry that ``lstat`` showed to be a directory or regular file,
-    while no cell runs (the box is dead between cells), so it cannot have been swapped for a link.
-    """
-    want = 0o700 if stat.S_ISDIR(st.st_mode) else 0o600
-    if stat.S_IMODE(st.st_mode) & want != want:
-        os.chmod(path, stat.S_IMODE(st.st_mode) | want)
-        return os.lstat(path)
-    return st
+#: the quota measure's answer when the host cannot restore its access without a path (no /proc): fail closed
+NO_PROC_BREACH = "over quota: the tree cannot be measured safely (/proc/self/fd is not available)"
 
 
 def _measure(root: Path) -> str | None:
     """The quota the tree breaks, or None. Entries are made owner-accessible on the way.
 
-    Walks with ``lstat`` (no link is followed, no file is read) and stops at the first breach: more than
-    :data:`QUOTA_ENTRIES` files, links and directories, a regular file over :data:`QUOTA_FILE_BYTES`,
-    regular files over :data:`QUOTA_TOTAL_BYTES` in all, or an entry that stays unreadable after
-    :func:`_unlock` (a ``chmod 0`` directory could otherwise hide any amount).
+    Walks from descriptors (:func:`.safe_paths.walk_unlocking`: no link is followed, no file is read, a mode is
+    changed only on the opened directory or regular file itself, through /proc) and stops at the first breach:
+    more than :data:`QUOTA_ENTRIES` files, links and directories, a regular file over :data:`QUOTA_FILE_BYTES`,
+    regular files over :data:`QUOTA_TOTAL_BYTES` in all, or an entry that stays unreadable after its owner's
+    access is restored (a ``chmod 0`` directory could otherwise hide any amount). Box code may change the tree
+    while it is measured: a directory swapped for a link is never followed, so no mode outside the tree changes.
     """
     entries = total = 0
     unreadable: list[str] = []
-    root = Path(root)
+    walk = _safe.walk_unlocking(root, 0o700, 0o600)
     try:
-        _unlock(root, os.lstat(root))
-    except OSError:
-        return "over quota: unreadable entries ['.']"
-    stack = [(root, "")]
-    while stack:
-        d, rel = stack.pop()
-        try:
-            it = os.scandir(d)
-        except OSError:
-            unreadable.append(rel.rstrip("/") or ".")
-            continue
-        with it:
-            for e in it:
-                r = rel + e.name
-                try:
-                    st = os.lstat(e.path)
-                    if stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode):
-                        st = _unlock(Path(e.path), st)
-                except OSError:
-                    unreadable.append(r)
-                    continue
-                entries += 1
-                if entries > QUOTA_ENTRIES:
-                    return f"over quota: more than {QUOTA_ENTRIES} files and directories under /memory"
-                if stat.S_ISDIR(st.st_mode):
-                    stack.append((Path(e.path), r + "/"))
-                elif stat.S_ISREG(st.st_mode):
-                    if st.st_size > QUOTA_FILE_BYTES:
-                        return (
-                            f"over quota: /memory/{r[:200]} has {st.st_size} bytes "
-                            f"(at most {QUOTA_FILE_BYTES} per file)"
-                        )
-                    total += st.st_size
-                    if total > QUOTA_TOTAL_BYTES:
-                        return f"over quota: more than {QUOTA_TOTAL_BYTES} bytes under /memory"
+        for event, r, st in walk:
+            if event != "entry" or st is None:
+                unreadable.append(r)
+                continue
+            entries += 1
+            if entries > QUOTA_ENTRIES:
+                return f"over quota: more than {QUOTA_ENTRIES} files and directories under /memory"
+            if stat.S_ISREG(st.st_mode):
+                if st.st_size > QUOTA_FILE_BYTES:
+                    return (
+                        f"over quota: /memory/{r[:200]} has {st.st_size} bytes "
+                        f"(at most {QUOTA_FILE_BYTES} per file)"
+                    )
+                total += st.st_size
+                if total > QUOTA_TOTAL_BYTES:
+                    return f"over quota: more than {QUOTA_TOTAL_BYTES} bytes under /memory"
+    except _safe.NoProc:
+        return NO_PROC_BREACH
+    finally:
+        walk.close()
     if unreadable:
         return f"over quota: unreadable entries {sorted(unreadable)[:5]}"
     return None
@@ -1642,18 +1629,11 @@ _MIRROR_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def _write_in_box(box: Path, rel: str, data: bytes) -> None:
-    """Write *data* to ``box/rel`` from the host without following a link: missing directories are made, and the
-    file is opened with ``O_NOFOLLOW`` (its directories were checked for links by the caller, between the agent's
-    cells, while no cell of the box runs)."""
-    dest = box / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(
-        dest,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o644,
-    )
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
+    """Write *data* to ``box/rel`` from the host without following a link: every directory is opened from the box's
+    descriptor (missing ones are made), a link or non-regular file at the leaf is refused, and the bytes replace the
+    leaf by a rename (:func:`.safe_paths.write_in`). Box code may change the box meanwhile; nothing is followed.
+    Raises ``OSError`` (a :class:`.safe_paths.LinkFound` for a link)."""
+    _safe.write_in(box, rel, data)
 
 
 def _mirror(
@@ -1794,26 +1774,47 @@ def _channel_dirs(box: Path, channels: Iterable[str]) -> None:
 def _drop_unchanged(tree: Path, generated: Mapping[str, bytes]) -> None:
     """Remove each generated file of a library-mode box (never committed) that still holds the bytes the
     harness wrote, then ``.memory/`` if it is left empty. An edited one stays, so the gate sees and refuses it.
+
+    *tree* can hold links the box made (a copy keeps them as links): each file is read and removed from its own
+    directory's descriptor, never through a link (:mod:`.safe_paths`).
     """
     from .layout import DATA_DIR
 
-    for rel, data in generated.items():
-        p = Path(tree) / rel
-        try:
-            if p.is_file() and not p.is_symlink() and p.read_bytes() == data:
-                p.unlink()
-        except OSError:
-            continue
-    data_dir = Path(tree) / DATA_DIR
     try:
-        if (
-            data_dir.is_dir()
-            and not data_dir.is_symlink()
-            and not any(data_dir.iterdir())
-        ):
-            data_dir.rmdir()
+        root = os.open(tree, _safe.DIR_FLAGS)
     except OSError:
-        pass
+        return
+    try:
+        for rel, data in generated.items():
+            try:
+                parts = _safe.rel_parts(rel)
+                dfd = _safe.walk_dirs(root, parts[:-1])
+            except (OSError, ValueError):
+                continue
+            try:
+                if _safe.read_at(dfd, parts[-1], len(data)) == data:
+                    os.unlink(parts[-1], dir_fd=dfd)
+            except OSError:
+                pass
+            finally:
+                os.close(dfd)
+        try:
+            dfd = _safe.walk_dirs(root, [DATA_DIR])
+        except OSError:
+            return
+        try:
+            empty = not _safe.listing(dfd)
+        except OSError:
+            empty = False
+        finally:
+            os.close(dfd)
+        if empty:
+            try:
+                os.rmdir(DATA_DIR, dir_fd=root)
+            except OSError:
+                pass
+    finally:
+        os.close(root)
 
 
 def _check_manifest(raw: object) -> tuple[object, str | None]:
@@ -1861,34 +1862,48 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
     """(found, parsed manifest or None, problem). The file is never followed through a link.
 
     ``.pass`` must be a real directory and ``manifest.json`` a regular file of at most 1 MiB holding JSON
-    that parses (a nesting too deep to parse is a problem, not a crash).
+    that parses (a nesting too deep to parse is a problem, not a crash). Both are opened from the box's descriptor
+    one component at a time (:mod:`.safe_paths`), so what is parsed, and then judged, is this read's own copy of
+    the bytes, whatever box code does to the file meanwhile.
     """
-    pass_dir = box / ".pass"
     try:
-        st = os.lstat(pass_dir)
-    except FileNotFoundError:
-        return False, None, None
+        root = os.open(box, _safe.DIR_FLAGS)
     except OSError as exc:  # /memory itself made unreadable
-        return True, None, f"manifest: /memory/.pass cannot be read ({exc.strerror})"
-    if not stat.S_ISDIR(st.st_mode):
-        return (
-            True,
-            None,
-            "manifest: /memory/.pass is not a directory, so no regular file was read",
-        )
+        return True, None, f"manifest: /memory cannot be read ({exc.strerror})"
     try:
-        fd = os.open(
-            pass_dir / "manifest.json",
-            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-        )
-    except FileNotFoundError:
-        return False, None, None
-    except OSError as exc:
-        return (
-            True,
-            None,
-            f"manifest: /memory/.pass/manifest.json is not a regular file that can be read ({exc.strerror})",
-        )
+        try:
+            pfd = _safe.walk_dirs(root, [".pass"])
+        except _safe.Missing:
+            if _safe.lstat_at(root, ".pass") is None:
+                return False, None, None
+            return (
+                True,
+                None,
+                "manifest: /memory/.pass is not a directory, so no regular file was read",
+            )
+        except _safe.LinkFound:
+            return (
+                True,
+                None,
+                "manifest: /memory/.pass is not a directory, so no regular file was read",
+            )
+        except OSError as exc:
+            return True, None, f"manifest: /memory/.pass cannot be read ({exc.strerror})"
+        try:
+            try:
+                fd = _safe.openat("manifest.json", _safe.READ_FLAGS, pfd)
+            except FileNotFoundError:
+                return False, None, None
+            except OSError as exc:
+                return (
+                    True,
+                    None,
+                    f"manifest: /memory/.pass/manifest.json is not a regular file that can be read ({exc.strerror})",
+                )
+        finally:
+            os.close(pfd)
+    finally:
+        os.close(root)
     try:
         fst = os.fstat(fd)
         if not stat.S_ISREG(fst.st_mode):
@@ -1902,6 +1917,8 @@ def _read_manifest(box: Path) -> tuple[bool, object, str | None]:
         data = os.read(fd, _MANIFEST_MAX_BYTES + 1)
     finally:
         os.close(fd)
+    if len(data) > _MANIFEST_MAX_BYTES:
+        return True, None, f"manifest: larger than {_MANIFEST_MAX_BYTES} bytes"
     try:
         parsed = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
@@ -2046,10 +2063,10 @@ def _library_item_ids(box: Path) -> set[str]:
 def _named_items(box: Path) -> list[str]:
     """The item ids the box's manifest names, if it can be read (a cancelled pass's draft names them)."""
     try:
-        raw = json.loads(
-            (Path(box) / ".pass" / "manifest.json").read_text(encoding="utf-8"),
-        )
+        found, raw, problem = _read_manifest(Path(box))
     except (OSError, ValueError):
+        return []
+    if not found or problem is not None:
         return []
     items = raw.get("items") if isinstance(raw, dict) else None
     return sorted(
@@ -2491,6 +2508,17 @@ class WriterPass:
                     )
                     + "\n",
                 )
+                from unify.common import in_code_switch
+
+                if in_code_switch.tools_in_code():
+                    # the reference tables the brief points to instead of carrying them
+                    from .library_prompts import input_pointer_files
+
+                    for name, text in input_pointer_files(
+                        staging=bool(getattr(self.cfg, "fork", False)),
+                        pool=bool(self.cfg.pool),
+                    ).items():
+                        (inputs / name).write_text(text)
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
@@ -2787,21 +2815,29 @@ class WriterPass:
             return "\n".join(lines + ["No instance verified: no test written."])
         rel, src = _rv.test_source(item, cases)
         data_rel, data = _rv.case_file(item, cases)
-        from . import fixtures as _fixtures
-
         # both files go into the writer's box, which its cells write: neither is written through a link
         for target in (rel, data_rel):
-            if (
-                not _fixtures._no_link_on_the_way(box, target)
-                or (box / target).is_symlink()
-            ):
+            if _safe.link_in(box, target):
                 return _wt.refusal(
                     "replay",
                     "not_run",
                     reason=f"a link is on the way to {target}",
                 )
         for target, content in ((rel, src.encode("utf-8")), (data_rel, data)):
-            _write_in_box(box, target, content)
+            try:
+                _write_in_box(box, target, content)
+            except _safe.LinkFound:  # planted after the check above: still never followed
+                return _wt.refusal(
+                    "replay",
+                    "not_run",
+                    reason=f"a link is on the way to {target}",
+                )
+            except OSError as exc:
+                return _wt.refusal(
+                    "replay",
+                    "not_run",
+                    reason=f"cannot write {target} ({_safe.errno_name(exc)})",
+                )
         return "\n".join(
             lines
             + [
@@ -3474,30 +3510,26 @@ class WriterPass:
         if name in ("read", "grep"):
             vpath = str(args.get("path") or ("/inputs" if name == "grep" else ""))
             try:
-                real = _views.resolve(vpath, roots)
-            except PermissionError:
+                prefix, parts = _safe.split(vpath, list(roots))
+            except _safe.Outside:
                 return _wt.refused(name, "outside_roots", path=vpath[:200])
-            virtual = _views._virtual(real, roots)
-            if virtual.endswith("/."):
-                virtual = virtual[:-2]
+            virtual = _safe.virtual(prefix, parts)
             if name == "read":
-                if not real.exists():
-                    return _wt.refused(
-                        "read",
-                        "not_found",
-                        ({"path": virtual, "mode": "read"},),
-                        path=vpath[:200],
-                    )
-                mode = "list" if real.is_dir() else "read"
+                where = ({"path": virtual, "mode": "read"},)
                 try:
-                    text = _views.read(vpath, roots, offset)
-                except OSError:
+                    text, mode = _views.read_entry(vpath, roots, offset)
+                except _safe.Outside:
+                    return _wt.refused("read", "outside_roots", path=vpath[:200])
+                except (_safe.LinkFound, _safe.NotRegular) as exc:
                     return _wt.refused(
                         "read",
-                        "not_found",
-                        ({"path": virtual, "mode": mode},),
+                        "unreadable",
+                        where,
+                        error=exc.reason,
                         path=vpath[:200],
                     )
+                except OSError:
+                    return _wt.refused("read", "not_found", where, path=vpath[:200])
                 return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
             where = ({"path": virtual, "mode": "search"},)
             try:
@@ -3509,8 +3541,26 @@ class WriterPass:
                 )
             except _views.PatternProblem as exc:
                 return _wt.refused("grep", "bad_pattern", where, reason=str(exc))
-            except PermissionError:
+            except _views.SearchFailed:
+                return _wt.refused("grep", "search_failed", where)
+            except _safe.Outside:
                 return _wt.refused("grep", "outside_roots", where, path=vpath[:200])
+            except _safe.LinkFound as exc:
+                return _wt.refused(
+                    "grep",
+                    "unreadable",
+                    where,
+                    error=exc.reason,
+                    path=vpath[:200],
+                )
+            except OSError as exc:
+                return _wt.refused(
+                    "grep",
+                    "unreadable",
+                    where,
+                    error=_safe.errno_name(exc),
+                    path=vpath[:200],
+                )
             return _wt.Reply(text, paths=where)
         if name == "pool":
             return _wt.pool(args, roots["/inputs"] / "pool", roots["/memory"])
@@ -3709,6 +3759,19 @@ class WriterPass:
             },
         )
         return reasons
+
+    def _candidate_key(self, candidate: str | None, manifest: object) -> tuple | None:
+        """What a repair round's check judged: the candidate commit's tree and the manifest, so a round that
+        changed neither compares equal to the last one (a commit's own id differs every round). None when
+        unknown."""
+        if candidate is None:
+            return None
+        try:
+            tree = self.mem.run("rev-parse", f"{candidate}^{{tree}}").strip()
+            judged = json.dumps(manifest, sort_keys=True, default=str)
+        except Exception:  # noqa: BLE001 - unknown is never a repeat
+            return None
+        return (tree, judged)
 
     def _commit_round(
         self,
@@ -3989,6 +4052,8 @@ class WriterPass:
         )  # each completed round's seconds, its gate check included
         round_paths: list[str] = []  # /inputs/gate/result-<n>.md written for the writer
         round_blobs: list[str] = []  # the same texts in the blob store
+        # uncapped passes: the refusals repeated round to round (repair.py states the stuck rule)
+        stuck = _repair.StuckRefusals()
         mark = [
             Decimal("0"),
             time.monotonic(),
@@ -4059,6 +4124,7 @@ class WriterPass:
             )
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
+                o.repair_stuck = stuck.report()
                 o.compactions = self._compaction["compactions"]
                 o.chars_moved = self._compaction["chars_moved"]
                 o.messages_moved = self._compaction["messages_moved"]
@@ -4141,6 +4207,9 @@ class WriterPass:
                 helper=self.helper_turn is not None,
                 similar=bool(self.cfg.similar_index),
                 edit_tools=bool(self.cfg.library_mode and self.cfg.edit_tools),
+                # the pass's own switch decides (cfg.tools_in_code): these are its JSON tools, or with tools in
+                # code its allow-list, and the request then carries execute_code alone (below)
+                in_code=False,
             )
             tool_names = [t["function"]["name"] for t in tools]
             in_code_allow: tuple[str, ...] = ()
@@ -4464,11 +4533,23 @@ class WriterPass:
                 store = getattr(self.gate, "blobs", None)
                 if isinstance(store, BlobStore):
                     round_blobs.append(store.put(text.encode()))
+                held: list[tuple[str, str, str]] = []
+                if uncapped:
+                    # no round count here: a refusal repeated round to round is stuck instead (repair.py)
+                    was = set(stuck.rows)
+                    held = stuck.update(res, self._candidate_key(candidate, manifest))
+                    fresh = [h for h in held if (h[0], h[1]) not in was]
+                    if fresh:
+                        notes.append(_repair.stuck_note(fresh, stuck.repeats))
                 why = refused_round(
                     check_s,
                 )  # after the check, with its time: this one decides
                 if why is not None:
                     notes.append(why)
+                    return False
+                if uncapped and stuck.all_stuck():
+                    stuck.stopped = True
+                    notes.append(_repair.stopped_note(round_no + 1, held, stuck.repeats))
                     return False
                 round_no += 1
                 checked["current"] = False  # the writer may change the box again
@@ -4480,6 +4561,8 @@ class WriterPass:
                             vpath,
                             res,
                             None if uncapped else _repair.REPAIR_ROUNDS,
+                            stuck=held,
+                            repeats=stuck.repeats,
                         ),
                     },
                 )

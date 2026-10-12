@@ -271,6 +271,14 @@ _PYTEST_ENV = {
     "PYTEST_ADDOPTS": "-c /dev/null --import-mode=importlib",
 }
 _REDACTED = "<redacted:key-shaped>"
+# G3's refusal of a listed test that is not red on the parent, and not a test-only repair: what would satisfy the
+# rule, and what to do with a change the rule does not admit
+NOT_RED_HINT = (
+    "A listed test counts when it fails on the parent because this pass changes the behaviour it checks, or when "
+    "it repairs a test file the parent already had red. A change that keeps behaviour (such as new tests that "
+    "only pin what the parent already does) does not belong in this pass: take its test files and its manifest "
+    "entry out, or leave it refused and the final merge keeps it as a draft for a later pass"
+)
 
 
 # The generated doctest runner of G3's examples run (a path the layout admits for no candidate file).
@@ -346,6 +354,9 @@ class GateResult:
     provenance: list[dict] = field(default_factory=list)
     # library mode: the fixture provenance entries G1 verified (path -> (sha256, entry)), persisted on merge
     fixtures_verified: dict[str, tuple[str, dict]] = field(default_factory=dict)
+    # each refused item's own reason lines, as they stand in ``reasons`` (a failure attributed to items); the
+    # writer pass's repair rounds compare them round to round (:func:`.repair.refusals`)
+    item_reasons: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _failed(reason: str, check: str | None = None) -> GateResult:
@@ -762,7 +773,8 @@ class _Run:
         self.res.passed = False
         if check not in self.res.refused:
             self.res.refused.append(check)
-        self.res.reasons.append(KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}"))
+        line = KEY_SHAPED.sub(_REDACTED, f"{check}: {reason}")
+        self.res.reasons.append(line)
         owners = [item] if isinstance(item, str) else list(item or [])
         if not owners:
             self.pass_wide = True
@@ -770,6 +782,7 @@ class _Run:
             codes = self.item_fail.setdefault(owner, [])
             if check not in codes:
                 codes.append(check)
+            self.res.item_reasons.setdefault(owner, []).append(line)
 
     def note(self, reason: str) -> None:
         self.notes.append(KEY_SHAPED.sub(_REDACTED, f"note: {reason}"))
@@ -2659,7 +2672,11 @@ class Gate:
                 f"{carried[:5]}, which it exercises"
             )
         run.output(f"{test} (parent)", on_parent)
-        run.fail("G3", f"the tests in {test} {why}", _owners(run.man, test))
+        run.fail(
+            "G3",
+            f"the tests in {test} {why}. {NOT_RED_HINT}",
+            _owners(run.man, test),
+        )
         return False
 
     def _repaired(self, run: _Run, test: str, on_cand: PytestOutcome) -> bool:

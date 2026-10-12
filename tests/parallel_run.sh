@@ -233,18 +233,29 @@ if (( SESSION_TIMEOUT == 0 )); then
 fi
 
 # Build pytest marker filter based on flags
-MARKER_FILTER=""
+MARKER_EXPRS=()
 if (( EVAL_ONLY )); then
-  MARKER_FILTER="-m eval"
+  MARKER_EXPRS+=( "eval" )
 elif (( SYMBOLIC_ONLY )); then
-  MARKER_FILTER="-m 'not eval'"
+  MARKER_EXPRS+=( "not eval" )
 elif (( DETERMINISTIC_ONLY )); then
   # "not eval" still leaves every llm_call test in, and those answer to
   # whatever the shared cache happens to hold: under UNILLM_CACHE=read-only a
   # request with no recorded entry raises, so a sweep meant to find broken
   # tests reports cache gaps instead. Excluding both markers leaves only the
   # tests whose outcome depends on this repository alone.
-  MARKER_FILTER="-m 'not eval and not llm_call'"
+  MARKER_EXPRS+=( "not eval and not llm_call" )
+fi
+if (( KEYLESS )); then
+  MARKER_EXPRS+=( "not live_provider" )
+elif (( LIVE_ONLY )); then
+  MARKER_EXPRS+=( "live_provider or requires_provider_key" )
+fi
+MARKER_FILTER=""
+if (( ${#MARKER_EXPRS[@]} == 1 )); then
+  MARKER_FILTER="-m '${MARKER_EXPRS[0]}'"
+elif (( ${#MARKER_EXPRS[@]} > 1 )); then
+  MARKER_FILTER="-m '(${MARKER_EXPRS[0]}) and (${MARKER_EXPRS[1]})'"
 fi
 
 # ---------------------------------------------------------------------------

@@ -90,7 +90,8 @@ def test_on_with_a_capture_sends_the_workspace_root_and_the_hook_file(
     monkeypatch,
 ):
     cap, ws = _capture(tmp_path, monkeypatch)
-    want = {"roots": [str(ws.resolve())], "path": str(Path(audit_mod.__file__))}
+    # The workspace as the worker's sandbox shows it.
+    want = {"roots": ["/workspace"], "path": str(Path(audit_mod.__file__))}
     assert hooks.worker_audit() == want
     assert _init_message(monkeypatch)["audit"] == want
     cap.finish([])
@@ -100,9 +101,10 @@ def test_on_with_a_capture_sends_the_workspace_root_and_the_hook_file(
 def test_worker_cell_done_stamps_records_on_the_harness_clock(tmp_path, monkeypatch):
     cap, ws = _capture(tmp_path, monkeypatch)
     monkeypatch.setattr(hooks.time, "time", lambda: 1234.5)
+    # As the worker's sandbox names it: mapped back to the host's workspace.
     read = {
         "event": "open",
-        "path": str(ws / "a.csv"),
+        "path": "/workspace/a.csv",
         "mode": "r",
         "tid": 1,
         "cell_thread": True,
@@ -122,7 +124,7 @@ def test_worker_cell_done_stamps_records_on_the_harness_clock(tmp_path, monkeypa
     # only the known path fields are kept (no tid); process starts are not kept (no shell rows here)
     kept = {
         "event": "open",
-        "path": str(ws / "a.csv"),
+        "path": str(ws.resolve() / "a.csv"),
         "mode": "r",
         "cell_thread": True,
     }

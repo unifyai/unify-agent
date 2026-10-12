@@ -19,11 +19,11 @@ import asyncio
 import base64
 import os
 import re
-import signal
 import uuid
 from typing import Any, Optional
 
 from unify import sandbox
+from unify.common import process_tree
 
 __all__ = ["BashSession", "DEFAULT_SHELL_TIMEOUT_S", "MAX_OUTPUT_BYTES"]
 
@@ -59,7 +59,13 @@ class BashSession:
         argv = ["/bin/bash", "--norc", "--noprofile"]
         if self._policy is not None:
             env = sandbox.sandbox_env(self._policy)
-            argv = sandbox.wrap_argv(argv, self._policy, cwd=self._cwd)
+            argv = sandbox.wrap_argv(
+                argv,
+                self._policy,
+                cwd=self._cwd,
+                env=env,
+                neutral=True,
+            )
         else:
             env = dict(os.environ)
         with sandbox.unconfined():  # already wrapped; never wrap twice
@@ -139,7 +145,7 @@ class BashSession:
             # The cell was stopped: its command must not keep running.
             proc, self._proc = self._proc, None
             if proc is not None and proc.returncode is None:
-                _kill_group(proc)
+                kill_sandbox(proc)
             raise
         except asyncio.TimeoutError:
             await self.close()
@@ -174,7 +180,7 @@ class BashSession:
         try:
             return await asyncio.wait_for(proc.wait(), timeout=5)
         except asyncio.TimeoutError:
-            _kill_group(proc)
+            kill_sandbox(proc)
             return await proc.wait()
 
     async def close(self) -> None:
@@ -183,21 +189,18 @@ class BashSession:
         if proc is None:
             return
         if proc.returncode is None:
-            _kill_group(proc)
+            kill_sandbox(proc)
         try:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except asyncio.TimeoutError:
             pass
 
 
-def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+def kill_sandbox(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the sandbox's process group and every process below it, and
+    verify they are gone; ``RuntimeError`` naming the survivors otherwise
+    (unify/common/process_tree.py, shared with the memory agents' boxes)."""
+    process_tree.kill_tree(proc.pid)
 
 
 def _result(

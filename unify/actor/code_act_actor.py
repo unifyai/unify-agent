@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from unify.actor.base import BaseCodeActActor
 from unify.common._async_tool import cell_reply
 from unify.actor import core_surface
+from unify.actor import in_code_tools as _in_code_tools
 from unify.common.context_dump import make_messages_safe_for_context_dump
 from unify import environment, transcripts
 from unify.actor.workspace_tools import workspace_tools as _workspace_tools
@@ -4222,10 +4223,15 @@ class CodeActActor(BaseCodeActActor):
 
         # UNIFY_LIBRARY_SNAPSHOT: the first user message says how large the
         # libraries are at task start.
-        snapshot = _library_snapshot_line(
-            _library_counts(self.function_manager, self.guidance_manager),
-            has_fm_tools=core_session.prompt.functions,
-            has_gm_tools=core_session.prompt.guidance,
+        # A memory run has no function or guidance store, so nothing to count.
+        snapshot = (
+            None
+            if _mv2.enabled()
+            else _library_snapshot_line(
+                _library_counts(self.function_manager, self.guidance_manager),
+                has_fm_tools=core_session.prompt.functions,
+                has_gm_tools=core_session.prompt.guidance,
+            )
         )
         if snapshot:
             first_message_parts.append(snapshot)
@@ -4280,6 +4286,7 @@ class CodeActActor(BaseCodeActActor):
         # is built); a sub-agent keeps those of the task it works for.
         instance_token = _instance_lint.enter(request)
         core_token = core_session.enter()
+        in_code = None
         try:
             # The library entries closest to the request, after the snapshot line.
             from unify.actor.library_shortlist import shortlist_block
@@ -4300,6 +4307,25 @@ class CodeActActor(BaseCodeActActor):
             if isinstance(getattr(sandbox, "core_globals", None), dict):
                 sandbox.core_globals.update(_agents.globals())
             first_message_parts.append(_agents.prompt_section())
+            # UNIFY_TOOLS_IN_CODE=on: execute_code(code) alone, its cells in
+            # this agent's persistent interpreter and every other tool a
+            # call from them (unify/actor/in_code_tools.py); None while off.
+            _store_tool = _act_tools.get("store_skills")
+            in_code = _in_code_tools.open_for_act(
+                agents=_agents,
+                sandbox=sandbox,
+                store_skills=(
+                    getattr(_store_tool, "fn", _store_tool)
+                    if _store_tool is not None
+                    and effective_can_store
+                    and not admission_gated
+                    else None
+                ),
+                response_format=response_format,
+                cell_limit_s=self._session_executor._timeout,
+            )
+            if in_code is not None:
+                tools = {"execute_code": in_code.tool()}
             handle = start_async_tool_loop(
                 client,
                 request or initial_prompt,
@@ -4348,6 +4374,8 @@ class CodeActActor(BaseCodeActActor):
             )
         except BaseException:
             _instance_lint.leave(instance_token)
+            if in_code is not None:
+                await in_code.close(completed=False)
             raise
         finally:
             current_run_meter.reset(meter_token)
@@ -4363,9 +4391,11 @@ class CodeActActor(BaseCodeActActor):
         _loop_handle = handle
 
         async def _result_with_cleanup() -> str:
+            completed = False
             try:
                 try:
                     result = await _original_result()
+                    completed = True
                 except BaseException:
                     await _end_agents_request(
                         _agents,
@@ -4385,9 +4415,14 @@ class CodeActActor(BaseCodeActActor):
                     await _end_agents_request(_agents, reply=str(result))
                 return result
             finally:
-                await _cleanup()
+                try:
+                    if in_code is not None:
+                        await in_code.close(completed=completed)
+                finally:
+                    await _cleanup()
 
         handle.result = _result_with_cleanup  # type: ignore[assignment]
+        handle.in_code_tools = in_code  # type: ignore[attr-defined]
 
         # Update agent context with handle reference
         new_ctx.handle = handle

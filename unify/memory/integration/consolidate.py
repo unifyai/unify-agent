@@ -922,6 +922,9 @@ def _end_event(
                 # (None: unknown, so no compaction)
                 "max_prompt_tokens": getattr(outcome, "max_prompt_tokens", None),
                 "context_window": getattr(outcome, "context_window", None),
+                # an uncapped pass's refusals the gate repeated for the same reason in consecutive rounds, so no
+                # further repair round was offered for them, and whether that ended repair (None: none)
+                "repair_stuck": getattr(outcome, "repair_stuck", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}
@@ -1252,6 +1255,9 @@ async def run_due_passes(
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
+                # UNIFY_TOOLS_IN_CODE=on: the writer, the curator and their helpers carry one JSON tool, execute_code,
+                # and call every other tool from their cells
+                "tools_in_code": getattr(settings, "UNIFY_TOOLS_IN_CODE", "off") == "on",
                 "edit_tools": library_edit_tools(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),

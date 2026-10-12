@@ -4,6 +4,9 @@ Verifies that the loop-owned send_notification tool:
   1. Puts notifications onto _notification_up_q (surfaced via handle.next_notification)
   2. Fires the on_notify callback for event emission
   3. Coexists with in-code notify() — both paths produce notifications on the same handle
+
+The model is scripted (``tests/scripted_model.py``), so nothing leaves the
+process.
 """
 
 from __future__ import annotations
@@ -17,13 +20,19 @@ from unify.common.llm_client import new_llm_client
 from tests.helpers import _handle_project
 from tests.async_helpers import first_assistant_tool_call
 from tests.baked_defaults import as_shipped  # noqa: F401
+from tests.scripted_model import ScriptedModel, reply, scripted
 
 # as_shipped: deleted in step 5 (notifications)
-pytestmark = [pytest.mark.llm_call, pytest.mark.usefixtures("as_shipped")]
+pytestmark = pytest.mark.usefixtures("as_shipped")
 
 
 def make_llm(system_message=None, **llm_kwargs):
     return new_llm_client(**llm_kwargs, system_message=system_message)
+
+
+def _notify(message: str):
+    """A scripted reply that calls ``send_notification``."""
+    return reply(calls=[("send_notification", {"message": message})])
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -41,41 +50,51 @@ async def do_work(task: str) -> str:
 async def test_send_notification_surfaces_on_handle(llm_config) -> None:
     """send_notification tool call produces a notification on handle.next_notification()."""
 
-    client = make_llm(
-        "You have two tools: send_notification and do_work.\n"
-        "1) First call send_notification with the message 'Starting task...'.\n"
-        "2) Then call do_work with the task 'process data'.\n"
-        "3) Finish with a short assistant message containing 'done'.",
-        **llm_config,
+    model = ScriptedModel(
+        actor=[
+            _notify("Starting task..."),
+            reply(calls=[("do_work", {"task": "process data"})]),
+            reply("done"),
+        ],
     )
+    with scripted(model):
+        client = make_llm(
+            "You have two tools: send_notification and do_work.\n"
+            "1) First call send_notification with the message 'Starting task...'.\n"
+            "2) Then call do_work with the task 'process data'.\n"
+            "3) Finish with a short assistant message containing 'done'.",
+            **llm_config,
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        message="Please process data and notify me of progress.",
-        tools={
-            "do_work": do_work,
-        },
-        time_awareness=False,
-        on_notify=lambda msg: None,
-    )
+        handle = start_async_tool_loop(
+            client,
+            message="Please process data and notify me of progress.",
+            tools={
+                "do_work": do_work,
+            },
+            time_awareness=False,
+            on_notify=lambda msg: None,
+        )
 
-    try:
-        event = await asyncio.wait_for(handle.next_notification(), timeout=120)
-        assert event["type"] == "notification"
-        assert event["tool_name"] == "send_notification"
-        assert "starting" in event.get("message", "").lower()
-
-        result = await asyncio.wait_for(handle.result(), timeout=120)
-        assert result is not None
-    finally:
         try:
-            await handle.stop("test cleanup")
-        except Exception:
-            pass
+            event = await asyncio.wait_for(handle.next_notification(), timeout=120)
+            assert event["type"] == "notification"
+            assert event["tool_name"] == "send_notification"
+            assert "starting" in event.get("message", "").lower()
 
-    _, call = first_assistant_tool_call(client.messages, "send_notification")
-    args = json.loads(call["function"]["arguments"])
-    assert "starting" in args["message"].lower()
+            result = await asyncio.wait_for(handle.result(), timeout=120)
+            assert result is not None
+        finally:
+            try:
+                await handle.stop("test cleanup")
+            except Exception:
+                pass
+
+        _, call = first_assistant_tool_call(client.messages, "send_notification")
+        args = json.loads(call["function"]["arguments"])
+        assert "starting" in args["message"].lower()
+    assert result == "done"
+    assert model.kinds() == ["actor"] * 3
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -88,34 +107,36 @@ async def test_send_notification_surfaces_on_handle(llm_config) -> None:
 async def test_send_notification_on_notify_callback(llm_config) -> None:
     """The on_notify callback is invoked with the message text."""
 
-    captured: list[str] = []
+    model = ScriptedModel(actor=[_notify("Checkpoint reached"), reply("ok")])
+    with scripted(model):
+        captured: list[str] = []
 
-    async def _capture(msg: str):
-        captured.append(msg)
+        async def _capture(msg: str):
+            captured.append(msg)
 
-    client = make_llm(
-        "Call send_notification with message 'Checkpoint reached' then respond with 'ok'.",
-        **llm_config,
-    )
+        client = make_llm(
+            "Call send_notification with message 'Checkpoint reached' then respond with 'ok'.",
+            **llm_config,
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        message="Notify me.",
-        tools={"do_work": do_work},
-        time_awareness=False,
-        on_notify=_capture,
-    )
+        handle = start_async_tool_loop(
+            client,
+            message="Notify me.",
+            tools={"do_work": do_work},
+            time_awareness=False,
+            on_notify=_capture,
+        )
 
-    try:
-        await asyncio.wait_for(handle.result(), timeout=120)
-    finally:
         try:
-            await handle.stop("test cleanup")
-        except Exception:
-            pass
+            await asyncio.wait_for(handle.result(), timeout=120)
+        finally:
+            try:
+                await handle.stop("test cleanup")
+            except Exception:
+                pass
 
-    assert len(captured) >= 1
-    assert any("checkpoint" in m.lower() for m in captured)
+        assert captured == ["Checkpoint reached"]
+    assert model.kinds() == ["actor", "actor"]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -141,46 +162,55 @@ async def test_send_notification_coexists_with_inline_notify(llm_config) -> None
     """Both send_notification (tool call) and inline notify (via _notification_up_q)
     produce notifications on the same handle."""
 
-    client = make_llm(
-        "You have send_notification and tool_with_inline_notify.\n"
-        "1) Call send_notification with message 'tool notification'.\n"
-        "2) Call tool_with_inline_notify.\n"
-        "3) Respond with 'complete'.",
-        **llm_config,
+    model = ScriptedModel(
+        actor=[
+            _notify("tool notification"),
+            reply(calls=[("tool_with_inline_notify", {})]),
+            reply("complete"),
+        ],
     )
+    with scripted(model):
+        client = make_llm(
+            "You have send_notification and tool_with_inline_notify.\n"
+            "1) Call send_notification with message 'tool notification'.\n"
+            "2) Call tool_with_inline_notify.\n"
+            "3) Respond with 'complete'.",
+            **llm_config,
+        )
 
-    handle = start_async_tool_loop(
-        client,
-        message="Run both notification paths.",
-        tools={
-            "tool_with_inline_notify": tool_with_inline_notify,
-        },
-        time_awareness=False,
-        on_notify=lambda msg: None,
-    )
+        handle = start_async_tool_loop(
+            client,
+            message="Run both notification paths.",
+            tools={
+                "tool_with_inline_notify": tool_with_inline_notify,
+            },
+            time_awareness=False,
+            on_notify=lambda msg: None,
+        )
 
-    notifications: list[dict] = []
-    try:
-        for _ in range(10):
-            try:
-                evt = await asyncio.wait_for(handle.next_notification(), timeout=30)
-                notifications.append(evt)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                break
-            if len(notifications) >= 2:
-                break
-
-        await asyncio.wait_for(handle.result(), timeout=120)
-    finally:
+        notifications: list[dict] = []
         try:
-            await handle.stop("test cleanup")
-        except Exception:
-            pass
+            for _ in range(10):
+                try:
+                    evt = await asyncio.wait_for(handle.next_notification(), timeout=30)
+                    notifications.append(evt)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    break
+                if len(notifications) >= 2:
+                    break
 
-    tool_names = [n.get("tool_name") for n in notifications]
-    assert (
-        "send_notification" in tool_names
-    ), f"Expected send_notification in tool_names, got {tool_names}"
-    assert (
-        "tool_with_inline_notify" in tool_names
-    ), f"Expected tool_with_inline_notify in tool_names, got {tool_names}"
+            await asyncio.wait_for(handle.result(), timeout=120)
+        finally:
+            try:
+                await handle.stop("test cleanup")
+            except Exception:
+                pass
+
+        tool_names = [n.get("tool_name") for n in notifications]
+        assert (
+            "send_notification" in tool_names
+        ), f"Expected send_notification in tool_names, got {tool_names}"
+        assert (
+            "tool_with_inline_notify" in tool_names
+        ), f"Expected tool_with_inline_notify in tool_names, got {tool_names}"
+    assert model.kinds() == ["actor"] * 3

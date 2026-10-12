@@ -932,7 +932,9 @@ def test_measure_refuses_entries_that_stay_unreadable(tmp_path, monkeypatch):
     real = os.scandir
 
     def deny(path):
-        if str(path).endswith("/d"):
+        # the measure lists directories from descriptors: name the one opened for "d"
+        name = os.readlink(f"/proc/self/fd/{path}") if isinstance(path, int) else str(path)
+        if name.endswith("/d"):
             raise PermissionError(13, "denied")
         return real(path)
 

@@ -62,13 +62,24 @@ def system_prompt(text: str) -> str:
     or under ``UNIFY_MEMORY_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
-    ``functions.search`` is dropped too; the change is the same for every request.
+    ``functions.search`` is dropped too, and the role and the sandbox section no longer name stored
+    functions; the change is the same for every request.
     """
     if not enabled():
         return text
-    from unify.actor.prompt_builders import _CORE_SANDBOX_SEARCH_PYTHON
+    from unify.actor import prompt_builders as _prompts
 
-    text = text.replace(_CORE_SANDBOX_SEARCH_PYTHON, _HELP_ONLY)
+    text = text.replace(_prompts._CORE_SANDBOX_SEARCH_PYTHON, _HELP_ONLY)
+    # No function store either: the role and the sandbox section say what a
+    # cell has instead.
+    text = text.replace(
+        _prompts._LEAN_ROLE_LIBRARY,
+        _prompts._LEAN_ROLE_LIBRARY_MEMORY,
+    )
+    text = text.replace(
+        _prompts._SANDBOX_GLOBALS_INTRO,
+        _prompts._SANDBOX_GLOBALS_INTRO_MEMORY,
+    )
     run = _run()
     index = getattr(run, "index", "") if run is not None else ""
     return f"{text}\n\n{index}" if index else text
@@ -127,8 +138,8 @@ def worker_audit() -> dict | None:
     installs no hook).
 
     While a request captures the work tree: the workspace root, for file events; in library mode without a
-    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root (the sandbox binds it at its
-    own path, so the child sees the same path) and the file of the audit hook, which the child loads by path
+    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root as the sandbox
+    shows it (``/workspace``) and the file of the audit hook, which the child loads by path
     (stdlib only; no ``unify`` import there).
     """
     if _run() is None:
@@ -145,7 +156,11 @@ def worker_audit() -> dict | None:
             if not memory_library_on():
                 return None
             return {"roots": [], "path": str(Path(audit.__file__))}
-        return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
+        # The sandbox binds the workspace at a fixed path (``unify.sandbox.WORKSPACE_MOUNT``), so that is
+        # the root the child sees; the records are mapped back to the host's in :func:`worker_cell_done`.
+        from unify.sandbox import WORKSPACE_MOUNT
+
+        return {"roots": [WORKSPACE_MOUNT], "path": str(Path(audit.__file__))}
     except (
         Exception
     ) as exc:  # noqa: BLE001 - the worker always starts; this request then records no file events
@@ -225,12 +240,39 @@ def worker_cell_done(events: Any) -> None:
 
         capture = active()
         if capture is not None:
-            capture.cell_done(time.time(), events)
+            capture.cell_done(time.time(), _host_paths(events, capture.workspace))
     except Exception as exc:  # noqa: BLE001 - recording never fails a cell
         logger.warning(
             "memory v2: a cell's audit records were lost (%s)",
             type(exc).__name__,
         )
+
+
+def _host_paths(events: Any, workspace: Path) -> Any:
+    """*events* (a cell's drained audit records) with each record's ``path`` and ``dst`` under the sandbox's
+    workspace path (``unify.sandbox.WORKSPACE_MOUNT``) mapped to the host *workspace* the capture reads;
+    anything else is returned as it came."""
+    from unify.sandbox import WORKSPACE_MOUNT
+
+    if not isinstance(events, dict) or not isinstance(events.get("records"), list):
+        return events
+
+    def host(value: Any) -> Any:
+        if isinstance(value, str) and (
+            value == WORKSPACE_MOUNT or value.startswith(WORKSPACE_MOUNT + "/")
+        ):
+            return str(workspace) + value[len(WORKSPACE_MOUNT) :]
+        return value
+
+    records = []
+    for record in events["records"]:
+        if isinstance(record, dict):
+            record = {**record}
+            for key in ("path", "dst"):
+                if key in record:
+                    record[key] = host(record[key])
+        records.append(record)
+    return {**events, "records": records}
 
 
 def cell_error(text: str) -> str:

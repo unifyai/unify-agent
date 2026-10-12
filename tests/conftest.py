@@ -274,14 +274,20 @@ def _exact_cache_keying_for_evals(request):
 
 @pytest.fixture(autouse=True)
 def _fresh_llm_calls(request, monkeypatch):
-    """A ``fresh_llm_calls`` test reaches the model on every call, never the cache.
+    """A ``fresh_llm_calls`` or ``live_provider`` test reaches the model on
+    every call, never the cache.
 
     For a test whose subject is the timing between live calls: a recording
     replays in a fraction of a second and so finishes before a decision the
-    test drives with another call (a pause) can land. Clients read the
-    setting when they are built, so this runs before any fixture builds one.
+    test drives with another call (a pause) can land. For a test whose
+    subject is the live model or provider: a replayed answer says nothing
+    about how the provider behaves now. Clients read the setting when they
+    are built, so this runs before any fixture builds one.
     """
-    if request.node.get_closest_marker("fresh_llm_calls") is None:
+    if (
+        request.node.get_closest_marker("fresh_llm_calls") is None
+        and request.node.get_closest_marker("live_provider") is None
+    ):
         yield
         return
 
@@ -604,9 +610,10 @@ def unify_home(request, monkeypatch):
 
 # ``requires_provider_key``: a deterministic test (no model call) whose code
 # path still sends a request that needs a provider key, such as an
-# OpenRouter embedding behind a semantic search. Workers of the model-free
-# half never hold credentials, so there it is skipped with this reason; the
-# key-bound half sets UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, so a key that
+# OpenRouter embedding behind a semantic search. ``live_provider``: a test
+# whose subject is the live model or provider. Workers of the model-free
+# half never hold credentials, so there both are skipped with this reason;
+# the key-bound half sets UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, so a key that
 # failed to load fails the test instead of skipping it silently.
 PROVIDER_KEY_SKIP_REASON = "needs a provider key; runs in the key-bound half"
 REQUIRE_PROVIDER_KEY_VAR = "UNIFY_TEST_REQUIRE_PROVIDER_KEY"
@@ -630,18 +637,86 @@ def _provider_key_loaded(name: str) -> bool:
 
 
 def _missing_provider_keys(item) -> list[str]:
+    """The keys a ``requires_provider_key`` or ``live_provider`` test needs
+    and that are not loaded. A ``live_provider`` test reaches the production
+    default model, so it needs the default key."""
+    names: list[str] = []
     marker = item.get_closest_marker("requires_provider_key")
-    if marker is None:
-        return []
-    names = list(marker.args) or [DEFAULT_PROVIDER_KEY]
-    return [name for name in names if not _provider_key_loaded(name)]
+    if marker is not None:
+        names += list(marker.args) or [DEFAULT_PROVIDER_KEY]
+    if item.get_closest_marker("live_provider") is not None:
+        names.append(DEFAULT_PROVIDER_KEY)
+    return [
+        name
+        for name in dict.fromkeys(names)
+        if not _provider_key_loaded(name)
+    ]
+
+
+# The keyless guard. A test that is not marked ``live_provider`` must not
+# reach a provider: its model is scripted (tests/scripted_model.py) or its
+# calls replay from a recording. With the guard on, unillm's provider call
+# (``litellm.acompletion`` and ``litellm.completion``, below unillm's retry
+# policy and request building) raises an error that names the cause, instead
+# of the provider's 401. A scripted model replaces the transport above it, a
+# fake below the retry policy replaces it again for its block, and a
+# recording never reaches it, so none of them notice the guard.
+#
+# UNIFY_TEST_KEYLESS=1 turns it on and UNIFY_TEST_KEYLESS=0 off. Unset, it
+# is on when no chat provider key is loaded: on such a machine every
+# provider call would fail anyway.
+KEYLESS_VAR = "UNIFY_TEST_KEYLESS"
+KEYLESS_REFUSAL = (
+    "reached the provider without a script; script it or mark it live_provider"
+)
+# The unillm settings a chat request's credential can come from.
+CHAT_PROVIDER_KEYS = (
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "TOGETHER_API_KEY",
+    "OPENAI_API_KEY",
+)
+
+
+def keyless_guard_on() -> bool:
+    """Whether the keyless guard applies in this session."""
+    value = os.environ.get(KEYLESS_VAR, "").strip()
+    if value:
+        return value == "1"
+    return not any(_provider_key_loaded(name) for name in CHAT_PROVIDER_KEYS)
+
+
+@pytest.fixture(autouse=True)
+def _keyless_guard(request, monkeypatch):
+    """Refuse provider calls in a test not marked ``live_provider`` while
+    :func:`keyless_guard_on` (see the comment above)."""
+    node = request.node
+    if (
+        node.get_closest_marker("live_provider") is not None
+        or node.get_closest_marker("requires_provider_key") is not None
+        or not keyless_guard_on()
+    ):
+        yield
+        return
+
+    import unillm.clients.uni_llm as uni_llm
+
+    async def refuse_async(*args, **kwargs):
+        raise AssertionError(KEYLESS_REFUSAL)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(KEYLESS_REFUSAL)
+
+    monkeypatch.setattr(uni_llm.litellm, "acompletion", refuse_async)
+    monkeypatch.setattr(uni_llm.litellm, "completion", refuse)
+    yield
 
 
 class _ProviderKeyGate:
-    """Fails a ``requires_provider_key`` test whose key is missing while
-    UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, before its body runs (the setup hook
-    skips it otherwise). A plugin object, since this module already defines
-    a ``pytest_runtest_call`` wrapper."""
+    """Fails a ``requires_provider_key`` or ``live_provider`` test whose key
+    is missing while UNIFY_TEST_REQUIRE_PROVIDER_KEY=1, before its body runs
+    (the setup hook skips it otherwise). A plugin object, since this module
+    already defines a ``pytest_runtest_call`` wrapper."""
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_runtest_call(self, item):
