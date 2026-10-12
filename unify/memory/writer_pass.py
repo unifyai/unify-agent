@@ -666,9 +666,11 @@ _ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
 # /inputs/library.json: an orientation index of the pass's channels, at most this many tokens
 LIBRARY_BUDGET_TOKENS = 2000
 _SUMMARY_CHARS = 200
-# The writer's transcript: JSON lines on this notes ref of the request's episode commit, bounded
+# The writer's transcript: kept whole, never cut (:mod:`.transcripts`). On this notes ref of the request's episode
+# commit go its JSON lines while they fit TRANSCRIPT_MAX_BYTES, else one row pointing to its chunk files
 TRANSCRIPT_REF = "writer-transcripts"
 TRANSCRIPT_MAX_BYTES = 256 * 1024
+# the per-string cut of a bounded view (:func:`transcript_lines` with *string_chars*); the stored transcript has none
 TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
 
 # Structured causes of a pass's end (PassOutcome.codes), set where each cause arises, never read back from
@@ -1214,14 +1216,14 @@ def transcript_lines(
     pass_id: str,
     redactor: Redactor | None = None,
     *,
-    max_bytes: int = TRANSCRIPT_MAX_BYTES,
-    string_chars: int = TRANSCRIPT_STRING_CHARS,
+    max_bytes: int | None = None,
+    string_chars: int | None = None,
     tools: list | None = None,
     originals: Mapping[int, str] | None = None,
     store: Callable[[bytes], str] | None = None,
     label: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """The writer's message list as JSON lines ``{"pass_id", "i", "message"}``: redacted first, then bounded.
+    """The writer's message list as JSON lines ``{"pass_id", "i", "message"}``, redacted, every message whole.
     *label* (for a helper: ``{"agent": "helper", "helper": <name>}``) is added to every line.
 
     The first line is a header ``{"pass_id", "header": {...}}`` naming the brief (the system message) and the tool
@@ -1232,12 +1234,15 @@ def transcript_lines(
     Each message becomes plain JSON, then *redactor* (the run's environment credentials and registered secrets by
     value, then key shapes; key shapes alone without one) and :func:`.redact.redact_error` (every secret registered
     with :mod:`unify.process_secrets` when the lines are made, credential structures, key shapes) rewrite every
-    string and key before anything is cut, so a cut never leaves part of a secret unredacted. Then every string is
-    cut to *string_chars* characters, except in the first user message, which is kept whole. A tool result that
-    compaction moved out of the conversation is recorded as it was before (*originals*, by message index) and
-    marked ``"compacted": true``. The lines stop before *max_bytes* in all, ending with
-    ``{"pass_id", "truncated": n}`` for the *n* messages left out. A message that is not JSON data is named by its
-    type.
+    string and key. A tool result that compaction moved out of the conversation is recorded as it was before
+    (*originals*, by message index) and marked ``"compacted": true``. A message that is not JSON data is named by
+    its type.
+
+    With neither *max_bytes* nor *string_chars* (the stored transcript, :mod:`.transcripts`) nothing is cut. A
+    bounded view may ask for one: redaction comes before any cut, so a cut never leaves part of a secret
+    unredacted; every string is cut to *string_chars* characters, except in the first user message, which is kept
+    whole; and the lines stop before *max_bytes* in all, ending with ``{"pass_id", "truncated": n}`` for the *n*
+    messages left out.
     """
     red = redactor if redactor is not None else Redactor()
     originals = originals or {}
@@ -1297,6 +1302,7 @@ def transcript_lines(
     line = header_line(True)
     if (
         line is not None
+        and max_bytes is not None
         and len(line.encode("utf-8")) + 1 > (max_bytes - marker_room) // 2
     ):
         # the texts would crowd out the messages: name them by hash only
@@ -1337,7 +1343,9 @@ def transcript_lines(
             plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
             # the first user message and the brief's name are kept whole; every other string is cut
             whole = i == first_user or (i == 0 and isinstance(brief, str))
-            msg = plain if whole else _plain(plain, string_chars)
+            msg = (
+                plain if whole or string_chars is None else _plain(plain, string_chars)
+            )
             line = json.dumps(
                 {"pass_id": pass_id, "i": i, "message": msg, **extra, **label},
                 sort_keys=True,
@@ -1352,7 +1360,7 @@ def transcript_lines(
                 },
             )
         size = len(line.encode("utf-8")) + 1
-        if used + size > max_bytes - marker_room:
+        if max_bytes is not None and used + size > max_bytes - marker_room:
             lines.append(
                 json.dumps(
                     {"pass_id": pass_id, "truncated": len(messages) - i, **label},
@@ -1364,63 +1372,26 @@ def transcript_lines(
     return lines
 
 
-def record_transcript(
-    root: str | Path,
-    pass_id: str,
-    agent: str,
-    messages: list,
-    *,
-    redactor: Redactor | None = None,
-    tools: list | None = None,
-    label: Mapping[str, str] | None = None,
-) -> dict:
-    """Write *agent*'s transcript (:func:`transcript_lines`: redacted, then bounded) to
-    ``<root>/<pass_id>/transcripts/<agent>.jsonl``, created new; return its manifest (agent, path, lines, bytes,
-    sha256), or the error that kept it from being written. The one place a helper's transcript is stored.
-    """
-    lines = transcript_lines(messages, pass_id, redactor, tools=tools, label=label)
-    data = "".join(line + "\n" for line in lines).encode("utf-8")
-    path = Path(root) / pass_id / "transcripts" / f"{agent}.jsonl"
-    manifest = {
-        "agent": agent,
-        "path": str(path),
-        "lines": len(lines),
-        "bytes": len(data),
-        "sha256": hashlib.sha256(data).hexdigest(),
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
-            path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o644,
-        )
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-    except OSError as exc:
-        manifest["error"] = type(exc).__name__
-    return manifest
-
-
 def record_lines(
     entries: list,
     pass_id: str,
     redactor: Redactor | None = None,
     *,
-    max_bytes: int = TRANSCRIPT_MAX_BYTES,
-    string_chars: int = TRANSCRIPT_STRING_CHARS,
+    max_bytes: int | None = None,
+    string_chars: int | None = None,
 ) -> list[str]:
     """The pass record's entries (:mod:`.messaging`) as JSON lines ``{"pass_id", "record": {seq, ts, author, kind,
-    text, mentions}}``, redacted and bounded as :func:`transcript_lines` bounds a transcript.
-    """
+    text, mentions}}``, redacted, every entry whole; a bounded view (*max_bytes*, *string_chars*) cuts as
+    :func:`transcript_lines` does."""
     red = redactor if redactor is not None else Redactor()
     lines: list[str] = []
     used = 0
     for n, e in enumerate(entries):
-        entry = _plain(_scrub(red.obj(e.to_dict())), string_chars)
+        entry = _scrub(red.obj(e.to_dict()))
+        entry = entry if string_chars is None else _plain(entry, string_chars)
         line = json.dumps({"pass_id": pass_id, "record": entry}, sort_keys=True)
         size = len(line.encode("utf-8")) + 1
-        if used + size > max_bytes - 200:
+        if max_bytes is not None and used + size > max_bytes - 200:
             lines.append(
                 json.dumps({"pass_id": pass_id, "record_truncated": len(entries) - n}),
             )
@@ -2081,9 +2052,9 @@ class WriterPass:
         self._role = "write"
 
     def transcript(self, pass_id: str) -> list[str]:
-        """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`): the brief and the
-        tool JSON by sha256 (their bytes in the gate's blob store when it has one), the first user message uncut,
-        and each compacted tool result as it was before the compaction."""
+        """The last run's messages as redacted JSON lines, every message whole (:func:`transcript_lines`): the brief
+        and the tool JSON by sha256 (their bytes in the gate's blob store when it has one), and each compacted tool
+        result as it was before the compaction."""
         blobs = getattr(self.gate, "blobs", None)
         store = blobs.put if isinstance(blobs, BlobStore) else None
         lines = transcript_lines(
@@ -2110,6 +2081,29 @@ class WriterPass:
         if pr is not None and pr.record.entries:
             lines += record_lines(list(pr.record.entries), pass_id, self.redactor)
         return lines
+
+    def transcript_note(self, pass_id: str) -> list[str]:
+        """Store the last run's whole transcript (:meth:`transcript`) as chunk files under the pass's record
+        folder (:func:`.transcripts.write_chunks`, with ``pass_record_root``), and return the git note's lines: the
+        transcript itself while it fits, else a row pointing to the chunks with their sha256
+        (:func:`.transcripts.note_lines`). With no record folder, or one that cannot be written, the note carries
+        the whole transcript: no message is dropped."""
+        from . import transcripts as _transcripts
+
+        lines = self.transcript(pass_id)
+        manifest = None
+        root = getattr(self.cfg, "pass_record_root", None)
+        if root:
+            try:
+                manifest = _transcripts.write_chunks(
+                    root,
+                    pass_id,
+                    _transcripts.WRITER,
+                    lines,
+                )
+            except (OSError, ValueError):
+                manifest = None  # the note keeps it all instead
+        return _transcripts.note_lines(pass_id, lines, manifest)
 
     def _stage_context(
         self,
@@ -2457,9 +2451,11 @@ class WriterPass:
         ctx = self._delegate_ctx
         root = getattr(self.cfg, "pass_record_root", None)
         if root and ctx is not None and ctx.pass_id == pr.pass_id:
+            from . import transcripts as _transcripts
+
             for name, (messages, tools) in ctx.transcripts.items():
                 transcripts.append(
-                    record_transcript(
+                    _transcripts.record_transcript(
                         root,
                         pr.pass_id,
                         name,

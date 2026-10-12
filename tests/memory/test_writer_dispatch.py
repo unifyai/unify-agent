@@ -145,16 +145,37 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
         helper=lane,
         pass_record_root=str(tmp_path / "records"),
     )
-    assert names(writer._tools_json) >= {"delegate", "wait", "messages", "send", "who", "reply", "stop"}
+    assert names(writer._tools_json) >= {
+        "delegate",
+        "wait",
+        "messages",
+        "send",
+        "who",
+        "reply",
+        "stop",
+    }
     assert "similar" not in names(writer._tools_json)
     brief = writer.messages[0]["content"]
-    assert "- `delegate`:" in brief and "`similar`" not in brief and "# The record\n" in brief
+    assert (
+        "- `delegate`:" in brief
+        and "`similar`" not in brief
+        and "# The record\n" in brief
+    )
     for cid, call in (("d0", "call-0"), ("d1", "call-1"), ("d2", "call-2")):
-        assert model.outputs[cid].startswith(f"helper {call} started"), model.outputs[cid]
+        assert model.outputs[cid].startswith(f"helper {call} started"), model.outputs[
+            cid
+        ]
     waited = "\n".join(model.outputs[w] for w in ("w0", "w1", "w2", "w3"))
-    for call, task in (("call-0", "area"), ("call-1", "perimeter"), ("call-2", "volume")):
+    for call, task in (
+        ("call-0", "area"),
+        ("call-1", "perimeter"),
+        ("call-2", "volume"),
+    ):
         assert f"{call} (done): helper {call}: ok" in waited, waited
-        assert f"files under /inputs/helpers/{call}/" in waited and f"- candidates/{task}.py" in waited
+        assert (
+            f"files under /inputs/helpers/{call}/" in waited
+            and f"- candidates/{task}.py" in waited
+        )
         assert f"summary: drafted {task}" in waited
     assert "- call-0 (helper, replied): area" in model.outputs["who"]
     assert [h["call"] for h in out.helpers] == ["call-0", "call-1", "call-2"]
@@ -174,27 +195,48 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
     assert len(writer_rows) == 3 and all(r["status"] == "ok" for r in writer_rows)
     # one helper identity everywhere: delegate's row, the helper's rows, the record and the output folder
     assert all(r["name"] == "writer" for r in rows if r["agent"] == "writer")
-    assert [r["messaging"] for r in writer_rows] == [{"helper": f"call-{i}"} for i in range(3)]
+    assert [r["messaging"] for r in writer_rows] == [
+        {"helper": f"call-{i}"} for i in range(3)
+    ]
     assert all(r["name"] == r["helper_call"] for r in helper_rows)
     waits = [r for r in rows if r.get("tool") == "wait"]
     assert len(waits) == 4 and all(
-        r["messaging"]["outcome"] in ("message", "nothing_can_arrive") and r["messaging"]["seconds"] >= 0
+        r["messaging"]["outcome"] in ("message", "nothing_can_arrive")
+        and r["messaging"]["seconds"] >= 0
         for r in waits
     )
     (who,) = [r for r in rows if r.get("tool") == "who"]
-    assert [a["name"] for a in who["messaging"]["roster"]] == ["writer", "call-0", "call-1", "call-2"]
+    assert [a["name"] for a in who["messaging"]["roster"]] == [
+        "writer",
+        "call-0",
+        "call-1",
+        "call-2",
+    ]
     # the pass's end: every helper ended, and where its record is
     (end,) = [r for r in rows if r["event"] == "pass_end"]
     assert rows[-1] is end or rows[-1] == end
-    assert end["helpers_closed"] == {"call-0": "ended", "call-1": "ended", "call-2": "ended"}
+    assert end["helpers_closed"] == {
+        "call-0": "ended",
+        "call-1": "ended",
+        "call-2": "ended",
+    }
     record = tmp_path / "records" / "p1" / "record.jsonl"
     assert end["record"] == str(record) and end["record_error"] is None
     entries = [json.loads(ln) for ln in record.read_text().splitlines()]
-    assert len(entries) == end["record_entries"] == len(writer._pass_record.record.entries)
+    assert (
+        len(entries) == end["record_entries"] == len(writer._pass_record.record.entries)
+    )
     assert [e["seq"] for e in entries] == list(range(1, len(entries) + 1))
     assert any(e["author"] == "call-2" and e["kind"] == "reply" for e in entries)
-    cursors = [json.loads(ln) for ln in (tmp_path / "records" / "p1" / "record.cursors.jsonl").read_text().splitlines()]
-    assert {"agent": "writer"}.items() <= cursors[-1].items() or any(c["agent"] == "writer" for c in cursors)
+    cursors = [
+        json.loads(ln)
+        for ln in (tmp_path / "records" / "p1" / "record.cursors.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert {"agent": "writer"}.items() <= cursors[-1].items() or any(
+        c["agent"] == "writer" for c in cursors
+    )
     assert {r["helper_call"] for r in helper_rows} == {"call-0", "call-1", "call-2"}
     assert {r["tool"] for r in helper_rows} == {"stage", "done"}
     # each helper's transcript is recorded with the writer's, every line naming the pass and the helper; the
@@ -203,15 +245,28 @@ def test_a_writer_that_delegates_gets_the_helpers_messages_and_staged_files(tmp_
     assert all(ln["pass_id"] == "p1" for ln in lines)
     turns_of = [ln for ln in lines if ln.get("helper") == "call-1" and "message" in ln]
     assert turns_of and all(ln["agent"] == "helper" for ln in turns_of)
-    assert any("candidates/perimeter.py" in json.dumps(ln["message"]) for ln in turns_of)
+    assert any(
+        "candidates/perimeter.py" in json.dumps(ln["message"]) for ln in turns_of
+    )
     record = [ln["record"] for ln in lines if "record" in ln]
     assert any(r["author"] == "call-1" and r["kind"] == "reply" for r in record)
     # and each helper's transcript is stored beside the pass's events, named in the end event
     (end,) = [r for r in rows if r["event"] == "pass_end"]
     stored = {m["agent"]: m for m in end["helper_transcripts"]}
-    assert set(stored) == {"call-0", "call-1", "call-2"} and not any("error" in m for m in stored.values())
-    kept = (tmp_path / "records" / "p1" / "transcripts" / "call-1.jsonl").read_text().splitlines()
-    assert len(kept) == stored["call-1"]["lines"] and all(json.loads(x)["helper"] == "call-1" for x in kept)
+    assert set(stored) == {"call-0", "call-1", "call-2"} and not any(
+        "error" in m for m in stored.values()
+    )
+    # whole, in sha-checked chunk files (transcripts.record_transcript, the one way every agent stores its own)
+    from unify.memory import transcripts
+
+    kept = transcripts.read_transcript(tmp_path / "records", "p1", "call-1")
+    assert len(kept) == stored["call-1"]["lines"] and all(
+        json.loads(x)["helper"] == "call-1" for x in kept
+    )
+    assert stored["call-1"]["manifest"] == "transcript-call-1.json"
+    assert all(
+        c["name"].startswith("transcript-call-1-") for c in stored["call-1"]["chunks"]
+    )
 
 
 class Slow:
@@ -226,7 +281,10 @@ class Slow:
             first = self.calls == 1
             await asyncio.sleep(self.gap)
             if first:
-                return _msg(_tc("s", "stage", {"path": "notes.md", "text": "a lesson"})), "0.001"
+                return (
+                    _msg(_tc("s", "stage", {"path": "notes.md", "text": "a lesson"})),
+                    "0.001",
+                )
             return _msg(_tc(f"o{self.calls}", "overview", {"episode": "e1"})), "0.001"
 
         return turn
@@ -269,7 +327,9 @@ def test_a_writer_error_ends_its_helpers(tmp_path):
     _, _, writer = _writer(tmp_path, model, library_mode=True)
     writer.load = EPS.__getitem__
     writer.helper_turn = lane.factory
-    out = asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1", "e2"], False), "p1"))
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "svc", ["e1", "e2"], False), "p1"),
+    )
     assert not out.passed
     _ended_with(writer, out, "stopped: the writer finished")
 

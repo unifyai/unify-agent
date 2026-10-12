@@ -52,9 +52,10 @@ in ``errors.jsonl``): a run with any such event consolidated nothing because of 
 null result of consolidation.
 
 The writer's transcript (its messages, tool calls and tool results, redacted by the environment's credentials
-and every registered secret, the writer's route token among them, then by :func:`..redact.redact_error`, then
-bounded: :func:`..writer_pass.transcript_lines`) goes as note lines on the
-:data:`..writer_pass.TRANSCRIPT_REF` notes ref of the same episode commit, one JSON line per message with its ``pass_id``.
+and every registered secret, the writer's route token among them, then by :func:`..redact.redact_error`:
+:func:`..writer_pass.transcript_lines`) is kept whole, never cut: as chunk files under the pass record root
+(:mod:`..transcripts`), and on the :data:`..writer_pass.TRANSCRIPT_REF` notes ref of the same episode commit as one
+JSON line per message with its ``pass_id`` while they fit, else as one row naming the chunks and their sha256.
 
 Money is a plain decimal string, never an exponent; a measurement that could not be taken is ``None``.
 The writer's per-turn cost rows go as note lines on ``refs/notes/costs`` of the request's episode commit: a pass
@@ -685,11 +686,13 @@ def _note_transcript(
     pass_id: str,
     writer: WriterPass,
 ) -> None:
-    """The writer's redacted, bounded transcript as note lines on :data:`..writer_pass.TRANSCRIPT_REF` of *sha*."""
+    """The writer's redacted, whole transcript on :data:`..writer_pass.TRANSCRIPT_REF` of *sha*: its lines, or a
+    row pointing to its chunk files under the pass record root (:meth:`..writer_pass.WriterPass.transcript_note`).
+    """
     try:
         stores.episodes.append_note_lines(
             sha,
-            writer.transcript(pass_id),
+            writer.transcript_note(pass_id),
             TRANSCRIPT_REF,
         )
     except Exception as exc:  # noqa: BLE001 - a record, never a failure of the pass
