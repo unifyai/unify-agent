@@ -335,7 +335,7 @@ def test_drawn_inputs_are_judged_on_the_calls_their_appended_lines_make(tmp_path
     ]
     checks._appended(it, drawn, tmp_path / "samples")
     assert [r for _, r, _ in run.fails] == [
-        f"[qa:fixtures] {ITEM} raises on 1 of 3 drawn recorded inputs of its family (TypeError); it must "
+        f"[qa:fixtures] {ITEM} raises on 1 of 3 drawn recorded inputs of its family (TypeError (1)); it must "
         "return or raise MemoryInputError",
         f"[qa:fixtures] {ITEM} refuses 1 of 3 drawn recorded inputs shaped like its covers, which the "
         "environment accepted",
