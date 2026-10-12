@@ -205,7 +205,8 @@ async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counte
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
     ex = SessionExecutor(environments={})
     try:
-        assert _ok(await _run(ex, None, "'memory' in globals()")) is False
+        probe = "try:\n    memory\n    bound = True\nexcept NameError:\n    bound = False\nbound"
+        assert _ok(await _run(ex, None, probe)) is False
     finally:
         await ex.close()
     # a library-mode request whose copy has no package: no ``memory`` either, and its NameError is counted

@@ -762,8 +762,9 @@ class RequestRun:
     def note_result(self, call_id: Any, result: Any) -> None:
         """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
         to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
-        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`). A plain mapping (the code tool's own result for an empty cell, or when its session
-        executor raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
+        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`).
+        A plain mapping (the code tool's own result for an empty cell, or when its session executor
+        raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
         kept; later ones are then unknown.
         """
         from ..analysis import use
