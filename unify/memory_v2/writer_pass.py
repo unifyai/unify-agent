@@ -2566,6 +2566,9 @@ class WriterPass:
         """The reader tools (read, grep, overview, read_episode, pool) for *agent*. Each agent has its own read log
         and its own record of parts it was shown in full. A bad argument is answered, never raised; the answer names
         the domain problem, never an exception type."""
+        readers = ("read", "grep", "overview", "read_episode", "pool")
+        if name not in readers:
+            return _wt.general("unknown_tool", name=str(name)[:80], tools=", ".join(readers))
         log = self._read_logs.setdefault(agent, _wt.ReadLog())
         shown = self._shown_full.setdefault(agent, {})
         batch = list(self._batch)
