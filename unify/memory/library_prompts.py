@@ -66,10 +66,53 @@ GUIDE_PARTS: tuple[tuple[str, str], ...] = (
 
 
 def guide_library_mode(extra_lines: tuple[str, ...] = ()) -> str:
-    """The guide, with *extra_lines* (optional pull helpers, constant per run) before :data:`FILES_LINE`."""
+    """The guide, with *extra_lines* (optional pull helpers, constant per run) before :data:`FILES_LINE`; with tools
+    called from code (``UNIFY_TOOLS_IN_CODE=on``), :data:`GUIDE_LIBRARY_IN_CODE`."""
+    guide = guide_library()
     if not extra_lines:
-        return GUIDE_LIBRARY
-    return GUIDE_LIBRARY.replace(FILES_LINE, "".join(extra_lines) + FILES_LINE, 1)
+        return guide
+    return guide.replace(FILES_LINE, "".join(extra_lines) + FILES_LINE, 1)
+
+
+def guide_library() -> str:
+    """The inline-index guide the actor reads: :data:`GUIDE_LIBRARY`, or :data:`GUIDE_LIBRARY_IN_CODE` when tools are
+    called from code."""
+    return GUIDE_LIBRARY_IN_CODE if _in_code() else GUIDE_LIBRARY
+
+
+def _in_code() -> bool:
+    from unify.common import in_code_switch
+
+    return in_code_switch.tools_in_code()
+
+
+#: The inline-index guide when tools are called from code: the index head says what each line holds, the overflow
+#: line says when the index shows headings only, and the index says what a status means once, here.
+GUIDE_LIBRARY_IN_CODE = (
+    "### Memory Library\n"
+    "\n"
+    "A Python library of tested functions and linked notes, built from earlier work, is importable "
+    "in your cells as `memory`. Before you write code for a step, look in the index for an item that does it. "
+    "Using the library is optional: use an item when it fits, and otherwise work as usual.\n"
+    "\n"
+    "Finding items:\n"
+    "- The index at the end of this prompt lists every function and note.\n"
+    '- `print(memory.index("<package>"))` prints one package\'s full section, and `print(memory.index())` the '
+    "whole index.\n"
+    "- `print(memory.show(\"<id>\"))` prints one item in full, with its records and recent changes.\n"
+    "- `memory.find(value)` lists the functions whose tests call them on arguments shaped like a structured "
+    "value you hold (a dict, a list of records, JSON text, or a CSV file with a header), and which parameter "
+    "matched. It cannot match plain text: for text, use the index or grep.\n"
+    + FILES_LINE
+    + "\n"
+    "Using items:\n"
+    "- Import a function by its id: `memory.text.dates:parse_date` is "
+    "`from memory.text.dates import parse_date`.\n"
+    "- A function raises `MemoryInputError` on an input it was not built for. Then do that step with your own "
+    "code.\n"
+    "- `experimental` items passed the library's checks and have had little use; `stable` items have also been "
+    "used without errors.\n"
+)
 
 
 #: The guide when the actor's prompt points to the index instead of carrying it
@@ -689,12 +732,25 @@ def write_brief(
     tools: str = "",
     tool_names: frozenset[str] = frozenset(),
     pool_kinds: str = "",
+    in_code: bool | None = None,
 ) -> str:
     """The WRITE brief. *staging* (the episode-end fork is on) and *pool* (the candidate pool is on) add their input
     bullets, row keys and manifest fields; *tools* is the rendered Tools section and *tool_names* the tools the role
     gets, so a sentence that relies on an optional tool (``pool``, ``similar``, ``delegate``, ``replay``) appears
     only when that tool exists. Every input is constant for a run, so the brief is byte-stable for the run.
+    *in_code* (None: ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code.
     """
+    if in_code if in_code is not None else _in_code():
+        return _write_brief_in_code(
+            limits=limits,
+            mutation_min=mutation_min,
+            sample_k=sample_k,
+            lint_min=lint_min,
+            pytest_env=pytest_env,
+            staging=staging,
+            pool=pool,
+            tool_names=tool_names,
+        )
     from .manifest import describe_semantic_types
 
     has = tool_names.__contains__
@@ -953,8 +1009,18 @@ def curate_brief(
     suspects_path: str,
     trigger_path: str,
     tools: str = "",
+    in_code: bool | None = None,
 ) -> str:
-    """The CURATE brief with its numbers, input paths and Tools section filled in."""
+    """The CURATE brief with its numbers, input paths and Tools section filled in; *in_code* (None:
+    ``UNIFY_TOOLS_IN_CODE``) gives the brief for tools called from code."""
+    if in_code if in_code is not None else _in_code():
+        return _curate_brief_in_code(
+            limits=limits,
+            pytest_env=pytest_env,
+            overlaps_path=overlaps_path,
+            suspects_path=suspects_path,
+            trigger_path=trigger_path,
+        )
     return _fill(
         _CURATE,
         {
@@ -1074,6 +1140,564 @@ def curate_brief_now(
         trigger_path=curate.TRIGGER_INPUT,
         tools=tools_section("curate", tool_flags(edit=edit_tools)),
     )
+
+
+# --- the briefs when tools are called from code (UNIFY_TOOLS_IN_CODE=on) ---------------------------------------------
+#
+# Every agent then has one model-API tool, `execute_code`, and calls every other tool in its cells as
+# `tools.<name>(...)`; `tools.list()` and `tools.help(name)` describe them, so a brief names a tool where the role uses
+# it and leaves its details to the help. Every rule a gate check enforces is stated once, where the agent acts on it.
+# Tables that only describe input files (the batch-map row keys, the `field_types` form, the pool's entry kinds) are
+# written next to the inputs (:func:`input_pointer_files`) and the brief points to them.
+
+#: The drafting contract when tools are called from code: the reason the writer generalises drafts is its own brief's.
+CANDIDATE_CONTRACT_IN_CODE = (
+    "Draft from what you saw: code that worked, the cases it ran on (values as they were recorded), and notes. "
+    "Where you can, write a reusable function or lesson in general form, with the values that vary as "
+    "parameters. Where your work is specific to this case, still write it down as it is: the library writer builds "
+    "from these drafts and may generalise them with other episodes."
+)
+
+
+def candidate_contract() -> str:
+    """The drafting contract a fork or helper reads: :data:`CANDIDATE_CONTRACT`, or its in-code form."""
+    return CANDIDATE_CONTRACT_IN_CODE if _in_code() else CANDIDATE_CONTRACT
+
+
+#: The example-evidence rule when tools are called from code: the same rule, with the wider evidence said once.
+EPISODES_RULE_IN_CODE = (
+    "the calls of a function that return take fixture values from a recorded episode: one episode is enough. Calls "
+    "on same-shaped values from other episodes, in this batch or not, are shown beside the function, never "
+    "required. A call that refuses or raises counts for nothing"
+)
+
+_REPAIR_IN_CODE = (
+    "# Repair\n"
+    "If the gate refuses anything, its full result (every check, every failing test's output and every note) is "
+    "written to /inputs/gate/result-<round>.md and you get a repair round: fix what it refused, keep the manifest "
+    "current, and call `tools.finish(summary)` again. The limits below say how many repair rounds a pass has. "
+    "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
+)
+
+
+def _check_names_in_code(g5: str, g3_mutations: str) -> str:
+    """What each check the gate names means, G1 to G6, stated once; *g3_mutations* is how many small mutations the
+    tests must catch, as the role's brief states it."""
+    return (
+        "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
+        "never the generated files, the manifest is well formed, every link names an item that exists, and every "
+        "fixture came through `tools.fixture` unchanged); G2, evidence (each function's listed tests call it, and a "
+        "call of it returns on fixture values from a recorded episode or values computed from them; it raises "
+        "nothing but `MemoryInputError` on those calls; with those values replaced by unseen values of the same "
+        "type, a call it accepted neither refuses nor raises; its docstring's `Example:` names one of its tests; "
+        "typed covers are recorded evidence of their type; and the literal rule); G3, tests (plain pytest, an exact "
+        "assertion against a trusted value on a recorded fixture for each changed function, no test that recomputes "
+        "the function, the tests pass on the candidate and on the drawn recorded inputs and catch "
+        + g3_mutations
+        + ", a behaviour change has a test that fails on the parent, and no test is lost or weakened without a "
+        "reason); G4, the index (it never refuses: it notes when the index has outgrown the view the working model "
+        "is shown); G5, items (" + g5 + "); G6, safety (no links, executables, submodules, git, pytest or "
+        "interpreter configuration files, bytecode or key-shaped strings).\n"
+    )
+
+
+_GATE_IN_CODE = (
+    "# The gate\n"
+    "After `tools.finish(summary)` a deterministic gate checks the candidate. An item that breaks a rule is refused "
+    "together with the items that import it, and the rest can land; a breach of a pass-wide rule (the layout, lost "
+    "tests, fewer items) refuses the round. "
+    + _check_names_in_code(
+        _G5_WRITE, "at least <<mutation_min_pct>>% of small mutations of each changed function"
+    )
+)
+
+_CURATE_GATE_IN_CODE = (
+    "# The gate\n"
+    "After `tools.finish(summary)` a deterministic gate checks the candidate (G1 to G6 below); an item that breaks "
+    "a rule is refused with the items that import it, and the rest can land. "
+    + _check_names_in_code(_G5_CURATE, "enough small mutations")
+)
+
+_LIMITS_IN_CODE = (
+    "# Limits\n"
+    "These are safety limits, stated as facts; none is a target. A reply that reads a file or a record shows at "
+    "most <<view_bytes>> bytes and ends with a marker naming the next offset; nothing is cut silently. A cell runs "
+    "for at most <<cell_s>> s. Files under /memory are limited to <<file_mib>> MiB each, <<total_mib>> MiB in all "
+    "and <<entries>> files and directories; a breach refuses the pass. The pass ends at its wall clock (its length "
+    "in seconds is in the first message<<helper_time>>) or after <<step_guard>> model and check calls, whichever "
+    "comes first, and a `tools.check` starts only while at least <<check_floor>> s of the wall clock remain."
+    "<<repair_cap>><<finish_cap>>\n"
+)
+
+
+def _limits_text_in_code(limits: Limits, helper_time: bool) -> str:
+    """The limits when tools are called from code. The per-turn counts are stated by the 'not run' answers when they
+    apply, and the compaction by the note that follows a restart (``writer_pass.RESTART_POINTER``)."""
+    return _fill(
+        _LIMITS_IN_CODE,
+        {
+            "view_bytes": limits.view_bytes,
+            "cell_s": _num(limits.cell_s),
+            "file_mib": _num(limits.file_bytes / 1024**2),
+            "total_mib": _num(limits.total_bytes / 1024**2),
+            "entries": limits.entries,
+            "helper_time": (
+                "; the helpers you start work within the same wall clock and stop when it is reached"
+                if helper_time
+                else ""
+            ),
+            "step_guard": limits.step_guard,
+            "check_floor": _num(limits.check_floor_s),
+            "repair_cap": (
+                f" At most {limits.repair_rounds} repair rounds follow the first refused `tools.finish` in this "
+                "pass."
+                if limits.repair_rounds is not None
+                else " There is no set number of repair rounds; only these limits end them."
+            ),
+            "finish_cap": (
+                " While /memory/.pass/manifest.json is missing or does not parse, `tools.finish` is refused with the "
+                f"reason up to {limits.finish_refusals} times in a pass; after that, `tools.finish` ends the pass and "
+                "the final check refuses the manifest by name."
+                if limits.finish_refusals is not None
+                else ""
+            ),
+        },
+    )
+
+
+_LIBRARY_BULLET_IN_CODE = (
+    "- /memory: a writable copy of the library. There is no git history in the box; an item's recent changes "
+    'are in `memory.show("<id>")`. /memory/INDEX.md is the library index, generated by the harness like '
+    "/memory/links.json and /memory/memory/__init__.py. In a cell, `import memory` gives `memory.index()`, "
+    '`memory.show("<id>")` and `memory.find(value)`. For: knowing what exists before you add anything.\n'
+)
+
+_WHAT_TO_WRITE_IN_CODE = (
+    "# What to write\n"
+    "- Functions go in `memory/<package>/<module>.py`, in packages you choose by what the code does. Each "
+    "package has an `__init__.py` whose docstring is one paragraph on what lives there. A function's id is "
+    "`memory.<package>.<module>:<name>`; a name starting with `_` is private and is not an item.\n"
+    "- A function's docstring has a one-line summary; `Args:`, `Returns:` and `Raises:` sections "
+    "(`MemoryInputError` on an input it was not built for); an `Example:` section of one line naming one of "
+    "the function's tests, `memory/<package>/tests/test_<module>.py::test_<case>`, with no doctest and no "
+    "`Input:` line; and, optionally, a `Notes:` line naming note paths.\n"
+    "- Notes go in `notes/<topic>/<slug>.md`: free-form markdown (a fact, a pitfall, a how-to, or how to combine "
+    "functions) with front matter `title`, `description` (one line, shown in the index) and `uses` (the ids of the "
+    "functions it uses). A link is written only in a note's `uses` or a function's `Notes:` line, and must name an "
+    "item that exists. A new item starts as `experimental`; later passes revise or remove it. A function's linked "
+    "note says when to use it, its preconditions and its known failures.\n"
+    "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
+    "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
+    "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
+    "- The manifest is /memory/.pass/manifest.json (never committed):\n"
+    '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '
+    '"covers": [...]<<item_extra>>}], "support": [], <<manifest_extra>>"why": "<one line>", "summary": '
+    '"<what changed>"} (optional: "tests_changed", "renames")\n'
+    "  - A note's entry takes `item`, `kind` and `source_episodes`: "
+    '`{"item": "notes/<topic>/<slug>.md", "kind": "note", "source_episodes": [...]}`; `tests`, `covers` and '
+    "`field_types` are for functions.\n"
+    "  - A function takes any arguments; its examples are the calls its listed tests make, so its `tests` name at "
+    "least one test file.\n"
+    "  - A field with a fixed domain is declared in `field_types` (form: /inputs/README.md).\n"
+    '  - `covers` takes typed covers only, e.g. `{"episode": e, "type": "cell", "cell": i}` (also `"diff"`, or '
+    '`"episode"` with a `runner` for a whole procedure). A recorded action is not a cover.\n'
+    "  - `support` lists helper files: a test helper under a package's `tests/` directory, or a shared module "
+    "`memory/<package>/<module>.py` that the package's items import, holding private (`_`) functions and classes "
+    "such as the package's `MemoryInputError` (a public function is an item).\n"
+    "<<manifest_extra_docs>>"
+    '  - `renames` (`{"<old id>": "<new id>"}`, optional) keeps a moved item\'s history.\n'
+    "  - `why` is one line on why the change helps. The harness writes it, the episodes and the item ids into "
+    "the commit.\n"
+)
+
+_WRITE_RULES_IN_CODE = (
+    "# Rules\n"
+    "1. Store anything that repeats or is likely to repeat, in any domain: readers, calculations, call "
+    "sequences, and whole-job procedures built from smaller tested functions. A procedure is verified by "
+    "replaying its episode: a work-tree procedure must reproduce the recorded file changes, a tool procedure the "
+    "recorded calls, and a dialogue procedure the recorded reply the environment then accepted. A procedure "
+    "of any other kind cannot be verified, so it stays a draft.\n"
+    "2. Start from the working model's own code when it already wrote it (its cells and its work-tree diff). "
+    "Generalise it: values that vary become parameters, and the function raises "
+    '`MemoryInputError("<what was expected>")` on an input it was not built for. Check and refuse shapes, not '
+    "observed values. The gate replaces the fixture values the tests load with unseen values of the same type and "
+    "reruns the tests: the function must not then raise `MemoryInputError` or another exception on a call it "
+    "accepted before. A field with a fixed domain is declared in `field_types`.\n"
+    "3. Judge outcomes from the records. The harness never reads environment text for a verdict: "
+    "`structural_events` lists only cell errors, action errors and retries, and an empty list says nothing about "
+    "success. Whether the work succeeded is in the environment's own replies, if anywhere; `end_parts` names "
+    "where each episode ended. Prefer work from episodes whose records show it working. Work that only failed "
+    'becomes a note ("X was tried and failed because Y; Z worked"), not a function, unless its tests check '
+    "values from episodes where it worked. When no record shows an outcome, rely on errors and on the gate's "
+    "checks.\n"
+    "4. Prefer extending an existing item to adding a near-duplicate. When you change what an item returns on "
+    "its recorded inputs, add a test that fails on the old version and passes on yours, and say why in `why`. "
+    "This pass never removes library items and never deletes or weakens a test: the gate refuses a candidate "
+    "with fewer items or tests. If an existing test must change, name it in `tests_changed` with the reason.\n"
+    "5. Write the tests first, against trusted expected values, "
+    + _TRUST
+    + " At least one call returns on arguments loaded from fixtures made with `tools.fixture`, or computed in the "
+    "test from one; the gate checks the argument changes when the fixture does. Across its examples, "
+    + EPISODES_RULE_IN_CODE
+    + ". Each function needs at least one test asserting "
+    "that its result on a recorded fixture equals an exact trusted value, and one test that it refuses an input of "
+    "another shape. A procedure's test checks the "
+    "effect the environment later confirmed, not only that it ran. Never compute an expected value with the "
+    "function's own expression. "
+    + _DETERMINISM
+    + " Run each new test and see it fail before the code exists, then pass.\n"
+    "6. Each function has a recorded-inputs file, "
+    "`memory/<package>/tests/data/<module>.<function>.inputs.jsonl`, with one line per recorded input made with "
+    "`tools.fixture(..., append=True)`, and a test parametrised over its lines. The gate appends <<sample_k>> more "
+    "recorded inputs of the same kind to a copy of that file, and the function's tests must pass on every one.\n"
+    "7. Code never holds a literal equal to a value that varies across its recorded inputs (text of "
+    "<<lint_min>> or more characters, or a number with 2 or more significant digits): make it a parameter.\n"
+    "8. Never store credentials, session tokens or the results of calls with side effects. "
+    + _HONESTY
+    + "\n"
+)
+
+
+def record_text() -> str:
+    """The pass record's facts as a brief states them (:data:`.messaging.RECORD_TEXT`, or its in-code form)."""
+    from . import messaging
+
+    return messaging.record_text()
+
+
+def _write_brief_in_code(
+    *,
+    limits: Limits,
+    mutation_min: Decimal,
+    sample_k: int,
+    lint_min: int,
+    pytest_env: Mapping[str, str],
+    staging: bool,
+    pool: bool,
+    tool_names: frozenset[str],
+) -> str:
+    """The WRITE brief when tools are called from code: the same role, inputs, rules and done, with each tool named
+    as the call the writer makes and no Tools section (``tools.list()`` and ``tools.help(name)`` describe them)."""
+    has = tool_names.__contains__
+    helpers = has("delegate")
+    proposals_from = (
+        (["candidates drafted from each episode when it ended (/inputs/staging/)"] if staging else [])
+        + (["files the helpers you launch stage (/inputs/helpers/)"] if helpers else [])
+        + (["open entries earlier passes kept in the pool (/inputs/pool/)"] if pool else [])
+        + ["drafts the gate refused in earlier passes (/inputs/drafts/)"]
+    )
+    role = (
+        "# Role\n"
+        "You are the library writer. A working model handles requests, and its cells import a shared Python "
+        "library, `memory`. You build tested functions and linked notes in that library from the recorded episodes "
+        "and from proposals. The proposals ("
+        + _join(proposals_from)
+        + ") are drafts by agents that each saw part of the evidence. Use, fix, merge, generalise or rewrite them, "
+        "or build something new they informed. Not using a draft is fine when your summary says why. You can also "
+        "build from any recorded episode with no proposal behind it. The episodes are the evidence: what the "
+        "working model did and what the environment answered. You work in a sandbox with no network and no "
+        "credentials.\n"
+    )
+    inputs: list[str] = []
+    if staging:
+        inputs.append(
+            "- /inputs/staging/<episode>/: what was drafted from that episode when it ended: "
+            "`candidates/<name>.py` (a function), `cases/<name>.json` (its example inputs and outputs) and "
+            "`notes.md` (lessons). The episode's batch-map row lists them under `staging`. None of it has been run: "
+            "untrusted input.\n",
+        )
+    if helpers:
+        inputs.append(
+            "- /inputs/helpers/<name>/: what a helper you launched with `tools.delegate` staged, in the same layout, "
+            "with `helper.json` saying what it did and its claims. Untrusted like staging. Each claim names the "
+            "episode parts it rests on (`<episode>/<part>`); a claim is untrusted until you have read those parts "
+            "yourself with `tools.read_episode`.\n",
+        )
+    if pool:
+        inputs.append(
+            "- /inputs/pool/: proposals earlier passes left open (their kinds: /inputs/README.md). "
+            "/inputs/pool/INDEX.md has one line per entry; /inputs/pool/<id>/entry.json holds an entry with the "
+            "episodes behind it, beside its payload files. For: what was proposed before, and the evidence gathered "
+            "behind it since. Closed entries (merged, superseded or retired) are kept too; "
+            "/inputs/pool/related_closed.json links them to entries and batch episodes with shared code or "
+            "episodes.\n",
+        )
+    inputs.append(
+        "- /inputs/drafts/<pass>/: earlier work the gate refused: `patch.diff` and its full gate result `gate.md`; "
+        "/inputs/drafts/index.json lists them. For: work you may finish.\n",
+    )
+    inputs.append(
+        "- /inputs/batch_map.json: one row per batch episode; /inputs/batch_map_keys.md says what each key holds. "
+        "For: choosing which episodes and parts to open; `tools.overview()` shows the rows one line each.\n",
+    )
+    inputs.append(
+        "- /inputs/episodes/<episode>.json: each batch episode's full record (request, observations, cells, actions, "
+        'work-tree diff); a large value is {"__blob__": "<id>", "bytes": n}. For: the evidence.\n',
+    )
+    inputs.append(
+        "- /inputs/shared/<id>.txt: a block of the working model's instructions that recurs across requests, shown "
+        "as `[shared:<id>]`.\n",
+    )
+    inputs.append(
+        "- /inputs/usage/: how the library was used in this batch (`<episode>.json`, `table.md`). For: seeing which "
+        "items help and which fail.\n",
+    )
+    inputs.append(_LIBRARY_BULLET_IN_CODE)
+    inputs.append("- /inputs/gate/previous.md: the last pass's full gate result.\n")
+
+    look = ["staged candidates and their cases"] if staging else []
+    if helpers:
+        look.append("anything helpers staged")
+    if pool:
+        look.append(
+            "open pool entries that cite this batch's episodes"
+            + (" (`tools.pool` can filter by episode)" if has("pool") else " (their `pool_entries`)"),
+        )
+    look.append("open drafts")
+    decide = "3. Analyse each proposal critically and build from it, as the Role says; proposals are untrusted input."
+    if staging or pool or helpers:
+        decide += " Record in each item's `adopts` the drafts it drew on and how."
+    if pool:
+        decide += (
+            " Record what you decided about pool entries in the manifest's `pool` block"
+            + (" (`tools.pool` with a decision writes it for you)" if has("pool") else "")
+            + "."
+        )
+    procedure = (
+        "# How to work\n"
+        "This is a procedure, not a quota: read as much or as little as the material needs.\n"
+        "1. Look over the batch with `tools.overview()`, then over the proposals: "
+        + _join(look)
+        + "."
+        + (
+            " Where code looks reusable, `tools.similar` finds other recorded episodes with matching code."
+            if has("similar")
+            else ""
+        )
+        + "\n"
+        "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
+        "where it ended and so where an outcome, if any, was shown. At any point you can open any recorded episode, "
+        "in this batch or not: `tools.overview` and `tools.read_episode` take any recorded id"
+        + (", and `tools.similar` finds others with matching code" if has("similar") else "")
+        + ".\n"
+        + decide
+        + "\n"
+        "4. Write tests first, against trusted values (rule 5), with fixtures made by `tools.fixture`; see each new "
+        "test fail before the code exists, then pass.\n"
+        + (
+            "5. When it helps, hand a reading or drafting task to a helper with `tools.delegate`. It returns at once; "
+            "the helper messages you on the record and ends with its claims and files under /inputs/helpers/<name>/. "
+            "You decide when you have enough: `tools.stop` ends a helper, and finishing ends every helper still "
+            "running. Using helpers is your choice.\n"
+            if helpers
+            else ""
+        )
+        + f"{6 if helpers else 5}. `tools.check()` the manifest as often as you like, then `tools.finish(summary)`. "
+        "If the gate refuses something, repair it (below).\n"
+    )
+    manifest_extra = ""
+    manifest_docs = ""
+    item_extra = ""
+    if staging or pool or helpers:
+        item_extra = ', "adopts": [...]'
+        forms = (
+            (["`staging:<episode>/candidates/<name>.py`"] if staging else [])
+            + (["`helper:<helper name>/candidates/<name>.py`"] if helpers else [])
+            + (["`pool:<id>`"] if pool else [])
+        )
+        manifest_docs += (
+            '  - An item\'s `adopts` lists the drafts it drew on, each as `{"ref": <ref>, "how": <how>}`. The ref is '
+            + _join(forms)
+            + ". How is `as_is` (used unchanged), `edited`, `merged` (with other drafts or a library item), "
+            "`generalised` (parametrised or generalised), `rewritten`, or `informed` (it only informed new work). "
+            "Leave it out when the item drew on none. The manifest itself has no `adopts`.\n"
+        )
+    if pool:
+        manifest_extra += '"pool": {...}, '
+        manifest_docs += (
+            "  - `pool` records decisions on pool entries"
+            + (
+                " (`tools.pool` with op='decide' writes it; `tools.help(\"pool\")` lists the decisions)"
+                if has("pool")
+                else ""
+            )
+            + '. `"reopened": {"<id>": "<reason>"}` opens a closed entry again.\n'
+        )
+    body = (
+        role
+        + "\n# Inputs\n"
+        + "".join(inputs)
+        + "\n"
+        + record_text()
+        + "\n"
+        + procedure
+        + "\n"
+        + _WHAT_TO_WRITE_IN_CODE
+        + "\n"
+        + _WRITE_RULES_IN_CODE
+        + "\n"
+        + _GATE_IN_CODE
+        + "\n"
+        + _REPAIR_IN_CODE
+        + "\n"
+        + _limits_text_in_code(limits, helper_time=helpers)
+        + "\n"
+        "# Done\n"
+        "You are done when you have built the best library items you can from this batch, with the proposals as "
+        "material and the episodes as evidence, and every item "
+        "you wrote has passed the gate or is kept as a draft with its failure. Then call `tools.finish(summary)`. "
+        "Writing nothing is a valid decision when your summary says why.\n"
+    )
+    return _fill(
+        body,
+        {
+            "manifest_extra": manifest_extra,
+            "item_extra": item_extra,
+            "manifest_extra_docs": manifest_docs,
+            "mutation_min_pct": _pct(mutation_min),
+            "sample_k": sample_k,
+            "lint_min": lint_min,
+            "pytest_env": _env(pytest_env),
+        },
+    )
+
+
+_CURATE_IN_CODE = (
+    "# Role\n"
+    "You are the library curator. The library, `memory`, is a Python package of tested functions and linked "
+    "notes that a working model imports. You keep it small, correct and easy to navigate: merge overlapping "
+    "items, generalise variants, repair or roll back suspect items, retire wrong or unused ones, fix links and "
+    "regroup packages. You work in a sandbox with no network and no credentials, on the library alone.\n"
+    "\n"
+    "# Inputs\n"
+    "- <<trigger_path>>: why this pass runs (its reasons, and the library commit it starts from). For: where to "
+    "begin.\n"
+    "- <<overlaps_path>>: the overlap candidates the harness found: functions with matching argument "
+    "shapes and overlapping input fixtures, functions whose bodies share a common generalisation (given with it), and "
+    "notes that use the same functions. For: what to merge or generalise.\n"
+    "- /inputs/curate/same_shape.json: groups of functions whose bodies have the same structure. For: more "
+    "merge and generalisation candidates.\n"
+    "- <<suspects_path>>: the suspect items, each with why it is suspect, the episodes involved and, when an "
+    "earlier version has a clean use record, that version as the proposed rollback. An input refusal (a "
+    "`MemoryInputError` raised on an input the item was not built for) is counted and reported, never a failure. "
+    "For: what to repair or roll back.\n"
+    "- /inputs/curate/rollback/<n>/: the files (module and tests) of each proposed rollback version; "
+    "/inputs/curate/rollback/index.json names each one's item, directory and commit. For: rolling back (the box has "
+    "no git history).\n"
+    "- /inputs/curate/use.json (use per item and library commit), /inputs/curate/history.json (recent changes) and "
+    "/inputs/curate/aliases.json (old names and whether this pass may remove them). For: judging what is used, what "
+    "changed and what may go.\n"
+    "- /inputs/episodes/<episode>.json: the recorded episodes the suspect items were used in. For: the evidence "
+    "behind a suspect; `tools.read_episode` and `tools.overview` show them part by part.\n"
+    "- /memory: a writable copy of the library. `import memory` works in your cells (`memory.index()`, "
+    '`memory.find(value)`, `memory.show("<id>")`); there is no git history in the box. /memory/INDEX.md and '
+    "/memory/memory/__init__.py are generated by the harness and need no reading.\n"
+    "- /inputs/gate/: the full result of each `tools.check` and each repair round of this pass, as it happens.\n"
+    "\n"
+    "<<record>>"
+    "\n"
+    "# What to do\n"
+    "- Merge overlapping items into one, keeping each old name as an alias: `old_name = new_name` in its "
+    "module, listed in the manifest's `aliases`.\n"
+    "- Generalise variants into one parametric function.\n"
+    "- Repair a suspect item, or roll it back to the proposed earlier version from /inputs/curate/rollback/.\n"
+    "- Retire an item that is wrong, or unused across many episodes, together with its tests, with a one-line "
+    "reason in `retired`.\n"
+    "- Fix broken links and add missing ones between notes and functions.\n"
+    "- Regroup packages when that makes the index clearer, keeping each moved function's old id as an alias.\n"
+    "- Leave alone what is fine, and say why in `kept`: changing nothing is a valid result when no candidate is "
+    "really one job.\n"
+    "- Write the manifest, /memory/.pass/manifest.json (never committed):\n"
+    '  {"items": [{"item": "<id>", "kind": "function" or "note", "source_episodes": [...], "tests": [...], '
+    '"covers": [...]}], "deleted": ["<retired id>"], '
+    '"retired": {"<retired id>": "<one-line reason>"}, "deleted_tests": ["<test file removed with them>"], '
+    '"aliases": {"<old id>": "<new id>"}, "renames": {"<old id>": "<new id>"}, '
+    '"kept": {"<item id, or INDEX.md>": "<why it stays as it is>"}, '
+    '"tests_changed": {"<test>": "<reason>"}, "why": "<one line>", "summary": "<what changed>"}\n'
+    "  `renames` moves an item to a new id without keeping the old name (its history follows it); `aliases` "
+    "keeps the old name forwarding to the new one.\n"
+    "  `items` lists every item you added or changed, with the tests and fixtures of the items it replaces. "
+    + _RUN_TESTS
+    + "\n"
+    "\n"
+    "# Rules\n"
+    "1. Every change keeps the library's existing tests green, or retires a test with its reason in "
+    "`tests_changed`. The tests of a merged item stay and run through its alias.\n"
+    "2. A change in what a function returns on its recorded inputs needs a test that fails on the parent and "
+    "passes on yours; a repair always changes behaviour.\n"
+    "3. The fixtures a retired function's tests called it on stay used by a remaining function's tests.\n"
+    "4. New tests check exact expected values, " + _TRUST + " " + _DETERMINISM + "\n"
+    "5. Act on records that span at least two episodes: one episode never decides.\n"
+    "6. Fixture files stay where they are: a test may read a fixture from any package's `tests/data/`.\n"
+    "7. A reason in your inputs is settled when this pass changes the item it names or keeps it in `kept`; "
+    "otherwise a later curate pass raises it again.\n"
+    "8. Never store credentials or session tokens. " + _HONESTY + "\n"
+    "\n" + _CURATE_GATE_IN_CODE + "\n" + _REPAIR_IN_CODE + "\n" + "<<limits>>" + "\n"
+    "# Done\n"
+    "You are done when each overlap candidate and suspect item in your inputs has been merged, generalised, "
+    "repaired, rolled back or retired, or kept as it is with the reason in `kept`, and your changes have "
+    "passed the gate or are kept as a draft with their failure. Then call `tools.finish(summary)`.\n"
+)
+
+
+def _curate_brief_in_code(
+    *,
+    limits: Limits,
+    pytest_env: Mapping[str, str],
+    overlaps_path: str,
+    suspects_path: str,
+    trigger_path: str,
+) -> str:
+    """The CURATE brief when tools are called from code."""
+    return _fill(
+        _CURATE_IN_CODE,
+        {
+            "record": record_text(),
+            "limits": _limits_text_in_code(limits, helper_time=False),
+            "pytest_env": _env(pytest_env),
+            "overlaps_path": overlaps_path,
+            "suspects_path": suspects_path,
+            "trigger_path": trigger_path,
+        },
+    )
+
+
+#: The files :func:`input_pointer_files` writes next to a store pass's inputs, by name under /inputs.
+BATCH_MAP_KEYS_FILE = "batch_map_keys.md"
+INPUTS_README_FILE = "README.md"
+
+
+def input_pointer_files(staging: bool = False, pool: bool = False) -> dict[str, str]:
+    """The reference files a store pass's /inputs holds when tools are called from code, by name: what each
+    batch-map row key holds (:func:`row_keys`, the same table the brief carries today), and the manifest's
+    `field_types` form with the semantic types and, with the pool on, the pool's entry kinds. The brief points to
+    both; each is constant for a run."""
+    from .manifest import describe_semantic_types
+
+    keys = "".join(f"- `{k}` ({doc})\n" for k, doc in row_keys(staging, pool))
+    readme = (
+        "# Inputs: reference\n\n"
+        "## The manifest's `field_types`\n\n"
+        '`field_types` (`{"<fixture path>#<field>": "<type>"}`) declares a field with a fixed domain: the path is a '
+        "fixture of the function's package under `memory/<package>/tests/data/`; the field is a JSON or YAML key path "
+        "(`a.b`, `items[]`), a CSV column (`#3` for the third column of a file without a header) or, in a JSON-lines "
+        "file made with `append=True`, a key path under `[].input`; the type is one of "
+        + describe_semantic_types()
+        + ". Leave it out when no field has a fixed domain.\n"
+        + (
+            "\n## Pool entry kinds\n\n" + _pool_kinds() + ".\n"
+            if pool
+            else ""
+        )
+    )
+    return {
+        BATCH_MAP_KEYS_FILE: (
+            "# Batch-map row keys\n\n"
+            '/inputs/batch_map.json is `{"version": 1, "episodes": [row, ...], "shared_blocks": [{"id", "chars", '
+            '"file"}, ...]}`, facts and pointers only. Each row holds:\n\n' + keys
+        ),
+        INPUTS_README_FILE: readme,
+    }
 
 
 #: Words no writer brief or first message may hold: economy cues and the retired reading-quota machinery.

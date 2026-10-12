@@ -2441,6 +2441,17 @@ class WriterPass:
                     )
                     + "\n",
                 )
+                from unify.common import in_code_switch
+
+                if in_code_switch.tools_in_code():
+                    # the reference tables the brief points to instead of carrying them
+                    from .library_prompts import input_pointer_files
+
+                    for name, text in input_pointer_files(
+                        staging=bool(getattr(self.cfg, "fork", False)),
+                        pool=bool(self.cfg.pool),
+                    ).items():
+                        (inputs / name).write_text(text)
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
