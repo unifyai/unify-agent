@@ -244,17 +244,17 @@ def test_run_pytest_ids_for_classes_subdirs_and_skips(tmp_path):
 
 
 _MOD_SKIP = (
-    'import pytest\n\npytest.importorskip("no_such_module_memv2")\n\n'
+    'import pytest\n\npytest.importorskip("no_such_module_anywhere")\n\n'
     "def test_never():\n    assert 1\n"
 )
 _FN_SKIPS = (
     "import pytest\n\n"
-    'def test_missing():\n    pytest.importorskip("no_such_module_memv2")\n\n'
+    'def test_missing():\n    pytest.importorskip("no_such_module_anywhere")\n\n'
     "def test_handled():\n"
-    "    try:\n        import no_such_module_memv2  # noqa: F401\n"
+    "    try:\n        import no_such_module_anywhere  # noqa: F401\n"
     "    except ImportError:\n        pytest.skip('optional dependency')\n\n"
     # pytest's own importorskip wording with no import behind it: the mark is structural, never this text
-    "def test_worded():\n    pytest.skip(\"could not import 'no_such_module_memv2'\")\n\n"
+    "def test_worded():\n    pytest.skip(\"could not import 'no_such_module_anywhere'\")\n\n"
     "@pytest.mark.skip\ndef test_plain():\n    assert 0\n\n"
     "def test_ok():\n    assert 1\n"
 )

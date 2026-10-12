@@ -2691,7 +2691,7 @@ class WriterPass:
         if _library_on(self):
             manifest = _with_fixtures(manifest, self._ledger(box))
         try:
-            with tempfile.TemporaryDirectory(prefix="memv2-check-") as tmp:
+            with tempfile.TemporaryDirectory(prefix="memory-check-") as tmp:
                 tree = Path(tmp) / "tree"
                 tree.mkdir()
                 _mirror(box, tree, skip_top=frozenset({".pass"}))

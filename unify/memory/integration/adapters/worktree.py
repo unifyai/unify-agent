@@ -576,7 +576,7 @@ def _git_raw(
     timeout: float = GIT_TIMEOUT,
 ) -> bytes:
     if scratch is None:
-        with tempfile.TemporaryDirectory(prefix="memv2-git-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="memory-git-") as tmp:
             return _git_raw(
                 repo,
                 args,
@@ -621,7 +621,7 @@ class _BlobReader:
         self._buf = bytearray()
 
     def _start(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory(prefix="memv2-cat-")
+        self._tmp = tempfile.TemporaryDirectory(prefix="memory-cat-")
         argv, env, empty = _git_setup(
             self.repo,
             ["cat-file", "--batch"],
@@ -876,7 +876,7 @@ def snapshot(
                 os.close(dfd)
     finally:
         os.close(root_fd)
-    with tempfile.TemporaryDirectory(prefix="memv2-wt-snap-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memory-wt-snap-") as tmp:
         scratch = Path(tmp)
         index = scratch / "index"
         info = b"".join(

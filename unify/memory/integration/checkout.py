@@ -224,7 +224,7 @@ def checkout_diff(
         f":(exclude,literal){rel}"
         for rel in _unexported(listing(Repo(Path(memory_dir)), base)[0])
     )
-    with tempfile.TemporaryDirectory(prefix="memv2-idx-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="memory-idx-") as tmp:
         env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
         git(memory_dir, "read-tree", base, env=env, cwd=Path(tmp))
         git(

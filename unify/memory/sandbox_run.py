@@ -873,10 +873,10 @@ def _read_junit(junit_dir: Path) -> ET.Element | None:
 # reaches pytest's junit writer through its stash key (``_pytest.junitxml.xml_key``); a pytest without it is a
 # usage error, so the run is invalid, never silently unmarked. Model code shares pytest's process and could
 # forge the properties, as it could the report (model code is assumed careless, not malicious).
-SKIP_PROPERTY = "memv2_import_skip"
-SKIPMARK_LOADED = "memv2_skipmark"
-SKIPMARK_MODULE = "_memv2_skipmark"
-SKIPMARK_DIR = "/memv2-skipmark"  # the plugin's read-only directory in the box (on PYTHONPATH, last)
+SKIP_PROPERTY = "memory_import_skip"
+SKIPMARK_LOADED = "memory_skipmark"
+SKIPMARK_MODULE = "_memory_skipmark"
+SKIPMARK_DIR = "/memory-skipmark"  # the plugin's read-only directory in the box (on PYTHONPATH, last)
 MODULE_SKIPPED = "test module skipped"
 # The plugin, written into a fresh host directory per run; the host never imports it (importing it patches
 # pytest.importorskip in that process).
@@ -887,9 +887,9 @@ import pytest
 from _pytest import outcomes as _outcomes
 from _pytest.junitxml import xml_key
 
-PROPERTY = "memv2_import_skip"
-LOADED = "memv2_skipmark"
-_MARK = "_memv2_import_skip"
+PROPERTY = "memory_import_skip"
+LOADED = "memory_skipmark"
+_MARK = "_memory_import_skip"
 _SKIPS = (_outcomes.Skipped, unittest.SkipTest)
 _importorskip = _outcomes.importorskip
 
@@ -920,7 +920,7 @@ def _from_import(exc):
 def _writer(config):
     xml = config.stash.get(xml_key, None)
     if xml is None or not hasattr(xml, "node_reporter") or not hasattr(xml, "add_global_property"):
-        raise pytest.UsageError("_memv2_skipmark needs pytest's junit writer (--junitxml)")
+        raise pytest.UsageError("_memory_skipmark needs pytest's junit writer (--junitxml)")
     return xml
 
 
@@ -1002,14 +1002,14 @@ def run_pytest(
     if spool_dir is not None:
         spool_dir.mkdir(parents=True, exist_ok=True)
     with contextlib.ExitStack() as stack:
-        tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="memv2-junit-"))
+        tmp = stack.enter_context(tempfile.TemporaryDirectory(prefix="memory-junit-"))
         rw2 = dict(rw)
         rw2[Path(tmp)] = "/junit"
         ro2, env2, plugin = ro, env, []
         if import_skips_fail:
             plug = Path(
                 stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="memv2-skipmark-"),
+                    tempfile.TemporaryDirectory(prefix="memory-skipmark-"),
                 ),
             )
             (plug / f"{SKIPMARK_MODULE}.py").write_text(SKIPMARK_SOURCE)

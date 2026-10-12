@@ -49,7 +49,7 @@ class Repo:
         path = Path(path).absolute()
         _git(["init", "--bare", "-q", "-b", "main", str(path)])
         repo = cls(path)
-        tmp = Path(tempfile.mkdtemp(prefix="memv2-init-"))
+        tmp = Path(tempfile.mkdtemp(prefix="memory-init-"))
         try:
             wt = tmp / "wt"
             _git(["init", "-q", "-b", "main", str(wt)])
@@ -78,7 +78,7 @@ class Repo:
 
     @contextlib.contextmanager
     def temp_checkout(self, rev: str = "main") -> Iterator[Path]:
-        tmp = Path(tempfile.mkdtemp(prefix="memv2-wt-"))
+        tmp = Path(tempfile.mkdtemp(prefix="memory-wt-"))
         wt = tmp / "wt"
         self.run("worktree", "add", "-q", "--detach", str(wt), rev)
         try:

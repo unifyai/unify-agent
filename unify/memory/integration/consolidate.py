@@ -697,7 +697,7 @@ def _note_transcript(
 
 def _library_after(stores: Stores) -> tuple[int | None, int | None]:
     """(listed items, index tokens) of memory ``main`` now; None for what could not be measured."""
-    tmp = Path(tempfile.mkdtemp(prefix="memv2-after-"))
+    tmp = Path(tempfile.mkdtemp(prefix="memory-after-"))
     try:
         files, _ = listing(stores.memory, stores.memory.head())
         tree = materialise(stores.memory, files, tmp / "main")
@@ -1014,7 +1014,7 @@ def _curate_state(
     from ..shape_rows import shapes_at
 
     sha = stores.memory.head()
-    tmp = Path(tempfile.mkdtemp(prefix="memv2-curate-"))
+    tmp = Path(tempfile.mkdtemp(prefix="memory-curate-"))
     try:
         files, _ = listing(stores.memory, sha)
         tree = materialise(stores.memory, files, tmp / "main")

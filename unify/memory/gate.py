@@ -896,7 +896,7 @@ class Gate:
         no commit, git object, evidence or pass row. A clean preview does not mean the gate will pass.
         """
         res = GateResult(True, {c: True for c in CHECKS})
-        tmp = Path(tempfile.mkdtemp(prefix="memv2-preview-"))
+        tmp = Path(tempfile.mkdtemp(prefix="memory-preview-"))
         run = _Run(res, Manifest(), manifest, "", "", tmp)
         try:
             try:
@@ -1291,7 +1291,7 @@ class Gate:
         pass id) the committed reduction of a candidate refused item by item.
         """
         res = GateResult(True, {c: True for c in CHECKS})
-        tmp = Path(tempfile.mkdtemp(prefix="memv2-gate-"))
+        tmp = Path(tempfile.mkdtemp(prefix="memory-gate-"))
         run = _Run(res, Manifest(), manifest, parent, candidate, tmp)
         run.seed = seed
         reduced = None

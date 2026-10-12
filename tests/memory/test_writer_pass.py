@@ -1260,12 +1260,12 @@ def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
     mem, ev, writer = _writer(tmp_path, model)
 
     def broken(*a, **kw):
-        raise OSError("cannot read /tmp/memv2-check-host/tree/x")
+        raise OSError("cannot read /tmp/memory-check-host/tree/x")
 
     monkeypatch.setattr(writer.gate, "preview", broken)
     out = _run(writer)
     assert model.outputs["k1"] == "check error: OSError"
-    assert any("/tmp/memv2-check-host" in r for r in out.reasons), out.reasons
+    assert any("/tmp/memory-check-host" in r for r in out.reasons), out.reasons
 
 
 def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
