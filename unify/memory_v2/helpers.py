@@ -195,7 +195,10 @@ DONE_SPEC = ToolSpec(
                 "items": {
                     "type": "object",
                     "properties": {
-                        "claim": {"type": "string", "description": "One finding, in plain words."},
+                        "claim": {
+                            "type": "string",
+                            "description": "One finding, in plain words.",
+                        },
                         "sources": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -241,16 +244,14 @@ EXECUTE_CODE_SPEC = ToolSpec(
 READERS = ("overview", "read_episode", "similar", "read", "grep")
 
 
-def helper_tools() -> list[dict]:
+def helper_tools(similar: bool = True) -> list[dict]:
     """The helper's tool JSON: the registry's ``helper`` tools (its readers, ``stage``, ``done``) with the helper's
-    own ``execute_code`` in place of any other."""
+    own ``execute_code`` in place of any other. *similar*: the pass has a similar-code index, so the helper gets
+    ``similar`` too. A helper never gets ``delegate`` (a writer-only tool)."""
     from .tool_spec import tools_for
 
-    specs = [
-        s
-        for s in tools_for("helper", frozenset({"helper"}))
-        if s.name != "execute_code"
-    ]
+    flags = frozenset({"helper", "similar"} if similar else {"helper"})
+    specs = [s for s in tools_for("helper", flags) if s.name != "execute_code"]
     names = {s.name for s in specs}
     for s in (STAGE_SPEC, DONE_SPEC):
         if s.name not in names:
@@ -671,7 +672,9 @@ def _source_problem(
     eid, part = source.split("/", 1)
     try:
         got = resolve(eid)
-    except Exception as exc:  # noqa: BLE001 - an episode that cannot be loaded is not a source
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - an episode that cannot be loaded is not a source
         return f"episode {eid[:80]!r} could not be loaded ({type(exc).__name__})"
     if isinstance(got, str):
         if "not an episode id" in got:
@@ -683,7 +686,9 @@ def _source_problem(
     else:
         try:
             named = part in _part_names(ep)
-        except Exception:  # noqa: BLE001 - an episode whose parts cannot be listed has no part to point to
+        except (
+            Exception
+        ):  # noqa: BLE001 - an episode whose parts cannot be listed has no part to point to
             named = False
     if named:
         try:
@@ -705,7 +710,8 @@ def check_claims(
     shared: dict[str, str],
 ) -> list[dict] | str:
     """The claims of a ``done`` call, each ``{"claim": text, "sources": ["<episode>/<part>", ...]}``, or the
-    refusal the helper is answered with: a claim without sources or with a source that does not resolve."""
+    refusal the helper is answered with: a claim without sources or with a source that does not resolve.
+    """
     claims = args.get("claims")
     if not isinstance(claims, list):
         return _refusal(DONE_SPEC, "claims", why="`claims` is missing or not a list")
@@ -720,12 +726,22 @@ def check_claims(
         if sources is None or sources == [] or sources == "":
             return _refusal(DONE_SPEC, "no_sources", n=n)
         if not isinstance(sources, list):
-            return _refusal(DONE_SPEC, "claims", why=f"claim {n}: `sources` is not a list")
+            return _refusal(
+                DONE_SPEC,
+                "claims",
+                why=f"claim {n}: `sources` is not a list",
+            )
         kept: list[str] = []
         for source in sources:
             why = _source_problem(source, resolve, shared)
             if why is not None:
-                return _refusal(DONE_SPEC, "bad_source", n=n, source=str(source)[:200], why=why)
+                return _refusal(
+                    DONE_SPEC,
+                    "bad_source",
+                    n=n,
+                    source=str(source)[:200],
+                    why=why,
+                )
             if source not in kept:
                 kept.append(source)
         out.append({"claim": text.strip(), "sources": kept})
@@ -928,7 +944,7 @@ async def _run_helper(
 ) -> None:
     resolve = _resolver(ctx)
     turn = ctx.new_turn(f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}")  # type: ignore[misc]
-    tools = helper_tools()
+    tools = helper_tools(similar=ctx.similar is not None)
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
         {"role": "system", "content": HELPER_BRIEF},
@@ -982,7 +998,10 @@ async def _run_helper(
         calls = calls if isinstance(calls, list) else []
         if not calls:
             messages.append(
-                {"role": "user", "content": "Use your tools, then call done(summary, claims)."},
+                {
+                    "role": "user",
+                    "content": "Use your tools, then call done(summary, claims).",
+                },
             )
             continue
         usage = _usage_of(msg, usd)
@@ -1005,7 +1024,9 @@ async def _run_helper(
             elif name == "done":
                 try:
                     got = check_claims(args, resolve, ctx.shared)
-                except Exception as exc:  # noqa: BLE001 - a broken check is answered, never ends the helper
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a broken check is answered, never ends the helper
                     got = f"error: {type(exc).__name__}"
                 if isinstance(got, str):
                     content = got

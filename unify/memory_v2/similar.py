@@ -61,6 +61,8 @@ SPEC = ToolSpec(
         "additionalProperties": False,
     },
     roles=frozenset({"write", "helper"}),
+    # offered only when the run has an index folder to search
+    requires="similar",
     refusals={
         "args": "give `episode` and `cell` together, or `code` alone.",
         "unknown_episode": "no recorded episode {episode}.",
