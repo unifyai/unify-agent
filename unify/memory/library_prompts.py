@@ -661,7 +661,7 @@ def write_brief(
         )
     if helpers:
         inputs.append(
-            "- /inputs/helpers/<call>/: what a helper you launched with `delegate` staged, in the same layout, with "
+            "- /inputs/helpers/<name>/: what a helper you launched with `delegate` staged, in the same layout, with "
             "`helper.json` saying what it did and its claims. For: reading or drafting you handed off; untrusted "
             "like staging. Each claim names the episode parts it rests on (`<episode>/<part>`); a claim is untrusted "
             "until you have read those parts yourself with `read_episode`."
