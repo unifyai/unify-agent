@@ -67,6 +67,7 @@ from unify.agents.pool import Pool
 
 from . import batch_map as _bm
 from . import messaging as _messaging
+from . import safe_paths as _safe
 from . import views as _views
 from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
@@ -360,6 +361,7 @@ GREP_SPEC = ToolSpec(
         "not_found": "{path} does not exist",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
+        "search_failed": _wt.SEARCH_FAILED,
     },
 )
 
@@ -417,7 +419,9 @@ class DelegateContext:
       ``usd`` and ``unknown``): helper spend joins it as it is incurred;
     * ``shared``: the shared request blocks (id -> text); ``events``: the pass's ``tool-events.jsonl`` (or None);
     * ``episode_reader``: the writer's episode reader for ``overview``/``read_episode`` if the pass has one
-      (``async (name, args, resolve) -> str``), else the plain reader here; ``similar``: the ``similar`` tool's
+      (``async (name, args, resolve) -> str``), else the writer's own handlers with this helper's read log
+      (:func:`_episode_reply`); ``blob``: the gate's recorded-blob reader for the raw lengths those handlers list
+      (None: the lengths are "unknown"); ``similar``: the ``similar`` tool's
       handler (``async (args) -> str``), or None;
     * ``records``: one row per delegate call, appended here (the pass outcome's ``helpers``);
     * ``pass_record``: the pass's record (:class:`.messaging.PassRecord`; made here when not given), whose pool
@@ -441,6 +445,8 @@ class DelegateContext:
     events: Path | None = None
     lane_refusal: str = "no helper lane"
     episode_reader: Callable[..., Awaitable[str]] | None = None
+    #: the gate's recorded-blob reader (``sha -> bytes``), for the raw lengths in read_episode's table of contents
+    blob: Callable[[str], bytes] | None = None
     similar: Callable[[dict], Awaitable[str]] | None = None
     step_guard: int = 500
     cell_timeout_s: float = CELL_TIMEOUT_S
@@ -521,6 +527,7 @@ def context_for(
         step_guard=STEP_GUARD,
         cell_timeout_s=float(getattr(cfg, "cell_timeout_s", 60.0)),
         records=writer._helper_rows,
+        blob=getattr(getattr(writer, "gate", None), "_blob", None),
         pass_record=pass_record,
         pool=getattr(writer, "_pool", None),
         compact=bool(
@@ -701,32 +708,28 @@ class _Staging:
 
 
 def work_over(root: Path) -> str | None:
-    """Which /work bound *root* breaks, or None (walked with ``lstat``; nothing followed or read)."""
+    """Which /work bound *root* breaks, or None. Walked from descriptors (:func:`.safe_paths.walk_unlocking`):
+    nothing followed or read, and the owner's access to each directory restored on the opened directory itself,
+    so a directory the box swaps for a link meanwhile never changes a mode outside /work."""
     entries = total = 0
-    stack = [Path(root)]
-    while stack:
-        d = stack.pop()
-        try:
-            it = os.scandir(d)
-        except OSError:
-            return "/work holds an unreadable directory"
-        with it:
-            for e in it:
-                try:
-                    st = os.lstat(e.path)
-                except OSError:
-                    return "/work holds an unreadable entry"
-                entries += 1
-                if entries > WORK_ENTRIES:
-                    return f"/work holds more than {WORK_ENTRIES} files and directories"
-                if stat.S_ISDIR(st.st_mode):
-                    if stat.S_IMODE(st.st_mode) & 0o700 != 0o700:
-                        os.chmod(e.path, stat.S_IMODE(st.st_mode) | 0o700)
-                    stack.append(Path(e.path))
-                elif stat.S_ISREG(st.st_mode):
-                    total += st.st_size
-                    if total > WORK_TOTAL_BYTES:
-                        return f"/work holds more than {WORK_TOTAL_BYTES} bytes"
+    walk = _safe.walk_unlocking(root, 0o700)
+    try:
+        for event, _, st in walk:
+            if event == "unlisted":
+                return "/work holds an unreadable directory"
+            if event != "entry" or st is None:
+                return "/work holds an unreadable entry"
+            entries += 1
+            if entries > WORK_ENTRIES:
+                return f"/work holds more than {WORK_ENTRIES} files and directories"
+            if stat.S_ISREG(st.st_mode):
+                total += st.st_size
+                if total > WORK_TOTAL_BYTES:
+                    return f"/work holds more than {WORK_TOTAL_BYTES} bytes"
+    except _safe.NoProc:
+        return "/work cannot be measured safely (/proc/self/fd is not available)"
+    finally:
+        walk.close()
     return None
 
 
@@ -798,17 +801,6 @@ def _part_names(ep: Any) -> list[str]:
     return _wt.part_names(ep)
 
 
-def _contents(ep: Any, eid: str, shared: dict[str, str]) -> str:
-    lines = [f"{eid}: parts (read them with read_episode(episode, parts=[...]))"]
-    for name in _part_names(ep):
-        try:
-            size = len(_bm.part_text(ep, name, shared).encode())
-        except (KeyError, ValueError, IndexError, StopIteration):
-            continue
-        lines.append(f"- {name}: {size} bytes")
-    return "\n".join(lines)
-
-
 def episode_paths(name: str, args: dict, eid: str) -> list[dict]:
     """The episode paths an answered ``overview`` or ``read_episode`` call read, as the writer's events name them:
     ``/episodes/<id>`` for the overview or the table of contents, ``/episodes/<id>/<part>`` for each named part.
@@ -820,70 +812,45 @@ def episode_paths(name: str, args: dict, eid: str) -> list[dict]:
     return [{"path": f"/episodes/{eid}/{p.strip()}", "mode": "read"} for p in names]
 
 
-async def plain_episode_reader(
+def _no_blob(sha: str) -> bytes:
+    raise KeyError(sha)
+
+
+def _episode_reply(
+    ctx: DelegateContext,
     name: str,
     args: dict,
     ep: Any,
     eid: str,
-    shared: dict[str, str],
-) -> str:
-    """``overview(episode)`` and ``read_episode(episode, parts?, offset?)`` on one resolved episode."""
-    offset = args.get("offset", 0) or 0
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        return refusal(
-            name,
-            "bad_arguments",
-            reason="offset must be an integer >= 0; nothing was read",
-        )
+    st: dict,
+) -> tuple[str, list[dict]]:
+    """``overview(episode)`` and ``read_episode`` on one resolved episode through the writer's own handlers
+    (:func:`.writer_tools.overview_episode`, :func:`.writer_tools.read_episode`): the same part limit per call, the
+    same table of contents (fixture sources and raw lengths) and the same pointer for a part identical to one this
+    helper was shown in full earlier. Each helper keeps its own read log and its own record of parts shown."""
+    log = st.setdefault("read_log", _wt.ReadLog())
+    shown = st.setdefault("shown_full", {})
     if name == "overview":
-        text, _ = _bm.solution_first(ep, shared)
-        return _views.view(text.encode(), offset)
-    # the writer's own parsing: "" and [] mean the table of contents, {"part", "offset"} items continue a part
-    wanted, problem = _wt._wanted_parts(args)
-    if problem is not None:
-        return refusal("read_episode", problem)
-    if wanted is None:
-        return _views.view(_contents(ep, eid, shared).encode(), offset)
-    items: list[tuple[str, int, bytes]] = []
-    unknown: list[str] = []
-    for item in wanted:
-        part, off = (
-            (item.get("part"), item.get("offset", 0))
-            if isinstance(item, dict)
-            else (item, None)
+        reply = _wt.overview_episode(
+            ep,
+            eid,
+            args.get("offset", 0),
+            log=log,
+            shared=ctx.shared,
         )
-        part = str(part).strip()
-        if off is None:
-            off = offset if len(wanted) == 1 else 0
-        if isinstance(off, bool) or not isinstance(off, int) or off < 0:
-            return refusal("read_episode", "bad_offset", part=part[:80])
-        try:
-            items.append((part, off, _bm.part_text(ep, part, shared).encode()))
-        except (KeyError, ValueError, IndexError, StopIteration, TypeError):
-            unknown.append(part[:80])
-    if unknown and not items:
-        return refusal(
-            "read_episode",
-            "unknown_part",
-            names=", ".join(repr(u) for u in unknown),
-            episode=eid,
-            valid=_wt.valid_names(ep),
+    else:
+        reply = _wt.read_episode(
+            ep,
+            eid,
+            args,
+            blob=ctx.blob or _no_blob,
+            log=log,
+            shown=shown,
+            shared=ctx.shared,
         )
-    out, left = [], _views.VIEW_BYTES
-    if unknown:
-        out.append(
-            f"unknown part(s) in {eid}: {', '.join(repr(u) for u in unknown)}; valid: {_wt.valid_names(ep)}",
-        )
-    for part, off, data in items:
-        if left <= 0:
-            out.append(
-                f"== {part} ==\nnot shown (page full): read again with parts={json.dumps([part])}",
-            )
-            continue
-        text, a, b = _views.view_range(data, off, left)
-        left -= b - a
-        out.append(f"== {part} ==\n{text}")
-    return "\n\n".join(out)
+    if reply.status == "refused":
+        return Refusal(reply.text, name, reply.form or "refused"), []
+    return reply.text, [dict(p) for p in reply.paths]
 
 
 # --- claims and their sources ------------------------------------------------------------------------------
@@ -1080,16 +1047,17 @@ async def _tool(
         vpath = str(args.get("path", "") or ("/inputs" if name == "grep" else ""))
         try:
             offset = int(args.get("offset", 0) or 0)
-            # the resolved virtual path, as the writer's events record it
-            real = _views.resolve(vpath, roots)
-            virtual = _views._virtual(real, roots)
-            if virtual.endswith("/."):
-                virtual = virtual[:-2]
+            # the box path asked for, normalised, as the writer's events record it
+            prefix, parts = _safe.split(vpath, list(roots))
+            virtual = _safe.virtual(prefix, parts)
             if name == "read":
-                mode = "list" if real.is_dir() else "read"
-                return _views.read(vpath, roots, offset), [
-                    {"path": virtual, "mode": mode},
-                ]
+                text, mode = await asyncio.to_thread(
+                    _views.read_entry,
+                    vpath,
+                    roots,
+                    offset,
+                )
+                return text, [{"path": virtual, "mode": mode}]
             out = await asyncio.to_thread(
                 _views.grep_bounded,
                 str(args.get("pattern", "")),
@@ -1098,18 +1066,26 @@ async def _tool(
                 offset,
             )
             return out, [{"path": virtual, "mode": "search"}]
-        except PermissionError:
+        except _safe.Outside:
             return _own_refusal(name, "outside_box", path=vpath[:200]), []
         except _views.PatternProblem as exc:
             return _own_refusal("grep", "bad_pattern", reason=str(exc)[:300]), []
+        except _views.SearchFailed:
+            return _own_refusal("grep", "search_failed"), []
         except FileNotFoundError:
             missing = _own_refusal(name, "not_found", path=vpath[:200])
+            listing = await asyncio.to_thread(_parent_listing, vpath, roots)
             return (
                 Refusal(
-                    str(missing) + _parent_listing(vpath, roots),
+                    str(missing) + listing,
                     name,
                     "not_found",
                 ),
+                [],
+            )
+        except (_safe.LinkFound, _safe.NotRegular) as exc:
+            return (
+                _own_refusal(name, "unreadable", error=exc.reason, path=vpath[:200]),
                 [],
             )
         except (OSError, ValueError, TypeError) as exc:
@@ -1134,9 +1110,8 @@ async def _tool(
         ep, eid = got
         if ctx.episode_reader is not None:
             out = await ctx.episode_reader(name, args, resolve)
-        else:
-            out = await plain_episode_reader(name, args, ep, eid, ctx.shared)
-        return out, ([] if form_of(out) else episode_paths(name, args, eid))
+            return out, ([] if form_of(out) else episode_paths(name, args, eid))
+        return await asyncio.to_thread(_episode_reply, ctx, name, args, ep, eid, st)
     if name == "similar":
         if ctx.similar is None:
             return refusal("similar", "not_available"), []
@@ -1187,20 +1162,31 @@ def _own_refusal(tool: str, form: str, **fields: object) -> str:
 
 
 def _parent_listing(vpath: str, roots: dict) -> str:
-    """What the nearest existing directory above *vpath* holds, for a path that does not exist (same form)."""
+    """What the nearest existing directory above *vpath* holds, for a path that does not exist (same form). Each
+    directory is opened from the root descriptor without following a link (:mod:`.safe_paths`)."""
     parent = vpath.rstrip("/").rsplit("/", 1)[0] or "/"
-    while parent not in ("", "/"):
-        try:
-            real = _views.resolve(parent, roots)
-        except PermissionError:
-            break
-        if real.is_dir():
-            names = sorted(x.name + ("/" if x.is_dir() else "") for x in real.iterdir())
+    with _safe.using(roots) as r:
+        while parent not in ("", "/"):
+            try:
+                fd, _, _ = _safe.open_path(r, parent)
+            except _safe.Missing:
+                parent = parent.rsplit("/", 1)[0]
+                continue
+            except OSError:
+                break
+            try:
+                names = _safe.listing(fd) if _safe.is_dir_fd(fd) else None
+            except OSError:
+                break
+            finally:
+                os.close(fd)
+            if names is None:
+                parent = parent.rsplit("/", 1)[0]
+                continue
             shown = names[:50] + (
                 [f"... {len(names) - 50} more"] if len(names) > 50 else []
             )
             return f"; {parent} holds: " + (", ".join(shown) or "(nothing)")
-        parent = parent.rsplit("/", 1)[0]
     return ""
 
 

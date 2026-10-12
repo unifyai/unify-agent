@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -21,6 +22,7 @@ from typing import Any, Callable
 from . import batch_map as _bm
 from . import fixtures as _fx
 from . import pool as _pool
+from . import safe_paths as _safe
 from . import views as _views
 from .tool_spec import GENERAL, ToolSpec, refusal
 from .tool_spec import GENERAL_REFUSALS as _GENERAL_REFUSALS
@@ -30,6 +32,9 @@ READ_PARTS_PER_CALL = 8
 READERS_PER_TURN = 16
 #: cells run per model turn (stated in execute_code's description)
 CELLS_PER_TURN = 8
+#: grep's answer when its search process fails for a reason other than the pattern (a fixed text: the process's
+#: own output can name host paths)
+SEARCH_FAILED = "the search did not complete; nothing is shown (narrow the pattern or the path and search again)"
 #: where the manifest lives in the writer's box
 MANIFEST = ".pass/manifest.json"
 
@@ -151,6 +156,7 @@ GREP = ToolSpec(
         "outside_box": "{path} is outside /inputs, /memory and /work",
         "bad_pattern": "{reason}",
         "unreadable": "{error} for {path!r}",
+        "search_failed": SEARCH_FAILED,
     },
     summary="search files with a regular expression (default under /inputs).",
 )
@@ -727,54 +733,107 @@ def fixture(
         return refused("fixture", "no_source", where)
     append = args.get("append") is True
     replace = args.get("replace") is True
-    box = Path(box)
-    cur = box
-    for part in Path(dest).parts[:-1]:
-        cur = cur / part
-        if cur.is_symlink():
+    # every component is opened from the box's descriptor, never through a link: box code can change /memory
+    # while this runs (:mod:`.safe_paths`); a dest the fixture rules refuse is answered by make below
+    parts = dest.split("/") if _fx.DATA_PATH.match(dest) else None
+    existing = None
+    try:
+        root = os.open(Path(box), _safe.DIR_FLAGS)
+    except OSError as exc:
+        return refused(
+            "fixture",
+            "bad_fixture",
+            where,
+            reason=f"cannot write {dest[:200]}: {_safe.errno_name(exc)}",
+        )
+    try:
+        if parts is not None:
+            try:
+                dfd = _safe.walk_dirs(root, parts[:-1])
+            except _safe.LinkFound:
+                return refused(
+                    "fixture",
+                    "link",
+                    where,
+                    what="a directory on the way to dest",
+                )
+            except OSError:
+                dfd = None  # made below
+            if dfd is not None:
+                try:
+                    st = _safe.lstat_at(dfd, parts[-1])
+                    if st is not None and stat.S_ISLNK(st.st_mode):
+                        return refused("fixture", "link", where, what="dest")
+                    if append and not replace and st is not None:
+                        try:
+                            data = _safe.read_at(dfd, parts[-1])
+                        except OSError:
+                            data = None
+                        existing = _fx.assembled_entry(data) if data else None
+                        if data and existing is None:
+                            return refused(
+                                "fixture",
+                                "not_input_lines",
+                                where,
+                                dest=dest[:200],
+                            )
+                finally:
+                    os.close(dfd)
+        notes: list[str] = []
+        try:
+            data, entry = _fx.make(
+                ep,
+                source,
+                dest,
+                blob=blob,
+                cut=args.get("slice"),
+                append=append,
+                existing=existing,
+                notes=notes,
+            )
+        except _fx.FixtureError as exc:
+            return refused("fixture", "bad_fixture", where, reason=str(exc)[:300])
+        try:
+            dfd = _safe.walk_dirs(root, (parts or [])[:-1], create=True)
+        except _safe.LinkFound:
             return refused(
                 "fixture",
                 "link",
                 where,
                 what="a directory on the way to dest",
             )
-    target = box / dest
-    if target.is_symlink():
-        return refused("fixture", "link", where, what="dest")
-    existing = None
-    if append and not replace and target.exists():
-        data = _fx._read_plain(target)
-        existing = _fx.assembled_entry(data) if data else None
-        if data and existing is None:
-            return refused("fixture", "not_input_lines", where, dest=dest[:200])
-    notes: list[str] = []
-    try:
-        data, entry = _fx.make(
-            ep,
-            source,
-            dest,
-            blob=blob,
-            cut=args.get("slice"),
-            append=append,
-            existing=existing,
-            notes=notes,
-        )
-    except _fx.FixtureError as exc:
-        return refused("fixture", "bad_fixture", where, reason=str(exc)[:300])
-    target.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
-    flags |= os.O_APPEND if (append and not replace) else os.O_TRUNC
-    try:
-        with os.fdopen(os.open(target, flags, 0o644), "wb") as f:
-            f.write(data)
-        _fx.write_listing(box, dest, None if append else entry)
-    except (OSError, _fx.FixtureError) as exc:
-        return refused(
-            "fixture",
-            "bad_fixture",
-            where,
-            reason=f"cannot write {dest[:200]}: {exc.__class__.__name__}",
-        )
+        except OSError as exc:
+            return refused(
+                "fixture",
+                "bad_fixture",
+                where,
+                reason=f"cannot write {dest[:200]}: {_safe.errno_name(exc)}",
+            )
+        try:
+            leaf = (parts or [""])[-1]
+            mode = _safe.check_leaf(dfd, leaf, dest)
+            # an appended line joins the file's current bytes; the whole file is then replaced by a rename, so
+            # neither a link nor a hard link at dest is written through
+            before = (
+                _safe.read_at(dfd, leaf)
+                if (append and not replace and mode is not None)
+                else b""
+            )
+            _safe.replace_at(dfd, leaf, before + data)
+            _fx.write_listing(box, dest, None if append else entry)
+        except _safe.LinkFound:
+            return refused("fixture", "link", where, what="dest")
+        except (OSError, _fx.FixtureError) as exc:
+            return refused(
+                "fixture",
+                "bad_fixture",
+                where,
+                reason=f"cannot write {dest[:200]}: {exc.__class__.__name__}",
+            )
+        finally:
+            os.close(dfd)
+    finally:
+        os.close(root)
     verb = (
         "started"
         if (append and replace)
@@ -864,12 +923,18 @@ def _link_line(link: dict) -> str:
 
 
 def _read_manifest(box: Path) -> tuple[dict | None, str | None]:
-    if (box / ".pass").is_symlink():
-        return None, "/memory/.pass is a link"
-    path = box / MANIFEST
-    if not path.exists() and not path.is_symlink():
+    """The draft manifest in *box*, read from the box's descriptor without following a link (:mod:`.safe_paths`):
+    ({} when there is none, None and the problem when it cannot be used)."""
+    try:
+        raw = _safe.read_in(box, MANIFEST, 1024 * 1024)
+    except _safe.Missing:
         return {}, None
-    raw = _fx._read_plain(path, 1024 * 1024)
+    except _safe.LinkFound as exc:
+        if exc.where == ".pass":
+            return None, "/memory/.pass is a link"
+        raw = None
+    except OSError:
+        raw = None
     if raw is None:
         return (
             None,
@@ -885,23 +950,15 @@ def _read_manifest(box: Path) -> tuple[dict | None, str | None]:
 
 
 def write_manifest(box: Path, manifest: object) -> None:
-    """Write *manifest* (an object, or JSON text) to ``/memory/.pass/manifest.json``, never through a link."""
-    pass_dir = Path(box) / ".pass"
-    if pass_dir.is_symlink():
-        raise OSError("/memory/.pass is a link")
-    pass_dir.mkdir(exist_ok=True)
+    """Write *manifest* (an object, or JSON text) to ``/memory/.pass/manifest.json``, never through a link: ``.pass``
+    is opened from the box's descriptor and a new ``O_EXCL`` file is renamed over the manifest (:mod:`.safe_paths`);
+    a link at ``.pass`` or at the manifest is refused (``OSError``)."""
     text = (
         manifest
         if isinstance(manifest, str)
         else json.dumps(manifest, indent=1, sort_keys=True) + "\n"
     )
-    fd = os.open(
-        Path(box) / MANIFEST,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o644,
-    )
-    with os.fdopen(fd, "w") as fh:
-        fh.write(text)
+    _safe.write_in(Path(box), MANIFEST, text.encode("utf-8", errors="replace"))
 
 
 def defer_rows(manifest: object) -> list[dict]:

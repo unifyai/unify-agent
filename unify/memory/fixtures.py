@@ -44,6 +44,8 @@ import re
 import stat as _stat
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import safe_paths as _safe
 from typing import Any, Callable
 
 from .analysis import shapes as _shapes
@@ -431,19 +433,37 @@ def _read_plain(path, limit: int | None = None) -> bytes | None:
 
 
 def _no_link_on_the_way(box, rel: str) -> bool:
-    cur = Path(box)
-    for part in Path(rel).parts[:-1]:
-        cur = cur / part
-        if cur.is_symlink():
-            return False
-    return True
+    """No directory on the way to *rel* in *box* is a link (checked from *box*'s descriptor, never followed)."""
+    try:
+        parts = _safe.rel_parts(rel)
+        root = os.open(box, _safe.DIR_FLAGS)
+    except OSError:
+        return False
+    try:
+        fd = _safe.walk_dirs(root, parts[:-1])
+    except _safe.Missing:
+        return True
+    except OSError:
+        return False
+    else:
+        os.close(fd)
+        return True
+    finally:
+        os.close(root)
+
+
+def _read_in_box(box, rel: str, limit: int | None = None) -> bytes | None:
+    """*rel*'s bytes in *box* when it is a regular file reached through no link (None otherwise), opened from *box*'s
+    descriptor one component at a time (:mod:`.safe_paths`)."""
+    try:
+        return _safe.read_in(box, rel, limit)
+    except (OSError, ValueError):
+        return None
 
 
 def read_listing(box) -> dict:
     """``.pass/fixtures.json`` in *box*: dest -> copied-fixture entry ({} when absent or unreadable)."""
-    if (Path(box) / ".pass").is_symlink():
-        return {}
-    raw = _read_plain(Path(box) / LEDGER_FILE, 16 * 1024 * 1024)
+    raw = _read_in_box(box, LEDGER_FILE, 16 * 1024 * 1024)
     try:
         val = json.loads(raw.decode("utf-8")) if raw is not None else {}
     except (UnicodeDecodeError, ValueError, RecursionError):
@@ -458,6 +478,8 @@ def derive_ledger(box) -> dict[str, dict]:
       sha256 (a deleted or rewritten file has no entry);
     * assembled fixtures: every ``.jsonl`` file under ``memory/**/tests/data/`` whose lines are all input lines, with
       the sources those lines name.
+
+    Every file is opened from *box*'s descriptor without following a link (:mod:`.safe_paths`).
     """
     box = Path(box)
     out: dict[str, dict] = {}
@@ -467,53 +489,67 @@ def derive_ledger(box) -> dict[str, dict]:
             or not isinstance(entry, dict)
             or entry.get("kind") != "copy"
             or not DATA_PATH.match(dest)
-            or not _no_link_on_the_way(box, dest)
         ):
             continue
-        data = _read_plain(box / dest)
+        data = _read_in_box(box, dest)
         if data is not None and hashlib.sha256(data).hexdigest() == entry.get("sha256"):
             out[dest] = {
                 k: entry.get(k)
                 for k in ("kind", "episode", "source", "slice", "trust", "sha256")
             }
-    root = box / "memory"
-    if root.is_dir() and not root.is_symlink():
-        for d, dirs, files in os.walk(root, followlinks=False):
-            for name in sorted(files):
-                if not name.endswith(".jsonl"):
-                    continue
-                rel = str((Path(d) / name).relative_to(box))
-                if (
-                    rel in out
-                    or not DATA_PATH.match(rel)
-                    or rel.split("/tests/data/", 1)[1].startswith(DRAWN_DIR)
-                ):
-                    continue
-                data = _read_plain(box / rel)
-                entry = assembled_entry(data) if data is not None else None
+
+    def wanted(vpath: str) -> bool:
+        rel = vpath[len("/box/") :]
+        return (
+            rel.endswith(".jsonl")
+            and rel not in out
+            and bool(DATA_PATH.match(rel))
+            and not rel.split("/tests/data/", 1)[1].startswith(DRAWN_DIR)
+        )
+
+    try:
+        with _safe.Roots({"/box": box}) as roots:
+            for vpath, data in _safe.iter_files(roots, "/box/memory", want=wanted):
+                entry = assembled_entry(data)
                 if entry is not None:
-                    out[rel] = entry
+                    out[vpath[len("/box/") :]] = entry
+    except OSError:  # /memory/memory is a link, or the box cannot be opened
+        pass
     return out
 
 
 def write_listing(box, dest: str, entry: dict | None) -> None:
-    """Set (or, with None, remove) *dest*'s copied-fixture entry in ``.pass/fixtures.json``; never through a link."""
-    pass_dir = Path(box) / ".pass"
-    if pass_dir.is_symlink():
-        raise FixtureError("/memory/.pass is a link")
-    pass_dir.mkdir(exist_ok=True)
-    listing = read_listing(box)
-    if entry is None:
-        listing.pop(dest, None)
-    else:
-        listing[dest] = entry
-    fd = os.open(
-        Path(box) / LEDGER_FILE,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-        0o644,
-    )
-    with os.fdopen(fd, "w") as fh:
-        fh.write(json.dumps(listing, indent=1, sort_keys=True) + "\n")
+    """Set (or, with None, remove) *dest*'s copied-fixture entry in ``.pass/fixtures.json``; never through a link:
+    ``.pass`` is opened from *box*'s descriptor and the listing replaces the file by a rename (:mod:`.safe_paths`).
+    """
+    try:
+        root = os.open(box, _safe.DIR_FLAGS)
+    except OSError as exc:
+        raise FixtureError(f"the box cannot be opened ({_safe.errno_name(exc)})") from None
+    try:
+        try:
+            pfd = _safe.walk_dirs(root, [".pass"], create=True)
+        except _safe.LinkFound:
+            raise FixtureError("/memory/.pass is a link") from None
+        try:
+            try:
+                raw = _safe.read_at(pfd, "fixtures.json", 16 * 1024 * 1024)
+                listing = json.loads(raw.decode("utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+                listing = {}
+            if not isinstance(listing, dict):
+                listing = {}
+            if entry is None:
+                listing.pop(dest, None)
+            else:
+                listing[dest] = entry
+            _safe.check_leaf(pfd, "fixtures.json", LEDGER_FILE)
+            data = (json.dumps(listing, indent=1, sort_keys=True) + "\n").encode()
+            _safe.replace_at(pfd, "fixtures.json", data)
+        finally:
+            os.close(pfd)
+    finally:
+        os.close(root)
 
 
 class HashIndex:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from unify.memory import safe_paths
 from unify.memory import views as v
 
 
@@ -21,18 +22,18 @@ def test_view_binary():
     )
 
 
-def test_resolve_refuses_escape(tmp_path: Path):
+def test_read_refuses_escape(tmp_path: Path):
     root = tmp_path / "inputs"
     root.mkdir()
     (tmp_path / "secret").write_text("x")
     (root / "link").symlink_to(tmp_path / "secret")
     roots = {"/inputs": root}
+    with pytest.raises(PermissionError, match="'..'"):
+        v.read("/inputs/../secret", roots)
+    with pytest.raises(safe_paths.LinkFound):
+        v.read("/inputs/link", roots)
     with pytest.raises(PermissionError, match="outside the readable roots"):
-        v.resolve("/inputs/../secret", roots)
-    with pytest.raises(PermissionError):
-        v.resolve("/inputs/link", roots)
-    with pytest.raises(PermissionError):
-        v.resolve("/etc/passwd", roots)
+        v.read("/etc/passwd", roots)
 
 
 def test_read_and_grep(tmp_path: Path):
