@@ -60,6 +60,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from ..library_prompts import CANDIDATE_CONTRACT
 from .fork_worker import (
     FORK_JSON,
     HTTP_TIMEOUT_S,
@@ -95,7 +96,7 @@ INSTRUCTION = (
     "What to write:\n"
     "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a general function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
-    "say code worked if it did not.\n"
+    "say code worked if it did not. " + CANDIDATE_CONTRACT + "\n"
     "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "
     'outputs it should give, as a JSON list of objects with "inputs" (the list of arguments) and "expected" '
     "(the return value).\n"

@@ -120,6 +120,16 @@ INPUT_FORMS_LIBRARY: dict[str, str] = {
     "env": "the object through which the request's tools are called",
 }
 
+#: What makes a proposed function one the library's gate can take as it is (the fork's and the helpers' texts
+#: state it): its first parameter in one recorded form, its own shape check, cases from recorded values.
+CANDIDATE_CONTRACT = (
+    "The library takes a function as it is when its first parameter takes one recorded form, "
+    + ", ".join(f"`{k}` ({v})" for k, v in INPUT_FORMS_LIBRARY.items())
+    + ", and it parses that input itself; when it raises `MemoryInputError` (defined in its module) on an input "
+    "of another shape; and when its cases are inputs and outputs recorded here, so they can become its tests. "
+    "A function on an already parsed value (a grid, a list) is kept only once it is wrapped to take the recorded form."
+)
+
 #: The keys of a batch-map row as :func:`.batch_map.build_batch_map` writes them, each with its type and meaning.
 #: The WRITE brief renders this table, and a test checks it against a built row key for key.
 BATCH_ROW_KEYS: tuple[tuple[str, str], ...] = (

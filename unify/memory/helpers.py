@@ -60,6 +60,7 @@ from . import batch_map as _bm
 from . import views as _views
 from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
+from .library_prompts import CANDIDATE_CONTRACT
 from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .tool_spec import GENERAL, ToolSpec, form_of, refusal
@@ -103,7 +104,7 @@ HELPER_BRIEF = (
     "- `stage(path, text)` hands one file to the writer, at one of three kinds of path: `candidates/<name>.py` (a "
     "general function with a docstring), `cases/<name>.json` (the inputs and outputs that function had in the "
     "episodes, from the records) and `notes.md` (lessons stated in general terms, each naming the episode and part "
-    f"it comes from). At most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all. Staging a path again "
+    f"it comes from). {CANDIDATE_CONTRACT.replace('recorded here', 'recorded in the episodes')} At most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all. Staging a path again "
     "replaces it.\n"
     "- `done(summary, claims)` ends your task. `claims` lists what you found, one finding per claim, each with "
     "`sources`: the episode parts it rests on, written `<episode>/<part>` with the part names `overview` lists "
