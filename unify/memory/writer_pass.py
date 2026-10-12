@@ -4253,6 +4253,21 @@ def _touches_client(exc: BaseException) -> bool:
     return False
 
 
+def _status_in_chain(exc: BaseException) -> object:
+    """The HTTP status code of *exc*, or of the first exception it was raised from or during that has one. A client
+    may re-raise a provider's error as a bare exception (unillm does, dropping the code); the original stays in the
+    chain, so the status is still known."""
+    seen: set[int] = set()
+    e: BaseException | None = exc
+    while e is not None and id(e) not in seen:
+        seen.add(id(e))
+        status = getattr(e, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+        e = e.__cause__ or e.__context__
+    return None
+
+
 def _call_failure(exc: BaseException) -> tuple[str, str, str]:
     """``(class name, category, detail)`` of a failed call. The category comes from its type and status code only.
     *detail* is empty for an answer from the provider or the route (an HTTP status, a timeout, a connection or
@@ -4261,7 +4276,7 @@ def _call_failure(exc: BaseException) -> tuple[str, str, str]:
     """
     name = type(exc).__name__
     name = name if _CLASS_NAME.fullmatch(name) else "Exception"
-    status = getattr(exc, "status_code", None)
+    status = _status_in_chain(exc)
     lowered = name.lower()
     if (
         isinstance(status, int)

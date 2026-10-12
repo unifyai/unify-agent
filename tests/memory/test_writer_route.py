@@ -1922,3 +1922,21 @@ def test_a_failure_with_any_client_frame_or_client_cause_keeps_its_text_out():
     except TypeError as exc:
         _, _, detail = writer_pass._call_failure(exc)
     assert detail.endswith(": cannot copy the messages")
+
+
+def test_a_status_dropped_by_a_client_re_raise_is_found_in_the_chain():
+    from unify.memory import writer_pass
+
+    class _APIError(Exception):
+        status_code = 403
+
+    try:
+        try:
+            raise _APIError("benchmark budget refused the call")
+        except _APIError as e:
+            raise Exception(
+                str(e),
+            )  # a client re-raising without the code, as unillm does
+    except Exception as exc:
+        name, category, detail = writer_pass._call_failure(exc)
+    assert (name, category, detail) == ("Exception", "http_403", "")
