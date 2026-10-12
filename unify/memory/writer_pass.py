@@ -1597,6 +1597,21 @@ _MIRROR_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _MIRROR_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
+def _write_in_box(box: Path, rel: str, data: bytes) -> None:
+    """Write *data* to ``box/rel`` from the host without following a link: missing directories are made, and the
+    file is opened with ``O_NOFOLLOW`` (its directories were checked for links by the caller, between the agent's
+    cells, while no cell of the box runs)."""
+    dest = box / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(
+        dest,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o644,
+    )
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
 def _mirror(
     src: Path,
     dst: Path,
@@ -2718,26 +2733,19 @@ class WriterPass:
         data_rel, data = _rv.case_file(item, cases)
         from . import fixtures as _fixtures
 
-        if (
-            not _fixtures._no_link_on_the_way(box, data_rel)
-            or (box / data_rel).is_symlink()
-        ):
-            return _wt.refusal(
-                "replay",
-                "not_run",
-                reason=f"a link is on the way to {data_rel}",
-            )
-        dest = box / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(src)
-        (box / data_rel).parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
-            box / data_rel,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
-            0o644,
-        )
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
+        # both files go into the writer's box, which its cells write: neither is written through a link
+        for target in (rel, data_rel):
+            if (
+                not _fixtures._no_link_on_the_way(box, target)
+                or (box / target).is_symlink()
+            ):
+                return _wt.refusal(
+                    "replay",
+                    "not_run",
+                    reason=f"a link is on the way to {target}",
+                )
+        for target, content in ((rel, src.encode("utf-8")), (data_rel, data)):
+            _write_in_box(box, target, content)
         return "\n".join(
             lines
             + [
