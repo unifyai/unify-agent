@@ -514,6 +514,30 @@ def _agent_tool_json(agent: str) -> list[dict]:
     return agent_profiles.tool_json(agent)
 
 
+#: Tools in code: how long the pass's end waits for its tool handler threads before refusing to start the gate.
+_IN_CODE_IDLE_S = 60.0
+
+
+def _args_sha256(args: object) -> str:
+    """The digest of a call's canonical arguments (sorted keys, compact JSON)."""
+    import hashlib
+
+    text = json.dumps(
+        args,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _lookup_store(gate: object) -> object:
+    """The evidence store behind the gate's episode lookup (an ``EpisodeLookup``'s stores), if it has one."""
+    owner = getattr(getattr(gate, "lookup", None), "__self__", None)
+    return getattr(getattr(owner, "stores", None), "evidence", None)
+
+
 def _messaging_extra(info: dict) -> dict:
     """The event fields of a delegate or record tool call: its ``messaging`` object (``helper`` names the helper a
     delegate or stop is about)."""
@@ -762,6 +786,10 @@ class PassConfig:
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
     # only, on WriterPass.tool_events)
     pass_record_root: str | None = None
+    # UNIFY_TOOLS_IN_CODE=on (library mode): every request carries the one JSON tool execute_code, and the other
+    # tools are Python calls from the agent's cells through the tool channel (tool_channel.py, tool_handlers.py);
+    # off: the JSON tools as before
+    tools_in_code: bool = False
 
 
 @dataclass
@@ -2061,6 +2089,10 @@ class WriterPass:
     state its trigger read.
     """
 
+    #: tools in code: how an agent's persistent interpreter starts (``BoxInterpreter.start``'s signature); None
+    #: uses :class:`unify.common.box_interpreter.BoxInterpreter`
+    interpreter_start: Any = None
+
     def __init__(
         self,
         memory: Repo,
@@ -3204,9 +3236,11 @@ class WriterPass:
         reply: "_wt.Reply | None",
         usage: dict | None,
         extra: dict | None = None,
+        call: int | None = None,
     ) -> None:
         """One ``tool_call`` row of tool-events.jsonl, from the tool layer's own reply (never from transcript text),
-        appended when the call ends; *extra* adds fields (delegate and the record's tools: ``messaging``).
+        appended when the call ends; *extra* adds fields (delegate and the record's tools: ``messaging``). *call*: a
+        number reserved when the cell started (tools in code: the cell's own calls are numbered after it).
         """
         reply = reply or _wt.Reply("")
         args_text = (
@@ -3219,7 +3253,7 @@ class WriterPass:
             # the agent's name on the pass's record
             "name": "curator" if self._role == "curate" else "writer",
             "pass_id": pass_id,
-            "call": len(self.tool_events),
+            "call": len(self.tool_events) if call is None else call,
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "tool": tool if isinstance(tool, str) else None,
             "status": reply.status,
@@ -3244,10 +3278,26 @@ class WriterPass:
                 {"agent": row["agent"], "pass_id": pass_id, "call": row["call"], **o}
                 for o in (audit or {}).get("rows") or []
             ]
-        self.tool_events.append(row)
+        if call is None:
+            self.tool_events.append(row)
+        else:
+            self.tool_events[call] = row
         self._write_event(pass_id, row)
         if opens:
             self._record_box_opens(pass_id, opens)
+
+    def _reserve_event(self) -> int:
+        """Reserve the next ``call`` number for a row written later (a cell's, after its in-code calls)."""
+        self.tool_events.append({"event": "reserved"})
+        return len(self.tool_events) - 1
+
+    def _channel_event(self, pass_id: str, row: dict) -> None:
+        """The tool channel's rows, on the event loop in the order calls end: a ``tool_call`` row gets the pass's
+        next ``call`` number and joins :attr:`tool_events`; a ``channel_closed`` row is written as it is."""
+        if row.get("event") == "tool_call":
+            row["call"] = len(self.tool_events)
+            self.tool_events.append(row)
+        self._write_event(pass_id, row)
 
     def _record_box_opens(self, pass_id: str, rows: list[dict]) -> None:
         """Keep host-stamped open rows on the pass (``self.box_opens``) and append them to
@@ -3368,7 +3418,19 @@ class WriterPass:
     ) -> _wt.Reply:
         """The reader tools (read, grep, overview, read_episode, pool) for *agent*. Each agent has its own read log
         and its own record of parts it was shown in full. A bad argument is answered, never raised; the answer names
-        the domain problem, never an exception type."""
+        the domain problem, never an exception type. ``grep`` runs on a worker thread, the others on the loop."""
+        if name == "grep":
+            return await asyncio.to_thread(self._reader_call, name, args, roots, agent)
+        return self._reader_call(name, args, roots, agent)
+
+    def _reader_call(
+        self,
+        name: str,
+        args: dict,
+        roots: dict[str, Path],
+        agent: str = "writer",
+    ) -> _wt.Reply:
+        """:meth:`_library_tool`'s work, synchronous (an in-code call runs it from the worker pool)."""
         readers = ("read", "grep", "overview", "read_episode", "pool")
         if name not in readers:
             return _wt.general(
@@ -3415,8 +3477,7 @@ class WriterPass:
                 return _wt.Reply(text, paths=({"path": virtual, "mode": mode},))
             where = ({"path": virtual, "mode": "search"},)
             try:
-                text = await asyncio.to_thread(
-                    _views.grep_bounded,
+                text = _views.grep_bounded(
                     str(args.get("pattern", "")),
                     vpath,
                     roots,
@@ -3457,6 +3518,134 @@ class WriterPass:
             shown=shown,
             shared=self._shared,
         )
+
+    def _in_code_start(
+        self,
+        *,
+        pass_id: str,
+        box: Path,
+        inputs: Path,
+        tmp: Path,
+        roots: dict[str, Path],
+        parent: str,
+        uncapped: bool,
+        max_calls: int,
+        remaining: Any,
+        cause: Any,
+        writing: Any,
+        check_file: Any,
+        phase: dict,
+        notes: list,
+        deadline: float,
+        spend: Any,
+        allow: tuple[str, ...],
+        scope: contextlib.AsyncExitStack,
+    ) -> tuple[Any, Any]:
+        """Tools in code: the handlers' pass state (:class:`.tool_handlers.WriterCalls`) and the agent's interpreter
+        session with its channel. The evidence store is readable from the worker pool for the pass; on the way out
+        the session ends first (the box is killed, the channel closed)."""
+        from unify.common.tool_channel import HandlerThreads
+
+        from . import tool_handlers as _th
+
+        agent = "curator" if self._role == "curate" else "writer"
+        ic = _th.WriterCalls(
+            writer=self,
+            agent=agent,
+            pass_id=pass_id,
+            box=box,
+            inputs=inputs,
+            tmp=tmp,
+            roots=roots,
+            parent=parent,
+            uncapped=uncapped,
+            max_calls=max_calls,
+            max_reads=int(self.cfg.max_reads),
+            remaining=remaining,
+            cause=cause,
+            writing=writing,
+            check_file=check_file,
+            phase=phase,
+            notes=notes,
+            deadline_s=self.cfg.deadline_s,
+            deadline=deadline,
+            spend=spend,
+            threads=HandlerThreads(),
+        )
+
+        def binds() -> dict:
+            # the cell box's binds, as _cell gives them (the generated files read-only over the writable box)
+            return {
+                "ro": {inputs: "/inputs"},
+                "rw": {box: "/memory"},
+                "late_ro": (
+                    self._generated_binds(box)
+                    if _library_on(self) and getattr(self, "_library_generated", None)
+                    else {}
+                ),
+                "cwd": "/memory",
+                "fsize": CELL_FSIZE_BYTES,
+            }
+
+        session = _th.InterpreterSession(
+            agent=agent,
+            name=agent,
+            role=self._role,
+            pass_id=pass_id,
+            state=ic,
+            allow=allow,
+            binds=binds,
+            env={"PYTHONPATH": "/inputs:/memory"},
+            roots=roots,
+            deadline=deadline,
+            cell_limit_s=float(self.cfg.cell_timeout_s),
+            on_event=lambda row: self._channel_event(pass_id, row),
+            threads=ic.threads,
+            start=self.interpreter_start,
+        )
+        ic.kill_box = session.kill
+        self._in_code_threads = ic.threads  # helpers' handler threads join the pass's tracker (C4)
+        scope.callback(
+            _th.thread_reads(
+                self.ev,
+                getattr(self.gate, "ev", None),
+                _lookup_store(self.gate),
+            ),
+        )
+        scope.push_async_callback(session.close)
+        return ic, session
+
+    async def _in_code_cell(
+        self,
+        session: Any,
+        ic: Any,
+        code: str,
+        cells: Path,
+        timeout: float,
+        cell_no: int,
+    ) -> str:
+        """One cell in the agent's interpreter, its in-code calls served by the channel; the output as _cell gives
+        it in library mode (the first 8000 bytes, the full output in /outputs/cell-<n>.txt), then the host's notes."""
+        from . import tool_handlers as _th
+
+        note, res = await session.cell(code, cell_no, timeout)
+        audit = getattr(res, "opens", None)
+        self._box_audit = audit if isinstance(audit, dict) else None
+        body, tail = _th.cell_parts(
+            note,
+            res,
+            timeout,
+            session.closed_reason(),
+            ic.finish_text,
+        )
+        shown, full = _head_marked(body)
+        out_dir = cells.parent / "outputs"
+        out_dir.mkdir(exist_ok=True)
+        n = len(list(out_dir.iterdir()))
+        (out_dir / f"cell-{n}.txt").write_text(full)
+        if len(full.encode("utf-8", errors="replace")) > _OUTPUT_CAP:
+            shown += f"\n(full output: /outputs/cell-{n}.txt)"
+        return shown + tail
 
     async def _run_cell(self, *args) -> str:
         """The confined cell on a worker thread; on cancellation, wait for the box before the pass cleans up."""
@@ -3802,6 +3991,8 @@ class WriterPass:
         reads = 0  # library_mode reader calls, against cfg.max_reads
         self._exported_bytes = None
         library = bool(self.cfg.library_mode)
+        # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
+        in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
 
         def cause(code: str) -> None:
             if code not in causes:
@@ -3927,6 +4118,15 @@ class WriterPass:
                 edit_tools=bool(self.cfg.library_mode and self.cfg.edit_tools),
             )
             tool_names = [t["function"]["name"] for t in tools]
+            in_code_allow: tuple[str, ...] = ()
+            if in_code:
+                from . import tool_handlers as _th
+
+                in_code_allow = tuple(n for n in tool_names if n != "execute_code")
+                tools = _th.in_code_json_tools(
+                    "curator" if self._role == "curate" else "writer",
+                )
+                tool_names = [t["function"]["name"] for t in tools]
             if self.cfg.library_mode:
                 # the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (the gate inputs replace previous_gate.json)
@@ -4026,7 +4226,10 @@ class WriterPass:
                 if phase["write_mark"] is None:
                     phase["write_mark"] = charged()
 
-            def commit_and_check(manifest: object) -> tuple[str, GateResult]:
+            def commit_and_check(
+                manifest: object,
+                box: Path = box,
+            ) -> tuple[str, GateResult]:
                 """Library mode: the box as one commit on the parent, and the whole gate on it without merging, with
                 the pass's seed (set from the first candidate the pass commits; Amendment A).
                 """
@@ -4040,7 +4243,7 @@ class WriterPass:
                     seed=pass_seed[0],
                 )
 
-            def check_tests(raw: object) -> str:
+            def check_tests(raw: object, box: Path = box) -> str:
                 """Amendment B: in library mode ``check`` also runs the items' own tests and the gate's drawn inputs
                 (``gate.check``, no merge, nothing written to the evidence store). A refusal is answered with
                 the gate's full result as a head-first view of /inputs/gate/check-<k>.md, which read pages.
@@ -4050,7 +4253,7 @@ class WriterPass:
                     return problem
                 manifest = _with_fixtures(manifest, self._ledger(box))
                 try:
-                    candidate, res = commit_and_check(manifest)
+                    candidate, res = commit_and_check(manifest, box)
                 except (
                     Exception
                 ) as exc:  # noqa: BLE001 - a broken check never ends the pass
@@ -4074,7 +4277,11 @@ class WriterPass:
                 check_files[0] += 1
                 return _views.view(text.encode()) + f"\n(full result: {vpath})"
 
-            def check_file(args: dict, base: ParentSnapshot | str) -> _wt.Reply:
+            def check_file(
+                args: dict,
+                base: ParentSnapshot | str,
+                box: Path = box,
+            ) -> _wt.Reply:
                 """``check`` with the library on: it judges /memory/.pass/manifest.json, the file finish and the gate
                 judge; a ``manifest`` argument is written there first. Every reason the static checks give is saved
                 in /inputs/gate/check-<k>.md and the reply names that file."""
@@ -4123,7 +4330,7 @@ class WriterPass:
                     notes.append(detail)
                     return _wt.Reply(content, "error", None, tuple(where))
                 if content == "ok":
-                    return _wt.Reply(check_tests(manifest), paths=tuple(where))
+                    return _wt.Reply(check_tests(manifest, box), paths=tuple(where))
                 vpath = f"/inputs/gate/check-{check_files[0]}.md"
                 (inputs / "gate").mkdir(exist_ok=True)
                 (inputs / "gate" / f"check-{check_files[0]}.md").write_text(
@@ -4241,6 +4448,29 @@ class WriterPass:
                 mark[0], mark[1] = charged(), time.monotonic()
                 return True
 
+            ic: Any = None  # tools in code: the handlers' pass state and the interpreter session
+            session: Any = None
+            if in_code:
+                ic, session = self._in_code_start(
+                    pass_id=pass_id,
+                    box=box,
+                    inputs=inputs,
+                    tmp=Path(tmp),
+                    roots=roots,
+                    parent=parent,
+                    uncapped=uncapped,
+                    max_calls=max_calls,
+                    remaining=remaining,
+                    cause=cause,
+                    writing=writing,
+                    check_file=check_file,
+                    phase=phase,
+                    notes=notes,
+                    deadline=deadline,
+                    spend=spend,
+                    allow=in_code_allow,
+                    scope=scope,
+                )
             last_prompt: list = [
                 None,
             ]  # the last model call's prompt tokens (compaction_due)
@@ -4372,10 +4602,17 @@ class WriterPass:
                     reply: _wt.Reply | None = None
                     # delegate and the record's tools: the event row's `messaging` object (and the helper's name)
                     event_extra: dict | None = None
+                    event_call: int | None = None  # tools in code: the cell row's reserved number
                     if args is None:
                         reply = _wt.general("bad_arguments", reason=str(content))
                     elif finished:
                         reply = _wt.general("pass_finished")
+                    elif in_code and name != "execute_code":
+                        reply = _wt.general(
+                            "unknown_tool",
+                            name=str(name)[:80],
+                            tools=", ".join(tool_names),
+                        )
                     elif name == "finish":
                         g1, empty = (
                             self._finish_manifest_problem(box)
@@ -4577,13 +4814,58 @@ class WriterPass:
                             1.0,
                             min(float(self.cfg.cell_timeout_s), remaining()),
                         )
-                        content = await self._run_cell(
-                            str(args.get("code", "")),
-                            box,
-                            inputs,
-                            cells,
-                            timeout,
-                        )
+                        if ic is None:
+                            content = await self._run_cell(
+                                str(args.get("code", "")),
+                                box,
+                                inputs,
+                                cells,
+                                timeout,
+                            )
+                        else:
+                            # the cell's in-code calls run through the channel against these counters
+                            event_call = self._reserve_event()
+                            ic.calls, ic.checks, ic.reads, ic.readers = (
+                                calls,
+                                checks,
+                                reads,
+                                readers,
+                            )
+                            ic.stop, ic.finished, ic.summary, ic.base = (
+                                stop,
+                                finished,
+                                summary,
+                                base,
+                            )
+                            ic.finish_text = None
+                            content = await self._in_code_cell(
+                                session,
+                                ic,
+                                str(args.get("code", "")),
+                                cells,
+                                timeout,
+                                event_call,
+                            )
+                            calls, checks, reads, readers = (
+                                ic.calls,
+                                ic.checks,
+                                ic.reads,
+                                ic.readers,
+                            )
+                            stop, finished, summary, base = (
+                                ic.stop,
+                                ic.finished,
+                                ic.summary,
+                                ic.base,
+                            )
+                            if session.stuck and stop is None:
+                                stop = "a tool handler did not end within its deadline"
+                            event_extra = {
+                                "via": "model",
+                                "cell": None,
+                                "args_sha256": _args_sha256(args),
+                                "box_gone": False,
+                            }
                         over_quota = _measure(box)
                         if over_quota is not None:
                             stop = over_quota
@@ -4606,6 +4888,7 @@ class WriterPass:
                         reply,
                         turn_usage,
                         event_extra,
+                        event_call,
                     )
                     turn_usage = None
                 if not tool_calls:
@@ -4627,6 +4910,13 @@ class WriterPass:
                     )
             # the loop has ended: every helper still running ends now, so its row is in the outcome
             await self._close_record()
+            if ic is not None:
+                # no box can write /memory and no tool handler of the pass may run while the gate judges it
+                await session.close()
+                if not await ic.threads.wait_idle(_IN_CODE_IDLE_S):
+                    raise RuntimeError(
+                        "a tool handler of this pass is still running; the gate does not start",
+                    )
             if (
                 not finished
                 and stop is None

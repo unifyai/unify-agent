@@ -940,8 +940,14 @@ def without_defer(manifest: object) -> object:
     )
 
 
-def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
-    """The pool tool over the entry files in *pool_dir* (``/inputs/pool``); decide edits the manifest in *box*."""
+def pool(
+    args: dict,
+    pool_dir: Path,
+    box: Path,
+    write: Callable[[Path, object], None] | None = None,
+) -> Reply:
+    """The pool tool over the entry files in *pool_dir* (``/inputs/pool``); decide edits the manifest in *box*,
+    through *write* when given (in-code calls: a descriptor-relative replace), else :func:`write_manifest`."""
     op = str(args.get("op", ""))
     entries = _entries(Path(pool_dir))
     listed = (path_row("/inputs/pool", "list"),)
@@ -1133,7 +1139,7 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
     else:
         manifest.pop("pool", None)
     try:
-        write_manifest(Path(box), manifest)
+        (write or write_manifest)(Path(box), manifest)
     except OSError as exc:
         return refused(
             "pool",
