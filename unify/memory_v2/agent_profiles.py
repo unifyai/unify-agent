@@ -40,7 +40,17 @@ _BOX_MOUNTS = [
     {"path": "/memory/INDEX.md", "mode": "ro"},
     {"path": "/memory/links.json", "mode": "ro"},
     {"path": "/memory/memory/__init__.py", "mode": "ro"},
+    # host-side only: `read` opens the saved cell outputs; cells cannot open /outputs
+    {"path": "/outputs", "mode": "ro", "via": "read"},
 ]
+
+
+def _fork_tool_reply() -> str:
+    """The one reply every tool call of the fork gets (it writes blocks; no tool runs)."""
+    from .integration.fork_worker import TOOL_REPLY
+
+    return TOOL_REPLY
+
 
 AGENT_PROFILES: tuple[dict, ...] = (
     {
@@ -103,6 +113,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
         # keep the cached prefix; no call is executed, and the instruction says to write blocks instead
         "tools": ["<the actor's tool schemas, not executed>"],
         "tools_executed": False,
+        "exceptions": ["told_about_not_usable: actor tools"],
+        "fixed_reply": _fork_tool_reply(),
         "mounts": [
             {"path": "/usr", "mode": "ro"},
             {"path": "/s", "mode": "ro"},

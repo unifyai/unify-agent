@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -983,7 +984,10 @@ async def _run_helper(
     doc: dict,
 ) -> None:
     resolve = _resolver(ctx)
-    turn = ctx.new_turn(f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}")  # type: ignore[misc]
+    session = f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}"
+    # a factory takes the per-call session label (the live lane) or nothing (scripted turns)
+    takes_session = bool(inspect.signature(ctx.new_turn).parameters)  # type: ignore[arg-type]
+    turn = ctx.new_turn(session) if takes_session else ctx.new_turn()  # type: ignore[misc]
     tools = helper_tools(similar=ctx.similar is not None)
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
