@@ -95,9 +95,16 @@ async def test_no_planted_credential_reaches_the_compaction_or_its_records(monke
         "the conversation after the restart": json.dumps(client.messages, default=str),
         "the loop's events": json.dumps(events, default=str),
     }
+    # the session transcript must exist here, so its check is never vacuous
     session = getattr(client, "_unify_transcript", None)
-    if session is not None and session.path.exists():
-        seen["the session transcript"] = session.path.read_text(encoding="utf-8")
+    assert (
+        session is not None and session.path.exists()
+    ), "no session transcript was written"
+    seen["the session transcript"] = session.path.read_text(encoding="utf-8")
+    assert (
+        SUMMARY in seen["the session transcript"]
+        or "look" in seen["the session transcript"]
+    )
     for where, text in seen.items():
         for planted in PLANTED:
             assert planted not in text, (planted, where)
