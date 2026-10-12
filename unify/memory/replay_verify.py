@@ -31,8 +31,11 @@ recorded at all (``None``) cannot be checked; when no replayed cell has a record
 taken as reproduced.
 
 The equivalence needs no reward signal. A verified instance becomes a case of the item's harness-written test
-(:func:`test_source`): the call's inputs as recorded at line ``a``, and its expected results. Nothing staged or written
-by the model runs on the host.
+(:func:`test_source`): the call's inputs as recorded at line ``a`` go to the item's replay case file
+(:func:`case_file`, ``tests/data/<function>.replay.jsonl``, one line per instance naming its episode, cell and lines),
+which the test reads, and its call and expected results stay in the test. The gate re-verifies a new or changed case
+file by replaying the instances its lines name (:func:`reverify`), so the inputs a test loads from it are recorded
+values. Nothing staged or written by the model runs on the host.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
+from . import fixtures as _fx
 from . import mining_behaviour as _mb
 from .mining import successful
 from .tool_spec import REFUSED
@@ -353,13 +357,19 @@ def verify(
     return out
 
 
+#: At most this many recorded instances of new or changed replay case files are replayed again in one gate run;
+#: past it the files are not judged.
+MAX_REPLAY_REVERIFY = 8
+
 _TEST = '''"""Harness-written: {item} reproduces the recorded instances it replaces."""
 
 import json
+from pathlib import Path
 
 from memory.{pkg}.{mod} import {fn}
 
 CASES = json.loads({cases!r})
+INPUTS = Path(__file__).parent / "data" / {data!r}
 
 
 def _dec(d, frozen=False):
@@ -386,25 +396,136 @@ def _dec(d, frozen=False):
 
 
 def test_{fn}_reproduces_its_recorded_instances():
-    for case in CASES:
+    lines = [json.loads(x) for x in INPUTS.read_text().splitlines() if x.strip()]
+    assert len(lines) == len(CASES), "the replay case file and the test name different instances"
+    for case, line in zip(CASES, lines):
         ns = {{"{fn}": {fn}}}
-        ns.update({{k: _dec(v) for k, v in case["inputs"].items()}})
+        ns.update({{k: _dec(v) for k, v in line["input"].items()}})
         exec(case["call"], ns)
         for name, want in case["expect"].items():
             assert ns[name] == _dec(want), (case["at"], name)
 '''
 
 
+def case_path(item: str) -> str:
+    """The replay case file of *item*: ``memory/<package>/tests/data/<function>.replay.jsonl``."""
+    m = _ITEM.match(item)
+    if not m:
+        raise ValueError(item)
+    return f"memory/{m['pkg']}/tests/data/{m['fn']}{_fx.REPLAY_SUFFIX}"
+
+
+def case_file(item: str, cases: list[dict]) -> tuple[str, bytes]:
+    """(the path in the tree, the bytes) of *item*'s replay case file: per verified case (each with ``episode``,
+    ``cell``, ``lines`` and ``inputs``), ``{"input": inputs, "source": {"episode", "source":
+    "replay:<cell>:<a>-<b>", "slice": null}}``."""
+    rows = []
+    for c in cases:
+        a, b = c["lines"]
+        source = {"episode": str(c["episode"]), "source": f"replay:{int(c['cell'])}:{int(a)}-{int(b)}", "slice": None}
+        rows.append(json.dumps({"input": c["inputs"], "source": source}, sort_keys=True, ensure_ascii=False))
+    return case_path(item), "".join(r + "\n" for r in rows).encode("utf-8")
+
+
 def test_source(item: str, cases: list[dict]) -> tuple[str, str]:
-    """(the test's path in the tree, its source) for *item*'s verified *cases* (each with ``at``)."""
+    """(the test's path in the tree, its source) for *item*'s verified *cases* (each with ``at``); the test reads the
+    inputs from :func:`case_file`, written beside it from the same cases in the same order."""
     m = _ITEM.match(item)
     if not m:
         raise ValueError(item)
     rel = f"memory/{m['pkg']}/tests/test_{m['fn'].lower()}_replay.py"
+    kept = [{k: c[k] for k in ("at", "call", "expect") if k in c} for c in cases]
     return rel, _TEST.format(
         item=item,
         pkg=m["pkg"],
         mod=m["mod"],
         fn=m["fn"],
-        cases=json.dumps(cases, sort_keys=True),
+        cases=json.dumps(kept, sort_keys=True),
+        data=case_path(item).rsplit("/", 1)[1],
     )
+
+
+def _instance(replaces: list, episode: str, at: tuple[int, int, int]) -> dict | None:
+    cell, a, b = at
+    for inst in replaces if isinstance(replaces, list) else []:
+        if (
+            isinstance(inst, dict)
+            and str(inst.get("episode")) == episode
+            and inst.get("cell") == cell
+            and list(inst.get("lines") or []) == [a, b]
+        ):
+            return inst
+    return None
+
+
+def reverify(
+    load: Callable,
+    files: dict[str, bytes],
+    replaces_of: dict[str, list],
+    tree: Path,
+    *,
+    trees: dict[str, Path] | None = None,
+    scratch: Path,
+) -> tuple[dict[str, dict], list[str]]:
+    """Replay again the instances that the new or changed replay case *files* (path -> bytes) name: (path -> its
+    provenance entry, for each file whose every line verifies now with the inputs it holds; reasons). *replaces_of*:
+    each function item's manifest ``replaces``. More than :data:`MAX_REPLAY_REVERIFY` instances in all are not
+    judged (a reason). Reasons name paths, lines, episodes and cells, never a value."""
+    entries: dict[str, dict] = {}
+    reasons: list[str] = []
+    plan = []
+    for path in sorted(files):
+        item = next(
+            (i for i in sorted(replaces_of) if _ITEM.match(i) and case_path(i) == path),
+            None,
+        )
+        if item is None:
+            reasons.append(
+                f"[examples:replay] {path}: no function item lists replaces for this case file; replay writes it "
+                "from an item's replaces",
+            )
+            continue
+        entry = _fx.assembled_entry(files[path])
+        if entry is None or entry.get("kind") != "replay":
+            reasons.append(f"[examples:replay] {path} is not a file of replay case lines")
+            continue
+        inputs = [json.loads(x)["input"] for x in files[path].decode("utf-8").splitlines() if x.strip()]
+        insts = []
+        for n, row in enumerate(entry["lines"], 1):
+            at = _fx.replay_source(row.get("source"))
+            inst = _instance(replaces_of[item], str(row.get("episode")), at) if at else None
+            if inst is None:
+                reasons.append(
+                    f"[examples:replay] {path} line {n} names an instance ({row.get('episode')} "
+                    f"{row.get('source')}) that {item}'s replaces does not list",
+                )
+                break
+            insts.append(inst)
+        else:
+            plan.append((path, item, inputs, insts, entry))
+    total = sum(len(p[3]) for p in plan)
+    if total > MAX_REPLAY_REVERIFY:
+        reasons.append(
+            f"[examples:replay] {total} recorded instances are named by new or changed replay case files "
+            f"({', '.join(p[0] for p in plan)}); at most {MAX_REPLAY_REVERIFY} are replayed again in one pass, so "
+            "they are not judged",
+        )
+        return {}, reasons
+    for path, item, inputs, insts, entry in plan:
+        got = verify(load, item, insts, tree, trees=trees, scratch=scratch)
+        bad = None
+        if len(got) != len(insts):
+            bad = f"[examples:replay] {path}: {len(got)} of {len(insts)} instances were replayed"
+        for n, (g, want) in enumerate(zip(got, inputs), 1):
+            if bad is not None:
+                break
+            verdict_ = str(g.get("verdict", "")).split(":", 1)[0]
+            if verdict_ != "verified":
+                bad = f"[examples:replay] {path} line {n}: its instance does not verify by replay now ({verdict_})"
+            elif _fx.canonical((g.get("case") or {}).get("inputs")) != _fx.canonical(want):
+                bad = f"[examples:replay] {path} line {n}: its inputs differ from the inputs the replay records"
+        if bad is None:
+            entries[path] = entry
+        else:
+            reasons.append(bad)
+    return entries, reasons

@@ -55,6 +55,10 @@ DATA_PATH = re.compile(
     r"(?:[A-Za-z0-9_][A-Za-z0-9._-]*/)*[A-Za-z0-9_][A-Za-z0-9._-]*\Z",
 )
 INPUTS_SUFFIX = ".inputs.jsonl"
+#: A function's replay case file (``tests/data/<function>.replay.jsonl``): the inputs of the recorded instances its
+#: replay verified, re-verified by replay rather than by bytes (:mod:`.replay_verify`).
+REPLAY_SUFFIX = ".replay.jsonl"
+_REPLAY_SOURCE = re.compile(r"replay:(\d{1,9}):(\d{1,9})-(\d{1,9})\Z")
 DRAWN_DIR = "_drawn/"  # reserved under tests/data/ for the gate's appended drawn inputs
 _INDEX = re.compile(r"\d{1,9}\Z")
 
@@ -76,6 +80,16 @@ def inputs_file(item: str) -> str:
     """The function's recorded-inputs file, e.g. ``memory/office/tests/data/payroll.export.inputs.jsonl``."""
     module, name = item.split(":", 1)
     return f"{package_dir(item)}/tests/data/{module.rsplit('.', 1)[1]}.{name}{INPUTS_SUFFIX}"
+
+
+def is_replay_file(path: str) -> bool:
+    return str(path).endswith(REPLAY_SUFFIX)
+
+
+def replay_source(source: object) -> tuple[int, int, int] | None:
+    """``replay:<cell>:<a>-<b>`` as ``(cell, a, b)``; None for any other source."""
+    m = _REPLAY_SOURCE.match(str(source))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def canonical(value: Any) -> str:
@@ -111,7 +125,7 @@ def sources_of(ep: Episode) -> list[str]:
 
 
 def trust_of(source: str) -> int:
-    return 2 if str(source).startswith(("args:", "cell:")) else 1
+    return 2 if str(source).startswith(("args:", "cell:", "replay:")) else 1
 
 
 def _index(text: str, n: int, what: str) -> int:
@@ -353,6 +367,8 @@ def verify(
         return f"{path}: {exc}"
     except (UnicodeDecodeError, ValueError) as exc:
         return f"{path} cannot be read as recorded lines ({type(exc).__name__})"
+    if isinstance(entry, dict) and entry.get("kind") == "replay":
+        return f"{path} is a replay case file; it is verified by replaying its cases, not by its bytes"
     return f"{path} has an unknown provenance kind"
 
 
@@ -384,7 +400,12 @@ def assembled_entry(data: bytes) -> dict | None:
                 "sha256": hashlib.sha256(canonical(got["input"]).encode()).hexdigest(),
             },
         )
-    return {"kind": "assembled", "lines": rows} if rows else None
+    if not rows:
+        return None
+    replay = [replay_source(r.get("source")) is not None for r in rows]
+    if all(replay):
+        return {"kind": "replay", "lines": rows}
+    return {"kind": "assembled", "lines": rows} if not any(replay) else None
 
 
 def _read_plain(path, limit: int | None = None) -> bytes | None:
@@ -558,7 +579,7 @@ def _origins(entry: dict) -> list[tuple[str, str, int, int | None]]:
     if entry.get("kind") == "copy":
         got = one(entry, None)
         return [got] if got else []
-    if entry.get("kind") == "assembled" and isinstance(entry.get("lines"), list):
+    if entry.get("kind") in ("assembled", "replay") and isinstance(entry.get("lines"), list):
         rows = [one(r, n) for n, r in enumerate(entry["lines"], 1)]
         return [r for r in rows if r is not None]
     return []
@@ -703,7 +724,8 @@ def value_views(
         return acc.out
     acc.add(text, "text", origins, part=False)
     ext = _shapes.extension(path)
-    assembled = entry.get("kind") == "assembled"
+    assembled = entry.get("kind") in ("assembled", "replay")
+    replay = entry.get("kind") == "replay"
     if ext in _YAML_EXT:
         return acc.out
     if assembled or ext in _LINES_EXT:
@@ -733,6 +755,11 @@ def value_views(
             acc.add(v, f"line:{n}", who, part=False)
             if assembled and isinstance(v, dict) and "input" in v:
                 acc.add(v["input"], f"line:{n}:input", who, part=False)
+                if replay and isinstance(v["input"], dict):
+                    for param, value in v["input"].items():
+                        got = _replay_value(value)
+                        if got is not _UNNORMAL:
+                            acc.add(got, f"line:{n}:input.{param}", who, part=False)
         _walk(acc, values, origins, per_item)
         return acc.out
     try:
@@ -744,6 +771,60 @@ def value_views(
         return acc.out
     _walk(acc, parsed, origins)
     return acc.out
+
+
+_UNNORMAL = object()
+
+
+def normalise(value: Any, depth: int = 0) -> Any:
+    """*value* as the JSON form an example call's argument digest is taken of: a tuple as a list; a set as the list
+    of its normalised items in canonical order; bytes as ``{"__bytes__": sha256}``; a Decimal as its text; a date as
+    its ISO text; an object with a plain ``__dict__`` as ``{"__type__": name, "vars": ...}`` (depth at most 8). Anything
+    else gives a sentinel the caller treats as no digest."""
+    import datetime as _dt
+    import decimal as _decimal
+
+    if depth > 8:
+        return _UNNORMAL
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        items = [normalise(v, depth + 1) for v in value]
+        return _UNNORMAL if any(i is _UNNORMAL for i in items) else items
+    if isinstance(value, (set, frozenset)):
+        items = [normalise(v, depth + 1) for v in value]
+        if any(i is _UNNORMAL for i in items):
+            return _UNNORMAL
+        return sorted(items, key=canonical)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            got = normalise(v, depth + 1)
+            if not isinstance(k, str) or got is _UNNORMAL:
+                return _UNNORMAL
+            out[k] = got
+        return out
+    if isinstance(value, (bytes, bytearray)):
+        return {"__bytes__": hashlib.sha256(bytes(value)).hexdigest()}
+    if isinstance(value, _decimal.Decimal):
+        return str(value)
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
+    attrs = getattr(value, "__dict__", None)
+    if isinstance(attrs, dict):
+        got = normalise(dict(attrs), depth + 1)
+        return _UNNORMAL if got is _UNNORMAL else {"__type__": type(value).__name__, "vars": got}
+    return _UNNORMAL
+
+
+def _replay_value(encoded: Any) -> Any:
+    """A replay case input (tagged JSON, :func:`.mining_behaviour.enc`) as the normalised value the call receives."""
+    from .mining_behaviour import dec
+
+    try:
+        return normalise(dec(encoded))
+    except (TypeError, ValueError, KeyError, RecursionError):
+        return _UNNORMAL
 
 
 # --- the recorded action behind a fixture -----------------------------------------------------------------------
@@ -810,6 +891,12 @@ def ledger_for(
             out[path] = kept
             continue
         lines = assembled_entry(data) if path.endswith(".jsonl") else None
+        if lines is not None and lines.get("kind") == "replay":
+            notes.append(
+                f"G2 examples: replay case file {path} was not re-verified by replay in this pass; it grounds no "
+                "argument",
+            )
+            continue
         if lines is not None:
             if reverified < MAX_REVERIFY:
                 reverified += 1
