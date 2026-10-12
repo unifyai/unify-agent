@@ -3474,8 +3474,9 @@ class WriterPass:
     ) -> _wt.Reply:
         """The reader tools (read, grep, overview, read_episode, pool) for *agent*. Each agent has its own read log
         and its own record of parts it was shown in full. A bad argument is answered, never raised; the answer names
-        the domain problem, never an exception type. ``grep`` runs on a worker thread, the others on the loop."""
-        if name == "grep":
+        the domain problem, never an exception type. ``grep`` and ``read`` run on a worker thread, the others on the
+        loop."""
+        if name in ("grep", "read"):
             return await asyncio.to_thread(self._reader_call, name, args, roots, agent)
         return self._reader_call(name, args, roots, agent)
 
@@ -3513,12 +3514,7 @@ class WriterPass:
             if name == "read":
                 where = ({"path": virtual, "mode": "read"},)
                 try:
-                    text, mode = await asyncio.to_thread(
-                        _views.read_entry,
-                        vpath,
-                        roots,
-                        offset,
-                    )
+                    text, mode = _views.read_entry(vpath, roots, offset)
                 except _safe.Outside:
                     return _wt.refused("read", "outside_roots", path=vpath[:200])
                 except (_safe.LinkFound, _safe.NotRegular) as exc:
