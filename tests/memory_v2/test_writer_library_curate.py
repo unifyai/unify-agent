@@ -21,7 +21,7 @@ from tests.memory_v2.test_gate_library_mode import (
     ITEM_ID,
     world21,
 )  # noqa: F401 (fixture)
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol, _write, needs_bwrap
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer, _write, needs_bwrap
 
 FIRED = {"overlap:f1": f"overlap (antiunify): {ACCOUNT}, {ITEM_ID}"}
 
@@ -44,7 +44,7 @@ def _state(commit):
 
 def test_a_curate_request_without_library_or_its_state_spends_nothing(tmp_path):
     model = Turns([])
-    mem, ev, writer = _sol(tmp_path, model)  # library_mode off
+    mem, ev, writer = _writer(tmp_path, model)  # library_mode off
     out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c0"))
     assert not out.passed and out.reasons == [
         "curate: needs memory v2.1 and the library state it curates",

@@ -1019,7 +1019,7 @@ async def run_due_passes(
     *state* is the harness state (:class:`.state.State`): its drift channels ride with the pass and are
     cleared once it is recorded; a passed pass clears them from ``suspect``. A pass recorded passed or
     failed advances the trigger's cursor; a pass the run guard holds back stays due. *effort* is the
-    actor's effort unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (``request.sol_effort``); it picks the
+    actor's effort unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (``request.writer_effort``); it picks the
     pass's scale of the allowance cap and its call limit.
 
     With *supervise* (memory v2.1's worker, :class:`.async_pass.Supervisor`), Sol's deadline is the supervisor's

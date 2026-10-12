@@ -361,6 +361,6 @@ def test_writer_and_the_gate_run_pytest_without_bytecode():
     assert re.search(r'"--setenv",\s*"PYTHONDONTWRITEBYTECODE",\s*"1"', confined)
     assert re.search(r'"-p",\s*"no:cacheprovider"', src[src.index("def run_pytest(") :])
     assert (
-        "no:cacheprovider" in writer_pass.SOL_SYSTEM
-        and '"PYTHONDONTWRITEBYTECODE": "1"' in writer_pass.SOL_SYSTEM
+        "no:cacheprovider" in writer_pass.WRITER_SYSTEM
+        and '"PYTHONDONTWRITEBYTECODE": "1"' in writer_pass.WRITER_SYSTEM
     )

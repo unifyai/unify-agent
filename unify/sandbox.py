@@ -2779,7 +2779,7 @@ _FORWARDER_SRC = r"""
 import os, socket, subprocess, sys, threading
 port, sock_path, argv = int(sys.argv[1]), sys.argv[2], sys.argv[3:]
 srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.setsockopt(socket.WRITER_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", port))
 srv.listen(64)
 def pump(a, b):

@@ -1,5 +1,5 @@
 """P1 Task 5 (spec v2.1 §7.3–7.4, P1, P5): the writer's read, grep, read_episode and dismiss tools, head-first cell
-output, and coverage at finish. Built on test_writer_pass's own helpers (``_call``, ``Turns``, ``_sol``): the plan's
+output, and coverage at finish. Built on test_writer_pass's own helpers (``_call``, ``Turns``, ``_writer``): the plan's
 ``_pass``/``_scripted`` sketches do not exist in that file."""
 
 import asyncio
@@ -10,7 +10,7 @@ from unify.memory_v2 import views
 from unify.memory_v2.episodes import Cell, Episode
 from unify.memory_v2.writer_pass import CODE_PASS_CAP, _head_marked, writer_tools
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol, needs_bwrap
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer, needs_bwrap
 
 
 def _episode(eid, cells=(), request=("req",)):
@@ -41,7 +41,7 @@ EPS = {
 
 def _pass(tmp_path, turns, eids=("e1", "e2"), **cfg):
     model = Turns(turns)
-    _, _, writer = _sol(tmp_path, model, library_mode=True, **cfg)
+    _, _, writer = _writer(tmp_path, model, library_mode=True, **cfg)
     writer.load = EPS.__getitem__
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", list(eids), False), "p1"),
@@ -164,7 +164,7 @@ def test_long_cell_output_is_head_first_with_the_full_output_readable(tmp_path):
 
 def test_library_tools_are_unknown_when_off(tmp_path):
     model = Turns([_call("r", "read", {"path": "/inputs"})])
-    _, _, writer = _sol(tmp_path, model)
+    _, _, writer = _writer(tmp_path, model)
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p0"))
     assert (
         model.outputs["r"] == "unknown tool 'read'; use execute_code, check or finish"

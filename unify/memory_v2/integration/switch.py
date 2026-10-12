@@ -658,7 +658,7 @@ LIBRARY_WAIT_SLOT = "UNIFY_MEMORY_LIBRARY_WAIT_SLOT"
 #: Design r5 (lead, 10 Oct): at each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
-#: Design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer, writing staging
+#: Design r5 arm C: ``writer`` runs one Sol analyst per flagged batch episode before the writer, writing staging
 #: (analysts.py); ``off`` (default): none, as built.
 LIBRARY_ANALYSTS = "UNIFY_MEMORY_LIBRARY_ANALYSTS"
 #: The lead, 11 Oct: the candidate pool (pool.py): ``on`` keeps every proposal (staging, S0 clusters, drafts,
@@ -887,9 +887,9 @@ def library_coverage(settings: Any) -> str:
 
 
 def parse_library_analysts(v: Any) -> str:
-    """``UNIFY_MEMORY_LIBRARY_ANALYSTS``: ``off`` (also for empty) or ``sol``."""
+    """``UNIFY_MEMORY_LIBRARY_ANALYSTS``: ``off`` (also for empty) or ``writer``."""
     s = str(v or "").strip().lower() or "off"
-    if s not in ("off", "sol"):
+    if s not in ("off", "writer"):
         raise ValueError(f"{LIBRARY_ANALYSTS} must be off or writer, got {v!r}")
     return s
 

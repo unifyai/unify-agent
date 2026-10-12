@@ -14,7 +14,7 @@ import pytest
 from unify.memory_v2.integration import async_pass as ap
 from unify.memory_v2.writer_pass import _Spend
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_writer_pass import _call, _sol, needs_bwrap
+from tests.memory_v2.test_writer_pass import _call, _writer, needs_bwrap
 from tests.memory_v2.test_writer_library_tools import EPS
 
 
@@ -125,7 +125,7 @@ class _Blocking:
 
 
 async def _cancelled_pass(tmp_path):
-    _, ev, writer = _sol(tmp_path, _Blocking(), library_mode=True)
+    _, ev, writer = _writer(tmp_path, _Blocking(), library_mode=True)
     writer.load = EPS.__getitem__
     # the brief is not under test here (it reads P2's and P4's constants; test_writer_library_brief.py pins it)
     writer._brief_library_mode = lambda: "brief"
@@ -139,7 +139,7 @@ async def _cancelled_pass(tmp_path):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    return ev, sol
+    return ev, writer
 
 
 @needs_bwrap
@@ -175,7 +175,7 @@ async def test_a_cancelled_pass_round_row_holds_the_cancelled_result(tmp_path):
 
 def test_v2_records_a_cancelled_pass_as_before(tmp_path):
     """Off the v2.1 switch, the failed row is v2's byte for byte: no patch and no refused items."""
-    _, ev, writer = _sol(tmp_path, _Blocking())
+    _, ev, writer = _writer(tmp_path, _Blocking())
     writer._cancel_patch = (
         "x" * 64,
         ["memory.text.extra:more"],

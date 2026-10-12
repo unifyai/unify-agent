@@ -260,10 +260,10 @@ def _v2_tools() -> list[dict]:
 
 
 def test_sols_brief_and_tools_at_the_defaults_are_v2s():
-    assert writer_pass.SOL_SYSTEM == _v2_brief()
-    assert writer_pass.sol_system() == _v2_brief()
+    assert writer_pass.WRITER_SYSTEM == _v2_brief()
+    assert writer_pass.writer_system() == _v2_brief()
     assert writer_pass._TOOLS == _v2_tools()
-    assert writer_pass.sol_tools() == _v2_tools()
+    assert writer_pass.writer_tools() == _v2_tools()
 
 
 def _never(eid):

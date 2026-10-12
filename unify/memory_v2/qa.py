@@ -1525,7 +1525,7 @@ def _first_param(tree: Path, item: str) -> str | None:
 # --- the consolidator's brief --------------------------------------------------------------------------------
 
 # Sentences of the base brief that the stage-5 switches change: (switch test, old text, new text). A test keeps
-# every old text present in :data:`.writer_pass.SOL_SYSTEM`, so the brief cannot drift from these rewrites.
+# every old text present in :data:`.writer_pass.WRITER_SYSTEM`, so the brief cannot drift from these rewrites.
 REWRITES: tuple[tuple[str, str, str], ...] = (
     (
         "on",

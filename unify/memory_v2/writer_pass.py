@@ -1002,7 +1002,7 @@ READERS_PER_TURN = 16
 
 
 def _library_on(writer: object) -> bool:
-    """PassConfig.library_mode of *sol*; off when it has no config (tests drive the staging helpers on stand-ins)."""
+    """PassConfig.library_mode of *writer*; off when it has no config (tests drive the staging helpers on stand-ins)."""
     return bool(getattr(getattr(writer, "cfg", None), "library_mode", False))
 
 
@@ -1083,7 +1083,7 @@ class PassConfig:
     # round cost (repair.round_reserve)
     round_reserve_usd: Decimal | None = None
     # memory v2.1 r5: where readers leave staging (<state>/memory-staging; None: a scratch dir in the pass), and
-    # arm C's analysts ("off" or "sol", UNIFY_MEMORY_LIBRARY_ANALYSTS)
+    # arm C's analysts ("off" or "writer", UNIFY_MEMORY_LIBRARY_ANALYSTS)
     staging_root: str | None = None
     analysts: str = "off"
     # r5 (r4 §4): S0 at pass start (its cache folder; None: no S0) and the run's worktree repo (office replays)
@@ -2028,20 +2028,20 @@ class _KeepOnCancel:
     """
 
     def __init__(self, writer: "WriterPass", parent: str, pass_id: str) -> None:
-        self.sol, self.parent, self.pass_id = writer, parent, pass_id
+        self.writer, self.parent, self.pass_id = writer, parent, pass_id
 
     def __enter__(self) -> "_KeepOnCancel":
         return self
 
     def __exit__(self, et, ev, tb) -> bool:
-        live = getattr(self.sol, "_live", None)
+        live = getattr(self.writer, "_live", None)
         if (
             et is not None
             and issubclass(et, asyncio.CancelledError)
-            and self.sol.cfg.library_mode
+            and self.writer.cfg.library_mode
             and live is not None
         ):
-            self.sol._cancel_patch = self.sol._keep_cancelled_work(
+            self.writer._cancel_patch = self.writer._keep_cancelled_work(
                 live[0],
                 live[1],
                 self.parent,
@@ -2524,7 +2524,7 @@ class WriterPass:
         sizes,
         spend,
     ) -> None:
-        """r5 §4: Sol analysts per flagged episode (``analysts == "sol"``; their spend joins the pass's), then each
+        """r5 §4: Sol analysts per flagged episode (``analysts == "writer"``; their spend joins the pass's), then each
         batch episode's staging copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is
         untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run.
         """
@@ -2576,7 +2576,7 @@ class WriterPass:
                     _json_file(Path(inputs) / "s0" / "clusters.json", []),
                     _json_file(Path(inputs) / "s0" / "behaviour.json", {}),
                 )
-        if self.cfg.analysts == "sol":
+        if self.cfg.analysts == "writer":
             flags = {
                 e: _analysts.flagged(ep, self._s0_clustered, self._s0_seen)
                 for e, ep in eps.items()
@@ -4206,7 +4206,7 @@ def unillm_turn(
     model: str,
     effort: str,
     *,
-    origin: str = "memory_v2.sol",
+    origin: str = "memory_v2.writer",
     route: WriterRoute | None = None,
 ) -> ModelTurn:
     """The real model call: one ``generate`` per turn on a unillm client, priced from unillm's LLM events.
@@ -4229,7 +4229,7 @@ def unillm_turn(
     Verifying a real call (Task 13, the first paid pass, under ``PassConfig.max_usd``): with the key in the
     environment, run one pass on a recorded episode with a small ``max_calls``; check that the ``passes`` row
     holds a decimal USD string and no ``note: N unpriced calls`` reason, that it matches the provider's billed amount for origin
-    ``memory_v2.sol``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this
+    ``memory_v2.writer``, and that the unillm log shows ``reasoning_effort`` as configured. No test makes this
     call.
 
     Sol's route (*route*, from ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``): ``None``

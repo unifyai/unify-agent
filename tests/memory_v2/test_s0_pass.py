@@ -10,7 +10,7 @@ from unify.memory_v2 import mining_behaviour, s0_pass
 from unify.memory_v2.episodes import Cell
 from unify.memory_v2.trigger import PassRequest
 from tests.memory_v2.test_mining_behaviour import FILL_A, FILL_B, GRID_A, GRID_B
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import _episode
 
 EPS = {
@@ -85,7 +85,7 @@ def test_s0_failure_does_not_stop_the_pass(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s0_pass, "_as_mining", boom)
     model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-    _, _, writer = _sol(
+    _, _, writer = _writer(
         tmp_path,
         model,
         library_mode=True,
@@ -122,7 +122,7 @@ def test_s0_runs_on_every_pass_when_the_loader_is_bound_to_the_calling_thread(
     outs = []
     for pass_id, batch in (("p1", ["e0"]), ("p2", ["e1"])):
         model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-        _, _, writer = _sol(
+        _, _, writer = _writer(
             tmp_path / pass_id,
             model,
             library_mode=True,
@@ -162,7 +162,7 @@ def test_an_unreadable_history_episode_is_s0s_error_and_the_pass_goes_on(
         return EPS[eid]
 
     model = Turns([_call("c", "read", {"path": "/inputs/batch_map.json"})])
-    _, _, writer = _sol(
+    _, _, writer = _writer(
         tmp_path,
         model,
         library_mode=True,

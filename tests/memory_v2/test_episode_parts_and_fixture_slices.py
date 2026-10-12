@@ -64,7 +64,7 @@ def test_read_episode_parts_answers_with_the_list_and_credits_nothing(tmp_path):
 def test_the_tool_description_names_the_parts_list():
     desc = next(
         t
-        for t in writer_pass.sol_tools(library_mode=True)
+        for t in writer_pass.writer_tools(library_mode=True)
         if t["function"]["name"] == "read_episode"
     )
     assert "'parts' lists the episode's parts" in desc["function"]["description"]

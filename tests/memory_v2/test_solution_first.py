@@ -6,7 +6,7 @@ from unify.memory_v2 import batch_map as bm
 from unify.memory_v2 import library_prompts as pv
 from unify.memory_v2.episodes import Action, Cell, Episode
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 
 
 def _ep(cells, actions):
@@ -97,7 +97,7 @@ def test_overview_without_cells():
 def test_the_overview_credits_the_end_parts_it_shows_in_full(tmp_path):
     ep = _ep(CELLS, ACTIONS)
     model = Turns([_call("o", "read_episode", {"episode": "e1", "part": "overview"})])
-    _, _, writer = _sol(tmp_path, model, library_mode=True, max_calls=5)
+    _, _, writer = _writer(tmp_path, model, library_mode=True, max_calls=5)
     writer.load = {"e1": ep}.__getitem__
     out = asyncio.run(
         writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"),

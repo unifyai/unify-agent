@@ -18,7 +18,7 @@ from tests.memory_v2.test_writer_pass import (
     _ME,
     _never,
     _run,
-    _sol,
+    _writer,
     _write,
     needs_bwrap,
 )
@@ -159,7 +159,12 @@ def test_budget_cut_skips_the_check_and_merges_once(tmp_path):
         ],
         usd="0.30",
     )
-    mem, ev, writer = _sol(tmp_path, model, library_mode=True, max_usd=Decimal("0.70"))
+    mem, ev, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_usd=Decimal("0.70"),
+    )
     calls = _count(writer.gate)
     out = _run(writer)
     # round 0 cost 0.60 of the 0.70 cap: the 0.10 left cannot hold a round, so no check runs
@@ -190,7 +195,7 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
             _call("f", "finish", {"summary": "s"}),
         ],
     )
-    mem, ev, writer = _sol(tmp_path, model, library_mode=True, deadline_s=6.0)
+    mem, ev, writer = _writer(tmp_path, model, library_mode=True, deadline_s=6.0)
     seen = []
 
     def slow_check(parent, candidate, manifest, **kwargs):
@@ -351,7 +356,12 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
         ],
         usd="0.30",
     )
-    mem, ev, writer = _sol(tmp_path, first, library_mode=True, max_usd=Decimal("0.70"))
+    mem, ev, writer = _writer(
+        tmp_path,
+        first,
+        library_mode=True,
+        max_usd=Decimal("0.70"),
+    )
     assert not _run(writer, "p1").passed  # refused at the one merge: a draft
     probe = (
         "import json, os\n"
@@ -396,7 +406,7 @@ def test_library_off_is_v2s_single_gate(tmp_path):
             _call("f", "finish", {"summary": "s"}),
         ],
     )
-    mem, ev, writer = _sol(tmp_path, model)  # PassConfig's default: library_mode off
+    mem, ev, writer = _writer(tmp_path, model)  # PassConfig's default: library_mode off
     calls = _count(writer.gate)
     out = _run(writer)
     assert calls == {"check": 0, "merge": 1}

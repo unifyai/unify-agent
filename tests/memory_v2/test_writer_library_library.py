@@ -1,6 +1,6 @@
 """Sol's box under v2.1 (spec §4, §7.2): the generated helper and index, never committed; no library.json.
 
-P3 Task 7, built on test_writer_pass's own helpers (``Turns``, ``_sol``, ``_run``): the plan's ``_pass``/``_scripted``
+P3 Task 7, built on test_writer_pass's own helpers (``Turns``, ``_writer``, ``_run``): the plan's ``_pass``/``_scripted``
 sketches do not exist there. Amendment C: the generated paths are read-only binds in the writer's cells.
 """
 
@@ -10,7 +10,7 @@ import errno
 
 from tests.memory_v2.test_layout import _tree
 from tests.memory_v2.test_library_helper import _commit, _py
-from tests.memory_v2.test_writer_pass import Turns, _run, _sol, needs_bwrap
+from tests.memory_v2.test_writer_pass import Turns, _run, _writer, needs_bwrap
 from unify.memory_v2.gitio import Repo
 from unify.memory_v2.sandbox_run import PYTHON, run_confined
 from unify.memory_v2.writer_pass import WriterPass, _drop_unchanged
@@ -62,7 +62,7 @@ def test_library_first_message_carries_the_index_and_no_library_json(
         raise AssertionError("library.json is v2's; v2.1 reads the tree")
 
     monkeypatch.setattr(WriterPass, "_stage_context", refuse)
-    _, _, writer = _sol(tmp_path, Turns([]), library_mode=True, max_calls=1)
+    _, _, writer = _writer(tmp_path, Turns([]), library_mode=True, max_calls=1)
     _run(writer)
     first = writer.messages[1]["content"]
     assert "Current library index (/memory/INDEX.md" in first

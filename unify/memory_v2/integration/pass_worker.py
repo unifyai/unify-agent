@@ -63,7 +63,7 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
     try:
         stores = consolidate.open_stores(paths, busy_timeout_s=ap.BUSY_TIMEOUT_S)
         view = ap.StateView.load(paths.state)
-        writer_model = consolidate.sol_settings(SETTINGS).model.split("@", 1)[0]
+        writer_model = consolidate.writer_settings(SETTINGS).model.split("@", 1)[0]
         # P7 Amendment D: the pass's calls are the Sol lane's journal rows in the window the supervisor records
         sup = ap.Supervisor(
             wall_s,

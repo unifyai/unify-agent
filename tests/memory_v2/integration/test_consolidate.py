@@ -581,7 +581,7 @@ def test_an_actor_effort_sets_the_pass_cap_and_calls(
     from unify.settings import SETTINGS
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_EFFORT", "actor")
-    effort = request_mod.sol_effort(
+    effort = request_mod.writer_effort(
         actor,
     )  # Sol follows the actor's effort (the default)
     assert effort == actor
@@ -718,8 +718,8 @@ def test_writer_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch)
     (out,) = _run(stores, "e1", sha)
     notes = [json.loads(n) for n in stores.episodes.notes(sha, ref="costs")]
     assert [(n["purpose"], n["usd"], n["episode"], n["pass_id"]) for n in notes] == [
-        ("sol", "0.0000001", "e1", "e1.p0"),
-        ("sol", "unknown", "e1", "e1.p0"),
+        ("writer", "0.0000001", "e1", "e1.p0"),
+        ("writer", "unknown", "e1", "e1.p0"),
     ]
     assert {n["writer_effort"] for n in notes} == {
         "low",
@@ -728,8 +728,8 @@ def test_writer_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch)
     costs = episode_costs(stores, "e1")
     assert [(c.purpose, c.usd) for c in costs] == [
         ("actor", "0.000123"),
-        ("sol", "0.0000001"),
-        ("sol", "unknown"),
+        ("writer", "0.0000001"),
+        ("writer", "unknown"),
     ]
     assert out.usd == "0.0000001" and out.unknown_cost_calls == 1
 

@@ -386,7 +386,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert "no manifest" in passes[0][2]
     costs = [json.loads(x) for x in episodes.notes(sha, ref="costs")]
     assert [(c["purpose"], c["usd"], c["writer_effort"]) for c in costs] == [
-        ("sol", WRITER_USD, WRITER_EFFORT),
+        ("writer", WRITER_USD, WRITER_EFFORT),
     ]
     events = [json.loads(x) for x in paths.events.read_text().splitlines() if x.strip()]
     assert events == [start, end]

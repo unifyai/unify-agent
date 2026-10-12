@@ -18,7 +18,7 @@ from pathlib import Path
 
 BASE = "9deefbfd1"
 SOURCES = (
-    "unify/memory_v2/writer_pass.py",
+    "unify/memory_v2/sol_pass.py",
     "unify/memory_v2/integration/prompt.py",
     "unify/memory_v2/evidence.py",
     "unify/memory_v2/gate.py",
@@ -68,7 +68,7 @@ def _assigned(tree: ast.Module, name: str) -> ast.expr:
 def extract(repo: Path, base: str = BASE) -> dict:
     full = _git(repo, "rev-parse", f"{base}^{{commit}}").strip()
     src = {p: _git(repo, "show", f"{full}:{p}") for p in SOURCES}
-    writer = ast.parse(src["unify/memory_v2/writer_pass.py"])
+    writer = ast.parse(src["unify/memory_v2/sol_pass.py"])
     tools = ast.literal_eval(_Templates().visit(_assigned(writer, "_TOOLS")))
     first = None
     for n in ast.walk(writer):

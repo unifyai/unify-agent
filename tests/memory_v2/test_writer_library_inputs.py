@@ -98,10 +98,10 @@ def test_export_blobs_uncapped_when_none(tmp_path: Path):
 
 
 def _staged(tmp_path: Path, **cfg) -> Path:
-    from tests.memory_v2.test_writer_pass import _sol
+    from tests.memory_v2.test_writer_pass import _writer
     from unify.memory_v2.trigger import PassRequest
 
-    _, _, writer = _sol(tmp_path, None, **cfg)
+    _, _, writer = _writer(tmp_path, None, **cfg)
     writer.load = lambda e: _ep()
     inputs = tmp_path / "inputs"
     writer._stage_inputs(PassRequest("incremental", "svc", ["e1"], False), inputs)

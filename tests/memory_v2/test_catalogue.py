@@ -813,7 +813,7 @@ def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
     per_function = (catalogue.estimate_tokens(readme) - 150) / 800
     assert 30 < per_function < 60  # the README grows by about 40 tokens a function
     text = catalogue.readme_for_writer(tree)
-    budget = catalogue.SOL_README_BUDGET_TOKENS
+    budget = catalogue.WRITER_README_BUDGET_TOKENS
     assert catalogue.estimate_tokens(text) <= budget
     assert "compact view" in text and "help(env.<channel>.<function>)" in text
     assert (

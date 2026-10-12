@@ -429,7 +429,7 @@ class ProductionSettings(BaseSettings):
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
     UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD: str = ""
-    # Memory v2.1 design r5 arm C: ``sol`` runs one Sol analyst per flagged batch episode before the writer (staging);
+    # Memory v2.1 design r5 arm C: ``writer`` runs one Sol analyst per flagged batch episode before the writer (staging);
     # ``off`` (default): none.
     UNIFY_MEMORY_LIBRARY_ANALYSTS: str = "off"
     # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo

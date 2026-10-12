@@ -46,7 +46,7 @@ def test_off_settings_brief_and_tools_are_v2s():
     s = tc._settings()
     s.UNIFY_MEMORY_V2_E = ""
     s.UNIFY_MEMORY_LIBRARY_E = 5  # read only under v2.1
-    assert consolidate.sol_settings(s).experience_budget == 150000
+    assert consolidate.writer_settings(s).experience_budget == 150000
     assert PassConfig().deadline_s == 900.0 and PassConfig().library_mode is False
     check = next(t for t in writer_tools() if t["function"]["name"] == "check")[
         "function"

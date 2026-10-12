@@ -4,11 +4,11 @@ Two sources, one row shape (:class:`..episodes.CostRow`):
 
 * :class:`CostListener`, registered once per process with ``unillm.add_llm_event_listener``
   (:func:`install`), records the request's own calls while it is active (the CLI runs one request per
-  process). The purpose comes from the call's origin tag: Sol's calls (origin ``memory_v2.sol`` or
-  ``memory_v2.sol.<more>``) are
+  process). The purpose comes from the call's origin tag: Sol's calls (origin ``memory_v2.writer`` or
+  ``memory_v2.writer.<more>``) are
   skipped, because the pass records its own through :func:`recording_turn`; an origin containing
   ``embed`` is ``embedding``; every other call is ``actor``.
-* :func:`recording_turn` wraps Sol's model turn and appends one ``sol`` row per turn.
+* :func:`recording_turn` wraps Sol's model turn and appends one ``writer`` row per turn.
 
 Money is a plain decimal string (never an exponent). A cost that is missing, not a finite non-negative
 number, or in any other form (``"x+unknown"``) is ``"unknown"``; an unknown cost is never zero. Token
@@ -27,7 +27,7 @@ from ..episodes import CostRow
 from ..writer_pass import ModelTurn
 
 UNKNOWN = "unknown"
-WRITER_ORIGIN = "memory_v2.sol"
+WRITER_ORIGIN = "memory_v2.writer"
 
 __all__ = [
     "WRITER_ORIGIN",
@@ -144,7 +144,7 @@ def install() -> CostListener:
 
 
 def recording_turn(turn: ModelTurn, rows: list[CostRow], model: str) -> ModelTurn:
-    """*turn*, appending one ``sol`` row per call to *rows*; a raising call appends ``unknown`` and re-raises.
+    """*turn*, appending one ``writer`` row per call to *rows*; a raising call appends ``unknown`` and re-raises.
 
     The turn's own return value is passed through unchanged, so the pass's spend accounting is the same
     with or without the wrapper.
@@ -156,9 +156,9 @@ def recording_turn(turn: ModelTurn, rows: list[CostRow], model: str) -> ModelTur
         except (
             BaseException
         ):  # cancellation included: the call may still have cost money
-            rows.append(CostRow("sol", model, None, None, UNKNOWN))
+            rows.append(CostRow("writer", model, None, None, UNKNOWN))
             raise
-        rows.append(CostRow("sol", model, None, None, money(usd)))
+        rows.append(CostRow("writer", model, None, None, money(usd)))
         return msg, usd
 
     return recorded

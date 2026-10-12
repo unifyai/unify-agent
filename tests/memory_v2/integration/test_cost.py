@@ -55,8 +55,8 @@ def test_nothing_is_recorded_while_inactive():
 def test_writer_origin_is_skipped_and_embedding_is_its_own_purpose():
     lis = CostListener()
     lis.activate()
-    lis(_event(0.5, origin="memory_v2.sol"))
-    lis(_event(0.5, origin="memory_v2.sol.pass"))
+    lis(_event(0.5, origin="memory_v2.writer"))
+    lis(_event(0.5, origin="memory_v2.writer.pass"))
     lis(_event(0.0625, origin="memory_v2.solar"))  # not Sol's origin
     lis(_event(0.25, origin="SemanticSearch.embed_query"))
     lis(_event(0.125, origin=None))
@@ -112,8 +112,8 @@ def test_recording_turn_appends_one_writer_row_per_turn_and_unknown_on_error():
     with pytest.raises(RuntimeError):
         asyncio.run(wrapped([], []))
     assert rows == [
-        CostRow("sol", "openai/gpt-6-sol", None, None, "0.01"),
-        CostRow("sol", "openai/gpt-6-sol", None, None, "unknown"),
+        CostRow("writer", "openai/gpt-6-sol", None, None, "0.01"),
+        CostRow("writer", "openai/gpt-6-sol", None, None, "unknown"),
     ]
 
 
@@ -124,7 +124,7 @@ def test_recording_turn_never_copies_the_r22_form_into_a_row():
     rows: list[CostRow] = []
     _, usd = asyncio.run(recording_turn(turn, rows, "m")([], []))
     assert usd == "0.2+unknown"  # passed through unchanged to the pass
-    assert rows == [CostRow("sol", "m", None, None, "unknown")]
+    assert rows == [CostRow("writer", "m", None, None, "unknown")]
 
 
 def test_install_is_idempotent(monkeypatch):

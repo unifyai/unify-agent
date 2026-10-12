@@ -17,12 +17,12 @@ from unify.memory_v2.integration.request import (
 )
 from unify.memory_v2.writer_pass import _library_trailers, writer_system
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import EPS
 
 
 def _finishing_pass(tmp_path, **cfg):
-    _, _, writer = _sol(
+    _, _, writer = _writer(
         tmp_path,
         Turns([_call("f", "finish", {"summary": "x"})]),
         **cfg,
@@ -31,7 +31,7 @@ def _finishing_pass(tmp_path, **cfg):
     asyncio.run(
         writer.run(PassRequest("incremental", "svc", ["e1", "e2"], False), "b1"),
     )
-    return sol
+    return writer
 
 
 def _briefs_integrated():
@@ -66,7 +66,7 @@ def test_library_system_message_is_the_write_brief(tmp_path):
 
 def test_a_curate_pass_gets_the_curate_brief(tmp_path):
     _briefs_integrated()
-    _, _, writer = _sol(tmp_path, Turns([]), library_mode=True)
+    _, _, writer = _writer(tmp_path, Turns([]), library_mode=True)
     writer.cfg.role = "curate"  # P6's PassConfig field
     assert writer._brief_library_mode() == pv.curate_brief_now()
 

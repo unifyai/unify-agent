@@ -588,7 +588,7 @@ def test_unillm_turn_prices_its_own_events_without_a_model_call(
             # delivered to the context-local hook only (as unillm does), never to process-wide listeners
             hook = get_llm_event_hook()
             for c in costs:  # e.g. a postprocessing retry emits a second event
-                hook(LLMEvent(request={}, provider_cost=c, origin="memory_v2.sol"))
+                hook(LLMEvent(request={}, provider_cost=c, origin="memory_v2.writer"))
             hook(LLMEvent(request={}, provider_cost=9.0, origin="elsewhere"))
             self.messages = [
                 *messages,
@@ -609,7 +609,7 @@ def test_unillm_turn_prices_its_own_events_without_a_model_call(
     )
     assert built == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.sol",
+        "origin": "memory_v2.writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -634,7 +634,7 @@ class Turns:
         return _call("fin", "finish", {"summary": "done"}), self.usd
 
 
-def _sol(tmp_path, model, **cfg):
+def _writer(tmp_path, model, **cfg):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     gate = Gate(mem, ev, BlobStore(tmp_path / "b"))
@@ -647,7 +647,7 @@ def _sol(tmp_path, model, **cfg):
         model_turn=model,
         config=PassConfig(**cfg),
     )
-    return mem, ev, sol
+    return mem, ev, writer
 
 
 def _run(writer, pass_id="px"):
@@ -691,7 +691,7 @@ def test_hostile_cells_and_arguments_never_raise_on_the_host(tmp_path):
         ),
     ]
     model = Turns(calls)
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
     out = _run(writer)
     assert model.outputs["big"].strip() == "BIG 1"
     assert "null bytes" in model.outputs["nul"]
@@ -717,7 +717,7 @@ def test_chmod_zero_entries_are_unlocked_measured_and_mirrored(tmp_path):
         "os.makedirs('/memory/.pass')\n"
         "open('/memory/.pass/manifest.json', 'w').write('{}')\n"
     )
-    mem, ev, writer = _sol(tmp_path, Script([code]))
+    mem, ev, writer = _writer(tmp_path, Script([code]))
     out = _run(writer)
     assert not out.passed  # the gate still decides; nothing crashed on the host
     assert not any(
@@ -753,7 +753,7 @@ def test_chmod_zero_entries_are_unlocked_measured_and_mirrored(tmp_path):
 def test_write_quota_refuses_the_pass_without_a_commit(tmp_path, code, why):
     later = _write("/memory/.pass/manifest.json", json.dumps(MAN))
     model = Script([code, later])
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
     parent = mem.head()
     out = _run(writer)
     assert not out.passed and out.commit is None and out.calls == 1
@@ -772,7 +772,7 @@ def test_cell_file_size_is_limited_below_run_confineds(tmp_path):
 
     code = "import resource\n" "print(resource.getrlimit(resource.RLIMIT_FSIZE)[0])\n"
     model = Script([code])
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
     _run(writer)
     assert model.outputs["c1"].strip() == str(CELL_FSIZE_BYTES)
 
@@ -808,7 +808,7 @@ def test_calls_after_finish_are_skipped_and_missing_ids_are_synthesised(tmp_path
         ],
     }
     model = Turns([turn])
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
     out = _run(writer)
     # the list the model was last given is the pass's transcript, final tool replies included
     tool_msgs = [m for m in model.seen if m.get("role") == "tool"]
@@ -828,7 +828,7 @@ def test_pass_deadline_stops_a_slow_model(tmp_path):
             await asyncio.sleep(0.4)
             return {"role": "assistant", "content": "thinking"}, "0.01"
 
-    mem, ev, writer = _sol(tmp_path, Slow(), max_calls=40, deadline_s=1.0)
+    mem, ev, writer = _writer(tmp_path, Slow(), max_calls=40, deadline_s=1.0)
     out = _run(writer)
     assert 2 <= out.calls <= 4
     assert any("pass deadline of 1.0 s reached" in r for r in out.reasons), out.reasons
@@ -842,7 +842,7 @@ def test_cancelled_pass_is_recorded(tmp_path):
         started.set()
         await asyncio.sleep(3600)
 
-    mem, ev, writer = _sol(tmp_path, hang)
+    mem, ev, writer = _writer(tmp_path, hang)
 
     async def main():
         task = asyncio.create_task(
@@ -873,7 +873,7 @@ def test_an_unreadable_memory_root_is_unlocked_and_measured(tmp_path):
         "os.chmod('/memory/env/venmo', 0)\n"
         "os.chmod('/memory', 0)\n"
     )
-    mem, ev, writer = _sol(tmp_path, Script([code]))
+    mem, ev, writer = _writer(tmp_path, Script([code]))
     out = _run(writer)
     assert not out.passed and ev.pass_exists("px")
     cand = ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
@@ -889,7 +889,7 @@ def test_an_unreadable_memory_root_is_unlocked_and_measured(tmp_path):
 @needs_bwrap
 def test_a_parsable_but_deep_manifest_is_refused_before_the_gate(tmp_path):
     deep = json.dumps({"items": [[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]})
-    mem, ev, writer = _sol(
+    mem, ev, writer = _writer(
         tmp_path,
         Script([_write("/memory/.pass/manifest.json", deep)]),
     )
@@ -911,7 +911,7 @@ def test_quota_cannot_be_hidden_under_an_unreadable_directory(tmp_path, mode):
         f"os.chmod('/memory/hide', {mode})\n"
     )
     model = Script([code])
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
     parent = mem.head()
     out = _run(writer)
     assert not out.passed and out.commit is None and out.calls == 1
@@ -949,7 +949,7 @@ def test_pass_notes_reach_the_recorded_row_on_the_gate_path(tmp_path):
                 return _call("w", "execute_code", {"code": code}), "unknown"
             raise RuntimeError("provider down")
 
-    mem, ev, writer = _sol(tmp_path, Model())
+    mem, ev, writer = _writer(tmp_path, Model())
     out = _run(writer)
     assert ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
         0
@@ -1064,7 +1064,7 @@ def test_channel_folders_exist_for_exactly_the_pass_channels_and_hold_no_file(tm
 
 def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_path):
     model = Turns([_checks("k", ["{", "{}", "{}", "{}", "{}", "{}"])])
-    mem, ev, writer = _sol(tmp_path, model, max_calls=20)
+    mem, ev, writer = _writer(tmp_path, model, max_calls=20)
     out = _run(writer)
     assert model.outputs["k1"].startswith("manifest: not valid JSON"), model.outputs[
         "k1"
@@ -1074,7 +1074,7 @@ def test_check_calls_are_bounded_per_pass_and_count_against_the_call_cap(tmp_pat
     assert out.calls == 2 + 5 and out.reasons == ["no manifest"]
     # a check is a call: the cap stops checks too
     model = Turns([_checks("c", ["{}"] * 4)])
-    mem, ev, writer = _sol(tmp_path / "capped", model, max_calls=3)
+    mem, ev, writer = _writer(tmp_path / "capped", model, max_calls=3)
     out = _run(writer, "py")
     # the cap ends the pass with no further model turn, so the replies are read from the message list
     # the model was given (the pass appends to it), not from what a next turn would have recorded
@@ -1214,7 +1214,7 @@ def _store_backed(tmp_path, model, **cfg):
         model_turn=model,
         config=PassConfig(**cfg),
     )
-    return mem, ev, sol
+    return mem, ev, writer
 
 
 _MISPLACED = {
@@ -1241,7 +1241,7 @@ def test_check_with_an_item_returns_the_gates_reasons_on_the_stores_thread(tmp_p
 
 def test_check_is_refused_when_too_little_of_the_deadline_is_left(tmp_path):
     model = Turns([_checks("k", ["{}"])])
-    mem, ev, writer = _sol(tmp_path, model, deadline_s=30.0)
+    mem, ev, writer = _writer(tmp_path, model, deadline_s=30.0)
     out = _run(writer)
     assert (
         model.outputs["k1"] == "not run: too little time left before the pass deadline"
@@ -1254,7 +1254,7 @@ def test_a_check_error_shows_its_type_only_and_the_detail_stays_on_the_host(
     monkeypatch,
 ):
     model = Turns([_checks("k", ["{}"])])
-    mem, ev, writer = _sol(tmp_path, model)
+    mem, ev, writer = _writer(tmp_path, model)
 
     def broken(*a, **kw):
         raise OSError("cannot read /tmp/memv2-check-host/tree/x")

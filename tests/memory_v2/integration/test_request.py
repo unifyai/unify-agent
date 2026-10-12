@@ -351,7 +351,7 @@ def test_without_jsonl_the_driver_gets_no_emitter(mv2):
 
 
 def test_finish_never_raises_and_logs_a_failed_pass(mv2):
-    mv2.fakes.passes_raise = RuntimeError("sol fell over")
+    mv2.fakes.passes_raise = RuntimeError("writer fell over")
     run = _begin(mv2, "hi")
     _transcript(run)
     progress, _ = _finish(mv2, run)

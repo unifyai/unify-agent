@@ -194,7 +194,7 @@ def test_a_tree_gets_the_kit_only_when_its_tests_use_it(tmp_path):
     assert (tmp_path / "k3/blobs" / sha).read_bytes() == b"recorded"
 
 
-def _sol(tmp_path, qa, store):
+def _writer(tmp_path, qa, store):
     ep = _ep(episode_id="e9", actions=[])
     return SimpleNamespace(
         gate=SimpleNamespace(blobs=store, qa=qa),
@@ -220,7 +220,7 @@ def test_sols_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(tmp_pa
         "on-plain": (QAConfig(replay=True), plain, True),
     }
     for name, (qa, tree, kit) in cases.items():
-        self, req = _sol(tmp_path, qa, store)
+        self, req = _writer(tmp_path, qa, store)
         inputs = tmp_path / name
         WriterPass._stage_inputs(self, req, inputs, tree)
         lab = inputs / "memlab"

@@ -16,7 +16,7 @@ from tests.memory_v2.test_gate_library_mode import (
 )  # noqa: F401 (a fixture)
 from tests.memory_v2.test_pool import EMPTY, INDEX, _defer, _finish_with, _Stores
 from unify.memory_v2.episodes import Cell
-from tests.memory_v2.test_writer_pass import _call, _sol
+from tests.memory_v2.test_writer_pass import _call, _writer
 from tests.memory_v2.test_writer_library_tools import EPS, _episode, _pass
 
 # --- (a) the open index in the first message ------------------------------------------------------------------
@@ -236,7 +236,7 @@ ALL_INPUTS = (pv.STAGING_INPUT, pv.S0_INPUT, pv.POOL_INPUT)
 
 def _brief_of(tmp_path, **cfg):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    _, _, writer = _sol(tmp_path, None, library_mode=True, **cfg)
+    _, _, writer = _writer(tmp_path, None, library_mode=True, **cfg)
     return writer._brief_library_mode()
 
 

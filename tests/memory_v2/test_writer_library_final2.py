@@ -128,10 +128,10 @@ def test_an_empty_manifest_at_finish_records_nothing_to_store(tmp_path, monkeypa
 
 
 def test_off_finish_is_unchanged(tmp_path):
-    from tests.memory_v2.test_writer_pass import _run, _sol
+    from tests.memory_v2.test_writer_pass import _run, _writer
 
     model = Turns([_call("f", "finish", {"summary": "s"})])
-    _, _, writer = _sol(tmp_path, model)  # library_mode off
+    _, _, writer = _writer(tmp_path, model)  # library_mode off
     out = _run(writer)
     assert (
         "f" not in model.outputs

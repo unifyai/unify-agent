@@ -7,7 +7,7 @@ import os
 from unify.memory_v2 import analysts, staging
 from unify.memory_v2.episodes import Cell
 from unify.memory_v2.trigger import PassRequest
-from tests.memory_v2.test_writer_pass import Turns, _call, _sol
+from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import _episode
 
 
@@ -144,7 +144,7 @@ def test_the_pass_lists_each_episodes_staging_in_the_batch_map(tmp_path):
             _call("f", "read", {"path": "/inputs/staging/e2/candidates/f.py"}),
         ],
     )
-    _, _, writer = _sol(
+    _, _, writer = _writer(
         tmp_path,
         model,
         library_mode=True,

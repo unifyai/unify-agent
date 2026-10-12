@@ -1,7 +1,7 @@
 """Sol's own route: ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``.
 
 Unset, Sol's call is built as shipped. Both set, it goes to that base URL with that token and carries
-``X-Unify-Call-Kind: memory_v2.sol``. One set, or a value in a wrong form, starts no pass. Neither name reaches a
+``X-Unify-Call-Kind: memory_v2.writer``. One set, or a value in a wrong form, starts no pass. Neither name reaches a
 cell's environment or Sol's box, and no repr, str, log line or error shows the token.
 
 Credentials here are placeholders, and even those are compared by digest and checked through booleans computed
@@ -141,7 +141,7 @@ def test_unset_route_builds_the_shipped_call(monkeypatch, actor_gateway):
     # the client and the generate call exactly as at 9deefbfd1: no header, no route
     assert built["client"] == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.sol",
+        "origin": "memory_v2.writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -156,9 +156,9 @@ def test_unset_route_builds_the_shipped_call(monkeypatch, actor_gateway):
 
 
 def test_unset_settings_give_no_route():
-    cfg = consolidate.sol_settings(SimpleNamespace())
+    cfg = consolidate.writer_settings(SimpleNamespace())
     assert cfg.route is None
-    cfg = consolidate.sol_settings(
+    cfg = consolidate.writer_settings(
         SimpleNamespace(
             UNIFY_MEMORY_V2_WRITER_BASE_URL="  ",
             UNIFY_MEMORY_V2_WRITER_TOKEN=SecretStr(""),
@@ -175,7 +175,7 @@ def test_settings_default_to_no_route(monkeypatch):
     s = ProductionSettings()
     assert s.UNIFY_MEMORY_V2_WRITER_BASE_URL == ""
     assert s.UNIFY_MEMORY_V2_WRITER_TOKEN.get_secret_value() == ""
-    assert consolidate.sol_settings(s).route is None
+    assert consolidate.writer_settings(s).route is None
 
 
 # --- both set: Sol's route --------------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
         event = LLMEvent(
             request=dict(transport),
             provider_cost=cost,
-            origin="memory_v2.sol",
+            origin="memory_v2.writer",
         )
         # unillm calls the scoped hook before any process-wide listener
         get_llm_event_hook()(event)
@@ -213,7 +213,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     assert msg["content"] == "ok" and got == usd
     assert built["client"] == {
         "model": "openai/gpt-6-sol@openrouter",
-        "origin": "memory_v2.sol",
+        "origin": "memory_v2.writer",
         "reasoning_effort": "low",
         "stateful": True,
     }
@@ -223,7 +223,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     t = seen["transport"]
     assert t["api_base"] == WRITER_BASE
     assert t["api_key"] == _digest(WRITER_TOKEN)  # Sol's token, not the actor's key
-    assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.sol"}
+    assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.writer"}
     # pricing as shipped: the request still asks the OpenRouter API for its charged cost
     assert t["extra_body"]["usage"]["include"] is True
     # the event bus never receives the token
@@ -242,7 +242,7 @@ def test_a_call_that_misses_the_route_fails_the_turn(monkeypatch, restore_unillm
             LLMEvent(
                 request={"api_base": ACTOR_BASE},
                 provider_cost=0.01,
-                origin="memory_v2.sol",
+                origin="memory_v2.writer",
             ),
         )
 
@@ -262,13 +262,13 @@ def test_a_forged_header_does_not_select_the_route(actor_gateway, restore_unillm
     allow-list whatever headers arrive, so a cell that forges the header reaches nothing new either.
     """
     writer_pass._install_writer_gateway()
-    t = _redacted(_prepare(extra_headers={"X-Unify-Call-Kind": "memory_v2.sol"}))
+    t = _redacted(_prepare(extra_headers={"X-Unify-Call-Kind": "memory_v2.writer"}))
     assert t["api_base"] == ACTOR_BASE
     assert t["api_key"] == _digest(ACTOR_KEY)
 
 
 def test_both_set_gives_the_route():
-    cfg = consolidate.sol_settings(
+    cfg = consolidate.writer_settings(
         SimpleNamespace(
             UNIFY_MEMORY_V2_WRITER_BASE_URL=WRITER_BASE + "/",
             UNIFY_MEMORY_V2_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
@@ -281,7 +281,7 @@ def test_both_set_gives_the_route():
 
 def test_the_route_needs_an_openrouter_endpoint():
     with pytest.raises(ValueError, match="@openrouter"):
-        consolidate.sol_settings(
+        consolidate.writer_settings(
             SimpleNamespace(
                 UNIFY_MEMORY_V2_WRITER_MODEL="anthropic/claude@anthropic",
                 UNIFY_MEMORY_V2_WRITER_BASE_URL=WRITER_BASE,
@@ -442,7 +442,7 @@ def test_settings_never_refuse_or_echo_the_two_values(monkeypatch):
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_TOKEN", unsendable)
     s = ProductionSettings()  # loads
     with pytest.raises(ValueError) as info:
-        consolidate.sol_settings(s)
+        consolidate.writer_settings(s)
     text = str(info.value)
     leaked = "pass@" in text or "placeholder" in text
     assert not leaked
@@ -457,13 +457,13 @@ def test_the_token_never_shows_in_repr_str_dump_or_log(monkeypatch, caplog):
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_BASE_URL", WRITER_BASE)
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_TOKEN", WRITER_TOKEN)
     s = ProductionSettings()
-    route = consolidate.sol_settings(s).route
+    route = consolidate.writer_settings(s).route
     assert route is not None
     held = _digest(s.UNIFY_MEMORY_V2_WRITER_TOKEN.get_secret_value()) == _digest(
         WRITER_TOKEN,
     )
     assert held
-    log = logging.getLogger("tests.memory_v2.sol_route")
+    log = logging.getLogger("tests.memory_v2.writer_route")
     with caplog.at_level(logging.DEBUG):
         log.info("settings %r %s", s, s)
         log.info("route %r %s token %s", route, route, s.UNIFY_MEMORY_V2_WRITER_TOKEN)
@@ -549,7 +549,7 @@ def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
         messages: list = []
 
         async def generate(self, **kw):
-            seen["sol"] = _redacted(_prepare(extra_headers=kw.get("extra_headers")))
+            seen["writer"] = _redacted(_prepare(extra_headers=kw.get("extra_headers")))
             gates["in"].set()
             await gates["out"].wait()
             seen["writer_after"] = _redacted(_prepare())
@@ -600,8 +600,8 @@ def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
 
     asyncio.run(scenario())
 
-    assert _is_writer(seen["sol"]) and _is_writer(seen["writer_after"])
-    assert seen["sol"]["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.sol"}
+    assert _is_writer(seen["writer"]) and _is_writer(seen["writer_after"])
+    assert seen["writer"]["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.writer"}
     others = {
         k: _is_actor(seen[k]) for k in ("actor", "served", "thread", "executor", "main")
     }
@@ -731,8 +731,8 @@ def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_ow
     assert len(real_transport.sent) == 1
     writer = real_transport.sent[0]
     assert _is_writer(writer)
-    assert writer["extra_headers"].get("X-Unify-Call-Kind") == "memory_v2.sol"
-    writer_events = [e for e in listener if e["origin"] == "memory_v2.sol"]
+    assert writer["extra_headers"].get("X-Unify-Call-Kind") == "memory_v2.writer"
+    writer_events = [e for e in listener if e["origin"] == "memory_v2.writer"]
     assert writer_events and all(
         not e["has_key"] and e["api_base"] == WRITER_BASE for e in writer_events
     )
@@ -751,7 +751,7 @@ def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_ow
     assert len(real_transport.sent) == 2
     after = real_transport.sent[1]
     assert _is_actor(after)
-    assert after["extra_headers"].get("X-Unify-Call-Kind") != "memory_v2.sol"
+    assert after["extra_headers"].get("X-Unify-Call-Kind") != "memory_v2.writer"
 
 
 def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
@@ -803,7 +803,7 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
     out = asyncio.run(scenario())
     assert out["cancelled"] and out["late"] and out["route_after"] is None
     assert len(real_transport.sent) == 1 and _is_writer(real_transport.sent[0])
-    writer_events = [e for e in listener if e["origin"] == "memory_v2.sol"]
+    writer_events = [e for e in listener if e["origin"] == "memory_v2.writer"]
     assert len(writer_events) >= 2
     assert all(not e["has_key"] for e in writer_events)
     assert all(e["api_base"] == WRITER_BASE for e in writer_events)
@@ -899,7 +899,7 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
     the registered token and a bearer header: neither credential reaches the notes or the recorded row.
     """
     from tests.memory_v2.test_writer_pass import _run as run_pass
-    from tests.memory_v2.test_writer_pass import _sol
+    from tests.memory_v2.test_writer_pass import _writer
     from unify.process_secrets import register_secret
 
     def on_generate(kw):
@@ -920,7 +920,7 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
     rows: list[str] = []
     for i, turn in enumerate((routed, raw)):
         (tmp_path / str(i)).mkdir()
-        _mem, ev, writer = _sol(tmp_path / str(i), turn)
+        _mem, ev, writer = _writer(tmp_path / str(i), turn)
         out = run_pass(writer, f"p{i}")
         recorded = ev.db.execute(
             "SELECT reasons FROM passes WHERE pass_id=?",
@@ -937,14 +937,14 @@ def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_pa
     event carries (not the generic ``writer_error``).
     """
     from tests.memory_v2.test_writer_pass import _run as run_pass
-    from tests.memory_v2.test_writer_pass import _sol
+    from tests.memory_v2.test_writer_pass import _writer
 
     async def misrouted(messages, tools):
         raise writer_pass.WriterRouteError(
             "a Sol call did not take Sol's declared route",
         )
 
-    _mem, _ev, writer = _sol(tmp_path, misrouted)
+    _mem, _ev, writer = _writer(tmp_path, misrouted)
     out = run_pass(writer, "p0")
     codes = consolidate.reason_codes(out, None)
     assert not out.passed
@@ -1074,7 +1074,7 @@ def test_sols_route_refuses_to_start_while_unillm_records_spans(
         UNIFY_MEMORY_V2_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
     )
     with pytest.raises(switch.SolRouteRefused) as info:
-        consolidate.sol_settings(routed)
+        consolidate.writer_settings(routed)
     with pytest.raises(writer_pass.WriterRouteError) as built:
         unillm_turn(
             "openai/gpt-6-sol",
@@ -1086,7 +1086,7 @@ def test_sols_route_refuses_to_start_while_unillm_records_spans(
     assert not leaked and all("UNILLM_OTEL" in t for t in texts)
     assert made == []
     # the shipped route is unaffected by OTel
-    assert consolidate.sol_settings(SimpleNamespace()).route is None
+    assert consolidate.writer_settings(SimpleNamespace()).route is None
 
 
 def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
@@ -1196,7 +1196,7 @@ def test_a_token_in_any_letter_case_leaves_the_environment(monkeypatch):
     refusal = switch.settle_writer_route_env(os.environ, s)
     left = [k for k in os.environ if k.upper() == "UNIFY_MEMORY_V2_WRITER_TOKEN"]
     assert held and refusal is None and left == []
-    assert consolidate.sol_settings(s).route is not None
+    assert consolidate.writer_settings(s).route is not None
 
 
 def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
@@ -1215,7 +1215,7 @@ def test_case_variants_that_disagree_refuse_every_pass(monkeypatch):
     leaked = WRITER_TOKEN in refusal or other in refusal
     assert not leaked
     with pytest.raises(ValueError):
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
 
 
 def test_writer_settings_settles_again_so_a_late_value_is_refused_off_the_cli(
@@ -1231,7 +1231,7 @@ def test_writer_settings_settles_again_so_a_late_value_is_refused_off_the_cli(
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_BASE_URL", WRITER_BASE)
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_TOKEN", WRITER_TOKEN)
     with pytest.raises(switch.SolRouteRefused) as info:
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
     text = str(info.value)
     token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
     leaked = WRITER_TOKEN in text or WRITER_BASE in text
@@ -1353,7 +1353,7 @@ def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
     assert not leaked
     assert ".env" in refusal and all(n in refusal for n in _ROUTE_NAMES)
     with pytest.raises(ValueError) as info:
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
     shown = WRITER_TOKEN in str(info.value) or WRITER_BASE in str(info.value)
     assert not shown and "no consolidation pass starts" in str(info.value)
 
@@ -1459,7 +1459,7 @@ def test_the_token_is_read_from_its_descriptor_which_is_then_closed(
     s = ProductionSettings()
     refusal = switch.settle_writer_route_env(os.environ, s)
     closed = not _is_open(fd)
-    cfg = consolidate.sol_settings(s)
+    cfg = consolidate.writer_settings(s)
     in_env = any(token in v for v in os.environ.values())
     used = cfg.route is not None and _digest(
         cfg.route.token.get_secret_value(),
@@ -1524,7 +1524,7 @@ def test_the_descriptor_name_leaves_the_environment_and_is_never_read_again(
     again = switch.settle_writer_route_env(os.environ, settings)
     same_back = switch.settle_writer_route_env({_FD: str(fd)}, settings)
     assert again is None and same_back is None and reads == []
-    held = switch.sol_token(settings)
+    held = switch.writer_token(settings)
     assert held is switch._FD_TOKEN and held.get_secret_value()
     late = {_FD.lower(): str(fd + 1)}
     refusal = switch.settle_writer_route_env(late, settings)
@@ -1617,7 +1617,7 @@ def test_both_token_settings_refuse_every_pass(fd_route):
     assert refusal is not None and closed
     assert "UNIFY_MEMORY_V2_WRITER_TOKEN and UNIFY_MEMORY_V2_WRITER_TOKEN_FD" in refusal
     with pytest.raises(switch.SolRouteRefused) as info:
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
     text = refusal + str(info.value)
     leaked = token in text or WRITER_TOKEN in text
     assert not leaked and "no consolidation pass starts" in str(info.value)
@@ -1631,7 +1631,7 @@ def test_a_descriptor_without_the_base_url_refuses_every_pass(fd_route):
     closed = not _is_open(fd)
     assert refusal is None and closed
     with pytest.raises(switch.SolRouteRefused) as info:
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
     text = str(info.value)
     leaked = token in text
     assert not leaked
@@ -1664,7 +1664,7 @@ def test_a_descriptor_without_a_bearer_token_refuses_every_pass(fd_route, data, 
     assert refusal is not None and closed
     assert rule in refusal and "no consolidation pass starts" in refusal
     with pytest.raises(switch.SolRouteRefused) as info:
-        consolidate.sol_settings(settings)
+        consolidate.writer_settings(settings)
     body = data.rstrip(b"\n").decode("latin-1")
     text = refusal + str(info.value)
     leaked = len(body) >= 8 and body in text
@@ -1700,7 +1700,7 @@ def test_an_unusable_descriptor_refuses_every_pass(fd_route):
         settings = _fd_settings(fd)
         refusal = switch.settle_writer_route_env({}, settings)
         with pytest.raises(switch.SolRouteRefused) as info:
-            consolidate.sol_settings(settings)
+            consolidate.writer_settings(settings)
         text = (refusal or "") + str(info.value)
         leaked = _GOOD in text
         assert refusal is not None and rule in refusal, rule
