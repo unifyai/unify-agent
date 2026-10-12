@@ -2699,6 +2699,32 @@ class WriterPass:
                 if eid in (e.provenance.get("episodes") or [])
             ]
             counts[src] = counts.get(src, 0) + 1
+        if self._pool is not None:
+            # each row names the closed pool entries resembling its episode or a draft staged from it
+            from .batch_map import add_related_closed
+
+            try:
+                add_related_closed(
+                    bmap.get("episodes", []),
+                    self._pool,
+                    self.load,
+                    staged={
+                        e: {
+                            k: v.decode("utf-8", "replace")
+                            for k, v in view.files.items()
+                            if k.startswith("candidates/") and k.endswith(".py")
+                        }
+                        for e, view in views.items()
+                    },
+                    index_root=self.cfg.similar_index,
+                )
+            except Exception as exc:  # noqa: BLE001 - the pool never stops a pass; the rows say why
+                for row in bmap.get("episodes", []):
+                    row["related_closed"] = {
+                        "count": None,
+                        "entries": [],
+                        "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                    }
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
         self._staging_counts = {"episodes": len(bmap.get("episodes", [])), **counts}
         self._chain_rows = list(bmap.get("episodes", []))

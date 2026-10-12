@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from . import batch_map as _bm
 from . import fixtures as _fx
+from . import pool as _pool
 from . import views as _views
 from .tool_spec import GENERAL, ToolSpec, refusal
 from .tool_spec import GENERAL_REFUSALS as _GENERAL_REFUSALS
@@ -44,6 +45,7 @@ def _obj(props: dict, required: list[str] | None = None) -> dict:
     return out
 
 
+_POOL_STATUS = ("open", "closed", "any")
 _OFFSET = {
     "type": "integer",
     "description": "byte offset to start the page at (a page marker names the next one)",
@@ -294,16 +296,23 @@ REPLAY = ToolSpec(
 POOL = ToolSpec(
     name="pool",
     description=(
-        "The candidate pool: drafts earlier passes left open, to build from, as files under /inputs/pool/<id>/. "
-        "op='list': one line per open entry (id, kind, episode count, title), optionally of one kind, paged by "
-        "offset. op='filter': the entries matching text (in the title or the entry's files), kind or episode. "
-        "op='show': one entry's entry.json and the paths of its files. op='decide': records a decision in "
+        "The candidate pool: drafts earlier passes left open, to build from, as files under /inputs/pool/<id>/, and "
+        "the closed entries (merged, superseded or retired), kept with their status. "
+        "op='list': one line per entry (id, kind, episode count, title; a closed one also its status, reason and "
+        "the pass it closed in), optionally of one kind, paged by offset. op='filter': the entries matching text "
+        "(in the title or the entry's files), kind or episode, or related (an entry id or a batch episode id: the "
+        "closed entries linked to it in /inputs/pool/related_closed.json). status: 'open' (the default), 'closed' "
+        "or 'any' (the default with related is 'any'). A closed entry is linked to an entry or a batch episode when "
+        "their code shares a normalised code unit (as `similar` compares code: variable names renamed in order of "
+        "use, literals lifted) or when they cite the same episode. "
+        f"op='show': one entry's entry.json, the paths of its files and the closed entries linked to it, "
+        f"{_pool.RELATED_PAGE} at a time from offset. op='decide': records a decision in "
         "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
         "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
         "(reason; closes the entry for good: it is wrong or not reusable), 'defer' (reason; keeps it open for a later "
         "pass; with episodes, those episodes join the entry as more evidence; id='new' with "
-        "episodes opens a deferred entry for them) or 'open' (removes an earlier decision on that id). Decisions "
-        "take effect when the gate judges the pass."
+        "episodes opens a deferred entry for them), 'reopened' (reason; opens a closed entry again) or 'open' "
+        "(removes an earlier decision on that id). Decisions take effect when the gate judges the pass."
     ),
     parameters=_obj(
         {
@@ -315,16 +324,21 @@ POOL = ToolSpec(
             "kind": {"type": "string"},
             "text": {"type": "string"},
             "episode": {"type": "string"},
+            "status": {"type": "string", "enum": list(_POOL_STATUS)},
+            "related": {
+                "type": "string",
+                "description": "an entry id or a batch episode id: the closed entries linked to it",
+            },
             "decision": {
                 "type": "string",
-                "enum": ["merged", "superseded", "retired", "defer", "open"],
+                "enum": ["merged", "superseded", "retired", "defer", "reopened", "open"],
             },
             "target": {"type": "string"},
             "reason": {"type": "string"},
             "episodes": {"type": "array", "items": {"type": "string"}},
             "offset": {
                 "type": "integer",
-                "description": "entry number to start a list page at",
+                "description": "entry number to start a list page at (show: its first linked closed entry)",
             },
         },
         ["op"],
@@ -333,11 +347,14 @@ POOL = ToolSpec(
     requires="pool",
     refusals={
         "bad_op": "op must be list, filter, show or decide",
-        "unknown_entry": "{id!r} is not an open pool entry (op='list' lists them)",
+        "bad_status": "status must be open, closed or any",
+        "unknown_entry": "{id!r} is not a pool entry (op='list' lists the open ones; status='closed' the closed ones)",
+        "closed_entry": "{id!r} is closed ({status}); of the decisions only 'reopened' applies to it",
+        "open_entry": "{id!r} is open; 'reopened' applies only to a closed entry",
         "bad_decision": "{reason}",
         "manifest_unreadable": "{reason}; fix /memory/.pass/manifest.json, then decide again",
     },
-    summary="list, filter, show and decide on open candidate-pool entries.",
+    summary="list, filter, show and decide on candidate-pool entries, open or closed, and see related closed ones.",
 )
 
 SPECS: tuple[ToolSpec, ...] = (
@@ -763,7 +780,7 @@ def fixture(
 
 # --- the pool ------------------------------------------------------------------------------------------------
 
-_DECISIONS = ("merged", "superseded", "retired")
+_DECISIONS = ("merged", "superseded", "retired", "reopened")
 
 
 def _entries(pool_dir: Path) -> list[dict]:
@@ -783,10 +800,44 @@ def _entries(pool_dir: Path) -> list[dict]:
     return out
 
 
+def _related(pool_dir: Path) -> dict:
+    """/inputs/pool/related_closed.json: ``{"entries": {id: [link]}, "episodes": {episode: [link]}}``."""
+    raw = _fx._read_plain(Path(pool_dir) / _pool.RELATED_FILE, 64 * 1024 * 1024)
+    try:
+        val = json.loads(raw.decode()) if raw else {}
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        val = {}
+    return val if isinstance(val, dict) else {}
+
+
+def _closing(e: dict) -> str:
+    """How a closed entry closed, from its entry.json: status, reason and the pass."""
+    d = e.get("status_detail") or {}
+    status = e.get("status")
+    if status == "merged":
+        why = f"into {d.get('item')}"
+    elif status == "superseded":
+        why = f"by {d['by']}" if d.get("by") else str(d.get("reason") or "")
+    else:
+        why = str(d.get("reason") or "")
+    return f"{status}{': ' + why if why else ''}; closed in {d.get('pass') or e.get('last_changed_in')}"
+
+
 def _line(e: dict) -> str:
     eps = (e.get("provenance") or {}).get("episodes") or []
+    closed = "" if e.get("status", "open") == "open" else f" ({_closing(e)})"
+    return f"- `{e.get('id')}` {e.get('kind')}{closed}: {e.get('title')} ({len(eps)} episode(s))"
+
+
+def _link_line(link: dict) -> str:
+    """One related closed entry: what it is, how it closed, its evidence and what it shares."""
+    shared = [f"{n} code unit(s) with {label}" for label, n in sorted((link.get("shared_code") or {}).items())]
+    if link.get("shared_episodes"):
+        shared.append("episode(s) " + ", ".join(link["shared_episodes"]))
     return (
-        f"- `{e.get('id')}` {e.get('kind')}: {e.get('title')} ({len(eps)} episode(s))"
+        f"- `{link.get('id')}` {link.get('kind')} ({link.get('status')}: {link.get('reason') or 'no reason given'}; "
+        f"closed in {link.get('closed_in')}): {link.get('title')}; evidence: "
+        f"{', '.join(link.get('evidence_episodes') or []) or 'none'}; shares {'; '.join(shared)}"
     )
 
 
@@ -872,12 +923,22 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
     op = str(args.get("op", ""))
     entries = _entries(Path(pool_dir))
     listed = (path_row("/inputs/pool", "list"),)
+    off = args.get("offset", 0)
+    off = off if isinstance(off, int) and not isinstance(off, bool) and off >= 0 else 0
     if op in ("list", "filter"):
         kind = args.get("kind")
+        related = str(args.get("related") or "") if op == "filter" else ""
+        status = args.get("status") or ("any" if related else "open")
+        if status not in _POOL_STATUS:
+            return refused("pool", "bad_status", listed)
         rows = [
             e
             for e in entries
-            if e.get("status", "open") == "open" and (not kind or e.get("kind") == kind)
+            if (not kind or e.get("kind") == kind)
+            and (
+                status == "any"
+                or (status == "open") == (e.get("status", "open") == "open")
+            )
         ]
         if op == "filter":
             text = str(args.get("text") or "").lower()
@@ -888,6 +949,16 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
                     for e in rows
                     if ep in ((e.get("provenance") or {}).get("episodes") or [])
                 ]
+            if related:
+                links = _related(Path(pool_dir))
+                got = (links.get("entries") or {}).get(related) or (
+                    links.get("episodes") or {}
+                ).get(related) or []
+                linked = [str(x.get("id")) for x in got if isinstance(x, dict)]
+                rows = sorted(
+                    (e for e in rows if str(e.get("id")) in linked),
+                    key=lambda e: linked.index(str(e.get("id"))),
+                )
             if text:
                 keep = []
                 for e in rows:
@@ -901,18 +972,13 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
                     if text in blob:
                         keep.append(e)
                 rows = keep
-        off = args.get("offset", 0)
-        off = (
-            off
-            if isinstance(off, int) and not isinstance(off, bool) and off >= 0
-            else 0
-        )
         page = rows[off : off + 100]
-        body = "\n".join(_line(e) for e in page) or "(no matching open entries)"
+        word = "" if status == "any" else f"{status} "
+        body = "\n".join(_line(e) for e in page) or f"(no matching {word}entries)"
         if off + 100 < len(rows):
             body += f"\n[… entries {off}–{off + 100} of {len(rows)}; next: offset={off + 100}]"
         return Reply(
-            f"{len(rows)} open entr{'y' if len(rows) == 1 else 'ies'}\n" + body,
+            f"{len(rows)} {word}entr{'y' if len(rows) == 1 else 'ies'}\n" + body,
             paths=listed,
         )
     eid = str(args.get("id", ""))
@@ -922,10 +988,22 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
         if e is None:
             return refused("pool", "unknown_entry", listed, id=eid[:40])
         files = [f"/inputs/pool/{eid}/{rel}" for rel in e.get("files") or []]
+        links = [
+            x
+            for x in (_related(Path(pool_dir)).get("entries") or {}).get(eid) or []
+            if isinstance(x, dict)
+        ]
+        size = _pool.RELATED_PAGE
+        related = f"\nRelated closed entries: {len(links)}" + (
+            "".join("\n" + _link_line(x) for x in links[off : off + size])
+        )
+        if off + size < len(links):
+            related += f"\n[… related {off}–{off + size} of {len(links)}; next: offset={off + size}]"
         text = (
             json.dumps(e, indent=1, sort_keys=True)
             + "\nFiles:\n"
             + ("\n".join(files) or "(none)")
+            + related
         )
         return Reply(
             _views.view(text.encode()),
@@ -943,12 +1021,23 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
             "pool",
             "bad_decision",
             man_path,
-            reason="decision must be merged, superseded, retired, defer or open",
+            reason="decision must be merged, superseded, retired, defer, reopened or open",
         )
     if not (decision == "defer" and eid == "new"):
         e = known.get(eid)
-        if e is None or e.get("status", "open") != "open":
+        if e is None:
             return refused("pool", "unknown_entry", man_path, id=eid[:40])
+        is_open = e.get("status", "open") == "open"
+        if decision == "reopened" and is_open:
+            return refused("pool", "open_entry", man_path, id=eid[:40])
+        if decision not in ("reopened", "open") and not is_open:
+            return refused(
+                "pool",
+                "closed_entry",
+                man_path,
+                id=eid[:40],
+                status=str(e.get("status"))[:20],
+            )
     if decision in ("merged", "superseded") and not target:
         return refused(
             "pool",
@@ -956,7 +1045,7 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
             man_path,
             reason=f"{decision} needs target",
         )
-    if decision in ("retired", "defer") and not reason:
+    if decision in ("retired", "defer", "reopened") and not reason:
         return refused(
             "pool",
             "bad_decision",
@@ -999,7 +1088,7 @@ def pool(args: dict, pool_dir: Path, box: Path) -> Reply:
     note = ""
     if decision in _DECISIONS:
         block.setdefault(decision, {})[eid] = (
-            target if decision != "retired" else reason
+            target if decision in ("merged", "superseded") else reason
         )
         items = {
             i.get("item") for i in manifest.get("items") or [] if isinstance(i, dict)

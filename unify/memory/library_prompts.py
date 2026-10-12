@@ -187,6 +187,14 @@ POOL_ROW_KEY = (
     "pool_entries",
     "list of `{id, kind, title}`: the open pool entries that cite the episode",
 )
+RELATED_ROW_KEY = (
+    "related_closed",
+    "`{count, entries}`: the closed pool entries whose code shares a normalised code unit with the episode's cells "
+    "or with a draft staged from it, or that cite the episode; `entries` lists the first "
+    "{page} as `{id, kind, title, status, reason, closed_in, evidence_episodes, shared_code, shared_episodes}`, "
+    "`shared_code` mapping what matched (`cells` or the staged draft's ref) to the number of shared units; "
+    "`error` instead of a count when the links could not be computed",
+)
 
 #: What each pool entry kind holds (only the kinds :data:`.pool.KINDS` defines are named).
 POOL_KIND_TEXT: dict[str, str] = {
@@ -591,8 +599,14 @@ def row_keys(staging: bool = False, pool: bool = False) -> tuple[tuple[str, str]
     return (
         BATCH_ROW_KEYS
         + ((STAGING_ROW_KEY,) if staging else ())
-        + ((POOL_ROW_KEY,) if pool else ())
+        + ((POOL_ROW_KEY, _related_row_key()) if pool else ())
     )
+
+
+def _related_row_key() -> tuple[str, str]:
+    from .pool import RELATED_PAGE
+
+    return RELATED_ROW_KEY[0], RELATED_ROW_KEY[1].replace("{page}", str(RELATED_PAGE))
 
 
 def write_brief(
@@ -678,8 +692,17 @@ def write_brief(
             "/inputs/pool/<id>/entry.json holds an entry with the episodes behind it, beside its payload files. "
             "Kinds: "
             + pool_kinds
-            + ". For: what was proposed before, and the evidence gathered behind it since."
-            + (" `pool` lists, filters and shows the entries." if has("pool") else "")
+            + ". For: what was proposed before, and the evidence gathered behind it since. Closed entries (merged, "
+            "superseded or retired) are kept too, with their status, reason and the pass they closed in. A closed "
+            "entry is linked to an entry or a batch episode whose code shares a normalised code unit with its code, "
+            "or that cites one of its episodes (an entry without code is linked only through episodes): "
+            "/inputs/pool/related_closed.json holds the links, and each batch-map row lists its own under "
+            "`related_closed`. A link is a fact, not a verdict; what to do with it is yours to decide."
+            + (
+                " `pool` lists, filters and shows the entries, open or closed, and `show` lists an entry's links."
+                if has("pool")
+                else ""
+            )
             + "\n",
         )
     inputs.append(
@@ -794,7 +817,8 @@ def write_brief(
             '{"<id>": "<id or item>"}, "retired": {"<id>": "<reason>"}}`. An entry is merged into an item this '
             "manifest lists, superseded by another entry or an item, or retired with a reason. `retired` closes an "
             "entry for good: it is wrong or not reusable. To keep an entry open for a later pass, defer it "
-            "(`pool` with decision `defer`, which writes the block's `defer` rows).\n"
+            "(`pool` with decision `defer`, which writes the block's `defer` rows). "
+            '`"reopened": {"<id>": "<reason>"}` opens a closed entry again.\n'
         )
     replay_rule = (
         " A function lifted from the working model's cells can be verified by listing in its manifest entry the "

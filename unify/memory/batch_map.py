@@ -390,3 +390,47 @@ def build_batch_map(
             for b, t in sorted(shared.items())
         ]
     return out
+
+
+def episode_units(ep: Episode, index_root=None) -> frozenset[str]:
+    """The normalised code-unit keys of *ep*'s Python cells: the ``similar`` index's entry when it is complete for
+    these cells, else built now under the index's time limit."""
+    from . import similar
+
+    entry = similar.read_entry(index_root, str(ep.episode_id)) if index_root else None
+    if not (
+        entry
+        and entry.get("complete")
+        and entry.get("content") == similar.content_key(ep.cells)
+    ):
+        entry = similar.build_entry(str(ep.episode_id), ep.cells)
+    return frozenset(u["key"] for u in entry.get("units") or [])
+
+
+def add_related_closed(
+    rows: list[dict],
+    pool,
+    load: Callable[[str], Episode],
+    *,
+    staged: dict[str, dict[str, str]] | None = None,
+    index_root=None,
+) -> dict[str, list[dict]]:
+    """Each row's ``related_closed``: the closed entries of *pool* (:class:`.pool.Pool`) resembling the row's
+    episode (its cells' code, the episode itself as evidence) or a draft staged from it (*staged*: episode -> staged
+    ``candidates/*.py`` path -> text), as ``{"count": n, "entries": [the first page of links]}``
+    (:meth:`.pool.Pool.related_closed`, :data:`.pool.RELATED_PAGE`). Every link, by episode, is returned and kept on
+    the pool (``episode_links``) for /inputs/pool/related_closed.json."""
+    from .pool import RELATED_PAGE, code_units
+
+    out: dict[str, list[dict]] = {}
+    for row in rows:
+        eid = row["episode_id"]
+        code = {"cells": episode_units(load(eid), index_root)}
+        for rel, text in sorted((staged or {}).get(eid, {}).items()):
+            code[f"staging:{eid}/{rel}"] = code_units(text)
+        links = pool.related_closed(code, [eid])
+        row["related_closed"] = {"count": len(links), "entries": links[:RELATED_PAGE]}
+        if links:
+            out[eid] = links
+    pool.episode_links = out
+    return out

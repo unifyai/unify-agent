@@ -8,7 +8,15 @@ untrusted), and the closed entries that received new evidence after they were cl
 entry's status: through its manifest's ``pool`` block (``merged`` and ``superseded`` take effect when the gate lands
 the pass, ``retired`` and ``reopened`` when finish is accepted), or by adopting the entry in an item (the item's
 ``adopts``), which closes it as merged when that item lands. There is no timer, cap or expiry: an entry stays open
-until the writer decides. Closed entries leave the open list and stay in git history.
+until the writer decides. Closed entries leave the open list and stay in the pool with their status, under
+``/inputs/pool/<id>/`` too, and ``pool`` lists them on request.
+
+A closed entry is linked to what resembles it (:meth:`Pool.related_closed`): code that shares a normalised code
+unit with the entry's code (the units of :mod:`.similar`: the whole code and each statement subtree, names renamed in
+order of use and literals lifted), or an evidence episode the entry cites; an entry without code is linked only
+through its episodes. ``/inputs/pool/related_closed.json`` holds every link, by open or closed entry and by batch
+episode; the batch map and ``pool show`` show them a page at a time. A link is a fact for the writer, who decides
+what to do with it: nothing reopens an entry for it.
 
 Entries are keyed by their content (a draft by its pass, a deferral by its episode), never by a task id, a stream
 position or a count. Layout per entry: ``pool/<kind>/<id>/entry.json`` and its payload files.
@@ -21,8 +29,10 @@ import hashlib
 import json
 import os
 import re
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 POOL_REF = "pool"
 # ``cluster`` entries came from a recurrence miner that no longer feeds the pool; old ones still load, and
@@ -35,6 +45,10 @@ BLOCK_KEYS = ("merged", "superseded", "retired", "reopened")
 TITLE_CHARS = 160
 MINER_RETIRED = "miner retired"
 _ID = re.compile(r"[0-9a-f]{16}")
+#: The related closed entries a batch-map row or ``pool show`` lists at once; ``pool`` pages through the rest.
+RELATED_PAGE = 20
+#: The file under /inputs/pool holding every link from an entry or a batch episode to the closed entries like it.
+RELATED_FILE = "related_closed.json"
 
 
 def _clip(text: str, n: int = TITLE_CHARS) -> str:
@@ -175,6 +189,70 @@ class Entry:
         return out
 
 
+# -- resemblance to closed entries -------------------------------------------------------------------------------
+
+
+def code_units(code: str) -> frozenset[str]:
+    """The normalised code-unit keys of Python *code* (:func:`.mining.units`, as the ``similar`` index keys them);
+    empty for code that does not parse."""
+    from . import mining
+
+    try:
+        return frozenset(u.key for u in mining.units(mining.Cell(0, str(code))))
+    except (RecursionError, MemoryError, ValueError):
+        return frozenset()
+
+
+def entry_code(e: Entry) -> list[tuple[str, str]]:
+    """The Python source *e* holds, as ``(label, code)``: each ``.py`` payload file, and the added lines of each
+    ``.py`` file in a ``.diff`` payload (a draft's patch), one run of added lines at a time.
+    """
+    from .batch_map import _diff_python_runs
+
+    out: list[tuple[str, str]] = []
+    for rel, text in sorted(e.files.items()):
+        if rel.endswith(".py"):
+            out.append((rel, text))
+        elif rel.endswith(".diff"):
+            for path, runs in sorted(_diff_python_runs(text).items()):
+                for _start, lines in runs:
+                    out.append((rel, textwrap.dedent("\n".join(lines))))
+    return out
+
+
+def entry_units(e: Entry) -> dict[str, frozenset[str]]:
+    """*e*'s code units by the payload file they come from (a diff's runs share the diff's name)."""
+    out: dict[str, frozenset[str]] = {}
+    for label, code in entry_code(e):
+        out[label] = out.get(label, frozenset()) | code_units(code)
+    return {k: v for k, v in out.items() if v}
+
+
+def closing(e: Entry) -> dict:
+    """How a closed entry closed: id, kind, title, status, the closing reason, the pass it closed in and its
+    evidence episodes."""
+    d = e.status_detail or {}
+    if e.status == "merged":
+        reason = f"merged into {d.get('item')}" + (
+            " (adopted)" if d.get("via") == "adopts" else ""
+        )
+    elif e.status == "superseded":
+        reason = (
+            f"superseded by {d['by']}" if d.get("by") else str(d.get("reason") or "")
+        )
+    else:
+        reason = str(d.get("reason") or "")
+    return {
+        "id": e.id,
+        "kind": e.kind,
+        "title": e.title,
+        "status": e.status,
+        "reason": reason,
+        "closed_in": str(d.get("pass") or e.last_changed_in),
+        "evidence_episodes": list(e.provenance.get("episodes") or []),
+    }
+
+
 def _canon(obj) -> str:
     return json.dumps(obj, sort_keys=True, default=str)
 
@@ -193,6 +271,10 @@ class Pool:
         self.skipped: list[str] = []  # entries load() refused
         # this pass's staging refs (``staging:<episode>/<file>``) -> the entry holding them (:meth:`enter_staging`)
         self.staged: dict[str, str] = {}
+        # batch episode -> its links to closed entries (set by :func:`.batch_map.add_related_closed`; staged with
+        # the pool in /inputs/pool/related_closed.json)
+        self.episode_links: dict[str, list[dict]] = {}
+        self._closed_cache: tuple[str, dict, dict] | None = None
 
     # -- read ------------------------------------------------------------------------------------------------
     def load(self) -> "Pool":
@@ -292,6 +374,73 @@ class Pool:
                 if e.status != "open" and e.new_evidence_episodes()
             ),
             key=_order,
+        )
+
+    def closed_entries(self) -> list[Entry]:
+        return sorted(
+            (e for e in self.entries.values() if e.status != "open"),
+            key=_order,
+        )
+
+    def _closed_index(self) -> tuple[dict[str, frozenset[str]], dict[str, set[str]]]:
+        """Each closed entry's code units, and episode -> the closed entries citing it; rebuilt only when
+        a closed entry's content, status or evidence changed."""
+        closed = self.closed_entries()
+        sig = _canon(
+            [
+                [e.id, e.status, sorted(e.files), e.provenance.get("episodes")]
+                for e in closed
+            ]
+        )
+        if self._closed_cache is None or self._closed_cache[0] != sig:
+            units = {e.id: frozenset().union(*entry_units(e).values()) for e in closed}
+            by_ep: dict[str, set[str]] = {}
+            for e in closed:
+                for ep in e.provenance.get("episodes") or []:
+                    by_ep.setdefault(ep, set()).add(e.id)
+            self._closed_cache = (sig, units, by_ep)
+        return self._closed_cache[1], self._closed_cache[2]
+
+    def related_closed(
+        self,
+        code: dict[str, frozenset[str]] | None = None,
+        episodes: Iterable[str] = (),
+        exclude: Iterable[str] = (),
+    ) -> list[dict]:
+        """The closed entries that resemble a subject: those whose code shares at least one normalised code unit
+        with the subject's *code* (label -> unit keys), and those citing one of its *episodes*. Each link is
+        :func:`closing` plus ``shared_code`` (subject label -> units shared) and ``shared_episodes``, in the pool's
+        order; none is ranked or dropped."""
+        units, by_ep = self._closed_index()
+        skip = set(exclude)
+        hits: dict[str, dict] = {}
+        for label, keys in sorted((code or {}).items()):
+            if not keys:
+                continue
+            for cid, theirs in units.items():
+                if cid in skip:
+                    continue
+                n = len(keys & theirs)
+                if n:
+                    hits.setdefault(cid, {"shared_code": {}, "shared_episodes": []})[
+                        "shared_code"
+                    ][label] = n
+        for ep in episodes:
+            for cid in sorted(by_ep.get(ep, ())):
+                if cid in skip:
+                    continue
+                row = hits.setdefault(cid, {"shared_code": {}, "shared_episodes": []})
+                if ep not in row["shared_episodes"]:
+                    row["shared_episodes"].append(ep)
+        return [
+            {**closing(self.entries[cid]), **hits[cid]}
+            for cid in sorted(hits, key=lambda i: _order(self.entries[i]))
+        ]
+
+    def related_to_entry(self, e: Entry) -> list[dict]:
+        """The closed entries resembling entry *e* (its code, its evidence episodes), itself left out."""
+        return self.related_closed(
+            entry_units(e), e.provenance.get("episodes") or [], exclude=[e.id]
         )
 
     # -- change ----------------------------------------------------------------------------------------------
@@ -434,7 +583,9 @@ class Pool:
     # -- the writer's view -----------------------------------------------------------------------------------
     def stage(self, dest: Path) -> int:
         """``/inputs/pool``: INDEX.md (every open entry, one line each, proposals first, deterministic; then the
-        closed entries with new evidence) and each listed entry's files. Returns the number of open entries.
+        closed entries with new evidence, and how many other closed entries there are), every entry's files, open
+        or closed, and :data:`RELATED_FILE` (each entry's and each batch episode's links to closed entries, in
+        full). Returns the number of open entries.
 
         *dest* must not exist yet (a fresh directory, never one reached through a link); every file is created new,
         never through a link, and must resolve under *dest*."""
@@ -502,6 +653,43 @@ class Pool:
                     f"({count(len(e.new_evidence_episodes()))} since it closed)",
                 )
                 files_of(e)
+        shown = {e.id for e in again}
+        rest = [
+            e
+            for e in self.closed_entries()
+            if _ID.fullmatch(e.id) and e.id not in shown
+        ]
+        for e in rest:
+            files_of(e)
+        if rest:
+            lines += [
+                "",
+                "## Other closed entries",
+                "",
+                f"{len(rest)} more closed entr{'y' if len(rest) == 1 else 'ies'} (merged, superseded or retired), kept "
+                "with their status under /inputs/pool/<id>/. /inputs/pool/related_closed.json names the closed "
+                "entries whose code shares a normalised code unit with an entry or a batch episode, or that cite "
+                "one of its episodes.",
+            ]
+        links = {
+            e.id: got
+            for e in sorted(self.entries.values(), key=_order)
+            if _ID.fullmatch(e.id) and (got := self.related_to_entry(e))
+        }
+        write(
+            RELATED_FILE,
+            json.dumps(
+                {
+                    "page": RELATED_PAGE,
+                    "entries": links,
+                    "episodes": self.episode_links,
+                },
+                indent=1,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+        )
         write("INDEX.md", "\n".join(lines) + "\n")
         return len(rows)
 
