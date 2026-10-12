@@ -34,7 +34,7 @@ from .layout import (
     module_of,
 )
 from .library_helper import FIND_FILE, ITEMS_FILE, MATCHER_FILE, SHAPES_FILE
-from .item_records import use_totals, verification_summary
+from .item_records import effect_of, use_totals, verification_summary
 from .library_index import HIDDEN, build_links, render_index, render_links
 from .redact import redact_error
 
@@ -155,6 +155,8 @@ def items_data(
             "path": f.path,
             "signature": f"{f.module}:{f.signature}",
             "summary": f.summary,
+            # the effect the gate derived from its covers (None: not derived)
+            "effect": effect_of(records)(f.item_id) if records else None,
             **common(f.item_id),
         }
     for n in lib.notes:
@@ -227,7 +229,12 @@ def generated_library_mode(
     found, complete = history if history is not None else ({}, True)
     return {
         RESERVED_INIT: (_HERE / "library_helper.py").read_bytes(),
-        INDEX_FILE: render_index(lib, links, status_of).encode("utf-8"),
+        INDEX_FILE: render_index(
+            lib,
+            links,
+            status_of,
+            effect_of(records) if records is not None else None,
+        ).encode("utf-8"),
         LINKS_FILE: render_links(links).encode("utf-8"),
         ITEMS_FILE: _json_bytes(items_data(lib, status_of, found, complete, records)),
         FIND_FILE: _json_bytes(find_data(tree, lib, status_of, shapes, records)),

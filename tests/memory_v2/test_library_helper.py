@@ -239,3 +239,32 @@ def test_write_generated_still_writes_v2s_files(tmp_path):
     assert (tmp_path / "memory.py").read_bytes() == (
         Path(memory_helper.__file__)
     ).read_bytes()
+
+
+def test_the_derived_effect_shows_beside_the_status_in_the_index_and_show(tmp_path):
+    from unify.memory_v2.item_records import empty_record
+
+    week = "memory.text.dates:week"
+    records = {
+        DATE: {**empty_record(DATE, "function"), "effect": "read"},
+        week: {
+            **empty_record(week, "function"),
+            "effect": "write",
+            "status_reason": "it refused inputs it was not built for in 2 episodes and no call to it has "
+            "returned yet; a refusal is not a failure",
+        },
+    }
+    root = _library(tmp_path, records=records)
+    index = (root / "INDEX.md").read_text()
+    assert "`memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]" in index
+    assert "[experimental, effect: read]" in index
+    # an item without a derived effect keeps the plain status
+    assert "Split text on whitespace. [experimental]\n" in index
+    out = json.loads(
+        _py(root, f"import json, memory\nprint(json.dumps(memory.show({week!r})))"),
+    )
+    assert out.splitlines()[:2] == [
+        "memory.text.dates:week(s)  [experimental, effect: write]",
+        "Status: it refused inputs it was not built for in 2 episodes and no call to it has returned yet; "
+        "a refusal is not a failure.",
+    ]
