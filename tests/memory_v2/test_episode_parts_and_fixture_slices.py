@@ -10,8 +10,8 @@ from tests.memory_v2.test_writer_library_tools import EPS, _pass
 
 
 def _cov(eid):
-    row = bm.build_batch_map(EPS.__getitem__, [eid])["episodes"][0]
-    req = {eid: row["required_parts"]}
+    # the batch map no longer names a reading list; this exercises the parts listing with one given here
+    req = {eid: {"e1": ["request", "observation:0", "cell:0"]}.get(eid, ["request"])}
     sizes = {(eid, p): len(bm.part_text(EPS[eid], p).encode()) for p in req[eid]}
     return views.Coverage(req, sizes)
 
