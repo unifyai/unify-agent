@@ -256,12 +256,13 @@ def _session_sections() -> list[str]:
 
 
 def _build_filesystem_context() -> str:
-    from unify.workspace import get_local_root
+    # The path cells see: the sandbox binds the workspace there, so the host
+    # path (which can name the run) never reaches the model.
+    from unify.sandbox import WORKSPACE_MOUNT
 
-    resolved = get_local_root()
     return (
         "### Workspace\n\n"
-        f"Your working directory is `{resolved}`; it persists across "
+        f"Your working directory is `{WORKSPACE_MOUNT}`; it persists across "
         "tasks. Write files there, with absolute paths."
     )
 

@@ -78,7 +78,11 @@ class RecordView:
         return [e.to_dict() for e in entries]
 
     def __repr__(self) -> str:
-        where = f"; file {self._record.path}" if self._record.path else ""
+        from unify.sandbox import RECORD_MOUNT
+
+        # As the cells' sandbox shows it, never the host path.
+        path = self._record.path
+        where = f"; file {RECORD_MOUNT}/{str(path).rsplit('/', 1)[-1]}" if path else ""
         return (
             f"<record: {len(self._record.entries)} entries; you are "
             f"{self._name!r}{where}>"

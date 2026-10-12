@@ -127,8 +127,8 @@ def worker_audit() -> dict | None:
     installs no hook).
 
     While a request captures the work tree: the workspace root, for file events; in library mode without a
-    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root (the sandbox binds it at its
-    own path, so the child sees the same path) and the file of the audit hook, which the child loads by path
+    capture, no roots, so only the library's runtime calls are recorded. With a capture: the workspace root as the sandbox
+    shows it (``/workspace``) and the file of the audit hook, which the child loads by path
     (stdlib only; no ``unify`` import there).
     """
     if _run() is None:
@@ -145,7 +145,11 @@ def worker_audit() -> dict | None:
             if not memory_library_on():
                 return None
             return {"roots": [], "path": str(Path(audit.__file__))}
-        return {"roots": [str(capture.workspace)], "path": str(Path(audit.__file__))}
+        # The sandbox binds the workspace at a fixed path (``unify.sandbox.WORKSPACE_MOUNT``), so that is
+        # the root the child sees; the records are mapped back to the host's in :func:`worker_cell_done`.
+        from unify.sandbox import WORKSPACE_MOUNT
+
+        return {"roots": [WORKSPACE_MOUNT], "path": str(Path(audit.__file__))}
     except (
         Exception
     ) as exc:  # noqa: BLE001 - the worker always starts; this request then records no file events
@@ -225,12 +229,39 @@ def worker_cell_done(events: Any) -> None:
 
         capture = active()
         if capture is not None:
-            capture.cell_done(time.time(), events)
+            capture.cell_done(time.time(), _host_paths(events, capture.workspace))
     except Exception as exc:  # noqa: BLE001 - recording never fails a cell
         logger.warning(
             "memory v2: a cell's audit records were lost (%s)",
             type(exc).__name__,
         )
+
+
+def _host_paths(events: Any, workspace: Path) -> Any:
+    """*events* (a cell's drained audit records) with each record's ``path`` and ``dst`` under the sandbox's
+    workspace path (``unify.sandbox.WORKSPACE_MOUNT``) mapped to the host *workspace* the capture reads;
+    anything else is returned as it came."""
+    from unify.sandbox import WORKSPACE_MOUNT
+
+    if not isinstance(events, dict) or not isinstance(events.get("records"), list):
+        return events
+
+    def host(value: Any) -> Any:
+        if isinstance(value, str) and (
+            value == WORKSPACE_MOUNT or value.startswith(WORKSPACE_MOUNT + "/")
+        ):
+            return str(workspace) + value[len(WORKSPACE_MOUNT) :]
+        return value
+
+    records = []
+    for record in events["records"]:
+        if isinstance(record, dict):
+            record = {**record}
+            for key in ("path", "dst"):
+                if key in record:
+                    record[key] = host(record[key])
+        records.append(record)
+    return {**events, "records": records}
 
 
 def cell_error(text: str) -> str:

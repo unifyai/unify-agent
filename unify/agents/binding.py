@@ -46,11 +46,20 @@ def helper_request(
     request_seq: int,
     path: Optional[Path],
 ) -> str:
-    where = f" The record's file is {path}." if path else ""
+    # Named as the cells' sandbox shows it (the run's record folder, bound
+    # read-only at a fixed path), never by its host path.
+    where = f" The record's file is {_in_sandbox(path)}." if path else ""
     return (
         f"You are `{name}`, a helper in a team. `{spawner}` asked you (record entry "
         f"#{request_seq}):\n\n{request}\n\nYour reply goes to `{spawner}`.{where}"
     )
+
+
+def _in_sandbox(path: Path) -> str:
+    """The record file *path* where the cells' sandbox shows it."""
+    from unify.sandbox import RECORD_MOUNT
+
+    return f"{RECORD_MOUNT}/{Path(path).name}"
 
 
 def records_dir() -> Path:

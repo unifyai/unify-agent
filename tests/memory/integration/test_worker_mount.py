@@ -45,11 +45,15 @@ def _home(world) -> tuple[Paths, list]:  # noqa: F811
     return paths, paths.harness_only()
 
 
+# Where the worker's sandbox binds the export: a fixed path, never its host path.
+LIBRARY = "/memory-library"
+
+
 def _probe(paths: Paths, hidden: list) -> str:
     return (
         "import os\n"
-        f"[os.path.isdir({str(paths.checkout)!r}), "
-        f"[os.path.exists(p) for p in {[str(p) for p in hidden]!r}]]"
+        f"[os.path.isdir({LIBRARY!r}), "
+        f"[os.path.exists(p) for p in {[str(p) for p in (*hidden, paths.checkout)]!r}]]"
     )
 
 
@@ -74,13 +78,13 @@ async def test_the_worker_imports_and_writes_the_export_and_sees_nothing_else(
         out = await _cell(
             ex,
             "from env.spotify import hello\n"
-            f"open({str(paths.checkout)!r} + '/env/spotify/scratch.py', 'w').write('x = 1')\n"
+            f"open({LIBRARY!r} + '/env/spotify/scratch.py', 'w').write('x = 1')\n"
             "hello(None, 'ada')",
         )
         assert out == "hi ada"
         assert list(await _cell(ex, _probe(paths, hidden))) == [
             True,
-            [False] * len(hidden),
+            [False] * (len(hidden) + 1),
         ]
     finally:
         await ex.close()
@@ -164,8 +168,8 @@ async def test_a_cell_imports_the_memory_helper_from_the_export(
     finally:
         await ex.close()
     assert list(out) == [
-        str(paths.checkout / "memory.py"),
-        f"Memory library: 1 channel, 1 function, at {paths.checkout} (first on the import path).",
+        f"{LIBRARY}/memory.py",
+        f"Memory library: 1 channel, 1 function, at {LIBRARY} (first on the import path).",
         [],
         ["env.spotify.hello(apis, name)", "Say hi."],
     ]
@@ -247,7 +251,7 @@ async def test_with_the_switch_off_the_export_is_neither_mounted_nor_imported(
     try:
         assert list(await _cell(ex, _probe(paths, hidden))) == [
             False,
-            [False] * len(hidden),
+            [False] * (len(hidden) + 1),
         ]
         res = await asyncio.wait_for(
             ex.execute(

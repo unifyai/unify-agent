@@ -949,10 +949,27 @@ Example: ``await install(["pandas>=2"])``
 
 
 async def install(packages: Union[str, List[str]]) -> Dict[str, Any]:
-    from unify import environment
+    from unify import environment, sandbox
 
     specs = [packages] if isinstance(packages, str) else list(packages)
-    return await asyncio.to_thread(environment.install, specs)
+    # A wheel is named as the cell's sandbox shows it (/workspace/...); the
+    # installer runs on the host's paths, and its reply is told back in the
+    # sandbox's (the installer prints the environment's host path).
+    policy = sandbox.build_policy()
+    specs = [
+        sandbox.host_path(s, policy) if isinstance(s, str) and s.startswith("/") else s
+        for s in specs
+    ]
+    result = await asyncio.to_thread(environment.install, specs)
+    return {
+        k: (sandbox.neutral_text(v, policy) if isinstance(v, str) else v)
+        for k, v in result.items()
+    } | {
+        "packages": [
+            sandbox.neutral_text(p, policy) if isinstance(p, str) else p
+            for p in result.get("packages", [])
+        ],
+    }
 
 
 install.__doc__ = _INSTALL_DOC
