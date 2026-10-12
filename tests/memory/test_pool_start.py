@@ -672,3 +672,51 @@ def test_the_brief_frames_proposals_as_material_from_agents_with_a_partial_view(
     assert "`retired` closes an entry for good" in brief and "defer it" in brief
     for how in ("as_is", "edited", "merged", "generalised", "rewritten", "informed"):
         assert f"`{how}`" in brief
+
+
+def test_superseded_by_an_existing_library_item_applies_and_an_unresolvable_target_is_refused(
+    tmp_path,
+):
+    p = _pool_with_staging(tmp_path)
+    existing = {"memory.acct.users:user_id"}
+    ok = {
+        **MAN,
+        "items": [],
+        "pool": {"superseded": {CID: "memory.acct.users:user_id"}},
+    }
+    assert pool.block_problems(ok, p, library_items=existing) == []
+    notes: list[str] = []
+    changed = pool.apply_block(
+        p,
+        ok,
+        "p2",
+        landed=set(),
+        finished=True,
+        library_items=existing,
+        notes=notes,
+    )
+    assert changed == [CID] and p.entries[CID].status == "superseded" and notes == []
+    nowhere = {**MAN, "items": [], "pool": {"superseded": {LID: "memory.nowhere.x:y"}}}
+    probs = pool.block_problems(nowhere, p, library_items=existing)
+    assert (
+        probs
+        and "is not a pool entry, an item this manifest lists or an item in the library"
+        in probs[0]
+    )
+
+
+def test_a_decision_that_cannot_apply_is_named_never_dropped(tmp_path):
+    p = _pool_with_staging(tmp_path)
+    man = {**MAN, "items": [ITEM], "pool": {"merged": {CID: ITEM["item"]}}}
+    notes: list[str] = []
+    changed = pool.apply_block(
+        p,
+        man,
+        "p2",
+        landed=set(),
+        finished=True,
+        library_items=set(),
+        notes=notes,
+    )
+    assert changed == [] and p.entries[CID].status == "open"
+    assert notes == [f"pool.merged: {CID} stays open: {ITEM['item']} did not land"]

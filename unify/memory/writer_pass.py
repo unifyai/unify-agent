@@ -1809,6 +1809,17 @@ CANCELLED_RESULT = (
 )
 
 
+def _library_item_ids(box: Path) -> set[str]:
+    """The ids of the functions and notes the library copy at *box* holds (its files alone; nothing runs)."""
+    from .layout import discover
+
+    try:
+        lib = discover(Path(box))
+    except (OSError, ValueError):
+        return set()
+    return {f.item_id for f in lib.functions} | {n.item_id for n in lib.notes}
+
+
 def _named_items(box: Path) -> list[str]:
     """The item ids the box's manifest names, if it can be read (a cancelled pass's draft names them)."""
     try:
@@ -2406,6 +2417,7 @@ class WriterPass:
 
         try:
             p = self._pool
+            unapplied: list[str] = []
             changed = _pool_mod.apply_block(
                 p,
                 _wt.without_defer(self._pool_manifest),
@@ -2413,6 +2425,8 @@ class WriterPass:
                 landed=set(out.items_merged or []),
                 finished=bool(out.finished),
                 provenance=self._provenance,
+                library_items=getattr(self, "_pool_library_items", None),
+                notes=unapplied,
             )
             new: list = []
             extended: list[str] = []
@@ -2443,6 +2457,8 @@ class WriterPass:
                 "added": added,
                 "extended": sorted(set(extended)),
                 "changed": changed,
+                # decisions that could not apply, each with why (an item that did not land)
+                "unapplied": unapplied,
                 "commit": p.save(pass_id),
                 "at_start": self._pool_at_start,
             }
@@ -2760,7 +2776,13 @@ class WriterPass:
         if self._pool is not None:
             from .pool import block_problems
 
-            probs = block_problems(_wt.without_defer(manifest), self._pool, self._role)
+            library_items = _library_item_ids(box)
+            probs = block_problems(
+                _wt.without_defer(manifest),
+                self._pool,
+                self._role,
+                library_items=library_items,
+            )
             block = manifest.get("pool") if isinstance(manifest, dict) else None
             raw_defer = block.get("defer") if isinstance(block, dict) else None
             rows = _wt.defer_rows(manifest)
@@ -2779,6 +2801,7 @@ class WriterPass:
             if probs:
                 return _redact(f"G1: {probs[0]}")[:600], False
             self._pool_manifest = manifest
+            self._pool_library_items = library_items
         return None, not man.items and not man.deleted
 
     def _event(

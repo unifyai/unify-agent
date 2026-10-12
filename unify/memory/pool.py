@@ -534,7 +534,12 @@ def _adopts_of(manifest: dict) -> dict[str, list[str]]:
     return out
 
 
-def block_problems(manifest: object, pool: Pool, kind: str = "write") -> list[str]:
+def block_problems(
+    manifest: object,
+    pool: Pool,
+    kind: str = "write",
+    library_items: set[str] | None = None,
+) -> list[str]:
     """Problems with *manifest*'s ``pool`` block and its items' ``adopts`` (G1 at finish): decisions must name open
     entries (``reopened``: closed ones); merged needs an item the manifest lists; retired and reopened need a
     reason; CURATE may supersede or retire, not merge; an adopted ref must name a pool entry or a file this pass
@@ -592,6 +597,20 @@ def block_problems(manifest: object, pool: Pool, kind: str = "write") -> list[st
                 out.append(f"pool.{key}: {str(eid)[:20]} is not an open entry")
             elif key == "merged" and (kind == "curate" or v not in items):
                 out.append(f"pool.merged: {eid} must name an item this manifest lists")
+            elif (
+                key == "superseded"
+                and isinstance(v, str)
+                and v
+                and library_items is not None
+                and v not in items
+                and v not in pool.entries
+                and v not in library_items
+            ):
+                # a target nothing can resolve would leave the entry open without a word
+                out.append(
+                    f"pool.superseded: {eid} names {v[:80]!r}, which is not a pool entry, an item this manifest "
+                    "lists or an item in the library",
+                )
             elif not isinstance(v, str) or not v.strip():
                 out.append(
                     f"pool.{key}: {eid} needs {'a value' if key == 'superseded' else 'a reason'}",
@@ -629,12 +648,16 @@ def apply_block(
     landed: set[str],
     finished: bool,
     provenance: list[dict] | None = None,
+    library_items: set[str] | None = None,
+    notes: list[str] | None = None,
 ) -> list[str]:
     """Apply the writer's status changes. From the ``pool`` block of an accepted manifest: merged only for an item
     the gate landed (*landed*); superseded by an item the gate landed, or by another pool entry once finish was
     accepted (no library change for the gate to land); retired and reopened only when finish was accepted. From the
     gate's *provenance* (``{"item", "adopts"}`` per landed item): every open entry a landed item adopts closes as
-    merged. Returns the ids changed."""
+    merged. A decision that cannot apply (its item did not land) is named in *notes*, never dropped without a word.
+    *library_items*: the items the library holds after the pass, which ``superseded`` may name once finish was
+    accepted. Returns the ids changed."""
     changed: list[str] = []
     if (
         isinstance(manifest, dict)
@@ -642,14 +665,24 @@ def apply_block(
         and not block_problems(manifest, pool)
     ):
         block = manifest["pool"]
+        known = library_items or set()
         for eid, item in (block.get("merged") or {}).items():
             if item in landed:
                 pool.set_status(eid, "merged", {"item": item}, pass_id)
                 changed.append(eid)
+            elif notes is not None:
+                notes.append(f"pool.merged: {eid} stays open: {item} did not land")
         for eid, by in (block.get("superseded") or {}).items():
-            if by in landed or (finished and by in pool.entries and by != eid):
+            if by in landed or (
+                finished and by != eid and (by in pool.entries or by in known)
+            ):
                 pool.set_status(eid, "superseded", {"by": by}, pass_id)
                 changed.append(eid)
+            elif notes is not None:
+                notes.append(
+                    f"pool.superseded: {eid} stays open: {by} did not land"
+                    + ("" if finished else " and finish was not accepted"),
+                )
         if finished:
             for eid, reason in (block.get("retired") or {}).items():
                 pool.set_status(eid, "retired", {"reason": reason}, pass_id)
