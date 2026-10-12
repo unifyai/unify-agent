@@ -1,6 +1,6 @@
-"""Hygiene inside Sol's normal pass (D26): merges, aliases and deletions through the existing gate.
+"""Hygiene inside the writer's normal pass: merges, aliases and deletions through the existing gate.
 
-The library is the ARC dialogue pair ``parse_submit_feedback`` / ``submit_state`` (memory-v2.1-hyg's
+The library is the ARC dialogue pair ``parse_submit_feedback`` / ``submit_state`` (the hygiene experiment's
 ``arc_env.pysrc``) with its value checks reduced to shape checks, which G2's held-out run requires: the parent's
 ``submit_state`` re-implements ``parse_submit_feedback``'s validation inline, and ``read_submit_feedback`` is a
 second pass's near-duplicate of ``parse_submit_feedback``.
@@ -257,7 +257,7 @@ def test_a_scripted_pass_merges_the_duplicated_validation_and_the_gate_admits_it
         writer.run(PassRequest("incremental", "dialogue:arc", ["a1"], False), "p1"),
     )
     assert "Tend the library too." in WRITER_SYSTEM
-    # Sol is shown the channel's functions with their recorded covers, and can read them
+    # the writer is shown the channel's functions with their recorded covers, and can read them
     user = script.first[1]["content"]
     assert (
         f"- {PSF}: 2 recorded covers\n- {RSF}: 1 recorded cover\n- {SS}: 3 recorded covers"
@@ -453,7 +453,7 @@ def test_a_kept_function_takes_over_a_deleted_ones_covers_only_if_its_behaviour_
         "deleted_tests": [T_RSF],
     }
     # parse_submit_feedback is edited in the same pass and now answers cover 3 differently: its recorded
-    # cover no longer vouches for the deleted function's input (I1)
+    # cover no longer vouches for the deleted function's input
     twisted = _candidate(mem, {MODULE: PSF_TWISTED + STATE_INLINE, T_RSF: None})
     res = gate.check(parent, twisted, man)
     assert not res.passed and res.refused == ["G3", "G5"], res.reasons
@@ -474,7 +474,7 @@ def test_a_kept_function_takes_over_a_deleted_ones_covers_only_if_its_behaviour_
     assert res.passed, res.reasons
 
 
-# --- the clean-up exemption fails closed (re-review of the C1 fix) -----------------------------------------
+# --- the clean-up exemption fails closed -------------------------------------------------------------------
 
 
 def test_a_result_that_is_not_json_voids_the_clean_up_exemption(arc):
@@ -526,7 +526,7 @@ def test_more_than_max_output_covers_voids_the_clean_up_exemption(arc, monkeypat
     ], res.reasons
 
 
-# --- D28: any change in what a stored function returns on recorded inputs needs a red test ------------------
+# --- any change in what a stored function returns on recorded inputs needs a red test -----------------------
 
 
 def _changed_reason(item, why):

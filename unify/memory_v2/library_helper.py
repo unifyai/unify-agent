@@ -1,4 +1,4 @@
-"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find`` (spec v2.1 §6).
+"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find``.
 
 The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded.
 It imports only the standard library and reads only files beside the package: ``INDEX.md``, ``links.json``
@@ -174,7 +174,11 @@ def show(item: Any) -> str:
     status = row.get("status", "experimental")
     if row["kind"] == "function":
         effect = row.get("effect")
-        out = [f"{row['signature']}  [{status}" + (f", effect: {effect}" if effect else "") + "]"]
+        out = [
+            f"{row['signature']}  [{status}"
+            + (f", effect: {effect}" if effect else "")
+            + "]",
+        ]
     else:
         out = [
             f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else ""),

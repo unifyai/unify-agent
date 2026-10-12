@@ -1,4 +1,4 @@
-"""Use telemetry (memory v2.1 stage 1): per-request use records, the evidence index, Sol's table.
+"""Use telemetry (the library mode's stage 1): per-request use records, the evidence index, the writer's table.
 
 The tracebacks here are real: each cell runs against a real ``env/<channel>/__init__.py`` package on a
 temporary import path, and its traceback is formatted by the traceback module, as the worker does.
@@ -748,7 +748,7 @@ S1_GUIDE = (
 
 
 def test_an_s1_style_section_without_the_old_header_still_counts_what_it_showed(lib):
-    """A channel catalogue in new wording (S1): the old header is absent, so the legacy reading finds
+    """A channel catalogue in new wording: the old header is absent, so the legacy reading finds
     nothing, but the renderer's record still counts every channel and item it showed."""
     assert use.HEADER_PREFIX not in S1_GUIDE
     lines = _lines([], system=f"core prompt\n\n{S1_GUIDE}")
@@ -786,7 +786,7 @@ def test_a_recorded_section_the_prompt_does_not_end_with_still_counts_and_says_s
     rec = use.request_use(later, ITEMS, shown=shown)
     assert rec["shown_items"] == ["env/x:parse"]
     assert rec["memory_section_shown"]["prompt_confirmed"] is False
-    # the record is unconfirmed: the evidence row says so, and Sol's table counts it
+    # the record is unconfirmed: the evidence row says so, and the writer's table counts it
     rows = {r[0]: r for r in _use_rows("e1", rec)}
     assert rows["env/x:parse"][2 + _USE_COUNTS.index("prompt_unconfirmed")] == 1
     # no system prompt recorded at all: flagged unknown and unconfirmed, nothing counts as shown
@@ -1110,7 +1110,7 @@ def test_cells_without_a_status_make_refusals_and_errors_unknown_never_zero(
     assert huge["status"] == "unread" and huge["exits"] == []
     unread = use.request_use(_lines(cells[:1]), ITEMS, cell_status={"c0": huge})
     assert unread["cells_error_unread"] == 1 and not unread["outcomes_known"]
-    # the evidence store, the signals and Sol's table say unknown, never 0
+    # the evidence store, the signals and the writer's table say unknown, never 0
     shown = use.record_shown("SECTION", channels=["x"], items=ITEMS, renderer="index")
     lines = _lines(cells, system="core\n\nSECTION")
     partial = use.request_use(

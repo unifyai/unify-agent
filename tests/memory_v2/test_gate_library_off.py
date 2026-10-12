@@ -1,4 +1,4 @@
-"""With library_mode off (the default), the gate is v2's: no v2.1 check is built, the same pytest calls, no new record."""
+"""With library_mode off (the default), the gate is v2's: no library check, the same pytest calls, no new record."""
 
 from unify.memory_v2 import library_checks
 from unify.memory_v2.gate import Gate, GateResult
@@ -66,7 +66,7 @@ def test_library_checks_need_the_library_layout(world):
     assert (
         Gate(mem, ev, gate.blobs, library_mode=library_checks.LibraryConfig()).qa
         == QAConfig()
-    )  # P3's layout alone: no checks
+    )  # the library layout alone: no checks
     try:
         Gate(
             mem,
@@ -77,14 +77,14 @@ def test_library_checks_need_the_library_layout(world):
     except ValueError as exc:
         assert "LibraryConfig.layout" in str(exc)
     else:
-        raise AssertionError("v2.1 checks on the v2 layout were built")
+        raise AssertionError("library checks on the v2 layout were built")
 
 
 def test_library_merge_checks_the_reduced_candidate_with_the_candidates_seed(
     world,
     monkeypatch,
 ):
-    """Review R2: without a check() round the merge seeds stage 5 by the candidate, and the reduced re-check uses
+    """Without a check() round the merge seeds stage 5 by the candidate, and the reduced re-check uses
     the same seed, so both draw the same recorded inputs and mutants."""
     from types import SimpleNamespace
 
@@ -110,7 +110,7 @@ def test_library_merge_checks_the_reduced_candidate_with_the_candidates_seed(
 
 
 def test_a_memory_test_id_is_root_relative_only_under_the_library_layout():
-    """Review S4(a): v2's test ids keep v2's mapping; a memory/ path is from the root only under v2.1."""
+    """v2's test ids keep v2's mapping; a memory/ path is from the root only under the library layout."""
     from unify.memory_v2.gate import _test_file
 
     tid = "memory/a/tests/test_b.py::test_c"

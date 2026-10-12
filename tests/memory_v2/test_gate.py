@@ -178,7 +178,7 @@ def test_gate_refuses_when_main_moved(world):
     assert b"def me(apis)" in gate.blobs.get(blob)
 
 
-# --- ruling R2: support files are copied onto the parent for the red run ----------------------------
+# --- support files are copied onto the parent for the red run ----------------------------
 
 
 def test_gate_red_run_copies_support_so_existing_code_is_not_red(world):
@@ -512,7 +512,7 @@ def test_gate_g4_index_budget(tmp_path, world):
 
 @pytest.mark.parametrize("surfacing", ["index", "catalogue"])
 def test_gate_g4_is_a_soft_budget(tmp_path, world, surfacing):
-    """v2.1 (UNIFY_MEMORY_V2_SOFT_BUDGET=on): past the budget G4 notes that hygiene is due, measured on
+    """With UNIFY_MEMORY_V2_SOFT_BUDGET=on: past the budget G4 notes that hygiene is due, measured on
     what the prompt carries; it never refuses growth."""
     mem, ev, _ = world
     gate = Gate(
@@ -642,7 +642,7 @@ def test_gate_reasons_never_carry_key_shaped_test_output(tmp_path, world):
     assert KEY not in stored and not any(KEY in r for r in res.reasons)
 
 
-# --- fix round 1: the reviewer's probes (P1-P3) and the scope rules -----------------------------------
+# --- fix round 1: the reviewer's probes and the scope rules -----------------------------------
 
 
 def _probe_runner(target, *, python, ro, rw, cwd, timeout_s=300.0, env=None):
@@ -678,7 +678,7 @@ PROBE_BASE = {"env/venmo/__init__.py": MOD, "env/venmo/tests/test_me.py": PROBE_
 PROBE_ITEM = {**ITEM}
 
 
-def test_probe_p1_unlisted_and_deleted_cannot_declare_paths(probe):
+def test_probe_unlisted_and_deleted_cannot_declare_paths(probe):
     mem, ev, gate = probe
     parent = mem.head()
     cand = _candidate(
@@ -708,7 +708,7 @@ def test_probe_p1_unlisted_and_deleted_cannot_declare_paths(probe):
     assert not res2.passed and not res2.checks["G1"] and mem.head() == parent
 
 
-def test_probe_p2_gitattributes_cannot_hide_files(probe):
+def test_probe_gitattributes_cannot_hide_files(probe):
     mem, ev, gate = probe
     parent = mem.head()
     key = "sk-" + "A" * 40  # pragma: allowlist secret
@@ -743,7 +743,7 @@ def test_probe_p2_gitattributes_cannot_hide_files(probe):
     assert not any(key in r for r in res2.reasons)
 
 
-def test_probe_p3_covers_only_on_environment_functions(probe):
+def test_probe_covers_only_on_environment_functions(probe):
     mem, ev, gate = probe
     p0 = mem.head()
     c0 = _candidate(mem, PROBE_BASE)
@@ -894,7 +894,7 @@ def test_gate_support_allowlist(probe, support):
     ],
 )
 def test_gate_refuses_bytecode_and_foreign_root_entries(probe, path, reason):
-    """v2.1 I4 (every mode), through the probe gate: manifest.unsafe_path's reason comes first, before
+    """In every mode, through the probe gate: manifest.unsafe_path's reason comes first, before
     anything is extracted, declared or not. A declaration support_allowed refuses (any path outside
     env/<channel>/tests/) stops earlier, as a malformed manifest. test_gate_layout.py covers the classes.
     """
@@ -1138,7 +1138,7 @@ def test_gate_inspects_exactly_the_committed_tree(world):
         } == set(files)
 
 
-# --- fix round 2: the reviewer's second probes (N1-N3, I1, M1-M3), ruling R16 ---------------------------
+# --- fix round 2: the reviewer's second probes ---------------------------
 
 
 def _fn(name, body):
@@ -1330,7 +1330,7 @@ def test_r2_n2_declared_skeleton_change_passes_with_every_function_listed(r2):
 
 
 def test_r2_n2_notes_preamble_is_pinned(r2):
-    """R7: a preamble rewrite needs a skeleton declaration, not just any declared note of the file."""
+    """A preamble rewrite needs a skeleton declaration, not just any declared note of the file."""
     mem, ev, gate, parent = r2
     notes = "Never log in.\n\n## Auth\nLog in first, then call me.\n"
     cand = _candidate(mem, {"env/venmo/NOTES.md": notes})
@@ -1464,7 +1464,7 @@ def test_r2_m3_item_ids_are_strict(r2, man):
     assert any("malformed manifest" in r for r in res.reasons)
 
 
-# --- fix round 3: plausible consolidator mistakes (probe_r2: R1-R9) ---------------------------------------
+# --- fix round 3: plausible consolidator mistakes ---------------------------------------
 
 LOGIN_KEEP = (
     '\n\ndef login(apis, fast=False):\n    """Log in.\n\n    Effect: read\n    Input: env\n    """\n'
@@ -1693,7 +1693,7 @@ def test_r3_suites_run_per_channel(tmp_path, r2):
     )
 
 
-# --- fix round 4: liveness when a channel was already red (ruling R19) -----------------------------------
+# --- fix round 4: liveness when a channel was already red -----------------------------------
 
 SLACK_POST = '__all__ = ["post"]\n' + _fn("post", "return 3")
 T_POST = "from env.slack import post\n\ndef test_post():\n    assert post(None) == 3\n"
@@ -2070,7 +2070,7 @@ def test_r5_notes_follow_every_failure_reason_including_the_merge(r2):
     assert kinds == sorted(kinds, key=lambda k: k == "note"), res.reasons
 
 
-# --- preview: the cheap, read-only checks on an uncommitted tree (Sol's check tool) ------------------------
+# --- preview: the cheap, read-only checks on an uncommitted tree (the writer's check tool) ------------------------
 
 
 def _tree(root, files):
@@ -2220,7 +2220,7 @@ def test_preview_refuses_a_declared_input_form_the_covers_cannot_give(
     ], reasons
 
 
-# --- G2: a function that replaces a value it computed from its input under a condition (the F3 lesson) -------
+# --- G2: a function that replaces a value it computed from its input under a condition -------
 
 RULE_MOD = MOD.replace('    return apis.venmo.me()["user_id"]\n', RULE_BODY)
 
@@ -2260,7 +2260,7 @@ def test_a_function_that_replaces_a_computed_value_needs_covers_from_two_episode
     assert res.passed, res.reasons
 
 
-# --- memory v2.1 P2: the whole output of each failing run, and one stage-5 seed per pass -------------------
+# --- the library mode: the whole output of each failing run, and one stage-5 seed per pass -------------------
 
 
 def test_check_keeps_each_failing_runs_whole_output_beside_the_reasons(tmp_path, world):
@@ -2311,7 +2311,7 @@ def test_the_stage5_seed_is_the_passes_when_given():
     run.seed = seed_of("a" * 40)
     assert QAChecks(gate, run).seed == seed_of(
         "a" * 40,
-    )  # v2.1: every round and the merge alike
+    )  # library mode: every round and the merge alike
     assert QAChecks(gate, SimpleNamespace(candidate="c" * 40)).seed == seed_of("c" * 40)
 
 

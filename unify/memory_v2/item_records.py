@@ -1,17 +1,17 @@
-"""Item records of a memory v2.1 library (spec §4.4, D40): harness-written git notes, one map per library commit.
+"""Item records of a library-mode memory library: harness-written git notes, one map per library commit.
 
 The map of library commit C is C's note on ``refs/notes/items``: a header line, then one JSON line per item
 (sorted by id), each a whole record. The harness writes it once, when a consolidation first records C, and never
 changes it, so every copy of C (the actor's export, the writer's box) renders the same bytes (cache rule).
-``main`` is never rebased (D13), so the notes stay attached. Each record names the commit that last changed its
+``main`` is never rebased, so the notes stay attached. Each record names the commit that last changed its
 item (``changed_at``).
 
-A commit no consolidation recorded (a crash between a merge and its record, or history from before v2.1) reads
+A commit no consolidation recorded (a crash between a merge and its record, or history from before library mode) reads
 the map of its nearest recorded first-parent ancestor (:func:`records_at`): statuses carry forward, and an item
 the map does not hold is ``experimental``.
 
 Models never write these records. The writer and the actor read them through ``memory.show``
-(``.memory/items.json``, P3's generated files).
+(``.memory/items.json``, one of the generated files).
 """
 
 from __future__ import annotations
@@ -69,7 +69,8 @@ def empty_record(item: str, kind: str) -> dict:
 
 def new_uid(item: str, changed_at: str | None) -> str:
     """A fresh persistent identity for *item* first recorded at library commit *changed_at*. Derived, not random,
-    so that recomputing a map gives the same bytes; after that it is copied, never recomputed."""
+    so that recomputing a map gives the same bytes; after that it is copied, never recomputed.
+    """
     return hashlib.sha256(f"{item}\0{changed_at or ''}".encode()).hexdigest()[:16]
 
 
@@ -149,7 +150,7 @@ def records_at(
 
 
 def status_of(records: Mapping[str, dict]) -> Callable[[str], str]:
-    """P3's ``status_of``: an item's recorded status, ``experimental`` without a (valid) one."""
+    """A ``status_of`` function: an item's recorded status, ``experimental`` without a (valid) one."""
 
     def get(item: str) -> str:
         rec = records.get(item)

@@ -11,8 +11,8 @@ What goes with a refused item (:func:`with_dependents`, a closure over the manif
 * an environment function that calls it, directly or through the module's private helpers (by name, in
   the candidate's module: ``ast``, never text);
 * an item whose test files import it by name (``from env.<channel> import <name>``);
-* under memory v2.1 (D42, :func:`uses_library_mode`), an item whose module or tests import it: by name, through a package
-  that re-exports it (resolved to the module that defines it, Amendment A), or with its whole module.
+* in library mode (:func:`uses_library_mode`), an item whose module or tests import it: by name, through a package
+  that re-exports it (resolved to the module that defines it), or with its whole module.
 
 What the reduction does to each refused item (:func:`build`), from the materialised candidate tree:
 
@@ -190,11 +190,11 @@ def _imports_library_mode(
 
 
 def uses_library_mode(tree: Path, it: ManifestItem, ctx=None) -> set[str]:
-    """v2.1 (D42): item ids *it* depends on in the candidate *tree*:
+    """In library mode: item ids *it* depends on in the candidate *tree*:
 
     - the functions of its own module it calls, directly or through private helpers (:func:`_called`);
     - what its module and its tests import from the library (:func:`_imports_library_mode`): a name, resolved through
-      a package's re-exports to the module that defines it (Amendment A), or every function of a module
+      a package's re-exports to the module that defines it, or every function of a module
       imported whole.
     """
     modules, inits, by_module = ctx or _library_context(tree)
@@ -239,8 +239,8 @@ def with_dependents(
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Every refused item with its codes (the failed ones' checks, ``dependency`` for the rest) and why.
 
-    With *library_mode* (D42) an item goes with a refused item that its module or its tests import (:func:`uses_library_mode`),
-    and, through the loop, with what goes with that one."""
+    With *library_mode* an item goes with a refused item that its module or its tests import
+    (:func:`uses_library_mode`), and, through the loop, with what goes with that one."""
     refused = {i: list(c) for i, c in failed.items()}
     reasons: list[str] = []
     by_id = {it.item: it for it in man.items}

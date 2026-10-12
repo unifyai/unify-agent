@@ -1,5 +1,5 @@
-"""m4k-c2 (MAIN 11 Oct, the rehearsal-2 diagnosis ab734c1e): compaction measures the prompt text, never the provider's
-opaque fields, and compacts only for a real drop, so it never fires call after call; each S0 reference in the batch
+"""Compaction measures the prompt text, never the provider's
+opaque fields, and compacts only for a real drop, so it never fires call after call; each miner reference in the batch
 map carries a gist of its code and its instance count."""
 
 import json
@@ -33,21 +33,21 @@ def _message(role, content, args, psf, reasoning, i):
 
 
 def test_the_rehearsal_pass_that_thrashed_never_compacts_call_after_call(tmp_path):
-    """dr2-med-A pass 1's real message sizes, blobs included: under m4k-c's serialized measure the conversation was
+    """A rehearsal pass's real message sizes, blobs included: under the earlier serialized measure the conversation was
     "over size" from call ~50 on, so compaction fired on every call; now it fires only for a real drop.
     """
     rows = json.loads(SIZES.read_text())["rows"]
     for at in (
         240_000,
         writer_pass.COMPACT_AT_CHARS,
-    ):  # m4k-c's recorded value, and today's
+    ):  # the earlier recorded value, and today's
         msgs, events, old_over, calls = [], [], 0, 0
         (tmp_path / str(at)).mkdir()
         for i, (role, content, args, psf, reasoning) in enumerate(rows):
             if role == "assistant":
                 calls += 1
                 if sum(len(json.dumps(m)) for m in msgs) > at:
-                    old_over += 1  # m4k-c's measure: a compaction on this call
+                    old_over += 1  # the earlier measure: a compaction on this call
                 if writer_pass._compact(msgs, tmp_path / str(at), at):
                     events.append(calls)
             msgs.append(_message(role, content, args, psf, reasoning, i))
@@ -69,8 +69,8 @@ def test_provider_fields_and_reasoning_are_not_prompt_text():
 
 
 def test_no_compaction_without_a_real_drop(tmp_path):
-    """Sol's own messages alone over the size, with little old tool output: nothing moves (a stub would only break
-    the cache)."""
+    """The writer's own messages alone over the size, with little old tool output: nothing moves (a stub would only
+    break the cache)."""
     big_calls = [{
         "role": "assistant", "content": None, "tool_calls": [
         {"id": f"c{i}", "type": "function", "function": {"name": "execute_code", "arguments": "a" * 30_000}},

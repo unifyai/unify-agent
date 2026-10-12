@@ -102,7 +102,7 @@ def test_signals_and_the_table_say_where_the_shown_counts_came_from(tmp_path):
     assert only.splitlines()[-1].startswith("env/x:strict | ")
 
 
-# --- Sol's first message ---------------------------------------------------------------------------------
+# --- the writer's first message --------------------------------------------------------------------------
 
 
 class _First:
@@ -141,7 +141,7 @@ def _library(tmp_path) -> Repo:
     return mem
 
 
-def test_with_the_switch_off_sols_first_message_is_the_screen_builds(tmp_path):
+def test_with_the_switch_off_the_writers_first_message_is_the_screen_builds(tmp_path):
     """``UNIFY_MEMORY_V2_WRITER_USAGE`` off (the default): the first message is byte for byte what the screen
     build (9deefbfd1) sent, even with use rows recorded for the pass's requests."""
     mem = _library(tmp_path)
@@ -152,7 +152,7 @@ def test_with_the_switch_off_sols_first_message_is_the_screen_builds(tmp_path):
     req = PassRequest("batched", None, ["e1"], False)
     with mem.temp_checkout() as wt:
         index = build_index(wt)
-    # the index, then (D26, memory-v2-sol-hygiene) the pass's functions with their cover counts; no table
+    # the index, then (for the writer's hygiene) the pass's functions with their cover counts; no table
     head = f"Pass p1: {json.dumps(req.__dict__)}\n\nCurrent index:\n{index}"
     tail = "\n\nFunctions on this pass's channels:\n"
     assert got.startswith(head + tail), got
@@ -177,7 +177,7 @@ def test_with_the_switch_on_the_table_is_added_after_the_index(tmp_path):
     assert on == off.replace("Pass p1:", "Pass p1b:", 1) + "\n\n" + table
 
 
-def test_sols_first_message_carries_the_usage_table_and_no_checker_text(tmp_path):
+def test_the_writers_first_message_carries_the_usage_table_and_no_checker_text(tmp_path):
     mem = _library(tmp_path)
     ev = EvidenceStore(tmp_path / "e.sqlite")
     _index(ev, "e0", _record({"env/x:parse": {"called": 1}}), "2026-10-08T00:00:00Z")
@@ -222,7 +222,7 @@ def test_sols_first_message_carries_the_usage_table_and_no_checker_text(tmp_path
         "env/x:lookup | 1 | 1 | 1 | 0 | 0 | 0 of 1 known (+0 unknown) | 0 | "
         "0 of 1 known (+0 unknown) | 0 | never" in table
     )
-    # ruling R10: the checker's verdict changes nothing Sol is shown
+    # the checker's verdict changes nothing the writer is shown
     assert after.split("Current index:", 1)[1] == table
     for word in ("checker", "fail", "solved", "e1.checker"):
         assert word not in table

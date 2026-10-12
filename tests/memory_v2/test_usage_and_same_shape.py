@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 S3 and S4: measured use for the writer, same-shape functions for CURATE, the when-to-use note."""
+"""Measured use for the writer, same-shape functions for CURATE, the when-to-use note."""
 
 from unify.memory_v2 import curate, library_prompts as pv
 from unify.memory_v2.evidence import EvidenceStore

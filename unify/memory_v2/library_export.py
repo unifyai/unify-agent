@@ -1,16 +1,16 @@
-"""The generated files of every v2.1 library copy (spec v2.1 §4.1–4.5, §6): the actor's export and Sol's box.
+"""The generated files of every library-mode copy of the library: the actor's export and the writer's box.
 
 * ``memory/__init__.py``: :mod:`.library_helper`, byte for byte (``index``, ``show``, ``find``);
 * ``INDEX.md`` and ``links.json``: :mod:`.library_index`;
 * ``.memory/items.json``: what ``show`` reads per item, namely its kind, path, signature or title, status, the
-  verification and use records (None until P5) and the subjects of the commits that changed it;
+  verification and use records (None without item records) and the subjects of the commits that changed it;
 * ``.memory/find.json``: the listed functions with their recorded input shapes, keyed by body digest
   (:mod:`.shape_rows`);
 * ``.memory/matcher.py``: v2's matcher (:mod:`.memory_helper` up to its catalogue section, so none of v2's
   catalogue or its footer ships);
 * ``.memory/shapes.py``: :mod:`.analysis.shapes`, byte for byte.
 
-None of these is ever committed (D13; P4's G1 refuses them). Each is a pure function of the tree, the item
+None of these is ever committed (the gate's G1 check refuses them). Each is a pure function of the tree, the item
 statuses, the recorded shapes and the history, so the same commit gives the same bytes (cache rule).
 """
 
@@ -142,7 +142,7 @@ def items_data(
             "status": _status(status_of, item),
             "status_reason": (
                 rec.get("status_reason") if rec else None
-            ),  # why it is out of the index (P5)
+            ),  # why it is out of the index (item record)
             "verification": verification_summary(rec) if rec else None,
             "use": use_totals(rec) if rec else None,
             "history": h[:HISTORY_SHOW],
@@ -196,7 +196,7 @@ def find_data(
             "signature": f.signature,
             "input": ((records or {}).get(f.item_id) or {}).get("input") or "",
             "summary": f.summary,
-        }  # input: the item record's form, from P5
+        }  # input: the item record's form
         if shapes is not None and f.item_id in bodies:
             found = shapes(f.item_id, body_digest(bodies[f.item_id]))
             if found and found[0]:
@@ -221,8 +221,8 @@ def generated_library_mode(
 ) -> dict[str, bytes]:
     """Every generated file of the copy of the library at *tree*, by relative path (module docstring).
 
-    *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives P3's files
-    byte for byte."""
+    *records* are the item records at the copy's commit (:func:`.item_records.records_at`); None gives the files
+    without item records, byte for byte."""
     tree = Path(tree)
     lib = discover(tree)
     links = build_links(lib)

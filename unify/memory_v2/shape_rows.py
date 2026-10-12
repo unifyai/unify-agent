@@ -1,4 +1,4 @@
-"""The recorded input shapes each memory commit's catalogue shows, frozen per commit (v2.1 surfacing).
+"""The recorded input shapes each memory commit's catalogue shows, frozen per commit (library-mode surfacing).
 
 A function's input shapes are the shapes of the recorded inputs the gate admitted it on
 (:func:`descriptor`, with :mod:`.memory_helper`'s ``file_shape`` and ``value_shape``). They are kept as a
@@ -93,7 +93,7 @@ def _functions(
     library_mode: bool = False,
 ) -> dict[str, tuple[str, str | None]]:
     """item -> (body digest, declared input form or None) of the environment functions in *tree*; with *library_mode*
-    the v2.1 function items (spec §4.2), whose input form comes from P5's item records (None until then).
+    the library function items, whose input form comes from the item records (None until then).
     """
     if library_mode:
         from .layout import function_bodies

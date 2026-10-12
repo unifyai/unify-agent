@@ -1,4 +1,4 @@
-"""Per-kind queries over exported episodes and the recorded file blobs (spec §F2).
+"""Per-kind queries over exported episodes and the recorded file blobs.
 
 Inside a consolidation pass, ``/inputs/episodes/<id>.json`` holds each episode and ``/inputs/blobs/``
 the file blobs its worktree actions recorded, as one file per blob id (the content's SHA-256), plus

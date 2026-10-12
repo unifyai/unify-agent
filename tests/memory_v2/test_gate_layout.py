@@ -1,6 +1,6 @@
 """Compiled code, start-up hooks and stray root entries are refused before anything is extracted or run.
 
-Review I4 (v2.1): on 9deefbfd1 ``layout_allowed`` admitted every non-``.py`` path (``manifest.py:297``, a
+On 9deefbfd1 ``layout_allowed`` admitted every non-``.py`` path (``manifest.py:297``, a
 non-``.py`` path under a tests directory, and ``manifest.py:300``, any other non-``.py`` path) and
 ``forbidden`` (``manifest.py:255``) names only ``sitecustomize.py``/``usercustomize.py`` and ``*.pth``. So
 ``Gate._early`` (``gate.py:624``) passed such a candidate, ``materialise`` extracted it and G3 ran pytest with

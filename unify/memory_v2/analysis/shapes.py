@@ -1,4 +1,4 @@
-"""Deterministic file shapes over recorded bytes (spec §C3): format plus structure, never values.
+"""Deterministic file shapes over recorded bytes: format plus structure, never values.
 
 :func:`shape` reads at most :data:`PARSE_LIMIT` bytes and returns a JSON-able dict:
 

@@ -1,4 +1,4 @@
-"""Work-tree adapter (spec §C2 "work tree" kind, §C3 shapes, §C5 option A, §E5 snapshot history).
+"""Work-tree adapter: the "work tree" action kind, its shapes and the snapshot history.
 
 :class:`WorkTreeRecorder` turns the per-cell audit records of the worker (the raw ``sys.audit`` names the
 separate audit adapter emits: ``open``, ``os.listdir``, ``os.scandir``, ``os.remove``, ``os.rename``,
@@ -59,22 +59,22 @@ with bounded depth and no ``NaN`` / ``Infinity``, checked against the shape sche
 :mod:`worktree_shapes` (only that format's keys and types, bounded strings and counts), and any violation
 gives ``{"format", "unparsed": "invalid"}``; then every string in it, keys and values, is redacted.
 
-What holds raw content (controller rulings on review item I5, R26 and R28)
--------------------------------------------------------------------------
+What holds raw content
+----------------------
 The snapshot git dir holds the same bytes as the user's own workspace, unredacted: it lives harness-side,
-is never mounted into a cell or into Sol's box, and blame / exact checkout need the real bytes.
+is never mounted into a cell or into the writer's box, and blame / exact checkout need the real bytes.
 Everything this adapter exports, i.e. the rows and the blob-store blobs they reference (which reach the
-evidence store and Sol), is redacted first. The default redactor knows the secrets in ``os.environ``.
+evidence store and the writer), is redacted first. The default redactor knows the secrets in ``os.environ``.
 
 A redactor scans text, so it cannot see inside compression or any other binary encoding, wherever in the
-file a stream starts. Exported blobs are therefore text only (ruling R28, which replaced R27's list of
-container signatures): a file's bytes are exported only when they decode as strict UTF-8 and hold no NUL
-byte (:func:`exportable_text`), whatever its name. Every other file (a zip, gzip, tar, PDF, image, a zlib
+file a stream starts. Exported blobs are therefore text only (not a list of container signatures): a file's
+bytes are exported only when they decode as strict UTF-8 and hold no NUL byte (:func:`exportable_text`),
+whatever its name. Every other file (a zip, gzip, tar, PDF, image, a zlib
 stream, a gzip appended to a log, latin-1 text) is ``withheld: "binary"``: its row holds the SHA-256 of
 its bytes, its size and its (redacted) shape, and no blob. The same rule holds for the request's
 work-tree diff (``Episode.worktree_diff``), which only :meth:`WorkTreeRecorder.diff` builds.
 
-No exported hash or id is of raw text from which a secret was redacted (ruling R30): a short password's
+No exported hash or id is of raw text from which a secret was redacted: a short password's
 file could otherwise be found by hashing guesses offline. Such a row has ``redacted: True`` and no git
 ``oid`` (its blob id, when it has a blob, is the SHA-256 of the redacted text), and the diff hashes text
 after redaction. Raw-content ids are exported only for text with no redaction, and for binary files.
@@ -194,7 +194,7 @@ def _gap(stage: str, rel: str) -> None:
     """Test seam between enumerating a name ("listed") or checking its fd ("checked") and reading it."""
 
 
-# -- shapes (spec §C3): parsed in a bounded child, never in this process ----------------------------
+# -- shapes: parsed in a bounded child, never in this process ---------------------------------------
 def _format_of(path: str) -> str:
     return FORMATS.get(Path(path).suffix.lower(), "text")
 
@@ -220,7 +220,7 @@ def _lib_dirs() -> tuple[str, ...]:
 
 
 def exportable_text(data: bytes) -> bool:
-    """Whether *data* may leave the harness as bytes (controller ruling R28): strict UTF-8 with no NUL.
+    """Whether *data* may leave the harness as bytes: strict UTF-8 with no NUL.
 
     The only test, whatever the file's name or signature. Anything else (any binary, container or
     embedded stream, and text in another encoding) exports its SHA-256, size and redacted shape only.
@@ -524,7 +524,7 @@ class GitTimeout(GitError):
     """A git command that ran past the time it was given."""
 
 
-# -- git plumbing (spec §E5) -------------------------------------------------------------------------
+# -- git plumbing ------------------------------------------------------------------------------------
 def _git_setup(
     repo: Repo,
     args: list[str],
@@ -731,8 +731,8 @@ class _Stored:
     blob: str | None  # redacted bytes in the blob store; None over the cap or withheld
     shape: dict | None  # None when the shape was not asked for
     size: int
-    sha256: str | None = None  # of the raw bytes of a withheld file (R28)
-    redacted: bool = False  # text with at least one secret redacted (R30)
+    sha256: str | None = None  # of the raw bytes of a withheld file
+    redacted: bool = False  # text with at least one secret redacted
 
     def withheld(self, suffix: str = "") -> dict:
         """The row fields of a withheld file (none otherwise); *suffix* is ``_before`` or ``_after``."""
@@ -742,7 +742,7 @@ class _Stored:
 
     def ids(self, oid: str, suffix: str = "") -> dict:
         """The row's git id of the file: the raw bytes' *oid*, or None and ``redacted: True`` when a
-        secret was redacted from it (ruling R30: a raw-content id would let a short secret be guessed
+        secret was redacted from it (a raw-content id would let a short secret be guessed
         offline; the blob id, when there is a blob, is of the redacted text)."""
         if self.redacted:
             return {f"oid{suffix}": None, f"redacted{suffix}": True}
@@ -961,15 +961,15 @@ def worktree_diff(
     max_paths: int = DIFF_PATHS,
     seconds: float = DIFF_SECONDS,
 ) -> str:
-    """The text of ``Episode.worktree_diff`` between snapshot commits *before* and *after* (ruling R28).
+    """The text of ``Episode.worktree_diff`` between snapshot commits *before* and *after*.
 
     Built here from the snapshot blobs, never by ``git diff``: ``--binary`` emits base85 of every file,
     and git's own text test only looks for a NUL in the first 8000 bytes, so a small compressed file would
     be printed as text. A changed path whose sides are both :func:`exportable_text` within *blob_cap*
     bytes and ``DIFF_LINES`` lines gets a unified diff of its sides, each redacted whole first (so a
     multi-line secret is never split by the diff's line prefixes). Every other changed path gets one line
-    with each side's SHA-256 (of its redacted text for ``text``, of its raw bytes for ``binary``: ruling
-    R30) and size and no bytes: ``binary``, ``text`` (over a limit, or an empty file added or deleted),
+    with each side's SHA-256 (of its redacted text for ``text``, of its raw bytes for ``binary``) and
+    size and no bytes: ``binary``, ``text`` (over a limit, or an empty file added or deleted),
     or ``text …: changed; content redacted`` when redaction hides the whole change. A path whose blobs
     cannot be read gets ``failed <path>: <error type>``. Every part is redacted again
     (paths included).
@@ -1063,7 +1063,7 @@ def _path_diff(
     )
     sides = [x for x in (a, b) if x is not None]
     text = all(exportable_text(x) for x in sides)
-    # text is hashed as redacted (ruling R30): a raw hash would let a short secret be guessed offline
+    # text is hashed as redacted: a raw hash would let a short secret be guessed offline
     ra, rb = (
         redactor.text(x.decode("utf-8")) if text and x is not None else None
         for x in (a, b)
@@ -1248,7 +1248,7 @@ class WorkTreeRecorder:
                 status, response = self._write_response(path, before_oid, after_oid)
             except Exception as exc:  # noqa: BLE001 - one path never loses the rest
                 self._notes.add("write record failed", path)
-                # whether a secret was redacted from it is unknown, so no raw git id (R30)
+                # whether a secret was redacted from it is unknown, so no raw git id
                 status, response = "unrecorded", {
                     "blob_before": None,
                     "blob_after": None,
@@ -1519,9 +1519,9 @@ class WorkTreeRecorder:
         """Redact and (up to the cap) store *data*, and shape it if *shape*; the shape is taken from the
         redacted bytes.
 
-        Only text is ever stored (:func:`exportable_text`, controller ruling R28): for any other file the
+        Only text is ever stored (:func:`exportable_text`): for any other file the
         row gets the SHA-256 of the raw bytes, the size and the shape instead. Text is redacted whole,
-        over the blob cap too, so ``redacted`` (ruling R30) knows of every secret in it.
+        over the blob cap too, so ``redacted`` knows of every secret in it.
         """
         size = len(data)
         text = exportable_text(data)

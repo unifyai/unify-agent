@@ -1,4 +1,4 @@
-"""The lean docstring standard (v2.1 stage 3): parsing, the gate's reasons, self-explaining refusals."""
+"""The lean docstring standard: parsing, the gate's reasons, self-explaining refusals."""
 
 import ast
 
@@ -152,7 +152,7 @@ def test_the_standard_text_is_generated_from_the_constants():
 
 
 def test_the_example_must_call_the_function_on_a_fixture_and_show_its_result():
-    """I2: a real example calls the function itself with an argument, shows a result and reads a fixture."""
+    """A real example calls the function itself with an argument, shows a result and reads a fixture."""
     split = docstrings.problems(
         FULL,
         ["path", "strict"],
@@ -272,7 +272,7 @@ def _example(body: str) -> docstrings.Docstring:
     ],
 )
 def test_only_a_shown_call_on_the_fixture_counts(body, want):
-    """Minor (re-review I2): the shown output is the call's own value, made once on the fixture."""
+    """The shown output is the call's own value, made once on the fixture."""
     got = docstrings.example_problems(_example(body), FN, "w")
     kinds = [
         "calls" if p.startswith(f"Example: no example calls `{FN}(...)`") else "fixture"

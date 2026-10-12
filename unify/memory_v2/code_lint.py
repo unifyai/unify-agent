@@ -1,4 +1,4 @@
-"""The literal lint of memory v2.1 (spec §9.1): a function may not hard-code a value that varies across its
+"""The literal lint of the library mode: a function may not hard-code a value that varies across its
 recorded inputs.
 
 A value *varies* (:func:`varying_values`) when:
@@ -13,7 +13,7 @@ What the lint looks at:
 - not its docstring, not the messages of its ``raise`` statements, and not its parameter defaults (a default is a
   parameter).
 
-Reasons name a line and a literal's kind and length, never its value (R10).
+Reasons name a line and a literal's kind and length, never its value.
 """
 
 from __future__ import annotations

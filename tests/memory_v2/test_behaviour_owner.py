@@ -1,4 +1,4 @@
-"""D28's ``Gate._behaviour_owner``: which manifest item a behaviour change found by G3's check belongs to.
+"""``Gate._behaviour_owner``: which manifest item a behaviour change found by G3's check belongs to.
 
 A function of a changed channel that does something else on its recorded inputs, with no red test, is
 refused under G3. The failure is item-scoped (only that item is refused, and per-item admission can land

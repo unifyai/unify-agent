@@ -1,4 +1,4 @@
-"""SQLite evidence store (spec §3, D5): a derived index over the episodes and memory repos."""
+"""SQLite evidence store: a derived index over the episodes and memory repos."""
 
 from __future__ import annotations
 
@@ -39,26 +39,27 @@ CREATE TABLE IF NOT EXISTS shape_commits(commit_sha TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS commit_shapes(commit_sha TEXT, item TEXT, body TEXT, shapes TEXT, backfilled INTEGER,
   PRIMARY KEY(commit_sha, item));
 """
-# Spec v2.1 §5 (P9): the checker signals the bed showed the actor, created by the first such signal, so a store
+# The checker signals the bed showed the actor, created by the first such signal, so a store
 # that never records one (every bed without UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE) keeps the schema above.
 _VISIBLE_TABLE = "CREATE TABLE IF NOT EXISTS signal_visible(signal_id TEXT PRIMARY KEY)"
 
-# Memory v2.1 (spec §8.4, §9.2): one row per v2.1 pass (its rounds, the blob ids of each refused round's full
-# gate result and of its final one), created by the first write, so a store that never runs a v2.1 pass keeps
+# Library mode: one row per library-mode pass (its rounds, the blob ids of each refused round's full
+# gate result and of its final one), created by the first write, so a store that never runs such a pass keeps
 # the v2 schema (as with _SHAPE_SCHEMA).
 _ROUNDS_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS pass_rounds(pass_id TEXT PRIMARY KEY, role TEXT, rounds INTEGER, "
     "round_blobs TEXT, gate_blob TEXT)"
 )
 
-# memory v2.1 (P4 Amendment C): the typed covers of landed items, created lazily on the first v2.1 merge
+# Library mode: the typed covers of landed items, created lazily on the first library-mode merge
 _TYPED_COVERS_SCHEMA = (
     "CREATE TABLE IF NOT EXISTS typed_covers(item TEXT, episode_id TEXT, cover_json TEXT, "
     "PRIMARY KEY(item, episode_id, cover_json))"
 )
 
-# Memory v2.1 CURATE (spec §10.3-10.4, P6): the fingerprints each CURATE pass was shown, and the aliases,
-# retirements and dropped aliases each landed CURATE pass made (P5 reads them for alias_of and deprecated).
+# CURATE passes: the fingerprints each CURATE pass was shown, and the aliases,
+# retirements and dropped aliases each landed CURATE pass made (the item records read them for alias_of and
+# deprecated).
 # Created by the first write, so a store that never runs CURATE keeps the v2 schema (as with _SHAPE_SCHEMA).
 _CURATE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS curate_seen(fingerprint TEXT PRIMARY KEY, pass_id TEXT);
@@ -301,7 +302,7 @@ _PASS_COLUMNS = (
 
 class EvidenceStore:
     def __init__(self, path: Path, timeout_s: float | None = None) -> None:
-        # memory v2.1: a pass worker and a request share the store, so the worker waits longer on a busy lock;
+        # library mode: a pass worker and a request share the store, so the worker waits longer on a busy lock;
         # None keeps sqlite3's default (5 s), as in v2
         self.db = (
             sqlite3.connect(str(path))
@@ -351,7 +352,7 @@ class EvidenceStore:
                 )
             return int(cur.lastrowid)
 
-    # -- item use (memory v2.1 telemetry) --------------------------------------------------------------
+    # -- item use (library-mode telemetry) -------------------------------------------------------------
 
     def item_use(
         self,
@@ -542,7 +543,7 @@ class EvidenceStore:
                 ),
             )
             if sig.visible_to_actor:
-                # Spec v2.1 §5 (P9): the table exists only once a visible signal is posted, so a store that
+                # The table exists only once a visible signal is posted, so a store that
                 # never had one keeps the schema it had before.
                 self.db.execute(_VISIBLE_TABLE)
                 self.db.execute(
@@ -821,7 +822,7 @@ class EvidenceStore:
         return live
 
     def record_pass_rounds(self, row: dict) -> bool:
-        """Record a v2.1 pass's rounds (``pass_id``, ``role``, ``rounds`` or None when unknown, ``round_blobs``
+        """Record a library-mode pass's rounds (``pass_id``, ``role``, ``rounds`` or None when unknown, ``round_blobs``
         as a JSON list, ``gate_blob``); the first record of a pass wins. False if one existed.
         """
         with self.db:
@@ -840,8 +841,8 @@ class EvidenceStore:
         return cur.rowcount == 1
 
     def pass_rounds(self, role: str = "write") -> list[dict]:
-        """Every recorded v2.1 pass of *role*, oldest first, joined with its pass row (its D13 ``patch_blob``,
-        ``passed``, ``items_merged`` and ``items_refused``); [] when no v2.1 pass ran.
+        """Every recorded library-mode pass of *role*, oldest first, joined with its pass row (its ``patch_blob``,
+        ``passed``, ``items_merged`` and ``items_refused``); [] when no such pass ran.
         """
         if not self._has_table("pass_rounds"):
             return []
@@ -887,7 +888,7 @@ class EvidenceStore:
         )
 
     def add_typed_cover(self, item: str, eid: str, cover_json: str) -> None:
-        """Record a typed cover of a landed v2.1 item (:func:`.procedures.cover_raw`, as canonical JSON)."""
+        """Record a typed cover of a landed library-mode item (:func:`.procedures.cover_raw`, as canonical JSON)."""
         with self.db:
             self.db.execute(_TYPED_COVERS_SCHEMA)
             self.db.execute(
@@ -896,7 +897,7 @@ class EvidenceStore:
             )
 
     def typed_covers(self) -> list[tuple[str, str, str]]:
-        """Every recorded typed cover as ``(item, episode_id, cover_json)``, sorted; [] before any v2.1 merge."""
+        """Every recorded typed cover as ``(item, episode_id, cover_json)``, sorted; [] before any merge records one."""
         if not self._has_table("typed_covers"):
             return []
         return [

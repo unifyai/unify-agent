@@ -1,4 +1,4 @@
-"""What a cover must point at, per action kind (spec §F3; the gate's G2).
+"""What a cover must point at, per action kind (the gate's G2).
 
 An environment function's ``covers`` name recorded actions ``[episode_id, action_index]``. G2 checks only
 that each is a real recorded observation of the right kind on the item's own channel; the tests the item
@@ -17,11 +17,11 @@ dialogue   an action with status ``ok`` and a recorded observation (``response``
 
 A tool, worktree or dialogue action the environment rejected (status ``error`` with its recorded error
 text or error response; :func:`is_rejection`) is also a cover: it is how an item shows that the
-environment itself restricts a value (spec §F3a). The gate requires at least one cover that is not such a
+environment itself restricts a value. The gate requires at least one cover that is not such a
 rejection.
 
 In v2 the action's memory channel (:func:`.episodes.env_channel` of its kind and channel key) must be the
-item's channel. v2.1 has no channel rule (D42).
+item's channel. The library mode has no channel rule.
 """
 
 from __future__ import annotations
@@ -95,8 +95,8 @@ def cover_problem(
 ) -> str | None:
     """Why recorded action *a* cannot be a cover of an item on memory channel *channel*, or None.
 
-    With *channel_rule* False (memory v2.1, spec §4.1 and D42) the action's channel is not compared: a cover is
-    any real recorded observation of its kind, and the item's source channel lives in its record (P5).
+    With *channel_rule* False (the library mode) the action's channel is not compared: a cover is
+    any real recorded observation of its kind, and the item's source channel lives in its record.
     """
     if a is None:
         return "not a recorded action"

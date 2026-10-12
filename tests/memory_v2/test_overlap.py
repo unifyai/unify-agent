@@ -1,4 +1,4 @@
-"""Overlap candidates (spec v2.1 §10.3): shapes and covers, anti-unified bodies, notes with the same uses."""
+"""Overlap candidates: shapes and covers, anti-unified bodies, notes with the same uses."""
 
 from __future__ import annotations
 

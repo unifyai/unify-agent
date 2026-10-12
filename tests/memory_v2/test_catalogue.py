@@ -1,4 +1,4 @@
-"""The export's generated catalogue and the ``memory`` helper (v2.1 surfacing, lane S1).
+"""The export's generated catalogue and the ``memory`` helper (library-mode surfacing).
 
 Memory is a library the working model works in: the harness writes ``README.md``, ``.memory/catalog.json``
 and the ``memory`` helper beside every export. The helper is loaded here from the export exactly as a cell
@@ -310,7 +310,7 @@ def test_reexporting_an_older_commit_after_a_later_merge_gives_the_same_bytes(
     library,
     tmp_path,
 ):
-    """I5: shapes are frozen per memory commit, so a later merge never changes an older commit's catalogue."""
+    """Shapes are frozen per memory commit, so a later merge never changes an older commit's catalogue."""
     mem, sha, export, ev, written = library
     base = mem.head()
     with (
@@ -578,7 +578,7 @@ def test_find_still_finds_real_arc_and_office_shapes(library, tmp_path):
     assert [(f.name, f.match) for f in memory.find(big)] == [
         ("env.dialogue_user.parse_submit", "structure"),  # another length class
     ]
-    # one named key says little: still listed, labelled weak (re-review I3 floor)
+    # one named key says little: still listed, labelled weak (the floor)
     assert [(f.name, f.match) for f in memory.find({"status": "fine"})] == [
         ("env.dialogue_user.parse_status", "weak"),
     ]
@@ -770,7 +770,7 @@ def test_a_single_key_match_is_weak_unless_a_typed_structure_sits_under_it():
 
 
 def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
-    """Minor (re-review I3): a 20^5 nested list (3.2 million leaves) is shaped from its first
+    """A 20^5 nested list (3.2 million leaves) is shaped from its first
     MAX_NODES nodes; values under the budget are shaped exactly as before (no ``truncated`` key).
     """
     import time
@@ -790,8 +790,8 @@ def test_a_huge_nested_value_is_shaped_in_bounded_time_and_marked_truncated():
     assert "truncated" not in small and small["tree"] == [[["int"]]]
 
 
-def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
-    """M9: Sol's first message carries the README while it fits WRITER_README_BUDGET_TOKENS; past it, the
+def test_the_writers_readme_message_is_capped_with_a_compact_view(library, tmp_path):
+    """The writer's first message carries the README while it fits WRITER_README_BUDGET_TOKENS; past it, the
     channel lines and one line per function as fit, and how to read the rest. Bounded at any size.
     """
     _, _, export, _, _ = library
@@ -826,7 +826,7 @@ def test_sols_readme_message_is_capped_with_a_compact_view(library, tmp_path):
     )
 
 
-# --- memory.catalog() is bounded (I-S1) ------------------------------------------------------------------
+# --- memory.catalog() is bounded -------------------------------------------------------------------------
 
 
 def _big_tree(tree: Path, channels: dict[str, int], summary: str = "") -> None:

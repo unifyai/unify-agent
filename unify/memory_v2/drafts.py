@@ -1,8 +1,8 @@
-"""Drafts (spec v2.1 §8.4, D41): work the gate refused after the repair rounds, given to the next WRITE pass.
+"""Drafts: work the gate refused after the repair rounds, given to the next WRITE pass.
 
-A draft is not a branch (D13 stands). It is the patch the gate already saves with a pass's row
+A draft is not a branch. It is the patch the gate already saves with a pass's row
 (``passes.patch_blob``; :meth:`.gate.Gate._record`: a refused pass keeps its whole patch, a reduced one what it
-refused) plus the pass's final full gate result (``pass_rounds.gate_blob``). Only v2.1 passes leave drafts.
+refused) plus the pass's final full gate result (``pass_rounds.gate_blob``). Only library-mode passes leave drafts.
 
 States, decided only from the evidence store, in pass order (:meth:`.evidence.EvidenceStore.pass_rounds`):
 
@@ -73,8 +73,8 @@ def stage_drafts(
     idle: int = DRAFT_IDLE_PASSES,
 ) -> list[dict]:
     """Write ``<inputs>/drafts/<pass_id>/patch.diff`` and ``gate.md`` per open draft, ``drafts/index.json``,
-    and ``<inputs>/gate/previous.md`` (the last v2.1 WRITE pass's final full result, landed or not: spec
-    §9.3). Returns the staged drafts as ``[{"pass_id", "items"}]``, in pass order.
+    and ``<inputs>/gate/previous.md`` (the last library-mode WRITE pass's final full result, landed or
+    not). Returns the staged drafts as ``[{"pass_id", "items"}]``, in pass order.
     """
     rows = ev.pass_rounds("write")
     states = draft_states(rows, idle)
@@ -113,7 +113,7 @@ def stage_drafts(
 
 
 def drafts_message(drafts: list[dict], previous: bool) -> str:
-    """The lines of Sol's first message that name the open drafts and the last full result."""
+    """The lines of the writer's first message that name the open drafts and the last full result."""
     lines = [
         "Open drafts (work an earlier pass's gate refused; each is /inputs/drafts/<pass>/patch.diff and "
         "gate.md, and you may finish it):",

@@ -1,5 +1,4 @@
-"""Spec v2.1 §6 (P7 Task 8): requests never wait for a pass, see only their pinned commit, and learn of a landed
-pass once."""
+"""Requests never wait for a pass, see only their pinned commit, and learn of a landed pass once."""
 
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ def _snapshot(root):
 
 
 def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_path):
-    """Needs P3's actor export and library fixtures and P5's records: runs once they are integrated."""
+    """Needs the actor export, the library fixtures and the item records: runs once they are integrated."""
     checkout = pytest.importorskip("unify.memory_v2.integration.checkout")
     if not hasattr(
         checkout,
@@ -67,7 +66,7 @@ def test_a_request_pins_the_served_head_and_never_sees_an_unrecorded_pass(tmp_pa
     assert mem.head() == candidate and served_head(mem) == old
     export_actor_library_mode(mem.git_dir, served_head(mem), tmp_path / "b")
     assert _snapshot(tmp_path / "b") == before
-    write_records(mem, candidate, {})  # P5's after_passes writes the map
+    write_records(mem, candidate, {})  # after_passes writes the map
     # the last step: the pin-able head advances
     assert publish(mem) == candidate == served_head(mem)
     assert (
@@ -233,7 +232,7 @@ def test_a_record_without_a_start_time_owns_nothing():
     assert ap.owns(live)
 
 
-# --- UNIFY_MEMORY_LIBRARY_WAIT_SLOT (MAIN, 10 Oct: hosts whose sandbox ends the controller's processes with it) ---
+# --- UNIFY_MEMORY_LIBRARY_WAIT_SLOT (for hosts whose sandbox ends the controller's processes with it) ---
 
 
 def _spawn(tmp_path, seconds):
@@ -373,7 +372,7 @@ json.dump(out, open(os.path.join(home, "token-child.json"), "w"))
 
 
 def test_the_route_token_reaches_the_worker_through_a_pipe_only(tmp_path, monkeypatch):
-    """0f, 10 Oct: the parent removed Sol's token from its environment, so the worker gets it over a fresh pipe
+    """The parent removed the writer's token from its environment, so the worker gets it over a fresh pipe
     named by UNIFY_MEMORY_V2_WRITER_TOKEN_FD: never in argv, the environment or a file.
     """
     import hashlib

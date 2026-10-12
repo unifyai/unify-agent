@@ -117,7 +117,6 @@ def test_non_python_and_empty():
     assert bm.actor_functions(_ep()) == []
 
 
-
 def test_row_keys_end_parts_and_no_reading_list_or_telemetry():
     ep = _ep(
         cells=[Cell(0, "def f():\n    return 1\n", ""), Cell(1, "print(1)", "1")],

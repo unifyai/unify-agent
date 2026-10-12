@@ -1,5 +1,6 @@
 """The prompts, and everything else the actor or the writer reads in library mode, checked for conflicting
-instructions. Each rule lives in its role's prompts only, and no retired rule survives."""
+instructions. Each rule lives in its role's prompts only, and no retired rule survives.
+"""
 
 from __future__ import annotations
 
@@ -91,7 +92,7 @@ def test_the_library_tool_descriptions_hold_no_retired_rule():
 
 
 def test_the_library_check_description_names_no_channel_and_says_what_it_runs():
-    """P2 Amendment B: under v2.1 check() also runs the items' own tests and the drawn inputs."""
+    """In library mode check() also runs the items' own tests and the drawn inputs."""
     check = next(
         t for t in writer_tools(library_mode=True) if t["function"]["name"] == "check"
     )["function"]["description"]
@@ -145,7 +146,7 @@ def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_li
 
 
 def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):
-    """RUNTIME's review B2 (MAIN, 9 Oct): P6's gate refuses a deletion that is neither an alias nor `retired` with a
+    """The CURATE gate refuses a deletion that is neither an alias nor `retired` with a
     one-line reason, so the brief's manifest and its retire bullet name `retired`; and the brief's input paths are
     the files CURATE's inputs are written to."""
     from unify.memory_v2 import curate

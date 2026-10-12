@@ -4,7 +4,7 @@ A recorded-shape ARC session (:mod:`tests.memory_v2.arc_transcript`: the benchma
 delivered as record blocks, the agent's JSON action on its reply's last line) gives the expected dialogue
 actions on ``env``; experience counts each observation once; the fingerprint follows the observation's
 shape; a 30x30 grid pair is kept whole through the episode store; payloads are redacted in linear time; a
-scripted Sol's item covering the actions passes the gate; and the episode content without dialogue actions
+scripted writer's item covering the actions passes the gate; and the episode content without dialogue actions
 is what the base build (9deefbfd1) records.
 """
 
@@ -410,7 +410,7 @@ def test_without_dialogue_actions_the_episode_is_the_base_builds():
     assert experience_pieces(offline) == _base_experience_pieces(offline)
 
 
-# --- the gate: a scripted Sol's item covering the actions ----------------------------------------------
+# --- the gate: a scripted writer's item covering the actions -------------------------------------------
 
 
 def _pass_world(tmp_path, episodes):
@@ -469,7 +469,7 @@ def test_a_scripted_pass_lands_an_env_item_covering_the_dialogue_actions(tmp_pat
 
 @needs_bwrap
 def test_a_pass_with_an_empty_manifest_passes_and_changes_nothing(tmp_path):
-    """What a zero-call fake Sol may write (pm6 §12): finish after an empty manifest."""
+    """What a zero-call fake writer may write: finish after an empty manifest."""
     eps = [_episode(visit()["lines"])[0]]
     mem, ev, gate, by_id = _pass_world(tmp_path, eps)
     parent = mem.head()

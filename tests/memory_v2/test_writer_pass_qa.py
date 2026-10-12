@@ -1,6 +1,6 @@
-"""Sol's side of the stage-5 test checks (memory v2.1): the brief's paragraph and the export's blob references.
+"""The writer's side of the stage-5 test checks: the brief's paragraph and the export's blob references.
 
-With every switch off, Sol's brief and the export are as at the screen build.
+With every switch off, the writer's brief and the export are as at the screen build.
 """
 
 import json
@@ -28,7 +28,7 @@ def F(n):
     }
 
 
-def test_every_switch_off_leaves_sols_brief_and_export_as_before(tmp_path):
+def test_every_switch_off_leaves_the_writers_brief_and_export_as_before(tmp_path):
     assert system(WRITER_SYSTEM, QAConfig()) is WRITER_SYSTEM
     ep = _ep(episode_id="e9", actions=[_dl(F(1))])
     export_for_writer(lambda eid: ep, ["e9"], tmp_path / "a")
@@ -36,7 +36,7 @@ def test_every_switch_off_leaves_sols_brief_and_export_as_before(tmp_path):
     assert "response_blobs" not in row and "truncated" not in row
 
 
-def test_sols_brief_gains_one_paragraph_per_switch_and_its_rewrites():
+def test_the_writers_brief_gains_one_paragraph_per_switch_and_its_rewrites():
     for _, old, _ in REWRITES:
         assert old in WRITER_SYSTEM  # the rewrites follow the brief
     every = QAConfig(
@@ -67,7 +67,7 @@ def test_sols_brief_gains_one_paragraph_per_switch_and_its_rewrites():
 
 def test_with_any_switch_on_writer_is_pointed_at_the_harness_replay_not_a_root_kit_of_its_own():
     """The kit (mounted whenever a switch is on) provides memlab.replay.env_from, so the brief no longer asks
-    Sol to write unify_memory_testkit.py to fake the environment; with every switch off it is as before.
+    the writer to write unify_memory_testkit.py to fake the environment; with every switch off it is as before.
     """
     assert "may build the fake environment" in WRITER_SYSTEM
     assert '"support":["unify_memory_testkit.py"]' in WRITER_SYSTEM
@@ -80,7 +80,7 @@ def test_with_any_switch_on_writer_is_pointed_at_the_harness_replay_not_a_root_k
         assert "may build the fake environment" not in text
         assert '"support":["unify_memory_testkit.py"]' not in text
         assert "memlab.replay.env_from(<recorded actions>)" in text
-        # the unfiltered comparison over the function's own rows (I-Q1): an effect filter is vacuous where
+        # the unfiltered comparison over the function's own rows: an effect filter is vacuous where
         # the recordings' effect is unknown, as for every dialogue action
         assert (
             "env.issued() == memlab.replay.calls(<the function's own recorded actions>)"
@@ -132,7 +132,7 @@ def test_the_blob_threshold_is_relative_to_the_fixture_bound_and_catches_crafter
     # 64 inline copies of a response just under the threshold fill the bound; a handful (8) takes 1/8
     assert 64 * cfg.response_blob_bytes == cfg.fixture_max_bytes
     # a whole Crafter screen of ~3.9 KB, under the recorder's 4000-character cap: the old fixed 4096-byte
-    # threshold left it inline, so Sol had to copy it into a fixture
+    # threshold left it inline, so the writer had to copy it into a fixture
     screen = "You see: " + "grass " * 640 + "\n\nYour status:\nhealth: 9"
     assert cfg.response_blob_bytes <= len(json.dumps(screen)) < 4096
     small = "You see: tree\n\nYour status:\nhealth: 9"
@@ -156,7 +156,7 @@ def test_the_blob_threshold_is_relative_to_the_fixture_bound_and_catches_crafter
     assert "at least 1024 bytes" in system(WRITER_SYSTEM, cfg)
 
 
-def test_sols_brief_says_how_tests_read_blobs_and_that_library_code_never_imports_the_kit():
+def test_the_writers_brief_says_how_tests_read_blobs_and_that_library_code_never_imports_the_kit():
     text = system(WRITER_SYSTEM, QAConfig(determinism=True))
     assert "memlab.inputs.blob(<id>), never by its /inputs path" in text
     assert "Library code outside tests never imports memlab" in text

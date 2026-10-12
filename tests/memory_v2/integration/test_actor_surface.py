@@ -1,5 +1,5 @@
 """UNIFY_MEMORY_V2 in the actor: no review, no library objects, the memory section last in the system prompt
-(Task 19; v2.1 ``catalogue``: a constant guide, the same bytes whatever the library holds; the channels are
+(library mode ``catalogue``: a constant guide, the same bytes whatever the library holds; the channels are
 what ``memory.catalog()`` prints in the cell).
 
 The model is the scripted transport (tests/scripted_model.py): a request of any kind the test did not
@@ -171,7 +171,7 @@ FN = 'def {name}(apis):\n    """{doc}\n\n    Effect: read\n    """\n    return 1
 
 
 def test_the_prompt_never_changes_as_the_library_grows_or_drifts(tmp_path, monkeypatch):
-    """The lead's rule: under ``catalogue`` the system prompt carries no library-dependent text. From the
+    """Under ``catalogue`` the system prompt carries no library-dependent text. From the
     first request whose library lists anything it holds the constant guide, byte for byte, however the
     library grows, gains channels, turns suspect or even empties; before that it holds no memory text.
     """

@@ -1,4 +1,4 @@
-"""P1 Task 7 (Amendment B), the writer and the loader under UNIFY_MEMORY_LIBRARY (RUNTIME's checklist points 1–4).
+"""The writer and the loader under UNIFY_MEMORY_LIBRARY.
 
 With ``EpisodeWriter(library_mode=True)`` the record is format 2: every large value the recorders now keep whole (each
 observation in ``request``, an action's args, kwargs and response) is stored as a content-addressed blob after

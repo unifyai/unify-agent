@@ -164,7 +164,7 @@ def test_a_write_function_is_held_to_exactly_its_recorded_write_calls():
     ]
 
 
-# --- effects: unknown is a class of its own (I-Q1) -----------------------------------------------------------
+# --- effects: unknown is a class of its own ------------------------------------------------------------------
 
 # dialogue actions are recorded with effect "unknown" (adapters/dialogue.py); an exported row without an effect
 # reads as unknown too
@@ -217,7 +217,7 @@ def test_an_effect_filter_fails_loudly_where_the_recorded_effect_is_unknown():
         env_from([LOGIN]).issued(effect="writes")
 
 
-# --- repeated identical calls replay in recorded order (I-Q2) ------------------------------------------------
+# --- repeated identical calls replay in recorded order -------------------------------------------------------
 
 STATUS = {
     "channel": "jobs",

@@ -1,4 +1,4 @@
-"""P7 Amendment C: every v2.1 end event carries how far ``served`` is behind memory ``main``, and a lag above 0
+"""Every library-mode end event carries how far ``served`` is behind memory ``main``, and a lag above 0
 after publishing raises a ``served_lag`` warning."""
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ def test_after_passes_failing_twice_leaves_a_lag_of_two_and_warns_twice(
     def boom(*a, **k):
         raise RuntimeError("records not written")
 
-    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeSol())
-    # P5's after_passes (absent before integration): it fails, so no landed commit gets its item records
+    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
+    # the item-records hook after_passes (absent before integration) fails, so no landed commit gets its item records
     monkeypatch.setattr(consolidate, "after_passes", boom, raising=False)
     stores = tc._stores(tmp_path)
     for i, eid in enumerate(("e1", "e2")):
@@ -55,7 +55,7 @@ def test_after_passes_failing_twice_leaves_a_lag_of_two_and_warns_twice(
 
 
 def test_v2_end_events_carry_no_lag(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
     tc._run(stores, "e1", sha)

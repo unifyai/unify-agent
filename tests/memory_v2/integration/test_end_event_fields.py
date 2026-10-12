@@ -21,7 +21,10 @@ def test_an_unpriced_helper_call_leaves_the_helpers_share_unknown():
         "0.50",
         [{"usd": "unknown", "usd_known": "0.10", "unknown_cost_calls": 1}],
     )
-    assert got == {"writer": consolidate._usd(Decimal("0.40")), "helpers": consolidate.UNKNOWN}
+    assert got == {
+        "writer": consolidate._usd(Decimal("0.40")),
+        "helpers": consolidate.UNKNOWN,
+    }
 
 
 def test_unknown_spend_stays_unknown():

@@ -94,7 +94,7 @@ async def test_the_worker_writes_no_bytecode_into_the_export(
     world,  # noqa: F811
     monkeypatch,
 ):
-    """v2.1 I4: under memory v2 the child sets ``sys.dont_write_bytecode`` (it runs under ``-I``, so the
+    """Under memory v2 the child sets ``sys.dont_write_bytecode`` (it runs under ``-I``, so the
     environment variable would be ignored); importing the library leaves no ``__pycache__`` in the export.
     """
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
@@ -142,7 +142,7 @@ async def test_a_cell_imports_the_memory_helper_from_the_export(
     world,  # noqa: F811
     monkeypatch,
 ):
-    """v2.1: ``import memory`` in a cell is the export's generated helper; it reads only the catalogue."""
+    """``import memory`` in a cell is the export's generated helper; it reads only the catalogue."""
     from unify.memory_v2.catalogue import write_generated
 
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2", "on")
@@ -188,7 +188,7 @@ async def test_a_suspect_channels_refusal_says_so_in_the_cell_error(
     world,  # noqa: F811
     monkeypatch,
 ):
-    """v2.1 ``catalogue``: the drift flag is not in the prompt; a suspect channel's MemoryInputError, as the
+    """``catalogue``: the drift flag is not in the prompt; a suspect channel's MemoryInputError, as the
     model reads it from the real worker, ends with a line saying the channel is suspect.
     """
     from unify.memory_v2.integration.switch import SurfacingOptions

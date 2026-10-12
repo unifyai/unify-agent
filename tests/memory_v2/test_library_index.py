@@ -1,4 +1,4 @@
-"""links.json, INDEX.md and the index view (spec §4.3, §4.5): complete, sorted, deterministic."""
+"""links.json, INDEX.md and the index view: complete, sorted, deterministic."""
 
 from __future__ import annotations
 
@@ -146,11 +146,19 @@ def test_a_functions_derived_effect_shows_beside_its_status(tmp_path):
     links = build_links(lib)
     effects = {"memory.text.dates:week": "write", "memory.text.parse:tokens": "read"}
     index = render_index(lib, links, None, effects.get)
-    assert "- `memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]\n" in index
+    assert (
+        "- `memory.text.dates:week(s)` — The ISO week of a date. [experimental, effect: write]\n"
+        in index
+    )
     assert "Split text on whitespace. [experimental, effect: read]\n" in index
-    assert "Count the words of a text. [experimental]\n" in index  # none derived: status only
+    assert (
+        "Count the words of a text. [experimental]\n" in index
+    )  # none derived: status only
     assert "effect: write" in INDEX_HEAD  # the head says what the bracket means
     # no effect function: the index is byte for byte the one without effects
     assert render_index(lib, links) == render_index(lib, links, None, lambda i: None)
     # a value outside the known effects is never rendered
-    assert "effect" not in render_index(lib, links, None, lambda i: "bogus").split("\n## ", 1)[1]
+    assert (
+        "effect"
+        not in render_index(lib, links, None, lambda i: "bogus").split("\n## ", 1)[1]
+    )

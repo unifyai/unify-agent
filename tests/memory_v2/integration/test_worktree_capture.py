@@ -451,7 +451,7 @@ def test_sandbox_secret_rule_hides_paths_fail_closed(tmp_path, monkeypatch):
     assert capture_mod.sandbox_hidden(tmp_path)("data.txt")
 
 
-# -- review fix round (I1, I2, M2, abort) -----------------------------------------------------------------
+# -- record fields, read deadlines, crediting errors and abort --------------------------------------------
 
 
 def test_only_known_record_fields_are_kept_and_every_byte_counts(tmp_path, monkeypatch):

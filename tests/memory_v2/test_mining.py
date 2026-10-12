@@ -45,7 +45,9 @@ def test_a_different_call_is_a_different_shape():
 def test_failed_cells_and_tracebacks_are_not_successful():
     assert m.successful(Cell(0, PARSE_A, "out"))
     assert not m.successful(Cell(0, PARSE_A, "out", "boom"))
-    assert not m.successful(Cell(0, PARSE_A, "Traceback (most recent call last):\n  ..."))
+    assert not m.successful(
+        Cell(0, PARSE_A, "Traceback (most recent call last):\n  ..."),
+    )
     assert not m.successful(Cell(0, "ls", "", None, "bash"))
 
 
@@ -56,9 +58,13 @@ def test_code_that_does_not_parse_has_no_units():
 def test_units_are_the_whole_cell_and_each_large_statement():
     us = m.units(Cell(3, PARSE_A + OTHER))
     assert us[0].kind == "cell" and us[0].lines == (1, 6) and us[0].cell == 3
-    assert {u.kind for u in us[1:]} == {"stmt"} and all(u.size >= m.MIN_NODES for u in us)
+    assert {u.kind for u in us[1:]} == {"stmt"} and all(
+        u.size >= m.MIN_NODES for u in us
+    )
     # renamed code gives the same keys, unit for unit
-    assert [u.key for u in m.units(Cell(0, PARSE_B))] == [u.key for u in m.units(Cell(0, PARSE_A))]
+    assert [u.key for u in m.units(Cell(0, PARSE_B))] == [
+        u.key for u in m.units(Cell(0, PARSE_A))
+    ]
 
 
 def test_the_same_code_hashes_the_same_whatever_other_cells_import():
@@ -71,7 +77,9 @@ def test_the_same_code_hashes_the_same_whatever_other_cells_import():
     assert one != other
     # the unit's own text decides: the whole cell hashes the same in both episodes
     assert m.normalise(t, m.own_keep(t))[0] == m.units(Cell(5, code))[0].key
-    assert "path" not in m.own_keep(m._parse(code)) and "len" in m.own_keep(m._parse(code))
+    assert "path" not in m.own_keep(m._parse(code)) and "len" in m.own_keep(
+        m._parse(code),
+    )
     with_import = m.own_keep(m._parse("import numpy as np\nx = np.zeros(3)\n"))
     assert "np" in with_import and "x" not in with_import
     # a builtin the code rebinds is a variable there

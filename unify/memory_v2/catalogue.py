@@ -1,4 +1,4 @@
-"""The generated catalogue of a memory export (v2.1 surfacing): README, catalog and the ``memory`` helper.
+"""The generated catalogue of a memory export (library-mode surfacing): README, catalog and the ``memory`` helper.
 
 Memory is a library the working model uses like a well-kept internal Python package. With every export the
 harness writes, beside the committed files and never into a commit:
@@ -24,8 +24,8 @@ A row is used only while its body digest (:func:`body_digest`) matches the expor
 commit gives the same bytes on every export, an old one re-exported included. Shapes derived from the
 covers table for a function no merge recorded shapes for are marked ``input_shapes_backfilled``.
 
-Sol never edits these files: the gate refuses any commit that touches a :func:`reserved` path, and Sol's
-copy of the library never holds them.
+The writer never edits these files: the gate refuses any commit that touches a :func:`reserved` path, and the
+writer's copy of the library never holds them.
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def render_readme(tree: Path) -> str:
     return "".join(out)
 
 
-# Sol's first message carries the README while it fits this many estimated tokens (M9); past it, a compact
+# The writer's first message carries the README while it fits this many estimated tokens; past it, a compact
 # view (channel lines and one line per function) cut to the same budget.
 WRITER_README_BUDGET_TOKENS = 2000
 _COMPACT_SUMMARY_CHARS = 100
@@ -215,7 +215,7 @@ def readme_for_writer(
     tree: Path,
     budget_tokens: int = WRITER_README_BUDGET_TOKENS,
 ) -> str:
-    """The library part of Sol's first message under ``catalogue``: the README, or past *budget_tokens*
+    """The library part of the writer's first message under ``catalogue``: the README, or past *budget_tokens*
     the channel lines and one ``env.<channel>.<function>: <summary>`` line per function, as many as fit,
     with how to read the rest (``help()`` in the box, or the module's source). Bounded however large the
     library grows."""

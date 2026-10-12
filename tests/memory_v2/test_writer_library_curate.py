@@ -1,4 +1,4 @@
-"""The CURATE pass kind (P6; spec v2.1 §10.3-10.4, §12.3): its brief, inputs, role, trailers and gate."""
+"""The CURATE pass kind: its brief, inputs, role, trailers and gate."""
 
 import asyncio
 import json
@@ -19,7 +19,7 @@ from tests.memory_v2.test_gate_curate import (
 from tests.memory_v2.test_gate_library_mode import (
     EPS,
     ITEM_ID,
-    world21,
+    library_gate_world,
 )  # noqa: F401 (fixture)
 from tests.memory_v2.test_writer_pass import Turns, _call, _writer, _write, needs_bwrap
 
@@ -53,8 +53,10 @@ def test_a_curate_request_without_library_or_its_state_spends_nothing(tmp_path):
 
 
 @needs_bwrap
-def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21):
-    mem, ev, blobs, gate = world21
+def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
+    library_gate_world,
+):
+    mem, ev, blobs, gate = library_gate_world
     parent = _merged(mem, _parent_files(blobs))
     ev.add_cover(ITEM_ID, "e1", 0)
     ev.add_cover(ACCOUNT, "e2", 0)
@@ -90,7 +92,7 @@ def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(world21
     assert model.seen[0] == {
         "role": "system",
         "content": curate_brief_now(),
-    }  # P7's brief
+    }  # the CURATE brief
     first = model.seen[1]["content"]
     # why the pass runs is a file (trigger.json), never a list in the first message
     assert (

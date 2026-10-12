@@ -1,4 +1,4 @@
-"""P7 Task 10: with UNIFY_MEMORY_LIBRARY off, P7 changes nothing: blocking passes, E = 150k, v2's brief and tools,
+"""With UNIFY_MEMORY_LIBRARY off, the library mode changes nothing: blocking passes, E = 150k, v2's brief and tools,
 no async files, no served head and no main lock."""
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def test_off_passes_block_and_create_no_async_files(tmp_path, monkeypatch):
 def test_off_settings_brief_and_tools_are_v2s():
     s = tc._settings()
     s.UNIFY_MEMORY_V2_E = ""
-    s.UNIFY_MEMORY_LIBRARY_E = 5  # read only under v2.1
+    s.UNIFY_MEMORY_LIBRARY_E = 5  # read only in the library mode
     assert consolidate.writer_settings(s).experience_budget == 150000
     assert PassConfig().deadline_s == 900.0 and PassConfig().library_mode is False
     check = next(t for t in writer_tools() if t["function"]["name"] == "check")[
@@ -55,7 +55,7 @@ def test_off_settings_brief_and_tools_are_v2s():
 
 
 def test_off_a_pass_leaves_no_served_head_lock_or_lag(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", tc.FakeWriter())
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
     (out,) = tc._run(stores, "e1", sha)

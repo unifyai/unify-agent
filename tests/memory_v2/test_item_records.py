@@ -1,4 +1,4 @@
-"""Item records (spec §4.4, D40): one map per library commit on refs/notes/items, written once, never rewritten."""
+"""Item records: one map per library commit on refs/notes/items, written once, never rewritten."""
 
 from __future__ import annotations
 

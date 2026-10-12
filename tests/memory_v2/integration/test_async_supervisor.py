@@ -1,5 +1,5 @@
-"""Spec v2.1 §6 (P7 Task 6): a pass runs under its wall-clock bound; cancellation goes through the abort path and
-keeps the work as a draft; the calls are reconciled from the Sol lane's journal window (Amendment D) before the
+"""A pass runs under its wall-clock bound; cancellation goes through the abort path and
+keeps the work as a draft; the calls are reconciled from the writer lane's journal window before the
 pass is settled."""
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ async def test_the_window_is_the_journal_range_the_pass_ran_in(tmp_path):
     assert sup.window == (before, j.stat().st_size)
     assert (await sup.reconcile(budget_s=0))[
         "calls"
-    ] == 0  # no Sol-lane request started
+    ] == 0  # no writer-lane request started
 
 
 def test_state_view_reports_what_a_pass_cleared(tmp_path):
@@ -127,7 +127,7 @@ class _Blocking:
 async def _cancelled_pass(tmp_path):
     _, ev, writer = _writer(tmp_path, _Blocking(), library_mode=True)
     writer.load = EPS.__getitem__
-    # the brief is not under test here (it reads P2's and P4's constants; test_writer_library_brief.py pins it)
+    # the brief is not under test here (it reads the library constants; test_writer_library_brief.py pins it)
     writer._brief_library_mode = lambda: "brief"
     req = PassRequest("incremental", "svc", ["e1", "e2"], False)
     task = asyncio.ensure_future(writer.run(req, "p9"))
@@ -162,7 +162,7 @@ async def test_a_cancelled_pass_keeps_its_work_as_a_draft(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_a_cancelled_pass_round_row_holds_the_cancelled_result(tmp_path):
-    """Needs P2's pass_rounds (k) and P5's drafts: runs once they are integrated."""
+    """Needs pass_rounds (k) and the drafts module: runs once they are integrated."""
     drafts = pytest.importorskip("unify.memory_v2.drafts")
     ev, writer = await _cancelled_pass(tmp_path)
     rows = ev.pass_rounds("write")
@@ -174,7 +174,7 @@ async def test_a_cancelled_pass_round_row_holds_the_cancelled_result(tmp_path):
 
 
 def test_v2_records_a_cancelled_pass_as_before(tmp_path):
-    """Off the v2.1 switch, the failed row is v2's byte for byte: no patch and no refused items."""
+    """With the library mode off, the failed row is v2's byte for byte: no patch and no refused items."""
     _, ev, writer = _writer(tmp_path, _Blocking())
     writer._cancel_patch = (
         "x" * 64,
@@ -197,7 +197,7 @@ def _supervised_driver(tmp_path, monkeypatch, journal=None):
     from tests.memory_v2.integration import test_consolidate as tc
     from unify.memory_v2.integration import consolidate
 
-    class _SlowSol:
+    class _SlowWriter:
         def __init__(self, *a, **k):
             pass
 
@@ -207,7 +207,7 @@ def _supervised_driver(tmp_path, monkeypatch, journal=None):
         def transcript(self, pass_id):
             return []
 
-    monkeypatch.setattr(consolidate, "WriterPass", _SlowSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _SlowWriter)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     stores = tc._stores(tmp_path)
     sha, _ = tc._record(stores, "e1")
@@ -237,7 +237,7 @@ async def _drive(consolidate, stores, sha, settings, sup):
 
 def _end(consolidate, stores):
     lines = consolidate.events_path(stores.paths).read_text().splitlines()
-    # the pass's end event (v2.1 publishes served after it)
+    # the pass's end event (library mode publishes served after it)
     return [e for e in map(json.loads, lines) if e.get("phase") == "end"][-1]
 
 
@@ -260,7 +260,7 @@ async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_t
     )
     loop = asyncio.get_running_loop()
 
-    def writer_calls():  # the proxy journals two Sol requests while the pass runs; one is never priced
+    def writer_calls():  # the proxy journals two writer requests while the pass runs; one is never priced
         rows = [
             {
                 "origin": "request_started",
@@ -301,7 +301,7 @@ async def test_run_due_passes_under_the_supervisor_ends_at_the_bound_and_books_t
     settle = _ledger(consolidate, stores)[-1]
     assert settle["phase"] == "settle" and settle["usd"] == "0.40"
     assert settle["unknown_cost_calls"] == 1 and settle["unknown_usd_each"] == "13.125"
-    # the run guard books the unpriced call at the worst case of one Sol call, not at the per-call reserve
+    # the run guard books the unpriced call at the worst case of one writer call, not at the per-call reserve
     assert consolidate.committed_writer_usd(stores) == Decimal("13.525")
 
 
@@ -325,7 +325,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
     monkeypatch,
     tmp_path,
 ):
-    """MAIN's ruling (9 Oct; spec §7): WRITE, its item records, the CURATE it made due in the same supervised
+    """Order: WRITE, its item records, the CURATE it made due in the same supervised
     slot, CURATE's records, then ``served`` published last; each pass keeps its own supervised run.
     """
     from types import SimpleNamespace
@@ -337,7 +337,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
 
     order = []
 
-    class _QuickSol:
+    class _QuickWriter:
         def __init__(self, *a, **k):
             pass
 
@@ -349,7 +349,7 @@ async def test_a_due_curate_runs_after_write_in_the_same_worker_and_served_is_pu
             return []
 
     due = iter([SimpleNamespace(suspects={}, fired={"index": "index over its view"})])
-    monkeypatch.setattr(consolidate, "WriterPass", _QuickSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _QuickWriter)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     monkeypatch.setattr(
         consolidate,
@@ -397,7 +397,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
     stop = asyncio.Event()
     kinds = []
 
-    class _StoppingSol:
+    class _StoppingWriter:
         def __init__(self, *a, **k):
             pass
 
@@ -409,7 +409,7 @@ async def test_a_stopped_worker_starts_no_curate(monkeypatch, tmp_path):
         def transcript(self, pass_id):
             return []
 
-    monkeypatch.setattr(consolidate, "WriterPass", _StoppingSol)
+    monkeypatch.setattr(consolidate, "WriterPass", _StoppingWriter)
     monkeypatch.setattr(consolidate, "unillm_turn", lambda *a, **k: None)
     monkeypatch.setattr(
         consolidate,

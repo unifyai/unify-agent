@@ -1,4 +1,4 @@
-"""CURATE's trigger, inputs, trailers and brief (spec v2.1 §10.3, §10.4, §12.3), and its evidence tables."""
+"""CURATE's trigger, inputs, trailers and brief, and its evidence tables."""
 
 from __future__ import annotations
 
@@ -296,14 +296,22 @@ def test_a_reason_is_settled_when_the_pass_changed_an_item_it_names():
     # an alias of the overlap's second item: the overlap and the index are dealt with, the suspect is not
     got = cu.settled(st, {"memory.a.c:g"}, {})
     assert got == sorted([_fp(st, "overlap:"), _fp(st, "index:")])
-    assert list(cu.due(st, set(got)).values()) == ["suspect: memory.a.b:f (raised in 2 episodes)"]
+    assert list(cu.due(st, set(got)).values()) == [
+        "suspect: memory.a.b:f (raised in 2 episodes)",
+    ]
 
 
 def test_a_reason_is_settled_by_an_explicit_keep_with_a_reason():
     st = _fired()
-    keeps = cu.kept({"kept": {"memory.a.c:g": "different jobs: one parses, one prints"}})
+    keeps = cu.kept(
+        {"kept": {"memory.a.c:g": "different jobs: one parses, one prints"}},
+    )
     assert cu.settled(st, set(), keeps) == [_fp(st, "overlap:")]
-    assert cu.settled(st, set(), cu.kept({"kept": {cu.INDEX_NAME: "every section is needed"}})) == [
+    assert cu.settled(
+        st,
+        set(),
+        cu.kept({"kept": {cu.INDEX_NAME: "every section is needed"}}),
+    ) == [
         _fp(st, "index:"),
     ]
     # a keep without a reason is no keep
@@ -314,7 +322,12 @@ def test_a_reason_is_settled_by_an_explicit_keep_with_a_reason():
 def test_changed_items_come_only_from_a_landed_pass():
     curations = [
         {"pass_id": "c1", "item": "memory.a.b:old", "action": "alias", "target": F},
-        {"pass_id": "c1", "item": "memory.a.b:gone", "action": "retire", "target": None},
+        {
+            "pass_id": "c1",
+            "item": "memory.a.b:gone",
+            "action": "retire",
+            "target": None,
+        },
         {"pass_id": "c0", "item": "memory.z.z:z", "action": "retire", "target": None},
     ]
     manifest = {"deleted": ["memory.a.b:old", "memory.a.b:gone", "memory.a.b:dropped"]}

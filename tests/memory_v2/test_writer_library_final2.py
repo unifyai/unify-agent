@@ -18,7 +18,7 @@ from tests.memory_v2.test_writer_pass import Turns, _call, _e1, _ME, _write, nee
 from tests.memory_v2.test_writer_library_repair import MOD_BAD
 from tests.memory_v2.test_writer_library_tools import EPS, _episode, _pass
 
-# --- §1: identical parts (RUNTIME P2) ----------------------------------------------------------------------
+# --- identical parts ---------------------------------------------------------------------------------------
 
 
 def test_an_identical_part_is_answered_with_where_it_was_shown(tmp_path):
@@ -32,7 +32,9 @@ def test_an_identical_part_is_answered_with_where_it_was_shown(tmp_path):
     ]
     out, model = _pass(tmp_path, turns, max_calls=10)
     assert model.outputs["a"] == '== request ==\n"req"'
-    assert model.outputs["b"].startswith("== request ==\nidentical to e1 request (sha256 ")
+    assert model.outputs["b"].startswith(
+        "== request ==\nidentical to e1 request (sha256 ",
+    )
     assert model.outputs["b"].endswith('read e1 parts=["request"] to see it again')
     assert out.coverage["opened"] == ["e1"]
 
@@ -44,7 +46,14 @@ def test_what_one_agent_was_shown_never_counts_for_another():
     writer_shown: dict = {}
     log = wt.ReadLog()
     args = {"episode": "e1", "parts": ["request"]}
-    wt.read_episode(EPS["e1"], "e1", args, blob=lambda s: b"", log=log, shown=helper_shown)
+    wt.read_episode(
+        EPS["e1"],
+        "e1",
+        args,
+        blob=lambda s: b"",
+        log=log,
+        shown=helper_shown,
+    )
     got = wt.read_episode(
         EPS["e2"],
         "e2",
@@ -60,7 +69,7 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
     long = (
         "x" * 9000
     )  # over one view: e3's request is shown in part, so it is not "shown complete"
-    # the same long observation (an identical request would now be one shared block, shown whole: r5 T2)
+    # the same long observation (an identical request would now be one shared block, shown whole)
     EPS["e3"], EPS["e4"] = _episode("e3", request=("first", long)), _episode(
         "e4",
         request=("second", long),
@@ -70,7 +79,7 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
             _call("a", "read_episode", {"episode": "e3", "part": "observation:0"}),
             _call("b", "read_episode", {"episode": "e4", "part": "observation:0"}),
         ]
-        # three unrelated episodes keep the long text in under half the batch: not shared text (M4)
+        # three unrelated episodes keep the long text in under half the batch: not shared text
         for e in ("e5", "e6", "e7"):
             EPS[e] = _episode(e, request=(f"other {e}",))
         out, model = _pass(
@@ -85,7 +94,7 @@ def test_a_part_shown_only_in_part_earns_no_identical_credit(tmp_path):
     assert "identical to" not in model.outputs["b"]
 
 
-# --- §3: finish validates the manifest (RUNTIME P6) -------------------------------------------------------
+# --- finish validates the manifest ------------------------------------------------------------------------
 
 
 def test_finish_refuses_a_missing_manifest_a_bounded_number_of_times(tmp_path):
@@ -139,13 +148,13 @@ def test_off_finish_is_unchanged(tmp_path):
     assert not out.finished and not out.nothing_to_store
 
 
-# --- §3: the first repair round is priced on the write phase ------------------------------------------------
+# --- the first repair round is priced on the write phase ----------------------------------------------------
 
 
 @needs_bwrap
 def test_a_long_read_still_leaves_a_repair_round(tmp_path):
     """Round 0 spends 13 turns reading and 2 writing: priced on all of it (0.75 USD) no repair round would fit in
-    the 0.25 left; priced on the write phase (0.05), the gate's refusal reaches Sol and the repair lands.
+    the 0.25 left; priced on the write phase (0.05), the gate's refusal reaches the writer and the repair lands.
     """
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")

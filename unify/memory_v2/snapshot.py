@@ -332,7 +332,7 @@ def calls_item(source: bytes, item: str) -> bool:
     the attribute ``<name>`` of the module bound by ``import env.<channel>`` (``env.<channel>.<name>``),
     ``import env.<channel> as m`` or ``from env import <channel> [as m]`` (``m.<name>``). Importing the
     function, or its channel, without calling it does not count; nor does an unparsable file. Rebinding a
-    name after import is not tracked (ruling R16: a careless consolidator, not a malicious one).
+    name after import is not tracked (the consolidator is assumed careless, not malicious).
     """
     channel, _, name = item.partition(":")
     channel = channel.split("/", 1)[1] if "/" in channel else channel

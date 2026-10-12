@@ -182,7 +182,7 @@ def install(monkeypatch) -> Fakes:
     # -- Track B: consolidate -----------------------------------------------------------------
     cons = types.ModuleType(f"{PKG}.consolidate")
 
-    def open_stores(paths, **kw):  # P7: busy_timeout_s under v2.1
+    def open_stores(paths, **kw):  # busy_timeout_s in library mode
         f.calls.append(("open_stores", (paths,), kw))
         return types.SimpleNamespace(
             paths=paths,

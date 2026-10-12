@@ -42,7 +42,7 @@ def test_pem_private_key_blocks_are_redacted_whole_or_cut():
 
 
 def test_redact_imports_where_unify_is_absent(tmp_path):
-    # memlab copies this module into Sol's box, which has no unify package
+    # memlab copies this module into the writer's box, which has no unify package
     import shutil
     import subprocess
     import sys

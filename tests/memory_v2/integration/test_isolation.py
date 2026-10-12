@@ -6,9 +6,9 @@ reads (the workspace, ``transcripts/`` and the run record are readable by design
 command binds none of them; and a cell in the real worker sees the export and nothing else.
 
 The sentinel: an outcome whose summary and check reasons carry ``SENTINEL-7f3a`` is taken, the request is
-recorded and a consolidation pass runs (E forced to 1, a fake Sol that records what it was sent and what
+recorded and a consolidation pass runs (E forced to 1, a fake writer that records what it was sent and what
 was staged for it). The sentinel is in no file, git object (notes included) or database row under
-``UNIFY_HOME``, in nothing Sol was sent or staged, and in no event. That part runs on the real
+``UNIFY_HOME``, in nothing the writer was sent or staged, and in no event. That part runs on the real
 trajectory, consolidation, cost and work-tree modules, so it skips until they are merged.
 """
 
@@ -192,7 +192,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
         tempfile,
         "tempdir",
         str(scratch),
-    )  # Sol's staging lands here, to be read
+    )  # the writer's staging lands here, to be read
 
     sent: list[str] = []
     staged: list[bytes] = []
@@ -250,7 +250,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     assert (
         sent
     ), f"no pass ran (progress: {progress})"  # otherwise the check below proves nothing
-    assert staged, "nothing was staged for Sol"
+    assert staged, "nothing was staged for the writer"
     assert [e["phase"] for e in emitted][:2] == ["start", "end"]
     assert SENTINEL.encode() not in fake_tracks.dump_home(home)
     assert not any(SENTINEL in m for m in sent)

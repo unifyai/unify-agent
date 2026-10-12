@@ -1,4 +1,4 @@
-"""Shape summaries of recorded shell outputs (spec §F2, §I4).
+"""Shape summaries of recorded shell outputs.
 
 A shell action records ``args`` (the command or argv), and ``response = {"exit_code": n | None,
 "tail": text}``: the last part of the output (its first line may be cut). :func:`records` collects them

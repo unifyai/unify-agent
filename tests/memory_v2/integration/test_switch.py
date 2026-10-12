@@ -1,7 +1,7 @@
 """The UNIFY_MEMORY_V2 switches: off by default, strict values (integration Task 17, online contract).
 
 The contract: ``UNIFY_MEMORY_V2`` (``on`` / ``off`` / empty), ``UNIFY_MEMORY_V2_E`` (a positive int,
-150000), ``UNIFY_MEMORY_V2_WRITER_MODEL`` (``openai/gpt-6-sol``),
+150000), ``UNIFY_MEMORY_V2_WRITER_MODEL`` (a model id),
 ``UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS`` (a decimal string, ``0.00000073``, no exponent) and
 ``UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD`` (a decimal string, or empty for no guard) and
 ``UNIFY_MEMORY_V2_DIALOGUE`` (``off`` / empty, or ``env``). Each value is loaded
@@ -58,7 +58,7 @@ def test_defaults():
     # per-effort pass limits: one rule for every bed
     assert s.UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE == "low:1,medium:2,high:5"
     assert s.UNIFY_MEMORY_V2_WRITER_MAX_CALLS == "low:40,medium:80,high:80"
-    # v2.1 surfacing: each default is the v2 screen build's behaviour (test_library_switch_defaults.py)
+    # surfacing: each default is the v2 screen build's behaviour (test_library_switch_defaults.py)
     assert s.UNIFY_MEMORY_V2_SURFACING == "index"
     assert s.UNIFY_MEMORY_V2_DOCSTRINGS == "off"
     assert s.UNIFY_MEMORY_V2_SOFT_BUDGET == "off"
@@ -114,7 +114,7 @@ def test_experience_budget_values(raw, want, monkeypatch):
     "raw,want",
     [
         ("", "openai/gpt-6-sol"),
-        (" openai/gpt-6-luna ", "openai/gpt-6-luna"),
+        (" " + "openai/gpt-6-luna" + " ", "openai/gpt-6-luna"),
         ("openai/gpt-6-sol@openrouter", "openai/gpt-6-sol@openrouter"),
     ],
 )
@@ -250,7 +250,7 @@ def test_the_allowance_assignment_passes_the_credential_guards():
     assert [p for p in parts if "TOKEN" in p] == ["TOKENS"]
 
 
-# --- stage-5 test checks in the gate (memory v2.1) ---------------------------------------------------------
+# --- stage-5 test checks in the gate (library mode) --------------------------------------------------------
 
 _QA_ON_OFF = (
     "UNIFY_MEMORY_V2_QA_MUTATION",

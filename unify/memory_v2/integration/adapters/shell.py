@@ -1,4 +1,4 @@
-"""Adapter 2 (spec §C2): shell actions.
+"""Adapter 2: shell actions.
 
 Two sources become ``Action(kind="shell")`` rows:
 

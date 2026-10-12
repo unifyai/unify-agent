@@ -35,7 +35,7 @@ def test_generation_bumps_on_new_shape_and_new_error_but_not_new_method():
     ) == {"venmo"}
 
 
-# --- per-kind fingerprints (spec J1) ---------------------------------------------------------------------
+# --- per-kind fingerprints -------------------------------------------------------------------------------
 
 
 def _sh(tail, code=0, ch="shell:uv"):

@@ -1,9 +1,9 @@
-"""Bisect and the rollback proposal of memory v2.1 (spec §10.2, §13.4). Deterministic; no model calls.
+"""Bisect and the rollback proposal of the library mode. Deterministic; no model calls.
 
 When a function turns ``suspect`` by its own use (errors or negative signals, not taint), the harness runs its
 current tests on each version of it in ``main``'s history, and on each version the gate refused
 (:func:`.history_probe.refused_versions`). The current tests read its recorded inputs, the drawn inputs appended
-to them and its exact expected values (P4), so they are the item's recorded inputs, re-run. Every run is
+to them and its exact expected values, so they are the item's recorded inputs, re-run. Every run is
 :func:`.history_probe.probe`'s confined pytest run: the tree read-only, no network, bounded. Nothing here imports
 library code.
 
@@ -11,7 +11,7 @@ The result names the version that introduced the current behaviour (the oldest v
 versions that behave like the current one) and every version at which behaviour changed. At most
 :data:`BISECT_MAX_VERSIONS` newest versions are run; how many were not is recorded (``versions_cut``).
 
-:func:`rollback_target` proposes the newest older version whose use record is clean. CURATE decides (P6).
+:func:`rollback_target` proposes the newest older version whose use record is clean. CURATE decides.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ BISECT_MAX_VERSIONS = 20
 VERSION_SCAN = 200
 #: The newest refused versions run (the rest are counted in ``versions_cut``).
 BISECT_MAX_REFUSED = 10
-#: Seconds all of one consolidation's bisects may take together (AGENTS.md: bounded runtime; MAIN, 9 Oct). An item
+#: Seconds all of one consolidation's bisects may take together (AGENTS.md: bounded runtime). An item
 #: the budget does not reach is recorded ``{"skipped": "budget"}``, and the records are still written.
 BISECT_BUDGET_S = 600.0
 
@@ -184,7 +184,7 @@ def rollback_target(
     introduced: str | None,
     order: list[str],
 ) -> dict | None:
-    """The newest version older than *introduced* whose use record is clean (spec §10.2): episodes ran it (on
+    """The newest version older than *introduced* whose use record is clean: episodes ran it (on
     the commits from that version up to the next), and none raised, refused or was followed by a negative
     signal. *use* is the item's record ``use`` (library commit -> counts); *order* is ``main`` oldest first.
     """

@@ -1,7 +1,7 @@
-"""Memory's git processes never carry a harness-only route name (M4 qualification on w174, 11 Oct: the runner's
-live token audit caught an ``sh`` holding the Sol base URL; a local push runs ``git-receive-pack`` under ``sh -c`` with
-the environment git was given). Every git environment builder starts from :func:`gitio.git_base_env`; a real local
-push's receive hook, a descendant of that shell, sees none of the names.
+"""Memory's git processes never carry a harness-only route name (a live token audit once caught an ``sh`` holding the
+writer's base URL: a local push runs ``git-receive-pack`` under ``sh -c`` with the environment git was given).
+Every git environment builder starts from :func:`gitio.git_base_env`; a real local push's receive hook,
+a descendant of that shell, sees none of the names.
 """
 
 from __future__ import annotations

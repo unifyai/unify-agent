@@ -1,17 +1,17 @@
-"""Memory v2.1 repair rounds (spec §9.2-9.3, D37): the round budget and the gate's full result as a file.
+"""The writer's repair rounds: the round budget and the gate's full result as a file.
 
-After Sol's accepted ``finish``, :class:`.writer_pass.WriterPass` runs :meth:`.gate.Gate.check` (the whole gate, no
-merge) on the round's candidate. A refusal is written in full to ``/inputs/gate/result-<n>.md`` and Sol gets
-another round, at most :data:`REPAIR_ROUNDS`, while the pass's budget holds one more round
+After the writer's accepted ``finish``, :class:`.writer_pass.WriterPass` runs :meth:`.gate.Gate.check` (the whole
+gate, no merge) on the round's candidate. A refusal is written in full to ``/inputs/gate/result-<n>.md`` and the
+writer gets another round, at most :data:`REPAIR_ROUNDS`, while the pass's budget holds one more round
 (:func:`may_repair`). Only the final candidate goes to :meth:`.gate.Gate.merge`, so per-item admission decides
 what lands. Nothing here calls a model, git or the jail.
 
-Budget (stated once, here): round 0 runs from the pass's start to Sol's first accepted ``finish``; round k >= 1
+Budget (stated once, here): round 0 runs from the pass's start to the writer's first accepted ``finish``; round k >= 1
 from the repair message that opens it to the next accepted ``finish``. A round's USD is the change in the
 pass's charge (known spend plus ``cap / max_calls`` per unpriced call); its seconds are its wall time plus the
 gate check that ends it. ``ROUND_RESERVE`` is the calibrated constant when given, else the median USD of the
 pass's completed rounds. The time reserve is the median of their seconds plus the last gate check's seconds,
-because the final :meth:`.gate.Gate.merge` runs the whole gate once more (Amendment A).
+because the final :meth:`.gate.Gate.merge` runs the whole gate once more.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import Iterable
 from .gate import GateResult
 from .redact import redact_error
 
-#: Spec §15 ``R``: repair rounds after the first finish, at most.
+#: Repair rounds after the first finish, at most.
 REPAIR_ROUNDS = 2
 #: The sandbox keeps each of a run's stdout and stderr up to this many bytes, from the end, and marks any
 #: bytes it drops (sandbox_run.CAPTURE_MAX_BYTES); the result says so.
@@ -36,7 +36,7 @@ def _money(value: Decimal) -> str:
 
 
 def round_reserve(round_usd: list[Decimal], fixed: Decimal | None = None) -> Decimal:
-    """``ROUND_RESERVE``: *fixed* when calibrated (spec §15), else the median USD of the completed rounds."""
+    """``ROUND_RESERVE``: *fixed* when calibrated, else the median USD of the completed rounds."""
     if fixed is not None:
         return Decimal(fixed)
     if not round_usd:
@@ -62,7 +62,7 @@ def may_repair(
     nxt = done + 1
     uncapped = (
         remaining_usd is None
-    )  # memory v2.1 r5 (S6): no round count and no USD reserve; time still applies
+    )  # no USD left to track: no round count and no USD reserve; time still applies
     if not uncapped and done >= REPAIR_ROUNDS:
         return f"repair: no round {nxt}: at most {REPAIR_ROUNDS} repair rounds per pass"
     if calls_left < 1:

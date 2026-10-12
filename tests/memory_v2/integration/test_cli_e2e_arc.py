@@ -10,8 +10,8 @@ The scripted actor replies with the action JSON on its reply's last line (one tu
 1. Visit 1 (E high): its episode holds the dialogue actions on ``env`` (request_demos, submit, submit),
    each answered by the runner message that followed (the closing ``finish``, which nothing answers, is
    not recorded online), and E counts each observation once. No pass.
-2. E is set just above visit 1's experience, so visit 2's episode makes a batched pass due over both. Sol is
-   a scripted model turn (``consolidate.unillm_turn``) whose one cell writes ``env/env:observation_lines``
+2. E is set just above visit 1's experience, so visit 2's episode makes a batched pass due over both. The writer
+   is a scripted model turn (``consolidate.unillm_turn``) whose one cell writes ``env/env:observation_lines``
    covering every recorded observation, then finishes. The pass passes the gate and merges on ``env/env``.
 3. Visit 3's export holds the merged item and its system prompt's index lists it.
 """

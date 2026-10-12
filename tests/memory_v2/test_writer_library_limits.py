@@ -1,5 +1,5 @@
-"""Memory v2.1 r5 (S6): an uncapped pass (PassConfig.max_usd None) has no USD cap and no count limits; the
-operational step guard and the deadline end a runaway. A capped pass (v2, or v2.1 with a cap) is unchanged.
+"""In library mode an uncapped pass (PassConfig.max_usd None) has no USD cap and no count limits; the
+operational step guard and the deadline end a runaway. A capped pass (v2, or library mode with a cap) is unchanged.
 """
 
 from decimal import Decimal

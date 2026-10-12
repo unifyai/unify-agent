@@ -1,4 +1,4 @@
-"""Work-tree and shell observation for memory v2 (spec §C2, option A of §C5).
+"""Work-tree and shell observation for memory v2, by an audit hook in the worker child.
 
 This module runs *inside the worker child* and imports the standard library
 only, so the worker can load it by file path without the ``unify`` package.

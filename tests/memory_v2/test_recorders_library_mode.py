@@ -1,8 +1,8 @@
-"""P1 Task 7 (Amendment B; spec v2.1 P5): under UNIFY_MEMORY_LIBRARY the recorders keep full values, redacted whole.
+"""Under UNIFY_MEMORY_LIBRARY the recorders keep full values, redacted whole.
 
-Off, each recorder cuts exactly as at 4675a3c45 (the golden was written there by :mod:`p1_t7_inputs`). On, each one
-keeps the value over its old cap whole, and a key planted past that cap is redacted. RUNTIME's checklist points 1
-and 5; the writer and loader (points 2–4, 6) are in test_episodes_library_mode.py."""
+Off, each recorder cuts exactly as at 4675a3c45 (the golden was written there by :mod:`recorder_inputs`). On, each one
+keeps the value over its old cap whole, and a key planted past that cap is redacted. The episode writer and loader
+are tested in test_episodes_library_mode.py."""
 
 import dataclasses
 import json
@@ -12,9 +12,9 @@ from unify.memory_v2.integration.adapters.dialogue import dialogue_actions
 from unify.memory_v2.integration.adapters.shell import shell_actions
 from unify.memory_v2.integration.adapters.tool import RecordingObserver
 from unify.memory_v2.redact import Redactor
-from tests.memory_v2 import p1_t7_inputs as inp
+from tests.memory_v2 import recorder_inputs as inp
 
-GOLDEN = Path(__file__).parent / "golden" / "p1_t7_off_4675a3c45.json"
+GOLDEN = Path(__file__).parent / "golden" / "recorder_cuts_off_4675a3c45.json"
 RED = Redactor(secrets={"OPENROUTER_API_KEY": inp.KEY})
 
 

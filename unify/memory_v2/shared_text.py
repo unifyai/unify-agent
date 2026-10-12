@@ -1,6 +1,6 @@
-"""Memory v2.1 r5 (r4 §1): request text shared by most episodes, shown to the writer once.
+"""Request text shared by most episodes, shown to the writer once.
 
-The actor's requests open with text every request carries (the replay's v2.1 writer re-read the same opening 121
+The actor's requests open with text every request carries (in a replay the writer re-read the same opening 121
 times: 17% of all it read). That text is found by code, never named: each request is split into blocks at blank
 lines, and a block whose exact bytes appear in at least half of the requests seen so far (and in at least two) is
 **shared**. The writer's views (``batch_map.json``'s request, ``read_episode``'s request part) show a shared block
@@ -19,8 +19,8 @@ import hashlib
 import re
 
 MIN_CHARS = 200
-# M4 (MAIN, 10 Oct: MED's repeated read text 6.7-7.8%): a single line shared by most episodes is shared too, inside
-# a block that also holds episode-specific lines, and in observations; floor, not a budget
+# Blocks alone left 6.7-7.8% repeated read text at medium effort: a single line shared by most episodes is shared
+# too, inside a block that also holds episode-specific lines, and in observations; floor, not a budget
 MIN_LINE = 40
 _BLOCKS = re.compile(r"\n[ \t]*\n")
 _SCHEMA = (
@@ -82,7 +82,7 @@ def shared(ev) -> dict[str, str]:
 
 
 def marker(bid: str) -> str:
-    """Short on purpose (M4): batch_map.json's ``shared_blocks`` says once what a marker stands for."""
+    """Short on purpose: batch_map.json's ``shared_blocks`` says once what a marker stands for."""
     return f"[shared:{bid}]"
 
 

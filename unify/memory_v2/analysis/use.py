@@ -1,4 +1,4 @@
-"""How one request used the memory library: a pure function of its transcript (memory v2.1, stage 1).
+"""How one request used the memory library: a pure function of its transcript.
 
 Standard library only, and no other module of this package is imported, so the file can be copied
 into an offline analyser as it is. The harness computes the record at a request's ``finish``
@@ -205,9 +205,9 @@ MAX_NAME_CHARS = 200
 #: functions of it whose calls show the library (``cell_exposure``).
 HELPER_MODULE = "memory"
 HELPER_FUNCTIONS = ("catalog", "find", "describe")
-#: memory v2.1 (spec §4.2, §6): the library is the package ``memory``, whose generated ``__init__.py`` is the
+#: In library mode the library is the package ``memory``, whose generated ``__init__.py`` is the
 #: helper (these functions), and a function item is ``memory.<package>.<module>:<name>``. A record computed for a
-#: v2.1 pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
+#: library-mode pin carries ``"layout": LAYOUT_LIBRARY``; a v2 record has no such key, so v2's records are unchanged.
 LAYOUT_LIBRARY = "library_mode"
 PACKAGE_LIBRARY = "memory"
 HELPER_FUNCTIONS_LIBRARY = ("show", "index", "find")
@@ -302,7 +302,7 @@ def library_surface(root: str | Path, *, library_mode: bool = False) -> dict:
     ``star`` is the module's ``__all__``, or its public top-level names without one. A re-export is a
     top-level ``from env.<b> import g [as h]`` (or ``from ..<b> import g``) in ``env/<a>/__init__.py``.
 
-    With *library_mode* (spec v2.1 §4.2) the keys are ``<package>`` and ``<package>.<module>`` of
+    With *library_mode* the keys are ``<package>`` and ``<package>.<module>`` of
     ``memory/<package>/(__init__|<module>).py``, and a re-export is any top-level ``from`` import of a library name in
     such a file (:func:`_library_surface_library_mode`).
     """
@@ -362,7 +362,7 @@ def _source_key_library_mode(key: str, node: ast.ImportFrom) -> str | None:
 
 
 def _library_surface_library_mode(root: Path) -> dict:
-    """:func:`library_surface` of a v2.1 export: ``star`` per key, and every name a library file binds by a
+    """:func:`library_surface` of a library-mode export: ``star`` per key, and every name a library file binds by a
     top-level ``from`` import of another library file (``memory.<key>:<name>`` -> the source's id), so a name
     re-exported by a package or a module resolves to the module that defines it."""
     star: dict[str, list[str]] = {}
@@ -437,7 +437,7 @@ class _Items:
             iid = self.reexports.get(iid)
         return None
 
-    # The layout's naming: v2's ``env/<channel>:<name>``. :class:`_Items21` overrides each method.
+    # The layout's naming: v2's ``env/<channel>:<name>``. :class:`_LibraryItems` overrides each method.
     def iid(self, channel: str, name: str) -> str:
         return f"env/{channel}:{name}"
 
@@ -466,8 +466,8 @@ class _Items:
         return list(self.by_channel.get(channel, []))
 
 
-class _Items21(_Items):
-    """The v2.1 items at the pin (spec §4.2). A key is ``<package>.<module>`` (a module, whose public functions
+class _LibraryItems(_Items):
+    """The library-mode items at the pin. A key is ``<package>.<module>`` (a module, whose public functions
     are items) or ``<package>`` (a package init, which holds no item but may re-export one). ``modules`` and
     ``packages`` are the keys of each kind; ``channels`` is both."""
 
@@ -694,7 +694,7 @@ def runtime_status(
     its = (
         items
         if isinstance(items, _Items)
-        else (_Items21 if library_mode else _Items)(items)
+        else (_LibraryItems if library_mode else _Items)(items)
     )
     exits: list[list[str]] = []
     if not isinstance(error, str) or not error:
@@ -1628,8 +1628,8 @@ class _Cell(ast.NodeVisitor):
             self._unbind(node.id)
 
 
-class _Cell21(_Cell):
-    """:class:`_Cell` for a v2.1 library (spec §4.2, §6).
+class _LibraryCell(_Cell):
+    """:class:`_Cell` for a library-mode library.
 
     ``memory`` is the package and the helper at once (``("helper",)``): its attributes are the helper's functions
     (:data:`HELPER_FUNCTIONS_LIBRARY`) or packages; a package's attributes are its modules or the items it
@@ -2007,7 +2007,7 @@ def attribute_errors(
     its = (
         items
         if isinstance(items, _Items)
-        else (_Items21 if library_mode else _Items)(items)
+        else (_LibraryItems if library_mode else _Items)(items)
     )
     if not text:
         return []
@@ -2081,12 +2081,12 @@ def request_use(
     ``cell_status`` list. A cell it does not cover is ``unknown`` (cause from the harness's reply, else
     ``other``), and so are the outcomes of the items that cell's code could reach, in this request only.
 
-    With *library_mode* (spec v2.1 §4.2) *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
+    With *library_mode* *items* are ``memory.<package>.<module>:<name>`` ids, the helper is ``memory``
     itself (``show``, ``index``, ``find``: lookups, never uses), and the record carries ``"layout": "library_mode"``. Its
     ``refused_then_accepted`` stays 0: a module has no environment channel to compare.
     """
     lines = list(lines)
-    its = (_Items21 if library_mode else _Items)(items, surface)
+    its = (_LibraryItems if library_mode else _Items)(items, surface)
     roots = _roots(export_roots)
     changed, diff_truncated = modified_channels(memory_diff, its)
     tally = _Tally(HELPER_FUNCTIONS_LIBRARY if library_mode else HELPER_FUNCTIONS)
@@ -2122,7 +2122,7 @@ def request_use(
                     unparsed += 1
                     opaque = True
             if tree is not None:
-                visitor = (_Cell21 if library_mode else _Cell)(
+                visitor = (_LibraryCell if library_mode else _Cell)(
                     its,
                     bindings,
                     tally,

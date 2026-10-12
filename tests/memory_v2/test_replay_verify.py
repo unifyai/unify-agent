@@ -191,8 +191,20 @@ SCALAR = "vals = [1, 2, 3]\nn = 10\nfor v in vals:\n    n += v\n"
 
 @needs_bwrap
 def test_a_scalar_result_is_compared(tmp_path):
-    good = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v)\n")
-    bad = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v) + 1\n")
+    good = _one(
+        tmp_path,
+        [SCALAR],
+        [3, 4],
+        "n = fn(vals, n)",
+        "def fn(v, n):\n    return n + sum(v)\n",
+    )
+    bad = _one(
+        tmp_path,
+        [SCALAR],
+        [3, 4],
+        "n = fn(vals, n)",
+        "def fn(v, n):\n    return n + sum(v) + 1\n",
+    )
     assert good["verdict"] == "verified" and good["case"]["expect"] == {"n": 16}, good
     assert bad["verdict"] == "differs" and bad["differs_in"] == "values", bad
 
@@ -202,8 +214,20 @@ DRAIN = "todo = [1, 2]\ndone = []\nwhile todo:\n    done.append(todo.pop())\n"
 
 @needs_bwrap
 def test_a_container_left_empty_is_compared(tmp_path):
-    good = _one(tmp_path, [DRAIN], [3, 4], "fn(todo, done)", "def fn(t, d):\n    while t:\n        d.append(t.pop())\n")
-    bad = _one(tmp_path, [DRAIN], [3, 4], "fn(todo, done)", "def fn(t, d):\n    d.extend(reversed(t))\n")
+    good = _one(
+        tmp_path,
+        [DRAIN],
+        [3, 4],
+        "fn(todo, done)",
+        "def fn(t, d):\n    while t:\n        d.append(t.pop())\n",
+    )
+    bad = _one(
+        tmp_path,
+        [DRAIN],
+        [3, 4],
+        "fn(todo, done)",
+        "def fn(t, d):\n    d.extend(reversed(t))\n",
+    )
     assert good["verdict"] == "verified" and good["case"]["expect"]["todo"] == [], good
     assert bad["verdict"] == "differs", bad
 
@@ -214,9 +238,30 @@ PRINT = "rows = [3, 1]\nfor r in sorted(rows):\n    print(r)\n"
 @needs_bwrap
 def test_stdout_decides_when_printing_is_the_only_effect(tmp_path):
     rec = ["1\n3\n"]
-    good = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in sorted(rows):\n        print(r)\n", outputs=rec)
-    bad = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in rows:\n        print(r)\n", outputs=rec)
-    silent = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    pass\n", outputs=rec)
+    good = _one(
+        tmp_path,
+        [PRINT],
+        [2, 3],
+        "fn(rows)",
+        "def fn(rows):\n    for r in sorted(rows):\n        print(r)\n",
+        outputs=rec,
+    )
+    bad = _one(
+        tmp_path,
+        [PRINT],
+        [2, 3],
+        "fn(rows)",
+        "def fn(rows):\n    for r in rows:\n        print(r)\n",
+        outputs=rec,
+    )
+    silent = _one(
+        tmp_path,
+        [PRINT],
+        [2, 3],
+        "fn(rows)",
+        "def fn(rows):\n    pass\n",
+        outputs=rec,
+    )
     assert good["verdict"] == "verified", good
     assert bad["verdict"] == "differs" and bad["differs_in"] == "stdout", bad
     assert silent["verdict"] == "differs" and silent["differs_in"] == "stdout", silent
@@ -225,7 +270,14 @@ def test_stdout_decides_when_printing_is_the_only_effect(tmp_path):
 @needs_bwrap
 def test_a_stdout_difference_beside_another_effect_is_a_tag(tmp_path):
     cell = "vals = [1, 2]\ntotal = sum(vals)\nprint('debug', total)\n"
-    got = _one(tmp_path, [cell], [2, 3], "total = fn(vals)", "def fn(v):\n    return sum(v)\n", outputs=["debug 3\n"])
+    got = _one(
+        tmp_path,
+        [cell],
+        [2, 3],
+        "total = fn(vals)",
+        "def fn(v):\n    return sum(v)\n",
+        outputs=["debug 3\n"],
+    )
     assert got["verdict"] == "verified" and got.get("stdout_differs") is True, got
 
 
@@ -234,9 +286,23 @@ SAVE = "text = 'hello'\nwith open('out.txt', 'w') as f:\n    f.write(text)\n"
 
 @needs_bwrap
 def test_file_deltas_are_compared(tmp_path):
-    good = _one(tmp_path, [SAVE], [2, 3], "fn(text)", "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t)\n")
-    bad = _one(tmp_path, [SAVE], [2, 3], "fn(text)", "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t + '!')\n")
-    assert good["verdict"] == "verified" and [p for p, _c, _s in good["files"]] == ["out.txt"], good
+    good = _one(
+        tmp_path,
+        [SAVE],
+        [2, 3],
+        "fn(text)",
+        "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t)\n",
+    )
+    bad = _one(
+        tmp_path,
+        [SAVE],
+        [2, 3],
+        "fn(text)",
+        "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t + '!')\n",
+    )
+    assert good["verdict"] == "verified" and [p for p, _c, _s in good["files"]] == [
+        "out.txt",
+    ], good
     assert good["files"][0][1] == "created"
     assert bad["verdict"] == "differs" and bad["differs_in"] == "files", bad
 
@@ -264,13 +330,21 @@ def test_each_run_starts_in_its_own_pristine_tree_and_tmp(tmp_path):
     )
     # a shared tree or /tmp would make the second run differ (nondeterministic) and the third see two writes
     assert got["verdict"] == "verified", got
-    assert (tree / "log.txt").read_text() == "a"  # the recorded tree itself is never written
+    assert (
+        tree / "log.txt"
+    ).read_text() == "a"  # the recorded tree itself is never written
 
 
 @needs_bwrap
 def test_aliases_are_recorded_as_unknown_and_not_compared(tmp_path):
     cell = "a = [1, 2]\nb = a\n"
-    got = _one(tmp_path, [cell], [2, 2], "b = fn(a)", "def fn(x):\n    return list(x)\n")
+    got = _one(
+        tmp_path,
+        [cell],
+        [2, 2],
+        "b = fn(a)",
+        "def fn(x):\n    return list(x)\n",
+    )
     assert got["verdict"] == "verified", got
     assert got["unknown"]["original"]["aliases"] == [["a", "b"]]
     assert got["unknown"]["rewritten"]["aliases"] == []
@@ -285,7 +359,10 @@ def test_a_box_failure_is_transient(tmp_path, monkeypatch):
         _lib(tmp_path, GOOD),
         scratch=tmp_path / "scratch",
     )
-    assert got[0]["verdict"] == "not replayable: box timeout" and got[0]["transient"] is True
+    assert (
+        got[0]["verdict"] == "not replayable: box timeout"
+        and got[0]["transient"] is True
+    )
 
 
 def test_the_three_runs_get_separate_writable_trees(tmp_path, monkeypatch):
@@ -325,7 +402,10 @@ def test_an_original_that_does_not_reproduce_the_recording_is_unknown(tmp_path):
     cell = "rows = [3, 1]\nprint(sorted(rows))\nn = len(rows)\n"
     src = "def fn(r):\n    return len(r)\n"
     got = _one(tmp_path, [cell], [3, 3], "n = fn(rows)", src, outputs=["[3, 1]\n"])
-    assert got["verdict"] == "unknown: oracle unsuitable: the original does not reproduce the recorded output", got
+    assert (
+        got["verdict"]
+        == "unknown: oracle unsuitable: the original does not reproduce the recorded output"
+    ), got
     assert got["oracle"] == {
         "recording": "not reproduced",
         "differs_at": [0],
@@ -333,7 +413,14 @@ def test_an_original_that_does_not_reproduce_the_recording_is_unknown(tmp_path):
         "deterministic": None,
     }
     assert "case" not in got and rv.summary([got])["unknown"] == 1
-    same = _one(tmp_path / "again", [cell], [3, 3], "n = fn(rows)", src, outputs=["[1, 3]\n"])
+    same = _one(
+        tmp_path / "again",
+        [cell],
+        [3, 3],
+        "n = fn(rows)",
+        src,
+        outputs=["[1, 3]\n"],
+    )
     assert same["verdict"] == "verified", same
     assert same["oracle"] == {
         "recording": "reproduced",
@@ -345,10 +432,25 @@ def test_an_original_that_does_not_reproduce_the_recording_is_unknown(tmp_path):
 
 @needs_bwrap
 def test_a_deterministic_reproducing_original_gets_the_usual_verdicts(tmp_path):
-    good = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v)\n")
-    bad = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n - sum(v)\n")
+    good = _one(
+        tmp_path,
+        [SCALAR],
+        [3, 4],
+        "n = fn(vals, n)",
+        "def fn(v, n):\n    return n + sum(v)\n",
+    )
+    bad = _one(
+        tmp_path,
+        [SCALAR],
+        [3, 4],
+        "n = fn(vals, n)",
+        "def fn(v, n):\n    return n - sum(v)\n",
+    )
     for got in (good, bad):
-        assert got["oracle"]["recording"] == "reproduced" and got["oracle"]["deterministic"] is True, got
+        assert (
+            got["oracle"]["recording"] == "reproduced"
+            and got["oracle"]["deterministic"] is True
+        ), got
     assert good["verdict"] == "verified" and bad["verdict"] == "differs"
     assert rv.summary([good, bad]) == {
         "verified": 1,
@@ -380,23 +482,42 @@ def _run(printed="hi", n=1, stdout=(3, "a")):
 
 
 def test_the_original_must_reproduce_the_recording_before_anything_is_compared():
-    got = rv.verdict(JOB, {"first": _run("bye"), "second": _run("bye"), "third": _run("bye")})
-    assert got["verdict"].startswith("unknown: oracle unsuitable: ") and got["oracle"]["differs_at"] == [0]
+    got = rv.verdict(
+        JOB,
+        {"first": _run("bye"), "second": _run("bye"), "third": _run("bye")},
+    )
+    assert got["verdict"].startswith("unknown: oracle unsuitable: ") and got["oracle"][
+        "differs_at"
+    ] == [0]
     # a wrong function does not turn an unsuitable oracle into a failure
-    got = rv.verdict(JOB, {"first": _run("bye"), "second": _run("bye"), "third": _run("bye", n=2)})
+    got = rv.verdict(
+        JOB,
+        {"first": _run("bye"), "second": _run("bye"), "third": _run("bye", n=2)},
+    )
     assert got["verdict"].startswith("unknown: oracle unsuitable: "), got
 
 
 def test_a_nondeterministic_original_is_unknown_whatever_differs():
     for second in (_run(n=2), _run(stdout=(3, "b")), {"error": "ValueError"}):
         got = rv.verdict(JOB, {"first": _run(), "second": second, "third": _run()})
-        assert got["verdict"] == "unknown: oracle unsuitable: nondeterministic", (second, got)
-        assert got["oracle"]["recording"] == "reproduced" and got["oracle"]["deterministic"] is False
+        assert got["verdict"] == "unknown: oracle unsuitable: nondeterministic", (
+            second,
+            got,
+        )
+        assert (
+            got["oracle"]["recording"] == "reproduced"
+            and got["oracle"]["deterministic"] is False
+        )
 
 
 def test_an_original_that_raises_is_unknown():
-    got = rv.verdict(JOB, {"first": {"error": "NameError"}, "second": _run(), "third": _run()})
-    assert got["verdict"] == "unknown: oracle unsuitable: the original raised NameError", got
+    got = rv.verdict(
+        JOB,
+        {"first": {"error": "NameError"}, "second": _run(), "third": _run()},
+    )
+    assert (
+        got["verdict"] == "unknown: oracle unsuitable: the original raised NameError"
+    ), got
     assert got["oracle"]["recording"] == "not reproduced"
 
 
@@ -416,7 +537,9 @@ def test_a_missing_recording_is_said_not_taken_as_reproduced():
     job = {**JOB, "cells": [{**JOB["cells"][0], "output": None}]}
     got = rv.verdict(job, {"first": _run(), "second": _run(), "third": _run()})
     assert got["verdict"] == "verified"
-    assert got["oracle"]["recording"] == "not available" and got["oracle"]["unrecorded"] == [0]
+    assert got["oracle"]["recording"] == "not available" and got["oracle"][
+        "unrecorded"
+    ] == [0]
 
 
 def test_recorded_output_readings_drop_what_the_recorder_adds():

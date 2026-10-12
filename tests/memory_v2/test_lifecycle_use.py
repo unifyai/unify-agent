@@ -1,4 +1,4 @@
-"""Use records per library commit (spec §4.4, D40) and the signals the lifecycle may count (spec §5, §10.1)."""
+"""Use records per library commit and the signals the lifecycle may count."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def _use_rec(rows, unknown=()):
 
 
 def _visible(source, label, regime):
-    """A checker signal that P9 marks agent-visible (``Signal.visible_to_actor``); counted_signals reads only
-    ``source``, ``label`` and that flag, so a stand-in carries them until P9 is integrated.
+    """A checker signal marked agent-visible (``Signal.visible_to_actor``); counted_signals reads only
+    ``source``, ``label`` and that flag, so a stand-in carries just those.
     """
     return SimpleNamespace(
         source=source,
@@ -168,7 +168,7 @@ def test_a_lookup_alone_is_not_a_use():
 
 
 def test_a_checker_verdict_counts_only_when_the_signal_is_marked_visible():
-    """P5 Amendment A: a grader ``checker pass`` without ``visible_to_actor`` is ignored even when the run allows
+    """A grader ``checker pass`` without ``visible_to_actor`` is ignored even when the run allows
     visible checker signals; a flagged pass counts."""
     unflagged = [Signal("s", "e1", "checker", "pass", "t", regime="dense")]
     assert lc.counted_signals(unflagged, "dense", checker_visible=True) == (
@@ -186,7 +186,11 @@ def test_a_call_that_returned_is_a_use_and_an_import_alone_is_only_seen():
     rec = _use_rec(
         {
             PD: {"imported": 1},  # imported, never called
-            WEEK: {"imported": 1, "called": 2, "refused": 1},  # one call refused, the other returned
+            WEEK: {
+                "imported": 1,
+                "called": 2,
+                "refused": 1,
+            },  # one call refused, the other returned
             TOK: {"called": 1, "errored": 1},  # its only call raised
         },
     )
@@ -198,13 +202,21 @@ def test_a_call_that_returned_is_a_use_and_an_import_alone_is_only_seen():
     }
     use = lc.aggregate_use([f])
     assert (use[PD][A]["episodes"], use[PD][A]["seen"]) == (0, 1)
-    assert (use[WEEK][A]["episodes"], use[WEEK][A]["refused"], use[WEEK][A]["errors"]) == (1, 1, 0)
+    assert (
+        use[WEEK][A]["episodes"],
+        use[WEEK][A]["refused"],
+        use[WEEK][A]["errors"],
+    ) == (1, 1, 0)
     assert (use[TOK][A]["episodes"], use[TOK][A]["errors"]) == (0, 1)
 
 
 def test_returned_compares_call_sites_with_the_exceptions_that_left_the_item():
     assert lc.returned(1, 0, 0) and lc.returned(2, 1, 0) and lc.returned(3, 1, 1)
-    assert not lc.returned(0, 0, 0) and not lc.returned(1, 1, 0) and not lc.returned(1, 0, 1)
+    assert (
+        not lc.returned(0, 0, 0)
+        and not lc.returned(1, 1, 0)
+        and not lc.returned(1, 0, 1)
+    )
 
 
 def test_a_signal_after_an_import_alone_is_not_counted_for_the_item():

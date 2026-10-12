@@ -1,4 +1,4 @@
-"""Bisect and the rollback proposal (spec §10.2, §13.4): later tests on each version, confined, bounded, explicit."""
+"""Bisect and the rollback proposal: later tests on each version, confined, bounded, explicit."""
 
 from __future__ import annotations
 

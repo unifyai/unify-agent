@@ -1,4 +1,4 @@
-"""The v2.1 memory section (spec §4.5, §6): GUIDE, then the index view, last in the system prompt (cache rule)."""
+"""The library-mode memory section: GUIDE, then the index view, last in the system prompt (cache rule)."""
 
 from __future__ import annotations
 
@@ -159,8 +159,13 @@ def test_actor_index_inline_by_default_keeps_the_bytes_and_pointer_points(tmp_pa
     )
 
     _, _, co = _export(tmp_path)
-    inline = prompt.GUIDE_LIBRARY + prompt.location_line(co) + "\n" + index_view(
-        (co / "INDEX.md").read_text(),
+    inline = (
+        prompt.GUIDE_LIBRARY
+        + prompt.location_line(co)
+        + "\n"
+        + index_view(
+            (co / "INDEX.md").read_text(),
+        )
     )
     assert library_actor_index(SETTINGS) == "inline"
     assert prompt.render_memory_library_mode(co)[0] == inline
@@ -170,7 +175,10 @@ def test_actor_index_inline_by_default_keeps_the_bytes_and_pointer_points(tmp_pa
     assert shown["renderer"] == "pointer_library_mode" and shown["channels"] == []
     for call in ("memory.index()", 'memory.show(\\"<id>\\")', "memory.find(value)"):
         assert call.replace("\\", "") in text
-    assert "memory.text" not in text.replace("memory.text.dates", "")  # names no package of the library
+    assert "memory.text" not in text.replace(
+        "memory.text.dates",
+        "",
+    )  # names no package of the library
     # the pointer is there whenever the library is mounted, empty or not, with the same bytes
     empty = tmp_path / "empty"
     mem = Repo.init_bare(empty / "memory")

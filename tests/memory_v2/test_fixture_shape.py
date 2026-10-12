@@ -1,4 +1,4 @@
-"""The examples' fixture check compares shapes exactly, with no information floor (v2.1 re-review N1).
+"""The examples' fixture check compares shapes exactly, with no information floor.
 
 ``find`` needs a named key before it says anything (:func:`unify.memory_v2.memory_helper.compare`), which is
 right for retrieval and wrong for a fixture: a headerless table, a raw grid or a list of scalars has no named
@@ -90,7 +90,7 @@ def test_same_schema_values_have_the_same_shape_and_a_retyped_leaf_does_not():
         assert not same_shape(a, c), (schema, path)
     assert (
         floorless >= 40
-    )  # the generator reaches the low-information shapes N1 is about
+    )  # the generator reaches the low-information shapes
 
 
 def _table(rng: random.Random, types: list[str], rows: int, header: bool) -> bytes:
@@ -136,7 +136,7 @@ def test_headerless_tables_of_the_same_column_types_have_the_same_shape():
 
 
 def test_the_three_shapes_of_the_review():
-    """N1's probes: each fixture has exactly the recorded shape and fits; find's floor would refuse each."""
+    """The probes: each fixture has exactly the recorded shape and fits; find's floor would refuse each."""
     grid_rec, grid_fx = value_shape([[0, 1], [1, 0]]), value_shape(b"[[1, 0], [0, 1]]")
     list_rec, list_fx = value_shape([4, 5, 6]), value_shape("[1, 2, 3]")
     csv_rec = file_shape("rec.csv", b"5,6\n7,8\n")

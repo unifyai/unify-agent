@@ -1,7 +1,7 @@
-"""Sol's box under v2.1 (spec §4, §7.2): the generated helper and index, never committed; no library.json.
+"""The writer's box in library mode: the generated helper and index, never committed; no library.json.
 
-P3 Task 7, built on test_writer_pass's own helpers (``Turns``, ``_writer``, ``_run``): the plan's ``_pass``/``_scripted``
-sketches do not exist there. Amendment C: the generated paths are read-only binds in the writer's cells.
+Built on test_writer_pass's own helpers (``Turns``, ``_writer``, ``_run``). The generated paths are read-only binds
+in the writer's cells.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def test_unchanged_generated_files_are_dropped_and_edited_ones_kept(tmp_path):
     _drop_unchanged(box, generated)
     assert (
         box / "INDEX.md"
-    ).read_text() == "edited by the writer\n"  # the gate refuses it (P4)
+    ).read_text() == "edited by the writer\n"  # the gate refuses it
     assert not (box / "memory/__init__.py").exists() and not (box / ".memory").exists()
     assert not (box / "links.json").exists() and (box / "memory/text/dates.py").exists()
 
@@ -59,7 +59,7 @@ def test_library_first_message_points_to_the_index_and_no_library_json(
     monkeypatch,
 ):
     def refuse(*a, **k):
-        raise AssertionError("library.json is v2's; v2.1 reads the tree")
+        raise AssertionError("library.json is v2's; library mode reads the tree")
 
     monkeypatch.setattr(WriterPass, "_stage_context", refuse)
     _, _, writer = _writer(tmp_path, Turns([]), library_mode=True, max_calls=1)

@@ -1,7 +1,6 @@
-"""Memory v2.1 m4k (MAIN 11 Oct, the m4j dress-rehearsal diagnosis a1-m4j-rehearsal-diagnosis-20261011.md): the batch
-map points at what else the pass holds about each episode, read_episode pages past its parts bound, finish's refusal
-names what is missing, the brief states the batch map's schema and no longer speaks of the pass's time, and G3's
-exact-assertion refusal shows a form that passes."""
+"""The batch map points at what else the pass holds about each episode, read_episode pages past its parts bound,
+finish's refusal names what is missing, the brief states the batch map's schema and no longer speaks of the pass's
+time, and G3's exact-assertion refusal shows a form that passes."""
 
 import json
 from pathlib import Path
@@ -17,7 +16,7 @@ from tests.memory_v2.test_gate_library_mode import (
     WEAK_TEST,
     _files_and_fixtures,
     _man,
-    world21,
+    library_gate_world,
 )  # noqa: F401 (a fixture)
 from tests.memory_v2.test_pool import EMPTY, _finish_with, _Stores
 from tests.memory_v2.test_writer_pass import _call
@@ -159,12 +158,12 @@ def test_neither_brief_speaks_of_the_pass_time():
 # --- 5b. G3's exact-assertion refusal shows a passing form ----------------------------------------------------------
 
 
-def test_the_exact_assertion_refusal_shows_a_form_that_passes(world21):
-    mem, ev, blobs, gate = world21
+def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs, test=WEAK_TEST)
     res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
     reason = next(r for r in res.reasons if "[library_mode:exact]" in r)
-    # RUNTIME 18:17Z: the passing form loads the expected value from a fixture (no literal answer in code)
+    # the passing form loads the expected value from a fixture (no literal answer in code)
     assert (
         "A form that passes" in reason
         and "assert f(load(fixture_in)) == load(fixture_out)" in reason
@@ -181,8 +180,8 @@ FIXTURE_FORM_TEST = TEST.replace(
 )
 
 
-def test_the_fixture_form_the_refusal_shows_passes_g3(world21):
-    """MAIN 11 Oct: the form G3's refusal shows must pass the gate itself. Both sides are harness-recorded fixtures (the
+def test_the_fixture_form_the_refusal_shows_passes_g3(library_gate_world):
+    """The form G3's refusal shows must pass the gate itself. Both sides are harness-recorded fixtures (the
     expected value a byte slice of the recorded response), with no literal in the test.
     """
     assert (
@@ -190,7 +189,7 @@ def test_the_fixture_form_the_refusal_shows_passes_g3(world21):
         and '"u-1"'
         not in FIXTURE_FORM_TEST.split("def test_reads")[1].split("@pytest")[0]
     )
-    mem, ev, blobs, gate = world21
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs, test=FIXTURE_FORM_TEST)
     whole = files["memory/acct/tests/data/me.json"].encode()
     at = whole.index(b'"u-1"')

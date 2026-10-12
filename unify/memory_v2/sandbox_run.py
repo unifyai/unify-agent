@@ -54,7 +54,7 @@ ETC_ALLOW = (
     "alternatives",
 )
 
-#: Never in a box's environment, whatever a caller passes: memory v2's route for Sol's own model calls.
+#: Never in a box's environment, whatever a caller passes: memory v2's route for the writer's own model calls.
 HARNESS_ONLY_ENV = frozenset(
     {
         "UNIFY_MEMORY_V2_WRITER_BASE_URL",
@@ -77,7 +77,7 @@ PRLIMIT = "/usr/bin/prlimit"
 JUNIT_MAX_BYTES = 8 * 1024**2
 # Each of stdout and stderr keeps at most its last CAPTURE_MAX_BYTES; the rest is read and dropped.
 CAPTURE_MAX_BYTES = 1024**2
-# memory v2.1 (spec P5, P4 Amendment A): a spooled stream keeps at most SPOOL_MAX_BYTES on the harness's disk
+# library mode: a spooled stream keeps at most SPOOL_MAX_BYTES on the harness's disk
 # (each of stdout and stderr of one run); past it the spool stops and ends with a marker naming the bytes not kept.
 SPOOL_MAX_BYTES = 64 * 1024**2
 
@@ -317,8 +317,8 @@ class _Tail:
 
     The box can always reach the host's pipes (its pid 1 holds them, and ``/proc/1/fd/1`` is open to the
     same user), so the host must never buffer them whole or decode them strictly: the text is decoded as
-    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped. With *spool* (memory v2.1,
-    spec P5) every byte is also written to that harness-side file, up to *spool_max* (:data:`SPOOL_MAX_BYTES`),
+    UTF-8 with replacement characters, prefixed by a marker when bytes were dropped. With *spool* (library
+    mode) every byte is also written to that harness-side file, up to *spool_max* (:data:`SPOOL_MAX_BYTES`),
     after which it ends with ``[spool limit reached: N further bytes not kept]``; memory stays bounded.
     """
 
@@ -428,13 +428,13 @@ def run_confined(
     """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
 
     *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
-    read-only (memory v2.1's generated files in the writer's box, P3 Amendment C). Each source must be an
+    read-only (library mode's generated files in the writer's box). Each source must be an
     existing path that is not a link.
 
     *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
     bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
     ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
-    *spool* (memory v2.1) also writes every byte of stdout and stderr to those two harness-side files (each at
+    *spool* (library mode) also writes every byte of stdout and stderr to those two harness-side files (each at
     most :data:`SPOOL_MAX_BYTES`, marked past it); it changes nothing about the box.
     """
     for name in env or {}:
@@ -569,12 +569,12 @@ class PytestOutcome:
     timed_out: bool = False
     output: str = ""
     valid: bool = True
-    # memory v2.1 (spec §9.2): the run's output uncut by this module: stdout then stderr as run_confined kept
+    # library mode: the run's output uncut by this module: stdout then stderr as run_confined kept
     # them (each its last CAPTURE_MAX_BYTES, prefixed "[N earlier bytes dropped]" when bytes were dropped, so
     # nothing is cut silently). ``output`` stays the 4,000-character tail every v2 reason quotes; empty means
     # the same text as ``output``.
     full_output: str = ""
-    # memory v2.1: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
+    # library mode: the whole output's blob id (the gate sets it; :func:`.library_checks.keep_output`)
     output_blob: str | None = None
 
     def __post_init__(self) -> None:
@@ -653,7 +653,7 @@ def _read_junit(junit_dir: Path) -> ET.Element | None:
 # suite property SKIPMARK_LOADED, and a report without it is invalid (the plugin did not run). The plugin
 # reaches pytest's junit writer through its stash key (``_pytest.junitxml.xml_key``); a pytest without it is a
 # usage error, so the run is invalid, never silently unmarked. Model code shares pytest's process and could
-# forge the properties, as it could the report (R16: careless, not malicious).
+# forge the properties, as it could the report (model code is assumed careless, not malicious).
 SKIP_PROPERTY = "memv2_import_skip"
 SKIPMARK_LOADED = "memv2_skipmark"
 SKIPMARK_MODULE = "_memv2_skipmark"
@@ -772,7 +772,7 @@ def run_pytest(
 
     *import_skips_fail* (default off: a skip is a skip): load the skip-marking plugin and count a skip caused
     by a failed import as a failure, ``<file>::test module skipped`` for a module skipped at collection and
-    the test's id for a test. *spool_dir* (memory v2.1) receives the run's whole ``stdout`` and ``stderr``
+    the test's id for a test. *spool_dir* (library mode) receives the run's whole ``stdout`` and ``stderr``
     (:func:`run_confined`'s *spool*); without it the call is v2's.
     """
     more = (

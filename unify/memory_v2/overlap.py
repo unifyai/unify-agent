@@ -1,4 +1,4 @@
-"""Overlap candidates for CURATE (spec v2.1 §10.3), found deterministically from structure and recordings.
+"""Overlap candidates for CURATE, found deterministically from structure and recordings.
 
 Three rules. None of them reads a name, a docstring, a description or any other text:
 
@@ -34,7 +34,7 @@ from .analysis.fn_antiunify import antiunify, function_defs
 from .analysis.library_graph import shape_graph
 
 OVERLAP_VERSION = 1
-#: Spec §10.3: two bodies "anti-unify" at this kept share or more. In the hygiene study the real near-duplicates
+#: Two bodies "anti-unify" at this kept share or more. In the hygiene study the real near-duplicates
 #: kept 0.7-1.0 and unrelated functions under 0.15 (test_hygiene_analysis.py); offline replay calibrates it.
 ANTIUNIFY_MIN_SHARE = 0.7
 #: Function pairs anti-unified per call, in sorted order (77 functions, the largest v2 library, make 2,926).
@@ -230,7 +230,7 @@ def overlap_candidates(
     min_share: float = ANTIUNIFY_MIN_SHARE,
     max_pairs: int = MAX_ANTIUNIFY_PAIRS,
 ) -> dict:
-    """Every overlap candidate of the library at *tree* (spec §10.3).
+    """Every overlap candidate of the library at *tree*.
 
     *shapes* are the commit's shape rows (:func:`.shape_rows.shapes_at`), *covers* the evidence store's
     ``(item, episode, action)`` covers and *typed* its typed covers ``(item, episode, cover JSON)``. Rows of items

@@ -1,7 +1,7 @@
-"""P1 Task 7's off-path inputs: one deterministic over-the-cap recording per recorder (dialogue, shell, tool,
+"""The library switch's off-path inputs: one deterministic over-the-cap recording per recorder (dialogue, shell, tool,
 worktree), using only the recorders' default arguments, as they exist at 4675a3c45.
 
-:func:`off_records` is run once at 4675a3c45 (on a keyless worker) to write ``golden/p1_t7_off_4675a3c45.json``;
+:func:`off_records` is run once at 4675a3c45 (on a keyless worker) to write ``golden/recorder_cuts_off_4675a3c45.json``;
 ``test_recorders_library_mode.py`` runs it again on this build and requires the same bytes, so with ``UNIFY_MEMORY_LIBRARY`` off
 every recorder cuts exactly as at 4675a3c45. Standard library plus unify only; no model, no network.
 """
@@ -133,7 +133,7 @@ def dumps(records: dict) -> str:
 
 if (
     __name__ == "__main__"
-):  # write the golden: python -m tests.memory_v2.p1_t7_inputs OUT
+):  # write the golden: python -m tests.memory_v2.recorder_inputs OUT
     import sys
     import tempfile
 

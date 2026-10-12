@@ -6,7 +6,7 @@ At import, before any test here runs:
   Manager source because its service-account key file exists), comparing values only, never printing them;
 * replace every provider key, in the environment and in unillm's loaded settings, with a placeholder, so request
   bodies a test builds can only ever hold the placeholder;
-* do the same check for memory v2's Sol route (``UNIFY_MEMORY_V2_WRITER_TOKEN`` / ``_BASE_URL``) and drop it from the
+* do the same check for memory v2's writer route (``UNIFY_MEMORY_V2_WRITER_TOKEN`` / ``_BASE_URL``) and drop it from the
   environment.
 
 ``test_no_real_provider_key_is_loadable`` then fails the suite on a host where a real key was loadable: these tests
@@ -60,7 +60,7 @@ def _real_key_seen() -> list[str]:
     return sorted(set(seen))
 
 
-#: Sol's route (unify/memory_v2/integration/switch.py): its token is a credential as well, and a test never runs
+#: The writer's route (unify/memory_v2/integration/switch.py): its token is a credential as well, and a test never runs
 #: with a real route. The controller's settings may already hold it (unify.settings removes it from the
 #: environment once read), so both places are looked at; names only, never values.
 WRITER_ROUTE = (

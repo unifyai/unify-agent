@@ -285,7 +285,9 @@ def test_the_tool_item_sees_neither_the_case_nor_the_recording(tmp_path):
 @needs_bwrap
 def test_an_item_that_copies_the_recording_instead_of_computing_fails(tmp_path):
     got = _ledger_run(tmp_path)(TOOL_COPY, 1)
-    assert not got.ok and "issued 0 write call(s); the episode recorded 1" in got.reason, got.reason
+    assert (
+        not got.ok and "issued 0 write call(s); the episode recorded 1" in got.reason
+    ), got.reason
 
 
 @needs_bwrap
@@ -301,7 +303,9 @@ def test_a_call_with_no_recording_reaches_the_item_as_an_exception(tmp_path):
     env.ledger.post(total=sum(rows))
 """
     got = _ledger_run(tmp_path)(src, 1)
-    assert not got.ok and "made 1 call(s) the episode did not record" in got.reason, got.reason
+    assert (
+        not got.ok and "made 1 call(s) the episode did not record" in got.reason
+    ), got.reason
 
 
 # --- the dialogue runner -------------------------------------------------------------------------------------
@@ -363,7 +367,7 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
     )
     # Amendment D: a checker verdict the bed does not declare visible to the actor is never evidence
     assert "no positive signal" in run(DIALOGUE, 4, good, visible=False).reason
-    # review R1: with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
+    # with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
     hidden = [Signal("s3", "e3", "checker", "pass", "2026-10-09T00:00:00Z")]
     assert "no positive signal" in run(DIALOGUE, 6, hidden).reason
     support = [Signal("s2", "e3", "provenance", "support", "2026-10-09T00:00:00Z")]
@@ -413,11 +417,19 @@ def test_runners_run_model_code_only_through_run_confined(tmp_path):
     [server_box] = [c for c in seen if c[0][2] == "/case/serve.py"]
     argv, ro, rw, cwd, env = item_box
     assert argv == [str(PYTHON), "-I", "/item/run.py"] and env == {} and not rw
-    assert ro[tree] == "/memory" and sorted(ro.values()) == ["/chan", "/item", "/kit", "/memory"]
+    assert ro[tree] == "/memory" and sorted(ro.values()) == [
+        "/chan",
+        "/item",
+        "/kit",
+        "/memory",
+    ]
     item_json = json.loads((tmp_path / "w" / "item" / "item.json").read_text())
     assert item_json == {"item": "memory.proc.jobs:post_total", "params": {}}
     argv, ro, rw, cwd, env = server_box
     assert argv[:3] == [str(PYTHON), "-I", "/case/serve.py"] and env == {}
-    assert sorted(ro.values()) == ["/case", "/kit"] and sorted(rw.values()) == ["/chan", "/out"]
+    assert sorted(ro.values()) == ["/case", "/kit"] and sorted(rw.values()) == [
+        "/chan",
+        "/out",
+    ]
     text = inspect.getsource(pr)
     assert "subprocess" not in text and "os.system" not in text and "exec(" not in text

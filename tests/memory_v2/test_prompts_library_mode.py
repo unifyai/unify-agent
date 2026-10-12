@@ -65,7 +65,9 @@ def _write(limits=None, **over):
         pytest_env=ENV,
         staging=True,
         pool=True,
-        tools="".join(f"- `{t}`: the {t} tool.\n" for t in sorted(OPTIONAL_TOOLS)).rstrip("\n"),
+        tools="".join(
+            f"- `{t}`: the {t} tool.\n" for t in sorted(OPTIONAL_TOOLS)
+        ).rstrip("\n"),
         tool_names=OPTIONAL_TOOLS,
         pool_kinds="`candidate` (a function with its cases)",
     )
@@ -212,7 +214,7 @@ def test_input_forms_match_the_manifest():
 
 
 def test_rendered_from_the_constants_that_enforce_them():
-    """Needs P2's repair, P3's library_index, P4's code_lint and MUTATION_MIN and P6's curate: runs once integrated."""
+    """Needs repair, library_index, code_lint with MUTATION_MIN, and curate: runs once they are integrated."""
     repair = pytest.importorskip("unify.memory_v2.repair")
     code_lint = pytest.importorskip("unify.memory_v2.code_lint")
     INDEX_VIEW_TOKENS = pytest.importorskip(
@@ -234,7 +236,9 @@ def test_rendered_from_the_constants_that_enforce_them():
     assert f"after {writer_pass.STEP_GUARD} model and check calls" in text
     assert pv._env(_PYTEST_ENV) in text
     assert INDEX_VIEW_TOKENS and repair  # imported: the constants exist
-    assert f"after {writer_pass.STEP_GUARD} model and check calls" in pv.curate_brief_now()
+    assert (
+        f"after {writer_pass.STEP_GUARD} model and check calls" in pv.curate_brief_now()
+    )
 
 
 def test_no_read_only_instruction():

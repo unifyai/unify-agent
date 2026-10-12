@@ -1,4 +1,4 @@
-"""Static test-quality checks of memory v2.1 (spec §9.1, §13.1–13.2, §13.4). Pure AST; nothing runs.
+"""Static test-quality checks of the library mode. Pure AST; nothing runs.
 
 * :func:`exact_assertions` finds every ``assert <call of the function> == <expected>`` (either side) in each test
   function, and reports three things:
@@ -6,7 +6,7 @@
   - whether the expected value has trust 1–3 (``trusted``): it derives from a recorded fixture, or it is an
     informative literal equal to a recorded value (:func:`recorded_literals`);
   - whether the expected value recomputes the function's own expression (``oracle``: a self-reimplementing
-    oracle, §13.4). That is an expression of at least :data:`ORACLE_MIN_NODES` nodes equal to one of the
+    oracle). That is an expression of at least :data:`ORACLE_MIN_NODES` nodes equal to one of the
     function's, with names renamed in order and builtins and constants kept.
 * :func:`inventory`, :func:`test_changes` and :func:`count_items` give a tree's tests and items, and which tests a
   candidate deletes or weakens (fewer assertions, or fewer exact ones).

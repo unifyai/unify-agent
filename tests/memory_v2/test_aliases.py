@@ -1,4 +1,4 @@
-"""Aliases and calls in a v2.1 library (spec v2.1 §10.4, §9.1): pure AST."""
+"""Aliases and calls in a library-mode library: pure AST."""
 
 from unify.memory_v2.aliases import calls_function, forwards, uses_name
 
