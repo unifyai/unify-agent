@@ -12,6 +12,7 @@ import shutil
 import time
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,16 +52,17 @@ async def _start(tmp_path: Path, *, channel=None, stub=None, limit: float = 30.0
 
 
 def test_cell_state_setting(monkeypatch):
-    from unify.settings import SETTINGS
+    import unify.settings
 
-    monkeypatch.setattr(SETTINGS, bi.CELL_STATE_SETTING, None, raising=False)
+    # settings without the field (read from the environment), then with it
+    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace())
     monkeypatch.delenv(bi.CELL_STATE_SETTING, raising=False)
     assert bi.cell_state() == "fresh" and not bi.persistent()
     monkeypatch.setenv(bi.CELL_STATE_SETTING, "persistent")
     assert bi.persistent()
-    monkeypatch.setattr(SETTINGS, bi.CELL_STATE_SETTING, "fresh", raising=False)
+    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "fresh"}))
     assert bi.cell_state() == "fresh"  # the settings field wins over the environment
-    monkeypatch.setattr(SETTINGS, bi.CELL_STATE_SETTING, "sometimes", raising=False)
+    monkeypatch.setattr(unify.settings, "SETTINGS", SimpleNamespace(**{bi.CELL_STATE_SETTING: "sometimes"}))
     with pytest.raises(ValueError):
         bi.cell_state()
 
@@ -437,6 +439,8 @@ def _kind(target: str) -> str:
         return "socket"
     if target == "anon_inode:[eventpoll]":
         return "epoll"
+    if target == "/dev/urandom":
+        return "urandom"
     return target
 
 
@@ -451,6 +455,8 @@ EXPECTED_FDS = Counter(
         # the event loop: its epoll descriptor and its wake-up socket pair
         "epoll": 1,
         "socket": 2,
+        # the random-number device (found open in both the memory box and the actor box: a device, no host data)
+        "urandom": 1,
     },
 )
 
