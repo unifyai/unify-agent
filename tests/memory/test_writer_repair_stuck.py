@@ -19,7 +19,7 @@ from unify.memory.repair import (
     repair_message,
 )
 from unify.memory.writer_pass import PassOutcome
-from tests.memory.test_gate import MAN, TEST
+from tests.memory.test_gate import TEST
 from tests.memory.test_writer_library_repair import FILES_CODE
 from tests.memory.test_writer_pass import Turns, _call, _run, _write, _writer, needs_bwrap
 
@@ -101,7 +101,7 @@ def test_the_same_refusal_becomes_stuck_after_its_repeats_and_a_change_resets_it
     assert t2.report() == {
         "repeats": STUCK_REPEATS,
         "stopped": False,
-        "refusals": [{"check": "G3", "item": ME, "reason": held[0][2], "rounds": STUCK_REPEATS}],
+        "refusals": [{"check": "G3", "item": ME, "reason": held[0][2][:300], "rounds": STUCK_REPEATS}],
     }
     assert StuckRefusals().report() is None
 
