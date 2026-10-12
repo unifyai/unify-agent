@@ -2367,6 +2367,12 @@ class WriterPass:
         ]
         lines = [
             f"- {g.get('episode')} cell {g.get('cell')} lines {g.get('lines')}: {g['verdict']}"
+            + (f" (in its {g['differs_in']})" if g.get("differs_in") else "")
+            + (
+                "; its printed output differs, which the rewrite may not reproduce"
+                if g.get("stdout_differs")
+                else ""
+            )
             for g in got
         ]
         if not cases:
