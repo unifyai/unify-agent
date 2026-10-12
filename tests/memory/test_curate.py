@@ -365,3 +365,43 @@ def test_changed_items_come_only_from_a_landed_pass():
         "memory.a.b:gone",
         "memory.a.b:dropped",
     }
+
+
+def _shared(rule="shapes_and_fixtures", fp="overlap:sf"):
+    return {
+        "version": 2,
+        "candidates": [
+            {
+                "rule": rule,
+                "items": [F, "memory.a.c:g"],
+                "reasons": ["r"],
+                "fingerprint": fp,
+            },
+        ],
+        "truncated": [],
+    }
+
+
+def test_functions_landed_together_share_shapes_and_fixtures_without_firing():
+    together = {F: ["aaaaaaaaaaaa write p0"], "memory.a.c:g": ["aaaaaaaaaaaa write p0"]}
+    assert cu.due(_state(overlap=_shared(), history=together), set()) == {}
+    assert cu.changed_together(_state(history=together), [F, "memory.a.c:g"])
+
+
+def test_a_real_overlap_fires_once_and_bodies_that_anti_unify_fire_even_when_landed_together():
+    apart = {
+        F: ["bbbbbbbbbbbb write p3", "aaaaaaaaaaaa write p0"],
+        "memory.a.c:g": ["aaaaaaaaaaaa write p0"],
+    }
+    st = _state(overlap=_shared(), history=apart)
+    fired = cu.due(st, set())
+    assert list(fired) == ["overlap:sf"]
+    # once a pass settled it, the same state does not fire it again
+    assert cu.due(st, {"overlap:sf"}) == {}
+    together = {F: ["aaaaaaaaaaaa write p0"], "memory.a.c:g": ["aaaaaaaaaaaa write p0"]}
+    st = _state(overlap=_shared("antiunify", "overlap:au"), history=together)
+    assert list(cu.due(st, set())) == ["overlap:au"]
+    # an item without recorded history is judged as before
+    assert list(
+        cu.due(_state(overlap=_shared(), history={F: ["aaaaaaaaaaaa x"]}), set()),
+    ) == ["overlap:sf"]

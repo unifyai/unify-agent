@@ -188,6 +188,21 @@ def _canon(obj: object) -> str:
 INDEX_NAME = "INDEX.md"
 
 
+def changed_together(state: CurateState, items: list[str]) -> bool:
+    """Whether every one of *items* was last changed by one and the same commit (:attr:`CurateState.history`, newest
+    first). Functions a pass wrote or changed side by side were seen together by that pass, which kept them apart:
+    a shared argument shape and a shared fixture between them are its own choice, not an overlap found later. Once
+    either changes in another pass, the pair is judged again; anti-unifying bodies are an overlap regardless.
+    """
+    heads = set()
+    for item in items:
+        rows = state.history.get(item) or []
+        if not rows or not isinstance(rows[0], str) or not rows[0].strip():
+            return False
+        heads.add(rows[0].split(" ", 1)[0])
+    return len(heads) == 1
+
+
 def _reasons(
     state: CurateState,
     budget: int,
@@ -195,6 +210,8 @@ def _reasons(
     out: dict[str, tuple[str, list[str]]] = {}
     for c in state.overlap.get("candidates", []):
         items = [str(i) for i in c["items"]]
+        if c.get("rule") == "shapes_and_fixtures" and changed_together(state, items):
+            continue
         out[c["fingerprint"]] = (f"overlap ({c['rule']}): " + ", ".join(items), items)
     for item in sorted(state.suspects):
         why = sorted(str(r) for r in (state.suspects[item] or {}).get("reasons", []))
