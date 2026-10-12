@@ -1,20 +1,22 @@
-"""Memory v2.1 candidate pool (the lead, 11 Oct; design ``docs/design/memory-v2.1-candidate-pool.md``).
+"""The candidate pool: proposals persist across passes until the writer settles them.
 
-Proposals are never thrown away after one pass. Every fork or analyst candidate and lesson, every S0 cluster, every
-draft a pass left, and every episode the writer dismissed with ``defer=true`` becomes an entry of a git-tracked pool:
-the memory repo's ref ``refs/heads/pool``, never served to the actor. Each WRITE (and CURATE) pass sees every open
-entry (``/inputs/pool/INDEX.md`` and ``/inputs/pool/<id>/``, read-only, untrusted). Only the writer changes an
-entry's status, through its manifest's ``pool`` block: ``merged`` and ``superseded`` take effect when the gate lands
-the pass, ``retired`` (with a reason) when finish is accepted. There is no timer, cap or expiry: an entry stays open
-until the writer decides. Closed entries leave the index (they are never re-checked) and stay in git history.
+Every staged candidate and lesson, every draft a pass left and every episode the writer deferred becomes an entry of
+a git-tracked pool: the memory repo's ref ``refs/heads/pool``, never served to the actor. A store pass's own staging
+enters the pool when the pass *starts* (:meth:`Pool.enter_staging`), so the writer can merge this pass's candidates
+in the same pass. Each pass sees every open entry (``/inputs/pool/INDEX.md`` and ``/inputs/pool/<id>/``, read-only,
+untrusted), and the closed entries that received new evidence after they were closed. Only the writer changes an
+entry's status: through its manifest's ``pool`` block (``merged`` and ``superseded`` take effect when the gate lands
+the pass, ``retired`` and ``reopened`` when finish is accepted), or by adopting the entry in an item (the item's
+``adopts``), which closes it as merged when that item lands. There is no timer, cap or expiry: an entry stays open
+until the writer decides. Closed entries leave the open list and stay in git history.
 
-Entries are keyed by their content (or, for a cluster, its S0 key; for a draft, its pass; for a deferral, its
-episode), never by a task id, a stream position or a count. Layout per entry: ``pool/<kind>/<id>/entry.json`` and
-its payload files.
+Entries are keyed by their content (a draft by its pass, a deferral by its episode), never by a task id, a stream
+position or a count. Layout per entry: ``pool/<kind>/<id>/entry.json`` and its payload files.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -23,14 +25,71 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 POOL_REF = "pool"
+# ``cluster`` entries came from a recurrence miner that no longer feeds the pool; old ones still load, and
+# :meth:`Pool.close_cluster_entries` closes them
 KINDS = ("candidate", "lesson", "cluster", "draft", "deferred", "unread")
+# the order the writer sees: proposals first (candidates, lessons, deferrals), then everything else
+ORDER = ("candidate", "lesson", "deferred", "draft", "unread", "cluster")
 STATUSES = ("open", "merged", "superseded", "retired")
+BLOCK_KEYS = ("merged", "superseded", "retired", "reopened")
+TITLE_CHARS = 160
+MINER_RETIRED = "miner retired"
 _ID = re.compile(r"[0-9a-f]{16}")
+
+
+def _clip(text: str, n: int = TITLE_CHARS) -> str:
+    """*text* on one line (whitespace collapsed), at most *n* characters."""
+    one = " ".join(str(text).split())
+    return one if len(one) <= n else one[: n - 1].rstrip() + "…"
+
+
+def candidate_title(name: str, source: str) -> str:
+    """A candidate's title from its content: the signature and the docstring's first line of the function named
+    *name* (else the file's first top-level function); the file's first line when it does not parse."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        tree = None
+    fns = [
+        n
+        for n in (tree.body if tree is not None else [])
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    fn = next((f for f in fns if f.name == name), fns[0] if fns else None)
+    if fn is None:
+        first = next((ln.strip() for ln in source.splitlines() if ln.strip()), "")
+        return _clip(f"{name}: {first}" if first and name else first or name)
+    sig = f"{fn.name}({ast.unparse(fn.args)})"
+    if fn.returns is not None:
+        sig += f" -> {ast.unparse(fn.returns)}"
+    doc = (ast.get_docstring(fn) or "").strip().splitlines()
+    return _clip(f"{sig}: {doc[0].strip()}" if doc and doc[0].strip() else sig)
+
+
+def lesson_title(notes: str) -> str:
+    """A lesson's title: the first non-empty line of its notes, without a heading marker."""
+    first = next((ln.strip() for ln in notes.splitlines() if ln.strip()), "")
+    return _clip(first.lstrip("#").strip() or "notes")
+
+
+def title_of(entry: "Entry") -> str:
+    """The content title of *entry*: a candidate's signature and docstring line, a lesson's first line, a deferral's
+    reason; any other kind keeps its title (clipped)."""
+    if entry.kind == "candidate" and "candidate.py" in entry.files:
+        return candidate_title(
+            str(entry.data.get("name") or ""),
+            entry.files["candidate.py"],
+        )
+    if entry.kind == "lesson" and "notes.md" in entry.files:
+        return lesson_title(entry.files["notes.md"])
+    if entry.kind == "deferred" and entry.data.get("reason"):
+        return _clip(str(entry.data["reason"]))
+    return _clip(entry.title)
 
 
 def safe_rel(rel: str) -> bool:
     """A payload path the pool may hold: relative, its parts plain names (no ``..``, ``.`` or empty part), no
-    backslash or NUL (RUNTIME H-P1: the host writes these under /inputs/pool)."""
+    backslash or NUL (the host writes these under /inputs/pool)."""
     if not rel or rel.startswith("/") or "\\" in rel or "\0" in rel:
         return False
     return all(part not in ("", ".", "..") for part in rel.split("/"))
@@ -48,7 +107,7 @@ class Entry:
     status: str = "open"
     status_detail: dict = field(
         default_factory=dict,
-    )  # merged: {item, pass}; superseded: {by, pass}; retired
+    )  # merged: {item, pass}; superseded: {by, pass} or {reason, pass}; retired: {reason, pass}
     provenance: dict = field(
         default_factory=lambda: {"episodes": [], "passes": [], "sources": []},
     )
@@ -56,10 +115,12 @@ class Entry:
     last_changed_in: str = ""
     data: dict = field(
         default_factory=dict,
-    )  # cluster instances, a deferral's reason, ...
+    )  # a candidate's name, a deferral's reason, evidence that arrived after the entry closed, ...
     files: dict[str, str] = field(
         default_factory=dict,
     )  # payload files by relative path (text)
+    # the staging refs (``staging:<episode>/<file>``) this entry was built from; held in memory only, never saved
+    refs: list[str] = field(default_factory=list, compare=False, repr=False)
 
     def meta(self) -> dict:
         return {
@@ -75,7 +136,9 @@ class Entry:
             "files": sorted(self.files),
         }
 
-    def add_provenance(self, episodes=(), passes=(), sources=()) -> None:
+    def add_provenance(self, episodes=(), passes=(), sources=()) -> list[str]:
+        """Add provenance; returns the episodes that were new to this entry."""
+        new_eps: list[str] = []
         for key, vals in (
             ("episodes", episodes),
             ("passes", passes),
@@ -85,10 +148,38 @@ class Entry:
             for v in vals:
                 if v not in have:
                     have.append(v)
+                    if key == "episodes":
+                        new_eps.append(v)
+        return new_eps
+
+    def note_new_evidence(self, episodes: list[str], pass_id: str) -> None:
+        """A closed entry received evidence: the episodes are listed under ``data.new_evidence`` until it reopens."""
+        if self.status == "open" or not episodes:
+            return
+        rows = self.data.setdefault("new_evidence", [])
+        for row in rows:
+            if row.get("pass") == pass_id:
+                row["episodes"] = row.get("episodes", []) + [
+                    e for e in episodes if e not in row.get("episodes", [])
+                ]
+                return
+        rows.append({"pass": pass_id, "episodes": list(episodes)})
+
+    def new_evidence_episodes(self) -> list[str]:
+        out: list[str] = []
+        for row in self.data.get("new_evidence") or []:
+            for e in row.get("episodes") or []:
+                if e not in out:
+                    out.append(e)
+        return out
 
 
 def _canon(obj) -> str:
     return json.dumps(obj, sort_keys=True, default=str)
+
+
+def _order(e: Entry) -> tuple:
+    return (ORDER.index(e.kind) if e.kind in ORDER else 99, e.opened_in, e.id)
 
 
 class Pool:
@@ -98,13 +189,15 @@ class Pool:
         self.repo = repo
         self.entries: dict[str, Entry] = {}
         self.head: str | None = None
-        self.skipped: list[str] = []  # entries load() refused (H-P1)
+        self.skipped: list[str] = []  # entries load() refused
+        # this pass's staging refs (``staging:<episode>/<file>``) -> the entry holding them (:meth:`enter_staging`)
+        self.staged: dict[str, str] = {}
 
     # -- read ------------------------------------------------------------------------------------------------
     def load(self) -> "Pool":
-        """Read ``refs/heads/pool``. RUNTIME H-P1: only well-formed entries are loaded (``pool/<kind>/<id>/``,
-        a known kind, a sha16 id equal to its ``entry.json``'s, plain relative file names, regular blobs only);
-        anything else is skipped and listed in :attr:`skipped`, never staged."""
+        """Read ``refs/heads/pool``. Only well-formed entries are loaded (``pool/<kind>/<id>/``, a known kind, a
+        sha16 id equal to its ``entry.json``'s, plain relative file names, regular blobs only); anything else is
+        skipped and listed in :attr:`skipped`, never staged. Titles are recomputed from content."""
         try:
             self.head = (
                 self.repo.run(
@@ -178,36 +271,46 @@ class Pool:
                 data=meta.get("data") or {},
                 files=files,
             )
+            e.title = title_of(e)
             self.entries[e.id] = e
         return self
 
     def open_entries(self) -> list[Entry]:
         return sorted(
             (e for e in self.entries.values() if e.status == "open"),
-            key=lambda e: (
-                KINDS.index(e.kind) if e.kind in KINDS else 99,
-                e.opened_in,
-                e.id,
+            key=_order,
+        )
+
+    def closed_with_new_evidence(self) -> list[Entry]:
+        """Closed entries that received evidence after they closed (the writer may reopen them)."""
+        return sorted(
+            (
+                e
+                for e in self.entries.values()
+                if e.status != "open" and e.new_evidence_episodes()
             ),
+            key=_order,
         )
 
     # -- change ----------------------------------------------------------------------------------------------
     def upsert(self, entry: Entry, pass_id: str) -> Entry:
         """Add *entry*, or merge its provenance and data into the existing entry with the same id (one id, more
-        evidence). A closed entry stays closed: new evidence for it is recorded, its status is the writer's.
-        """
+        evidence). A closed entry stays closed: new episodes for it are recorded as new evidence, and its status
+        stays the writer's."""
         have = self.entries.get(entry.id)
         if have is None:
             entry.opened_in = entry.opened_in or pass_id
             entry.last_changed_in = pass_id
+            entry.title = title_of(entry)
             self.entries[entry.id] = entry
             return entry
         before = _canon(have.meta()) + _canon(have.files)
-        have.add_provenance(
+        new_eps = have.add_provenance(
             entry.provenance.get("episodes", []),
             entry.provenance.get("passes", []),
             entry.provenance.get("sources", []),
         )
+        have.note_new_evidence(new_eps, pass_id)
         inst = entry.data.get("instances")
         if inst:
             seen = {_canon(i) for i in have.data.get("instances", [])}
@@ -216,17 +319,20 @@ class Pool:
             )
         for rel, text in entry.files.items():
             have.files.setdefault(rel, text)
+        for ref in entry.refs:
+            if ref not in have.refs:
+                have.refs.append(ref)
         if _canon(have.meta()) + _canon(have.files) != before:
             have.last_changed_in = pass_id
         return have
 
     def add_evidence(self, eid: str, episode: str, reason: str, pass_id: str) -> bool:
-        """m4j: the writer's ``dismiss(defer=true, pool_entry=<eid>)``: *episode* and its reason join entry *eid*
-        (its status is unchanged). False when there is no such entry."""
+        """The writer's deferral that names entry *eid*: *episode* and its reason join that entry (its status is
+        unchanged). False when there is no such entry."""
         e = self.entries.get(eid)
         if e is None:
             return False
-        e.add_provenance([episode], [pass_id], ["writer"])
+        e.note_new_evidence(e.add_provenance([episode], [pass_id], ["writer"]), pass_id)
         ev = e.data.setdefault("evidence", [])
         row = {"episode": episode, "reason": reason, "pass": pass_id}
         if row not in ev:
@@ -241,6 +347,33 @@ class Pool:
             {**detail, "pass": pass_id},
             pass_id,
         )
+        if status == "open":
+            e.data.pop("new_evidence", None)
+
+    def enter_staging(self, views: dict, pass_id: str) -> dict:
+        """A store pass's staging enters the pool at the pass's start: each batch episode's staging
+        (:class:`.staging.StagingView` by episode) as entries (:func:`from_staging`), and :attr:`staged` maps each
+        staged file's ref to the entry holding it. Returns ``{"entries": n, "added": n}``."""
+        added, held = 0, set()
+        for eid, view in sorted(views.items()):
+            for e in from_staging(eid, view):
+                e.add_provenance([], [pass_id], [])
+                added += e.id not in self.entries
+                kept = self.upsert(e, pass_id)
+                held.add(kept.id)
+                for ref in e.refs:
+                    self.staged[ref] = kept.id
+        return {"entries": len(held), "added": added}
+
+    def close_cluster_entries(self, pass_id: str) -> list[str]:
+        """Close every open ``cluster`` entry as superseded (the miner that fed them is retired); returns their ids.
+        A cleanup that runs when a pass loads the pool, so a pool with no cluster entries is unchanged."""
+        out = []
+        for e in self.open_entries():
+            if e.kind == "cluster":
+                self.set_status(e.id, "superseded", {"reason": MINER_RETIRED}, pass_id)
+                out.append(e.id)
+        return out
 
     # -- write -----------------------------------------------------------------------------------------------
     def _blob(self, text: str) -> str:
@@ -296,10 +429,11 @@ class Pool:
 
     # -- the writer's view -----------------------------------------------------------------------------------
     def stage(self, dest: Path) -> int:
-        """``/inputs/pool``: INDEX.md (every open entry, one line each, deterministic) and each entry's files.
+        """``/inputs/pool``: INDEX.md (every open entry, one line each, proposals first, deterministic; then the
+        closed entries with new evidence) and each listed entry's files. Returns the number of open entries.
 
-        RUNTIME H-P1: *dest* must not exist yet (a fresh directory, never one reached through a link); every file is
-        created new, never through a link, and must resolve under *dest*."""
+        *dest* must not exist yet (a fresh directory, never one reached through a link); every file is created new,
+        never through a link, and must resolve under *dest*."""
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=False)
         root = dest.resolve()
@@ -319,20 +453,7 @@ class Pool:
             with os.fdopen(fd, "w") as fh:
                 fh.write(text)
 
-        rows = [e for e in self.open_entries() if _ID.fullmatch(e.id)]
-        lines = [
-            "# Candidate pool: open entries",
-            "",
-            "Proposals earlier passes did not settle. Each stays open until a pass merges, supersedes or retires it "
-            "in its manifest's `pool` block. Files: /inputs/pool/<id>/.",
-            "",
-        ]
-        for e in rows:
-            eps = e.provenance.get("episodes", [])
-            lines.append(
-                f"- `{e.id}` {e.kind}: {e.title} ({len(eps)} episode(s): {', '.join(eps) or '-'}; "
-                f"opened in {e.opened_in})",
-            )
+        def files_of(e: Entry) -> None:
             write(
                 f"{e.id}/entry.json",
                 json.dumps(e.meta(), indent=1, sort_keys=True, default=str) + "\n",
@@ -340,8 +461,43 @@ class Pool:
             for rel, text in sorted(e.files.items()):
                 if safe_rel(rel) and rel != "entry.json":
                     write(f"{e.id}/{rel}", text)
+
+        def count(n: int) -> str:
+            return f"{n} episode{'' if n == 1 else 's'}"
+
+        rows = [e for e in self.open_entries() if _ID.fullmatch(e.id)]
+        lines = [
+            "# Candidate pool: open entries",
+            "",
+            "Proposals not yet settled, candidates first, then lessons and deferrals. Each stays open until a pass "
+            "merges, supersedes or retires it in its manifest's `pool` block, or an item that adopts it lands. "
+            "Files: /inputs/pool/<id>/.",
+            "",
+        ]
+        for e in rows:
+            n = len(e.provenance.get("episodes", []))
+            lines.append(
+                f"- `{e.id}` {e.kind}: {e.title} ({count(n)}; opened in {e.opened_in})",
+            )
+            files_of(e)
         if not rows:
             lines.append("(no open entries)")
+        again = [e for e in self.closed_with_new_evidence() if _ID.fullmatch(e.id)]
+        if again:
+            lines += [
+                "",
+                "## Closed entries with new evidence",
+                "",
+                "Closed entries that received evidence after they were closed. A manifest's "
+                '`"pool": {"reopened": {"<id>": "<reason>"}}` reopens one.',
+                "",
+            ]
+            for e in again:
+                lines.append(
+                    f"- `{e.id}` {e.kind} ({e.status}): {e.title} "
+                    f"({count(len(e.new_evidence_episodes()))} since it closed)",
+                )
+                files_of(e)
         write("INDEX.md", "\n".join(lines) + "\n")
         return len(rows)
 
@@ -349,38 +505,96 @@ class Pool:
 # -- the writer's status changes ----------------------------------------------------------------------------
 
 
+def adopted_entries(pool: Pool, refs) -> list[str]:
+    """The pool entries the adopt refs *refs* name: ``pool:<id>`` directly, a staged file through
+    :attr:`Pool.staged`. Unknown refs name nothing."""
+    out: list[str] = []
+    for ref in refs or []:
+        ref = str(ref)
+        eid = ref[len("pool:") :] if ref.startswith("pool:") else pool.staged.get(ref)
+        if eid and eid in pool.entries and eid not in out:
+            out.append(eid)
+    return out
+
+
+def _adopts_of(manifest: dict) -> dict[str, list[str]]:
+    """Each manifest item's ``adopts`` refs (as written; the parser canonicalises and validates their form)."""
+    out: dict[str, list[str]] = {}
+    for it in manifest.get("items") or []:
+        if isinstance(it, dict) and isinstance(it.get("adopts"), list):
+            out[str(it.get("item"))] = [str(r) for r in it["adopts"]]
+    return out
+
+
 def block_problems(manifest: object, pool: Pool, kind: str = "write") -> list[str]:
-    """Problems with *manifest*'s ``pool`` block (G1 at finish): it must name open entries; merged needs an item the
-    manifest lists; retired needs a reason; CURATE may supersede or retire, not merge.
+    """Problems with *manifest*'s ``pool`` block and its items' ``adopts`` (G1 at finish): decisions must name open
+    entries (``reopened``: closed ones); merged needs an item the manifest lists; retired and reopened need a
+    reason; CURATE may supersede or retire, not merge; an adopted ref must name a pool entry or a file this pass
+    staged, and an entry an item adopts cannot also be superseded or retired.
     """
-    if not isinstance(manifest, dict) or "pool" not in manifest:
+    if not isinstance(manifest, dict):
         return []
+    from .manifest import ManifestError, adopt_ref
+
+    out = []
+    adopted: dict[str, str] = {}
+    for item, refs in _adopts_of(manifest).items():
+        for raw in refs:
+            try:
+                ref = adopt_ref(raw)
+            except ManifestError:
+                continue  # the manifest parser reports a malformed ref
+            if ref.startswith("helper:"):
+                continue  # helper output is checked where it is exported
+            eids = adopted_entries(pool, [ref])
+            if not eids:
+                where = (
+                    "a pool entry"
+                    if ref.startswith("pool:")
+                    else "a file this pass staged"
+                )
+                out.append(f"{item}: adopts {ref[:120]!r}, which is not {where}")
+            for eid in eids:
+                adopted.setdefault(eid, item)
+    if "pool" not in manifest:
+        return out
     block = manifest.get("pool")
     if not isinstance(block, dict):
-        return ["pool must be an object with merged, superseded and retired"]
-    out = []
+        return out + [
+            "pool must be an object with merged, superseded, retired or reopened",
+        ]
     items = {i.get("item") for i in manifest.get("items") or [] if isinstance(i, dict)}
     for key in block:
-        if key not in ("merged", "superseded", "retired"):
+        if key not in BLOCK_KEYS:
             out.append(f"pool: unknown key {key!r}")
-    for key in ("merged", "superseded", "retired"):
+    for key in BLOCK_KEYS:
         val = block.get(key) or {}
         if not isinstance(val, dict):
             out.append(f"pool.{key} must map entry ids to values")
             continue
         for eid, v in val.items():
             e = pool.entries.get(str(eid))
+            if key == "reopened":
+                if e is None or e.status == "open":
+                    out.append(f"pool.reopened: {str(eid)[:20]} is not a closed entry")
+                elif not isinstance(v, str) or not v.strip():
+                    out.append(f"pool.reopened: {eid} needs a reason")
+                continue
             if e is None or e.status != "open":
                 out.append(f"pool.{key}: {str(eid)[:20]} is not an open entry")
             elif key == "merged" and (kind == "curate" or v not in items):
                 out.append(f"pool.merged: {eid} must name an item this manifest lists")
             elif not isinstance(v, str) or not v.strip():
                 out.append(
-                    f"pool.{key}: {eid} needs {'a reason' if key == 'retired' else 'a value'}",
+                    f"pool.{key}: {eid} needs {'a value' if key == 'superseded' else 'a reason'}",
                 )
-    # RUNTIME 11 Oct: one decision per entry, and a supersession keeps its replacement open
+            elif key in ("superseded", "retired") and str(eid) in adopted:
+                out.append(
+                    f"pool.{key}: {eid} is adopted by {adopted[str(eid)]}, which merges it when it lands",
+                )
+    # one decision per entry, and a supersession keeps its replacement open
     named: dict[str, str] = {}
-    for key in ("merged", "superseded", "retired"):
+    for key in BLOCK_KEYS:
         val = block.get(key)
         for eid in val if isinstance(val, dict) else {}:
             if str(eid) in named:
@@ -406,29 +620,43 @@ def apply_block(
     *,
     landed: set[str],
     finished: bool,
+    provenance: list[dict] | None = None,
 ) -> list[str]:
-    """Apply the writer's status changes: merged only for an item the gate landed (*landed*); superseded by an item
-    the gate landed, or by another pool entry once finish was accepted (no library change for the gate to land);
-    retired only when finish was accepted. Returns the ids changed."""
+    """Apply the writer's status changes. From the ``pool`` block of an accepted manifest: merged only for an item
+    the gate landed (*landed*); superseded by an item the gate landed, or by another pool entry once finish was
+    accepted (no library change for the gate to land); retired and reopened only when finish was accepted. From the
+    gate's *provenance* (``{"item", "adopts"}`` per landed item): every open entry a landed item adopts closes as
+    merged. Returns the ids changed."""
+    changed: list[str] = []
     if (
-        not isinstance(manifest, dict)
-        or not isinstance(manifest.get("pool"), dict)
-        or block_problems(manifest, pool)
+        isinstance(manifest, dict)
+        and isinstance(manifest.get("pool"), dict)
+        and not block_problems(manifest, pool)
     ):
-        return []
-    block, changed = manifest["pool"], []
-    for eid, item in (block.get("merged") or {}).items():
-        if item in landed:
-            pool.set_status(eid, "merged", {"item": item}, pass_id)
-            changed.append(eid)
-    for eid, by in (block.get("superseded") or {}).items():
-        if by in landed or (finished and by in pool.entries and by != eid):
-            pool.set_status(eid, "superseded", {"by": by}, pass_id)
-            changed.append(eid)
-    if finished:
-        for eid, reason in (block.get("retired") or {}).items():
-            pool.set_status(eid, "retired", {"reason": reason}, pass_id)
-            changed.append(eid)
+        block = manifest["pool"]
+        for eid, item in (block.get("merged") or {}).items():
+            if item in landed:
+                pool.set_status(eid, "merged", {"item": item}, pass_id)
+                changed.append(eid)
+        for eid, by in (block.get("superseded") or {}).items():
+            if by in landed or (finished and by in pool.entries and by != eid):
+                pool.set_status(eid, "superseded", {"by": by}, pass_id)
+                changed.append(eid)
+        if finished:
+            for eid, reason in (block.get("retired") or {}).items():
+                pool.set_status(eid, "retired", {"reason": reason}, pass_id)
+                changed.append(eid)
+            for eid, reason in (block.get("reopened") or {}).items():
+                pool.set_status(eid, "open", {"reopened": reason}, pass_id)
+                changed.append(eid)
+    for row in provenance or []:
+        item = row.get("item")
+        if item not in landed:
+            continue
+        for eid in adopted_entries(pool, row.get("adopts") or []):
+            if pool.entries[eid].status == "open":
+                pool.set_status(eid, "merged", {"item": item, "via": "adopts"}, pass_id)
+                changed.append(eid)
     return changed
 
 
@@ -436,8 +664,8 @@ def apply_block(
 
 
 def from_staging(eid: str, view) -> list[Entry]:
-    """A fork's or analyst's staging (:class:`.staging.StagingView`) as entries: each candidate with its case, and
-    the notes as a lesson."""
+    """A reader's staging (:class:`.staging.StagingView`) as entries: each candidate with its case, and the notes
+    as a lesson. Each entry's :attr:`Entry.refs` names the staged files it holds."""
     out = []
     files = {k: v.decode("utf-8", "replace") for k, v in view.files.items()}
     for rel, text in sorted(files.items()):
@@ -445,14 +673,18 @@ def from_staging(eid: str, view) -> list[Entry]:
             continue
         name = rel[len("candidates/") : -3]
         payload = {"candidate.py": text}
+        refs = [f"staging:{eid}/{rel}"]
         case = files.get(f"cases/{name}.json")
         if case is not None:
             payload["cases.json"] = case
+            refs.append(f"staging:{eid}/cases/{name}.json")
         e = Entry(
             id=entry_id("candidate", _canon(payload)),
             kind="candidate",
-            title=f"candidate {name} from episode {eid}",
+            title=candidate_title(name, text),
+            data={"name": name},
             files=payload,
+            refs=refs,
         )
         e.add_provenance([eid], [], [view.source])
         out.append(e)
@@ -460,8 +692,9 @@ def from_staging(eid: str, view) -> list[Entry]:
         e = Entry(
             id=entry_id("lesson", files["notes.md"]),
             kind="lesson",
-            title=f"lesson from episode {eid}: {files['notes.md'].strip().splitlines()[0][:80]}",
+            title=lesson_title(files["notes.md"]),
             files={"notes.md": files["notes.md"]},
+            refs=[f"staging:{eid}/notes.md"],
         )
         e.add_provenance([eid], [], [view.source])
         out.append(e)
@@ -469,7 +702,8 @@ def from_staging(eid: str, view) -> list[Entry]:
 
 
 def from_clusters(tier_a: list, tier_b: dict) -> list[Entry]:
-    """S0's clusters (``clusters.json``, ``behaviour.json``) as entries: one id per cluster key, instances added."""
+    """A recurrence miner's clusters (``clusters.json``, ``behaviour.json``) as entries: one id per cluster key,
+    instances added."""
     out = []
     for c in tier_a or []:
         inst = [
@@ -512,7 +746,7 @@ def deferred(eid: str, reason: str) -> Entry:
     e = Entry(
         id=entry_id("deferred", eid),
         kind="deferred",
-        title=f"episode {eid} deferred: {reason[:100]}",
+        title=_clip(reason),
         data={"reason": reason},
     )
     e.add_provenance([eid], [], ["writer"])
@@ -520,12 +754,11 @@ def deferred(eid: str, reason: str) -> Entry:
 
 
 def unread(eid: str, parts_read: int, parts_required: int) -> Entry:
-    """UNIFY_MEMORY_LIBRARY_COVERAGE=optional: an episode a WRITE pass left neither covered nor dismissed; kept, never
-    dropped, until a writer closes it."""
+    """An episode a store pass left neither read nor dismissed; kept, never dropped, until a writer closes it."""
     e = Entry(
         id=entry_id("unread", eid),
         kind="unread",
-        title=f"episode {eid} unread ({parts_read} of {parts_required} required parts read)",
+        title=f"episode unread ({parts_read} of {parts_required} parts read)",
         data={"parts_read": parts_read, "parts_required": parts_required},
     )
     e.add_provenance([eid], [], ["writer"])
@@ -536,7 +769,7 @@ def draft(pass_id: str, patch: str, result: str, items: list[str]) -> Entry:
     e = Entry(
         id=entry_id("draft", pass_id),
         kind="draft",
-        title=f"draft of pass {pass_id}: {', '.join(items[:4])}",
+        title=_clip(f"draft of pass {pass_id}: {', '.join(items[:4]) or 'no items'}"),
         data={"items": items},
         files={"patch.diff": patch, "gate.md": result},
     )

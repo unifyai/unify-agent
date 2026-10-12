@@ -221,6 +221,8 @@ class ManifestItem:
     input: str | None = None  # an INPUT_KINDS key; None: not declared
     # memory v2.1: the typed covers (procedures.Cover: an actor cell, a work-tree diff or an episode procedure)
     typed_covers: list = field(default_factory=list)
+    # the proposals this item came from (:func:`adopt_ref`): staged files, helper output or pool entries
+    adopts: list[str] = field(default_factory=list)
 
     @property
     def channel(self) -> str | None:
@@ -387,6 +389,53 @@ def layout_allowed(path: str) -> bool:
     return True
 
 
+# an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<call>/<file>`` or ``pool:<entry id>``, where
+# <file> is a staged file (``candidates/<name>.py``, ``cases/<name>.json`` or ``notes.md``); the same files named by
+# their /inputs path are accepted and stored in the ref form
+ADOPT_FORMS = (
+    "staging:<episode>/candidates/<name>.py, staging:<episode>/cases/<name>.json, staging:<episode>/notes.md, "
+    "helper:<call>/<same files>, or pool:<entry id>"
+)
+_ADOPT_FILE = r"(?:candidates/[^/\s\\]+\.py|cases/[^/\s\\]+\.json|notes\.md)"
+_ADOPT_DIR = r"(?!\.\.?/)[^/\s\\]+"
+_ADOPT = re.compile(
+    rf"(?:(?P<src>staging|helper):(?P<dir>{_ADOPT_DIR})/(?P<file>{_ADOPT_FILE})|pool:(?P<pool>[0-9a-f]{{16}}))",
+)
+_ADOPT_PATHS = (
+    ("/inputs/staging/", "staging:"),
+    ("/inputs/helpers/", "helper:"),
+)
+
+
+def adopt_ref(raw: object) -> str:
+    """One ``adopts`` ref in its canonical form, or ManifestError naming the accepted forms. ``/inputs/staging/...``,
+    ``/inputs/helpers/...`` and ``/inputs/pool/<id>[/...]`` paths are accepted for the same files."""
+    if not isinstance(raw, str) or "\0" in raw:
+        raise ManifestError(f"adopts: {raw!r} is not a string ref ({ADOPT_FORMS})"[:400])
+    ref = raw.strip()
+    for prefix, form in _ADOPT_PATHS:
+        if ref.startswith(prefix):
+            ref = form + ref[len(prefix) :]
+    if ref.startswith("/inputs/pool/"):
+        ref = "pool:" + ref[len("/inputs/pool/") :].split("/", 1)[0]
+    if not _ADOPT.fullmatch(ref):
+        raise ManifestError(f"adopts: {raw!r} is not one of {ADOPT_FORMS}"[:400])
+    return ref
+
+
+def _adopts(raw: object, item: str) -> list[str]:
+    out: list[str] = []
+    if raw is None:
+        return out
+    if not isinstance(raw, list):
+        raise ManifestError(f"{item}: adopts must be a list of refs ({ADOPT_FORMS})"[:400])
+    for r in raw:
+        ref = adopt_ref(r)
+        if ref not in out:
+            out.append(ref)
+    return out
+
+
 def _str_list(value: object, what: str) -> list[str]:
     if value is None:
         return []
@@ -528,6 +577,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 {},
                 form,
                 typed,
+                _adopts(raw.get("adopts"), item),
             ),
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]

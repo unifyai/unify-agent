@@ -57,13 +57,25 @@ def test_each_row_points_at_its_staged_candidates_and_the_pool_entries_citing_it
             "cases": "/inputs/staging/e2/cases/f.json",
         },
     ]
+    # the pass's own staged candidate entered the pool at the pass's start, so the row names its entry too
+    cid = pool.entry_id(
+        "candidate",
+        json.dumps(
+            {"candidate.py": "def f(x):\n    return x\n", "cases.json": "[]"},
+            sort_keys=True,
+        ),
+    )
     assert row["pool_entries"] == [
-        {"id": did, "kind": "deferred", "title": "episode e2 deferred: seen before"},
+        {"id": cid, "kind": "candidate", "title": "f(x)"},
+        {"id": did, "kind": "deferred", "title": "seen before"},
     ]
     assert "s0_clusters" not in row
 
 
-def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(tmp_path, monkeypatch):
+def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(
+    tmp_path,
+    monkeypatch,
+):
     """The miner is not on the writer's path: no /inputs/s0, no cluster field in any batch-map row, no cluster entry
     fed to the pool, and no miner summary on the outcome."""
     seen: dict = {}
@@ -72,7 +84,9 @@ def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(tmp_path, monk
     async def spy(self, req, inputs, *args, **kwargs):
         await staged(self, req, inputs, *args, **kwargs)
         seen["inputs"] = sorted(p.name for p in Path(inputs).iterdir())
-        seen["rows"] = json.loads((Path(inputs) / "batch_map.json").read_text())["episodes"]
+        seen["rows"] = json.loads((Path(inputs) / "batch_map.json").read_text())[
+            "episodes"
+        ]
 
     monkeypatch.setattr(writer_pass.WriterPass, "_staging_library_mode", spy)
     st = _Stores(tmp_path)
@@ -84,7 +98,8 @@ def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(tmp_path, monk
     )
     assert seen["inputs"] and "s0" not in seen["inputs"]
     assert seen["rows"] and all(
-        not any(k.startswith("s0") or "cluster" in k for k in row) for row in seen["rows"]
+        not any(k.startswith("s0") or "cluster" in k for k in row)
+        for row in seen["rows"]
     )
     assert not hasattr(out, "s0")
     assert all(e.kind != "cluster" for e in st.pool().entries.values())
@@ -146,9 +161,7 @@ def test_the_brief_names_every_batch_map_key_and_its_shape():
     text = pv.write_brief_now()
     bmap = build_batch_map(EPS.__getitem__, ["e1"])
     keys = (
-        set(bmap)
-        | set(bmap["episodes"][0])
-        | {"staging", "pool_entries", "candidates"}
+        set(bmap) | set(bmap["episodes"][0]) | {"staging", "pool_entries", "candidates"}
     )
     for k in sorted(keys):
         assert f"`{k}`" in text or f'\\"{k}\\"' in text or f'"{k}"' in text, k
