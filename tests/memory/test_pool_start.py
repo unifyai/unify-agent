@@ -533,7 +533,6 @@ def test_chain_counts_read_events_and_unknown_parse_records(tmp_path):
 
 
 @needs_bwrap
-@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.judge", strict=False)
 def test_the_gate_records_each_landed_items_adopts(library_example_world):  # noqa: F811
     from tests.memory import library_example_world as w
     from tests.memory.test_gate import _candidate

@@ -12,7 +12,9 @@ import shutil
 import pytest
 
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import library_example_world  # noqa: F401 (fixture)
+from tests.memory.library_example_world import (
+    library_example_world,
+)  # noqa: F401 (fixture)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -20,21 +22,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 #: the gate takes a function item without ``input`` and runs its examples through its tests
-JUDGED = "needs example_checks.ExampleChecks.judge"
 #: the manifest takes a function item without ``input``, and the gate reads no Input: line
-PARSED = "needs manifest._parse_library_mode"
 #: G2 no longer refuses a function that covers no recorded action (its examples are its tests' calls)
-UNCOVERED = "needs gate.Gate._g2"
 
 # --- the gate on the shared world ------------------------------------------------------------------------------
 
 
 def _merge(world, files, man, pass_id="p1"):
     mem, _, _, gate = world
-    return gate().merge(mem.head(), w.candidate(mem, files), man, pass_id, "write", None, "0.01")
+    return gate().merge(
+        mem.head(),
+        w.candidate(mem, files),
+        man,
+        pass_id,
+        "write",
+        None,
+        "0.01",
+    )
 
 
-@pytest.mark.xfail(reason=JUDGED, strict=False)
 def test_library_gate_passes_and_records_verification(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)
@@ -50,10 +56,18 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     # e3's acct.me response is of the fixtures' family and copied by none: stage 5 draws it
     assert rec["drawn_inputs"] >= 1 and rec["drawn_inputs_read"] == rec["drawn_inputs"]
     examples = rec["examples"]
-    assert (examples["calls"], examples["accepted"], examples["refused"], examples["raised"]) == (5, 4, 1, 0)
+    assert (
+        examples["calls"],
+        examples["accepted"],
+        examples["refused"],
+        examples["raised"],
+    ) == (5, 4, 1, 0)
     assert examples["grounded_calls"] == 4 and examples["episodes"] == ["e1", "e2"]
     assert examples["fixtures"] == sorted([*w.FIXTURE_PATHS, w.INPUTS_PATH])
-    assert examples["perturbation"]["judged"] > 0 and examples["perturbation"]["unstable"] == 0
+    assert (
+        examples["perturbation"]["judged"] > 0
+        and examples["perturbation"]["unstable"] == 0
+    )
     first = w.recorded_calls(blobs.get)[0]
     assert examples["example"] == {
         "test": w.EXAMPLE_TEST,
@@ -69,7 +83,6 @@ def test_library_gate_passes_and_records_verification(library_example_world):
     assert w.ITEM_ID in (ev.commit_shapes(res.merged) or {})
 
 
-@pytest.mark.xfail(reason=PARSED, strict=False)
 def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)
@@ -79,7 +92,6 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
     assert any("me_1.json did not come through fixture()" in r for r in res.reasons)
 
 
-@pytest.mark.xfail(reason=UNCOVERED, strict=False)
 def test_no_trusted_exact_assertion_is_refused(library_example_world):
     mem, ev, blobs, gate = library_example_world
     assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE
@@ -88,16 +100,18 @@ def test_no_trusted_exact_assertion_is_refused(library_example_world):
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
 
 
-@pytest.mark.xfail(reason=JUDGED, strict=False)
 def test_curate_due_is_a_note_not_a_refusal(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)
-    res = gate(index_tokens=1).check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
+    res = gate(index_tokens=1).check(
+        mem.head(),
+        w.candidate(mem, files),
+        w.manifest(fixtures),
+    )
     assert res.passed, res.reasons
     assert res.curate_due and any("G4 CURATE due" in r for r in res.reasons)
 
 
-@pytest.mark.xfail(reason=JUDGED, strict=False)
 def test_write_may_not_remove_an_item(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)
@@ -117,7 +131,6 @@ def test_write_may_not_remove_an_item(library_example_world):
     )
 
 
-@pytest.mark.xfail(reason="needs example_evidence.evidence_check", strict=False)
 def test_examples_on_values_from_one_episode_are_refused(library_example_world):
     """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the special-casing test below). The
     rule that replaces the cross-episode run: a function's examples run on recorded values from at least 2
@@ -146,8 +159,9 @@ SPECIAL = re.compile(
 )
 
 
-@pytest.mark.xfail(reason="needs example_perturb.check", strict=False)
-def test_a_function_that_handles_only_its_recorded_values_is_refused(library_example_world):
+def test_a_function_that_handles_only_its_recorded_values_is_refused(
+    library_example_world,
+):
     """Replaces test_cross_episode_text_input_that_crashes_is_refused (with the one-episode test above). The rule
     that replaces running a function on another episode's input: the gate replaces the fixture values its tests
     load with unseen values of the same type, and a call that returned before must not raise now (special-cased).
@@ -166,7 +180,6 @@ def test_a_function_that_handles_only_its_recorded_values_is_refused(library_exa
         assert m["file"] == w.TEST_FILE and int(m["line"]) in lines
 
 
-@pytest.mark.xfail(reason=JUDGED, strict=False)
 def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
     library_example_world,
 ):
@@ -181,7 +194,11 @@ def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
         "support": [],
     }
     lost = "no longer passes the parent's tests"
-    res = gate(role="curate").check(mem.head(), w.candidate(mem, {w.TEST_FILE: None}), man)
+    res = gate(role="curate").check(
+        mem.head(),
+        w.candidate(mem, {w.TEST_FILE: None}),
+        man,
+    )
     assert not res.passed and any(
         f"suite memory/acct/tests {lost}" in r for r in res.reasons
     )
@@ -189,11 +206,14 @@ def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
         **man,
         "tests_changed": {w.TEST_FILE: "the function is covered by test_accounts.py"},
     }
-    res = gate(role="curate").check(mem.head(), w.candidate(mem, {w.TEST_FILE: None}), stated)
+    res = gate(role="curate").check(
+        mem.head(),
+        w.candidate(mem, {w.TEST_FILE: None}),
+        stated,
+    )
     assert not any(lost in r for r in res.reasons), res.reasons
 
 
-@pytest.mark.xfail(reason=PARSED, strict=False)
 def test_a_tests_init_file_is_refused_with_the_rule_it_breaks(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)

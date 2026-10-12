@@ -212,7 +212,6 @@ def _gate_library_mode():
     return pytest.importorskip("tests.memory.library_example_world")
 
 
-@pytest.mark.xfail(reason="needs gate.Gate._g2", strict=False)
 def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
     """The library-mode gate fixture; the candidate is made on a parent that a code commit then moves past."""
     g = _gate_library_mode()
@@ -225,7 +224,15 @@ def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
         _candidate_on(mem, parent, {"memory/zz/__init__.py": '"""Other."""\n'}),
         parent,
     )
-    res = gate().merge(parent, candidate, g.manifest(fixtures), "p1", "write", None, "0.01")
+    res = gate().merge(
+        parent,
+        candidate,
+        g.manifest(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
     assert not res.passed and any("stale" in r for r in res.reasons)
     (patch,) = ev.db.execute(
         "SELECT patch_blob FROM passes WHERE pass_id='p1'",
@@ -233,7 +240,6 @@ def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
     assert patch and b"memory/acct/users.py" in blobs.get(patch)
 
 
-@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.judge", strict=False)
 def test_the_gate_retargets_over_a_status_commit(request):
     g = _gate_library_mode()
     from unify.memory.memory_repo import MemoryRepo
@@ -243,7 +249,15 @@ def test_the_gate_retargets_over_a_status_commit(request):
     files, fixtures = g.files_and_fixtures(blobs.get)
     candidate = g.candidate(mem, files)
     status = MemoryRepo(mem).status_commit({ITEM: "suspect"}, ["e1"])
-    res = gate().merge(parent, candidate, g.manifest(fixtures), "p1", "write", None, "0.01")
+    res = gate().merge(
+        parent,
+        candidate,
+        g.manifest(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
     assert res.passed, res.reasons
     assert mem.head() == res.merged
     assert mem.run("rev-parse", f"{res.merged}^").strip() == status

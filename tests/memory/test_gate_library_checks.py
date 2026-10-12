@@ -226,7 +226,6 @@ def _function(**over):
     }
 
 
-@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
 def test_library_manifest_parses_function_ids_and_routes_typed_covers():
     raw = {
         "items": [_function(covers=[{"episode": "e1", "type": "cell", "cell": 0}])],
@@ -246,7 +245,6 @@ def test_library_manifest_parses_function_ids_and_routes_typed_covers():
     ]
 
 
-@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
 def test_library_manifest_refuses_an_action_cover():
     """Replaces the action-cover routing of test_library_manifest_parses_function_ids_and_routes_covers. The rule
     that replaces it: an action cover is refused in library mode; a function's examples are the calls its tests make
@@ -429,7 +427,6 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
     assert v.run.fails[0][1].startswith(f"{job} changes behaviour without a test")
 
 
-@pytest.mark.xfail(reason="needs example_perturb.check", strict=False)
 def test_a_check_with_unseen_fixture_values_that_cannot_complete_refuses(tmp_path):
     """Replaces test_cross_episode_runs_that_do_not_complete_refuse. The rule that replaces it: the check with
     unseen fixture values fails closed when it does not complete; a function is admitted only once it is judged.

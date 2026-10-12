@@ -6,7 +6,6 @@ from __future__ import annotations
 import inspect
 from types import SimpleNamespace
 
-import pytest
 
 from unify.memory.library_checks import LibraryChecks, derive_effect
 from unify.memory.procedures import Cover
@@ -44,35 +43,29 @@ def _tool(eid):
 
 
 #: derive_effect takes the typed covers and the episode reader only
-NEW_SIGNATURE = pytest.mark.xfail(reason="needs library_checks.derive_effect", strict=False)
 
 
-@NEW_SIGNATURE
 def test_a_tool_procedure_over_recorded_writes_is_a_write():
     assert derive_effect([_tool("wrote")], EPISODES) == "write"
     # one write cover among others is enough
     assert derive_effect([_tool("read"), _tool("wrote")], EPISODES) == "write"
 
 
-@NEW_SIGNATURE
 def test_a_tool_procedure_whose_calls_declare_no_effect_is_unknown():
     assert derive_effect([_tool("undeclared")], EPISODES) == "unknown"
     assert derive_effect([_tool("missing")], EPISODES) == "unknown"
 
 
-@NEW_SIGNATURE
 def test_a_worktree_procedure_changes_files():
     cover = Cover("wrote", "episode", runner="worktree")
     assert derive_effect([cover], EPISODES) == "write"
 
 
-@NEW_SIGNATURE
 def test_a_dialogue_procedure_gives_read():
     dialogue = Cover("read", "episode", runner="dialogue", action=0)
     assert derive_effect([dialogue], EPISODES) == "read"
 
 
-@NEW_SIGNATURE
 def test_only_episode_covers_give_an_effect():
     """Replaces test_action_covers_carry_their_recorded_effect_unless_the_input_is_a_recorded_value (and the action
     cover and cell cases of test_read_only_covers_give_read). The rule that replaces it: action covers are refused in
@@ -108,7 +101,10 @@ def test_the_gate_records_the_effect_in_each_functions_verification_record():
     checks = _checks(
         [
             _item(WRITER, typed=[_tool("wrote")]),
-            _item(READER, typed=[Cover("read", "episode", runner="dialogue", action=0)]),
+            _item(
+                READER,
+                typed=[Cover("read", "episode", runner="dialogue", action=0)],
+            ),
             _item("memory.shop.cart:count"),  # no episode cover: no effect recorded
             SimpleNamespace(item="notes/shop/cart.md", kind="note"),
         ],

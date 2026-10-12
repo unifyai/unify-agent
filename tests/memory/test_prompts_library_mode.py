@@ -325,7 +325,6 @@ FORMER_INPUT_FORMS = (
 )
 
 
-@pytest.mark.xfail(reason="needs library_prompts.write_brief", strict=False)
 def test_no_input_form_is_named_in_library_briefs():
     """Replaces test_input_forms_match_the_manifest. The rule that replaces it: a library function takes any
     arguments and its examples are the calls its tests make on fixtures, so no library text names an input form, the

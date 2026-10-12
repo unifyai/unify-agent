@@ -5,14 +5,15 @@ time, and G3's exact-assertion refusal shows a form that passes."""
 import json
 from pathlib import Path
 
-import pytest
 
 from unify.memory import pool, library_prompts as pv, writer_pass
 from unify.memory.batch_map import build_batch_map
 from tests.memory.test_gate import _candidate
 from unify.memory import fixtures as fx
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import library_example_world  # noqa: F401 (a fixture)
+from tests.memory.library_example_world import (
+    library_example_world,
+)  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, _finish_with, _Stores
 from tests.memory.test_writer_pass import _call
 from tests.memory.test_writer_library_tools import EPS, _pass
@@ -153,7 +154,6 @@ def test_neither_brief_speaks_of_the_pass_time():
 # --- 5b. G3's exact-assertion refusal shows a passing form ----------------------------------------------------------
 
 
-@pytest.mark.xfail(reason="needs gate.Gate._g2", strict=False)
 def test_the_exact_assertion_refusal_shows_a_form_that_passes(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
@@ -173,7 +173,6 @@ FIXTURE_FORM_TEST = w.TEST_SOURCE.replace(
 )
 
 
-@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.judge", strict=False)
 def test_the_fixture_form_the_refusal_shows_passes_g3(library_example_world):
     """The form G3's refusal shows must pass the gate itself. Both sides are harness-recorded fixtures (the
     expected value a byte slice of the recorded response), with no literal in the test.

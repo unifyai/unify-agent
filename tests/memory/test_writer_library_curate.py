@@ -3,7 +3,6 @@
 import asyncio
 import json
 
-import pytest
 
 from unify.memory.curate import CurateState
 from unify.memory.library_prompts import curate_brief_now
@@ -55,7 +54,6 @@ def test_a_curate_request_without_library_or_its_state_spends_nothing(tmp_path):
 
 
 @needs_bwrap
-@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.behaviour", strict=False)
 def test_a_curate_pass_merges_through_its_own_brief_inputs_role_and_gate(
     library_example_world,
 ):

@@ -1284,10 +1284,10 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
     assert out.checks == 1 and not out.passed
 
 
-@pytest.mark.xfail(reason="needs manifest._parse_library_mode", strict=False)
 def test_check_refuses_a_declared_input_in_library_mode(tmp_path):
     """The library-mode counterpart of the v2 test above: a library function takes any arguments, so the check
-    refuses an item that still declares an input form, naming the item, before finish."""
+    refuses an item that still declares an input form, naming the item, before finish.
+    """
     from unify.memory.library_checks import LibraryConfig
     from tests.memory import library_example_world as w
 

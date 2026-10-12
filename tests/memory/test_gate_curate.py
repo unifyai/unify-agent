@@ -15,7 +15,9 @@ from unify.memory import fixtures as fx
 from unify.memory.gate import Gate, GateResult
 from unify.memory.library_checks import LibraryConfig
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import library_example_world  # noqa: F401 (fixture)
+from tests.memory.library_example_world import (
+    library_example_world,
+)  # noqa: F401 (fixture)
 from tests.memory.test_gate import (
     FILES,
     MAN,
@@ -29,7 +31,6 @@ needs_bwrap = pytest.mark.skipif(
     reason="bubblewrap required",
 )
 #: the gate runs a function's examples through its tests and compares the parent's calls on the candidate
-JUDGED = pytest.mark.xfail(reason="needs example_checks.ExampleChecks.behaviour", strict=False)
 
 ITEM_ID, T, USERS = w.ITEM_ID, w.TEST_FILE, w.MODULE
 ACCOUNT = "memory.acct.ids:account_id"
@@ -76,12 +77,16 @@ def account_name(response: dict) -> str:
         raise MemoryInputError("an acct.me response with a name field is needed")
     return response["name"]
 '''
-ALIAS_IDS = (
-    '"""Account ids: account_id is kept as an alias."""\n\nfrom memory.acct.users import user_id as account_id\n'
-)
+ALIAS_IDS = '"""Account ids: account_id is kept as an alias."""\n\nfrom memory.acct.users import user_id as account_id\n'
 RETURN = '    return response["user_id"]\n'
-REFACTOR = w.MODULE_SOURCE.replace(RETURN, '    found = response["user_id"]\n    return found\n')
-TWISTED = w.MODULE_SOURCE.replace(RETURN, '    return response.get("name", response["user_id"])\n')
+REFACTOR = w.MODULE_SOURCE.replace(
+    RETURN,
+    '    found = response["user_id"]\n    return found\n',
+)
+TWISTED = w.MODULE_SOURCE.replace(
+    RETURN,
+    '    return response.get("name", response["user_id"])\n',
+)
 #: user_id's tests also load e3's fixture, so they take over the fixture of a retired account_id
 TAKEN_TEST = w.TEST_SOURCE.replace(
     '    assert user_id(load("me_2.json")) == "u-2"\n',
@@ -128,7 +133,10 @@ def _curate_man(**over):
 
 
 def _parent(mem, blobs, **kw):
-    return _merged(mem, _parent_files(blobs, **kw))  # a stand-in for the earlier gated merges
+    return _merged(
+        mem,
+        _parent_files(blobs, **kw),
+    )  # a stand-in for the earlier gated merges
 
 
 def test_the_clean_up_pass_is_curate_under_library_mode():
@@ -164,7 +172,6 @@ def test_v2s_gate_records_no_curation(world):
 
 
 @needs_bwrap
-@JUDGED
 def test_an_alias_merge_lands_and_records_its_curation(library_example_world):
     mem, ev, blobs, gate = library_example_world
     parent = _parent(mem, blobs)
@@ -198,7 +205,6 @@ CHANGED_TAIL = (
 
 
 @needs_bwrap
-@JUDGED
 def test_an_alias_that_answers_differently_is_refused(library_example_world):
     """Behaviour is compared on the calls the parent's tests make: account_id's test calls it on e3's fixture, and
     the alias to account_name returns another value there."""
@@ -214,7 +220,9 @@ def test_an_alias_that_answers_differently_is_refused(library_example_world):
     )
     res = gate(role="curate").check(parent, _candidate(mem, {IDS: wrong}), man)
     assert not res.passed
-    found = [r for r in res.reasons if r.startswith(CHANGED) and r.endswith(CHANGED_TAIL)]
+    found = [
+        r for r in res.reasons if r.startswith(CHANGED) and r.endswith(CHANGED_TAIL)
+    ]
     assert found, res.reasons
     # the reason names the call by its test, never a value
     assert f"{T_IDS}::test_account_id_of_the_third_response" in found[0]
@@ -223,7 +231,6 @@ def test_an_alias_that_answers_differently_is_refused(library_example_world):
 
 
 @needs_bwrap
-@JUDGED
 def test_a_retirement_needs_a_reason_and_keeps_its_fixtures_used(library_example_world):
     """Replaces test_a_retirement_needs_a_reason_and_keeps_its_covers_covered. The rule that replaces "a deleted
     item's recorded inputs stay covered": the fixtures a deleted function's examples ran on stay used by a remaining
@@ -280,7 +287,6 @@ def test_a_retirement_needs_a_reason_and_keeps_its_fixtures_used(library_example
 
 
 @needs_bwrap
-@JUDGED
 def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour_is_kept(
     library_example_world,
 ):
@@ -321,12 +327,13 @@ STORED_IDS_MOD = IDS_MOD.replace(
 
 
 def _parent_without_alias_tests(mem, blobs, ids_mod=IDS_MOD):
-    files = {k: v for k, v in _parent_files(blobs, ids_mod).items() if k != T_IDS}  # the old name has no test
+    files = {
+        k: v for k, v in _parent_files(blobs, ids_mod).items() if k != T_IDS
+    }  # the old name has no test
     return _merged(mem, files)
 
 
 @needs_bwrap
-@JUDGED
 def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_name(
     library_example_world,
 ):
@@ -350,23 +357,25 @@ def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_
         r.startswith(f"G3: {ACCOUNT} changes behaviour without a test")
         for r in res.reasons
     ), res.reasons
-    note = (
-        f"G3 behaviour check: {ACCOUNT} has no example call in the parent's tests; compared on its stored covers"
-    )
+    note = f"G3 behaviour check: {ACCOUNT} has no example call in the parent's tests; compared on its stored covers"
     assert any(r.endswith(note) for r in res.reasons), res.reasons
 
 
 @needs_bwrap
-@JUDGED
 def test_an_alias_whose_old_name_no_parent_test_calls_and_no_cover_records_is_refused(
     library_example_world,
 ):
     """Replaces test_an_alias_with_fewer_than_two_recorded_inputs_is_refused. The rule that replaces the alias's
     count of recorded inputs: an alias is compared on the calls the parent's tests make of the old name; with no such
-    call and no stored cover its behaviour cannot be compared, so it is refused (fail closed)."""
+    call and no stored cover its behaviour cannot be compared, so it is refused (fail closed).
+    """
     mem, ev, blobs, gate = library_example_world
     parent = _parent_without_alias_tests(mem, blobs)
-    res = gate(role="curate").check(parent, _candidate(mem, {IDS: ALIAS_IDS}), _curate_man())
+    res = gate(role="curate").check(
+        parent,
+        _candidate(mem, {IDS: ALIAS_IDS}),
+        _curate_man(),
+    )
     assert not res.passed
     assert (
         f"G3: {ACCOUNT} is in a changed module but no test of the parent calls it and it has no stored cover; its "

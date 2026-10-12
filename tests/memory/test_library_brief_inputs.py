@@ -5,12 +5,13 @@ two read_episode refusals are gone.
 
 import json
 
-import pytest
 
 from unify.memory import batch_map, pool, library_prompts as pv
 from unify.memory.writer_pass import writer_tools
 from tests.memory import library_example_world as w
-from tests.memory.library_example_world import library_example_world  # noqa: F401 (a fixture)
+from tests.memory.library_example_world import (
+    library_example_world,
+)  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
 from unify.memory.episodes import Cell
 from tests.memory.test_writer_pass import _call, _writer
@@ -347,7 +348,6 @@ def user_id(response: dict) -> str:
 '''
 
 
-@pytest.mark.xfail(reason="needs example_checks.ExampleChecks.judge", strict=False)
 def test_a_shared_module_lands_when_declared_as_support_and_is_refused_when_not(
     library_example_world,
 ):
