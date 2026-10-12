@@ -52,6 +52,7 @@ STAGING_DIR = "memory-staging"
 STATUS_FILES = {
     "fork.json": "fork",
     "replay_fork.json": "replay_fork",
+    "helper.json": "helper",
 }
 
 
