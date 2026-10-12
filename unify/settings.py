@@ -441,6 +441,9 @@ class ProductionSettings(BaseSettings):
     # ``on`` keeps every proposal open across passes in the candidate pool (memory repo
     # refs/heads/pool) until the writer closes it; ``off`` (default): none.
     UNIFY_MEMORY_LIBRARY_POOL: str = "off"
+    # ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory; ``off``
+    # (default): neither tool exists.
+    UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: str = "off"
     # Experimental, off by default: ``on`` moves old tool results out of the memory writer's
     # conversation once it passes a size; ``off`` (default): never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "off"
@@ -696,6 +699,7 @@ class ProductionSettings(BaseSettings):
         "UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL",
         "UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD",
         "UNIFY_MEMORY_LIBRARY_POOL",
+        "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS",
         "UNIFY_MEMORY_LIBRARY_COMPACT",
         "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX",
         "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN",

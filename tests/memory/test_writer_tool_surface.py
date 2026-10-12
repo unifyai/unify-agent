@@ -54,8 +54,14 @@ def test_the_curator_gets_only_its_own_tools():
             for t in writer_tools(library_mode=True, pool=pool_on, role="curate")
         }
         assert got == CURATE_TOOLS
+    got = {
+        t["function"]["name"]
+        for t in writer_tools(library_mode=True, role="curate", edit_tools=True)
+    }
+    assert got == CURATE_TOOLS | {"write", "edit"}
     row = agent_profiles.profile("curator")
-    assert set(row["tools"]) == CURATE_TOOLS
+    # write and edit are named in the row and exist only with the edit switch on
+    assert set(row["tools"]) == CURATE_TOOLS | {"write", "edit"}
     for denied in ("pool", "similar", "replay", "delegate"):
         assert denied in row["denied"] and denied not in row["tools"]
 

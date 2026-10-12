@@ -25,6 +25,7 @@ PKG = Path(writer_pass.__file__).parent
 #: The modules whose replies reach an agent as tool results (handlers, readers and the pass loop).
 TOOL_MODULES = (
     "writer_tools.py",
+    "edit_tools.py",
     "writer_pass.py",
     "helpers.py",
     "similar.py",

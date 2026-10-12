@@ -128,6 +128,7 @@ from .switch import (
     surfacing_options,
     library_enabled,
     library_pool,
+    library_edit_tools,
     library_compact,
     library_fork,
     library_coverage,
@@ -1232,6 +1233,7 @@ async def run_due_passes(
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
+                "edit_tools": library_edit_tools(settings),
                 # the writer's brief and rows name staging only when the episode-end fork writes it
                 "fork": library_fork(settings),
                 "compact": library_compact(settings),

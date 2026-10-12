@@ -67,6 +67,7 @@ from . import qa as _qa
 from . import repair as _repair
 from . import views as _views
 from . import writer_tools as _wt
+from . import edit_tools as _et
 from .tool_spec import form_of as _form_of
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
@@ -590,17 +591,19 @@ def writer_tools(
     role: str = "write",
     helper: bool = False,
     similar: bool = False,
+    edit_tools: bool = False,
 ) -> list[dict]:
     """The writer's tool JSON. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
     (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
-    need the candidate pool, *helper* (a helper lane exists) ``delegate`` and *similar* (the similar-code index
-    exists) ``similar``. With *library_mode* off: the original three tools (only ``check``'s text varies).
+    need the candidate pool, *helper* (a helper lane exists) ``delegate``, *similar* (the similar-code index
+    exists) ``similar`` and *edit_tools* the ``write`` and ``edit`` file tools. With *library_mode* off: the original
+    three tools (only ``check``'s text varies).
     """
     if library_mode:
         from . import agent_profiles
         from .library_prompts import tool_flags
 
-        flags = tool_flags(pool=pool, helper=helper, similar=similar)
+        flags = tool_flags(pool=pool, helper=helper, similar=similar, edit=edit_tools)
         return agent_profiles.tool_json(
             "curator" if role == "curate" else "writer",
             flags,
@@ -729,6 +732,9 @@ class PassConfig:
     # off by default: UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
     # the writer's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
+    # UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: the writer and the curator get the ``write`` and ``edit`` file tools on
+    # /memory (edit_tools.py); off: neither tool exists and every prompt is as before
+    edit_tools: bool = False
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
     # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
@@ -3382,6 +3388,7 @@ class WriterPass:
                 cell_s=float(self.cfg.cell_timeout_s),
                 compact=bool(self.cfg.compact),
                 finish_capped=self.cfg.max_usd is not None,
+                edit_tools=bool(self.cfg.edit_tools),
             )
         return write_brief_now(**self._write_inputs())
 
@@ -3397,6 +3404,7 @@ class WriterPass:
             # the limits the brief states: compaction when it is on, finish's refusal cap when the pass is capped
             "compact": bool(self.cfg.compact),
             "finish_capped": self.cfg.max_usd is not None,
+            "edit_tools": bool(self.cfg.edit_tools),
         }
 
     def _keep_cancelled_work(
@@ -3716,6 +3724,7 @@ class WriterPass:
                 role=self._role,
                 helper=self.helper_turn is not None,
                 similar=bool(self.cfg.similar_index),
+                edit_tools=bool(self.cfg.library_mode and self.cfg.edit_tools),
             )
             tool_names = [t["function"]["name"] for t in tools]
             if self.cfg.library_mode:
@@ -4264,6 +4273,28 @@ class WriterPass:
                             self.gate._blob,
                             self._batch,
                         )
+                    elif library and name in _et.NAMES:
+                        # host-side, never through a link (edit_tools.py); the quotas are measured as after a cell
+                        if stop is not None:
+                            reply = _wt.general("stopped", reason=stop)
+                        elif remaining() <= 0:
+                            stop = f"pass deadline of {self.cfg.deadline_s} s reached"
+                            cause(CODE_DEADLINE)
+                            reply = _wt.general("stopped", reason=stop)
+                        else:
+                            calls += 1  # a writer action, against the step guard
+                            writing()
+                            reply = _et.call(name, args, box)
+                            if reply.status == "ok":
+                                over_quota = _measure(box)
+                                if over_quota is not None:
+                                    stop = over_quota
+                                    reply = _wt.Reply(
+                                        f"{reply.text}\n({over_quota}; the pass is refused)",
+                                        reply.status,
+                                        reply.form,
+                                        reply.paths,
+                                    )
                     elif library and name != "execute_code":
                         if readers >= READERS_PER_TURN:
                             reply = _wt.general("readers_per_turn")

@@ -223,6 +223,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
             *_RECORD_TOOLS,
             "reply",
             "stop",
+            # write and edit exist only with UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on (spec flag "edit")
+            "write",
+            "edit",
             "execute_code",
             "check",
             "finish",
@@ -345,6 +348,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
             *_RECORD_TOOLS,
             "reply",
             "stop",
+            # write and edit exist only with UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on (spec flag "edit")
+            "write",
+            "edit",
             "execute_code",
             "check",
             "finish",

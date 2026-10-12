@@ -936,15 +936,18 @@ def tool_flags(
     pool: bool = False,
     helper: bool = False,
     similar: bool = False,
+    edit: bool = False,
 ) -> frozenset[str]:
     """The tool spec configuration flags of a pass (``fork``: staging exists; ``pool``: the candidate pool is on;
-    ``helper``: a helper lane exists, so ``delegate`` is offered; ``similar``: the similar-code index exists).
+    ``helper``: a helper lane exists, so ``delegate`` is offered; ``similar``: the similar-code index exists;
+    ``edit``: the ``write`` and ``edit`` file tools are on).
     """
     return frozenset(
         ({"fork"} if staging else set())
         | ({"pool"} if pool else set())
         | ({"helper"} if helper else set())
-        | ({"similar"} if similar else set()),
+        | ({"similar"} if similar else set())
+        | ({"edit"} if edit else set()),
     )
 
 
@@ -956,13 +959,14 @@ def write_brief_now(
     similar: bool = False,
     compact: bool = False,
     finish_capped: bool = False,
+    edit_tools: bool = False,
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
     from . import code_lint, qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
-    flags = tool_flags(staging, pool, helper, similar)
+    flags = tool_flags(staging, pool, helper, similar, edit_tools)
     return write_brief(
         limits=limits_now(cell_s, compact=compact, finish_capped=finish_capped),
         mutation_min=qa.MUTATION_MIN,
@@ -981,8 +985,10 @@ def curate_brief_now(
     cell_s: float | None = None,
     compact: bool = False,
     finish_capped: bool = False,
+    edit_tools: bool = False,
 ) -> str:
-    """The CURATE brief from the enforcing constants, the curate input paths and the curate tools."""
+    """The CURATE brief from the enforcing constants, the curate input paths and the curate tools (with the
+    ``write`` and ``edit`` file tools when *edit_tools*)."""
     from . import curate
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
@@ -993,7 +999,7 @@ def curate_brief_now(
         overlaps_path=curate.OVERLAPS_INPUT,
         suspects_path=curate.SUSPECTS_INPUT,
         trigger_path=curate.TRIGGER_INPUT,
-        tools=tools_section("curate"),
+        tools=tools_section("curate", tool_flags(edit=edit_tools)),
     )
 
 

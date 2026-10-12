@@ -669,6 +669,9 @@ LIBRARY_HELPER_MODEL = "UNIFY_MEMORY_LIBRARY_HELPER_MODEL"
 #: The candidate pool (pool.py): ``on`` keeps every proposal (staging, drafts, deferrals) open across passes on the
 #: memory repo's refs/heads/pool until the writer closes it; ``off``: none.
 LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
+#: ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory
+#: (edit_tools.py); ``off``: neither tool exists and every prompt is as before.
+LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
 #: Prepared, off by default: ``on`` moves old tool results out of the writer's
 #: conversation once it passes a size (writer_pass._compact); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
@@ -914,6 +917,18 @@ def parse_library_pool(v: Any) -> str:
 
 def library_pool(settings: Any) -> bool:
     return parse_library_pool(getattr(settings, LIBRARY_POOL, "") or "") == "on"
+
+
+def parse_library_edit_tools(v: Any) -> str:
+    """``UNIFY_MEMORY_LIBRARY_EDIT_TOOLS``: ``off`` (also for empty) or ``on``."""
+    return _on_off(LIBRARY_EDIT_TOOLS, v)
+
+
+def library_edit_tools(settings: Any) -> bool:
+    return (
+        parse_library_edit_tools(getattr(settings, LIBRARY_EDIT_TOOLS, "") or "")
+        == "on"
+    )
 
 
 def parse_library_actor_index(v: Any) -> str:
@@ -1234,6 +1249,7 @@ PARSERS = {
     LIBRARY_HELPER_BASE_URL: parse_library_helper_base_url,
     LIBRARY_HELPER_TOKEN_FD: parse_library_helper_token_fd,
     LIBRARY_POOL: parse_library_pool,
+    LIBRARY_EDIT_TOOLS: parse_library_edit_tools,
     LIBRARY_COMPACT: parse_library_compact,
     LIBRARY_ACTOR_INDEX: parse_library_actor_index,
     LIBRARY_COVERAGE: parse_library_coverage,
