@@ -46,11 +46,20 @@ def helper_request(
     request_seq: int,
     path: Optional[Path],
 ) -> str:
-    where = f" The record's file is {path}." if path else ""
+    # Named as the cells' sandbox shows it (the run's record folder, bound
+    # read-only at a fixed path), never by its host path.
+    where = f" The record's file is {_in_sandbox(path)}." if path else ""
     return (
         f"You are `{name}`, a helper in a team. `{spawner}` asked you (record entry "
         f"#{request_seq}):\n\n{request}\n\nYour reply goes to `{spawner}`.{where}"
     )
+
+
+def _in_sandbox(path: Path) -> str:
+    """The record file *path* where the cells' sandbox shows it."""
+    from unify.sandbox import RECORD_MOUNT
+
+    return f"{RECORD_MOUNT}/{Path(path).name}"
 
 
 def records_dir() -> Path:
@@ -155,7 +164,9 @@ def bind_for_act(*, request: str, user_reads: bool) -> Binding:
         )
     record = Record(
         RecordLog(records_dir() / _run_id() / "record.jsonl", create=True),
-        options=Options(),
+        # The operational limits of every agent's helpers in one request:
+        # 16 running at once and 64 in all, the memory passes' limits.
+        options=Options(max_live=16, max_total=64),
         root=ROOT,
         user_reads=user_reads,
     )

@@ -34,6 +34,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+try:
+    from unify.common import process_tree
+except ImportError:  # run as a script outside the package: the stdlib-only module by path
+    import importlib.util as _importlib_util
+
+    _spec = _importlib_util.spec_from_file_location(
+        "process_tree",
+        Path(__file__).resolve().parents[1] / "common" / "process_tree.py",
+    )
+    process_tree = _importlib_util.module_from_spec(_spec)
+    _spec.loader.exec_module(process_tree)
+
 if TYPE_CHECKING:
     from .example_calls import CallRecord
 
@@ -285,37 +297,10 @@ def seccomp_program() -> bytes:
 # --- termination ---------------------------------------------------------------------------------------
 
 
-def _proc_stat(pid: int) -> tuple[int, str, str] | None:
-    """(ppid, state, starttime) of *pid*, or None when it no longer exists."""
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_text()
-    except OSError:
-        return None
-    fields = raw[raw.rfind(")") + 2 :].split()
-    return int(fields[1]), fields[0], fields[19]
-
-
-def _descendants(pid: int) -> list[tuple[int, str]]:
-    """Every live descendant of *pid* as (pid, starttime), so a reused pid is never mistaken for it."""
-    children: dict[int, list[tuple[int, str]]] = {}
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        st = _proc_stat(int(entry))
-        if st is not None:
-            children.setdefault(st[0], []).append((int(entry), st[2]))
-    found: list[tuple[int, str]] = []
-    todo = [pid]
-    while todo:
-        for child in children.get(todo.pop(), []):
-            found.append(child)
-            todo.append(child[0])
-    return found
-
-
-def _alive(pid: int, starttime: str) -> bool:
-    st = _proc_stat(pid)
-    return st is not None and st[2] == starttime and st[1] not in ("Z", "X")
+# Shared with the actor's sandbox (unify/common/process_tree.py).
+_proc_stat = process_tree.proc_stat
+_descendants = process_tree.descendants
+_alive = process_tree.alive
 
 
 class _Tail:
@@ -393,31 +378,11 @@ class _Tail:
 
 def _kill_box(proc: subprocess.Popen) -> None:
     """SIGKILL bubblewrap's process group and every process below it; raise unless all are gone."""
-    victims = _descendants(proc.pid)
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    for pid, start in victims:
-        if _alive(pid, start):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-    try:
-        proc.wait(timeout=_KILL_GRACE_S)
-    except subprocess.TimeoutExpired:
-        pass
-    deadline = time.monotonic() + _KILL_GRACE_S
-    while True:
-        survivors = [pid for pid, start in victims if _alive(pid, start)]
-        if proc.poll() is not None and not survivors:
-            return
-        if time.monotonic() > deadline:
-            raise RuntimeError(
-                f"sandbox processes survived SIGKILL: bwrap {proc.pid}, others {survivors}",
-            )
-        time.sleep(0.1)
+    process_tree.kill_tree(
+        proc.pid,
+        exited=lambda: proc.poll() is not None,
+        grace_s=_KILL_GRACE_S,
+    )
 
 
 def _check_box_request(env: dict[str, str] | None, pass_fds: tuple[int, ...]) -> str:

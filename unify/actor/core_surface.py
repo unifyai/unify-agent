@@ -966,10 +966,27 @@ def install_doc() -> str:
 
 
 async def install(packages: Union[str, List[str]]) -> Dict[str, Any]:
-    from unify import environment
+    from unify import environment, sandbox
 
     specs = [packages] if isinstance(packages, str) else list(packages)
-    return await asyncio.to_thread(environment.install, specs)
+    # A wheel is named as the cell's sandbox shows it (/workspace/...); the
+    # installer runs on the host's paths, and its reply is told back in the
+    # sandbox's (the installer prints the environment's host path).
+    policy = sandbox.build_policy()
+    specs = [
+        sandbox.host_path(s, policy) if isinstance(s, str) and s.startswith("/") else s
+        for s in specs
+    ]
+    result = await asyncio.to_thread(environment.install, specs)
+    return {
+        k: (sandbox.neutral_text(v, policy) if isinstance(v, str) else v)
+        for k, v in result.items()
+    } | {
+        "packages": [
+            sandbox.neutral_text(p, policy) if isinstance(p, str) else p
+            for p in result.get("packages", [])
+        ],
+    }
 
 
 install.__doc__ = _INSTALL_DOC
@@ -1338,6 +1355,9 @@ _SINGLE_CALL_RULE = re.compile(
     r"\n[ \t]*\*\*IMPORTANT — single-call rule\*\*:.*?\n[ \t]*\n",
     re.DOTALL,
 )
+_LIBRARY_FUNCTIONS = re.compile(
+    r"environment globals and FunctionManager-discovered\s+functions still available",
+)
 _SESSION_TOOLS = re.compile(
     r";?\s*choose via\s*``list_sessions\(\)`` / ``inspect_state\(\)``\.",
 )
@@ -1349,7 +1369,14 @@ def execute_code_doc(doc: str) -> str:
     with."""
     doc = _SINGLE_CALL_RULE.sub("\n", doc, count=1)
     doc = _SESSION_TOOLS.sub(".", doc, count=1)
-    doc = doc.replace("FunctionManager-discovered", "library", 1)
+    from unify.memory.integration import hooks as _memory
+
+    if _memory.enabled():
+        # A memory run has no function library: a fresh run keeps the
+        # environment globals only.
+        doc = _LIBRARY_FUNCTIONS.sub("environment globals still available", doc, 1)
+    else:
+        doc = doc.replace("FunctionManager-discovered", "library", 1)
     return doc.rstrip() + "\n"
 
 

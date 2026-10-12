@@ -342,8 +342,14 @@ def _build_inner_actor(
             scoped_managers=primitive_scope.scoped_managers | env_aliases,
         )
 
+    from unify.memory.integration import hooks as _memory
+
+    # A memory run has no function or guidance store (unify/actor/base.py).
+    memory_run = _memory.enabled()
     # Build a fresh FM scoped by discovery_scope (no parent inheritance).
-    inner_fm = _build_scoped_fm(discovery_scope, primitive_scope)
+    inner_fm = (
+        None if memory_run else _build_scoped_fm(discovery_scope, primitive_scope)
+    )
 
     # Resolve prompt_functions: first check parent environments for
     # custom namespaces (e.g. create_env-based services), then resolve
@@ -379,8 +385,8 @@ def _build_inner_actor(
         effective_guidelines = effective_guidelines or None
 
     # Build a scoped GuidanceManager for subagent discovery.
-    inner_gm = _build_scoped_gm(guidance_scope)
-    if resolved_guidance_ids:
+    inner_gm = None if memory_run else _build_scoped_gm(guidance_scope)
+    if inner_gm is not None and resolved_guidance_ids:
         inner_gm.exclude_ids = resolved_guidance_ids
 
     inner_actor = CodeActActor(

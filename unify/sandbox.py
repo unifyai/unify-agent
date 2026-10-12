@@ -107,8 +107,11 @@ __all__ = [
     "SandboxRefusal",
     "annotate_refusals",
     "build_policy",
+    "box_path",
     "check_readable",
     "confined_subprocesses",
+    "host_path",
+    "neutral_text",
     "egress_proxy",
     "scrubbed_env",
     "unconfined",
@@ -117,6 +120,11 @@ __all__ = [
 
 # Rule name -> what it does, as a refused action reports it.
 RULES: dict[str, str] = {
+    "resource-limits": (
+        "every process runs under fixed resource limits: no core files, 1,024 "
+        "open files, 256 processes and threads, 512 MiB per written file and "
+        "the configured address space (UNIFY_SANDBOX_ADDRESS_SPACE_BYTES)"
+    ),
     "sandbox-required": (
         "shell commands and Python cells run only inside bubblewrap, never "
         "unconfined"
@@ -221,6 +229,38 @@ _POLICY_TTL_S = 300.0
 
 MASK_NOTICE_NAME = "UNIFY_SANDBOX_MASKED"
 _PROXY_MOUNT = "/tmp/.unify-proxy"
+
+# Where a neutral sandbox (the actor's cells: wrap_argv(neutral=True)) shows
+# what the harness keeps under paths that can name the run (UNIFY_HOME,
+# UNIFY_LOCAL_ROOT): fixed paths, so no working directory, import path,
+# traceback or prompt a cell sees names the host's. The host side of every
+# tool maps them back (box_path, host_path).
+WORKSPACE_MOUNT = "/workspace"
+LIBRARY_MOUNT = "/memory-library"
+RECORD_MOUNT = "/record"
+TRANSCRIPTS_MOUNT = "/transcripts"
+ENVIRONMENT_MOUNT = "/venv"
+NEUTRAL_MOUNTS = frozenset(
+    {WORKSPACE_MOUNT, LIBRARY_MOUNT, RECORD_MOUNT, TRANSCRIPTS_MOUNT, ENVIRONMENT_MOUNT},
+)
+# The state directory's entries a neutral sandbox shows, by name, and where.
+_STATE_VIEW_MOUNTS = {
+    "transcripts": TRANSCRIPTS_MOUNT,
+    "venv": ENVIRONMENT_MOUNT,
+    "memory-checkout": LIBRARY_MOUNT,
+}
+
+# Resource limits of every process in a sandbox, set inside it by prlimit
+# before the command starts (as the memory agents' boxes do,
+# unify/memory/sandbox_run.py): no core files, at most 1,024 open files, 256
+# processes and threads in the sandbox's own user namespace, 512 MiB per
+# written file. The address space is UNIFY_SANDBOX_ADDRESS_SPACE_BYTES
+# (16 GiB by default).
+PRLIMIT = "/usr/bin/prlimit"
+RLIMIT_CORE_BYTES = 0
+RLIMIT_NOFILE_COUNT = 1024
+RLIMIT_NPROC_COUNT = 256
+RLIMIT_FSIZE_BYTES = 512 * 1024**2
 
 # The host paths every sandboxed command sees besides those derived at start
 # (_derived_roots: the interpreter, the Unify package, editable installs, the
@@ -1992,8 +2032,11 @@ def build_policy(*, fresh: bool = False) -> SandboxPolicy:
         scan = _scan_workspace(workspace, ws_skip)
         scan_note = None
         if scan.capped:
+            # The note reaches the run's record, which agents read: the
+            # workspace is named as cells see it, never by its host path.
             scan_note = (
-                f"workspace sandbox: the secret scan of {workspace} read its cap "
+                f"workspace sandbox: the secret scan of the workspace "
+                f"({WORKSPACE_MOUNT}) read its cap "
                 f"of {_WORKSPACE_SCAN_LIMIT} entries and stopped; secret-named "
                 "files in directories it did not read are not masked in cells "
                 "(the harness's file tools still refuse them by name)"
@@ -2087,6 +2130,101 @@ def check_readable(path: str | os.PathLike, policy: SandboxPolicy) -> Path:
         rule, detail = violation
         raise SandboxRefusal(rule, detail)
     return Path(os.path.realpath(p))
+
+
+def neutral_mounts(
+    policy: SandboxPolicy,
+    extra: Sequence[Path] = (),
+) -> list[tuple[Path, str]]:
+    """(host path, in-sandbox path) of each mount a neutral sandbox shows at a
+    fixed path: the workspace at :data:`WORKSPACE_MOUNT`, the transcripts,
+    the environment and the memory library copy at theirs, and the run's
+    agent record folder at :data:`RECORD_MOUNT`. *extra* are a command's own
+    binds; one that is not a state view keeps its host path."""
+    state = Path(os.path.realpath(policy.state_dir))
+    out: list[tuple[Path, str]] = [
+        (Path(os.path.realpath(policy.workspace)), WORKSPACE_MOUNT),
+    ]
+    taken = {WORKSPACE_MOUNT}
+    for path in policy.readonly_state:
+        real = Path(os.path.realpath(path))
+        at = (
+            _STATE_VIEW_MOUNTS.get(real.name, RECORD_MOUNT)
+            if real.parent == state
+            else RECORD_MOUNT
+        )
+        if at not in taken:
+            out.append((real, at))
+            taken.add(at)
+    for path in extra:
+        real = Path(os.path.realpath(path))
+        at = _STATE_VIEW_MOUNTS.get(real.name) if real.parent == state else None
+        if at is not None and at not in taken:
+            out.append((real, at))
+            taken.add(at)
+    return out
+
+
+def box_path(
+    path: str | os.PathLike,
+    policy: SandboxPolicy,
+    *,
+    mounts: Optional[Sequence[tuple[Path, str]]] = None,
+) -> str:
+    """Where a neutral sandbox shows the host *path*: under the fixed path of
+    the innermost mount holding it, else *path* itself (unchanged)."""
+    real = Path(os.path.realpath(path))
+    best: Optional[tuple[Path, str]] = None
+    for host, at in mounts if mounts is not None else neutral_mounts(policy):
+        if _within(real, host) and (best is None or len(host.parts) > len(best[0].parts)):
+            best = (host, at)
+    if best is None:
+        return os.fspath(path)
+    rel = real.relative_to(best[0])
+    return best[1] if not rel.parts else "/".join((best[1], *rel.parts))
+
+
+def host_path(path: str | os.PathLike, policy: SandboxPolicy) -> str:
+    """The host path of *path* as a neutral sandbox names it: a path under a
+    fixed mount (``/workspace/a.csv``) maps to the host directory it shows;
+    any other absolute path is returned normalised, a relative one as given. The caller checks the result as it
+    checks any host path (:func:`check_readable`), so the mapping adds no
+    access."""
+    text = os.fspath(path)
+    if not text.startswith("/"):
+        return text
+    # Resolved as the sandbox resolves it: each fixed mount sits directly
+    # under the sandbox's root, so ".." above one leaves it.
+    norm = os.path.normpath(text)
+    for host, at in neutral_mounts(policy):
+        if norm == at or norm.startswith(at + "/"):
+            return str(host) + norm[len(at) :]
+    return norm
+
+
+def neutral_text(text: str, policy: SandboxPolicy) -> str:
+    """*text* with every host path a neutral sandbox shows elsewhere replaced
+    by its fixed path, and the state directory by a name, so a host tool's
+    reply or refusal names no path that can name the run."""
+    if not isinstance(text, str) or not text:
+        return text
+    pairs = [(str(host), at) for host, at in neutral_mounts(policy)]
+    states = [str(policy.state_dir)]
+    try:
+        from unify.db import store_home
+        from unify.workspace import get_local_root
+
+        pairs.append((os.path.abspath(get_local_root()), WORKSPACE_MOUNT))
+        states.append(os.path.abspath(store_home()))
+    except Exception:  # noqa: BLE001 - the policy's own paths still apply
+        pass
+    for host, at in sorted(pairs, key=lambda pair: len(pair[0]), reverse=True):
+        if host not in ("", "/"):
+            text = text.replace(host, at)
+    for state in sorted(set(states), key=len, reverse=True):
+        if state not in ("", "/"):
+            text = text.replace(state, "<the harness's state directory>")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -2277,6 +2415,8 @@ def wrap_argv(
     readonly: Sequence[Path] = (),
     late_readonly: Sequence[Path] = (),
     egress: Optional["EgressProxy"] = None,
+    env: Optional[Mapping[str, str]] = None,
+    neutral: bool = False,
 ) -> list[str]:
     """*argv* as a bubblewrap command line under *policy*.
 
@@ -2291,12 +2431,23 @@ def wrap_argv(
     library copy, under the hidden state directory) is seen and is never
     writable.
 
-    The command line starts ``/bin/sh -c 'exec "$@" 9<"$0"' <seccomp.bpf>``:
-    the shell opens the seccomp program on descriptor 9 for bubblewrap
-    (``--seccomp 9``), which reads and closes it, and replaces itself with
-    bubblewrap (same process, same process group).
+    *env*, when given, is the command's whole environment: bubblewrap clears
+    the inherited one (``--clearenv``) and sets each variable with
+    ``--setenv``, after the credential filters (:func:`_is_secret_env`,
+    :func:`_looks_like_key`) checked each again; a dropped name is logged,
+    never its value. *neutral* (the actor's cells) shows the workspace and the
+    state directory's views at fixed paths (:data:`WORKSPACE_MOUNT` and the
+    others, :func:`neutral_mounts`) instead of their host paths, which can
+    name the run, and starts the command there; the host paths are hidden.
+
+    Every process runs under :data:`PRLIMIT`'s resource limits
+    (:func:`_rlimit_args`). The command line starts ``/bin/sh -c 'exec "$@"
+    9<"$0"' <seccomp.bpf>``: the shell opens the seccomp program on
+    descriptor 9 for bubblewrap (``--seccomp 9``), which reads and closes it,
+    and replaces itself with bubblewrap (same process, same process group).
     """
     bwrap = require_bwrap()
+    limits = _rlimit_args()
     notices = policy.notices_dir
     root_args = policy.root_args
     if notices is None or not (notices / "seccomp.bpf").is_file() or not root_args:
@@ -2334,6 +2485,11 @@ def wrap_argv(
     extra = [Path(os.path.realpath(p)) for p in writable]
     late = [_late_readonly_path(Path(p), policy) for p in late_readonly]
     shown = (*policy.readonly_state, policy.workspace, *extra, *late)
+    # Where each mount is shown inside: its own path, or a fixed one.
+    moves = neutral_mounts(policy, (*extra, *late)) if neutral else []
+
+    def inside(path: Path) -> str:
+        return box_path(path, policy, mounts=moves) if moves else str(path)
 
     def _inside_shown(path: Path) -> bool:
         return any(_within(path, p) and path != p for p in shown)
@@ -2346,7 +2502,8 @@ def wrap_argv(
         except OSError:
             if not path.is_dir():
                 raise
-        return ["--tmpfs", str(path), "--ro-bind", str(notices / rule), _notice(path)]
+        at = Path(inside(path))
+        return ["--tmpfs", str(at), "--ro-bind", str(notices / rule), _notice(at)]
 
     # Hide the state directory, then put back what may be seen.
     args += ["--tmpfs", str(policy.state_dir)]
@@ -2365,22 +2522,37 @@ def wrap_argv(
     for path, rule in policy.hidden:
         if not _within(path, policy.state_dir) and not _inside_shown(path):
             args += _hide(path, rule)
+    # Shown at a fixed path, a mount's host path is not shown as well, even
+    # where the allowlisted root would show it (a workspace inside a mounted
+    # checkout): an empty directory stands there.
+    for host, _at in moves:
+        if any(_within(host, r) for r in policy.root_visible) and not _within(
+            host,
+            policy.state_dir,
+        ):
+            args += ["--tmpfs", str(host)]
     # After every mask, so what may be seen is seen wherever it lives, and the
     # workspace last of all, so it is writable even inside a masked directory.
     for path in policy.readonly_state:
-        args += ["--ro-bind", str(path), str(path)]
-    args += ["--bind", str(policy.workspace), str(policy.workspace)]
+        args += ["--ro-bind", str(path), inside(path)]
+    args += ["--bind", str(policy.workspace), inside(policy.workspace)]
     # What the workspace bind covers of the harness's: a state directory
     # inside it is hidden again, whole, and the views inside the workspace
     # are put back read-only (transcripts stay readable, never writable).
     workspace = policy.workspace
     state = policy.state_dir
     if state != workspace and _within(state, workspace):
-        args += ["--tmpfs", str(state)]
-        args += ["--ro-bind", str(notices / "mask-unify-state"), _notice(state)]
-    for path in policy.readonly_state:
-        if _within(path, workspace):
-            args += ["--ro-bind", str(path), str(path)]
+        args += ["--tmpfs", inside(state)]
+        args += [
+            "--ro-bind",
+            str(notices / "mask-unify-state"),
+            _notice(Path(inside(state))),
+        ]
+    if not moves:
+        # (Shown at fixed paths, the views are outside the workspace.)
+        for path in policy.readonly_state:
+            if _within(path, workspace):
+                args += ["--ro-bind", str(path), str(path)]
     # Then the masks inside it: the secret scan's finds and the store's files.
     # Only what exists now: a mount point made on this read-write mount
     # would be made on the host.
@@ -2388,14 +2560,14 @@ def wrap_argv(
         if os.path.islink(path):
             continue
         if os.path.isdir(path):
-            args += ["--tmpfs", str(path)]
-            args += ["--ro-bind", str(notices / rule), _notice(path)]
+            args += ["--tmpfs", inside(path)]
+            args += ["--ro-bind", str(notices / rule), _notice(Path(inside(path)))]
         elif os.path.exists(path):
-            args += ["--ro-bind", str(notices / rule), str(path)]
+            args += ["--ro-bind", str(notices / rule), inside(path)]
     for path in extra:
-        args += ["--bind", str(path), str(path)]
+        args += ["--bind", str(path), inside(path)]
     for path in late:
-        args += ["--ro-bind", str(path), str(path)]
+        args += ["--ro-bind", str(path), inside(path)]
     # A harness-only directory inside a mount above is hidden last of all,
     # unless it holds a mount itself (a log directory that holds the
     # workspace): the harness's own file tools still refuse it then. One
@@ -2444,14 +2616,17 @@ def wrap_argv(
             f"{_PROXY_MOUNT}/proxy.sock",
             *command,
         ]
-    workdir = cwd or os.getcwd()
+    workdir = cwd or (str(policy.workspace) if moves else os.getcwd())
     bound = any(_within(Path(os.path.realpath(workdir)), p) for p in extra)
     if (
         not bound and policy.readable_violation(Path(workdir)) is not None
     ) or not os.path.isdir(workdir):
         workdir = str(policy.workspace)
+    workdir = inside(Path(os.path.realpath(workdir))) if moves else workdir
     # Every mount point on the root's tmpfs exists now; nothing more is
     # written there.
+    if env is not None:
+        args += ["--clearenv", *_setenv_args(env)]
     # The /bin/sh wrapper runs outside the sandbox and exports the harness's
     # own working directory as PWD; the command gets its sandbox one instead.
     args += ["--setenv", "PWD", workdir]
@@ -2468,8 +2643,57 @@ def wrap_argv(
         _SECCOMP_EXEC,
         str(notices / "seccomp.bpf"),
         *args,
+        *limits,
         *command,
     ]
+
+
+def _rlimit_args() -> list[str]:
+    """``prlimit`` with the sandbox's resource limits, ending in ``--``: every
+    process of the command runs under them (hard and soft alike)."""
+    from unify.settings import SETTINGS
+
+    if not os.access(PRLIMIT, os.X_OK):
+        raise SandboxRefusal(
+            "resource-limits",
+            f"{PRLIMIT} is missing, so the sandbox's resource limits cannot be set",
+            suggestion="Install util-linux, which provides prlimit.",
+        )
+    address_space = int(SETTINGS.UNIFY_SANDBOX_ADDRESS_SPACE_BYTES)
+    return [
+        PRLIMIT,
+        f"--as={address_space}:{address_space}",
+        f"--core={RLIMIT_CORE_BYTES}:{RLIMIT_CORE_BYTES}",
+        f"--fsize={RLIMIT_FSIZE_BYTES}:{RLIMIT_FSIZE_BYTES}",
+        f"--nofile={RLIMIT_NOFILE_COUNT}:{RLIMIT_NOFILE_COUNT}",
+        f"--nproc={RLIMIT_NPROC_COUNT}:{RLIMIT_NPROC_COUNT}",
+        "--",
+    ]
+
+
+def _setenv_args(env: Mapping[str, str]) -> list[str]:
+    """``--setenv NAME VALUE`` for each variable of *env* the credential
+    filters pass; the names of those they drop are logged at debug level."""
+    out: list[str] = []
+    dropped: list[str] = []
+    for name, value in env.items():
+        if (
+            _is_secret_env(name, value)
+            or _looks_like_key(value)
+            or "\0" in name
+            or "\0" in value
+            or "=" in name
+            or not name
+        ):
+            dropped.append(name)
+            continue
+        out += ["--setenv", name, value]
+    if dropped:
+        logging.getLogger(__name__).debug(
+            "workspace sandbox: environment variables not passed: %s",
+            ", ".join(sorted(dropped)),
+        )
+    return out
 
 
 _BIND_OPTIONS = ("--bind", "--ro-bind", "--dev-bind", "--bind-try", "--ro-bind-try")
@@ -2540,8 +2764,17 @@ def _refuse_broad_binds(
     ws = str(workspace) if workspace is not None else None
     for i in range(end - 2):
         if args[i] in _BIND_OPTIONS:
-            is_workspace = args[i] == "--bind" and args[i + 1] == args[i + 2] == ws
-            for p in (args[i + 1], args[i + 2]):
+            is_workspace = (
+                args[i] == "--bind"
+                and args[i + 1] == ws
+                and args[i + 2] in (ws, WORKSPACE_MOUNT)
+            )
+            # A fixed in-sandbox path (NEUTRAL_MOUNTS) is never a host
+            # path: only the source it shows is checked.
+            checked = [args[i + 1]]
+            if args[i + 2] not in NEUTRAL_MOUNTS:
+                checked.append(args[i + 2])
+            for p in checked:
                 why = None
                 if is_workspace:
                     why = _workspace_refusal(Path(p), state=state)
@@ -2627,6 +2860,13 @@ def sandbox_env(
     """
     if env is None:
         out = allowed_env()
+        dropped = sorted(set(os.environ) - set(out) - set(TRUSTED_ENV))
+        if dropped:
+            # Names only: a value never reaches a log.
+            logging.getLogger(__name__).debug(
+                "workspace sandbox: environment variables not in the allow-list: %s",
+                ", ".join(dropped),
+            )
         out["PATH"] = _interpreter_first_on_path(out.get("PATH"))
         account = _account_name()
         if account:
@@ -2656,7 +2896,7 @@ def annotate_refusals(output: str, policy: SandboxPolicy) -> Optional[str]:
     if "Read-only file system" in output:
         notes.append(
             f"`workspace-write`: {RULES['workspace-write']} "
-            f"(workspace: {policy.workspace})",
+            f"(workspace: {WORKSPACE_MOUNT})",
         )
     network_errors = (
         "Network is unreachable",
@@ -2745,14 +2985,16 @@ def _install_popen_patch() -> None:
             if not a.get("shell") and a.get("executable"):
                 argv[0] = os.fsdecode(a["executable"])
             cwd = a.get("cwd")
+            env = sandbox_env(policy, a.get("env"))
             a["args"] = wrap_argv(
                 argv,
                 policy,
                 cwd=os.fsdecode(cwd) if cwd is not None else None,
+                env=env,
             )
             a["shell"] = False
             a["executable"] = None
-            a["env"] = sandbox_env(policy, a.get("env"))
+            a["env"] = env
             return original_init(*bound.args, **bound.kwargs)
 
         original_system = os.system

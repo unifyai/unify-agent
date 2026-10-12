@@ -392,8 +392,18 @@ class TranscriptSession:
                 )
 
     def pointer_line(self) -> str:
+        # Named as the cells' sandbox shows the transcripts (read-only, at a
+        # fixed path), never by the host path, which can name the run.
+        from unify.sandbox import TRANSCRIPTS_MOUNT
+
+        if self.internal:
+            return (
+                "The full history of this session is kept in the harness's "
+                "internal transcripts, which cells cannot read."
+            )
         return (
-            f"The full history of this session is at {self.path}; "
+            f"The full history of this session is at "
+            f"{TRANSCRIPTS_MOUNT}/{self.path.name}; "
             "search it with grep/rg if you need details."
         )
 

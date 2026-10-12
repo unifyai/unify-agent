@@ -57,6 +57,21 @@ def _resolve_file(path: str, policy: sandbox.SandboxPolicy) -> Path:
     return resolved
 
 
+def _neutral_error(exc: ToolInputError, policy: sandbox.SandboxPolicy) -> ToolInputError:
+    """*exc* with its texts naming paths as the sandbox shows them
+    (:func:`unify.sandbox.neutral_text`), never the host's, which can name
+    the run."""
+    exc.message = sandbox.neutral_text(exc.message, policy)
+    exc.args = (exc.message,)
+    if exc.suggestion:
+        exc.suggestion = sandbox.neutral_text(exc.suggestion, policy)
+    exc.received = {
+        k: sandbox.neutral_text(v, policy) if isinstance(v, str) else v
+        for k, v in exc.received.items()
+    }
+    return exc
+
+
 def read_file(
     path: str,
     start: int = 1,
@@ -64,8 +79,24 @@ def read_file(
     *,
     policy: sandbox.SandboxPolicy,
 ) -> dict[str, Any]:
-    """Lines ``start``..``end`` (1-based, inclusive) of *path*, numbered."""
-    resolved = _resolve_file(path, policy)
+    """Lines ``start``..``end`` (1-based, inclusive) of *path*, numbered.
+
+    *path* is as a cell names it (``/workspace/...``, or relative to the
+    workspace); the reply names paths the same way."""
+    try:
+        return _read_file(path, start, end, policy=policy)
+    except ToolInputError as exc:
+        raise _neutral_error(exc, policy) from None
+
+
+def _read_file(
+    path: str,
+    start: int,
+    end: Optional[int],
+    *,
+    policy: sandbox.SandboxPolicy,
+) -> dict[str, Any]:
+    resolved = _resolve_file(sandbox.host_path(path, policy), policy)
     if _is_binary(resolved):
         raise ToolInputError(
             f"{resolved} is a binary file",
@@ -98,7 +129,7 @@ def read_file(
             size += len(text)
     shown_end = start + len(lines) - 1 if lines else start - 1
     out: dict[str, Any] = {
-        "path": str(resolved),
+        "path": sandbox.box_path(resolved, policy),
         "start": start,
         "end": shown_end,
         "total_lines": total,
@@ -116,8 +147,25 @@ async def grep(
     *,
     policy: sandbox.SandboxPolicy,
 ) -> dict[str, Any]:
-    """Lines matching the regular expression *pattern* under *path*."""
-    target = sandbox.check_readable(path, policy)
+    """Lines matching the regular expression *pattern* under *path*.
+
+    *path* is as a cell names it (``/workspace/...``, or relative to the
+    workspace); both engines run in a neutral sandbox, so every hit names
+    its file the same way."""
+    try:
+        return await _grep(pattern, path, max_hits, policy=policy)
+    except ToolInputError as exc:
+        raise _neutral_error(exc, policy) from None
+
+
+async def _grep(
+    pattern: str,
+    path: str,
+    max_hits: int,
+    *,
+    policy: sandbox.SandboxPolicy,
+) -> dict[str, Any]:
+    target = sandbox.check_readable(sandbox.host_path(path, policy), policy)
     if not target.exists():
         raise ToolInputError(
             f"No such file or directory: {target}",
@@ -141,7 +189,7 @@ async def grep(
         engine = "python-sandboxed"
     return {
         "pattern": pattern,
-        "path": str(target),
+        "path": sandbox.box_path(target, policy),
         "hits": hits,
         "truncated": truncated,
         "engine": engine,
@@ -174,15 +222,22 @@ async def _grep_ripgrep(
         "-e",
         pattern,
         "--",
-        str(target),
+        sandbox.box_path(target, policy),
     ]
+    env = sandbox.sandbox_env(policy)
     with sandbox.unconfined():  # already wrapped; never wrap twice
         proc = await asyncio.create_subprocess_exec(
-            *sandbox.wrap_argv(argv, policy, cwd=str(policy.workspace)),
+            *sandbox.wrap_argv(
+                argv,
+                policy,
+                cwd=str(policy.workspace),
+                env=env,
+                neutral=True,
+            ),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=sandbox.sandbox_env(policy),
+            env=env,
             start_new_session=True,
         )
     hits: list[str] = []
@@ -216,7 +271,7 @@ async def _grep_ripgrep(
         err = (await proc.stderr.read()).decode("utf-8", errors="replace")
         raise ToolInputError(
             f"grep failed: {err.strip()[:2000]}",
-            received={"pattern": pattern, "path": str(target)},
+            received={"pattern": pattern, "path": sandbox.box_path(target, policy)},
         )
     return hits, truncated
 
@@ -279,20 +334,27 @@ async def _grep_sandboxed_python(
     config = json.dumps(
         {
             "pattern": pattern,
-            "target": str(target),
+            "target": sandbox.box_path(target, policy),
             "skip_dirs": sorted(_SKIP_DIRS),
             "max_file_bytes": MAX_GREP_FILE_BYTES,
             "max_line_chars": _MAX_LINE_CHARS,
         },
     )
     argv = [sys.executable, "-I", "-S", "-c", _GREP_CHILD, config]
+    env = sandbox.sandbox_env(policy)
     with sandbox.unconfined():  # already wrapped; never wrap twice
         proc = await asyncio.create_subprocess_exec(
-            *sandbox.wrap_argv(argv, policy, cwd=str(policy.workspace)),
+            *sandbox.wrap_argv(
+                argv,
+                policy,
+                cwd=str(policy.workspace),
+                env=env,
+                neutral=True,
+            ),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=sandbox.sandbox_env(policy),
+            env=env,
             start_new_session=True,
             limit=1 << 20,
         )
@@ -321,7 +383,11 @@ async def _grep_sandboxed_python(
                 return
             file, number, text = record["hit"]
             if file not in refused:
-                refused[file] = policy.readable_violation(Path(file)) is not None
+                # The child names files as the sandbox shows them.
+                refused[file] = (
+                    policy.readable_violation(Path(sandbox.host_path(file, policy)))
+                    is not None
+                )
             if refused[file]:
                 continue
             if len(hits) >= max_hits:

@@ -554,6 +554,11 @@ class ProductionSettings(BaseSettings):
     # comma list of names and ``PREFIX_*`` patterns, for a runner's own cell
     # variables. A credential's name or a key-shaped value is never passed.
     UNIFY_CELL_ENV_ALLOW: str = ""
+    # The address-space limit (RLIMIT_AS, bytes) of every process in the
+    # workspace sandbox, set inside it with prlimit beside its other limits
+    # (unify/sandbox.py). A positive whole number; 16 GiB by default, which
+    # leaves normal work unconstrained.
+    UNIFY_SANDBOX_ADDRESS_SPACE_BYTES: int = 16 * 1024**3
     # What the model is asked to fill in to run a cell. Empty (or "legacy"):
     # ``execute_code`` as shipped, with ``thought``, ``state_mode``,
     # ``session_id``, ``session_name`` (and ``language`` in a sandboxed
@@ -868,6 +873,17 @@ class ProductionSettings(BaseSettings):
                     f"and PREFIX_* patterns, not {v!r}",
                 )
         return ",".join(entries)
+
+    @field_validator("UNIFY_SANDBOX_ADDRESS_SPACE_BYTES", mode="before")
+    @classmethod
+    def parse_sandbox_address_space(cls, v: Any) -> int:
+        text = str(v).strip() if v is not None else ""
+        if isinstance(v, bool) or not re.fullmatch(r"[0-9]+", text) or int(text) <= 0:
+            raise ValueError(
+                "UNIFY_SANDBOX_ADDRESS_SPACE_BYTES must be a positive whole number "
+                f"of bytes, not {v!r}",
+            )
+        return int(text)
 
     @field_validator("UNIFY_WORKSPACE_NETWORK", mode="before")
     @classmethod

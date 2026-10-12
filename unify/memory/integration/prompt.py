@@ -18,8 +18,8 @@ and suspect flags) is what ``memory.catalog()`` prints in the cell, read from th
 ``.memory/catalog.json`` (:mod:`..catalogue`, :mod:`..memory_helper`); a suspect channel's refusals say so
 in the cell's error (:func:`.hooks.cell_error`).
 
-The index of ``index`` is a pure function of the exported commit, the export's fixed path under
-``UNIFY_HOME`` and the harness's suspect set; it grows by one line per function and is left out over its
+The index of ``index`` is a pure function of the exported commit, the export's fixed in-sandbox path
+and the harness's suspect set; it grows by one line per function and is left out over its
 4,000-token budget, unless ``UNIFY_MEMORY_SOFT_BUDGET`` is on (then the gate never refuses growth, so
 the request renders it whole).
 """
@@ -46,8 +46,12 @@ INDEX_BUDGET_TOKENS = 4000
 
 
 def export_line(checkout: Path) -> str:
+    """Names the copy where the cells' sandbox binds it (``unify.sandbox.LIBRARY_MOUNT``), never *checkout*,
+    the host path, which can name the run."""
+    from unify.sandbox import LIBRARY_MOUNT
+
     return (
-        f"These files are a scratch copy of the library at `{checkout}`, first on the import "
+        f"These files are a scratch copy of the library at `{LIBRARY_MOUNT}`, first on the import "
         "path; anything written there is discarded when the request ends.\n"
     )
 
@@ -124,7 +128,11 @@ def render_catalogue(checkout: Path, shown_before: bool = False) -> tuple[str, d
 
 
 def location_line(checkout: Path) -> str:
-    return f"Library files: `{checkout}`, holding INDEX.md, links.json, memory/ and notes/.\n"
+    """Names the copy where the cells' sandbox binds it (``unify.sandbox.LIBRARY_MOUNT``), never *checkout*,
+    the host path, which can name the run."""
+    from unify.sandbox import LIBRARY_MOUNT
+
+    return f"Library files: `{LIBRARY_MOUNT}`, holding INDEX.md, links.json, memory/ and notes/.\n"
 
 
 def _actor_index_setting() -> str:
