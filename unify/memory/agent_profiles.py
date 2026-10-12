@@ -1,9 +1,11 @@
-"""The memory agents' profiles: one row per agent, binding it to its tools, its box mounts (with the mode the box
-really gives them), what it is denied, and what it consumes and produces.
+"""The agents' profiles: one row per agent, binding it to its tools, its box mounts (with the mode the box really
+gives them), what it is denied, and what it consumes and produces.
 
-Rows use role names only; every model is a setting. The writer pass takes its tool set from here
-(:func:`tool_json`), and the tools themselves come from the shared spec (:mod:`.tool_spec`), so a profile can only
-name tools that exist.
+Rows use role names only; every model is a setting. Each tool-using row names its tools three ways: ``tools``, the
+model-API tools it was given before every agent had one (the memory agents' earlier surface); ``json_tools``, its one
+model-API tool with ``UNIFY_TOOLS_IN_CODE=on`` (``execute_code``); and ``in_code``, the tools it may call from its
+cells then (the allow-list the host enforces, :func:`unify.common.tool_registry.allow_list`). The tools themselves
+come from the shared registry (:mod:`unify.common.tool_registry`), so a profile can only name tools that exist.
 """
 
 from __future__ import annotations
@@ -59,6 +61,34 @@ _PASS_EVENTS = [
 #: Every agent on a pass's record reads it and posts to it (messaging.py: one in-memory record per pass).
 _RECORD = "the pass's record (send, messages, wait, who)"
 _RECORD_TOOLS = ["send", "messages", "wait", "who"]
+#: The actor and its teammates share the run's agent record (unify/agents/record.py).
+_AGENT_RECORD = "the agent record (send, messages, wait, who)"
+#: Every tool-using agent's one model-API tool with UNIFY_TOOLS_IN_CODE=on.
+_JSON_TOOLS = ["execute_code"]
+#: The actor's and a teammate's in-code tools (store_skills only where the actor may store).
+_ACTOR_IN_CODE = [
+    "read",
+    "grep",
+    "install",
+    *_RECORD_TOOLS,
+    "reply",
+    "stop",
+    "delegate",
+    "finish",
+    "store_skills",
+    "sh",
+]
+_TEAMMATE_IN_CODE = [
+    "read",
+    "grep",
+    "install",
+    *_RECORD_TOOLS,
+    "reply",
+    "stop",
+    "ask",
+    "finish",
+    "sh",
+]
 _BOX_MOUNTS = [
     {"path": "/inputs", "mode": "ro"},
     {"path": "/memory", "mode": "rw"},
@@ -94,8 +124,10 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "instructions": "unify.memory.library_prompts:guide_library_mode",
         # memory.index / memory.show / memory.find are library functions called in cells, not tools
         "tools": [],
-        # what its guide names that it does in its own cells, not through memory tools
-        "in_code": ["memory.index", "memory.show", "memory.find", "grep", "file reads"],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": list(_ACTOR_IN_CODE),
+        # what its guide names that it does in its own cells, through no tool
+        "in_cells": ["memory.index", "memory.show", "memory.find"],
         "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
         "denied": [
             "/inputs",
@@ -104,8 +136,12 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "other episodes",
             "library repository",
         ],
-        "consumes": [{"artifact": "library export", "path": "<library scratch copy>"}],
+        "consumes": [
+            {"artifact": "library export", "path": "<library scratch copy>"},
+            {"artifact": "agent record", "path": _AGENT_RECORD},
+        ],
         "produces": [
+            {"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "teammate"},
             {
                 "artifact": "episode record",
                 "path": "<state>/episodes/<episode>",
@@ -156,6 +192,28 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "fields": ["memory_use"],
         "emits": [],
         "pointers": [{"pointer": "library index", "tool": "memory.index"}],
+    },
+    {
+        "agent": "teammate",
+        "mode": "teammate",
+        "instructions": "unify.agents.binding:helper_request",
+        # the actor's own loop and box (a teammate is an actor started on the agent record)
+        "tools": [],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": list(_TEAMMATE_IN_CODE),
+        "in_cells": ["memory.index", "memory.show", "memory.find"],
+        "mounts": [{"path": "<library scratch copy>", "mode": "rw"}],
+        "denied": ["store_skills", "delegate", "/inputs", "library repository"],
+        "consumes": [{"artifact": "agent record", "path": _AGENT_RECORD}],
+        "produces": [{"artifact": "agent record", "path": _AGENT_RECORD, "consumer": "actor"}],
+        "limits": [],
+        "inlined": [{"what": "its task, as the record entry that started it", "bound": _INLINE_BOUND}],
+        "capabilities": ["work on one part of the actor's request in its own cells"],
+        "absent_paths": ["/inputs"],
+        "expectations": [],
+        "fields": [],
+        "emits": [],
+        "pointers": [],
     },
     {
         "agent": "fork",
@@ -240,6 +298,26 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "execute_code",
             "check",
             "finish",
+        ],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": [
+            "read",
+            "grep",
+            "overview",
+            "read_episode",
+            "similar",
+            "pool",
+            "fixture",
+            "replay",
+            "delegate",
+            *_RECORD_TOOLS,
+            "reply",
+            "stop",
+            "write",
+            "edit",
+            "check",
+            "finish",
+            "sh",
         ],
         "mounts": list(_BOX_MOUNTS),
         "denied": ["network", "credentials", "/outputs inside cells", ".git"],
@@ -368,6 +446,22 @@ AGENT_PROFILES: tuple[dict, ...] = (
             "check",
             "finish",
         ],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": [
+            "read",
+            "grep",
+            "overview",
+            "read_episode",
+            "fixture",
+            *_RECORD_TOOLS,
+            "reply",
+            "stop",
+            "write",
+            "edit",
+            "check",
+            "finish",
+            "sh",
+        ],
         "mounts": list(_BOX_MOUNTS),
         "denied": [
             "pool",
@@ -477,6 +571,19 @@ AGENT_PROFILES: tuple[dict, ...] = (
             *_RECORD_TOOLS,
             "ask",
             "done",
+        ],
+        "json_tools": list(_JSON_TOOLS),
+        "in_code": [
+            "read",
+            "grep",
+            "overview",
+            "read_episode",
+            "similar",
+            "stage",
+            *_RECORD_TOOLS,
+            "ask",
+            "done",
+            "sh",
         ],
         "mounts": [
             # the writer's own /inputs (staging, pool, batch map, drafts, gate results, other helpers' output)
@@ -655,10 +762,34 @@ def tool_names(agent: str, flags: frozenset[str] = frozenset()) -> list[str]:
     return [s.name for s in _tool_spec.tools_for(role, flags) if s.name in named]
 
 
-def tool_json(agent: str, flags: frozenset[str] = frozenset()) -> list[dict]:
+def tools_in_code() -> bool:
+    """Whether ``UNIFY_TOOLS_IN_CODE=on``: every agent keeps one model-API tool and calls the rest in code."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off") == "on"
+
+
+def tool_json(
+    agent: str,
+    flags: frozenset[str] = frozenset(),
+    in_code: bool | None = None,
+) -> list[dict]:
+    """*agent*'s model-API tools: with the tools in code (*in_code*, by default the setting), ``execute_code``
+    alone, the same bytes for every agent; otherwise the tools it was given before, byte for byte."""
+    if tools_in_code() if in_code is None else in_code:
+        from unify.common import tool_registry
+
+        return tool_registry.json_tools(agent)
     names = set(tool_names(agent, flags))
     return [
         s.as_tool()
         for s in _tool_spec.tools_for(SPEC_ROLE[agent], flags)
         if s.name in names
     ]
+
+
+def in_code_names(agent: str, flags: frozenset[str] = frozenset()) -> tuple[str, ...]:
+    """The tools *agent* may call from its cells with the configuration *flags* on (the host's allow-list)."""
+    from unify.common import tool_registry
+
+    return tool_registry.allow_list(agent, flags)
