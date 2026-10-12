@@ -175,14 +175,13 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "curator",
         "mode": "curate",
         "instructions": "unify.memory_v2.library_prompts:curate_brief_now",
-        "tools": ["read", "grep", "read_episode", "fixture", "execute_code", "check", "finish"],
+        "tools": ["read", "grep", "overview", "read_episode", "fixture", "execute_code", "check", "finish"],
         "mounts": list(_BOX_MOUNTS),
         "denied": [
             "pool",
             "similar",
             "replay",
             "delegate",
-            "overview",
             "staging",
             "batch map",
             "network",
@@ -223,6 +222,7 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "pointers": [
             {"pointer": "/inputs/curate/trigger.json", "tool": "read"},
             {"pointer": "recorded episodes", "tool": "read_episode"},
+            {"pointer": "an episode's end and steps", "tool": "overview"},
             {"pointer": "/memory/INDEX.md", "tool": "read"},
         ],
     },
@@ -230,7 +230,9 @@ AGENT_PROFILES: tuple[dict, ...] = (
         "agent": "helper",
         "mode": "helper",
         "instructions": "unify.memory_v2.analysts:run",
-        "tools": ["read", "grep", "overview", "read_episode", "execute_code"],
+        # its own execute_code (in a box with /memory read-only and a private /work) and stage/done come with the
+        # helper's own specs
+        "tools": ["read", "grep", "overview", "read_episode", "similar", "execute_code", "stage", "done"],
         "mounts": [
             {"path": "/inputs", "mode": "ro"},
             {"path": "/memory", "mode": "ro"},

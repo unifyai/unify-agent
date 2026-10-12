@@ -15,7 +15,7 @@ from unify.settings import SETTINGS
 from tests.memory_v2.test_writer_pass import Turns, _call, _writer
 from tests.memory_v2.test_writer_library_tools import EPS
 
-CURATE_TOOLS = {"read", "grep", "read_episode", "fixture", "execute_code", "check", "finish"}
+CURATE_TOOLS = {"read", "grep", "overview", "read_episode", "fixture", "execute_code", "check", "finish"}
 
 
 def test_the_tool_json_is_the_spec_render():

@@ -58,7 +58,8 @@ EXECUTE_CODE = ToolSpec(
         "again."
     ),
     parameters=_obj({"code": {"type": "string"}}, ["code"]),
-    roles=_ALL,
+    # a helper's own box differs (/memory read-only, a private /work): its execute_code is specified with the helper
+    roles=_WRITE_CURATE,
     summary="run Python in a fresh confined process (cwd /memory; /inputs read-only).",
 )
 
@@ -144,7 +145,7 @@ OVERVIEW = ToolSpec(
         "first, with the part name read_episode reads it by. Paged at 8000 bytes."
     ),
     parameters=_obj({"episode": {"type": "string"}, "offset": _OFFSET}),
-    roles=frozenset({_W, _H}),
+    roles=_ALL,
     refusals={"unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}"},
     summary="the batch at a glance, or one episode's end and every step.",
 )
