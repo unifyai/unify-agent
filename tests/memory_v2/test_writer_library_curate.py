@@ -47,7 +47,7 @@ def test_a_curate_request_without_library_or_its_state_spends_nothing(tmp_path):
     mem, ev, writer = _writer(tmp_path, model)  # library_mode off
     out = asyncio.run(writer.run(PassRequest("curate", None, [], False), "c0"))
     assert not out.passed and out.reasons == [
-        "curate: needs memory v2.1 and the library state it curates",
+        "curate: needs the library mode and the library state it curates",
     ]
     assert model.seen == [] and not ev.pass_exists("c0")
 

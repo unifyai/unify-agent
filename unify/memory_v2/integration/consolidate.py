@@ -216,7 +216,7 @@ def events_path(paths: Paths) -> Path:
 
 def ledger_path(paths: Paths) -> Path:
     """The run guard's ledger: one ``reserve`` line before each pass starts, one ``settle`` line after it."""
-    return paths.state_dir / "sol-spend.jsonl"
+    return paths.state_dir / "writer-spend.jsonl"
 
 
 class EpisodeLookup:
@@ -566,9 +566,7 @@ def _settle(
         "usd": usd,
         "unknown_cost_calls": int(unknown_cost_calls),
     }
-    if (
-        unknown_usd_each is not None
-    ):  # library mode: unpriced calls at the worst case
+    if unknown_usd_each is not None:  # library mode: unpriced calls at the worst case
         row["unknown_usd_each"] = format(unknown_usd_each, "f")
     _ledger(stores, row)
 
@@ -1129,13 +1127,13 @@ async def run_due_passes(
             )
         raise
     if not isinstance(effort, str) or not effort.strip():
-        _error(stores, f"no pass for {eid}: Sol's effort is empty")
+        _error(stores, f"no pass for {eid}: the writer's effort is empty")
         return []  # nothing recorded; the request stays due
     level = effort.strip().lower()
     if level not in cfg.effort_scale or level not in cfg.max_calls:
         _error(
             stores,
-            f"no pass for {eid}: Sol's effort has no pass limits (low, medium or high)",
+            f"no pass for {eid}: the writer's effort has no pass limits (low, medium or high)",
         )
         return []  # nothing recorded; the request stays due
     scale, max_calls = cfg.effort_scale[level], cfg.max_calls[level]
@@ -1315,7 +1313,7 @@ async def run_due_passes(
                 start["run_guard_booking_usd"] = _usd(cap)
             else:
                 start["capped"] = (
-                    "no Sol route: the allowance cap and call limit apply (RUNTIME B1)"
+                    "no writer route: the allowance cap and call limit apply"
                 )
         if curating:
             # why it runs; codes and ids only

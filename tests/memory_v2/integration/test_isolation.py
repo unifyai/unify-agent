@@ -200,7 +200,7 @@ def test_checker_text_never_lands_anywhere(monkeypatch, tmp_path):
     def fake_turn_factory(model, effort, **_kw):
         async def turn(messages, tools):
             sent.append(json.dumps(messages, default=str))
-            for path in sorted(scratch.glob("memv2-sol-*/inputs/**/*")):
+            for path in sorted(scratch.glob("memory-writer-*/inputs/**/*")):
                 if path.is_file() and not path.is_symlink():
                     staged.append(path.read_bytes())
             return {"role": "assistant", "content": "nothing to add"}, "0.01"

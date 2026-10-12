@@ -675,7 +675,7 @@ _ITEM_PREFIX = re.compile(r"^(?:item refused: |reduced: )")
 LIBRARY_BUDGET_TOKENS = 2000
 _SUMMARY_CHARS = 200
 # The writer's transcript: JSON lines on this notes ref of the request's episode commit, bounded
-TRANSCRIPT_REF = "sol-transcripts"
+TRANSCRIPT_REF = "writer-transcripts"
 TRANSCRIPT_MAX_BYTES = 256 * 1024
 TRANSCRIPT_STRING_CHARS = _OUTPUT_CAP
 
@@ -3219,7 +3219,7 @@ class WriterPass:
                 None,
                 "0",
                 0,
-                ["curate: needs memory v2.1 and the library state it curates"],
+                ["curate: needs the library mode and the library state it curates"],
             )
         if self.ev.pass_exists(pass_id):
             # never overwrite an earlier attempt's record, and spend nothing on a pass the gate would refuse
@@ -3418,7 +3418,7 @@ class WriterPass:
         with (
             self.mem.temp_checkout() as wt,
             tempfile.TemporaryDirectory(
-                prefix="memv2-sol-",
+                prefix="memory-writer-",
             ) as tmp,
             _KeepOnCancel(self, parent, pass_id),
         ):
@@ -4233,7 +4233,7 @@ def _check_route_in_effect(route: WriterRoute) -> None:
     """
     from unillm.clients import uni_llm
 
-    kw: dict = {"model": "openrouter/memory-v2-sol-route-check", "messages": []}
+    kw: dict = {"model": "openrouter/memory-writer-route-check", "messages": []}
     uni_llm._prepare_provider_request_kw(kw=kw, provider="openrouter", stream=False)
     ok = (
         str(kw.get("api_base") or "").rstrip("/") == route.base_url
@@ -4242,15 +4242,15 @@ def _check_route_in_effect(route: WriterRoute) -> None:
     kw.clear()
     if not ok:
         raise WriterRouteError(
-            "Sol's declared route is not in effect; no Sol call was made",
+            "the writer's declared route is not in effect; no writer call was made",
         )
 
 
 #: Why the writer's route does not start while unillm records OTel spans: a span keeps a failed call's text as is.
 OTEL_REFUSAL = (
     "UNILLM_OTEL is on (or its state cannot be read): unillm's spans record a failed call's error text, "
-    "which Sol's route keeps out of every record, so Sol's route does not start and no consolidation pass "
-    "runs; turn UNILLM_OTEL off for a run with Sol's route"
+    "which the writer's route keeps out of every record, so the writer's route does not start and no consolidation pass "
+    "runs; turn UNILLM_OTEL off for a run with the writer's route"
 )
 
 
@@ -4359,7 +4359,7 @@ def _install_writer_gateway() -> None:
             getattr(uni_llm, "_prepare_provider_request_kw", None),
         ):
             raise RuntimeError(
-                "Sol's route is set, but the installed unillm has no per-call gateway lookup to apply it",
+                "the writer's route is set, but the installed unillm has no per-call gateway lookup to apply it",
             )
 
         def gateway() -> tuple[str, str] | None:
@@ -4429,7 +4429,7 @@ def unillm_turn(
     if route is not None:
         if not endpoint.endswith("@openrouter"):
             raise ValueError(
-                "Sol's route replaces the OpenRouter transport; the Sol model must be an @openrouter endpoint",
+                "the writer's route replaces the OpenRouter transport; the writer model must be an @openrouter endpoint",
             )
         _install_writer_gateway()
     client = new_llm_client(
@@ -4496,10 +4496,12 @@ def unillm_turn(
             if (
                 timed_out
             ):  # still a timeout to the pass, which treats it as its deadline
-                raise TimeoutError("a Sol call timed out")
-            raise WriterCallError(f"Sol call failed: {name} ({category})")
+                raise TimeoutError("a writer call timed out")
+            raise WriterCallError(f"writer call failed: {name} ({category})")
         if any(misrouted):
-            raise WriterRouteError("a Sol call did not take Sol's declared route")
+            raise WriterRouteError(
+                "a writer call did not take the writer's declared route",
+            )
         msg = client.messages[-1]
         msg = msg if isinstance(msg, dict) else dict(msg)
         if not costs or any(c is None for c in costs):

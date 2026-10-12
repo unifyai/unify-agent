@@ -222,7 +222,9 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     ]
     t = seen["transport"]
     assert t["api_base"] == WRITER_BASE
-    assert t["api_key"] == _digest(WRITER_TOKEN)  # the writer's token, not the actor's key
+    assert t["api_key"] == _digest(
+        WRITER_TOKEN,
+    )  # the writer's token, not the actor's key
     assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_writer"}
     # pricing as shipped: the request still asks the OpenRouter API for its charged cost
     assert t["extra_body"]["usage"]["include"] is True
@@ -867,7 +869,7 @@ def test_a_failed_routed_call_is_recorded_as_its_class_and_category_only(
     with pytest.raises(writer_pass.WriterCallError) as info:
         _run(turn)
     text = str(info.value)
-    exact = text == "Sol call failed: _EchoingError (http_401)"
+    exact = text == "writer call failed: _EchoingError (http_401)"
     unchained = info.value.__context__ is None and info.value.__cause__ is None
     leaked = WRITER_TOKEN in text
     assert exact and unchained and not leaked
@@ -927,7 +929,7 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
             (f"p{i}",),
         ).fetchone()[0]
         rows.append(" ".join(out.reasons) + " " + str(recorded))
-    named = "WriterCallError: Sol call failed: _EchoingError (http_401)" in rows[0]
+    named = "WriterCallError: writer call failed: _EchoingError (http_401)" in rows[0]
     leaked = [i for i, text in enumerate(rows) if WRITER_TOKEN in text or other in text]
     assert named and leaked == []
 
