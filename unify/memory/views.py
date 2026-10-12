@@ -213,12 +213,12 @@ def grep_bounded(
     except subprocess.TimeoutExpired:
         return f"[grep timed out after {limit:g} s: narrow the pattern or the path]"
     if r.returncode != 0:
+        last = " ".join(r.stderr.decode(errors="replace").strip().splitlines()[-1:])
         if r.returncode == _EXIT_OUTSIDE:
             raise PermissionError(r.stdout.decode("utf-8", errors="replace")[:300])
         if r.returncode == _EXIT_PATTERN:
             raise PatternProblem(r.stdout.decode("utf-8", errors="replace")[:300])
-        # the child's own error text can name host paths: the reply says only that the search failed
-        raise PatternProblem("grep failed: the search could not run")
+        raise PatternProblem(f"grep failed ({last})"[:300])
     return r.stdout.decode("utf-8", errors="replace")
 
 
