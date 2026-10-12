@@ -2843,6 +2843,9 @@ class WriterPass:
         # each row points at what else this pass holds about its episode, where the writer reads: staged
         # candidates and open pool entries citing it
         open_pool = self._pool.open_entries() if self._pool is not None else []
+        if staging_on:
+            # the brief names /inputs/staging/ whenever staging is on: it exists even when nothing was staged
+            (Path(inputs) / "staging").mkdir(parents=True, exist_ok=True)
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
             src = "none"
