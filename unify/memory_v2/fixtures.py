@@ -53,7 +53,7 @@ class FixtureError(ValueError):
 
 
 def module_path(item: str) -> str:
-    """``memory.office.payroll:export`` -> ``memory/office/payroll.py`` (spec §4.2)."""
+    """``memory.office.payroll:export`` -> ``memory/office/payroll.py``."""
     return item.split(":", 1)[0].replace(".", "/") + ".py"
 
 
@@ -471,7 +471,7 @@ def write_listing(box, dest: str, entry: dict | None) -> None:
 
 
 class HashIndex:
-    """SHA-256 of every recorded source of some episodes -> ``(episode, source)`` (spec §9.1)."""
+    """SHA-256 of every recorded source of some episodes -> ``(episode, source)``."""
 
     def __init__(self) -> None:
         self.by_sha: dict[str, list[tuple[str, str]]] = {}

@@ -23,7 +23,7 @@ environment recorded:
     observation on its channel, else the request);
   - it must return the recorded action's value: its keyword arguments, else its one argument, else its arguments;
   - the episode must carry a positive signal (checker ``pass`` or provenance ``support``) and no contrary one. The
-    harness never reads environment text for this (spec §5 item 3). A ``checker`` signal counts only when the bed
+    harness never reads environment text for this. A ``checker`` signal counts only when the bed
     declares its verdict visible to the actor (*checker_visible*, from ``switch.checker_visible``); a grader the
     actor never sees is never read.
 
@@ -680,8 +680,8 @@ def _dialogue(
     a = ep.actions[i] if i is not None and i < len(ep.actions) else None
     if a is None or getattr(a, "kind", "tool") != "dialogue" or a.status != "ok":
         return Outcome(False, f"action {i} is not an answered dialogue action")
-    # Amendments A3, D: a checker verdict counts only when the bed declares its verdicts visible AND this signal is
-    # one the actor saw (P9's visible_to_actor), as lifecycle.counted_signals; a hidden grader is never evidence
+    # a checker verdict counts only when the bed declares its verdicts visible AND this signal is
+    # one the actor saw (visible_to_actor), as lifecycle.counted_signals; a hidden grader is never evidence
     sigs = [
         s
         for s in (signals(ep.episode_id) or [])
