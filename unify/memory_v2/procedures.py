@@ -1,4 +1,4 @@
-"""Procedure verification of memory v2.1 (spec §8.2 rule 1, §13.2): the ``episode`` cover type and its runners.
+"""Procedure verification: the ``episode`` cover type and its runners.
 
 A procedure is a function that does a whole recorded job. Its ``episode`` cover names the episode and the runner
 of the episode's action kind. The runner re-does the job confined and compares the effect with what the
@@ -11,7 +11,9 @@ environment recorded:
     ``worktree_after``;
   - other paths it changed are noted.
 * **tool**:
-  - ``fn(env, **params)`` with ``env`` the exact-call replay of the episode's tool calls (``memlab.replay``);
+  - ``fn(env, **params)`` runs in its own box, a fresh interpreter that sees neither the case nor the recording:
+    ``env`` is a proxy whose every call goes over a socket to a replay server in a second box, which holds the
+    recorded rows (``memlab.replay``), answers only the calls the function makes, and writes the result;
   - no call may miss the recording;
   - the write calls it issues must equal the recorded write calls, in order, with their arguments;
   - when the recording's effects are ``unknown``, the whole served sequence must equal the recorded one;
@@ -22,24 +24,31 @@ environment recorded:
   - it must return the recorded action's value: its keyword arguments, else its one argument, else its arguments;
   - the episode must carry a positive signal (checker ``pass`` or provenance ``support``) and no contrary one. The
     harness never reads environment text for this (spec §5 item 3). A ``checker`` signal counts only when the bed
-    declares its verdict visible to the actor (*checker_visible*: P5's ``switch.checker_visible``, Amendments A3
-    and D); a grader the actor never sees is never read.
+    declares its verdict visible to the actor (*checker_visible*, from ``switch.checker_visible``); a grader the
+    actor never sees is never read.
 
 A procedure's parameters must be values its episode recorded (:func:`param_problems`). A procedure of any other
 kind has no runner; :func:`parse_cover` refuses it, so it goes to drafts.
 
 Model-written code runs only through *runner* (:func:`.sandbox_run.run_confined`):
-- the library tree read-only at ``/memory``, the case read-only at ``/case``, the kit read-only at ``/kit``;
-- writable only ``/out`` (and ``/work`` for a work-tree run);
+- the library tree read-only at ``/memory``, the kit read-only at ``/kit``;
+- for the work-tree and dialogue runners, the case read-only at ``/case`` (it holds only the runner and the
+  inputs; the expected result stays on the host) and writable only ``/out`` (and ``/work`` for a work-tree run);
+- for the tool runner, no ``/case`` and no ``/out``: only the item's name and parameters at ``/item`` and the
+  replay server's socket at ``/chan``;
 - no network and an empty environment.
 The host only compares files and JSON.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import re
 import shutil
+import socket
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -74,19 +83,6 @@ try:
     if spec["runner"] == "worktree":
         os.chdir("/work")
         fn("/work", **params)
-    elif spec["runner"] == "tool":
-        from memlab.replay import RecordedEnv
-        env = RecordedEnv(spec["rows"])
-        try:
-            fn(env, **params)
-        finally:
-            out["issued"] = env.issued()
-            out["misses"] = len(env.misses)
-            if spec.get("effect") == "write":
-                try:
-                    out["issued_writes"] = env.issued(effect="write")
-                except Exception:
-                    out["issued_writes"] = None
     else:
         out["value"] = json.dumps(fn(spec["observation"], **params), sort_keys=True, default=repr)
     out["outcome"] = "returned"
@@ -95,6 +91,157 @@ except BaseException as exc:
     out["error_class"] = type(exc).__name__
 with open("/out/result.json", "w") as f:
     json.dump(out, f, default=repr)
+"""
+
+
+# The tool runner's two boxes. The item's box runs _ITEM_RUN: a fresh interpreter with the item's name and parameters
+# only, whose env proxy sends each call over the socket. The server's box runs _SERVE: it holds the recorded rows,
+# answers each call through the exact-call replay, and writes the result once the item ends.
+SOCKET = "env.sock"
+SERVER_GRACE_S = 10.0
+
+_ITEM_RUN = r"""
+import importlib, json, socket, sys, time
+sys.path[:0] = ["/memory", "/kit"]
+sys.dont_write_bytecode = True
+
+
+def _main():
+    with open("/item/item.json") as f:
+        target = json.load(f)
+    conn = None
+    for _ in range(1200):
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            conn.connect("/chan/env.sock")
+            break
+        except OSError:
+            conn.close()
+            conn = None
+            time.sleep(0.05)
+    if conn is None:
+        return
+    rx, tx = conn.makefile("r", encoding="utf-8"), conn.makefile("w", encoding="utf-8")
+    try:
+        from memlab.replay import RecordedError, ReplayMiss
+    except Exception:
+        class ReplayMiss(LookupError):
+            pass
+
+        class RecordedError(RuntimeError):
+            pass
+
+    def ask(message):
+        tx.write(json.dumps(message, default=str) + "\n")
+        tx.flush()
+        line = rx.readline()
+        if not line:
+            raise RuntimeError("the recorded environment ended")
+        return json.loads(line)
+
+    class Channel:
+        def __init__(self, name):
+            self._name = name
+
+        def __getattr__(self, method):
+            if method.startswith("_"):
+                raise AttributeError(method)
+            channel = self._name
+
+            def call(*args, **kwargs):
+                got = ask({"op": "call", "channel": channel, "method": method, "args": list(args), "kwargs": kwargs})
+                if got.get("error") == "miss":
+                    raise ReplayMiss(str(got.get("message") or ""))
+                if got.get("error") == "recorded":
+                    raise RecordedError(str(got.get("message") or "recorded error"))
+                return got.get("value")
+
+            return call
+
+    class Env:
+        def __getattr__(self, channel):
+            if channel.startswith("_"):
+                raise AttributeError(channel)
+            return Channel(channel)
+
+    end = {"op": "end"}
+    try:
+        module, _, name = target["item"].partition(":")
+        fn = getattr(importlib.import_module(module), name)
+        fn(Env(), **(target.get("params") or {}))
+        end["outcome"] = "returned"
+    except BaseException as exc:
+        end["outcome"] = "raised"
+        end["error_class"] = type(exc).__name__
+    tx.write(json.dumps(end) + "\n")
+    tx.flush()
+
+
+_main()
+"""
+
+_SERVE = r"""
+import json, socket, sys
+sys.path[:0] = ["/kit"]
+sys.dont_write_bytecode = True
+from memlab.replay import RecordedEnv, RecordedError, ReplayMiss
+
+
+def _main():
+    with open("/case/case.json") as f:
+        case = json.load(f)
+    env = RecordedEnv(case["rows"])
+    out = {"outcome": "raised"}
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind("/chan/env.sock")
+    srv.listen(1)
+    srv.settimeout(float(sys.argv[1]))
+    try:
+        conn, _ = srv.accept()
+    except OSError:
+        conn = None
+    if conn is not None:
+        conn.settimeout(None)
+        rx, tx = conn.makefile("r", encoding="utf-8"), conn.makefile("w", encoding="utf-8")
+        try:
+            for line in rx:
+                msg = json.loads(line)
+                op = msg.get("op") if isinstance(msg, dict) else None
+                if op == "end":
+                    if msg.get("outcome") == "returned":
+                        out["outcome"] = "returned"
+                    elif isinstance(msg.get("error_class"), str):
+                        out["error_class"] = msg["error_class"][:64]
+                    break
+                channel, method = msg.get("channel"), msg.get("method")
+                args, kwargs = msg.get("args"), msg.get("kwargs")
+                if op != "call" or not (
+                    isinstance(channel, str) and isinstance(method, str)
+                    and isinstance(args, list) and isinstance(kwargs, dict)
+                ):
+                    break
+                try:
+                    reply = {"value": env._serve(channel, method, args, kwargs)}
+                except ReplayMiss as exc:
+                    reply = {"error": "miss", "message": str(exc)}
+                except RecordedError as exc:
+                    reply = {"error": "recorded", "message": str(exc)}
+                tx.write(json.dumps(reply) + "\n")
+                tx.flush()
+        except (OSError, ValueError):
+            pass
+    out["issued"] = env.issued()
+    out["misses"] = len(env.misses)
+    if case.get("effect") == "write":
+        try:
+            out["issued_writes"] = env.issued(effect="write")
+        except Exception:
+            out["issued_writes"] = None
+    with open("/out/result.json", "w") as f:
+        json.dump(out, f, default=repr)
+
+
+_main()
 """
 
 
@@ -411,6 +558,77 @@ def _rows(ep: Episode) -> list[dict]:
     ]
 
 
+def _tool_boxes(
+    item: str,
+    params: dict,
+    case_data: dict,
+    *,
+    tree: Path,
+    python: Path,
+    work: Path,
+    runner: Callable[..., SandboxResult],
+    timeout_s: float,
+) -> tuple[dict | None, SandboxResult]:
+    """Run *item* against the recording in two boxes: (the server's result, the item box's result).
+
+    The item's box sees the library, the kit, its name and parameters, and the server's socket, never the case:
+    so it cannot reproduce the recording without computing. The server's box sees the case and the socket's
+    folder and writes ``/out/result.json``.
+    """
+    case, out, kit, chan, item_dir = (
+        work / "case",
+        work / "out",
+        work / "kit",
+        work / "chan",
+        work / "item",
+    )
+    for d in (case, out, chan, item_dir):
+        d.mkdir(parents=True)
+    testkit.stage_package(kit / testkit.PACKAGE)
+    (case / "serve.py").write_text(_SERVE)
+    (case / "case.json").write_text(json.dumps(case_data, default=str))
+    (item_dir / "run.py").write_text(_ITEM_RUN)
+    (item_dir / "item.json").write_text(
+        json.dumps({"item": item, "params": params}, default=str),
+    )
+    served: dict = {}
+
+    def serve() -> None:
+        try:
+            served["res"] = runner(
+                [str(python), "-I", "/case/serve.py", f"{timeout_s:g}"],
+                ro={case: "/case", kit: "/kit"},
+                rw={out: "/out", chan: "/chan"},
+                cwd="/tmp",
+                timeout_s=timeout_s + SERVER_GRACE_S,
+                env={},
+            )
+        except BaseException as exc:  # noqa: BLE001 - reported as no result
+            served["error"] = exc
+
+    server = threading.Thread(target=serve, name="replay-env-server", daemon=True)
+    server.start()
+    try:
+        res = runner(
+            [str(python), "-I", "/item/run.py"],
+            ro={tree: "/memory", kit: "/kit", item_dir: "/item", chan: "/chan"},
+            cwd="/memory",
+            timeout_s=timeout_s,
+            env={},
+        )
+    finally:
+        # a server still waiting for an item that never connected ends now instead of at its own limit
+        with contextlib.suppress(OSError), socket.socket(socket.AF_UNIX) as poke:
+            poke.settimeout(1.0)
+            poke.connect(str(chan / SOCKET))
+        server.join(timeout_s + 2 * SERVER_GRACE_S)
+    try:
+        result = json.loads((out / "result.json").read_text())
+    except (OSError, ValueError):
+        result = None
+    return (result if isinstance(result, dict) else None), res
+
+
 def _tool(item: str, cover: Cover, ep: Episode, kw: dict) -> Outcome:
     rows = _rows(ep)
     if not rows:
@@ -424,13 +642,12 @@ def _tool(item: str, cover: Cover, ep: Episode, kw: dict) -> Outcome:
             False,
             "the episode recorded no write call: there is no effect to confirm (a reader takes action covers)",
         )
-    spec = {
-        "runner": "tool",
-        "params": cover.params,
-        "rows": rows,
-        "effect": "write" if writes is not None else None,
-    }
-    result, res = _box(item, spec, **kw)
+    result, res = _tool_boxes(
+        item,
+        cover.params,
+        {"rows": rows, "effect": "write" if writes is not None else None},
+        **kw,
+    )
     why = _ran(result, res, kw["timeout_s"])
     if why is not None:
         return Outcome(False, why)

@@ -1,4 +1,5 @@
 import inspect
+import json
 import shutil
 from pathlib import Path
 
@@ -214,6 +215,95 @@ def test_tool_runner_replays_the_recorded_calls(tmp_path):
     )
 
 
+TOOL_PROBE = """import gc, os, sys
+
+
+def post_total(env):
+    seen = []
+    if os.path.exists("/case") or os.path.exists("/out"):
+        seen.append("case")
+    if hasattr(sys.modules["__main__"], "spec"):
+        seen.append("spec")
+    if any(type(o).__name__ == "RecordedEnv" for o in gc.get_objects()):
+        seen.append("recording")
+    if seen:
+        raise RuntimeError(seen)
+    rows = env.ledger.list()["rows"]
+    env.ledger.post(total=sum(rows))
+"""
+TOOL_COPY = """import gc, json, sys
+
+
+def post_total(env):
+    rows = None
+    try:
+        rows = json.load(open("/case/case.json"))["rows"]
+    except OSError:
+        pass
+    spec = getattr(sys.modules["__main__"], "spec", None)
+    if rows is None and isinstance(spec, dict):
+        rows = spec.get("rows")
+    for o in gc.get_objects():
+        if rows is None and type(o).__name__ == "RecordedEnv":
+            rows = [vars(a) for v in o._table.values() for a in v]
+    for r in rows or []:
+        if r.get("effect") == "write":
+            getattr(getattr(env, r["channel"]), r["method"])(*r["args"], **r["kwargs"])
+"""
+
+
+def _ledger_run(tmp_path):
+    ep = _ep(
+        episode_id="e2",
+        request=["Post the total"],
+        actions=[
+            Action(0, "ledger", "list", [], {}, {"rows": [1, 2]}, "ok", "read"),
+            Action(1, "ledger", "post", [], {"total": 3}, {"ok": True}, "ok", "write"),
+        ],
+    )
+    cover = pr.parse_cover({"episode": "e2", "type": "episode", "runner": "tool"})
+    return lambda src, n: pr.run_procedure(
+        "memory.proc.jobs:post_total",
+        cover,
+        ep=ep,
+        tree=_tree(tmp_path / f"t{n}", src),
+        python=PYTHON,
+        work=tmp_path / f"w{n}",
+        blob=_nofile,
+        worktree_files=lambda s, d: None,
+        signals=_none,
+    )
+
+
+@needs_bwrap
+def test_the_tool_item_sees_neither_the_case_nor_the_recording(tmp_path):
+    # the probe raises if it can see the case, a spec object or the recorded rows; computing, it verifies
+    got = _ledger_run(tmp_path)(TOOL_PROBE, 1)
+    assert got.ok, got.reason
+
+
+@needs_bwrap
+def test_an_item_that_copies_the_recording_instead_of_computing_fails(tmp_path):
+    got = _ledger_run(tmp_path)(TOOL_COPY, 1)
+    assert not got.ok and "issued 0 write call(s); the episode recorded 1" in got.reason, got.reason
+
+
+@needs_bwrap
+def test_a_call_with_no_recording_reaches_the_item_as_an_exception(tmp_path):
+    src = """def post_total(env):
+    try:
+        env.ledger.post(total=99)
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("a call with no recording must raise")
+    rows = env.ledger.list()["rows"]
+    env.ledger.post(total=sum(rows))
+"""
+    got = _ledger_run(tmp_path)(src, 1)
+    assert not got.ok and "made 1 call(s) the episode did not record" in got.reason, got.reason
+
+
 # --- the dialogue runner -------------------------------------------------------------------------------------
 
 DIALOGUE = """def solve(observation):
@@ -317,9 +407,17 @@ def test_runners_run_model_code_only_through_run_confined(tmp_path):
         runner=fake,
     )
     assert not out.ok and out.reason == "it could not be run (no result)"
-    [(argv, ro, rw, cwd, env)] = seen
-    assert argv == [str(PYTHON), "-I", "/case/run.py"] and env == {}
-    assert ro[tree] == "/memory" and sorted(ro.values()) == ["/case", "/kit", "/memory"]
-    assert sorted(rw.values()) == ["/out"]
+    # the item's box: the library, the kit, its name and parameters and the server's socket; no case, nothing
+    # writable. The server's box: the case and the kit, writing only the result and its socket.
+    [item_box] = [c for c in seen if c[0][2] == "/item/run.py"]
+    [server_box] = [c for c in seen if c[0][2] == "/case/serve.py"]
+    argv, ro, rw, cwd, env = item_box
+    assert argv == [str(PYTHON), "-I", "/item/run.py"] and env == {} and not rw
+    assert ro[tree] == "/memory" and sorted(ro.values()) == ["/chan", "/item", "/kit", "/memory"]
+    item_json = json.loads((tmp_path / "w" / "item" / "item.json").read_text())
+    assert item_json == {"item": "memory.proc.jobs:post_total", "params": {}}
+    argv, ro, rw, cwd, env = server_box
+    assert argv[:3] == [str(PYTHON), "-I", "/case/serve.py"] and env == {}
+    assert sorted(ro.values()) == ["/case", "/kit"] and sorted(rw.values()) == ["/chan", "/out"]
     text = inspect.getsource(pr)
     assert "subprocess" not in text and "os.system" not in text and "exec(" not in text

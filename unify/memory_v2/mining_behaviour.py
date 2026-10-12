@@ -337,6 +337,7 @@ def child_replay(job: dict) -> dict:
         "causes": causes,
         "cell_errors": cell_errors,
         "fidelity": fidelity,
+        "obs": OBS_VERSION,
     }
 
 
@@ -502,21 +503,80 @@ def child_cross(job: dict) -> dict:
     }
 
 
+#: The replay verifier's observation contract. Each run records its live-out values (every plain value its namespace
+#: ends with, scalars and empty containers included), its stdout per cell and its working tree's file deltas as
+#: ``[path, created | modified | deleted, sha256]``. Alias groups, deleted names and values that cannot be encoded
+#: are recorded as unknown and never compared. Results of another version are never mixed with these.
+OBS_VERSION = 2
+
+
+def _tree_state(root: str | None) -> dict[str, str]:
+    """Every regular file under *root* (a run's working tree), by relative path, with its sha256."""
+    import hashlib
+
+    out: dict[str, str] = {}
+    if not root or not os.path.isdir(root):
+        return out
+    for d, _dirs, files in os.walk(root):
+        for f in files:
+            fp = os.path.join(d, f)
+            if os.path.islink(fp) or not os.path.isfile(fp):
+                continue
+            try:
+                with open(fp, "rb") as fh:
+                    out[os.path.relpath(fp, root)] = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                out[os.path.relpath(fp, root)] = "unreadable"
+    return out
+
+
+def _file_deltas(before: dict[str, str], after: dict[str, str]) -> list[list]:
+    return sorted(
+        [
+            p,
+            "deleted" if p not in after else "created" if p not in before else "modified",
+            after.get(p),
+        ]
+        for p in set(before) | set(after)
+        if before.get(p) != after.get(p)
+    )
+
+
+def _stdout_digest(text: str) -> list:
+    import hashlib
+
+    return [len(text), hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()]
+
+
+def _not_a_value(v) -> bool:
+    """Code objects a namespace holds besides data (functions, classes, modules): neither values nor unknowns."""
+    import types
+
+    return callable(v) or isinstance(v, types.ModuleType)
+
+
 def _run_cells(
     cells: list[dict],
     snap: tuple[int, int] | None,
     names: list[str],
     prelude: list[str],
+    cwd: str | None = None,
 ) -> dict:
-    """Replay *cells* in one namespace; at line *snap* = (cell index, line) record the names then bound and the
-    values of *names*. The namespace's plain values after the last cell, tagged (S2's verification).
+    """Replay *cells* in one namespace with *cwd* (the run's own working tree) as the working directory; at line
+    *snap* = (cell index, line) record the names then bound and the values of *names*. The run's observation
+    (:data:`OBS_VERSION`): ``after``, every plain value the namespace ends with, tagged; ``stdout``, each cell's
+    ``[length, sha256]``; ``files``, the working tree's deltas; ``unknown``, what is recorded but not compared.
     """
+    if cwd:
+        os.chdir(cwd)
+    files0 = _tree_state(cwd)
     ns: dict = {"__name__": "__main__", "__builtins__": builtins}
     for code in prelude:
         err = _run_code(compile(code, "<prelude>", "exec"), ns, RUN_TIMEOUT_S)
         if err:
             return {"error": f"prelude {err}"}
     seen: dict = {}
+    stdout: list = []
     flags = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
     for cell in cells:
         fname = f"<cell-{cell['index']}>"
@@ -547,45 +607,78 @@ def _run_cells(
             code = compile(cell["code"], fname, "exec", flags=flags)
         except (SyntaxError, ValueError):
             return {"error": "SyntaxError"}
-        with (
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             sys.settrace(tracer)
             try:
                 err = _run_code(code, ns, CELL_TIMEOUT_S)
             finally:
                 sys.settrace(None)
+        stdout.append(_stdout_digest(out.getvalue()))
         if err:
             return {"error": err}
-    after = {}
+    after, unobservable, ids = {}, [], {}
     for k, v in ns.items():
-        if k.startswith("__"):
+        if k.startswith("__") or _not_a_value(v):
             continue
         try:
             after[k] = enc(v)
         except (NotPlain, RecursionError):
-            continue
-    return {"after": after, **seen}
+            unobservable.append(k)
+        if isinstance(v, (list, dict, set)):
+            ids.setdefault(id(v), []).append(k)
+    unknown = {
+        "aliases": sorted(sorted(g) for g in ids.values() if len(g) > 1),
+        "deleted": sorted(n for n in seen.get("bound", []) if n not in ns),
+        "unobservable": sorted(unobservable),
+    }
+    return {
+        "after": after,
+        "stdout": stdout,
+        "files": _file_deltas(files0, _tree_state(cwd)),
+        "unknown": unknown,
+        "obs": OBS_VERSION,
+        **seen,
+    }
+
+
+def _reset_dir(path: str) -> None:
+    for entry in os.listdir(path):
+        p = os.path.join(path, entry)
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(p)
 
 
 def child_verify(job: dict) -> dict:
-    """S2 (r5 §4): the original cells twice (determinism), then the rewritten last cell calling the function."""
+    """The replay verifier's three runs: the original cells twice (determinism), then the rewritten last cell calling
+    the function. Each run starts in its own pristine copy of the working tree (``job["cwds"]``); in the box the
+    private ``/tmp`` is emptied before each run, so no run sees another's writes."""
     signal.signal(signal.SIGALRM, _on_alarm)
-    if job.get("cwd"):
-        os.chdir(job["cwd"])
     if job.get("path"):
         sys.path.insert(0, job["path"])
+    cwds = list(job.get("cwds") or [job.get("cwd")] * 3)
     snap = (job["cell"], job["line"])
-    first = _run_cells(job["cells"], snap, job["names"], [])
-    second = _run_cells(job["cells"], snap, job["names"], [])
     rewritten = [*job["cells"][:-1], {**job["cells"][-1], "code": job["rewritten"]}]
-    third = _run_cells(rewritten, snap, job["names"], job.get("imports", []))
-    return {"first": first, "second": second, "third": third}
+    runs = (
+        ("first", job["cells"], []),
+        ("second", job["cells"], []),
+        ("third", rewritten, job.get("imports", [])),
+    )
+    out = {}
+    for (label, cells, prelude), cwd in zip(runs, cwds):
+        if job.get("in_box"):
+            os.chdir("/tmp")
+            _reset_dir("/tmp")
+        out[label] = _run_cells(cells, snap, job["names"], prelude, cwd)
+    return out
 
 
 def child_main() -> int:
     job = json.loads(sys.stdin.read())
+    job["in_box"] = True  # set only here, the box's entry point: in-process callers never reset a host directory
     modes = {"replay": child_replay, "cross": child_cross, "verify": child_verify}
     out = modes[job["mode"]](job)
     sys.stdout.write(json.dumps(out))
@@ -595,14 +688,32 @@ def child_main() -> int:
 # --- the host -------------------------------------------------------------------------------------------------
 
 
-def box_argv(script_dir: Path, binds: list[tuple[str, str, bool]] = ()) -> list[str]:
-    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes; *binds*:
+def _sandbox_run():
+    """The confined runner's module (its seccomp program and file-size bound), imported where it is needed so the
+    box's child does not load it."""
+    try:
+        from . import sandbox_run
+    except ImportError:  # run as a script beside sandbox_run.py
+        import sandbox_run  # type: ignore[no-redef]
+    return sandbox_run
+
+
+def box_argv(
+    script_dir: Path,
+    binds: list[tuple[str, str, bool]] = (),
+    *,
+    seccomp_fd: int,
+) -> list[str]:
+    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes and file
+    size, and the confined runner's seccomp filter read from *seccomp_fd* (sockets only AF_UNIX, AF_INET and
+    AF_INET6, since a network namespace does not isolate AF_VSOCK; no new user namespaces; no io_uring); *binds*:
     ``(host path, box path, writable)``."""
     bwrap, prlimit = shutil.which("bwrap"), shutil.which("prlimit")
     if not bwrap or not prlimit:
         raise RuntimeError(
             "bubblewrap and prlimit are required: the actor's code never runs outside a box",
         )
+    fsize = _sandbox_run().RLIMIT_FSIZE_BYTES
     args = [
         bwrap,
         "--unshare-all",
@@ -624,24 +735,37 @@ def box_argv(script_dir: Path, binds: list[tuple[str, str, bool]] = ()) -> list[
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", str(script_dir), "/s",
         *[x for src, dst, rw in binds for x in ("--bind" if rw else "--ro-bind", src, dst)],
         "--chdir", "/tmp", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
-        prlimit, *BOX_LIMITS, "/usr/bin/python3", "-I", "/s/mining_behaviour.py", "--child",
+        "--seccomp", str(seccomp_fd), "--",
+        prlimit, *BOX_LIMITS, f"--fsize={fsize}:{fsize}", "--",
+        "/usr/bin/python3", "-I", "/s/mining_behaviour.py", "--child",
     ]  # fmt: skip
     return args
 
 
 def in_box(job: dict, timeout: float, binds: list[tuple[str, str, bool]] = ()) -> dict:
-    argv = box_argv(Path(__file__).resolve().parent, binds)
-    try:
-        p = subprocess.run(
-            argv,
-            input=json.dumps(job),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=_mining.helper_env(),  # bwrap itself; the box then clears and sets its own
-        )
-    except subprocess.TimeoutExpired:
-        return {"box_error": "box timeout"}
+    import platform
+    import tempfile
+
+    if platform.machine() != "x86_64":
+        raise RuntimeError("the box's seccomp filter is built for x86_64 only")
+    # An unlinked temporary file holds the filter; bubblewrap reads it from the inherited descriptor.
+    with tempfile.TemporaryFile() as bpf:
+        bpf.write(_sandbox_run().seccomp_program())
+        bpf.flush()
+        bpf.seek(0)
+        argv = box_argv(Path(__file__).resolve().parent, binds, seccomp_fd=bpf.fileno())
+        try:
+            p = subprocess.run(
+                argv,
+                input=json.dumps(job),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=_mining.helper_env(),  # bwrap itself; the box then clears and sets its own
+                pass_fds=(bpf.fileno(),),
+            )
+        except subprocess.TimeoutExpired:
+            return {"box_error": "box timeout"}
     if p.returncode:
         return {"box_error": f"box exit {p.returncode}: {p.stderr[-300:]}"}
     try:
@@ -862,12 +986,13 @@ def run_behaviour(
     cached: dict[str, dict] | None = None,
 ) -> tuple[dict, dict[str, dict]]:
     """Tier (b) over *episodes* (``(episode_id, request_key, cells)``): (the behaviour document, each newly
-    replayed episode's replay result). *cached* replay results (by episode) are reused, so an episode is
-    replayed once in its lifetime; with *batch*, only pairs with a unit from a batch episode are cross-run.
+    replayed episode's replay result). *cached* replay results (by episode) of :data:`OBS_VERSION` are reused, so an
+    episode is replayed once per version; a box failure is never returned for caching; with *batch*, only pairs with a unit from a batch episode are cross-run.
     *trees* (episode -> its exported recorded workspace) replays office code in place.
     """
     trees = trees or {}
-    cached = dict(cached or {})
+    # a cached replay of another observation version (or of none) is replayed again, never mixed in
+    cached = {e: r for e, r in (cached or {}).items() if isinstance(r, dict) and r.get("obs") == OBS_VERSION}
     out.mkdir(parents=True, exist_ok=True)
     units, jobs_by_ep, causes = collect_units(episodes)
     reqs_by_key: dict[str, set] = {}
@@ -898,7 +1023,8 @@ def run_behaviour(
     with ThreadPoolExecutor(jobs) as pool:
         for eid, r in zip(todo, pool.map(replay, todo)):
             if "box_error" in r:
-                r = {
+                # a box failure (a timeout, a crash) is transient: used for this pass, never kept as the replay
+                cached[eid] = {
                     "snaps": {},
                     "causes": {
                         t["uid"]: r["box_error"]
@@ -908,6 +1034,7 @@ def run_behaviour(
                     },
                     "fidelity": [0, 0],
                 }
+                continue
             fresh[eid] = cached[eid] = r
     snaps: dict[str, dict] = {}
     fidelity = [0, 0]
