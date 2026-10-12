@@ -1,8 +1,5 @@
-"""Spec §12.4 (P7 Task 2): the three prompts, and everything else the actor or the writer reads under v2.1, checked
-for conflicting instructions. Each rule lives in its role's prompts only, and no retired v2 rule survives.
-
-The surfaces come from P2 (repair and drafts messages), P3 (the rendered section and generated files) and P6
-(the CURATE inputs); those tests run once they are integrated."""
+"""The prompts, and everything else the actor or the writer reads in library mode, checked for conflicting
+instructions. Each rule lives in its role's prompts only, and no retired rule survives."""
 
 from __future__ import annotations
 
@@ -140,22 +137,11 @@ def test_v2_settings_that_contradict_library_are_named_only_with_library_on():
     )
 
 
-def test_what_to_read_names_every_part_required_parts_demands():
-    """T8 (P1): replies and changing actions are required parts, so the WRITE brief must say so (MAIN, 9 Oct)."""
-    from unify.memory_v2.batch_map import required_parts
-    from unify.memory_v2.episodes import Action
-    from tests.memory_v2.test_episodes import _ep
-
-    brief = pv.write_brief_now()
-    ep = _ep(
-        episode_id="e1",
-        actions=[Action(0, "acct", "pay", [], {}, {}, "ok", "write")],
-    )
-    assert "action:0" in required_parts(ep, [], [])
-    assert (
-        "every reply the working model sent and every action that changed something, with the cell it came from"
-        in " ".join(brief.split())
-    )
+def test_the_write_brief_points_to_where_an_outcome_is_and_never_to_a_reading_list():
+    """The batch map names no reading list; the brief points to the parts where each episode ended."""
+    brief = " ".join(pv.write_brief_now().split())
+    assert "required_parts" not in brief and "covered" not in brief
+    assert "starting from each one's `end_parts`" in brief
 
 
 def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):

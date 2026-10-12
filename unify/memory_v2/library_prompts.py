@@ -203,6 +203,27 @@ _REPAIR = (
     "The items that pass land, and the rest is kept as a draft for a later pass, with its failure.\n"
 )
 
+#: What each check the gate names in its refusals and results means (the same names: G1 to G6).
+_CHECK_NAMES = (
+    "Its results and refusals name the check: G1, layout and provenance (only `memory/` and `notes/` change and "
+    "never the generated files, the manifest is well formed, every link names an item that exists, and every "
+    "fixture came through `fixture` unchanged); G2, evidence (each function's covers are recorded evidence of "
+    "their type, a function given a same-shaped input from another episode returns a value or raises "
+    "`MemoryInputError`, and the literal rule); G3, tests (plain pytest, an exact assertion against a trusted "
+    "value on a recorded fixture for each changed function, no test that recomputes the function, the tests pass "
+    "on the candidate and on the drawn recorded inputs and catch enough small mutations, a behaviour change has a "
+    "test that fails on the parent, and no test is lost or weakened without a reason); G4, the index (it never "
+    "refuses: it notes when the index has outgrown the view the working model is shown); G5, items (<<g5>>); "
+    "G6, safety (no links, executables, submodules, git, pytest or interpreter configuration files, bytecode or "
+    "key-shaped strings).\n"
+)
+
+_G5_WRITE = "a store pass never ends with fewer items, and every recorded input a function covered stays covered"
+_G5_CURATE = (
+    "every recorded input a deleted function covered stays covered by a remaining item, and each alias and "
+    "retirement names an item"
+)
+
 _GATE = (
     "# The gate\n"
     "After `finish` a deterministic gate checks the candidate: the layout and the links; that every fixture "
@@ -212,7 +233,15 @@ _GATE = (
     "episode returns a value or raises `MemoryInputError`; the literal rule; and that no test is lost or "
     "weakened without a reason. An item that breaks a rule is refused together with the items that import it, "
     "and the rest can land; a breach of a pass-wide rule (the layout, lost tests, fewer items) refuses the "
-    "round.\n"
+    "round. " + _CHECK_NAMES.replace("<<g5>>", _G5_WRITE)
+)
+
+_CURATE_GATE = (
+    "# The gate\n"
+    "After `finish` a deterministic gate checks the candidate: the layout and the links, the aliases and "
+    "retirements, every test on the candidate (and on the parent where behaviour changed), and that every "
+    "recorded input a deleted function covered stays covered. An item that breaks a rule is refused together with "
+    "the items that import it, and the rest can land. " + _CHECK_NAMES.replace("<<g5>>", _G5_CURATE)
 )
 
 _LIMITS = (
@@ -379,7 +408,7 @@ _CURATE = (
     "5. Act on records that span at least two episodes: one episode never decides.\n"
     "6. Fixture files stay where they are: a test may read a fixture from any package's `tests/data/`.\n"
     "7. Never store credentials or session tokens. " + _HONESTY + "\n"
-    "\n" + _REPAIR + "\n" + "<<limits>>" + "\n"
+    "\n" + _CURATE_GATE + "\n" + _REPAIR + "\n" + "<<limits>>" + "\n"
     "# Done\n"
     "You are done when each overlap candidate and suspect item in your inputs has been merged, generalised, "
     "repaired, rolled back or retired, or left as it is with the reason in your summary, and your changes have "
@@ -748,9 +777,11 @@ def curate_brief_now(cell_s: float | None = None) -> str:
 #: Words no writer brief or first message may hold: economy cues and the retired reading-quota machinery.
 BANNED_WORDS = ("cheaply", "budget", "coverage", "required_parts", "experience_tokens", "covered or dismissed")
 
-#: The longest list (lines starting "- " or "| ", or table rows) a rendered brief or first message may carry. A
-#: brief's own bullets are stable text; a list that grows with the library, the pool or the batch is never inlined.
-MAX_INLINE_LIST = 20
+#: The most an inlined list may hold: items (lines starting "- ", or table rows) and bytes. A list that grows with
+#: the library, the pool or the batch goes to a file the prompt points to. The Tools section, rendered once per run
+#: from the tool registry, is stable text and is not such a list.
+MAX_INLINE_LIST = 10
+MAX_INLINE_LIST_BYTES = 1000
 
 
 

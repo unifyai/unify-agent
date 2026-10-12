@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -1591,17 +1592,25 @@ def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
     assert len(text.encode()) + 1 <= 8000
     rows = [json.loads(ln) for ln in lines]
     assert all(r["pass_id"] == "p9" for r in rows)
-    assert rows[0]["message"] == {"role": "system", "content": "(WRITER_SYSTEM)"}
-    assert rows[-1]["truncated"] == len(messages) - len(rows) + 1 > 0
+    # the header names the brief by hash; the system message is named, not copied
+    sha = hashlib.sha256(WRITER_SYSTEM.encode()).hexdigest()
+    assert rows[0]["header"]["brief_sha256"] == sha
+    assert rows[1]["message"] == {"role": "system", "content": f"(brief sha256 {sha})"}
+    kept = rows[1:-1]
+    assert rows[-1]["truncated"] == len(messages) - len(kept) > 0
+    # every string is cut, except in the first user message, which is kept whole (redacted)
     assert all(
         len(v) <= 50
-        for r in rows[:-1]
+        for r in kept
+        if r["i"] != 1
         for v in r["message"].values()
         if isinstance(v, str)
     )
+    whole = kept[1]["message"]["content"]
+    assert whole.startswith("Pass p9: <secret:FAKE_TOKEN> ") and "tok-PLANT" not in whole
     # nothing to cut: every message kept
     short = transcript_lines(messages[:3], "p9", red)
-    assert [json.loads(ln)["i"] for ln in short] == [0, 1, 2]
+    assert [json.loads(ln).get("i") for ln in short] == [None, 0, 1, 2]
     assert PLANTED not in "\n".join(short)
 
 
@@ -1688,14 +1697,16 @@ def test_the_pass_stages_the_new_inputs_and_keeps_its_transcript(tmp_path, monke
         text = (staged / name).read_text()
         assert MARK not in text and "e1.checker" not in text
         assert not set(_keys(json.loads(text))) & _NO_OUTCOME_KEYS, name
-    rows = [json.loads(ln) for ln in writer.transcript("pt")]
+    head, *rows = [json.loads(ln) for ln in writer.transcript("pt")]
     assert [r["message"]["role"] for r in rows] == [
         "system",
         "user",
         "assistant",
         "tool",
     ]
-    assert rows[0]["message"]["content"] == "(WRITER_SYSTEM)"
+    sha = head["header"]["brief_sha256"]
+    assert rows[0]["message"]["content"] == f"(brief sha256 {sha})"
+    assert head["header"]["tools_sha256"]
     assert rows[2]["message"]["tool_calls"][0]["function"]["name"] == "finish"
 
 

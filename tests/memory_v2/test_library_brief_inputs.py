@@ -1,6 +1,6 @@
-"""Memory v2.1 m4j (MAIN-54 for the lead, 11 Oct; diagnosis a1-m4i-s25-pool-diagnosis-20261011.md): the open pool
-index is shown in the first message, a deferral can add evidence to an open entry the writer names, the WRITE brief
-says new items start as experimental and are revised later, and two read_episode refusals are gone.
+"""The pool index is a file the brief points to (never inlined in the first message), a deferral can add evidence
+to an open entry the writer names, the WRITE brief says new items start as experimental and are revised later, and
+two read_episode refusals are gone.
 """
 
 import json
@@ -22,45 +22,26 @@ from tests.memory_v2.test_writer_library_tools import EPS, _episode, _pass
 # --- (a) the open index in the first message ------------------------------------------------------------------
 
 
-def test_the_first_message_shows_the_open_index_and_the_brief_stays_the_same(
+def test_the_first_message_points_to_the_pool_and_the_brief_stays_the_same(
     tmp_path,
     monkeypatch,
 ):
-    st = _Stores(tmp_path)
-    _finish_with(monkeypatch, EMPTY)
-    _, m1 = st.run([_defer("e2")], "p1")
-    _, m2 = st.run([_call("x", "dismiss", {"episode": "e2", "reason": "seen"})], "p2")
-    did = pool.entry_id("deferred", "e2")
-    first = m2.seen[1]["content"]
-    assert first.splitlines()[0].startswith("Pass p2: ")
-    shown = first.split("read it at a marker's offset for more):\n\n", 1)[1]
-    assert shown.startswith("# Candidate pool: open entries\n")
-    assert (
-        f"- `{did}` deferred: episode e2 deferred: a rule that may come back (1 episode(s): e2; opened in p1)"
-        in shown
-    )
-    assert (
-        m1.seen[0] == m2.seen[0]
-    )  # the system brief is the same bytes with 0 and 1 open entries
-
-
-def test_a_long_index_is_shown_one_page_with_its_next_offset(tmp_path, monkeypatch):
     st = _Stores(tmp_path)
     p = st.pool()
     for i in range(120):
         p.upsert(pool.deferred(f"e{i:03d}", "a rule " * 20), "p0")
     p.save("p0")
     _finish_with(monkeypatch, EMPTY)
-    _, model = st.run(
-        [_call("x", "dismiss", {"episode": "e2", "reason": "seen"})],
-        "p1",
-    )
-    shown = model.seen[1]["content"].split(
-        "read it at a marker's offset for more):\n\n",
-        1,
-    )[1]
-    assert "[… shown bytes 0–" in shown and "; next: offset=" in shown
-    assert len(shown.encode()) < 8300
+    _, m1 = st.run([_defer("e2")], "p1")
+    _, m2 = st.run([_call("x", "dismiss", {"episode": "e2", "reason": "seen"})], "p2")
+    first = m2.seen[1]["content"]
+    assert first.splitlines()[0].startswith("Pass p2: ")
+    # no index, no entry line and no count of entries is inlined; the brief names /inputs/pool/INDEX.md
+    assert "Candidate pool" not in first and "deferred" not in first and "120" not in first
+    assert "/inputs/pool/INDEX.md" in m2.seen[0]["content"]
+    assert (
+        m1.seen[0] == m2.seen[0]
+    )  # the system brief is the same bytes whatever the pool holds
 
 
 # --- (b) a revisit adds evidence to the entry the writer names ------------------------------------------------
@@ -158,8 +139,8 @@ def test_pool_entry_must_name_an_open_entry_and_needs_defer(tmp_path, monkeypatc
 def test_the_write_brief_says_new_items_are_experimental_and_revised_later():
     text = pv.write_brief_now()
     sentence = (
-        "A new item starts as `experimental`; later passes and CURATE revise, generalise or remove it as evidence "
-        "arrives, so storing a rule that worked is not a final commitment."
+        "A new item starts as `experimental`; later passes and the curate pass revise, generalise or remove it as "
+        "evidence arrives, so storing a rule that worked is not a final commitment."
     )
     assert sentence in text and sentence not in pv.curate_brief_now()
     line = text.split("A new item starts as")[1].split("\n")[0]
@@ -231,9 +212,6 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
 from unify.memory_v2 import fixtures as fx  # noqa: E402
 from unify.memory_v2.manifest import ManifestError, parse_manifest  # noqa: E402
 
-ALL_INPUTS = (pv.STAGING_INPUT, pv.S0_INPUT, pv.POOL_INPUT)
-
-
 def _brief_of(tmp_path, **cfg):
     tmp_path.mkdir(parents=True, exist_ok=True)
     _, _, writer = _writer(tmp_path, None, library_mode=True, **cfg)
@@ -241,72 +219,45 @@ def _brief_of(tmp_path, **cfg):
 
 
 def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
-    full = _brief_of(
-        tmp_path / "a",
-        staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
-        pool=True,
-    )
-    for bullet in ALL_INPUTS:
-        assert bullet in full
+    full = _brief_of(tmp_path / "a", staging_root=str(tmp_path), fork=True, pool=True)
     inputs = full.split("# Inputs\n")[1].split("\n# Tools")[0]
+    # proposals first, then the evidence behind them
     assert (
-        inputs.index("/inputs/gate/previous.md")
-        < inputs.index("/inputs/staging/")
-        < inputs.index(
-            "/inputs/s0/",
-        )
+        inputs.index("/inputs/staging/")
         < inputs.index("/inputs/pool/")
+        < inputs.index("/inputs/batch_map.json")
+        < inputs.index("/inputs/episodes/")
     )
     plain = _brief_of(tmp_path / "b")
-    assert plain == pv.write_brief_now() and not any(b in plain for b in ALL_INPUTS)
-    fork_off = _brief_of(
-        tmp_path / "c",
-        staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
-    )
-    assert pv.POOL_INPUT not in fork_off and pv.STAGING_INPUT in fork_off
+    assert plain == pv.write_brief_now()
+    assert "/inputs/staging" not in plain and "/inputs/pool" not in plain
+    # a staging root without the fork stages nothing, so the brief names no staging
+    fork_off = _brief_of(tmp_path / "c", staging_root=str(tmp_path), pool=True)
+    assert "/inputs/staging" not in fork_off and "/inputs/pool/" in fork_off
     # byte-stable within a run: the same configuration gives the same bytes
     assert full == _brief_of(
         tmp_path / "d",
         staging_root=str(tmp_path),
-        s0_cache=str(tmp_path),
+        fork=True,
         pool=True,
     )
 
 
-def test_the_new_input_bullets_keep_the_brief_guards():
-    text = pv.write_brief_now(extra_inputs=ALL_INPUTS, pool=True)
+def test_the_optional_inputs_keep_the_brief_guards():
+    text = pv.write_brief_now(staging=True, pool=True)
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
     for marker in pv.CURATE_ONLY:
         assert marker not in text.lower()
-    for bullet in ALL_INPUTS:
-        low = bullet.lower()
-        assert (
-            " must " not in low
-            and " only " not in low
-            and "task" not in low
-            and "answer" not in low
-        )
-    assert all(b not in pv.curate_brief_now() for b in ALL_INPUTS)
+    inputs = text.split("# Inputs\n")[1].split("\n# Tools")[0].lower()
+    assert " must " not in inputs and "task" not in inputs and "answer" not in inputs
+    curate = pv.curate_brief_now()
+    assert "/inputs/staging" not in curate and "/inputs/pool" not in curate
 
 
-def test_the_end_condition_does_not_make_dismissing_everything_the_easy_path():
-    off, on = pv.write_brief_now(), pv.write_brief_now(pool=True)
-    assert (
-        "every episode in the batch is covered or dismissed with a reason, and every item"
-        in off
-    )
-    assert (
-        "every episode in the batch is covered, dismissed with a reason, or attached to a pool entry"
-        in on
-    )
-    for text in (off, on):
-        assert "dismiss the rest" not in text and "holding nothing to store" not in text
-        assert (
-            "read in full what may be worth keeping, and decide each episode on what it holds"
-            in text
-        )
+def test_the_end_condition_is_a_decision_not_a_count():
+    for text in (pv.write_brief_now(), pv.write_brief_now(staging=True, pool=True)):
+        assert "every episode in the batch" not in text and "dismiss" not in text
+        assert "you have decided what to keep from this batch's proposals and episodes" in text
         assert "kept as a draft" in text  # the drafts rule's phrase stays (RULES)
 
 
@@ -387,7 +338,6 @@ def test_a_fixture_slice_refusal_names_the_valid_range():
         "keeps bytes start to end-1 of the recorded value's UTF-8 bytes"
         in tool["function"]["description"]
     )
-    assert "byte offsets into the recorded value's UTF-8 bytes" in pv.write_brief_now()
 
 
 HELPER = '''"""Shared account helpers."""

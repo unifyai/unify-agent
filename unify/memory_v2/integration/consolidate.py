@@ -126,6 +126,7 @@ from .switch import (
     surfacing_options,
     library_enabled,
     library_analysts,
+    library_fork,
     library_pool,
     library_compact,
     library_coverage,
@@ -1111,6 +1112,8 @@ async def run_due_passes(
                 "staging_root": str(Path(stores.paths.state_dir) / "memory-staging"),
                 "analysts": library_analysts(settings),
                 "pool": library_pool(settings),
+                # the writer's brief and rows name staging only when the episode-end fork writes it
+                "fork": library_fork(settings),
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
                 "s0_cache": str(Path(stores.paths.state_dir) / "memory-s0"),

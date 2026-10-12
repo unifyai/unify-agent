@@ -1585,7 +1585,9 @@ def transcript_lines(
     lines: list[str] = []
     used = 0
 
-    def text_ref(kind: str, text: str) -> dict:
+    carried: list[str] = []  # hashes whose text this header carries
+
+    def text_ref(kind: str, text: str, inline: bool) -> dict:
         data = text.encode("utf-8")
         sha = _sha(data)
         ref: dict = {f"{kind}_sha256": sha, f"{kind}_chars": len(text)}
@@ -1596,12 +1598,14 @@ def transcript_lines(
                 return ref
             except Exception:  # noqa: BLE001 - the transcript keeps the text instead
                 pass
-        if sha not in _TRANSCRIPT_TEXTS:
+        if sha in _TRANSCRIPT_TEXTS:
+            ref[f"{kind}_stored"] = "earlier transcript"
+        elif inline:
             ref[kind] = _scrub(red.obj(text))
             ref[f"{kind}_stored"] = "transcript"
-            _TRANSCRIPT_TEXTS.add(sha)
+            carried.append(sha)
         else:
-            ref[f"{kind}_stored"] = "earlier transcript"
+            ref[f"{kind}_stored"] = "not stored: larger than the transcript's size"
         return ref
 
     first = messages[0] if messages else None
@@ -1610,16 +1614,29 @@ def transcript_lines(
         if isinstance(first, dict) and first.get("role") == "system"
         else None
     )
-    header: dict = {}
-    if isinstance(brief, str):
-        header |= text_ref("brief", brief)
-    if tools:
-        header |= text_ref(
-            "tools",
-            json.dumps(tools, sort_keys=True, default=str, ensure_ascii=False),
-        )
-    if header:
-        line = json.dumps({"pass_id": pass_id, "header": header}, sort_keys=True)
+    tools_text = (
+        json.dumps(tools, sort_keys=True, default=str, ensure_ascii=False)
+        if tools
+        else None
+    )
+
+    def header_line(inline: bool) -> str | None:
+        header: dict = {}
+        if isinstance(brief, str):
+            header |= text_ref("brief", brief, inline)
+        if tools_text is not None:
+            header |= text_ref("tools", tools_text, inline)
+        if not header:
+            return None
+        return json.dumps({"pass_id": pass_id, "header": header}, sort_keys=True)
+
+    line = header_line(True)
+    if line is not None and len(line.encode("utf-8")) + 1 > (max_bytes - marker_room) // 2:
+        # the texts would crowd out the messages: name them by hash only
+        carried.clear()
+        line = header_line(False)
+    if line is not None:
+        _TRANSCRIPT_TEXTS.update(carried)
         lines.append(line)
         used += len(line.encode("utf-8")) + 1
     first_user = next(
@@ -2738,10 +2755,14 @@ class WriterPass:
                 f"Wall clock for this pass: {wall} s.\n"
             )
         eids = [e for e in req.episodes if isinstance(e, str)]
+        from .library_prompts import MAX_INLINE_LIST
+
+        # the ids are inlined only while they are a short list; a larger batch is named by its count
+        named = f": {', '.join(eids)}" if len(eids) <= MAX_INLINE_LIST else ""
         return (
             f"Pass {pass_id}: a store pass over {len(eids)} recorded episode"
-            f"{'' if len(eids) == 1 else 's'}: {', '.join(eids)}.\n"
-            "Their rows are in /inputs/batch_map.json.\n"
+            f"{'' if len(eids) == 1 else 's'}{named}.\n"
+            "Their ids and rows are in /inputs/batch_map.json.\n"
             f"Wall clock for this pass: {wall} s.\n"
         )
 

@@ -1,4 +1,4 @@
-"""The v2.1 prompts (spec §12): one role each, every part present, no benchmark words, no example checking."""
+"""The memory prompts: one role each, every part present, no benchmark words, no example checking."""
 
 from __future__ import annotations
 
@@ -15,40 +15,68 @@ BRIEF_HEADINGS = {
         "Role",
         "Inputs",
         "Tools",
-        "What to read",
+        "How to work",
         "What to write",
         "Rules",
         "The gate",
         "Repair",
+        "Limits",
         "Done",
     ],
-    "curate": ["Role", "Inputs", "Tools", "What to do", "Rules", "Repair", "Done"],
+    "curate": [
+        "Role",
+        "Inputs",
+        "Tools",
+        "What to do",
+        "Rules",
+        "The gate",
+        "Repair",
+        "Limits",
+        "Done",
+    ],
 }
 ENV = {"PYTHONPATH": "/memory"}
+OPTIONAL_TOOLS = frozenset({"pool", "similar", "delegate", "replay"})
 
 
-def _write(**over):
+def _limits(**over):
     values = dict(
         view_bytes=8000,
-        max_checks=5,
-        repair_rounds=2,
+        cell_s=60.0,
+        file_bytes=1024**2,
+        total_bytes=20 * 1024**2,
+        entries=2000,
+        step_guard=500,
+        check_floor_s=60.0,
+        cells_per_turn=8,
+        readers_per_turn=16,
+    )
+    values.update(over)
+    return pv.Limits(**values)
+
+
+def _write(limits=None, **over):
+    """The WRITE brief with every optional input and tool, so each write-only phrase is present."""
+    values = dict(
+        limits=limits or _limits(),
         mutation_min=Decimal("0.6"),
         sample_k=8,
         lint_min=4,
         pytest_env=ENV,
-        semantic_types="month (integer 1–12)",
+        staging=True,
+        pool=True,
+        tools="".join(f"- `{t}`: the {t} tool.\n" for t in sorted(OPTIONAL_TOOLS)).rstrip("\n"),
+        tool_names=OPTIONAL_TOOLS,
+        pool_kinds="`candidate` (a function with its cases)",
     )
     values.update(over)
     return pv.write_brief(**values)
 
 
-def _curate(**over):
+def _curate(limits=None, **over):
     values = dict(
-        view_bytes=8000,
-        max_checks=5,
-        repair_rounds=2,
+        limits=limits or _limits(),
         pytest_env=ENV,
-        index_tokens=4000,
         overlaps_path="/inputs/curate/overlaps.json",
         suspects_path="/inputs/curate/suspects.json",
         trigger_path="/inputs/curate/trigger.json",
@@ -88,25 +116,25 @@ def test_the_guide_has_every_part_and_takes_extra_lines_only_before_the_files_li
 
 
 def test_numbers_come_from_the_values_given():
+    limits = _limits(view_bytes=1234, cell_s=45.0, step_guard=321, entries=77)
     text = _write(
-        view_bytes=1234,
-        max_checks=7,
-        repair_rounds=3,
+        limits=limits,
         mutation_min=Decimal("0.7"),
         sample_k=11,
         lint_min=6,
     )
     for s in (
         "at most 1234 bytes",
-        "at most 7 times per pass",
-        "up to 3 of them",
+        "at most 45 s",
+        "after 321 model and check calls",
+        "77 files and directories",
         "at least 70% of small mutations",
         "appends 11 more recorded inputs",
         "text of 6 or more characters",
     ):
         assert s in text, s
     assert "<<" not in text and ">>" not in text
-    assert "over its budget of 999 tokens" in _curate(index_tokens=999)
+    assert "after 321 model and check calls" in _curate(limits=limits)
     assert '"PYTHONPATH": "/x"' in _write(pytest_env={"PYTHONPATH": "/x"})
 
 
@@ -194,15 +222,19 @@ def test_rendered_from_the_constants_that_enforce_them():
     from unify.memory_v2 import qa, views
     from unify.memory_v2.gate import _PYTEST_ENV
 
+    from unify.memory_v2 import writer_pass
+
     text = pv.write_brief_now()
     assert f"at most {views.VIEW_BYTES} bytes" in text
-    # r5 S6: the v2.1 briefs state no check or repair-round counts (the pass enforces none)
-    assert "times per pass" not in text and "while the pass budget lasts" not in text
+    # the briefs state no check or repair-round counts (the pass enforces none)
+    assert "times per pass" not in text and "while the pass" not in text
     assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
     assert f"text of {code_lint.LINT_MIN} or more characters" in text
     assert f"at least {pv._pct(qa.MUTATION_MIN)}% of small mutations" in text
+    assert f"after {writer_pass.STEP_GUARD} model and check calls" in text
     assert pv._env(_PYTEST_ENV) in text
-    assert f"over its budget of {INDEX_VIEW_TOKENS} tokens" in pv.curate_brief_now()
+    assert INDEX_VIEW_TOKENS and repair  # imported: the constants exist
+    assert f"after {writer_pass.STEP_GUARD} model and check calls" in pv.curate_brief_now()
 
 
 def test_amendment_e_no_read_only_instruction():
@@ -210,20 +242,15 @@ def test_amendment_e_no_read_only_instruction():
     for name, text in _texts().items():
         assert "never write" not in text.lower(), name
         assert "The library is read-only" not in text, name
-    assert "are generated by the harness.\n" in _write()
+    assert "generated by the harness" in _write()
     assert pv.GUIDE_LIBRARY.endswith(
         "\n\nWrite your own code and files in your session as usual.\n",
     )
 
 
-def test_amendment_b_observations_and_what_check_runs():
-    text = _write()
-    assert "`request`, `observation:<i>`, `cell:<i>`" in text
-    assert "its request, every observation" in text
+def test_amendment_b_guide_sentences_kept():
     for name, t in _texts().items():
         assert "does not run the tests" not in t, name
-    assert "the items' own tests and the recorded inputs the gate draws" in text
-    assert "the items' own tests and the recorded inputs the gate draws" in _curate()
     # the two GUIDE sentences that wait for the lead's decision are kept
     assert (
         "Before you write code for a step, look in the index for an item that does it."

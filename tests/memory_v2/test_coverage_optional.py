@@ -138,7 +138,7 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
         {
             "episode_id": "a",
             "functions": [{"name": "f"}],
-            "signals": [{"kind": "cell_error", "cell": 1}],
+            "structural_events": [{"kind": "cell_error", "cell": 1}],
             "s0_clusters": [{"key": "k"}],
             "pool_entries": [],
             "staging": {"candidates": [{"name": "g"}]},
@@ -146,7 +146,7 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
         {
             "episode_id": "b",
             "functions": [],
-            "signals": [],
+            "structural_events": [],
             "staging": {"candidates": []},
         },
         {"episode_id": "c", "functions": [{"name": "h"}]},  # read: not unread
