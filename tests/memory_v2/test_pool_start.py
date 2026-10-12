@@ -9,10 +9,15 @@ import pytest
 from unify.memory_v2 import chain, pool
 from unify.memory_v2.gate import GateResult
 from unify.memory_v2.gitio import Repo
-from unify.memory_v2.manifest import ADOPT_FORMS, ManifestError, adopt_ref, parse_manifest
+from unify.memory_v2.manifest import (
+    ADOPT_FORMS,
+    ManifestError,
+    adopt_ref,
+    parse_manifest,
+)
 from unify.memory_v2.staging import StagingView
 from tests.memory_v2.test_gate import ITEM, MAN
-from tests.memory_v2.test_pool import EMPTY, INDEX, _finish_with, _Stores
+from tests.memory_v2.test_pool import EMPTY, INDEX, _finish_with, _open, _Stores
 from tests.memory_v2.test_writer_pass import _call, needs_bwrap
 from tests.memory_v2.test_gate_library_mode import world21  # noqa: F401 (a fixture)
 
@@ -30,7 +35,10 @@ def _canon(obj):
     return json.dumps(obj, sort_keys=True, default=str)
 
 
-CID = pool.entry_id("candidate", _canon({"candidate.py": FILL, "cases.json": "[[1, 1]]"}))
+CID = pool.entry_id(
+    "candidate",
+    _canon({"candidate.py": FILL, "cases.json": "[[1, 1]]"}),
+)
 LID = pool.entry_id("lesson", NOTES)
 
 
@@ -44,11 +52,18 @@ def _stage(root, eid="e2", blocks=True):
     (d / "fork.json").write_text(json.dumps({"status": "ok"}))
     if blocks:
         rows = [
-            {"index": 0, "path": "candidates/fill.py", "kind": "candidate", "status": "parsed"},
+            {
+                "index": 0,
+                "path": "candidates/fill.py",
+                "kind": "candidate",
+                "status": "parsed",
+            },
             {"index": 1, "path": "cases/fill.json", "kind": "case", "status": "parsed"},
             {"index": 2, "path": "notes.md", "kind": "notes", "status": "parsed"},
         ]
-        (d / "fork-blocks.json").write_text(json.dumps({"episode": eid, "blocks": rows}))
+        (d / "fork-blocks.json").write_text(
+            json.dumps({"episode": eid, "blocks": rows}),
+        )
     return d
 
 
@@ -76,7 +91,7 @@ def test_a_staged_candidate_is_an_open_entry_during_its_own_pass(tmp_path, monke
         [
             _call("r", "read", {"path": INDEX}),
             _call("m", "read", {"path": "/inputs/batch_map.json"}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "looked"}),
+            _open("e2"),  # read, so the pass keeps no unread entry for it
         ],
         "p1",
         staging_root=str(root),
@@ -86,12 +101,18 @@ def test_a_staged_candidate_is_an_open_entry_during_its_own_pass(tmp_path, monke
     lesson = f"- `{LID}` lesson: Regions touching the border stay open (1 episode; opened in p1)"
     assert cand in index and lesson in index and index.index(cand) < index.index(lesson)
     row = json.loads(model.outputs["m"].split("\n[…")[0])["episodes"][0]
-    assert {"id": CID, "kind": "candidate", "title": CANDIDATE_TITLE} in row["pool_entries"]
+    assert {"id": CID, "kind": "candidate", "title": CANDIDATE_TITLE} in row[
+        "pool_entries"
+    ]
     # the start commit holds the entries; the end of the pass changed nothing more
     assert out.pool["at_start"]["entries"] == 2 and out.pool["at_start"]["added"] == 2
     assert out.pool["at_start"]["commit"] and out.pool["added"] == 0
     e = st.pool().entries[CID]
-    assert e.status == "open" and e.opened_in == "p1" and e.provenance["episodes"] == ["e2"]
+    assert (
+        e.status == "open"
+        and e.opened_in == "p1"
+        and e.provenance["episodes"] == ["e2"]
+    )
     assert out.chain == {
         "parsed": 1,
         "staged": 1,
@@ -142,7 +163,9 @@ def test_an_adopted_staged_candidate_merges_in_the_same_pass(tmp_path, monkeypat
         "p1",
         staging_root=str(root),
     )
-    assert out.finished and out.passed and out.items_merged == [ITEM["item"]], out.reasons
+    assert (
+        out.finished and out.passed and out.items_merged == [ITEM["item"]]
+    ), out.reasons
     assert out.provenance == [
         {"item": ITEM["item"], "adopts": ["staging:e2/candidates/fill.py"]},
     ]
@@ -182,7 +205,9 @@ def test_finish_refuses_an_adopt_ref_that_names_nothing_staged(tmp_path, monkeyp
 
 
 def test_with_staging_off_the_writer_sees_no_staging_anywhere(tmp_path, monkeypatch):
-    _stage(tmp_path / "unused-root")  # present on disk, but no reader is configured for this pass
+    _stage(
+        tmp_path / "unused-root",
+    )  # present on disk, but no reader is configured for this pass
     st = _Stores(tmp_path)
     _finish_with(monkeypatch, EMPTY)
     out, model = st.run(
@@ -197,7 +222,9 @@ def test_with_staging_off_the_writer_sees_no_staging_anywhere(tmp_path, monkeypa
     assert "staging" not in model.outputs["l"]
     rows = json.loads(model.outputs["m"].split("\n[…")[0])["episodes"]
     assert rows and all("staging" not in r for r in rows)
-    assert "candidate:" not in model.outputs["r"] and "staging" not in model.outputs["r"]
+    assert (
+        "candidate:" not in model.outputs["r"] and "staging" not in model.outputs["r"]
+    )
     assert "/inputs/staging" not in model.seen[1]["content"]
     assert out.chain == dict.fromkeys(chain.KEYS, 0)
     assert not any(e.kind == "candidate" for e in st.pool().entries.values())
@@ -207,11 +234,20 @@ def test_with_staging_off_the_writer_sees_no_staging_anywhere(tmp_path, monkeypa
 
 
 def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
-    assert adopt_ref("/inputs/staging/e2/candidates/fill.py") == "staging:e2/candidates/fill.py"
+    assert (
+        adopt_ref("/inputs/staging/e2/candidates/fill.py")
+        == "staging:e2/candidates/fill.py"
+    )
     assert adopt_ref("staging:e2/cases/fill.json") == "staging:e2/cases/fill.json"
     assert adopt_ref("/inputs/pool/" + CID + "/candidate.py") == "pool:" + CID
     assert adopt_ref("/inputs/helpers/c1/notes.md") == "helper:c1/notes.md"
-    for bad in ("staging:../candidates/x.py", "staging:e2/evil.sh", "pool:xyz", "e2/fill.py", 3):
+    for bad in (
+        "staging:../candidates/x.py",
+        "staging:e2/evil.sh",
+        "pool:xyz",
+        "e2/fill.py",
+        3,
+    ):
         with pytest.raises(ManifestError) as exc:
             adopt_ref(bad)
         assert ADOPT_FORMS in str(exc.value)
@@ -244,7 +280,10 @@ def test_staged_refs_map_to_their_entries_and_adoption_closes_on_landing(tmp_pat
         "staging:e2/cases/fill.json": CID,
         "staging:e2/notes.md": LID,
     }
-    man = {**MAN, "items": [{**ITEM, "adopts": ["staging:e2/cases/fill.json", "pool:" + LID]}]}
+    man = {
+        **MAN,
+        "items": [{**ITEM, "adopts": ["staging:e2/cases/fill.json", "pool:" + LID]}],
+    }
     assert pool.block_problems(man, p) == []
     retire = {**man, "pool": {"retired": {CID: "not needed"}}}
     assert pool.block_problems(retire, p) == [
@@ -254,9 +293,14 @@ def test_staged_refs_map_to_their_entries_and_adoption_closes_on_landing(tmp_pat
     assert pool.block_problems(nothing, p) == [
         f"{ITEM['item']}: adopts 'pool:{'0' * 16}', which is not a pool entry",
     ]
-    prov = [{"item": ITEM["item"], "adopts": ["staging:e2/cases/fill.json", "pool:" + LID]}]
+    prov = [
+        {"item": ITEM["item"], "adopts": ["staging:e2/cases/fill.json", "pool:" + LID]},
+    ]
     # the item was refused: nothing closes
-    assert pool.apply_block(p, man, "p1", landed=set(), finished=True, provenance=prov) == []
+    assert (
+        pool.apply_block(p, man, "p1", landed=set(), finished=True, provenance=prov)
+        == []
+    )
     assert p.entries[CID].status == "open"
     changed = pool.apply_block(
         p,
@@ -267,7 +311,11 @@ def test_staged_refs_map_to_their_entries_and_adoption_closes_on_landing(tmp_pat
         provenance=prov,
     )
     assert changed == [CID, LID]
-    assert p.entries[LID].status_detail == {"item": ITEM["item"], "via": "adopts", "pass": "p1"}
+    assert p.entries[LID].status_detail == {
+        "item": ITEM["item"],
+        "via": "adopts",
+        "pass": "p1",
+    }
 
 
 # --- 4. titles, order and counts -------------------------------------------------------------------------------
@@ -283,10 +331,19 @@ def test_titles_carry_content_and_the_index_lists_proposals_first_with_counts(tm
         p.upsert(e, "p0")
     assert p.stage(tmp_path / "pool") == 4
     lines = [
-        ln for ln in (tmp_path / "pool" / "INDEX.md").read_text().splitlines() if ln.startswith("- `")
+        ln
+        for ln in (tmp_path / "pool" / "INDEX.md").read_text().splitlines()
+        if ln.startswith("- `")
     ]
-    assert [ln.split()[2] for ln in lines] == ["candidate:", "lesson:", "deferred:", "draft:"]
-    assert lines[0] == f"- `{CID}` candidate: {CANDIDATE_TITLE} (2 episodes; opened in p0)"
+    assert [ln.split()[2] for ln in lines] == [
+        "candidate:",
+        "lesson:",
+        "deferred:",
+        "draft:",
+    ]
+    assert (
+        lines[0] == f"- `{CID}` candidate: {CANDIDATE_TITLE} (2 episodes; opened in p0)"
+    )
     assert not any(e in ln.split("`")[2] for ln in lines for e in ("e1", "e3", "e9"))
     assert all(len(e.title) <= pool.TITLE_CHARS for e in p.entries.values())
     long = "def g(x):\n    " + '"""' + "word " * 80 + '"""\n'
@@ -299,7 +356,9 @@ def test_old_titles_are_recomputed_when_the_pool_loads(tmp_path):
     p = pool.Pool(repo).load()
     e = pool.from_staging("e1", _view())[0]
     p.upsert(e, "p0")
-    e.title = "candidate fill from episode e1"  # an entry saved before titles carried content
+    e.title = (
+        "candidate fill from episode e1"  # an entry saved before titles carried content
+    )
     p.save("p0")
     assert pool.Pool(repo).load().entries[CID].title == CANDIDATE_TITLE
 
@@ -313,12 +372,17 @@ def test_a_closed_entry_with_new_evidence_is_surfaced_and_can_be_reopened(tmp_pa
     for e in pool.from_staging("e3", _view()):
         p.upsert(e, "p2")
     e = p.entries[CID]
-    assert e.status == "merged" and e.data["new_evidence"] == [{"pass": "p2", "episodes": ["e3"]}]
+    assert e.status == "merged" and e.data["new_evidence"] == [
+        {"pass": "p2", "episodes": ["e3"]},
+    ]
     assert p.stage(tmp_path / "a") == 1  # the lesson is still open
     text = (tmp_path / "a" / "INDEX.md").read_text()
     head, _, section = text.partition("## Closed entries with new evidence")
     assert CID not in head
-    assert f"- `{CID}` candidate (merged): {CANDIDATE_TITLE} (1 episode since it closed)" in section
+    assert (
+        f"- `{CID}` candidate (merged): {CANDIDATE_TITLE} (1 episode since it closed)"
+        in section
+    )
     assert (tmp_path / "a" / CID / "candidate.py").read_text() == FILL
 
     assert pool.block_problems({**EMPTY, "pool": {"reopened": {LID: "r"}}}, p) == [
@@ -356,7 +420,10 @@ def test_cluster_entries_close_once_and_a_pool_without_them_is_unchanged(tmp_pat
     assert [e.kind for e in p.open_entries()] == ["deferred"]
 
 
-def test_a_pass_closes_the_old_cluster_entries_when_it_loads_the_pool(tmp_path, monkeypatch):
+def test_a_pass_closes_the_old_cluster_entries_when_it_loads_the_pool(
+    tmp_path,
+    monkeypatch,
+):
     st = _Stores(tmp_path)
     p = st.pool()
     (c,) = pool.from_clusters([{"key": "k" * 64, "at": []}], {})
@@ -383,22 +450,39 @@ def test_chain_counts_read_events_and_unknown_parse_records(tmp_path):
     assert chain.parsed_candidates(tmp_path, ["e1"]) is None  # no parse record: unknown
     assert chain.parsed_candidates(tmp_path, []) == 0
     events = [
-        {"event": "tool_call", "status": "ok", "paths": [
-            {"path": "/inputs/staging/e1/candidates/../candidates/fill.py", "mode": "read"},
-        ]},
-        {"event": "tool_call", "status": "refused", "paths": [
-            {"path": "/inputs/staging/e1/candidates/fill.py", "mode": "read"},
-        ]},
+        {
+            "event": "tool_call",
+            "status": "ok",
+            "paths": [
+                {
+                    "path": "/inputs/staging/e1/candidates/../candidates/fill.py",
+                    "mode": "read",
+                },
+            ],
+        },
+        {
+            "event": "tool_call",
+            "status": "refused",
+            "paths": [
+                {"path": "/inputs/staging/e1/candidates/fill.py", "mode": "read"},
+            ],
+        },
         {"event": "open", "path": "/inputs/staging/e1/cases/fill.json", "mode": "r"},
     ]
     read = chain.read_paths([], events)
-    assert read == {"/inputs/staging/e1/candidates/fill.py", "/inputs/staging/e1/cases/fill.json"}
+    assert read == {
+        "/inputs/staging/e1/candidates/fill.py",
+        "/inputs/staging/e1/cases/fill.json",
+    }
     got = chain.counts(
         views=views,
         root=tmp_path,
         staged_entry={},
         pool_ids=set(),
-        batch_rows=[{"staging": {"candidates": [{"name": "fill"}]}}, {"episode_id": "e2"}],
+        batch_rows=[
+            {"staging": {"candidates": [{"name": "fill"}]}},
+            {"episode_id": "e2"},
+        ],
         read=read,
         provenance=[],
     )
@@ -418,7 +502,11 @@ def test_chain_counts_read_events_and_unknown_parse_records(tmp_path):
 @needs_bwrap
 def test_the_gate_records_each_landed_items_adopts(world21):  # noqa: F811
     from tests.memory_v2.test_gate import _candidate
-    from tests.memory_v2.test_gate_library_mode import ITEM_ID, _files_and_fixtures, _man
+    from tests.memory_v2.test_gate_library_mode import (
+        ITEM_ID,
+        _files_and_fixtures,
+        _man,
+    )
 
     mem, ev, blobs, gate = world21
     files, fixtures = _files_and_fixtures(blobs)
@@ -435,4 +523,3 @@ def test_the_gate_records_each_landed_items_adopts(world21):  # noqa: F811
     assert res.provenance == [
         {"item": ITEM_ID, "adopts": ["staging:e2/candidates/fill.py", "pool:" + CID]},
     ]
-
