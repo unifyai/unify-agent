@@ -417,6 +417,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
         "pass_id": "e1.p0",
         "trigger_tokens": start["trigger_tokens"],
         "episodes": ["e1"],
+        "held": [],  # episodes whose fork had not settled, rolled to the next pass
         "writer_model": "openai/gpt-6-sol",
         "writer_effort": "medium",
         "cap_usd": "0.00000146",  # E x a_tok x 2, the medium scale
