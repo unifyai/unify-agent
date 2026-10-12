@@ -364,20 +364,20 @@ class ProductionSettings(BaseSettings):
     # runs the passes, at the actor's reasoning effort for the run;
     # ``_WRITER_ALLOWANCE_USD_PER_TOKENS`` (a decimal string) times E caps one
     # pass's USD; ``_WRITER_RUN_GUARD_USD`` (a decimal string, empty for none)
-    # stops further passes once the run's Sol USD plus the next cap would
+    # stops further passes once the run's writer USD plus the next cap would
     # exceed it. ``_WRITER_BASE_URL`` and ``_WRITER_TOKEN`` (both or neither) send
-    # Sol's calls to a route of their own (a proxy listener with its own
+    # the writer's calls to a route of their own (a proxy listener with its own
     # token); empty, they go as shipped. They are checked when a pass starts
     # (a settings error would print the value), the token is a SecretStr and
     # leaves this process's environment once read (below). ``_WRITER_TOKEN_FD``
     # (instead of ``_WRITER_TOKEN``, never both) names an inherited descriptor
     # holding the token: read once when settings are settled (below), then
     # closed; the token never enters the environment. ``_WRITER_EFFORT`` is
-    # ``actor`` (Sol's effort is the actor's for the run) or a fixed
+    # ``actor`` (the writer's effort is the actor's for the run) or a fixed
     # ``low``/``medium``/``high`` for a declared mismatch ablation.
     # ``_WRITER_EFFORT_SCALE`` (``low:1,medium:2,high:5``) multiplies a pass's
     # USD cap and ``_WRITER_MAX_CALLS`` (``low:40,medium:80,high:80``) bounds its
-    # calls, each by the pass's Sol effort. The v2.1
+    # calls, each by the pass's writer effort. The library
     # surfacing switches (same parser; each default is
     # the v2 screen build's behaviour): ``_SURFACING`` is ``index`` (the v2
     # per-function index in the prompt, nothing generated in the export) or
@@ -393,9 +393,9 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_WRITER_MODEL: str = "openai/gpt-6-sol"
     UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS: str = "0.00000073"
     UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD: str = ""
-    # Memory v2.1 r5 (RUNTIME B1): a v2.1 pass with a Sol route runs with no pass cap, bounded in flight only by the
-    # route's ceilings; point this only at a proxy with a spend ceiling (the runner's Sol lane, the replay proxy),
-    # never at an uncapped relay.
+    # In the library mode a pass with a writer route runs with no pass cap, bounded in flight only by the route's
+    # ceilings; point this only at a proxy with a spend ceiling (the runner's writer lane, the replay proxy), never
+    # at an uncapped relay.
     UNIFY_MEMORY_V2_WRITER_BASE_URL: str = ""
     UNIFY_MEMORY_V2_WRITER_TOKEN: SecretStr = SecretStr("")
     UNIFY_MEMORY_V2_WRITER_TOKEN_FD: str = ""
@@ -406,26 +406,26 @@ class ProductionSettings(BaseSettings):
     UNIFY_MEMORY_V2_DOCSTRINGS: str = "off"
     UNIFY_MEMORY_V2_SOFT_BUDGET: str = "off"
     UNIFY_MEMORY_V2_WRITER_USAGE: str = ""
-    # Memory v2.1 (unify/memory_v2; spec docs memory-v2.1-spec.md): ``off``
-    # (default; empty means it) or ``on``. On: the writer reads a batch
-    # map and bounded views, and finish waits for coverage. Off: v2 as built.
+    # The library mode (unify/memory_v2): ``off`` (default; empty means it) or
+    # ``on``. On: the writer reads a batch map and bounded views and keeps a
+    # function library. Off: the earlier memory mode as built.
     UNIFY_MEMORY_LIBRARY: str = "off"
-    # Memory v2.1 P9: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_LIBRARY), a
+    # Checker visibility: ``off`` (default) or ``on``. On (with UNIFY_MEMORY_LIBRARY), a
     # ``{"checker": {"label": ...}}`` stdin line records the verdict the bed
     # showed the actor as an agent-visible checker signal. Off: refused.
     UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE: str = "off"
-    # Memory v2.1 P7: E (D43: 100k recorded tokens), one pass's wall-clock bound (s), and the Sol route
-    # proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
+    # The library mode's E (recorded tokens at which a pass becomes due), one pass's wall-clock bound (s), and the
+    # writer route proxy's journal (absolute path; empty: none) used only to reconcile cancelled calls.
     UNIFY_MEMORY_LIBRARY_E: int = 100000
-    # Memory v2.1: the writer's reader calls per pass (PassConfig.max_reads).
+    # The library mode: the writer's reader calls per pass (PassConfig.max_reads).
     UNIFY_MEMORY_LIBRARY_MAX_READS: int = 400
-    # Memory v2.1: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
+    # The library mode: ``on`` makes the CLI wait for the pass slot it spawned before exiting (sandboxes whose PID
     # namespace ends with the controller); ``off`` (default): the request returns at once.
     UNIFY_MEMORY_LIBRARY_WAIT_SLOT: str = "off"
-    # Memory v2.1 design r5: ``on`` forks the actor's conversation once at each episode's end, in a confined process
+    # The library mode: ``on`` forks the actor's conversation once at each episode's end, in a confined process
     # writing only to the episode's staging dir (integration/fork.py); ``off`` (default): nothing happens.
     UNIFY_MEMORY_LIBRARY_FORK: str = "off"
-    # The fork lane's route (fork-lane design, RUNTIME C3): the key proxy's /fork/v1 base URL and the inherited
+    # The fork lane's route: the key proxy's /fork/v1 base URL and the inherited
     # descriptor carrying its token, read once at start-up and then removed from the environment (empty: no fork lane).
     UNIFY_MEMORY_LIBRARY_FORK_BASE_URL: str = ""
     UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD: str = ""
@@ -438,10 +438,10 @@ class ProductionSettings(BaseSettings):
     # read once at start-up and then removed from the environment (empty: no helper lane).
     UNIFY_MEMORY_LIBRARY_HELPER_BASE_URL: str = ""
     UNIFY_MEMORY_LIBRARY_HELPER_TOKEN_FD: str = ""
-    # The lead, 11 Oct: ``on`` keeps every proposal open across passes in the candidate pool (memory repo
+    # ``on`` keeps every proposal open across passes in the candidate pool (memory repo
     # refs/heads/pool) until the writer closes it; ``off`` (default): none.
     UNIFY_MEMORY_LIBRARY_POOL: str = "off"
-    # MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the memory writer's
+    # Experimental, off by default: ``on`` moves old tool results out of the memory writer's
     # conversation once it passes a size; ``off`` (default): never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "off"
     # The former reading rule: empty or ``optional`` (a no-op; finish never waits on reading). ``required`` is
@@ -450,7 +450,8 @@ class ProductionSettings(BaseSettings):
     # How the actor's prompt reaches the library index: ``inline`` (default) ends it with the index view;
     # ``pointer`` ends it with a constant guide pointing to memory.index(), memory.show() and memory.find().
     UNIFY_MEMORY_LIBRARY_ACTOR_INDEX: str = "inline"
-    # Memory v2.1: USD per recorded token of a pass's cap (v2's rate until the offline replay sizes it).
+    # The library mode: USD per recorded token of a pass's cap (the earlier mode's rate until an offline replay
+    # sizes it).
     UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN: str = "0.00000073"
     UNIFY_MEMORY_LIBRARY_PASS_WALL_S: int = 2700
     UNIFY_MEMORY_V2_WRITER_JOURNAL: str = ""
@@ -885,7 +886,7 @@ SETTINGS = ProductionSettings()
 from unify.memory_v2.integration.switch import settle_writer_route_env  # noqa: E402
 
 settle_writer_route_env(os.environ, SETTINGS)
-# The fork lane's token likewise (RUNTIME C3): read once from its descriptor, both route names out of the environment.
+# The fork lane's token likewise: read once from its descriptor, both route names out of the environment.
 from unify.memory_v2.integration.switch import settle_fork_route_env  # noqa: E402
 
 settle_fork_route_env(os.environ, SETTINGS)

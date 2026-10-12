@@ -1,11 +1,11 @@
-"""Asynchronous consolidation for memory v2.1 (spec §6, D43; RUNTIME 11:24Z).
+"""Asynchronous consolidation for the library mode.
 
 A request never waits for a pass. When a request ends and the experience recorded since the last pass reaches E
 (:func:`.switch.library_experience_budget`), :func:`maybe_spawn` starts one detached worker process
 (:mod:`.pass_worker`) and returns. The worker runs the pass under its wall-clock bound (:class:`Supervisor`).
 
 **Isolation.** Each request pins memory ``main`` when it starts (``RequestRun.pin``) and works on a read-only copy
-of that commit (P3). A pass works in its own temporary box and checkout, and its merge moves ``main`` with one
+of that commit. A pass works in its own temporary box and checkout, and its merge moves ``main`` with one
 compare-and-swap (``Repo.fast_forward``, ``git update-ref <new> <old>``). A request therefore sees the old commit
 or the new one, never a half-written library, and a commit takes effect from the next request that starts after
 it lands.
@@ -20,7 +20,7 @@ ownership check) and deadline.
 
 **Shutdown** (:func:`drain`) never starts a pass. A pass in flight gets at most until its own deadline; then it
 is sent SIGTERM, which the worker turns into a cancellation through the pass's abort path (the work becomes a
-draft, the calls are reconciled from the Sol lane's journal window). A worker that has not ended after the grace
+draft, the calls are reconciled from the writer lane's journal window). A worker that has not ended after the grace
 period is killed and its termination verified. Every pass that ended after the last request is reported as such and is never
 counted toward the stream.
 """
@@ -44,7 +44,7 @@ from ..reconcile import RECONCILE_S, journal_offset
 
 #: The evidence store's SQLite busy timeout while a worker and a request share it (v2's default is 5 s).
 BUSY_TIMEOUT_S = 60.0
-#: Seconds of the wall bound kept for the final merge (the whole gate, mutation included) after Sol's deadline.
+#: Seconds of the wall bound kept for the final merge (the whole gate, mutation included) after the writer's deadline.
 MERGE_RESERVE_S = 600.0
 #: Seconds a worker has, after SIGTERM, to cancel its pass (a cell in flight ends within its own 60 s timeout).
 CANCEL_GRACE_S = 30.0
@@ -54,12 +54,12 @@ WORKER_MODULE = "unify.memory_v2.integration.pass_worker"
 _ENDED = ("landed", "refused", "deadline", "cancelled", "error")
 
 
-#: The passes one worker slot runs (MAIN, 9 Oct; spec §7): the WRITE pass, then the CURATE pass it made due.
+#: The passes one worker slot runs: the WRITE pass, then the CURATE pass it made due.
 WORKER_PASSES = 2
 
 
 def slot_s(wall_s: float, passes: int = WORKER_PASSES) -> float:
-    """A worker slot's deadline: each pass's wall bound and each item-records step's bisect budget (P5)."""
+    """A worker slot's deadline: each pass's wall bound and each item-records step's bisect budget."""
     from ..item_bisect import BISECT_BUDGET_S
 
     return passes * (float(wall_s) + BISECT_BUDGET_S)
@@ -67,7 +67,7 @@ def slot_s(wall_s: float, passes: int = WORKER_PASSES) -> float:
 
 def failsafe_s(wall_s: float, passes: int = 1) -> float:
     """The worker's failsafe: *passes* passes, each with its wall bound, cancel grace and reconcile, plus a margin;
-    a slot of several passes also each item-records step's bisect budget (P5; MAIN, 9 Oct).
+    a slot of several passes also each item-records step's bisect budget.
     """
     from ..item_bisect import BISECT_BUDGET_S
 
@@ -92,7 +92,7 @@ class Supervised:
 class Supervisor:
     """Runs one pass coroutine under the wall-clock bound *wall_s*; *stop* (set by SIGTERM) cancels it early.
     Cancellation goes through the pass's own abort path: :meth:`..writer_pass.WriterPass.run` records the pass as
-    failed and, under v2.1, keeps its work as a draft."""
+    failed and, in the library mode, keeps its work as a draft."""
 
     def __init__(
         self,
@@ -104,7 +104,7 @@ class Supervisor:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.wall_s, self.stop, self.clock = float(wall_s), stop, clock
-        # P7 Amendment D: the Sol route proxy's journal and Sol's models; the pass's window is the journal's byte
+        # the writer route proxy's journal and the writer's models; the pass's window is the journal's byte
         # range from the pass's start to the end this supervisor records
         self.journal, self.models = journal, tuple(models)
         self.window: tuple[int | None, int | None] = (None, None)
@@ -115,7 +115,7 @@ class Supervisor:
 
     @property
     def pass_deadline_s(self) -> float:
-        """Sol's own deadline: the wall bound less the final merge's reserve (at least a minute)."""
+        """The writer's own deadline: the wall bound less the final merge's reserve (at least a minute)."""
         return max(60.0, self.wall_s - MERGE_RESERVE_S)
 
     async def __call__(self, start: Callable[[], Awaitable[Any]]) -> Supervised:
@@ -158,7 +158,7 @@ class Supervisor:
         return result
 
     async def reconcile(self, **kw: Any) -> dict:
-        """The pass's Sol calls priced from the journal window this supervisor recorded (Amendment D: by lane and
+        """The pass's writer calls priced from the journal window this supervisor recorded (by lane and
         window, no header and no generation lookup); unpriced calls stay unknown and are booked at the worst
         case."""
         from ..reconcile import reconcile_window
@@ -329,9 +329,9 @@ def spawn(
     """Start the worker in its own session, holding the pass lock through an inherited descriptor; None when the
     lock is held (a worker is running, starting or ending). Credentials never enter argv.
 
-    *route_token* (Sol's own route, which the parent read once and removed from its environment): handed to the
+    *route_token* (the writer's own route, which the parent read once and removed from its environment): handed to the
     worker through a fresh pipe named by ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD``, which the worker's settings read once and
-    close. The worker's environment is the parent's without any Sol token name; the token is never in argv, the
+    close. The worker's environment is the parent's without any writer token name; the token is never in argv, the
     environment or a file. Without one the worker starts exactly as before.
     """
     fd = try_lock(lock_path(paths))
@@ -417,7 +417,7 @@ def maybe_spawn(
     popen: Callable[..., Any] = subprocess.Popen,
     argv_prefix: list[str] | None = None,
 ) -> dict:
-    """At a v2.1 request's end: start a pass if one is due and none is in flight, and return at once (spec §6).
+    """At a library-mode request's end: start a pass if one is due and none is in flight, and return at once.
     Delivers one event (``spawned`` or ``busy``) and returns it; ``not_due`` and ``error`` deliver nothing.
     Never raises: a failure is recorded in ``errors.jsonl``, and the request stays due.
     """
@@ -488,8 +488,8 @@ def maybe_spawn(
 
 
 def _route_token(settings: Any) -> str | None:
-    """Sol's own route token as this process holds it (read once from its descriptor, or the setting), or None
-    when Sol uses no route of its own."""
+    """The writer's own route token as this process holds it (read once from its descriptor, or the setting), or
+    None when the writer uses no route of its own."""
     from .switch import WRITER_BASE_URL, writer_token
 
     if not str(getattr(settings, WRITER_BASE_URL, "") or "").strip():
@@ -539,7 +539,7 @@ def unapplied(paths: Any) -> list[dict]:
 
 def apply_results(state: Any, paths: Any) -> list[dict]:
     """Apply the worker rows no request has applied yet (drift and suspect clears), save the state, then move the
-    cursor. Called under the request lock at a v2.1 request's open."""
+    cursor. Called under the request lock at a library-mode request's open."""
     rows, end = _rows_from(paths, _cursor(paths))
     if not rows and end == _cursor(paths):
         return []
@@ -616,7 +616,7 @@ def wait_slot(
     start (*budget_s* replaces that bound). A worker still alive then goes through :func:`drain` at once: SIGTERM,
     the grace, a verified end; its late result is reported as not counted. Nothing in flight: returns at once.
 
-    *relay* (MAIN, 10 Oct): the slot's pass events (``start``, ``end`` and ``held`` rows of its passes, WRITE and
+    *relay*: the slot's pass events (``start``, ``end`` and ``held`` rows of its passes, WRITE and
     CURATE) appended to ``events.jsonl`` after byte *events_from* are handed to it once each, in order, exactly as
     the synchronous v2 path emitted them (the same dicts :func:`.consolidate._deliver` wrote).
     """
@@ -698,7 +698,7 @@ def drain(
     kill: Callable[[int, int], None] = os.killpg,
     archive_to: Path | None = None,
 ) -> dict:
-    """Shutdown (spec §6): never starts a pass. A pass in flight may run until its own deadline (or *wait_s*, if
+    """Shutdown: never starts a pass. A pass in flight may run until its own deadline (or *wait_s*, if
     sooner); then SIGTERM cancels it through the abort path; a worker still alive after *grace_s* is killed and its
     end verified within *settle_s*. Every result no request applied is reported under ``after_last_request`` and
     marked ``counted: false``. With *archive_to*, once no worker can write, the memory repo is archived with every

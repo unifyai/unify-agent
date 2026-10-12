@@ -1,22 +1,22 @@
 """Value parsing for the UNIFY_MEMORY_V2 settings (unify/settings.py calls these validators).
 
-The contract (online build, spec §F1 and D23):
+The contract (online build):
 
 - ``UNIFY_MEMORY_V2``: ``on``, ``off`` or empty (empty and ``off`` mean off).
 - ``UNIFY_MEMORY_V2_E``: the experience budget E in tokens, a positive int; empty means 150000. A pass
   becomes due once the evidence since the last pass reaches E, and its USD cap is E times the allowance.
 - ``UNIFY_MEMORY_V2_WRITER_MODEL``: the model that runs consolidation passes; empty means
-  ``openai/gpt-6-sol``. Sol's reasoning effort has no switch: it is the actor's effort for the run.
-- ``UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS``: USD Sol may spend per token of experience, a positive
+  ``openai/gpt-6-sol``. The writer's reasoning effort has no switch: it is the actor's effort for the run.
+- ``UNIFY_MEMORY_V2_WRITER_ALLOWANCE_USD_PER_TOKENS``: USD the writer may spend per token of experience, a positive
   plain decimal string; empty means ``0.00000073``.
 - ``UNIFY_MEMORY_V2_WRITER_RUN_GUARD_USD``: a non-negative plain decimal string, or empty for no guard. When
-  set, no further pass starts once the run's committed Sol USD plus the next pass's cap would exceed it.
-- ``UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE`` and ``UNIFY_MEMORY_V2_WRITER_MAX_CALLS``: per-pass limits by the pass's Sol
+  set, no further pass starts once the run's committed writer USD plus the next pass's cap would exceed it.
+- ``UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE`` and ``UNIFY_MEMORY_V2_WRITER_MAX_CALLS``: per-pass limits by the pass's writer
   effort, maps ``low:1,medium:2,high:5`` (positive plain decimals multiplying the allowance cap) and
   ``low:40,medium:80,high:80`` (positive whole numbers of calls); empty means those defaults.
-- ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``: Sol's own route, both or neither. Set,
-  Sol's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of Sol's own,
-  so the actor's route never carries Sol's model); empty, they go as shipped. The URL is http(s) with a
+- ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``: the writer's route, both or neither. Set,
+  the writer's model calls go to that OpenAI-compatible base URL with that token (a proxy listener of the writer's own,
+  so the actor's route never carries the writer's model); empty, they go as shipped. The URL is http(s) with a
   host and no user, password, query or fragment; plain http only to exactly ``127.0.0.1`` with an explicit
   port (the launcher's loopback bridge; the token travels in a header). The token is a secret: at least 16
   URL-safe characters (RFC 3986 unreserved: ``A-Z a-z 0-9 . _ ~ -``, as ``secrets.token_urlsafe`` makes),
@@ -42,26 +42,26 @@ The contract (online build, spec §F1 and D23):
   the counterpart's next message; :mod:`.adapters.dialogue`) on the channel ``env``, which is the memory
   channel ``env`` (``env/env/``). Off, the episode is recorded exactly as without the setting.
 
-The v2.1 surfacing switches (lane S1). Each default restores the behaviour of the v2 screen build
-(``9deefbfd1``) exactly, so a paired v2 vs v2.1 comparison runs on one build:
+The library mode's surfacing switches. Each default restores the behaviour of the v2 screen build
+(``9deefbfd1``) exactly, so a paired v2 vs library-mode comparison runs on one build:
 
 - ``UNIFY_MEMORY_V2_SURFACING``: ``index`` (default; empty means it): the system prompt ends with the v2
   per-function index and the export line, the export holds only the commit's files, no input shapes are
-  recorded or frozen, and Sol's first message carries the index. ``catalogue``: a constant guide paragraph
+  recorded or frozen, and the writer's first message carries the index. ``catalogue``: a constant guide paragraph
   in the prompt (the same bytes for the whole run, from the first request with a non-empty library; the
   channels, counts and suspect flags are what ``memory.catalog()`` prints in the cell); the generated
   ``README.md``, ``.memory/catalog.json``, ``.memory/shapes.py`` and ``memory.py`` in every export; input
-  shapes recorded at each merge and frozen per commit; Sol's first message carries the README and its brief
+  shapes recorded at each merge and frozen per commit; the writer's first message carries the README and its brief
   says never to write those files.
 - ``UNIFY_MEMORY_V2_DOCSTRINGS``: ``off`` (default; empty means it) or ``on``: the gate's lean docstring
-  standard (G1) and examples run (G3), with the standard and the check list in Sol's brief. The online
+  standard (G1) and examples run (G3), with the standard and the check list in the writer's brief. The online
   driver and the offline replay (``memory_v2_offline/cadence_replay.py``) both build the gate from this
-  switch (:func:`surfacing_options`), so a replay enforces exactly what Sol is told.
+  switch (:func:`surfacing_options`), so a replay enforces exactly what the writer is told.
 - ``UNIFY_MEMORY_V2_SOFT_BUDGET``: ``off`` (default; empty means it): G4 refuses an index over 4,000
   estimated tokens, as in v2. ``on``: G4 only notes that hygiene is due past the budget, measured on the
   library's surface (the README and channel lines under ``catalogue``, the index under ``index``).
 
-Stage-5 test checks in the consolidation gate (memory v2.1; :mod:`unify.memory_v2.qa`), each off by default
+Stage-5 test checks in the consolidation gate (the library mode; :mod:`unify.memory_v2.qa`), each off by default
 and read only while ``UNIFY_MEMORY_V2`` is on:
 
 - ``UNIFY_MEMORY_V2_QA_FIXTURES``: ``on``, ``strict``, ``off`` or empty. Seeded random draws of recorded inputs
@@ -116,9 +116,9 @@ SURFACING = "UNIFY_MEMORY_V2_SURFACING"
 DOCSTRINGS = "UNIFY_MEMORY_V2_DOCSTRINGS"
 SOFT_BUDGET = "UNIFY_MEMORY_V2_SOFT_BUDGET"
 WRITER_USAGE = "UNIFY_MEMORY_V2_WRITER_USAGE"
-# memory v2.1 (spec v2.1; P1 onwards): the writer's batch map, views and coverage; off by default
+# library mode: the writer's batch map, views and coverage; off by default
 LIBRARY_MODE = "UNIFY_MEMORY_LIBRARY"
-# memory v2.1 P9: the bed's runner posts the verdicts the actor sees as structured checker lines; off by default
+# library mode: the bed's runner posts the verdicts the actor sees as structured checker lines; off by default
 CHECKER_VISIBLE = "UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE"
 DIALOGUE = "UNIFY_MEMORY_V2_DIALOGUE"
 
@@ -132,12 +132,12 @@ QA_FIXTURE_SIZE = "UNIFY_MEMORY_V2_QA_FIXTURE_SIZE"
 EXPERIENCE_BUDGET_DEFAULT = 150000
 WRITER_MODEL_DEFAULT = "openai/gpt-6-sol"
 WRITER_ALLOWANCE_DEFAULT = "0.00000073"
-#: Sol's reasoning effort. ``actor`` (the default) matches the actor's effort for the run (the lead, 8 Oct ~15:4xZ:
+#: The writer's reasoning effort. ``actor`` (the default) matches the actor's effort for the run (the design rule:
 #: "match the agent doing the task's effort with the agent that writes the stored memory"); ``low``, ``medium`` or
 #: ``high`` fixes it, for a declared mismatch ablation only (e.g. a HIGH actor with a LOW storer).
 WRITER_EFFORT_DEFAULT = "actor"
 WRITER_EFFORTS = ("actor", "low", "medium", "high")
-#: Per-pass limits by the pass's Sol effort (one rule for every bed; MAIN, 8 Oct): the allowance cap (E x a_tok)
+#: Per-pass limits by the pass's writer effort (one rule for every bed): the allowance cap (E x a_tok)
 #: is multiplied by the effort's scale, and the pass makes at most the effort's calls. The offline diagnostic
 #: measured USD per pass 0.095 (ARC MEDIUM), 0.178 (ARC HIGH), 0.116 (office MEDIUM), 0.30 (office HIGH) and
 #: 10/14/13/23 calls per pass; at scale 1 and 40 calls a HIGH pass merged nothing.
@@ -213,7 +213,7 @@ def parse_writer_allowance(v: Any) -> str:
 
 
 def parse_writer_run_guard(v: Any) -> str:
-    """The run's Sol USD guard: a non-negative plain decimal string, or ``""`` for none."""
+    """The run's writer USD guard: a non-negative plain decimal string, or ``""`` for none."""
     text = _stripped(v)
     if text == "":
         return ""
@@ -262,7 +262,7 @@ def parse_writer_token_fd(v: Any) -> int | None:
 
 
 class WriterRouteRefused(ValueError):
-    """Sol's route is set but not in effect (malformed, half set, or not what the settings hold): no
+    """The writer's route is set but not in effect (malformed, half set, or not what the settings hold): no
     consolidation pass starts. Its text names settings and rules, never a value.
     """
 
@@ -302,7 +302,7 @@ def parse_writer_base_url(v: Any) -> str:
     return text.rstrip("/")
 
 
-#: The one host plain http may name: the launcher's loopback bridge to Sol's proxy listener (the token travels
+#: The one host plain http may name: the launcher's loopback bridge to the writer's proxy listener (the token travels
 #: in a header, in clear). Exactly this IPv4 literal, compared as text: no other name, address or DNS lookup;
 #: always with an explicit port, as the launcher sends it (``http://127.0.0.1:<port>/sol/v1``).
 HTTP_HOST = "127.0.0.1"
@@ -330,7 +330,7 @@ _BEARER_TOKEN = re.compile(r"[A-Za-z0-9._~-]{%d,}" % _MIN_TOKEN_CHARS)
 
 
 def writer_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
-    """Sol's route, ``(base_url, token)``, or ``None`` when neither is set (the shipped route).
+    """The writer's route, ``(base_url, token)``, or ``None`` when neither is set (the shipped route).
 
     Exactly one set is refused (fail closed: no pass starts, so no call is made), as is either value in a
     wrong form. No error quotes a value.
@@ -356,15 +356,15 @@ def writer_route(base_url: Any, token: Any) -> tuple[str, SecretStr] | None:
 
 
 #: Why every pass is refused, once :func:`settle_writer_route_env` found the environment and the settings
-#: disagreeing about Sol's route; sticky for the life of the process.
+#: disagreeing about the writer's route; sticky for the life of the process.
 _ENV_REFUSAL: str | None = None
 
 
-#: The most bytes Sol's token may take on its descriptor, and how long reading it may take.
+#: The most bytes the writer's token may take on its descriptor, and how long reading it may take.
 TOKEN_FD_MAX_BYTES = 4096
 TOKEN_FD_TIMEOUT_S = 5.0
 
-#: Sol's token as read from ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD`` (once per process; never in ``os.environ``).
+#: The writer's token as read from ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD`` (once per process; never in ``os.environ``).
 _FD_TOKEN: SecretStr | None = None
 _FD_TRIED = False
 #: The descriptor number the first settle read (settings' value), kept once it has left ``os.environ``.
@@ -377,7 +377,7 @@ def _read_token_fd(
     fd_name: str = WRITER_TOKEN_FD,
     secret_name: str = WRITER_TOKEN,
 ) -> str:
-    """A route token (Sol's, or the fork lane's with its own names) from inherited descriptor *fd*, which is then
+    """A route token (the writer's, or the fork lane's with its own names) from inherited descriptor *fd*, which is then
     closed; refusals name the rule, never a value."""
     where = f"{fd_name} names descriptor {fd}, which"
     try:
@@ -431,7 +431,7 @@ def _read_token_fd(
 
 
 def writer_token(settings: Any) -> Any:
-    """The token Sol's route uses: the one read from ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD`` when that is set (empty
+    """The token the writer's route uses: the one read from ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD`` when that is set (empty
     if it could not be read; :func:`writer_route` then refuses), else ``UNIFY_MEMORY_V2_WRITER_TOKEN``.
     """
     if _stripped(getattr(settings, WRITER_TOKEN_FD, "")):
@@ -443,7 +443,7 @@ def settle_writer_route_env(
     environ: MutableMapping[str, str],
     settings: Any,
 ) -> str | None:
-    """Keep Sol's token out of *environ* and refuse every pass if *environ* and *settings* disagree.
+    """Keep the writer's token out of *environ* and refuse every pass if *environ* and *settings* disagree.
 
     Called once the settings are built (``unify/settings.py``), again after the CLI loads ``.env`` and whenever
     a pass is about to start. The first call with ``UNIFY_MEMORY_V2_WRITER_TOKEN_FD`` set reads the token from that
@@ -454,7 +454,7 @@ def settle_writer_route_env(
     case variant of ``UNIFY_MEMORY_V2_WRITER_TOKEN`` is removed from *environ* and its value registered for
     redaction (pydantic-settings matches names in any case). A token or base URL found in *environ* that the
     settings do not hold (one that arrived after they were built, from ``.env`` say, or two case variants
-    with different values) would otherwise silently leave Sol on the actor's route, so from then on
+    with different values) would otherwise silently leave the writer on the actor's route, so from then on
     :func:`writer_route` refuses every pass with the returned message. The message names settings, never
     values. Returns ``None`` when they agree.
     """
@@ -498,14 +498,14 @@ def settle_writer_route_env(
     if stray and _ENV_REFUSAL is None:
         _ENV_REFUSAL = (
             f"{' and '.join(sorted(set(stray)))} reached the environment after settings were read "
-            "(from .env, or in another letter case), so Sol's route is not what the settings hold; no "
+            "(from .env, or in another letter case), so the writer's route is not what the settings hold; no "
             "consolidation pass starts. Set both in the controller's process environment, not .env"
         )
     return _ENV_REFUSAL
 
 
 def parse_writer_effort(v: Any) -> str:
-    """Sol's reasoning effort: ``actor`` (the default: the actor's effort for the run), or a fixed ``low``,
+    """The writer's reasoning effort: ``actor`` (the default: the actor's effort for the run), or a fixed ``low``,
     ``medium`` or ``high`` for a declared mismatch ablation."""
     value = _stripped(v).lower() or WRITER_EFFORT_DEFAULT
     if value not in WRITER_EFFORTS:
@@ -547,7 +547,7 @@ def _positive_int(text: str) -> bool:
 
 
 def writer_effort_scale_map(v: Any) -> dict[str, Decimal]:
-    """The allowance-cap multiplier per Sol effort, from ``UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE``'s value."""
+    """The allowance-cap multiplier per writer effort, from ``UNIFY_MEMORY_V2_WRITER_EFFORT_SCALE``'s value."""
     m = _effort_map(
         WRITER_EFFORT_SCALE,
         v,
@@ -558,7 +558,7 @@ def writer_effort_scale_map(v: Any) -> dict[str, Decimal]:
 
 
 def writer_max_calls_map(v: Any) -> dict[str, int]:
-    """The per-pass call limit per Sol effort, from ``UNIFY_MEMORY_V2_WRITER_MAX_CALLS``'s value."""
+    """The per-pass call limit per writer effort, from ``UNIFY_MEMORY_V2_WRITER_MAX_CALLS``'s value."""
     m = _effort_map(WRITER_MAX_CALLS, v, WRITER_MAX_CALLS_DEFAULT, _positive_int)
     return {k: int(x) for k, x in m.items()}
 
@@ -616,19 +616,19 @@ parse_library_mode = parse_memory_library_mode
 
 
 def library_enabled(settings: Any) -> bool:
-    """Whether memory v2.1 is on in *settings* (``unify.settings.SETTINGS`` or any object; missing is off)."""
+    """Whether the library mode is on in *settings* (``unify.settings.SETTINGS`` or any object; missing is off)."""
     return parse_library_mode(getattr(settings, LIBRARY_MODE, "") or "") == "on"
 
 
 def parse_checker_visible(v: Any) -> str:
     """``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE``: ``off`` (also for empty) or ``on``. On (with ``UNIFY_MEMORY_LIBRARY``),
     the CLI takes ``{"checker": {"label": "pass"|"fail"}}`` lines: the verdicts the bed shows the actor, recorded
-    as agent-visible checker signals (spec v2.1 §5, P9)."""
+    as agent-visible checker signals."""
     return _on_off(CHECKER_VISIBLE, v)
 
 
-#: v2 settings whose value contradicts the v2.1 prompts or gate (spec §12.4): the v2 docstring check (fixtures
-#: under env/<channel>/tests/), the catalogue guide, memlab replay in tests, and the fixture-size cap (P5 forbids
+#: v2 settings whose value contradicts the library mode's prompts or gate: the v2 docstring check (fixtures
+#: under env/<channel>/tests/), the catalogue guide, memlab replay in tests, and the fixture-size cap (no
 #: caps on data).
 LIBRARY_CONFLICTS: tuple[tuple[str, str], ...] = (
     ("UNIFY_MEMORY_V2_DOCSTRINGS", "on"),
@@ -639,7 +639,7 @@ LIBRARY_CONFLICTS: tuple[tuple[str, str], ...] = (
 
 
 def library_conflicts(settings: Any) -> list[str]:
-    """``NAME=value`` for each setting in :data:`LIBRARY_CONFLICTS` at its contradicting value, while v2.1 is on."""
+    """``NAME=value`` for each setting in :data:`LIBRARY_CONFLICTS` at its contradicting value, in library mode."""
     if not library_enabled(settings):
         return []
     out = []
@@ -650,12 +650,12 @@ def library_conflicts(settings: Any) -> list[str]:
 
 
 LIBRARY_E = "UNIFY_MEMORY_LIBRARY_E"
-#: The v2.1 writer's reader calls per pass (PassConfig.max_reads), settable for the replay and the reruns.
+#: The library-mode writer's reader calls per pass (PassConfig.max_reads), settable for the replay and the reruns.
 LIBRARY_MAX_READS = "UNIFY_MEMORY_LIBRARY_MAX_READS"
-#: Opt-in (MAIN, 10 Oct): the CLI waits for the pass slot it spawned before it exits, for hosts whose sandbox ends
+#: Opt-in: the CLI waits for the pass slot it spawned before it exits, for hosts whose sandbox ends
 #: every process of the controller with it (a PID namespace); off: the request returns at once, as built.
 LIBRARY_WAIT_SLOT = "UNIFY_MEMORY_LIBRARY_WAIT_SLOT"
-#: Design r5 (lead, 10 Oct): at each episode's end the actor's own conversation is forked once, in a confined
+#: At each episode's end the actor's own conversation is forked once, in a confined
 #: process that writes only to the episode's staging dir (integration/fork.py); off: nothing happens, as built.
 LIBRARY_FORK = "UNIFY_MEMORY_LIBRARY_FORK"
 #: Retired: helpers are launched by the writer itself with the ``delegate`` tool (helpers.py), never by the harness.
@@ -668,7 +668,7 @@ LIBRARY_HELPER_MODEL = "UNIFY_MEMORY_LIBRARY_HELPER_MODEL"
 #: The candidate pool (pool.py): ``on`` keeps every proposal (staging, drafts, deferrals) open across passes on the
 #: memory repo's refs/heads/pool until the writer closes it; ``off``: none.
 LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
-#: MAIN 11 Oct (prepared; off until the lead decides): ``on`` moves old tool results out of the writer's
+#: Prepared, off by default: ``on`` moves old tool results out of the writer's
 #: conversation once it passes a size (writer_pass._compact); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
 #: The former reading rule. Finish never waits on reading: empty and ``optional`` are accepted and change nothing;
@@ -681,11 +681,11 @@ LIBRARY_ACTOR_INDEX = "UNIFY_MEMORY_LIBRARY_ACTOR_INDEX"
 LIBRARY_ACTOR_INDEX_VALUES = ("inline", "pointer")
 LIBRARY_COVERAGE_VALUES = ("optional",)
 LIBRARY_MAX_READS_DEFAULT = 400
-#: The v2.1 writer's USD per recorded token (spec §15, F9): v2's rate until the offline replay sizes it for coverage.
+#: The library-mode writer's USD per recorded token: v2's rate until the offline replay sizes it for coverage.
 LIBRARY_WRITER_USD_PER_TOKEN = "UNIFY_MEMORY_LIBRARY_WRITER_USD_PER_TOKEN"
 LIBRARY_PASS_WALL_S = "UNIFY_MEMORY_LIBRARY_PASS_WALL_S"
 WRITER_JOURNAL = "UNIFY_MEMORY_V2_WRITER_JOURNAL"
-#: The pass's wall-clock bound in seconds (spec §6, §9.2, §15): calibrated with the budget by the offline replay.
+#: The pass's wall-clock bound in seconds: calibrated with the budget by the offline replay.
 LIBRARY_PASS_WALL_S_DEFAULT = 2700
 
 
@@ -708,7 +708,7 @@ def _positive_whole(name: str, default: int, v: Any) -> int:
 
 
 def parse_library_e(v: Any) -> int:
-    """``UNIFY_MEMORY_LIBRARY_E``: E under v2.1, positive digits (D43; empty: 100,000)."""
+    """``UNIFY_MEMORY_LIBRARY_E``: E under the library mode, positive digits (empty: 100,000)."""
     from ..trigger import EXPERIENCE_BUDGET_LIBRARY
 
     return _positive_whole(LIBRARY_E, EXPERIENCE_BUDGET_LIBRARY, v)
@@ -720,8 +720,8 @@ def parse_library_pass_wall_s(v: Any) -> int:
 
 
 def parse_writer_journal(v: Any) -> str:
-    """Empty, or the absolute path of the Sol route proxy's journal (JSON lines with ``request_attempt_id``,
-    ``generation_id`` and ``account_charge``), read only to reconcile cancelled calls (spec §6).
+    """Empty, or the absolute path of the writer route proxy's journal (JSON lines with ``request_attempt_id``,
+    ``generation_id`` and ``account_charge``), read only to reconcile cancelled calls.
     """
     text = _stripped(v)
     if text and not text.startswith("/"):
@@ -740,7 +740,7 @@ def parse_library_writer_usd_per_token(v: Any) -> str:
 
 
 def library_writer_usd_per_token(settings: Any) -> Decimal:
-    """The USD per recorded token of a v2.1 pass's cap (MAIN, 9 Oct: the replay can raise it without code)."""
+    """The USD per recorded token of a library-mode pass's cap (a setting, so the replay can raise it without code)."""
     return Decimal(
         parse_library_writer_usd_per_token(
             getattr(settings, LIBRARY_WRITER_USD_PER_TOKEN, ""),
@@ -749,7 +749,7 @@ def library_writer_usd_per_token(settings: Any) -> Decimal:
 
 
 def parse_library_max_reads(v: Any) -> int:
-    """``UNIFY_MEMORY_LIBRARY_MAX_READS``: a pass's reader calls under v2.1, positive digits (empty: 400)."""
+    """``UNIFY_MEMORY_LIBRARY_MAX_READS``: a pass's reader calls in library mode, positive digits (empty: 400)."""
     return _positive_whole(LIBRARY_MAX_READS, LIBRARY_MAX_READS_DEFAULT, v)
 
 
@@ -773,7 +773,7 @@ def library_fork(settings: Any) -> bool:
     return parse_library_fork(getattr(settings, LIBRARY_FORK, "") or "") == "on"
 
 
-# --- the fork lane's route (docs/design/fork-lane-design.md; RUNTIME C2, C3, C5) ----------------------------------
+# --- the fork lane's route (docs/design/fork-lane-design.md) ----------------------------------------------------
 #: The key proxy's fork route: its base URL and the descriptor carrying its token, handed by the runner's learner to
 #: this controller's spawn alone. Read once (:func:`settle_fork_route_env`), then both names leave the environment;
 #: neither ever reaches an actor box (``HARNESS_ONLY_ENV``); the token lives in this process and goes to the fork worker
@@ -817,7 +817,7 @@ def settle_fork_route_env(
     environ: MutableMapping[str, str],
     settings: Any,
 ) -> str | None:
-    """C3: the first call with ``UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD`` set reads the fork token from that inherited
+    """The first call with ``UNIFY_MEMORY_LIBRARY_FORK_TOKEN_FD`` set reads the fork token from that inherited
     descriptor once (:func:`_read_token_fd`: inherited, a pipe or file, size-capped, timed, closed; registered for
     redaction by value) and keeps it in this process. Every call removes every case variant of both route names from
     *environ*, so no child spawned afterwards sees them. The base URL and the descriptor are set together or not at
@@ -850,7 +850,7 @@ def settle_fork_route_env(
 
 
 def fork_lane_route() -> tuple[tuple[str, str] | None, str | None]:
-    """C5: ``((chat completions URL, token), None)`` on the key proxy's fork lane, or ``(None, why)``: a refusal from
+    """``((chat completions URL, token), None)`` on the key proxy's fork lane, or ``(None, why)``: a refusal from
     :func:`settle_fork_route_env`, or ``no fork lane``. Never any other route (no fallback to the actor's).
     """
     if _FORK_REFUSAL is not None:
@@ -1049,15 +1049,15 @@ def writer_journal(settings: Any) -> str | None:
 
 
 def checker_visible(settings: Any) -> bool:
-    """The bed's declaration ``checker_visible_to_actor`` (spec v2.1 §5): whether the checker's verdict is one
+    """The bed's declaration ``checker_visible_to_actor``: whether the checker's verdict is one
     the actor itself sees. Only then does the item lifecycle count checker signals. Missing is off. The one
-    switch P9 reads too."""
+    switch the checker-line reader reads too."""
     return parse_checker_visible(getattr(settings, CHECKER_VISIBLE, "") or "") == "on"
 
 
 @dataclass(frozen=True)
 class SurfacingOptions:
-    """The three v2.1 surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
+    """The three library-mode surfacing switches, parsed; the defaults are the v2 screen build's behaviour."""
 
     surfacing: str = SURFACING_DEFAULT
     docstrings: bool = False
@@ -1068,7 +1068,7 @@ class SurfacingOptions:
         return self.surfacing == "catalogue"
 
     def gate_kwargs(self) -> dict[str, Any]:
-        """The :class:`unify.memory_v2.gate.Gate` keyword arguments these switches set (Sol's brief follows
+        """The :class:`unify.memory_v2.gate.Gate` keyword arguments these switches set (the writer's brief follows
         the gate it is given, so this is the one place both are configured)."""
         return {
             "surfacing": self.surfacing,

@@ -1,4 +1,4 @@
-"""The end event's spend split by lane, helpers, staging and S0 fields."""
+"""The end event's spend split by lane, helpers, staging and similarity-miner fields."""
 
 from decimal import Decimal
 

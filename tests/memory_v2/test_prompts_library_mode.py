@@ -255,7 +255,7 @@ def test_no_read_only_instruction():
 def test_the_guide_sentences_are_kept():
     for name, t in _texts().items():
         assert "does not run the tests" not in t, name
-    # the two GUIDE sentences that wait for the lead's decision are kept
+    # the two GUIDE sentences still awaiting a decision are kept
     assert (
         "Before you write code for a step, look in the index for an item that does it."
         in pv.GUIDE_LIBRARY

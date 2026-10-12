@@ -61,7 +61,7 @@ def test_write_points_lifted_functions_to_replay_without_requiring_it(monkeypatc
 
 
 def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar(monkeypatch):
-    """M4h (MAIN, 11 Oct): the live stage-25 writer read the old generality sentence as "only cross-task, verified
+    """A live writer read the old generality sentence as "only cross-task, verified
     knowledge" and dismissed recurring solved tasks. The wording now encourages generality and values a rule for one
     kind of request that comes back; the replay sentence offers verification, it does not require it.
     """

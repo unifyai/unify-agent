@@ -73,7 +73,7 @@ def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(
     tmp_path,
     monkeypatch,
 ):
-    """The miner is not on the writer's path: no /inputs/s0, no cluster field in any batch-map row, no cluster entry
+    """The miner is not on the writer's path: no similarity-miner input directory, no cluster field in any batch-map row, no cluster entry
     fed to the pool, and no miner summary on the outcome."""
     seen: dict = {}
     staged = writer_pass.WriterPass._staging_library_mode
