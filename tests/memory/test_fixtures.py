@@ -322,10 +322,10 @@ def test_ledger_for_takes_the_first_provenance_that_applies_in_order():
         "backfilled": True,
     }
     assert none_path not in ledger  # 5. none
-    assert notes == [
-        f"G2 examples: fixture {backfill_path}'s provenance was re-derived from its bytes (e1 2)",
+    assert notes == [  # in path order
         f"G2 examples: fixture {none_path} has no recorded provenance (made before provenance was kept, and its "
         "bytes match no recorded source); it grounds no argument",
+        f"G2 examples: fixture {backfill_path}'s provenance was re-derived from its bytes (e1 2)",
     ]
     assert sorted(asked) == sorted(files.keys() - {in_pass_path})  # each file looked up once
     assert loads == ["e1", "e1"]  # one re-verify, one source index for every backfill
