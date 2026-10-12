@@ -81,13 +81,12 @@ def test_cell_output_is_head_first_and_marked():
     assert full == text
 
 
-def test_finish_refused_until_covered_then_cap(tmp_path):
+def test_finish_never_waits_for_reading(tmp_path):
     out, model = _pass(tmp_path, [], max_calls=5)  # Turns finishes on every turn
-    assert out.coverage["missing"] == ["e1", "e2"]
-    assert any(
+    assert out.coverage["missing"] == []
+    assert not any(
         c.startswith("not finished: 2 episode(s)") for c in model.outputs.values()
     )
-    assert not out.passed and CODE_PASS_CAP in out.codes
 
 
 def test_read_episode_credits_shown_ranges_and_finish_succeeds(tmp_path):
@@ -112,16 +111,7 @@ def test_read_episode_credits_shown_ranges_and_finish_succeeds(tmp_path):
     assert (
         out.summary == "done"
     )  # finish accepted (Turns sees no reply after the last turn)
-    s = out.coverage
-    assert (
-        s["missing"] == []
-        and s["covered"] == 1
-        and s["dismissed"] == {"e2": "no reusable work"}
-    )
-    dismissed = len(
-        bm.part_text(EPS["e2"], "request").encode(),
-    )  # e2 was dismissed, not read
-    assert s["bytes_read"] == s["bytes_required"] - dismissed
+    assert out.coverage["missing"] == []
 
 
 def test_read_and_grep_tools_are_confined_and_bounded(tmp_path, monkeypatch):
@@ -231,8 +221,6 @@ def test_read_episode_parts_share_one_page(tmp_path):
     )
     # m4k: more than 8 parts page instead of refusing; the rest is named for the next call
     assert model.outputs["many"].endswith('next: parts=["request"]]')
-    s = out.coverage
-    assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1
 
 
 def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):

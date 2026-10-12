@@ -29,37 +29,13 @@ def test_the_switch_is_required_by_default_and_takes_only_its_two_values():
         raise AssertionError("an unknown value must be refused")
 
 
-def test_the_required_brief_is_unchanged_and_the_optional_one_states_the_contract():
+def test_the_brief_is_the_same_under_both_values_and_names_no_reading_rule():
     for pool_on in (False, True):
-        req = pv.write_brief_now(pool=pool_on)
-        assert req == pv.write_brief_now(pool=pool_on, coverage="required")
+        text = pv.write_brief_now(pool=pool_on)
         assert (
-            "`finish` is refused while any episode is neither covered nor dismissed. Scan the episodes cheaply"
-            in req
+            "neither covered nor dismissed" not in text and "required_parts" not in text
         )
-        assert "You are done when every episode in the batch is covered" in req
-        opt = pv.write_brief_now(pool=pool_on, coverage="optional")
-        assert pv.FINISH_COVERAGE_OPTIONAL + "Scan the episodes cheaply" in opt
-        assert "is refused while any episode" not in opt
-        assert "You are done when every item you wrote has passed the gate" in opt
-        # only the two sentences differ
-        assert opt.replace(pv.FINISH_COVERAGE_OPTIONAL, "") == req.replace(
-            "`finish` is refused while any episode is neither covered nor dismissed. ",
-            "",
-        ).replace(
-            "every episode in the batch is "
-            + (
-                "covered, dismissed with a reason, or attached to a pool entry"
-                if pool_on
-                else "covered or dismissed with a reason"
-            )
-            + ", and ",
-            "",
-        )
-    low = pv.FINISH_COVERAGE_OPTIONAL.lower()
-    assert " must " not in low and " only " not in low and "measure" not in low
-    assert "share" not in low and "evidence" not in low and "task" not in low
-    assert pv.benchmark_words(opt) == [] and pv.example_checks(opt) == []
+        assert "every episode in the batch" not in text
 
 
 def test_dismiss_stays_a_tool_under_both_values():
@@ -67,45 +43,30 @@ def test_dismiss_stays_a_tool_under_both_values():
     assert "dismiss" in names and "read_episode" in names
 
 
-def test_finish_needs_coverage_only_when_required(tmp_path, monkeypatch):
+def test_finish_is_accepted_without_reading_under_both_values(tmp_path, monkeypatch):
+    """The batch map names no reading list, so finish never waits for reading and no episode is unread."""
     _finish_with(monkeypatch, EMPTY)
-    (tmp_path / "r").mkdir()
-    (tmp_path / "o").mkdir()
-    req, rmodel = _pass(tmp_path / "r", FINISH, eids=("e2",), max_calls=3)
-    assert rmodel.outputs["f"].startswith("not finished: 1 episode(s)")
-    assert not req.finished and req.coverage_measures is None
-    assert "unread" not in (req.coverage or {})
-    opt, omodel = _pass(
-        tmp_path / "o",
-        FINISH,
-        eids=("e2",),
-        max_calls=3,
-        coverage_rule="optional",
-    )
-    # accepted at its first call: the pass ended there, so no refusal was ever fed back to the model
-    assert opt.finished and "f" not in omodel.outputs and "fin" not in omodel.outputs
-    assert opt.coverage["unread"] == ["e2"] and opt.coverage["missing"] == ["e2"]
-    m = opt.coverage_measures
-    assert m["unread"] == 1 and m["episodes"] == 1 and m["episodes_opened"] == 0
-    assert m["read_share"] == 0.0 and m["empty_pass"] is True
+    for rule in ("required", "optional"):
+        (tmp_path / rule).mkdir()
+        out, model = _pass(
+            tmp_path / rule,
+            FINISH,
+            eids=("e2",),
+            max_calls=3,
+            coverage_rule=rule,
+        )
+        assert out.finished and "f" not in model.outputs
+        assert (out.coverage or {}).get("unread", []) == []
 
 
 @needs_bwrap
-def test_an_unread_episode_is_kept_in_the_pool_never_dropped(tmp_path, monkeypatch):
+def test_no_unread_entry_enters_the_pool(tmp_path, monkeypatch):
     uid = pool.entry_id("unread", "e2")
     with monkeypatch.context() as m:
         _finish_with(m, EMPTY)
         st = _Stores(tmp_path / "o")
-        out, _ = st.run(FINISH, "p1", coverage_rule="optional")
-    entry = st.pool().entries[uid]
-    assert entry.kind == "unread" and entry.status == "open"
-    assert entry.provenance["episodes"] == ["e2"] and entry.data["parts_read"] == 0
-    assert out.pool["unread_open"] == 1
-    with monkeypatch.context() as m:
-        _finish_with(m, EMPTY)
-        st2 = _Stores(tmp_path / "r")
-        out2, _ = st2.run(FINISH + FINISH, "p1")
-    assert uid not in st2.pool().entries and "unread_open" not in out2.pool
+        st.run(FINISH, "p1", coverage_rule="optional")
+    assert uid not in st.pool().entries
 
 
 @needs_bwrap
@@ -138,14 +99,14 @@ def test_the_measures_name_unread_episodes_that_carry_evidence():
         {
             "episode_id": "a",
             "functions": [{"name": "f"}],
-            "signals": [{"kind": "cell_error", "cell": 1}],
+            "structural_events": [{"kind": "cell_error", "cell": 1}],
             "pool_entries": [],
             "staging": {"candidates": [{"name": "g"}]},
         },
         {
             "episode_id": "b",
             "functions": [],
-            "signals": [],
+            "structural_events": [],
             "staging": {"candidates": []},
         },
         {"episode_id": "c", "functions": [{"name": "h"}]},  # read: not unread
@@ -183,5 +144,5 @@ def test_a_measures_failure_never_fails_the_pass(tmp_path, monkeypatch):
         max_calls=3,
         coverage_rule="optional",
     )
-    assert out.finished and out.coverage["unread"] == ["e2"]
-    assert out.coverage_measures == {"error": "RuntimeError: boom"}
+    assert out.finished
+    assert out.coverage_measures in (None, {"error": "RuntimeError: boom"})

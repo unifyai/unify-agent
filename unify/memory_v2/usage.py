@@ -5,12 +5,17 @@ code and tracebacks, never a checker's verdict or text (ruling R10). Two readers
 
 * :func:`item_signals`: the flags the hygiene and promotion stages will read (this module only reports
   them; nothing here promotes, retires or hides an item);
-* :func:`usage_table`: the compact, deterministic table a consolidation pass's first message carries when
+* :func:`usage_table`: the compact, deterministic table of a batch's library use: in library mode the file
+  ``/inputs/usage/table.md`` of a store pass; otherwise the end of a pass's first message when
   ``UNIFY_MEMORY_V2_WRITER_USAGE=on`` (off by default).
+
+:func:`writer_usage_record` gives one episode's recorded library use as the writer reads it
+(``/inputs/usage/<episode>.json``), with host paths taken out.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Iterable
 
 from .evidence import EvidenceStore
@@ -21,6 +26,7 @@ __all__ = [
     "item_signals",
     "outcome_report",
     "usage_table",
+    "writer_usage_record",
 ]
 
 MAX_TABLE_ROWS = 60
@@ -209,3 +215,46 @@ def usage_table(
             "counted as showing nothing)",
         )
     return "\n".join(lines) + "\n"
+
+
+#: Keys of a recorded library-use record that hold host paths of the actor's export, which the writer never needs.
+_HOST_PATH_KEYS = frozenset({"export_roots"})
+#: What a host path of the actor's export is shown as.
+LIBRARY_COPY = "<library copy>"
+
+
+def writer_usage_record(memory_use: object) -> object:
+    """An episode's library-use record (``Episode.memory_use``) as the writer reads it: the harness's own counts,
+    with every host path taken out. The export roots are dropped, and any string that held one (or the home
+    directory) shows :data:`LIBRARY_COPY` (or ``~``) in its place, so nothing of the host's layout reaches the box.
+    """
+    roots: list[str] = []
+    if isinstance(memory_use, dict):
+        raw = memory_use.get("export_roots")
+        if isinstance(raw, (list, tuple)):
+            roots = sorted({r for r in raw if isinstance(r, str) and r}, key=len, reverse=True)
+        elif isinstance(raw, str) and raw:
+            roots = [raw]
+    home = os.path.expanduser("~")
+
+    def text(v: str) -> str:
+        for r in roots:
+            v = v.replace(r, LIBRARY_COPY)
+        if home and home not in ("/", "~"):
+            v = v.replace(home, "~")
+        return v
+
+    def clean(o: object) -> object:
+        if isinstance(o, str):
+            return text(o)
+        if isinstance(o, dict):
+            return {
+                text(str(k)): clean(v)
+                for k, v in o.items()
+                if str(k) not in _HOST_PATH_KEYS
+            }
+        if isinstance(o, (list, tuple)):
+            return [clean(v) for v in o]
+        return o
+
+    return clean(memory_use)

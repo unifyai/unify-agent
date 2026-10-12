@@ -39,15 +39,23 @@ def _ep():
     )
 
 
-def test_library_export_carries_signals_and_actor_code(tmp_path: Path):
-    export_for_writer(lambda e: _ep(), ["e1"], tmp_path, library_mode=True)
-    row = json.loads((tmp_path / "e1.json").read_text())
+def test_library_export_carries_structural_events_and_actor_code(tmp_path: Path):
+    export_for_writer(
+        lambda e: _ep(),
+        ["e1"],
+        tmp_path / "episodes",
+        library_mode=True,
+        usage_dest=tmp_path / "usage",
+    )
+    row = json.loads((tmp_path / "episodes" / "e1.json").read_text())
     assert row["regime"] == "implicit" and row["memory_main"] == "abc"
     assert (
         row["cells"][1]["error"] == "Boom" and row["cells"][0]["language"] == "python"
     )
-    assert {"kind": "action_error", "cell": 1, "action": 0} in row["signals"]
-    assert row["memory_use"] == {"imported": []}
+    assert {"kind": "action_error", "cell": 1, "action": 0} in row["structural_events"]
+    # the use record is telemetry: its own file, never in the episode
+    assert "memory_use" not in row and "signals" not in row
+    assert json.loads((tmp_path / "usage" / "e1.json").read_text()) == {"imported": []}
 
 
 def test_v2_export_unchanged_when_off(tmp_path: Path):
@@ -113,13 +121,26 @@ def test_stage_inputs_writes_the_batch_map_only_under_library_mode(tmp_path: Pat
         (_staged(tmp_path / "on", library_mode=True) / "batch_map.json").read_text(),
     )
     assert m["version"] == 1 and m["episodes"][0]["episode_id"] == "e1"
-    assert m["episodes"][0]["required_parts"] == [
-        "request",
-        "cell:0",
-        "cell:1",
-        "action:0",
-    ]
+    assert "required_parts" not in m["episodes"][0]
+    assert m["episodes"][0]["end_parts"] == ["cell:0", "action:0"]
+    on = tmp_path / "on" / "inputs"
+    assert json.loads((on / "usage" / "e1.json").read_text()) == {"imported": []}
     assert not (_staged(tmp_path / "off") / "batch_map.json").exists()
+
+
+def test_a_curate_pass_stages_no_batch_map_and_no_usage(tmp_path: Path):
+    from tests.memory_v2.test_writer_pass import _writer
+    from unify.memory_v2.trigger import PassRequest
+
+    _, _, writer = _writer(tmp_path, None, library_mode=True)
+    writer.load = lambda e: _ep()
+    inputs = tmp_path / "inputs"
+    try:
+        writer._stage_inputs(PassRequest("curate", None, ["e1"], False), inputs)
+    except Exception:  # noqa: BLE001 - a curate pass without its state may stop after the episodes are staged
+        pass
+    assert (inputs / "episodes" / "e1.json").is_file()
+    assert not (inputs / "batch_map.json").exists() and not (inputs / "usage").exists()
 
 
 def test_export_blobs_records_the_bytes_exported(tmp_path: Path):

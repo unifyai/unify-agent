@@ -32,8 +32,22 @@ def test_write_asks_for_a_linked_when_to_use_note_without_rules_about_ids():
     assert pv.benchmark_words(text) == [] and pv.example_checks(text) == []
 
 
-def test_write_points_lifted_functions_to_replay_without_requiring_it():
-    """MAIN 10 Oct: S2 went unused in the stage-1 replay; WRITE now says how to verify a lifted function."""
+def _with_replay(monkeypatch):
+    """The replay sentence appears only when the replay tool is registered for the writer."""
+    from unify.memory_v2 import tool_spec
+
+    spec = tool_spec.ToolSpec(
+        name="replay",
+        description="Verify an item by replay.",
+        parameters={"type": "object", "properties": {}},
+        roles=frozenset({"write"}),
+    )
+    monkeypatch.setattr(tool_spec, "registry", lambda: (spec,))
+
+
+def test_write_points_lifted_functions_to_replay_without_requiring_it(monkeypatch):
+    """WRITE says how to verify a lifted function when the replay tool exists."""
+    _with_replay(monkeypatch)
     text = pv.write_brief_now()
     assert (
         "listing in its manifest entry the code it `replaces` and calling `replay`"
@@ -46,11 +60,12 @@ def test_write_points_lifted_functions_to_replay_without_requiring_it():
     assert "calling `replay`" not in pv.curate_brief_now()
 
 
-def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar():
+def test_the_notes_and_replay_sentences_inform_and_never_set_a_bar(monkeypatch):
     """M4h (MAIN, 11 Oct): the live stage-25 writer read the old generality sentence as "only cross-task, verified
     knowledge" and dismissed recurring solved tasks. The wording now encourages generality and values a rule for one
     kind of request that comes back; the replay sentence offers verification, it does not require it.
     """
+    _with_replay(monkeypatch)
     text = pv.write_brief_now()
     notes = text.split("A note states its rule")[1].split("\n")[0]
     assert "worth keeping when that kind of request comes back" in notes

@@ -608,7 +608,12 @@ COMPACT_KEEP_LAST = 6
 _COMPACT_STUB = "[compacted: "
 
 
-def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) -> int:
+def _compact(
+    messages: list[dict],
+    out_dir: Path,
+    at: int = COMPACT_AT_CHARS,
+    originals: dict[int, str] | None = None,
+) -> int:
     """Cache-preserving compaction (MAIN 11 Oct; the rehearsal's HIGH pass re-sent its whole history on each of 286
     calls). When the conversation's prompt text (:func:`_prompt_chars`) passes *at*, and the old tool results it may
     move hold at least half of *at* (a real drop, so a compaction is rare), the oldest tool results (never the system message,
@@ -617,7 +622,9 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
     most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
     the number of results moved. RUNTIME's defence in depth (MAIN 11 Oct): nothing is compacted when *out_dir* or its
     ``compacted/`` is a link or not a directory, and each file is created new, never through a link (a result whose
-    file cannot be made that way stays in the conversation)."""
+    file cannot be made that way stays in the conversation). *originals*, when given, receives each moved result's
+    text by message index, so the transcript keeps what the writer saw before the compaction.
+    """
     # m4k-c2 (the rehearsal-2 diagnosis ab734c1e): the size is the prompt text, never the provider's opaque fields
     # (provider_specific_fields, reasoning blobs), which made every call "over size" and compacted once per call
     sizes = [_prompt_chars(m) for m in messages]
@@ -661,6 +668,8 @@ def _compact(messages: list[dict], out_dir: Path, at: int = COMPACT_AT_CHARS) ->
             continue  # it exists already, or is a link: this result stays in the conversation
         with os.fdopen(fd, "w") as fh:
             fh.write(content)
+        if originals is not None:
+            originals[i] = content
         m["content"] = (
             f"{_COMPACT_STUB}this result ({len(content)} characters) was moved out of the conversation to keep it "
             f'short; read it again with read(path="/outputs/compacted/{target.name}")]'
@@ -789,7 +798,7 @@ def _coverage_measures(
                     "cell_error",
                     any(
                         isinstance(s, dict) and s.get("kind") == "cell_error"
-                        for s in r.get("signals") or []
+                        for s in r.get("structural_events") or []
                     ),
                 ),
                 ("pool", r.get("pool_entries")),
@@ -1032,6 +1041,9 @@ class PassConfig:
     similar_index: str | None = None
     # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
     pool: bool = False
+    # UNIFY_MEMORY_LIBRARY_FORK: the episode-end fork stages candidates, so the writer's brief and batch-map rows
+    # describe /inputs/staging; off: neither names staging
+    fork: bool = False
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
     # Sol's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
     compact: bool = False
@@ -1102,12 +1114,15 @@ def export_for_writer(
     response_blobs: tuple[BlobStore, Path] | None = None,
     blob_min_bytes: int = _qa.RESPONSE_BLOB_BYTES,
     library_mode: bool = False,
+    usage_dest: Path | None = None,
 ) -> None:
     """Write ``<dest>/<episode_id>.json`` per episode: the request, cells and actions, and nothing else.
 
-    With *library_mode* (spec v2.1 D31) the row also carries the declared regime, the memory pin, the work-tree diff,
-    the use record, the structural signals, and each cell's error and language. Ruling R10's allowlist applies
-    only with *library_mode* off.
+    With *library_mode* the row also carries the declared regime, the memory pin, the work-tree diff, the
+    structural events, and each cell's error and language. The episode's library-use record is harness telemetry,
+    not part of the episode: with *usage_dest* it goes to ``<usage_dest>/<episode_id>.json``
+    (:func:`.usage.writer_usage_record`, host paths removed), and it is never in the episode file. Ruling R10's
+    allowlist applies only with *library_mode* off.
 
     Ruling R10: no outcome, signal or checker data reaches Sol. The fields are an allowlist: cells carry
     their index, code and printed output; actions their index (the ``action_index`` covers cite), cell,
@@ -1158,13 +1173,25 @@ def export_for_writer(
             ],
         }
         if library_mode:
-            from .batch_map import structural_signals
+            from .batch_map import structural_events
 
             row["regime"] = ep.regime
             row["memory_main"] = ep.memory_main
             row["worktree_diff"] = ep.worktree_diff or ""
-            row["memory_use"] = ep.memory_use
-            row["signals"] = structural_signals(ep)
+            row["structural_events"] = structural_events(ep)
+            if usage_dest is not None:
+                from .usage import writer_usage_record
+
+                Path(usage_dest).mkdir(parents=True, exist_ok=True)
+                (Path(usage_dest) / f"{eid}.json").write_text(
+                    json.dumps(
+                        writer_usage_record(ep.memory_use),
+                        sort_keys=True,
+                        default=str,
+                        indent=1,
+                    )
+                    + "\n",
+                )
             for c_row, c in zip(row["cells"], ep.cells):
                 c_row["error"] = c.error
                 c_row["language"] = c.language
@@ -1455,6 +1482,15 @@ def _scrub(o: object) -> object:
     return o
 
 
+#: sha256 of each brief or tool JSON whose text a transcript of this process already carries (when no blob store
+#: holds it): the text is stored once per run, and later transcripts name it by its hash.
+_TRANSCRIPT_TEXTS: set[str] = set()
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def transcript_lines(
     messages: list,
     pass_id: str,
@@ -1462,39 +1498,115 @@ def transcript_lines(
     *,
     max_bytes: int = TRANSCRIPT_MAX_BYTES,
     string_chars: int = TRANSCRIPT_STRING_CHARS,
-    brief: str | None = None,
+    tools: list | None = None,
+    originals: Mapping[int, str] | None = None,
+    store: Callable[[bytes], str] | None = None,
 ) -> list[str]:
-    """Sol's message list as JSON lines ``{"pass_id", "i", "message"}``: redacted first, then bounded.
+    """The writer's message list as JSON lines ``{"pass_id", "i", "message"}``: redacted first, then bounded.
 
-    Each message becomes plain JSON, then *redactor* (the run's environment credentials and registered
-    secrets by value, then key shapes; key shapes alone without one) and :func:`.redact.redact_error` (every
-    secret registered with :mod:`unify.process_secrets` when the lines are made, so a token registered after
-    the redactor was built, such as Sol's route token, is caught too; credential structures; key shapes)
-    rewrite every string and key before anything is cut, so a cut never leaves part of a secret unredacted.
-    Then every string is cut to *string_chars* characters and the lines stop before *max_bytes* in all,
-    ending with ``{"pass_id", "truncated": n}`` for the *n* messages left out. The brief (``WRITER_SYSTEM``, or
-    *brief*: the pass's own under its switches) is named (``(WRITER_SYSTEM)``), not copied; a message that is
-    not JSON data is named by its type.
+    The first line is a header ``{"pass_id", "header": {...}}`` naming the brief (the system message) and the tool
+    JSON by sha256 with their sizes. With *store* (a content-addressed store such as the gate's blob store) their
+    bytes are put there; without one, the header carries their text the first time this process writes them, so
+    each is stored once per run. The system message itself is then named, ``(brief sha256 <hash>)``, not copied.
+
+    Each message becomes plain JSON, then *redactor* (the run's environment credentials and registered secrets by
+    value, then key shapes; key shapes alone without one) and :func:`.redact.redact_error` (every secret registered
+    with :mod:`unify.process_secrets` when the lines are made, credential structures, key shapes) rewrite every
+    string and key before anything is cut, so a cut never leaves part of a secret unredacted. Then every string is
+    cut to *string_chars* characters, except in the first user message, which is kept whole. A tool result that
+    compaction moved out of the conversation is recorded as it was before (*originals*, by message index) and
+    marked ``"compacted": true``. The lines stop before *max_bytes* in all, ending with
+    ``{"pass_id", "truncated": n}`` for the *n* messages left out. A message that is not JSON data is named by its
+    type.
     """
     red = redactor if redactor is not None else Redactor()
-    briefs = {WRITER_SYSTEM} | ({brief} if brief is not None else set())
+    originals = originals or {}
     marker_room = 200
     lines: list[str] = []
     used = 0
+
+    carried: list[str] = []  # hashes whose text this header carries
+
+    def text_ref(kind: str, text: str, inline: bool) -> dict:
+        data = text.encode("utf-8")
+        sha = _sha(data)
+        ref: dict = {f"{kind}_sha256": sha, f"{kind}_chars": len(text)}
+        if store is not None:
+            try:
+                store(data)
+                ref[f"{kind}_stored"] = "blobs"
+                return ref
+            except Exception:  # noqa: BLE001 - the transcript keeps the text instead
+                pass
+        if sha in _TRANSCRIPT_TEXTS:
+            ref[f"{kind}_stored"] = "earlier transcript"
+        elif inline:
+            ref[kind] = _scrub(red.obj(text))
+            ref[f"{kind}_stored"] = "transcript"
+            carried.append(sha)
+        else:
+            ref[f"{kind}_stored"] = "not stored: larger than the transcript's size"
+        return ref
+
+    first = messages[0] if messages else None
+    brief = (
+        first.get("content")
+        if isinstance(first, dict) and first.get("role") == "system"
+        else None
+    )
+    tools_text = (
+        json.dumps(tools, sort_keys=True, default=str, ensure_ascii=False)
+        if tools
+        else None
+    )
+
+    def header_line(inline: bool) -> str | None:
+        header: dict = {}
+        if isinstance(brief, str):
+            header |= text_ref("brief", brief, inline)
+        if tools_text is not None:
+            header |= text_ref("tools", tools_text, inline)
+        if not header:
+            return None
+        return json.dumps({"pass_id": pass_id, "header": header}, sort_keys=True)
+
+    line = header_line(True)
+    if (
+        line is not None
+        and len(line.encode("utf-8")) + 1 > (max_bytes - marker_room) // 2
+    ):
+        # the texts would crowd out the messages: name them by hash only
+        carried.clear()
+        line = header_line(False)
+    if line is not None:
+        _TRANSCRIPT_TEXTS.update(carried)
+        lines.append(line)
+        used += len(line.encode("utf-8")) + 1
+    first_user = next(
+        (
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, dict) and m.get("role") == "user"
+        ),
+        None,
+    )
     for i, m in enumerate(messages):
-        if (
-            isinstance(m, dict)
-            and m.get("role") == "system"
-            and m.get("content") in briefs
-        ):
-            m = {"role": "system", "content": "(WRITER_SYSTEM)"}
+        extra: dict = {}
+        if i == 0 and isinstance(brief, str):
+            m = {
+                "role": "system",
+                "content": f"(brief sha256 {_sha(brief.encode('utf-8'))})",
+            }
+        elif i in originals and isinstance(m, dict):
+            m = {**m, "content": originals[i]}
+            extra["compacted"] = True
         try:
-            msg = _plain(
-                _scrub(red.obj(json.loads(json.dumps(m, default=str)))),
-                string_chars,
-            )
+            plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
+            # the first user message and the brief's name are kept whole; every other string is cut
+            whole = i == first_user or (i == 0 and isinstance(brief, str))
+            msg = plain if whole else _plain(plain, string_chars)
             line = json.dumps(
-                {"pass_id": pass_id, "i": i, "message": msg},
+                {"pass_id": pass_id, "i": i, "message": msg, **extra},
                 sort_keys=True,
             )
         except (RecursionError, ValueError, TypeError):
@@ -2084,6 +2196,10 @@ class WriterPass:
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
         self.messages: list[dict] = []
+        # what the writer saw, for the transcript: the tool JSON it was given and each compacted tool result's
+        # text before compaction (message index -> text)
+        self._tools_json: list[dict] = []
+        self._precompact: dict[int, str] = {}
         # v2.1: fixture provenance the fixture tool recorded this pass (spec §7.4); the manifest's own is ignored
         self.fixtures_made: dict[str, dict] = {}
         # v2.1 (design r2 §1, RUNTIME P2): sha256 of a part shown complete in this pass -> (episode, part)
@@ -2125,18 +2241,17 @@ class WriterPass:
         self._role = "write"
 
     def transcript(self, pass_id: str) -> list[str]:
-        """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`)."""
-        first = self.messages[0] if self.messages else None
-        brief = (
-            first.get("content")
-            if isinstance(first, dict) and first.get("role") == "system"
-            else None
-        )
+        """The last run's messages as bounded, redacted JSON lines (:func:`transcript_lines`): the brief and the
+        tool JSON by sha256 (their bytes in the gate's blob store when it has one), the first user message uncut,
+        and each compacted tool result as it was before the compaction."""
+        blobs = getattr(self.gate, "blobs", None)
         return transcript_lines(
             self.messages,
             pass_id,
             self.redactor,
-            brief=brief if isinstance(brief, str) else None,
+            tools=self._tools_json,
+            originals=self._precompact,
+            store=blobs.put if isinstance(blobs, BlobStore) else None,
         )
 
     def _stage_context(
@@ -2204,20 +2319,16 @@ class WriterPass:
 
         try:
             if self.cfg.library_mode:
-                # r5 S3: v2.1's function items; the whole table under /inputs/usage.md, a marked head here
+                # library mode: the whole table is a file the brief names, /inputs/usage/table.md; nothing of it
+                # is inlined in the first message
                 from .layout import discover
-                from .usage import MAX_TABLE_ROWS
 
                 ids = [f.item_id for f in discover(Path(tree)).functions]
                 full = usage_table(self.ev, list(req.episodes), ids, max_rows=None)
                 if self._inputs_dir is not None:
-                    (self._inputs_dir / "usage.md").write_text(full)
-                if len(ids) <= MAX_TABLE_ROWS:
-                    return full
-                return (
-                    usage_table(self.ev, list(req.episodes), ids)
-                    + "(the whole table: /inputs/usage.md)\n"
-                )
+                    (self._inputs_dir / "usage").mkdir(exist_ok=True)
+                    (self._inputs_dir / "usage" / "table.md").write_text(full)
+                return full
             ids = [
                 it.item_id
                 for it in memory_items(tree).items
@@ -2253,6 +2364,11 @@ class WriterPass:
             ),
             blob_min_bytes=self._qa.response_blob_bytes,
             library_mode=_library_on(self),
+            # the store pass reads each episode's library use as its own file (none for a curate pass, whose use
+            # records are /inputs/curate/use.json)
+            usage_dest=(
+                inputs / "usage" if _library_on(self) and req.kind != "curate" else None
+            ),
         )
         exported = export_blobs(
             self.load,
@@ -2297,15 +2413,18 @@ class WriterPass:
                 (inputs / "shared").mkdir(exist_ok=True)
                 for b, text in self._shared.items():
                     (inputs / "shared" / f"{b}.txt").write_text(text)
-            (inputs / "batch_map.json").write_text(
-                json.dumps(
-                    build_batch_map(self.load, list(req.episodes), self._shared),
-                    sort_keys=True,
-                    default=str,
-                    indent=1,
+            if (
+                req.kind != "curate"
+            ):  # a curate pass has no batch: its inputs are /inputs/curate/
+                (inputs / "batch_map.json").write_text(
+                    json.dumps(
+                        build_batch_map(self.load, list(req.episodes), self._shared),
+                        sort_keys=True,
+                        default=str,
+                        indent=1,
+                    )
+                    + "\n",
                 )
-                + "\n",
-            )
         # the library test kit, as the gate mounts it, when a switch is on or the parent library's tests use
         # it (the blobs those tests name join the pass's blobs); else the toolkit as at the screen build
         staged = tree is not None and isinstance(store, BlobStore)
@@ -2626,6 +2745,28 @@ class WriterPass:
                 list(getattr(self, "tool_events", None) or []),
             ),
             provenance=self._provenance,
+        )
+
+    def _first_message_library_mode(self, req: PassRequest, pass_id: str) -> str:
+        """The first user message of a library-mode pass: the pass id, its episode ids and its wall clock, and
+        nothing that grows (no library index, pool index, use table, drafts or curate reasons: those are files the
+        brief points to). Byte-stable apart from the ids and the wall-clock number."""
+        wall = format(Decimal(str(float(self.cfg.deadline_s))).normalize(), "f")
+        if req.kind == "curate":
+            return (
+                f"Pass {pass_id}: a curate pass. Why it runs: /inputs/curate/trigger.json.\n"
+                f"Wall clock for this pass: {wall} s.\n"
+            )
+        eids = [e for e in req.episodes if isinstance(e, str)]
+        from .library_prompts import MAX_INLINE_LIST
+
+        # the ids are inlined only while they are a short list; a larger batch is named by its count
+        named = f": {', '.join(eids)}" if len(eids) <= MAX_INLINE_LIST else ""
+        return (
+            f"Pass {pass_id}: a store pass over {len(eids)} recorded episode"
+            f"{'' if len(eids) == 1 else 's'}{named}.\n"
+            "Their ids and rows are in /inputs/batch_map.json.\n"
+            f"Wall clock for this pass: {wall} s.\n"
         )
 
     @staticmethod
@@ -3074,20 +3215,21 @@ class WriterPass:
         )
 
     def _brief_library_mode(self) -> str:
-        """The v2.1 system message: the CURATE brief for a CURATE pass (P6: the request's role), else WRITE."""
+        """The library-mode system message: the CURATE brief for a curate pass (the request's role), else WRITE."""
         from .library_prompts import curate_brief_now, write_brief_now
 
         if self._role == "curate" or getattr(self.cfg, "role", "write") == "curate":
-            return curate_brief_now()
+            return curate_brief_now(cell_s=float(self.cfg.cell_timeout_s))
         return write_brief_now(**self._write_inputs())
 
     def _write_inputs(self) -> dict:
-        """m4j: the WRITE brief names each input this pass's configuration prepares (constant per run)."""
-        from .library_prompts import POOL_INPUT, STAGING_INPUT
-
-        pool = bool(self.cfg.pool)
-        extra = (STAGING_INPUT,) * bool(self.cfg.staging_root) + (POOL_INPUT,) * pool
-        return {"extra_inputs": extra, "pool": pool, "coverage": self.cfg.coverage_rule}
+        """The WRITE brief names each input this pass's configuration prepares (constant per run): staging only
+        with the episode-end fork on, the pool only with the pool on."""
+        return {
+            "staging": bool(getattr(self.cfg, "fork", False)),
+            "pool": bool(self.cfg.pool),
+            "cell_s": float(self.cfg.cell_timeout_s),
+        }
 
     def _keep_cancelled_work(
         self,
@@ -3133,6 +3275,7 @@ class WriterPass:
 
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
+        self._tools_json, self._precompact = [], {}
         self.fixtures_made = {}
         self._shown_full = {}
         self._shared = {}
@@ -3379,14 +3522,15 @@ class WriterPass:
             _mirror(wt, box)
             self._stage_inputs(req, inputs, wt)
             if self.cfg.library_mode:
-                bmap = json.loads((inputs / "batch_map.json").read_text())
-                # CURATE reads the suspects' episodes as evidence; coverage (spec §7.4) is WRITE's batch rule
-                required = {
-                    r["episode_id"]: (
-                        [] if req.kind == "curate" else r["required_parts"]
-                    )
-                    for r in bmap["episodes"]
-                }
+                bmap_path = inputs / "batch_map.json"
+                bmap = (
+                    json.loads(bmap_path.read_text())
+                    if bmap_path.is_file()
+                    else {"episodes": []}
+                )
+                # the batch rows no longer name parts a writer must read: nothing is required, and every
+                # episode of the request stays readable (a curate pass reads its suspects' episodes)
+                required: dict[str, list[str]] = {e: [] for e in req.episodes}
                 eps = {e: self.load(e) for e in required}
                 sizes = {
                     (e, part): len(_bm.part_text(eps[e], part, self._shared).encode())
@@ -3437,7 +3581,9 @@ class WriterPass:
                         spend,
                         pass_id=pass_id,
                     )
-                if self._pool is not None:
+                if (
+                    self._pool is not None and req.kind != "curate"
+                ):  # the curator has no pool
                     try:
                         self._pool_open = self._pool.stage(Path(inputs) / "pool")
                     except (
@@ -3447,19 +3593,7 @@ class WriterPass:
                         self._pool_error = (
                             f"stage: {type(exc).__name__}: {str(exc)[:200]}"
                         )
-                if req.kind == "curate":
-                    # memory v2.1 CURATE (P6): the library view, then what the trigger found
-                    first = (
-                        f"Pass {pass_id}: curate\n\n"
-                        + self._library_message_library_mode(box)
-                        + "\n\n"
-                        + _curate.message(self.curate_state)
-                    )
-                else:
-                    first = (
-                        f"Pass {pass_id}: {json.dumps(req.__dict__)}\n\n"
-                        + self._library_message_library_mode(box)
-                    )
+                first = self._first_message_library_mode(req, pass_id)
             else:
                 _channel_dirs(box, channels)
                 # D26: Sol tends the library on its channels, so library.json gives each function's recorded
@@ -3480,27 +3614,12 @@ class WriterPass:
                     + (tended or "(none yet)")
                 )
             self._inputs_dir = Path(inputs)
-            if self.cfg.show_usage:  # UNIFY_MEMORY_V2_WRITER_USAGE=on
+            if self.cfg.library_mode:
+                # point, don't paste: the use table is a file (/inputs/usage/table.md), named by the brief
+                if req.kind != "curate":
+                    self._usage(req, wt)
+            elif self.cfg.show_usage:  # UNIFY_MEMORY_V2_WRITER_USAGE=on
                 first += f"\n\n{self._usage(req, wt)}"
-            if self.cfg.library_mode and req.kind != "curate":
-                from .drafts import drafts_message
-
-                first += "\n\n" + drafts_message(
-                    self._drafts,
-                    (inputs / "gate" / "previous.md").is_file(),
-                )
-            if self.cfg.library_mode and self._pool is not None:
-                # m4j: the index's first page is shown here (paged like any view; the rest is read at the marker)
-                index = (Path(inputs) / "pool" / "INDEX.md").read_bytes()
-                first += (
-                    f"\n\nCandidate pool: {self._pool_open} open entries: proposals earlier passes left open "
-                    "(each entry's files under /inputs/pool/<id>/). Your manifest may close entries with "
-                    '`"pool": {"merged": {"<id>": "<item>"}, "superseded": {"<id>": "<id or item>"}, '
-                    '"retired": {"<id>": "<reason>"}}`; `dismiss(..., defer=true)` keeps an episode open in it, '
-                    "and `dismiss(..., defer=true, pool_entry=<id>)` adds it to an open entry it is more evidence "
-                    "for. The index (/inputs/pool/INDEX.md; read it at a marker's offset for more):\n\n"
-                    + _views.view(index)
-                )
             messages: list[dict] = [
                 # the v2.1 surfacing switches' brief, then the stage-5 rewrites and paragraph (each
                 # unchanged while its switches are off)
@@ -3515,6 +3634,7 @@ class WriterPass:
                 {"role": "user", "content": first},
             ]
             self.messages = messages
+            self._tools_json = list(tools)
             finished = False
 
             def charged() -> Decimal:
@@ -3686,7 +3806,12 @@ class WriterPass:
                     break
                 calls += 1
                 if self.cfg.library_mode and self.cfg.compact:
-                    _compact(messages, Path(tmp) / "outputs", COMPACT_AT_CHARS)
+                    _compact(
+                        messages,
+                        Path(tmp) / "outputs",
+                        COMPACT_AT_CHARS,
+                        self._precompact,
+                    )
                 try:
                     msg, usd = await asyncio.wait_for(
                         self.turn(messages, tools),

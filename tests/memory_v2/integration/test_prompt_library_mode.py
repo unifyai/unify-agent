@@ -149,3 +149,36 @@ async def test_the_section_ends_the_system_prompt_after_the_clock(
     assert "### Current Time" in system and system.index(
         "### Current Time",
     ) < system.index(section)
+
+
+def test_actor_index_inline_by_default_keeps_the_bytes_and_pointer_points(tmp_path):
+    from unify.memory_v2.integration.switch import (
+        LIBRARY_ACTOR_INDEX,
+        library_actor_index,
+        parse_library_actor_index,
+    )
+
+    _, _, co = _export(tmp_path)
+    inline = prompt.GUIDE_LIBRARY + prompt.location_line(co) + "\n" + index_view(
+        (co / "INDEX.md").read_text(),
+    )
+    assert library_actor_index(SETTINGS) == "inline"
+    assert prompt.render_memory_library_mode(co)[0] == inline
+    assert prompt.render_memory_library_mode(co, actor_index="inline")[0] == inline
+    text, shown = prompt.render_memory_library_mode(co, actor_index="pointer")
+    assert text == prompt.GUIDE_POINTER + prompt.location_line(co)
+    assert shown["renderer"] == "pointer_library_mode" and shown["channels"] == []
+    for call in ("memory.index()", 'memory.show(\\"<id>\\")', "memory.find(value)"):
+        assert call.replace("\\", "") in text
+    assert "memory.text" not in text.replace("memory.text.dates", "")  # names no package of the library
+    # the pointer is there whenever the library is mounted, empty or not, with the same bytes
+    empty = tmp_path / "empty"
+    mem = Repo.init_bare(empty / "memory")
+    export_actor_library_mode(mem.git_dir, mem.head(), empty / "co")
+    assert prompt.render_memory_library_mode(empty / "co", actor_index="pointer")[
+        0
+    ] == prompt.GUIDE_POINTER + prompt.location_line(empty / "co")
+    assert parse_library_actor_index("") == "inline"
+    assert parse_library_actor_index("Pointer") == "pointer"
+    with pytest.raises(ValueError, match=LIBRARY_ACTOR_INDEX):
+        parse_library_actor_index("summary")

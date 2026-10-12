@@ -10,8 +10,8 @@ from tests.memory_v2.test_writer_library_tools import EPS, _pass
 
 
 def _cov(eid):
-    row = bm.build_batch_map(EPS.__getitem__, [eid])["episodes"][0]
-    req = {eid: row["required_parts"]}
+    # the batch map no longer names a reading list; this exercises the parts listing with one given here
+    req = {eid: {"e1": ["request", "observation:0", "cell:0"]}.get(eid, ["request"])}
     sizes = {(eid, p): len(bm.part_text(EPS[eid], p).encode()) for p in req[eid]}
     return views.Coverage(req, sizes)
 
@@ -49,16 +49,14 @@ def test_read_episode_parts_answers_with_the_list_and_credits_nothing(tmp_path):
     ]
     out, model = _pass(tmp_path, turns, eids=("e1",), max_calls=5)
     first, second = model.outputs["p1"], model.outputs["p2"]
+    # the batch map names no reading list, so the listing marks no part required; it still names every part
     assert (
         not first.startswith("refused")
-        and first.splitlines()[0] == "e1: 4 part(s), 3 required"
+        and first.splitlines()[0] == "e1: 4 part(s), 0 required"
     )
     size = len(bm.part_text(EPS["e1"], "request").encode())
-    assert f"- request: {size} bytes, required, not read" in first
-    assert f"- request: {size} bytes, required, read" in second
-    assert (
-        out.coverage["parts_read"] == 1
-    )  # only the request: the lists credited nothing
+    assert f"- request: {size} bytes" in first and f"- request: {size} bytes" in second
+    assert "def f()" not in first  # no content
 
 
 def test_the_tool_description_names_the_parts_list():

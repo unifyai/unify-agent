@@ -1199,6 +1199,8 @@ async def run_due_passes(
                 # each pass's tool events, box opens and refusal codes, kept after the pass (one folder per pass)
                 "pass_record_root": str(Path(stores.paths.state_dir) / "passes"),
                 "pool": library_pool(settings),
+                # the writer's brief and rows name staging only when the episode-end fork writes it
+                "fork": library_fork(settings),
                 "compact": library_compact(settings),
                 "coverage_rule": library_coverage(settings),
                 "trees_cache": str(

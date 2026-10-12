@@ -142,23 +142,22 @@ def test_the_finish_refusal_names_each_missing_part_and_what_is_dismissed():
     ]
 
 
-def test_a_pass_shows_the_new_refusal(tmp_path):
+def test_finish_is_never_refused_for_unread_episodes(tmp_path):
+    """The batch map names no reading list, so nothing about reading gates finish."""
     _, model = _pass(
         tmp_path,
         [_call("f", "finish", {"summary": "s"})],
         eids=("e2",),
         max_calls=4,
     )
-    assert model.outputs["f"].startswith(
-        "not finished: 1 episode(s) neither covered nor dismissed:\n- e2: not yet read",
-    )
+    assert "neither covered nor dismissed" not in model.outputs["f"]
 
 
 # --- 4. the brief states the batch map's schema; 6. no sentence about the pass's time ---------------------------
 
 
 def test_the_brief_names_every_batch_map_key_and_its_shape():
-    text = pv.write_brief_now()
+    text = pv.write_brief_now(staging=True, pool=True)
     bmap = build_batch_map(EPS.__getitem__, ["e1"])
     keys = (
         set(bmap) | set(bmap["episodes"][0]) | {"staging", "pool_entries", "candidates"}

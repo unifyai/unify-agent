@@ -37,8 +37,10 @@ from .. import library_prompts as _prompts_library_mode
 
 logger = logging.getLogger(__name__)
 
-#: The reviewed v2.1 actor guide (P7, spec §12.1): constant bytes, naming nothing the library holds.
+#: The reviewed library-mode actor guide: constant bytes, naming nothing the library holds.
 GUIDE_LIBRARY = _prompts_library_mode.GUIDE_LIBRARY
+#: The guide when the prompt points to the index instead of carrying it (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX``).
+GUIDE_POINTER = _prompts_library_mode.GUIDE_POINTER
 
 INDEX_BUDGET_TOKENS = 4000
 
@@ -125,22 +127,52 @@ def location_line(checkout: Path) -> str:
     return f"Library files: `{checkout}`, holding INDEX.md, links.json, memory/ and notes/.\n"
 
 
+def _actor_index_setting() -> str:
+    """``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX`` as set (``inline`` when it cannot be read)."""
+    from .switch import library_actor_index
+
+    try:
+        from unify.settings import SETTINGS
+    except Exception:  # noqa: BLE001 - no settings: the default
+        return "inline"
+    return library_actor_index(SETTINGS)
+
+
 def render_memory_library_mode(
     checkout: Path,
     budget_tokens: int | None = None,
+    actor_index: str | None = None,
 ) -> tuple[str, dict]:
-    """``UNIFY_MEMORY_LIBRARY=on`` (spec v2.1 §4.5, §6): the guide, the copy's location, then the index view
-    (:func:`..library_index.index_view` of the copy's ``INDEX.md``), or ``""`` while the index lists no item.
+    """``UNIFY_MEMORY_LIBRARY=on``: the actor's memory section.
 
-    The hooks append it last in the system prompt, after the clock line (:func:`.hooks.system_prompt`). The
-    guide and the location are the same for the whole run, and the view changes only when a consolidation
-    commits or changes a status (cache rule), so each pass changes only the section's tail.
+    *actor_index* (``UNIFY_MEMORY_LIBRARY_ACTOR_INDEX`` when None) picks its form:
+
+    * ``inline`` (the default): the guide, the copy's location, then the index view
+      (:func:`..library_index.index_view` of the copy's ``INDEX.md``), or ``""`` while the index lists no item. The
+      guide and the location are the same for the whole run, and the view changes only when a consolidation commits
+      or changes a status, so each pass changes only the section's tail.
+    * ``pointer``: the pointer guide (:data:`GUIDE_POINTER`) and the copy's location, whenever the library is
+      mounted, empty or not. It names no item, package or count, so the section's bytes are the same for the
+      whole run and the actor reaches the index with ``memory.index()`` in a cell.
+
+    The hooks append it last in the system prompt, after the clock line (:func:`.hooks.system_prompt`).
     """
     from ..analysis.use import record_shown
     from ..layout import INDEX_FILE
     from ..library_index import INDEX_VIEW_TOKENS, index_view, listed, packages_of
 
     checkout = Path(checkout)
+    mode = _actor_index_setting() if actor_index is None else actor_index
+    if mode == "pointer":
+        text = GUIDE_POINTER + location_line(checkout)
+        return text, record_shown(
+            text,
+            channels=(),
+            items=(),
+            renderer="pointer_library_mode",
+        )
+    if mode != "inline":
+        raise ValueError(f"actor index form must be 'inline' or 'pointer', not {mode!r}"[:200])
     try:
         index = (checkout / INDEX_FILE).read_text(encoding="utf-8")
     except OSError:
@@ -151,7 +183,7 @@ def render_memory_library_mode(
         text = (
             GUIDE_LIBRARY + location_line(checkout) + "\n" + index_view(index, budget)
         )
-    # per-item exposure under v2.1 is P5's (use records); the record keeps the packages and the digest
+    # per-item exposure comes from the use records; the record keeps the packages and the digest
     return text, record_shown(
         text,
         channels=packages_of(index),

@@ -89,20 +89,19 @@ def test_repair_without_a_usd_figure_has_no_round_count():
 def test_the_library_briefs_state_no_count_limits_but_numbers_still_render_when_given():
     text = library_prompts.write_brief_now()
     assert "times per pass" not in text and "while the pass budget lasts" not in text
-    # m4k (MAIN 11 Oct): no sentence about the pass's time (it fed the writer's economy worry); the deadline holds
+    # no sentence about time running out (it fed the writer's economy worry); the limits are stated as facts
     assert (
         "time runs out" not in text
         and "The items that pass land, and the rest is kept as a draft" in text
     )
     numbered = library_prompts.write_brief(
-        view_bytes=8000,
-        max_checks=7,
-        repair_rounds=3,
+        limits=library_prompts.limits_now(cell_s=45.0),
         mutation_min=Decimal("0.7"),
         sample_k=11,
         lint_min=6,
         pytest_env={},
-        semantic_types="",
     )
-    assert "at most 7 times per pass" in numbered and "up to 3 of them" in numbered
+    # the real limits render as information: the cell time, the step guard, no count of checks or rounds
+    assert "at most 45 s" in numbered and "There is no set number of repair rounds" in numbered
+    assert "times per pass" not in numbered
     assert "at most" not in writer_pass._library_check_description()

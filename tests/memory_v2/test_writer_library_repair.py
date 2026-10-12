@@ -392,8 +392,10 @@ def test_next_pass_sees_open_drafts_and_the_last_full_result(tmp_path):
         "# Gate result: pass p1, round 0, final (merge)",
     )
     assert second.outputs["pv"] == second.outputs["g"]  # p1 was the last pass
+    # the drafts are files the brief points to; the first message lists none of them
     first_message = second.seen[1]["content"]
-    assert "Open drafts" in first_message and "- p1: env/venmo:me" in first_message
+    assert "Open drafts" not in first_message and "env/venmo:me" not in first_message
+    assert "/inputs/drafts/" in second.seen[0]["content"]
 
 
 @needs_bwrap

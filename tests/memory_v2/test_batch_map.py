@@ -23,7 +23,7 @@ def _ep(cells=(), actions=(), diff="", regime="none", eid="e1"):
     )
 
 
-def test_signals_cell_error_action_error_and_retry():
+def test_structural_events_cell_error_action_error_and_retry():
     ep = _ep(
         cells=[Cell(0, "x=1", "", error="Traceback ... ValueError")],
         actions=[
@@ -54,7 +54,7 @@ def test_signals_cell_error_action_error_and_retry():
             ),
         ],
     )
-    sig = bm.structural_signals(ep)
+    sig = bm.structural_events(ep)
     assert {"kind": "cell_error", "cell": 0, "action": None} in sig
     assert {"kind": "action_error", "cell": 0, "action": 0} in sig
     assert {"kind": "retry_after_error", "cell": 0, "action": 1} in sig
@@ -117,7 +117,8 @@ def test_non_python_and_empty():
     assert bm.actor_functions(_ep()) == []
 
 
-def test_required_parts_and_row():
+
+def test_row_keys_end_parts_and_no_reading_list_or_telemetry():
     ep = _ep(
         cells=[Cell(0, "def f():\n    return 1\n", ""), Cell(1, "print(1)", "1")],
         actions=[
@@ -132,15 +133,6 @@ def test_required_parts_and_row():
             ),
         ],
     )
-    sig = bm.structural_signals(ep)
-    fns = bm.actor_functions(ep)
-    assert bm.required_parts(ep, sig, fns) == [
-        "request",
-        "observation:0",
-        "cell:0",
-        "cell:1",  # T8: the source cell of an action that is not a read
-        "action:0",
-    ]
     m = bm.build_batch_map(lambda e: ep, ["e1"])
     row = m["episodes"][0]
     assert (
@@ -149,36 +141,52 @@ def test_required_parts_and_row():
         and row["memory_main"] == "abc123"
     )
     assert row["regime"] == "none" and row["request"] == "Do the thing"
-    assert row["calls"] == {"svc.get": 1} and row["items_used"] == {
-        "imported": ["memory.x"],
-        "called": [],
-    }
+    assert row["request_bytes"] == len("Do the thing")
+    assert row["calls"] == {"svc.get": 1}
     assert row["errors"] == [{"action": 0, "error": "x", "next_call": None}]
-    assert row["required_parts"] == [
-        "request",
-        "observation:0",
-        "cell:0",
-        "cell:1",
-        "action:0",
+    assert row["structural_events"] == [
+        {"kind": "action_error", "cell": 1, "action": 0},
     ]
+    # where the episode ended: its last clean cell, its last action, its last observation
+    assert row["end_parts"] == ["cell:1", "action:0", "observation:0"]
+    # removed: the reading list, the coverage fields and the use telemetry (now /inputs/usage/<episode>.json)
+    for gone in ("required_parts", "items_used", "signals", "memory_use"):
+        assert gone not in row
+
+
+def test_row_keys_match_the_brief_exactly():
+    from unify.memory_v2.library_prompts import BATCH_ROW_KEYS
+
+    row = bm.build_batch_map(lambda e: _ep(), ["e1"])["episodes"][0]
+    assert list(row) == [k for k, _ in BATCH_ROW_KEYS]
+
+
+def test_end_parts_skip_a_failed_last_cell_and_match_solution_first():
+    ep = _ep(
+        cells=[Cell(0, "x = 1", ""), Cell(1, "y = 2", "", error="Traceback ... boom")],
+    )
+    assert bm.end_parts(ep) == ["cell:0", "observation:0"]
+    assert bm.solution_first(ep)[1] == bm.end_parts(ep)
+    empty = _ep()
+    empty.request = ["only the request"]
+    assert bm.end_parts(empty) == []
+
+
+def test_request_is_a_short_head_with_a_pointer():
+    ep = _ep()
+    long = "row " * 400
+    ep.request = [long, "obs"]
+    row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
+    assert row["request"].startswith(long[: bm.REQUEST_HEAD_CHARS])
+    assert len(row["request"]) < bm.REQUEST_HEAD_CHARS + 100
+    assert "request part" in row["request"]
+    assert row["request_bytes"] == len(long.encode())
 
 
 def test_part_text_is_canonical_json():
     ep = _ep(cells=[Cell(0, "x=1", "out")])
     assert bm.part_text(ep, "request") == '"Do the thing"'
     assert '"code": "x=1"' in bm.part_text(ep, "cell:0")
-
-
-def test_error_cell_without_function_is_required():
-    ep = _ep(
-        cells=[Cell(0, "x = 1", "", error="Traceback ... boom"), Cell(1, "y = 2", "")],
-    )
-    sig = bm.structural_signals(ep)
-    assert bm.required_parts(ep, sig, bm.actor_functions(ep)) == [
-        "request",
-        "observation:0",
-        "cell:0",
-    ]
 
 
 _TWO_FILES = (
@@ -197,7 +205,6 @@ def test_diff_parsed_per_file_and_unparsable_files_listed():
     ]
     row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
     assert row["diff_unparsed"] == ["bad.py"]
-    assert row["required_parts"] == ["request", "observation:0", "diff"]
 
 
 def test_diff_fragment_of_a_modified_file():
@@ -215,43 +222,21 @@ def test_diff_fragment_of_a_modified_file():
     ]
 
 
-def test_diff_with_python_lines_but_no_function_is_still_required():
-    diff = "diff --git a/c.py b/c.py\n--- a/c.py\n+++ b/c.py\n@@ -1,1 +1,2 @@\n x = 1\n+y = 2\n"
-    ep = _ep(diff=diff)
-    assert bm.actor_functions(ep) == []
-    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
-        "request",
-        "observation:0",
-        "diff",
-    ]
-
-
 def _obs_ep(observations):
     ep = _ep()
     ep.request = ["Do the thing", *observations]
     return ep
 
 
-def test_every_observation_is_required_and_readable():
+def test_every_observation_is_readable():
     ep = _obs_ep(["obs A", "Verdict: wrong total"])
-    sig = bm.structural_signals(ep)
-    assert bm.required_parts(ep, sig, []) == [
-        "request",
-        "observation:0",
-        "observation:1",
-    ]
     assert bm.part_text(ep, "observation:1") == '"Verdict: wrong total"'
     row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
     assert row["observations"] == 2
 
 
-def test_identical_observations_are_required_once_and_any_copy_credits_it():
+def test_identical_observations_name_their_first_copy():
     ep = _obs_ep(["same", "other", "same", "same"])
-    assert bm.required_parts(ep, [], []) == [
-        "request",
-        "observation:0",
-        "observation:1",
-    ]
     assert bm.canonical_part(ep, "observation:2") == "observation:0"
     assert bm.canonical_part(ep, "observation:3") == "observation:0"
     assert bm.canonical_part(ep, "observation:1") == "observation:1"
@@ -262,112 +247,3 @@ def test_row_states_which_observations_are_copies():
     ep = _obs_ep(["same", "other", "same"])
     row = bm.build_batch_map(lambda e: ep, ["e1"])["episodes"][0]
     assert row["observation_copies"] == {"2": 0}
-
-
-# --- P1 T8 (a1's blocker): what the actor did is required -----------------------------------------------------
-
-
-def _row(seq, role, content="", **extra):
-    return {
-        "seq": seq,
-        "type": "message",
-        "message": {"role": role, "content": content, **extra},
-    }
-
-
-def _cell_call(seq, cid):
-    call = {
-        "id": cid,
-        "type": "function",
-        "function": {"name": "execute_code", "arguments": "{}"},
-    }
-    return [
-        _row(seq, "assistant", "", tool_calls=[call]),
-        _row(seq + 1, "tool", "out", tool_call_id=cid),
-    ]
-
-
-def test_a_dialogue_action_and_the_cell_before_its_reply_are_required():
-    ep = _ep(
-        cells=[Cell(0, "x = 1", "1"), Cell(1, "grid = [[1]]", "[[1]]")],
-        actions=[
-            Action(
-                cell=-1,
-                channel="env",
-                method="submit",
-                args=[[[1]]],
-                kwargs={},
-                response="Verdict: wrong",
-                status="ok",
-                kind="dialogue",
-            ),
-        ],
-    )
-    ep.request = ["Solve the grid", "Verdict: wrong"]
-    ep.transcript = [
-        _row(0, "user", "Solve the grid"),
-        *_cell_call(1, "c0"),
-        *_cell_call(3, "c1"),
-        _row(5, "assistant", '{"action": "submit", "grid": [[1]]}'),
-        _row(6, "user", "Verdict: wrong"),
-    ]
-    assert bm.required_parts(ep, bm.structural_signals(ep), bm.actor_functions(ep)) == [
-        "request",
-        "observation:0",
-        "cell:1",
-        "action:0",
-    ]
-
-
-def test_a_write_action_and_its_source_cell_are_required():
-    ep = _ep(
-        cells=[Cell(0, "x = 1", ""), Cell(1, "open('out.json', 'w').write('{}')", "")],
-        actions=[
-            Action(
-                cell=0,
-                channel="svc",
-                method="get",
-                args=[],
-                kwargs={},
-                status="ok",
-                effect="read",
-            ),
-            Action(
-                cell=1,
-                channel="workspace",
-                method="write",
-                args=["out.json"],
-                kwargs={},
-                status="ok",
-                effect="write",
-                kind="worktree",
-            ),
-        ],
-    )
-    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
-        "request",
-        "observation:0",
-        "cell:1",
-        "action:1",
-    ]
-
-
-def test_a_pure_read_episode_requires_nothing_extra():
-    ep = _ep(
-        cells=[Cell(0, "x = 1", "")],
-        actions=[
-            Action(
-                cell=0,
-                channel="svc",
-                method="get",
-                args=[],
-                kwargs={},
-                status="ok",
-                effect="read",
-            ),
-        ],
-    )
-    assert bm.required_parts(ep, bm.structural_signals(ep), []) == [
-        "request",
-        "observation:0",
-    ]

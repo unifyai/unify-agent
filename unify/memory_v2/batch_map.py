@@ -1,7 +1,13 @@
-"""The writer's batch map (spec v2.1 §7.1): deterministic facts and pointers per episode, no summaries.
+"""The writer's batch map: deterministic facts and pointers per episode, no summaries.
 
-Signals are structural only (spec §5): a cell error, an action's error status, and a retry of an identical call
-after an error. The episode's declared ``regime`` passes through. Environment text is never pattern-matched.
+Structural events are what the harness sees without reading environment text: a cell error, an action's error
+status, and a retry of an identical call after an error. ``end_parts`` names where an episode ended (its last clean
+cell, last action and last observation), so the writer knows where an outcome, if any, was shown; the harness never
+decides one. The episode's declared ``regime`` passes through. Environment text is never pattern-matched.
+
+A row holds no reading list and no telemetry: the library-use record is a file of its own
+(``/inputs/usage/<episode>.json``), the request is a short head (the whole request is the episode's ``request``
+part), and shared request blocks are listed once in ``shared_blocks``.
 """
 
 from __future__ import annotations
@@ -27,7 +33,11 @@ def _call_key(a) -> str:
     )
 
 
-def structural_signals(ep: Episode) -> list[dict]:
+#: The characters of a request a row shows (the brief states it through :data:`.library_prompts.BATCH_ROW_KEYS`).
+REQUEST_HEAD_CHARS = 300
+
+
+def structural_events(ep: Episode) -> list[dict]:
     out: list[dict] = []
     for c in ep.cells:
         if c.error:
@@ -41,6 +51,10 @@ def structural_signals(ep: Episode) -> list[dict]:
             out.append({"kind": "action_error", "cell": a.cell, "action": i})
             failed.add(key)
     return out
+
+
+#: The former name, kept for callers outside the writer's inputs.
+structural_signals = structural_events
 
 
 def _defs(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -179,99 +193,11 @@ def observation_copies(ep: Episode) -> dict[str, int]:
     return {str(i): obs.index(t) for i, t in enumerate(obs) if obs.index(t) != i}
 
 
-def _cells_before_replies(ep: Episode) -> dict[int, int]:
-    """Episode action index of each dialogue action -> the index of the last cell completed before its reply,
-    from the transcript's order. The dialogue recorder's own reply rule pairs actions with replies: its
-    answered replies when the counts match (the online recorder), else all of them; with neither, no pairing.
-    """
-    from .integration.adapters.dialogue import _is_observation, _is_reply, _messages
-
-    msgs = _messages(ep.transcript)
-    calls: set[str] = set()
-    done: set[str] = set()
-    replies: list[tuple[int | None, bool]] = []  # (last cell index before it, answered)
-    for i, m in enumerate(msgs):
-        for tc in m.get("tool_calls") or []:
-            fn = (
-                tc.get("function")
-                if isinstance(tc, dict) and isinstance(tc.get("function"), dict)
-                else {}
-            )
-            if fn.get("name") == "execute_code" and isinstance(tc.get("id"), str):
-                calls.add(tc["id"])
-        if m.get("role") == "tool" and m.get("tool_call_id") in calls:
-            done.add(m["tool_call_id"])
-        if _is_reply(m):
-            answered = False
-            for later in msgs[i + 1 :]:
-                if later.get("role") == "assistant":
-                    break
-                if _is_observation(later):
-                    answered = True
-                    break
-            replies.append((len(done) - 1 if done else None, answered))
-    dialogue = [i for i, a in enumerate(ep.actions) if a.kind == "dialogue"]
-    answered = [c for c, ok in replies if ok]
-    pairs = answered if len(answered) == len(dialogue) else [c for c, _ in replies]
-    if len(pairs) != len(dialogue):
-        return {}
-    return {i: c for i, c in zip(dialogue, pairs) if c is not None}
-
-
-def required_parts(
-    ep: Episode,
-    signals: list[dict],
-    functions: list[dict],
-    diff: tuple[list[dict], list[str], bool] | None = None,
-) -> list[str]:
-    """Every part a writer must read to cover *ep*: the request, every distinct observation (where any verdict
-    lives; the harness never decides which by its text), every cell that defines a function or carries a
-    signal, every action a signal names, every dialogue action and every action that is not a read (with its
-    source cell), and the work-tree diff whenever a ``.py`` file in it has added lines.
-    """
-    parts = ["request"]
-    seen: set[str] = set()
-    for i, text in enumerate(_observations(ep)):
-        if text not in seen:
-            seen.add(text)
-            parts.append(f"observation:{i}")
-    cells = {f["cell"] for f in functions if f["source"] == "cell"}
-    cells |= {
-        s["cell"]
-        for s in signals
-        if s["kind"] == "cell_error" and s["cell"] is not None
-    }
-    actions = {s["action"] for s in signals if s["action"] is not None}
-    # T8 (what the actor did): every dialogue action and every action that is not a read, with its source cell
-    # (a dialogue action's: the last cell completed before its reply). Structural only: kind and effect.
-    acted = [
-        i
-        for i, a in enumerate(ep.actions)
-        if a.kind == "dialogue" or a.effect != "read"
-    ]
-    actions |= set(acted)
-    known = {c.index for c in ep.cells}
-    before = _cells_before_replies(ep)
-    for i in acted:
-        a = ep.actions[i]
-        source = before.get(i) if a.kind == "dialogue" else a.cell
-        if source in known:
-            cells.add(source)
-    for c in sorted(cells):
-        parts.append(f"cell:{c}")
-    for a in sorted(actions):
-        parts.append(f"action:{a}")
-    if (diff or _diff_functions(ep))[2]:
-        parts.append("diff")
-    return parts
-
-
 def part_text(ep: Episode, part: str, shared: dict[str, str] | None = None) -> str:
-    """*part* of *ep* as the writer reads it; *shared* (r5, :mod:`.shared_text`): the request's shared blocks shown
+    """*part* of *ep* as the writer reads it; *shared* (:mod:`.shared_text`): the request's shared blocks shown
     as their markers (the raw episode files keep every byte)."""
     if part.startswith("shared:"):
-        # r5 (RUNTIME B2): a shared request block is its own part, so the writer sees it once; the identical-part
-        # credit then covers it in every other episode whose request holds it
+        # a shared request block can be read as its own part, so the writer reads it once
         if not shared or part[7:] not in shared:
             raise KeyError(part)
         obj = shared[part[7:]]
@@ -337,11 +263,26 @@ def _gist_cell(code: str) -> str:
     return ("; ".join(bits) + " | " if bits else "") + first[:_GIST]
 
 
+def end_parts(ep: Episode) -> list[str]:
+    """Where *ep* ended: its last cell that ran without an error, its last action and its last observation (each
+    when there is one). This is where an outcome, if any, was shown; the harness never reads which."""
+    ok = [c for c in ep.cells if c.error is None and _TRACEBACK not in (c.output or "")]
+    parts = []
+    if ok:
+        parts.append(f"cell:{ok[-1].index}")
+    if ep.actions:
+        parts.append(f"action:{len(ep.actions) - 1}")
+    obs = _observations(ep)
+    if obs:
+        parts.append(f"observation:{len(obs) - 1}")
+    return parts
+
+
 def solution_first(
     ep: Episode,
     shared: dict[str, str] | None = None,
 ) -> tuple[str, list[str]]:
-    """r5 (r4 §5): *ep* end first, then an index of every step, newest first; and the parts shown in full.
+    """*ep*'s end first, then an index of every step, newest first; and the parts shown in full.
 
     The end: the last cell that ran without an error, the last action and the last observation, each verbatim as
     its own part (``read_episode`` returns the same bytes). The index: one line per cell, action and observation,
@@ -349,19 +290,12 @@ def solution_first(
     gist (a cell's definitions, calls and first line; an action's channel, method and status; an observation's
     first line). Nothing is summarised by a model and nothing is left out: every step is listed and readable.
     """
-    ok = [c for c in ep.cells if c.error is None and _TRACEBACK not in (c.output or "")]
     obs = _observations(ep)
-    end_parts = []
-    if ok:
-        end_parts.append(f"cell:{ok[-1].index}")
-    if ep.actions:
-        end_parts.append(f"action:{len(ep.actions) - 1}")
-    if obs:
-        end_parts.append(f"observation:{len(obs) - 1}")
+    ends = end_parts(ep)
     out = ["== end =="]
-    for part in end_parts:
+    for part in ends:
         out.append(f"-- {part} --\n{part_text(ep, part, shared)}")
-    if not end_parts:
+    if not ends:
         out.append("(no cell, action or observation was recorded)")
     out.append("\n== steps, newest first ==")
     for c in reversed(ep.cells):
@@ -383,7 +317,7 @@ def solution_first(
         out.append(
             f"observation:{i}  {len(part_text(ep, f'observation:{i}').encode())}B  {first[:_GIST]}",
         )
-    return "\n".join(out) + "\n", end_parts
+    return "\n".join(out) + "\n", ends
 
 
 def _errors(ep: Episode) -> list[dict]:
@@ -403,12 +337,11 @@ def _errors(ep: Episode) -> list[dict]:
     return out
 
 
-def _shared_parts(ep: Episode, shared: dict[str, str]) -> list[str]:
-    """``shared:<id>`` for each shared block *ep*'s request holds (RUNTIME B2: shown once, never only a marker)."""
-    from .shared_text import units
-
-    held = units([str(t) for t in ep.request])
-    return [f"shared:{b}" for b, text in sorted(shared.items()) if text in held]
+def request_head(text: str, chars: int = REQUEST_HEAD_CHARS) -> str:
+    """The first *chars* characters of a request, marked when more follows (the whole request is a part)."""
+    if len(text) <= chars:
+        return text
+    return text[:chars] + f" [... {len(text) - chars} more characters: the episode's request part]"
 
 
 def build_batch_map(
@@ -416,38 +349,34 @@ def build_batch_map(
     eids: Iterable[str],
     shared: dict[str, str] | None = None,
 ) -> dict:
-    """The batch map; *shared* (r5): requests carry shared blocks as markers, and ``shared_blocks`` lists each
-    block's file once."""
+    """The batch map: one row of facts and pointers per episode. With *shared*, requests carry shared blocks as
+    markers, and ``shared_blocks`` lists each block's file once."""
     if shared:
         from .shared_text import mark
     rows = []
     for eid in eids:
         ep = load(eid)
-        sig = structural_signals(ep)
         diff = _diff_functions(ep)
         fns = actor_functions(ep, diff)
+        raw = ep.request[0] if ep.request else ""
+        request = mark(raw, shared) if shared else raw
         rows.append(
             {
                 "episode_id": ep.episode_id,
                 "memory_main": ep.memory_main,
                 "regime": ep.regime,
-                "request": (
-                    mark(ep.request[0] if ep.request else "", shared)
-                    if shared
-                    else (ep.request[0] if ep.request else "")
-                ),
+                "request": request_head(request),
+                "request_bytes": len(str(raw).encode("utf-8")),
                 "observations": len(_observations(ep)),
                 "observation_copies": observation_copies(ep),
                 "cells": len(ep.cells),
                 "actions": len(ep.actions),
-                "items_used": ep.memory_use,
                 "calls": dict(Counter(f"{a.channel}.{a.method}" for a in ep.actions)),
                 "errors": _errors(ep),
-                "signals": sig,
+                "structural_events": structural_events(ep),
+                "end_parts": end_parts(ep),
                 "functions": fns,
                 "diff_unparsed": diff[1],
-                "required_parts": required_parts(ep, sig, fns, diff)
-                + (_shared_parts(ep, shared) if shared else []),
             },
         )
     out = {"version": 1, "episodes": rows}

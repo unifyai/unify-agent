@@ -177,12 +177,11 @@ def test_the_writer_sees_the_pool_after_the_requests_first_line(tmp_path, monkey
         "p2",
     )
     first = model.seen[1]["content"]
-    assert first.splitlines()[0].startswith(
-        'Pass p2: {"kind": "incremental"',
-    )  # the fakes read the ids here
+    assert first.splitlines()[0] == "Pass p2: a store pass over 1 recorded episode: e2."
+    # the pool is a file the brief names, never inlined in the first message
     assert (
-        "\n\nCandidate pool: 1 open entries: proposals earlier passes left open"
-        in first
+        "Candidate pool" not in first
+        and "/inputs/pool/INDEX.md" in model.seen[0]["content"]
     )
     defer = next(
         t
