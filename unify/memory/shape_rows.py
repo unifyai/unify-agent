@@ -112,13 +112,22 @@ def _tree_file(tree: Path, rel: str) -> bytes | None:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except (OSError, ValueError, RuntimeError):
         return None
-    with os.fdopen(fd, "rb") as fh:
-        try:
-            if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
-                return None
-            return fh.read(PARSE_LIMIT + 1)
-        except OSError:
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             return None
+        chunks: list[bytes] = []
+        left = PARSE_LIMIT + 1
+        while left > 0:
+            chunk = os.read(fd, left)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            left -= len(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 def arg_descriptors(
@@ -157,7 +166,8 @@ def arg_descriptors(
                 else:
                     desc = value_shape(arg.json)
             except Exception:  # noqa: BLE001 - shapes are a catalogue aid, never a failure
-                desc = None
+                dropped += 1  # a value the shape reader could not walk is counted with the dropped ones
+                continue
             if desc is None:
                 continue
             desc = {**desc, "param": arg.name}

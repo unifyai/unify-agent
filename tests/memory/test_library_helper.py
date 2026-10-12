@@ -167,7 +167,8 @@ def test_find_ranks_like_v2s_matcher(tmp_path, monkeypatch):
         {
             **e,
             "input_shapes": [
-                {k: v for k, v in d.items() if k != "param"} for d in e["input_shapes"]
+                {k: v for k, v in d.items() if k != "param"}
+                for d in e.get("input_shapes", [])
             ],
         }
         for e in entries
