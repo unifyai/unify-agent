@@ -1592,6 +1592,11 @@ def _layout_refusal(found: list[str]) -> str:
     )[:900]
 
 
+#: How :func:`_mirror` opens what it copies: never through a link, so an entry swapped while it walks is not followed
+_MIRROR_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_MIRROR_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+
+
 def _mirror(
     src: Path,
     dst: Path,
@@ -1603,40 +1608,73 @@ def _mirror(
     (the gate refuses them); FIFOs, sockets, devices and anything that cannot be read are left out (an
     unreadable directory is left empty). ``.git``, ``__pycache__``, ``.pytest_cache`` and ``.hypothesis`` are
     never copied, at any depth, nor *skip_top* names at the top.
+
+    *src* may be written while it is copied (a box with it bound read-write runs beside a helper's copy), so the
+    walk holds a descriptor for each directory and opens every entry relative to it with ``O_NOFOLLOW``: an
+    entry swapped for a link after it was listed is recreated as the link or left out, never followed.
     """
     left_out: list[str] = []
 
-    def walk(s: Path, d: Path, rel: str, top: bool) -> None:
+    def copy_file(dfd: int, name: str, dp: Path) -> None:
+        fd = os.open(name, _MIRROR_FILE, dir_fd=dfd)
         try:
-            with os.scandir(s) as it:
-                entries = sorted(it, key=lambda e: e.name)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"{name} is not a regular file")
+            with open(dp, "xb") as out:
+                while True:
+                    chunk = os.read(fd, 1 << 20)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            os.chmod(dp, stat.S_IMODE(st.st_mode))
+        finally:
+            os.close(fd)
+
+    def walk(dfd: int, d: Path, rel: str, top: bool) -> None:
+        try:
+            with os.scandir(dfd) as it:
+                names = sorted(e.name for e in it)
         except OSError:
             left_out.append(rel.rstrip("/") or ".")
             return
-        for e in entries:
+        for name in names:
             if (
-                e.name in _NEVER_COPIED
-                or e.name.startswith(".git")
-                or (top and e.name in skip_top)
+                name in _NEVER_COPIED
+                or name.startswith(".git")
+                or (top and name in skip_top)
             ):
                 continue  # git metadata never enters a checkout the harness runs git in
-            sp, dp, r = Path(e.path), d / e.name, rel + e.name
+            dp, r = d / name, rel + name
             try:
-                st = os.lstat(sp)
+                st = os.stat(name, dir_fd=dfd, follow_symlinks=False)
                 if stat.S_ISLNK(st.st_mode):
-                    os.symlink(os.readlink(sp), dp)
+                    os.symlink(os.readlink(name, dir_fd=dfd), dp)
                 elif stat.S_ISDIR(st.st_mode):
                     dp.mkdir()
-                    walk(sp, dp, r + "/", False)
+                    try:
+                        cfd = os.open(name, _MIRROR_DIR, dir_fd=dfd)
+                    except OSError:
+                        left_out.append(
+                            r,
+                        )  # unreadable, or swapped for a link since it was listed
+                        continue
+                    try:
+                        walk(cfd, dp, r + "/", False)
+                    finally:
+                        os.close(cfd)
                 elif stat.S_ISREG(st.st_mode):
-                    shutil.copyfile(sp, dp, follow_symlinks=False)
-                    os.chmod(dp, stat.S_IMODE(st.st_mode))
+                    copy_file(dfd, name, dp)
                 else:
                     left_out.append(r)
             except OSError:
                 left_out.append(r)
 
-    walk(Path(src), Path(dst), "", True)
+    root = os.open(src, _MIRROR_DIR)
+    try:
+        walk(root, Path(dst), "", True)
+    finally:
+        os.close(root)
     return left_out
 
 
@@ -3011,6 +3049,7 @@ class WriterPass:
                 timeout_s=timeout_s,
                 env={"PYTHONPATH": "/inputs:/memory", **open_log.env},
                 pass_fds=open_log.pass_fds,
+                on_spawn=open_log.close_write,
                 # library mode: the generated files are read-only binds, so a write fails at once
                 **(
                     {"late_ro": self._generated_binds(box)}
