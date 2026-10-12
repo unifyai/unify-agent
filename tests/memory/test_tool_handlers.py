@@ -84,7 +84,35 @@ class FakeBox:
         return not self.stopped.is_set()
 
     async def measure_quota(self):
-        return None
+        measure = getattr(self.profile, "measure", None)
+        return await asyncio.to_thread(measure) if measure is not None else None
+
+    def _root(self, group, box_path=None):
+        for host, mounted in (self.binds.get(group) or {}).items():
+            if box_path is None or mounted == box_path:
+                return Path(host)
+        raise KeyError(box_path)
+
+    def _pseudo(self, tool, args):
+        """Test set-up between calls, as a cell could do it (or, for /inputs, as the host stages it)."""
+        if tool == "__sleep__":
+            time.sleep(float(args))
+            return
+        if tool == "__until_left__":  # sleep until this many seconds of the pass's wall clock are left
+            time.sleep(max(0.0, self.channel.binding.deadline - time.monotonic() - float(args)))
+            return
+        for kind, (rel, value) in args.items():
+            if kind == "input":
+                path = self._root("ro", "/inputs") / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(value)
+                continue
+            path = self._root("rw") / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if kind == "link":
+                path.symlink_to(value)
+            elif kind == "bytes":
+                path.write_bytes(bytes.fromhex(value))
 
     async def run_cell(self, code, *, call=None):
         self.cells += 1
@@ -95,6 +123,9 @@ class FakeBox:
 
         def go():
             for tool, args in json.loads(code):
+                if tool in ("__sleep__", "__setup__", "__until_left__"):
+                    self._pseudo(tool, args)
+                    continue
                 try:
                     out = self.client._call(tool, args)
                     lines.append(f"{tool} -> {out}")
