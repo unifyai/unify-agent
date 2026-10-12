@@ -646,12 +646,11 @@ async def _tool(
         vpath = f"/inputs/{EXPORT_DIR}/{st['call']}/{rel}"
         return out, [{"path": vpath, "mode": "write"}] if out.startswith("staged") else []
     if name in ("read", "grep"):
+        vpath = str(args.get("path", "") or ("/inputs" if name == "grep" else ""))
         try:
             offset = int(args.get("offset", 0) or 0)
             if name == "read":
-                vpath = str(args.get("path", ""))
                 return _views.read(vpath, roots, offset), [{"path": vpath, "mode": "read"}]
-            vpath = str(args.get("path", "/inputs") or "/inputs")
             out = await asyncio.to_thread(
                 _views.grep_bounded, str(args.get("pattern", "")), vpath, roots, offset
             )
@@ -659,7 +658,8 @@ async def _tool(
         except PermissionError as exc:
             return str(exc)[:300], []
         except (OSError, ValueError, TypeError) as exc:
-            return f"refused: {type(exc).__name__}: {str(exc)[:200]}", []
+            # the type and the path asked for only: the error's text names host paths
+            return f"refused: {type(exc).__name__} for {vpath[:200]!r}", []
     if name in ("overview", "read_episode"):
         got = resolve(args.get("episode"))
         if isinstance(got, str):
@@ -811,7 +811,7 @@ async def _run_helper(
                         if content.startswith(("refused:", "not run:", "unknown part"))
                         else "ok"
                     )
-                except (OSError, ValueError, TypeError, KeyError) as exc:
+                except Exception as exc:  # noqa: BLE001 - a broken tool call is answered, never ends the helper
                     content, status = f"error: {type(exc).__name__}", "error"
             _emit(ctx, tool_event(ctx, call, n, name, status, content, args or {}, paths, usage if i == 0 else None))
             n += 1
