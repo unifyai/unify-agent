@@ -1315,7 +1315,8 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
         "role": "system",
         "content": curate_brief_now(
             finish_capped=True,
-        ),  # the pass is capped, so finish's cap is stated
+            compact=True,
+        ),  # the pass is capped, so finish's cap is stated; agents compact by default, so the brief says when
     }
     # CURATE changed nothing and kept nothing with a reason: its reasons are not settled, so they fire again
     assert stores.evidence.curate_seen() == set()
