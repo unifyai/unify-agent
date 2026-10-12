@@ -14,7 +14,7 @@ from tests.memory.library_example_world import (
 )  # noqa: F401 (a fixture)
 from tests.memory.test_pool import EMPTY, INDEX, _defer, _finish_with, _open, _Stores
 from unify.memory.episodes import Cell
-from tests.memory.test_writer_pass import _call, _writer
+from tests.memory.test_writer_pass import _call, _writer, needs_bwrap
 from tests.memory.test_writer_library_tools import EPS, _episode, _pass
 
 # --- (a) the open index in the first message ------------------------------------------------------------------
@@ -378,3 +378,61 @@ def test_a_shared_module_lands_when_declared_as_support_and_is_refused_when_not(
         "0.01",
     )
     assert declared.passed, declared.reasons
+
+
+# --- every input the texts point at exists ---------------------------------------------------------------------
+
+_LIST_INPUTS = (
+    "import os\n"
+    "for root, dirs, files in os.walk('/inputs'):\n"
+    "    print(root + '/')\n"
+    "    for f in files:\n"
+    "        print(os.path.join(root, f))\n"
+)
+
+
+def _named_inputs(text: str) -> set[str]:
+    """The concrete /inputs paths *text* names: no `<placeholder>` path, and none whose sentence says it may be
+    absent ("when present")."""
+    import re
+
+    out = set()
+    for m in re.finditer(r"/inputs/[A-Za-z0-9_.\-/]*", text):
+        path = m.group(0).rstrip(".,;:")
+        if text[m.end() : m.end() + 1] == "<" or path.endswith("/<"):
+            continue
+        start = max(text.rfind(". ", 0, m.start()), text.rfind("\n", 0, m.start()))
+        end = min(
+            x
+            for x in (text.find(". ", m.end()), text.find("\n", m.end()), len(text))
+            if x >= 0
+        )
+        if "when present" in text[start:end] or "if present" in text[start:end]:
+            continue
+        out.add(path)
+    return out
+
+
+@needs_bwrap
+def test_every_input_path_the_brief_and_first_message_name_exists_in_the_pass(tmp_path):
+    for name, cfg in (
+        ("plain", {}),
+        (
+            "staged",
+            {"staging_root": str(tmp_path / "staging"), "fork": True, "pool": True},
+        ),
+    ):
+        turns = [
+            _call("ls", "execute_code", {"code": _LIST_INPUTS}),
+            _call("f", "finish", {"summary": "s"}),
+        ]
+        _, model = _pass(tmp_path / name, turns, **cfg)
+        listed = set(model.outputs["ls"].split())
+        named = _named_inputs(
+            model.seen[0]["content"] + "\n" + model.seen[1]["content"],
+        )
+        assert named, name
+        missing = sorted(
+            p for p in named if p not in listed and p.rstrip("/") + "/" not in listed
+        )
+        assert missing == [], (name, missing)
