@@ -54,6 +54,10 @@ COVERAGE: dict[tuple[str, str], str] = {
         "searched as nothing, so the handler never sees a missing file"
     ),
     ("grep", "unreadable"): "as read's unreadable: only an I/O error other than a missing or forbidden entry",
+    ("grep", "search_failed"): (
+        "the search's child process fails only for a reason outside the call (it could not start, or it crashed); "
+        "listed for builds whose grep has this form"
+    ),
     ("overview", "unknown_episode"): R,
     ("overview", "not_episode_id"): R,
     ("overview", "not_recorded"): R,
@@ -161,8 +165,10 @@ def _required() -> set[tuple[str, str]]:
 
 
 def test_the_coverage_table_names_every_form_of_every_memory_tool():
-    assert set(COVERAGE) == _required()
-    assert set(tool_handlers.TOOL_FIELDS) | NOT_CHANNEL_TOOLS >= {t for t, _ in _required()} - {"*"}
+    # every form is in the table; a form some builds do not have may be listed, as unreachable data
+    assert _required() <= set(COVERAGE), sorted(_required() - set(COVERAGE))
+    assert all(COVERAGE[k] != R for k in set(COVERAGE) - _required())
+    assert set(tool_handlers.HANDLED) | NOT_CHANNEL_TOOLS >= {t for t, _ in _required()} - {"*"}
     for key, how in COVERAGE.items():
         assert how == R or len(how) > 40, key  # an unreachable form says why
 
@@ -480,7 +486,11 @@ def test_every_reachable_form_is_answered_and_nothing_leaks(tmp_path, monkeypatc
 
 def test_a_forced_exception_in_any_handler_is_an_error_reply_that_carries_nothing_it_said(tmp_path):
     secret = f"{PLANTED_ENV} {PLANTED_TOKEN} {tmp_path} {os.path.expanduser('~')}"
-    specs = tool_handlers.channel_specs()
+    from types import SimpleNamespace
+
+    from unify.common import tool_registry
+
+    specs = {n: s for n, s in tool_registry.registry().items() if n in tool_handlers.HANDLED}
 
     def boom_sync(ctx, args):
         raise OSError(secret)
@@ -492,7 +502,15 @@ def test_a_forced_exception_in_any_handler_is_an_error_reply_that_carries_nothin
     for name, spec in specs.items():
         real = getattr(tool_handlers, name)
         fn = boom_async if asyncio.iscoroutinefunction(real) else boom_sync
-        forced[name] = tool_handlers.SpecView(name, spec.parameters, spec.kind, spec.blocking, spec.deadline_s, fn)
+        agent = next(a for a in ("writer", "helper", "curator") if a in spec.roles)
+        forced[name] = SimpleNamespace(
+            name=name,
+            parameters=tool_registry.strict_parameters(agent, name),
+            kind=spec.kind,
+            blocking=spec.blocking,
+            deadline_s=spec.deadline_s,
+            handler=fn,
+        )
     sample = {
         name: {k: _sample(v) for k, v in ((spec.parameters or {}).get("properties") or {}).items()
                if k in ((spec.parameters or {}).get("required") or [])}
@@ -520,7 +538,7 @@ def test_a_forced_exception_in_any_handler_is_an_error_reply_that_carries_nothin
         return out, rows
 
     out, rows = asyncio.run(main())
-    assert set(out) == set(tool_handlers.TOOL_FIELDS)
+    assert set(out) == set(tool_handlers.HANDLED)
     for name, exc in out.items():
         assert type(exc).__name__ == "ToolError", (name, exc)
         text = str(exc)

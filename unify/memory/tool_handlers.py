@@ -30,33 +30,6 @@ from . import edit_tools as _et
 from . import writer_tools as _wt
 from .tool_spec import form_of
 
-#: What each memory tool is, for the registry's in-code fields: (kind, blocking, deadline in seconds or None for the
-#: pass's wall clock). Coroutine handlers are not ``blocking``: they run on the loop and send heavy work to the pool.
-TOOL_FIELDS: dict[str, tuple[str, bool, float | None]] = {
-    "read": ("reader", True, 30.0),
-    "grep": ("reader", True, 30.0),
-    "overview": ("reader", False, 30.0),
-    "read_episode": ("reader", False, 30.0),
-    "pool": ("reader", True, 30.0),
-    "similar": ("reader", False, 30.0),
-    "fixture": ("action", False, 60.0),
-    "replay": ("action", False, None),
-    "check": ("action", False, None),
-    "finish": ("terminal", False, None),
-    "write": ("action", False, 60.0),
-    "edit": ("action", False, 60.0),
-    "delegate": ("record", False, 60.0),
-    "send": ("record", False, 30.0),
-    "messages": ("record", False, 30.0),
-    "wait": ("record", False, None),
-    "who": ("record", False, 30.0),
-    "reply": ("record", False, 30.0),
-    "stop": ("record", False, None),
-    "ask": ("record", False, None),
-    "stage": ("action", True, 60.0),
-    "done": ("terminal", False, None),
-}
-
 #: The draft manifest under /memory.
 _MANIFEST_SHOWN = "/memory/.pass/manifest.json"
 
@@ -556,108 +529,18 @@ async def done(ctx: Any, args: dict) -> "_wt.Reply":
 # --- registry fields and the evidence store's reads from the worker pool --------------------------------------------
 
 
-@dataclass(frozen=True)
-class SpecView:
-    """A memory tool's spec with the in-code fields the channel reads (used until the shared registry provides
-    them): the base spec's fields plus ``kind``, ``blocking``, ``deadline_s`` and ``handler``."""
-
-    name: str
-    parameters: dict
-    kind: str
-    blocking: bool
-    deadline_s: float | None
-    handler: str
-
-
-def channel_specs() -> dict[str, Any]:
-    """The channel's spec table: the shared registry's when it exists, else the memory registry's specs with this
-    module's handlers and :data:`TOOL_FIELDS` (every object refuses unknown arguments either way)."""
-    try:
-        from unify.common import tool_registry  # type: ignore[attr-defined]
-
-        return dict(tool_registry.registry())
-    except ImportError:
-        pass
-    from .tool_spec import registry
-
-    out: dict[str, Any] = {}
-    for s in registry():
-        if s.name not in TOOL_FIELDS:
-            continue
-        kind, blocking, deadline = TOOL_FIELDS[s.name]
-        out[s.name] = SpecView(
-            s.name,
-            s.parameters,
-            kind,
-            blocking,
-            deadline,
-            f"unify.memory.tool_handlers:{s.name}",
-        )
-    return out
-
-
 def in_code_json_tools(agent: str) -> list[dict]:
-    """The one JSON tool every agent's requests carry with tools in code: ``execute_code``."""
-    try:
-        from unify.common import tool_registry  # type: ignore[attr-defined]
+    """The one model-API tool every agent's requests carry with tools in code (the registry's ``execute_code``)."""
+    from unify.common import tool_registry
 
-        return list(tool_registry.json_tools(agent))
-    except ImportError:
-        return [_wt.EXECUTE_CODE.as_tool()]
+    return tool_registry.json_tools(agent)
 
 
-def stub_source(names: tuple[str, ...]) -> str:
-    """The box module ``tools`` for *names*: the shared registry's renderer when it exists, else
-    :func:`plain_stub`."""
-    try:
-        from unify.common import tool_registry  # type: ignore[attr-defined]
+def stub_source(names: tuple[str, ...], agent: str | None = None) -> str:
+    """The box module ``tools`` for *agent* allowed *names* (the registry's renderer)."""
+    from unify.common import tool_registry
 
-        render = tool_registry.render_stub
-    except (ImportError, AttributeError):
-        return plain_stub(names)
-    return render(tuple(names))
-
-
-def plain_stub(names: tuple[str, ...]) -> str:
-    """A box module ``tools`` built from the box-side client's source and the memory registry's parameter names
-    only (no host path, run id, route or environment value): one function per tool in *names*; positional arguments
-    take the schema's names in order (required first), keywords pass as they are, and the host checks everything."""
-    from unify.common import tool_channel_client
-    from .tool_spec import registry
-
-    specs = {s.name: s for s in registry()}
-    out = [Path(tool_channel_client.__file__).read_text(encoding="utf-8"), "", "_NAMES = {}", ""]
-    for name in names:
-        spec = specs.get(name)
-        if spec is None or not name.isidentifier():
-            continue
-        props = list((spec.parameters or {}).get("properties") or {})
-        required = [p for p in (spec.parameters or {}).get("required") or [] if p in props]
-        order = required + [p for p in props if p not in required]
-        out += [
-            f"_NAMES[{name!r}] = {order!r}",
-            "",
-            "",
-            f"def {name}(*args, **kwargs):",
-            f"    {spec.summary or name!r}",
-            f"    return _call({name!r}, _args({name!r}, args, kwargs))",
-            "",
-        ]
-    out += [
-        "",
-        "def _args(tool, args, kwargs):",
-        "    names = _NAMES[tool]",
-        "    if len(args) > len(names):",
-        "        raise TypeError('%s() takes at most %d positional arguments' % (tool, len(names)))",
-        "    out = dict(zip(names, args))",
-        "    for key in kwargs:",
-        "        if key in out:",
-        "            raise TypeError('%s() got two values for %r' % (tool, key))",
-        "    out.update(kwargs)",
-        "    return out",
-        "",
-    ]
-    return "\n".join(out)
+    return tool_registry.render_stub(tuple(names), agent)
 
 
 class _ThreadReads:
@@ -732,15 +615,40 @@ def thread_reads(*stores: Any) -> Callable[[], None]:
     return undo
 
 
-__all__ = [n for n in TOOL_FIELDS] + [
+#: The memory tools this module answers (each registry spec's handler names one of them).
+HANDLED = (
+    "read",
+    "grep",
+    "overview",
+    "read_episode",
+    "pool",
+    "similar",
+    "fixture",
+    "replay",
+    "check",
+    "finish",
+    "write",
+    "edit",
+    "delegate",
+    "send",
+    "messages",
+    "wait",
+    "who",
+    "reply",
+    "stop",
+    "ask",
+    "stage",
+    "done",
+)
+
+__all__ = [
+    *HANDLED,
     "WriterCalls",
     "HelperCalls",
-    "channel_specs",
     "in_code_json_tools",
     "stub_source",
     "thread_reads",
     "write_draft_manifest",
-    "TOOL_FIELDS",
 ]
 
 
@@ -804,6 +712,7 @@ class InterpreterSession:
         start: Callable[..., Awaitable[Any]] | None = None,
         specs: dict | None = None,
     ) -> None:
+        """*specs*: tool specs by name for the channel (None: the shared registry's, as in a pass)."""
         from unify.common.tool_channel import CallContext
 
         self.allow = tuple(allow)
@@ -839,8 +748,6 @@ class InterpreterSession:
         """The interpreter's channel factory: a fresh channel for every box it starts."""
         from unify.common.tool_channel import Channel
 
-        if self._specs is None:
-            self._specs = channel_specs()
         if self.channel is not None and self.channel.stuck:
             self.stuck = True
         self.channel = Channel.open(
@@ -885,7 +792,7 @@ class InterpreterSession:
                 binds=self.binds,
                 env=self.env,
                 channel=self._new_channel,
-                stub_source=stub_source(self.allow),
+                stub_source=stub_source(self.allow, self.binding.agent),
                 cell_limit_s=self.cell_limit_s,
             )
         self._row_cell = cell_no

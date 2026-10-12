@@ -317,7 +317,7 @@ def _channel_for(agent, allow, state):
         state=state,
     )
     rows: list[dict] = []
-    ch = tc.Channel.open(binding, allow, rows.append, specs=tool_handlers.channel_specs())
+    ch = tc.Channel.open(binding, allow, rows.append)  # the shared registry's specs
     box = _client()
     req, rep = ch.box_fds()
     box._STATE["fds"] = (os.dup(req), os.dup(rep))
@@ -509,7 +509,8 @@ def test_a_helper_polling_during_a_slow_check_is_stopped_by_a_finish_requested_m
         time.sleep(2.0)  # a synchronous check that takes its time, as the gate's does
         return Reply("ok")
 
-    specs = {"check": tool_handlers.SpecView("check", {"type": "object", "properties": {}}, "action", True, None, slow_check)}
+    specs = {"check": SimpleNamespace(parameters={"type": "object", "properties": {}}, kind="action", blocking=True,
+                                      deadline_s=None, handler=slow_check)}
 
     async def main():
         pr = messaging.PassRecord(root="writer", deadline=time.monotonic() + 60)
@@ -572,17 +573,24 @@ def test_pool_decide_writes_the_draft_manifest_without_following_a_link(tmp_path
 def test_every_memory_tool_has_a_handler_named_as_the_tool():
     import inspect
 
-    for name, (kind, blocking, _) in tool_handlers.TOOL_FIELDS.items():
-        fn = getattr(tool_handlers, name)
-        assert callable(fn) and fn.__name__ == name
-        # synchronous work never runs on the event loop: a synchronous handler is dispatched to the worker pool,
-        # a coroutine handler sends its blocking parts there itself
-        assert inspect.iscoroutinefunction(fn) != blocking, name
-    specs = tool_handlers.channel_specs()
-    for name, spec in specs.items():
-        if isinstance(spec, tool_handlers.SpecView):
-            assert spec.handler == f"unify.memory.tool_handlers:{name}"
-            assert tc.resolve_handler(spec.handler) is getattr(tool_handlers, name)
+    from unify.common import tool_registry
+
+    mine = {
+        name: spec
+        for name, spec in tool_registry.registry().items()
+        if spec.handler.startswith("unify.memory.tool_handlers:")
+    }
+    assert set(mine) == set(tool_handlers.HANDLED)
+    for name, spec in mine.items():
+        assert spec.handler == f"unify.memory.tool_handlers:{name}"
+        fn = tc.resolve_handler(spec.handler)
+        assert fn is getattr(tool_handlers, name) and fn.__name__ == name
+        # synchronous work never runs on the event loop: a synchronous handler is dispatched to the worker pool
+        # (the registry says blocking), a coroutine handler sends its blocking parts there itself
+        assert inspect.iscoroutinefunction(fn) != spec.blocking, name
+        for agent in ("writer", "curator", "helper"):
+            if agent in spec.roles:
+                assert tool_registry.handler_for(agent, name) == (spec.handler, spec.blocking)
 
 
 def test_the_worker_pool_reads_the_evidence_store_through_its_own_connection(tmp_path):
@@ -617,7 +625,18 @@ def test_a_pass_that_ends_with_a_handler_thread_alive_keeps_its_folder_and_says_
         return Reply("late")
 
     monkeypatch.setattr(tool_handlers, "read", stuck_read)
-    monkeypatch.setitem(tool_handlers.TOOL_FIELDS, "read", ("reader", True, 0.2))
+    import dataclasses
+
+    from unify.common import tool_registry
+
+    monkeypatch.setattr(
+        tool_registry,
+        "_REGISTRY",
+        tuple(
+            dataclasses.replace(s, deadline_s=0.2) if s.name == "read" else s
+            for s in tool_registry._REGISTRY
+        ),
+    )
     monkeypatch.setattr(tc, "HANDLER_GRACE_S", 0.1)
     FakeBox.started = []
     model = ToolsSeen([_cell("c1", ("read", {"path": "/inputs"}))])

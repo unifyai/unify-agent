@@ -1402,10 +1402,9 @@ def _in_code_session(ctx: DelegateContext, call: str, st: dict, doc: dict) -> An
     from . import tool_handlers as _th
 
     hc = _th.HelperCalls(ctx=ctx, call=call, st=st, resolve=None, doc=doc)
-    allow = tuple(
-        n
-        for n in (t["function"]["name"] for t in helper_tools(similar=ctx.similar is not None))
-        if n != "execute_code"
+    allow = _registry.allow_list(
+        "helper",
+        frozenset({"helper", "similar"} if ctx.similar is not None else {"helper"}),
     )
 
     def on_event(row: dict) -> None:

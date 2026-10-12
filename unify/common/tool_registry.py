@@ -85,7 +85,8 @@ class RegisteredTool:
     handler: str = ""
     #: the per-call deadline in seconds; None: bounded by the pass's or request's wall clock only
     deadline_s: Optional[float] = None
-    #: True: the host runs the handler in its worker pool (file, git or subprocess work); False: on the event loop
+    #: True: the host runs the (synchronous) handler in its worker pool (file, git or subprocess work); False: the
+    #: handler runs on the event loop, a coroutine handler sending its own blocking work to the pool
     blocking: bool = False
     #: an agent's own parameter schema where it differs from ``parameters`` (shown in its help after
     #: :data:`ROLE_MARKER`)
@@ -1148,7 +1149,7 @@ _IN_CODE: dict[str, dict] = {
         when="Start here: the batch at a glance, then one episode's steps with the part names read_episode takes.",
         kind="reader",
         deadline_s=60.0,
-        blocking=True,
+        blocking=False,
     ),
     "read_episode": dict(
         returns="the episode's table of contents, or the parts asked for on one page of 8000 bytes, each marked.",
@@ -1156,7 +1157,7 @@ _IN_CODE: dict[str, dict] = {
         when="Read the parts overview names, several at once (at most 8 a call).",
         kind="reader",
         deadline_s=60.0,
-        blocking=True,
+        blocking=False,
     ),
     "pool": dict(
         returns="the entries listed, filtered or shown, or the manifest's pool block after a decision.",
@@ -1176,7 +1177,7 @@ _IN_CODE: dict[str, dict] = {
         "recording.",
         kind="action",
         deadline_s=120.0,
-        blocking=True,
+        blocking=False,
     ),
     "replay": dict(
         returns="the instances that replayed and the test file written, or why an instance did not verify.",
@@ -1186,14 +1187,14 @@ _IN_CODE: dict[str, dict] = {
             "code it `replaces` and calling `replay`: the instances that replay become its test."
         ),
         kind="action",
-        blocking=True,
+        blocking=False,
     ),
     "check": dict(
         returns="'ok', or the gate's reasons with the output of any failing test and the result file's path.",
         examples=("print(tools.check())",),
         when="Run it before finish: it judges the same file finish and the gate judge, and changes nothing else.",
         kind="action",
-        blocking=True,
+        blocking=False,
     ),
     "finish": dict(
         roles=(_A, _T, _W, _C),
@@ -1206,7 +1207,7 @@ _IN_CODE: dict[str, dict] = {
         examples=('tools.finish("Merged two items; see the manifest.")',),
         when="Call it once, when your work is ready (a writer or curator runs check first).",
         kind="terminal",
-        blocking=True,
+        blocking=False,
     ),
     "similar": dict(
         returns="for the cell and each large statement, the episodes and cells holding the same code, with "
@@ -1215,7 +1216,7 @@ _IN_CODE: dict[str, dict] = {
         when="Use it to see whether code you are about to generalise already occurs in other episodes.",
         kind="reader",
         deadline_s=120.0,
-        blocking=True,
+        blocking=False,
     ),
     "delegate": dict(
         roles=(_A, _W),
@@ -1245,7 +1246,7 @@ _IN_CODE: dict[str, dict] = {
         when="Call it last, with every claim's sources; a refused done says what to fix, and the task goes on.",
         kind="terminal",
         deadline_s=60.0,
-        blocking=True,
+        blocking=False,
     ),
     "send": dict(
         roles=_ALL,
@@ -1255,7 +1256,7 @@ _IN_CODE: dict[str, dict] = {
         when="Post short findings with the sources they rest on; put long content in a file and post its path.",
         kind="record",
         deadline_s=30.0,
-        blocking=True,
+        blocking=False,
     ),
     "messages": dict(
         roles=_ALL,
@@ -1264,7 +1265,7 @@ _IN_CODE: dict[str, dict] = {
         when="Read new messages between steps; it never waits.",
         kind="record",
         deadline_s=30.0,
-        blocking=True,
+        blocking=False,
     ),
     "wait": dict(
         roles=_ALL,
@@ -1291,7 +1292,7 @@ _IN_CODE: dict[str, dict] = {
         when="Answer a question or a request from one agent.",
         kind="record",
         deadline_s=30.0,
-        blocking=True,
+        blocking=False,
     ),
     "stop": dict(
         roles=(_A, _T, _W, _C),
@@ -1316,7 +1317,7 @@ _IN_CODE: dict[str, dict] = {
         when="Write a whole new file or replace one; use edit for a small change to an existing file.",
         kind="action",
         deadline_s=60.0,
-        blocking=True,
+        blocking=False,
     ),
     "edit": dict(
         returns="the path changed.",
@@ -1324,7 +1325,7 @@ _IN_CODE: dict[str, dict] = {
         when="Change one exact passage; add surrounding lines to `old` until it occurs once.",
         kind="action",
         deadline_s=60.0,
-        blocking=True,
+        blocking=False,
     ),
 }
 

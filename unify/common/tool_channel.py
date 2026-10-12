@@ -515,7 +515,8 @@ class Channel:
         threads: HandlerThreads | None = None,
         row_cell: Callable[[], int | None] | None = None,
     ) -> "Channel":
-        """A channel for one box. *specs*: the registry by name (default :func:`unify.common.tool_registry.registry`);
+        """A channel for one box. *specs*: tool specs by name (default: the shared registry, with the caller's strict
+        schema and handler from ``strict_parameters`` and ``handler_for``);
         *threads*: the pass's tracker, so the pass sees every channel's handler threads; *row_cell*: the owner's
         number for the running cell (its event row's ``call``), else the number :meth:`cell_started` was given."""
         return cls(binding, allow, on_event, specs=specs, threads=threads, row_cell=row_cell)
@@ -578,12 +579,23 @@ class Channel:
 
     # -- serving -----------------------------------------------------------------------------------------------
 
-    def _spec_table(self) -> Mapping[str, Any]:
-        if self._specs is None:
-            from unify.common import tool_registry
+    def _call_fields(self, tool: str) -> tuple[Any, dict, Any, bool] | None:
+        """(spec, validation schema, handler, blocking) for *tool*, or None when it is not a tool. With no *specs*
+        given, the shared registry's: the caller's strict schema and its handler (``strict_parameters``,
+        ``handler_for``); else the given spec's own fields."""
+        if self._specs is not None:
+            spec = self._specs.get(tool)
+            if spec is None:
+                return None
+            return spec, getattr(spec, "parameters", {}) or {}, spec.handler, bool(getattr(spec, "blocking", False))
+        from unify.common import tool_registry
 
-            self._specs = tool_registry.registry()
-        return self._specs
+        spec = tool_registry.registry().get(tool)
+        if spec is None or spec.kind == "local":  # a local tool (sh) runs in the box and is never served here
+            return None
+        agent = self.binding.agent
+        handler, blocking = tool_registry.handler_for(agent, tool)
+        return spec, tool_registry.strict_parameters(agent, tool), handler, bool(blocking)
 
     async def serve(self) -> None:
         """Read and answer frames until the channel closes or the box closes its end."""
@@ -682,15 +694,15 @@ class Channel:
     async def _dispatch(self, tool: str, args: dict) -> Any:
         """The answer to one well-formed call: the allow-list, the schema, the wall clock, the counters (on the
         loop, before anything runs), then the handler under its deadline."""
-        specs = self._spec_table()
-        spec = specs.get(tool) if tool in self.allow else None
-        if spec is None:
+        fields = self._call_fields(tool) if tool in self.allow else None
+        if fields is None:
             return _general(
                 "unknown_tool",
                 name=tool[:80],
                 tools=", ".join(self.allow),
             )
-        problem = validate(getattr(spec, "parameters", {}) or {}, args)
+        spec, schema, handler, blocking = fields
+        problem = validate(schema, args)
         if problem is not None:
             return _general("bad_arguments", reason=problem[:300])
         now = time.monotonic()
@@ -707,11 +719,10 @@ class Channel:
             deadline = min(deadline, now + float(own))
         ctx = dataclasses.replace(self.binding, deadline=deadline)
         try:
-            handler = spec.handler
             fn = handler if callable(handler) else resolve_handler(handler)
         except Exception as exc:  # noqa: BLE001 - a missing handler is an error reply, never a crash
             return _reply_class()(f"error: {type(exc).__name__} in tools.{tool}", "error")
-        return await self._run_handler(tool, fn, ctx, args, bool(getattr(spec, "blocking", False)), deadline)
+        return await self._run_handler(tool, fn, ctx, args, blocking, deadline)
 
     async def _run_handler(
         self,

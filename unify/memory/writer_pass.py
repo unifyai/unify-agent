@@ -4147,7 +4147,20 @@ class WriterPass:
             if in_code:
                 from . import tool_handlers as _th
 
-                in_code_allow = tuple(n for n in tool_names if n != "execute_code")
+                from unify.common import tool_registry as _registry
+
+                from .library_prompts import tool_flags
+
+                # the registry's allow-list for the agent, with the flags its model-API tools were chosen by
+                in_code_allow = _registry.allow_list(
+                    "curator" if self._role == "curate" else "writer",
+                    tool_flags(
+                        pool=bool(self.cfg.pool),
+                        helper=self.helper_turn is not None,
+                        similar=bool(self.cfg.similar_index),
+                        edit=bool(self.cfg.edit_tools),
+                    ),
+                )
                 tools = _th.in_code_json_tools(
                     "curator" if self._role == "curate" else "writer",
                 )
