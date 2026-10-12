@@ -321,10 +321,10 @@ def test_a_path_line_is_only_taken_by_the_fence_right_after_it():
         + "```text\npath: cases/x.json\n```\nprose\n```json\n{}\n```\n",
     )
     assert _files(blocks) == ({}, [])
-    assert sorted((b["path"], b["reason"]) for b in blocks) == [
-        ("cases/x.json", "path_block_then_text_then_block"),
+    assert [(b["path"], b["reason"]) for b in blocks] == [
         ("notes.md", "path_line_without_block"),
         (None, "no_path"),
+        ("cases/x.json", "path_block_then_text_then_block"),
         (None, "no_path"),
     ]
     assert record["counts"] == {"blocks": 4, "parsed": 0, "refused": 0, "dropped": 4}
