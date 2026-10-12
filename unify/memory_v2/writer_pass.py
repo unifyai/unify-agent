@@ -792,7 +792,6 @@ def _coverage_measures(
                         for s in r.get("signals") or []
                     ),
                 ),
-                ("s0", r.get("s0_clusters")),
                 ("pool", r.get("pool_entries")),
                 ("staging", staging.get("candidates")),
             )
@@ -826,66 +825,6 @@ def _staged_candidates(entry: dict) -> list[dict]:
                     "name": name,
                     "file": f"{base}/{f}",
                     "cases": f"{base}/{case}" if case in files else None,
-                },
-            )
-    return out
-
-
-def _gist(src: object, lines: int = 3, width: int = 100) -> str:
-    """m4k-c2: what a cluster's code is, at a glance: its first non-empty lines (a reference without it read as boilerplate)."""
-    if not isinstance(src, str):
-        return ""
-    got = [ln.rstrip()[:width] for ln in src.splitlines() if ln.strip()][:lines]
-    return "\n".join(got)
-
-
-def _s0_by_episode(tier_a: list, tier_b: dict) -> dict[str, list[dict]]:
-    """Each episode's S0 clusters: (tier a) code shapes it shares with other episodes, (tier b) behaviour groups; with
-    their size, this episode's cells, the file holding them and the pool entry id the pool keeps them under.
-    """
-    from .pool import entry_id
-
-    out: dict[str, list[dict]] = {}
-    for c in tier_a if isinstance(tier_a, list) else []:
-        at = [a for a in c.get("at") or [] if isinstance(a, dict)]
-        eps = sorted({a.get("episode") for a in at})
-        for eid in eps:
-            out.setdefault(eid, []).append(
-                {
-                    "tier": "a",
-                    "key": str(c.get("key", ""))[:16],
-                    "gist": _gist(c.get("template")),
-                    "instances": len(at),
-                    "episodes": len(eps),
-                    "cells": sorted(
-                        {a.get("cell") for a in at if a.get("episode") == eid},
-                    ),
-                    "file": "/inputs/s0/clusters.json",
-                    "pool_entry": entry_id("cluster", f"a:{c.get('key')}"),
-                },
-            )
-    units = (tier_b or {}).get("units") or {} if isinstance(tier_b, dict) else {}
-    for c in (tier_b or {}).get("clusters") or [] if isinstance(tier_b, dict) else []:
-        us = [units[m] for m in c.get("units") or [] if m in units]
-        eps = sorted({u.get("episode") for u in us})
-        akeys = sorted(c.get("akeys") or [])
-        for eid in eps:
-            out.setdefault(eid, []).append(
-                {
-                    "tier": "b",
-                    "gist": _gist(us[0].get("src") if us else ""),
-                    "instances": len(us),
-                    "shapes": len(akeys),
-                    "episodes": len(eps),
-                    "cells": sorted(
-                        {u.get("cell") for u in us if u.get("episode") == eid},
-                    ),
-                    "file": "/inputs/s0/behaviour.json",
-                    # the pool's own keying (pool.from_clusters): a witness group (S0 contract 2) is "b2:"
-                    "pool_entry": entry_id(
-                        "cluster",
-                        ("b2:" if c.get("witness") else "b:") + ",".join(akeys),
-                    ),
                 },
             )
     return out
@@ -1086,9 +1025,10 @@ class PassConfig:
     # arm C's analysts ("off" or "writer", UNIFY_MEMORY_LIBRARY_ANALYSTS)
     staging_root: str | None = None
     analysts: str = "off"
-    # r5 (r4 §4): S0 at pass start (its cache folder; None: no S0) and the run's worktree repo (office replays)
-    s0_cache: str | None = None
+    # the run's worktree repo and the folder its recorded office workspaces are exported to, once each, for
+    # replay (workspace_trees.py; None: replays run without a recorded workspace)
     worktree_git: str | None = None
+    trees_cache: str | None = None
     # the lead, 11 Oct: the candidate pool (UNIFY_MEMORY_LIBRARY_POOL; pool.py): proposals persist across passes
     pool: bool = False
     # MAIN 11 Oct (prepared, off until the lead decides): UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
@@ -1097,14 +1037,6 @@ class PassConfig:
     # MAIN 11 Oct (prepared; "required" until the lead decides): UNIFY_MEMORY_LIBRARY_COVERAGE. "optional": finish never
     # needs coverage, the episodes left are recorded as unread, and the pass reports coverage measures (no gate)
     coverage_rule: str = "required"
-
-
-def _json_file(path: Path, default):
-    """*path*'s JSON, or *default* when it is missing or unreadable."""
-    try:
-        return json.loads(path.read_text())
-    except (OSError, ValueError):
-        return default
 
 
 @dataclass
@@ -1142,8 +1074,6 @@ class PassOutcome:
     nothing_to_store: bool = False
     # r5 arm C: one row per Sol analyst (episode, status, flags, turns, usd, files); their spend is in usd too
     analysts: list[dict] = field(default_factory=list)
-    # r5: S0's summary for this pass (clusters, tier (b) counts, or its error); None when S0 did not run
-    s0: dict | None = None
     # r5: the batch's staging by source (fork, writer_analyst, replay_fork, none); None with library_mode off
     staging: dict | None = None
     # the candidate pool after this pass: open entries, added, status changes, its commit (or its error); None off
@@ -2089,11 +2019,7 @@ class WriterPass:
         self._shown_full: dict[str, tuple[str, str]] = {}
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
-        # r5: S0's facts for the analysts' flags (Task 5 fills them): episodes in a cluster, shapes seen before
-        self._s0_clustered: set[str] = set()
-        self._s0_seen: set[str] = set()
         self._analyst_rows: list[dict] = []
-        self._s0_summary: dict | None = None
         self._inputs_dir: Path | None = (
             None  # the pass's /inputs on the host, once staged
         )
@@ -2103,7 +2029,6 @@ class WriterPass:
         self._pool_open: int | None = None
         self._pool_error: str | None = None
         self._pool_staging: list = []
-        self._pool_s0: tuple = ([], {})
         self._deferred: dict[str, tuple[str, str | None]] = (
             {}
         )  # episode -> (reason, the entry it extends)
@@ -2362,10 +2287,11 @@ class WriterPass:
         return files
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
-        """r5 S2: verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified
-        instances as the item's harness-written test. Never raises: problems are the reply.
+        """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
+        as the item's harness-written test. Never raises: problems are the reply.
         """
         from . import replay_verify as _rv
+        from . import workspace_trees as _workspace_trees
 
         item = str(args.get("item", ""))
         found, manifest, problem = _read_manifest(box)
@@ -2381,13 +2307,15 @@ class WriterPass:
         )
         if entry is None or not entry.get("replaces"):
             return f"not run: the manifest lists no item {item!r} with replaces"
-        trees_dir = Path(self.cfg.s0_cache) / "trees" if self.cfg.s0_cache else None
-        trees = (
-            {p.name: p for p in trees_dir.iterdir() if p.is_dir()}
-            if trees_dir is not None and trees_dir.is_dir()
-            else None
-        )
+        replaces = entry["replaces"] if isinstance(entry["replaces"], list) else []
         try:
+            # each named episode's recorded office workspace, exported once (none without a worktree repo)
+            trees = _workspace_trees.trees_for(
+                self.load,
+                [i.get("episode") for i in replaces if isinstance(i, dict)],
+                self.cfg.worktree_git,
+                Path(self.cfg.trees_cache) if self.cfg.trees_cache else None,
+            )
             got = _rv.verify(
                 self.load,
                 item,
@@ -2424,7 +2352,7 @@ class WriterPass:
 
     def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
         """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed
-        them, retired when finish was accepted), then, on a WRITE pass, its staging, S0 clusters, deferrals and its
+        them, retired when finish was accepted), then, on a WRITE pass, its staging, deferrals and its
         draft when nothing landed; one commit on refs/heads/pool. Never raises: a failure is recorded and the pass's
         result stands."""
         from . import pool as _pool_mod
@@ -2443,7 +2371,6 @@ class WriterPass:
             if req.kind != "curate":
                 for eid, view in self._pool_staging:
                     new += _pool_mod.from_staging(eid, view)
-                new += _pool_mod.from_clusters(*self._pool_s0)
                 for e, (r, target) in sorted(self._deferred.items()):
                     if target is None:
                         new.append(_pool_mod.deferred(e, r))
@@ -2537,48 +2464,9 @@ class WriterPass:
             if self.cfg.staging_root
             else Path(inputs).parent / "staging-local"
         )
-        if self.cfg.s0_cache:
-            from . import s0_pass as _s0
-
-            batch = set(req.episodes)
-            since = getattr(self.ev, "experience_since", None)
-            history = (
-                [e for e, _ in since(0) if e not in batch] if since is not None else []
-            )
-            # the loader reaches the evidence store, whose SQLite connection belongs to this thread: load every
-            # episode S0 reads here and hand the worker thread a plain dict (M3c/M4 qualification, 11 Oct)
-            try:
-                loaded = {
-                    e: self.load(e) for e in dict.fromkeys([*history, *req.episodes])
-                }
-                s0_load = loaded.__getitem__
-            except (
-                Exception
-            ) as exc:  # noqa: BLE001 - S0 never stops a pass: an unreadable episode is S0's error
-
-                def s0_load(_eid: str, _exc: Exception = exc):
-                    raise _exc
-
-            got = await asyncio.to_thread(
-                _s0.run,
-                s0_load,
-                list(req.episodes),
-                history,
-                Path(inputs) / "s0",
-                Path(self.cfg.s0_cache),
-                worktree=self.cfg.worktree_git,
-            )
-            self._s0_clustered = set(got.get("clustered") or [])
-            self._s0_seen = set(got.get("seen") or [])
-            self._s0_summary = {k: v for k, v in got.items() if k != "seen"}
-            if self._pool is not None:
-                self._pool_s0 = (
-                    _json_file(Path(inputs) / "s0" / "clusters.json", []),
-                    _json_file(Path(inputs) / "s0" / "behaviour.json", {}),
-                )
         if self.cfg.analysts == "writer":
             flags = {
-                e: _analysts.flagged(ep, self._s0_clustered, self._s0_seen)
+                e: _analysts.flagged(ep, set(), set())
                 for e, ep in eps.items()
             }
             scratch = _views.Coverage(
@@ -2606,12 +2494,8 @@ class WriterPass:
         path = Path(inputs) / "batch_map.json"
         bmap = json.loads(path.read_text())
         counts: dict[str, int] = {}
-        # m4k (MAIN 11 Oct, the rehearsal diagnosis): each row points at what else this pass holds about its
-        # episode, where the writer reads: staged candidates, S0 clusters its code is in, open pool entries citing it
-        s0_refs = _s0_by_episode(
-            _json_file(Path(inputs) / "s0" / "clusters.json", []),
-            _json_file(Path(inputs) / "s0" / "behaviour.json", {}),
-        )
+        # each row points at what else this pass holds about its episode, where the writer reads: staged
+        # candidates and open pool entries citing it
         open_pool = self._pool.open_entries() if self._pool is not None else []
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
@@ -2620,7 +2504,6 @@ class WriterPass:
                 self._pool_staging.append((eid, view))
             row["staging"] = _staging.export(view, Path(inputs) / "staging" / eid)
             row["staging"]["candidates"] = _staged_candidates(row["staging"])
-            row["s0_clusters"] = s0_refs.get(eid, [])
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool
@@ -3080,12 +2963,11 @@ class WriterPass:
 
     def _write_inputs(self) -> dict:
         """m4j: the WRITE brief names each input this pass's configuration prepares (constant per run)."""
-        from .library_prompts import POOL_INPUT, S0_INPUT, STAGING_INPUT
+        from .library_prompts import POOL_INPUT, STAGING_INPUT
 
         pool = bool(self.cfg.pool)
         extra = (
             (STAGING_INPUT,) * bool(self.cfg.staging_root)
-            + (S0_INPUT,) * bool(self.cfg.s0_cache)
             + (POOL_INPUT,) * pool
         )
         return {"extra_inputs": extra, "pool": pool, "coverage": self.cfg.coverage_rule}
@@ -3138,12 +3020,10 @@ class WriterPass:
         self._shown_full = {}
         self._shared = {}
         self._analyst_rows = []
-        self._s0_summary = None
-        self._s0_clustered, self._s0_seen = set(), set()
         self._staging_counts = None
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
-        self._pool_staging, self._pool_s0 = [], ([], {})
+        self._pool_staging = []
         self._deferred, self._pool_manifest = {}, None
         self._cov, self._bmap_rows = None, []
         self._live, self._cancel_patch = None, (None, [])
@@ -3337,7 +3217,6 @@ class WriterPass:
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
-                o.s0 = self._s0_summary
                 o.staging = self._staging_counts
                 o.analysts = [
                     {
