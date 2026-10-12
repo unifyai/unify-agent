@@ -1,7 +1,7 @@
 """The replay box: runs an episode's recorded Python cells again, in a fresh interpreter inside a bubblewrap box
 (no network, read-only root, a private ``/tmp``, process limits, a per-cell alarm), and reports the plain values the
-run left. Replay verification (:mod:`.replay_verify`) uses it to check that a library function reproduces the
-recorded code it replaces.
+run left. Two jobs: ``replay`` snapshots the inputs of chosen lines, and ``verify`` (:mod:`.replay_verify`) checks
+that a library function reproduces the recorded code it replaces.
 
 Only plain data (numbers including ``Decimal``, strings, dates, lists, tuples, dicts, sets) leaves the box, as
 tagged JSON; the host never unpickles or executes anything it receives. Code that reads its working directory
@@ -133,6 +133,76 @@ def _run_code(code, ns: dict, timeout: float) -> str | None:
         signal.setitimer(signal.ITIMER_REAL, 0)
 
 
+def child_replay(job: dict) -> dict:
+    """Replay one episode's cells; snapshot each target unit's free names at its first execution."""
+    signal.signal(signal.SIGALRM, _on_alarm)
+    if job.get("cwd"):
+        os.chdir(job["cwd"])
+    ns: dict = {"__name__": "__main__", "__builtins__": builtins}
+    snaps: dict[str, dict] = {}
+    causes: dict[str, str] = {}
+    cell_errors: dict[int, str] = {}
+    fidelity = [0, 0]
+    flags = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
+    for cell in job["cells"]:
+        idx, fname = cell["index"], f"<cell-{cell['index']}>"
+        want: dict[int, list[dict]] = {}
+        for t in job["targets"].get(str(idx), []):
+            want.setdefault(t["line"], []).append(t)
+
+        def local(frame, event, arg, _want=want):
+            if event == "line" and frame.f_lineno in _want:
+                for t in _want[frame.f_lineno]:
+                    if t["uid"] in snaps or t["uid"] in causes:
+                        continue
+                    vals = {}
+                    try:
+                        for n in t["names"]:
+                            if n in frame.f_locals:
+                                vals[n] = enc(frame.f_locals[n])
+                            elif n in frame.f_globals:
+                                vals[n] = enc(frame.f_globals[n])
+                        snaps[t["uid"]] = vals
+                    except NotPlain as exc:
+                        causes[t["uid"]] = str(exc)
+                    except RecursionError:
+                        causes[t["uid"]] = "non-plain input: too deep"
+            return local
+
+        def tracer(frame, event, arg, _f=fname, _local=local):
+            return _local if frame.f_code.co_filename == _f else None
+
+        try:
+            code = compile(cell["code"], fname, "exec", flags=flags)
+        except (SyntaxError, ValueError):
+            cell_errors[idx] = "SyntaxError"
+            continue
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            sys.settrace(tracer)
+            try:
+                err = _run_code(code, ns, CELL_TIMEOUT_S)
+            finally:
+                sys.settrace(None)
+        if err:
+            cell_errors[idx] = err
+        fidelity[1] += 1
+        fidelity[0] += out.getvalue().strip() == (cell.get("output") or "").strip()
+    for cell in job["cells"]:
+        for t in job["targets"].get(str(cell["index"]), []):
+            if t["uid"] not in snaps and t["uid"] not in causes:
+                err = cell_errors.get(cell["index"])
+                causes[t["uid"]] = (
+                    f"not reached: {err}" if err else "not reached: line not executed"
+                )
+    return {
+        "snaps": snaps,
+        "causes": causes,
+        "cell_errors": cell_errors,
+        "fidelity": fidelity,
+    }
+
+
 def _run_cells(
     cells: list[dict],
     snap: tuple[int, int] | None,
@@ -218,7 +288,7 @@ def child_verify(job: dict) -> dict:
 
 def child_main() -> int:
     job = json.loads(sys.stdin.read())
-    modes = {"verify": child_verify}
+    modes = {"replay": child_replay, "verify": child_verify}
     out = modes[job["mode"]](job)
     sys.stdout.write(json.dumps(out))
     return 0

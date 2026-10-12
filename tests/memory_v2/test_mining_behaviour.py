@@ -1,4 +1,4 @@
-"""The replay box: plain values cross it as tagged JSON, it runs only verification jobs, and it has no network, a
+"""The replay box: plain values cross it as tagged JSON, it runs replay and verification jobs, and it has no network, a
 read-only root and a private /tmp. The in-process functions run on test code here; the box itself only where
 bubblewrap exists."""
 
@@ -27,10 +27,22 @@ def test_plain_data_round_trips_and_other_values_are_refused():
         b.enc(lambda: 0)
 
 
-def test_the_child_runs_verification_jobs_only(monkeypatch):
-    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps({"mode": "replay"})))
+def test_the_child_knows_only_replay_and_verification_jobs(monkeypatch):
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps({"mode": "cross"})))
     with pytest.raises(KeyError):
         b.child_main()
+
+
+def test_a_replay_snapshots_a_target_line_s_inputs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    code = "xs = [3, 1, 2]\nys = sorted(xs)\n"
+    job = {
+        "mode": "replay",
+        "cells": [{"index": 0, "code": code, "output": ""}],
+        "targets": {"0": [{"uid": "u", "line": 2, "names": ["xs"]}]},
+    }
+    r = b.child_replay(json.loads(json.dumps(job)))
+    assert r["snaps"] == {"u": {"xs": [3, 1, 2]}} and r["cell_errors"] == {}
 
 
 def test_a_cell_that_reads_its_working_directory_runs_in_the_recorded_tree(
@@ -55,7 +67,7 @@ def test_a_cell_that_reads_its_working_directory_runs_in_the_recorded_tree(
     first = got["first"]
     assert "error" not in first, first
     assert first["inputs"]["rows"] == [["a", "1"], ["b", "2"]]
-    assert b.dec(first["after"]["total"]) == {"a": 3, "b": 2}
+    assert b.dec(first["after"]["total"]) == {"a": 1, "b": 2}
     assert got["first"]["after"] == got["second"]["after"] == got["third"]["after"]
 
 
