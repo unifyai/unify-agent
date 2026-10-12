@@ -100,6 +100,50 @@ def test_no_trusted_exact_assertion_is_refused(library_example_world):
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
 
 
+def test_a_function_whose_parameters_are_all_required_passes_the_gate(
+    library_example_world,
+):
+    """The gate calls a function only as its tests call it: a second required parameter with no default is never
+    refused as an unbound argument, so no writer needs to invent a default to pass."""
+    import ast
+
+    mem, ev, blobs, gate = library_example_world
+    module = (
+        w.MODULE_SOURCE.replace(
+            "def user_id(response: dict) -> str:",
+            "def user_id(response: dict, field: str) -> str:",
+        )
+        .replace('"user_id" not in response', "field not in response")
+        .replace('return response["user_id"]', "return response[field]")
+    )
+    test = re.sub(
+        r'user_id\((load\("[^"]+"\))\)',
+        r'user_id(\1, "user_id")',
+        w.TEST_SOURCE,
+    )
+    test = test.replace(
+        'user_id(row["input"])',
+        'user_id(row["input"], "user_id")',
+    ).replace(
+        'user_id({"name": "Ada"})',
+        'user_id({"name": "Ada"}, "user_id")',
+    )
+    (fn,) = [
+        n
+        for n in ast.walk(ast.parse(module))
+        if isinstance(n, ast.FunctionDef) and n.name == "user_id"
+    ]
+    assert [a.arg for a in fn.args.args] == [
+        "response",
+        "field",
+    ] and fn.args.defaults == []
+    assert 'user_id(load("me_1.json"), "user_id")' in test
+    files, fixtures = w.files_and_fixtures(blobs.get, module=module, test=test)
+    res = _merge(library_example_world, files, w.manifest(fixtures))
+    assert res.passed, res.reasons
+    assert not any("unbound" in r or "default" in r for r in res.reasons)
+
+
 def test_curate_due_is_a_note_not_a_refusal(library_example_world):
     mem, ev, blobs, gate = library_example_world
     files, fixtures = w.files_and_fixtures(blobs.get)
