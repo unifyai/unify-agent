@@ -195,14 +195,7 @@ def test_the_write_brief_names_each_input_the_pass_prepares(tmp_path):
         < inputs.index("/inputs/pool/")
     )
     plain = _brief_of(tmp_path / "b")
-    import inspect
-
-    optional = (
-        {"coverage": "optional"}
-        if "coverage" in inspect.signature(pv.write_brief_now).parameters
-        else {}
-    )
-    assert plain == pv.write_brief_now(**optional) and not any(b in plain for b in ALL_INPUTS)
+    assert plain == pv.write_brief_now() and not any(b in plain for b in ALL_INPUTS)
     fork_off = _brief_of(
         tmp_path / "c",
         staging_root=str(tmp_path),

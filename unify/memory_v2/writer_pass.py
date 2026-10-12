@@ -33,7 +33,6 @@ import asyncio
 import contextvars
 import copy
 import hashlib
-import inspect
 import json
 import logging
 import os
@@ -2741,7 +2740,7 @@ class WriterPass:
 
     def _write_inputs(self) -> dict:
         """m4j: the WRITE brief names each input this pass's configuration prepares (constant per run)."""
-        from .library_prompts import POOL_INPUT, S0_INPUT, STAGING_INPUT, write_brief_now
+        from .library_prompts import POOL_INPUT, S0_INPUT, STAGING_INPUT
 
         pool = bool(self.cfg.pool)
         extra = (
@@ -2749,11 +2748,7 @@ class WriterPass:
             + (S0_INPUT,) * bool(self.cfg.s0_cache)
             + (POOL_INPUT,) * pool
         )
-        out = {"extra_inputs": extra, "pool": pool}
-        # finish never waits on reading; a brief that still takes the old reading-rule argument is told so
-        if "coverage" in inspect.signature(write_brief_now).parameters:
-            out["coverage"] = "optional"
-        return out
+        return {"extra_inputs": extra, "pool": pool}
 
     def _keep_cancelled_work(
         self,
