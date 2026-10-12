@@ -90,7 +90,7 @@ def test_a_write_pass_stages_no_miner_input_and_no_cluster_fields(
     st = _Stores(tmp_path)
     _finish_with(monkeypatch, EMPTY)
     out, _ = st.run(
-        [_call("x", "dismiss", {"episode": "e2", "reason": "r"})],
+        [_call("x", "read_episode", {"episode": "e2", "parts": ["request"]})],
         "p1",
         staging_root=str(tmp_path / "staging-root"),
     )

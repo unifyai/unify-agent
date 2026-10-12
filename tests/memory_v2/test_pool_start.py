@@ -157,7 +157,7 @@ def test_an_adopted_staged_candidate_merges_in_the_same_pass(tmp_path, monkeypat
     out, model = st.run(
         [
             _call("r", "read", {"path": STAGED}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "stored"}),
+            _open("e2"),
             _call("f", "finish", {"summary": "adopted fill"}),
         ],
         "p1",
@@ -188,7 +188,7 @@ def test_finish_refuses_an_adopt_ref_that_names_nothing_staged(tmp_path, monkeyp
     _finish_with(monkeypatch, bad)
     _, model = st.run(
         [
-            _call("x", "dismiss", {"episode": "e2", "reason": "seen"}),
+            _open("e2"),
             _call("f", "finish", {"summary": "s"}),
         ],
         "p1",
@@ -215,7 +215,7 @@ def test_with_staging_off_the_writer_sees_no_staging_anywhere(tmp_path, monkeypa
             _call("l", "read", {"path": "/inputs"}),
             _call("m", "read", {"path": "/inputs/batch_map.json"}),
             _call("r", "read", {"path": INDEX}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "seen"}),
+            _open("e2"),
         ],
         "p1",
     )
@@ -433,7 +433,7 @@ def test_a_pass_closes_the_old_cluster_entries_when_it_loads_the_pool(
     _, model = st.run(
         [
             _call("r", "read", {"path": INDEX}),
-            _call("x", "dismiss", {"episode": "e2", "reason": "seen"}),
+            _open("e2"),
         ],
         "p1",
     )
