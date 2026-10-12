@@ -498,6 +498,7 @@ def _fixture_call(
         return f"refused: {eid[:80]!r} is not in this batch"
     dest = str(args.get("dest", ""))
     append = bool(args.get("append", False))
+    notes: list[str] = []
     try:
         data, entry = make(
             eps[eid],
@@ -507,6 +508,7 @@ def _fixture_call(
             cut=args.get("slice"),
             append=append,
             existing=made.get(dest),
+            notes=notes,
         )
     except FixtureError as exc:
         return f"refused: {exc}"[:300]
@@ -531,7 +533,10 @@ def _fixture_call(
         f.write(data)
     made[dest] = entry
     verb = "appended a line to" if append else "wrote"
-    return f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
+    return (
+        f"ok: {verb} {dest} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()[:12]})"
+        + "".join(f"; {n}" for n in notes)
+    )
 
 
 # design r2 §3: finish refuses an unparseable manifest at most this many times in a pass
@@ -735,6 +740,25 @@ def _parts_list(
         f"Read parts with parts=[...] ({READ_PARTS_PER_CALL} per call) or one with part=<name>.",
     )
     return "\n".join(lines)
+
+
+def _unknown_part(
+    ep: Any,
+    eid: str,
+    name: str,
+    cov: Any,
+    shared: dict[str, str] | None = None,
+) -> str:
+    """``read_episode`` with a part *ep* does not have: nothing is read, and the answer lists the parts it has."""
+    return (
+        f"no part {name[:80]!r} in {eid}; nothing was read. Its parts:\n"
+        + _parts_list(
+            ep,
+            eid,
+            cov,
+            shared,
+        )
+    )
 
 
 def _coverage_measures(
@@ -2759,7 +2783,8 @@ class SolPass:
             try:
                 data = _bm.part_text(ep, name, shared).encode()
             except (KeyError, ValueError, IndexError, StopIteration):
-                return f"refused: unknown part {name!r}; nothing was read"[:300]
+                # m4k-c4: answer with the episode's part names (rehearsal 3 refused here)
+                return _unknown_part(ep, eid, name, cov, shared)
             items.append((name, off, data))
         left, out = _views.VIEW_BYTES, []
         for name, off, data in items:
@@ -2899,7 +2924,10 @@ class SolPass:
                 return text
             if "parts" not in args:
                 part = str(args.get("part", ""))
-                data = _bm.part_text(eps[eid], part, self._shared).encode()
+                try:
+                    data = _bm.part_text(eps[eid], part, self._shared).encode()
+                except (KeyError, ValueError, IndexError, StopIteration):
+                    return _unknown_part(eps[eid], eid, part, cov, self._shared)
                 canon = _bm.canonical_part(eps[eid], part)
                 same = (
                     _identical(self._shown_full, cov, eid, canon, data)

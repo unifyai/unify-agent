@@ -146,6 +146,26 @@ def _cut(data: bytes, cut: object) -> bytes:
     return data[a:b]
 
 
+def _clamped(data: bytes, cut: object, notes: list[str] | None) -> object:
+    """m4k-c4 (rehearsal 3: a slice longer than the record was the main MED/HIGH tool refusal): a well-formed slice
+    that starts inside the record but ends past it is cut at the record's end, and *notes* says so. The clamped
+    slice is the one recorded, so the gate re-derives the same bytes. Anything else is left to :func:`_cut`.
+    """
+    if (
+        isinstance(cut, (list, tuple))
+        and len(cut) == 2
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in cut)
+        and 0 <= cut[0] < len(data) < cut[1]
+    ):
+        if notes is not None:
+            notes.append(
+                f"truncated: slice end {cut[1]} is past the {len(data)} recorded bytes; copied "
+                f"[{cut[0]}, {len(data)}]",
+            )
+        return [cut[0], len(data)]
+    return cut
+
+
 def _decoded(piece: bytes) -> Any:
     try:
         text = piece.decode("utf-8")
@@ -175,15 +195,20 @@ def make(
     cut: object = None,
     append: bool = False,
     existing: dict | None = None,
+    notes: list[str] | None = None,
 ) -> tuple[bytes, dict]:
-    """The bytes to write at *dest* (or, with *append*, the one line to append) and its new provenance entry."""
+    """The bytes to write at *dest* (or, with *append*, the one line to append) and its new provenance entry.
+    *notes* (when given) receives what was adjusted, e.g. a slice cut at the record's end.
+    """
     if not DATA_PATH.match(dest) or dest.split("/tests/data/", 1)[1].startswith(
         DRAWN_DIR,
     ):
         raise FixtureError(
             f"{dest[:200]} is not a file name under memory/<package>/tests/data/",
         )
-    piece = _cut(source_bytes(ep, source, blob), cut)
+    data = source_bytes(ep, source, blob)
+    cut = _clamped(data, cut, notes)
+    piece = _cut(data, cut)
     where = {
         "episode": ep.episode_id,
         "source": str(source),

@@ -252,7 +252,9 @@ def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):
         ),
     ]
     out, model = _pass(tmp_path, turns, max_calls=5)
-    assert model.outputs["bogus"].startswith("refused: unknown part 'bogus'")
+    assert model.outputs["bogus"].startswith(
+        "no part 'bogus' in e1; nothing was read. Its parts:\ne1: 4 part(s)",
+    )  # m4k-c4: an unknown part answers with the episode's parts
     assert model.outputs["neg"].startswith("refused: offset must be an integer >= 0")
     assert model.outputs["txt"].startswith("refused: offset must be an integer >= 0")
     assert out.coverage["bytes_read"] == 0 and out.coverage["parts_read"] == 0
