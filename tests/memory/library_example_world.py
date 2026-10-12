@@ -15,7 +15,7 @@ Public names:
 * ids and paths ``ITEM_ID``, ``PACKAGE_INIT``, ``MODULE``, ``TEST_FILE``, ``FIXTURE_PATHS`` (the two copies),
   ``INPUTS_PATH`` (the recorded-inputs file), and the test ids ``EXAMPLE_TEST``, ``INPUTS_TEST``, ``REFUSAL_TEST``;
 * sources ``MODULE_SOURCE``, ``TEST_SOURCE`` (:func:`example_test_source` for other fixture episodes) and
-  ``WEAK_TEST_SOURCE`` (the same calls with no exact assertion);
+  ``WEAK_TEST_SOURCE`` (the same calls with no exact assertion in any test);
 * builders :func:`make_fixtures`, :func:`files_and_fixtures`, :func:`item`, :func:`manifest`, :func:`candidate`,
   :func:`recorded_calls` (the example calls a complete call record of the test file holds);
 * the pytest fixture :func:`library_example_world` (a :class:`World`: memory repo, evidence store, blob store and a
@@ -136,13 +136,21 @@ def example_test_source(sources: tuple[Episode, ...] = (E1, E2)) -> str:
 
 
 TEST_SOURCE = example_test_source()
-#: The test file with no trusted exact assertion: each fixture's call is only checked to return a string.
-WEAK_TEST_SOURCE = TEST_SOURCE.replace(
-    'assert user_id(load("me_1.json")) == "u-1"',
-    'assert isinstance(user_id(load("me_1.json")), str)',
-).replace(
-    'assert user_id(load("me_2.json")) == "u-2"',
-    'assert isinstance(user_id(load("me_2.json")), str)',
+#: The test file with no trusted exact assertion: each fixture's call, and each recorded-inputs line's, is only
+#: checked to return a string (the recorded-inputs test's expected value comes from its fixture, so it is trusted).
+WEAK_TEST_SOURCE = (
+    TEST_SOURCE.replace(
+        'assert user_id(load("me_1.json")) == "u-1"',
+        'assert isinstance(user_id(load("me_1.json")), str)',
+    )
+    .replace(
+        'assert user_id(load("me_2.json")) == "u-2"',
+        'assert isinstance(user_id(load("me_2.json")), str)',
+    )
+    .replace(
+        'assert user_id(row["input"]) == row["input"]["user_id"]',
+        'assert isinstance(user_id(row["input"]), str)',
+    )
 )
 
 

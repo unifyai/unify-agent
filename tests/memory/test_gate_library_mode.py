@@ -94,7 +94,7 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
 
 def test_no_trusted_exact_assertion_is_refused(library_example_world):
     mem, ev, blobs, gate = library_example_world
-    assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE
+    assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE and " == " not in w.WEAK_TEST_SOURCE
     files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)

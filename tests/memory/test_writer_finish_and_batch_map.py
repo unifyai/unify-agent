@@ -206,6 +206,6 @@ def test_the_fixture_form_the_refusal_shows_passes_g3(library_example_world):
         "0.01",
     )
     assert res.passed, res.reasons
-    assert (
-        res.verification[w.ITEM_ID]["exact_assertions"] == 2
-    )  # the fixture-form assertion counts, as the literal did
+    # the fixture-form assertion counts, as the literal did: with the other fixture's literal assertion and the
+    # recorded-inputs test's (its expected value comes from its fixture), three, as on the literal form
+    assert res.verification[w.ITEM_ID]["exact_assertions"] == 3
