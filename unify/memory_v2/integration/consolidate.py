@@ -958,6 +958,7 @@ def _curate_state(
     """
     from .. import layout
     from ..library_export import item_history
+    from ..item_records import effect_of, records_at
     from ..library_index import build_links, render_index
     from ..overlap import overlap_candidates
     from ..shape_rows import shapes_at
@@ -987,8 +988,14 @@ def _curate_state(
                 typed=stores.evidence.typed_covers(),
             ),
             suspects=suspects,
+            # the index as the actor's copy renders it, with each function's recorded effect
             index_tokens=estimate_tokens(
-                render_index(lib, build_links(lib), status_of),
+                render_index(
+                    lib,
+                    build_links(lib),
+                    status_of,
+                    effect_of(records_at(stores.memory, sha)[0]),
+                ),
             ),
             bodies=layout.function_bodies(tree),
             use=use,
