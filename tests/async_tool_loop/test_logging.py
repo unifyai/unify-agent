@@ -501,7 +501,6 @@ class TestPendingThinkingLog:
         assert "LLM thinking… →" in out
         assert "ProactiveSpeech" in out
 
-    @pytest.mark.llm_call
     def test_new_llm_client_attaches_pending_log(self):
         """new_llm_client with origin should attach _pending_thinking_log."""
         client = new_llm_client(origin="TestOrigin")
