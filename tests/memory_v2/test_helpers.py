@@ -203,16 +203,24 @@ def test_the_helper_box_is_ro_ro_rw_and_holds_only_what_the_task_needs(
     (call,) = fake_box
     assert sorted(call["ro"].values()) == ["/cell", "/inputs", "/memory"]
     assert list(call["rw"].values()) == ["/work"] and call["cwd"] == "/work"
-    assert call["env"] == {"PYTHONPATH": "/inputs:/memory"}
+    # the open log's pipe is the one extra descriptor and variable; the interpreter skips the user site
+    (fd,) = call["pass_fds"]
+    assert call["env"] == {
+        "PYTHONPATH": "/inputs:/memory",
+        "MEMORY_BOX_OPEN_LOG": f"fd:{fd}",
+    }
+    assert call["argv"][-2:] == ["-s", "/cell/code.py"]
     assert (
         f"--fsize={helpers.WORK_FILE_BYTES}:{helpers.WORK_FILE_BYTES}" in call["argv"]
     )
-    # /inputs: the named episode's record and the shared blocks; no pool, gate, drafts or other helpers' output
+    # /inputs: the named episode's record, the shared blocks and the open-log hook; no pool, gate, drafts or other
+    # helpers' output
     assert call["listing"]["/inputs"] == [
         "episodes",
         "episodes/e1.json",
         "shared",
         "shared/b1.txt",
+        "sitecustomize.py",
     ]
     # /memory: the library as the writer sees it, without the writer's .pass
     assert call["listing"]["/memory"] == ["INDEX.md"]
@@ -403,7 +411,9 @@ def test_done_with_resolving_sources_is_recorded_and_shown_to_the_writer(
         {"claim": "e3 asked for nothing", "sources": ["e3/request"]},
         {"claim": "a shared block holds the rules", "sources": ["e1/shared:b1"]},
     ]
-    exported = json.loads((ctx.inputs / "helpers" / "call-0" / "helper.json").read_text())
+    exported = json.loads(
+        (ctx.inputs / "helpers" / "call-0" / "helper.json").read_text(),
+    )
     assert exported["claims"] == status["claims"]
     assert ctx.records[0]["claims"] == status["claims"]
     # the writer's reply lists every claim with its pointers and says they are untrusted until read
@@ -479,7 +489,10 @@ def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
     assert "the task is not done, call done again" in refused
     # the helper went on and fixed it
     rows = [json.loads(x) for x in ctx.events.read_text().splitlines()]
-    assert [(r["tool"], r["status"]) for r in rows] == [("done", "refused"), ("done", "ok")]
+    assert [(r["tool"], r["status"]) for r in rows] == [
+        ("done", "refused"),
+        ("done", "ok"),
+    ]
     assert rows[0]["refusal"]["form"] == form
     status = json.loads((ctx.out_root / "call-0" / "helper.json").read_text())
     assert status["status"] == "ok" and status["claims"] == fixed
@@ -487,7 +500,12 @@ def test_done_with_a_missing_or_unresolved_source_is_refused_and_can_be_fixed(
 
 
 def test_a_helper_that_never_fixes_its_claims_hands_back_none(tmp_path, fake_box):
-    script = Script({"t": [_msg(_tc("d", "done", {"summary": "s", "claims": [{"claim": "x"}]}))] * 3})
+    script = Script(
+        {
+            "t": [_msg(_tc("d", "done", {"summary": "s", "claims": [{"claim": "x"}]}))]
+            * 3,
+        },
+    )
     ctx = _ctx(tmp_path, script, step_guard=3)
     reply = asyncio.run(helpers.handle({"task": "t", "episodes": ["e1"]}, ctx))
     assert reply.startswith("helper call-0: operational step guard")
@@ -501,7 +519,10 @@ def test_the_done_spec_asks_for_sources_and_the_briefs_say_claims_are_untrusted(
     assert props["claims"]["items"]["required"] == ["claim", "sources"]
     assert "<episode>/<part>" in helpers.DONE_SPEC.description
     assert "done(summary, claims)" in helpers.HELPER_BRIEF
-    assert "is refused" in helpers.HELPER_BRIEF and "<episode>/<part>" in helpers.HELPER_BRIEF
+    assert (
+        "is refused" in helpers.HELPER_BRIEF
+        and "<episode>/<part>" in helpers.HELPER_BRIEF
+    )
     assert "untrusted until you read the parts" in helpers.SPEC.description
     assert "cannot launch helpers" in helpers.SPEC.description
 
@@ -528,7 +549,11 @@ def test_delegate_is_a_write_tool_offered_only_with_a_helper_lane():
     names = [t["function"]["name"] for t in helpers.helper_tools()]
     assert "delegate" not in names and {"stage", "done", "execute_code"} <= set(names)
     # a helper never launches helpers, whatever flags the pass has
-    for flags in (frozenset(), frozenset({"helper"}), frozenset({"helper", "pool", "fork"})):
+    for flags in (
+        frozenset(),
+        frozenset({"helper"}),
+        frozenset({"helper", "pool", "fork"}),
+    ):
         assert "delegate" not in [s.name for s in tool_spec.tools_for("helper", flags)]
 
 

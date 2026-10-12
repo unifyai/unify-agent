@@ -59,6 +59,7 @@ from . import batch_map as _bm
 from . import views as _views
 from . import writer_tools as _wt
 from .integration.fork_worker import QUOTA_BYTES, QUOTA_FILES, allowed
+from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .tool_spec import ToolSpec
 
@@ -305,6 +306,8 @@ class DelegateContext:
     step_guard: int = 500
     cell_timeout_s: float = 60.0
     records: list[dict] = field(default_factory=list)
+    #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
+    box_opens: list[dict] = field(default_factory=list)
     model_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     next_call: int = 0
 
@@ -397,6 +400,29 @@ def _emit(ctx: DelegateContext, row: dict) -> None:
             fh.write(json.dumps(row, sort_keys=True, default=str) + "\n")
     except OSError:
         pass  # the record is best effort; the helper's own helper.json still holds its ledger
+
+
+def record_box_opens(ctx: DelegateContext, row: dict, audit: dict | None) -> None:
+    """Add an ``execute_code`` call's open-log fields to its tool event *row*, and keep its open rows, stamped by
+    the host (agent, pass, delegate call, call number; the box supplies only event, path and mode), on
+    ``ctx.box_opens`` and in ``box-opens.jsonl`` beside the pass's ``tool-events.jsonl``. *audit* None: no box ran.
+    """
+    row.update(_sandbox.box_open_fields(audit))
+    rows = [
+        {
+            "agent": "helper",
+            "pass_id": ctx.pass_id,
+            "helper_call": row.get("helper_call"),
+            "call": row.get("call"),
+            **o,
+        }
+        for o in (audit or {}).get("rows") or []
+    ]
+    if not rows:
+        return
+    ctx.box_opens.extend(rows)
+    if ctx.events is not None:
+        _sandbox.append_open_rows(ctx.events.parent / "box-opens.jsonl", rows)
 
 
 def tool_event(
@@ -556,11 +582,14 @@ def box_cell(
     work: Path,
     cells: Path,
     timeout_s: float,
+    audit: dict | None = None,
 ) -> str:
     """*code* in the helper's box: the writer's box profile (:func:`.sandbox_run.run_confined`), with ``/inputs``
     and ``/memory`` read-only and ``/work`` read-write; the code is a fresh read-only bind, never argv.
+    *audit*, when given, receives the call's open log (:meth:`.sandbox_run.BoxOpenLog.finish`).
     """
     cdir = Path(tempfile.mkdtemp(prefix="cell-", dir=cells))
+    open_log = _sandbox.BoxOpenLog()
     try:
         (cdir / "code.py").write_bytes(code.encode("utf-8", errors="replace"))
         r = run_confined(
@@ -569,15 +598,20 @@ def box_cell(
                 f"--fsize={WORK_FILE_BYTES}:{WORK_FILE_BYTES}",
                 "--",
                 str(PYTHON),
+                "-s",  # no user site-packages
                 "/cell/code.py",
             ],
             ro={hin: "/inputs", lib: "/memory", cdir: "/cell"},
             rw={work: "/work"},
             cwd="/work",
             timeout_s=timeout_s,
-            env={"PYTHONPATH": "/inputs:/memory"},
+            env={"PYTHONPATH": "/inputs:/memory", **open_log.env},
+            pass_fds=open_log.pass_fds,
         )
     finally:
+        result = open_log.finish()
+        if audit is not None:
+            audit.update(result)
         shutil.rmtree(cdir, ignore_errors=True)
     content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
     data = content.encode("utf-8", "replace")
@@ -879,6 +913,8 @@ async def _tool(
         left = ctx.deadline - time.monotonic()
         if left <= 1.0:
             return "not run: the pass's wall clock is used up", []
+        audit: dict = {}
+        st["box_audit"] = audit
         out = await _in_thread(
             box_cell,
             str(args.get("code", "")),
@@ -887,6 +923,7 @@ async def _tool(
             st["work"],
             st["cells"],
             max(1.0, min(ctx.cell_timeout_s, left)),
+            audit,
         )
         over = work_over(st["work"])
         if over is not None:
@@ -903,6 +940,9 @@ def _prepare(ctx: DelegateContext, episodes: list[str], tmp: Path) -> dict:
     hin, lib, work, cells = (tmp / n for n in ("inputs", "memory", "work", "cells"))
     for d in (hin, lib, work, cells):
         d.mkdir()
+    _sandbox.stage_open_hook(
+        hin,
+    )  # /inputs/sitecustomize.py: the box's observe-only open log
     export_for_writer(ctx.load, episodes, hin / "episodes", library_mode=True)
     if ctx.shared:
         (hin / "shared").mkdir()
@@ -1047,20 +1087,20 @@ async def _run_helper(
                     Exception
                 ) as exc:  # noqa: BLE001 - a broken tool call is answered, never ends the helper
                     content, status = f"error: {type(exc).__name__}", "error"
-            _emit(
+            row = tool_event(
                 ctx,
-                tool_event(
-                    ctx,
-                    call,
-                    n,
-                    name,
-                    status,
-                    content,
-                    args or {},
-                    paths,
-                    usage if i == 0 else None,
-                ),
+                call,
+                n,
+                name,
+                status,
+                content,
+                args or {},
+                paths,
+                usage if i == 0 else None,
             )
+            if name == "execute_code":
+                record_box_opens(ctx, row, st.pop("box_audit", None) or None)
+            _emit(ctx, row)
             n += 1
             messages.append({"role": "tool", "tool_call_id": cid, "content": content})
         if finished:

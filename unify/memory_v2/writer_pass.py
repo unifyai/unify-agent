@@ -68,6 +68,7 @@ from . import writer_tools as _wt
 from . import testkit as _testkit
 from .qa_static import cuts as _cuts
 from .redact import Redactor, redact_error
+from . import sandbox_run as _sandbox
 from .sandbox_run import PRLIMIT, PYTHON, run_confined
 from .snapshot import item_bodies
 from .trigger import PassRequest
@@ -2055,6 +2056,9 @@ class WriterPass:
     ) -> None:
         """The pass's read-only ``/inputs``; *tree* is the parent library (its tests decide the test kit)."""
         inputs.mkdir()
+        _sandbox.stage_open_hook(
+            inputs,
+        )  # /inputs/sitecustomize.py: the cells' observe-only open log
         store = getattr(self.gate, "blobs", None)
         export_for_writer(
             self.load,
@@ -2598,7 +2602,11 @@ class WriterPass:
         timeout_s: float,
     ) -> str:
         """Run *code* as ``/cell/code.py`` (a fresh read-only bind; never argv) under a lowered file-size limit."""
+        self._box_audit = None
         cdir = Path(tempfile.mkdtemp(prefix="cell-", dir=cells))
+        # the opens the code makes under /inputs and /memory, from the audit hook (/inputs/sitecustomize.py) through
+        # a pipe the host drains; stamped and recorded by the call's tool event
+        open_log = _sandbox.BoxOpenLog()
         try:
             (cdir / "code.py").write_bytes(code.encode("utf-8", errors="replace"))
             r = run_confined(
@@ -2607,13 +2615,15 @@ class WriterPass:
                     f"--fsize={CELL_FSIZE_BYTES}:{CELL_FSIZE_BYTES}",
                     "--",
                     str(PYTHON),
+                    "-s",  # no user site-packages
                     "/cell/code.py",
                 ],
                 ro={inputs: "/inputs", cdir: "/cell"},
                 rw={box: "/memory"},
                 cwd="/memory",
                 timeout_s=timeout_s,
-                env={"PYTHONPATH": "/inputs:/memory"},
+                env={"PYTHONPATH": "/inputs:/memory", **open_log.env},
+                pass_fds=open_log.pass_fds,
                 # v2.1 (P3 Amendment C): the generated files are read-only binds, so a write fails at once
                 **(
                     {"late_ro": self._generated_binds(box)}
@@ -2622,6 +2632,7 @@ class WriterPass:
                 ),
             )
         finally:
+            self._box_audit = open_log.finish()
             shutil.rmtree(cdir, ignore_errors=True)
         content = (r.stdout + ("\n" + r.stderr if r.stderr else "")) or "(no output)"
         if _library_on(self):
@@ -2764,8 +2775,29 @@ class WriterPass:
             "result_truncated": "; next: offset=" in reply.text,
             "usage": usage,
         }
+        opens: list[dict] = []
+        if tool == "execute_code":
+            # the host stamps who, which pass and which call; the box supplies only event, path and mode
+            audit = self.__dict__.pop("_box_audit", None)
+            row.update(_sandbox.box_open_fields(audit))
+            opens = [
+                {"agent": row["agent"], "pass_id": pass_id, "call": row["call"], **o}
+                for o in (audit or {}).get("rows") or []
+            ]
         self.tool_events.append(row)
         self._write_event(pass_id, row)
+        if opens:
+            self._record_box_opens(pass_id, opens)
+
+    def _record_box_opens(self, pass_id: str, rows: list[dict]) -> None:
+        """Keep host-stamped open rows on the pass (``self.box_opens``) and append them to
+        ``<pass_record_root>/<pass id>/box-opens.jsonl`` (:func:`.sandbox_run.append_open_rows`).
+        """
+        kept = self.__dict__.setdefault("box_opens", [])
+        kept.extend(rows)
+        root = getattr(self.cfg, "pass_record_root", None)
+        if root:
+            _sandbox.append_open_rows(Path(root) / pass_id / "box-opens.jsonl", rows)
 
     def _write_event(self, pass_id: str, row: dict) -> None:
         """Append *row* to ``<pass_record_root>/<pass id>/tool-events.jsonl``. The file is created new (never through

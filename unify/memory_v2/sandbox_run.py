@@ -16,8 +16,10 @@ from __future__ import annotations
 import contextlib
 import os
 import platform
+import json
 import posixpath
 import pwd
+import select
 import shutil
 import signal
 import stat
@@ -424,8 +426,12 @@ def run_confined(
     env: dict[str, str] | None = None,
     spool: tuple[Path, Path] | None = None,
     late_ro: dict[Path, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> SandboxResult:
     """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
+
+    *pass_fds* are host descriptors the box inherits under the same numbers (the write end of an open-log pipe,
+    :class:`BoxOpenLog`); never a descriptor of a host file.
 
     *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
     read-only (library mode's generated files in the writer's box). Each source must be an
@@ -440,6 +446,13 @@ def run_confined(
     for name in env or {}:
         if name.upper() in HARNESS_ONLY_ENV:
             raise ValueError(f"{name} never enters the box")
+    for fd in pass_fds:
+        if (
+            not isinstance(fd, int)
+            or isinstance(fd, bool)
+            or not stat.S_ISFIFO(os.fstat(fd).st_mode)
+        ):
+            raise ValueError("only pipe descriptors are passed into the box")
     bwrap = shutil.which("bwrap")
     if not bwrap:
         raise RuntimeError("bubblewrap is required")
@@ -521,7 +534,7 @@ def run_confined(
             stderr=subprocess.PIPE,
             start_new_session=True,
             env={"PATH": "/usr/bin:/bin"},
-            pass_fds=(env_fd, bpf_fd),
+            pass_fds=(env_fd, bpf_fd, *pass_fds),
         )
     tails: list[_Tail] = []
 
@@ -544,6 +557,212 @@ def run_confined(
         except BaseException as kill_error:
             raise kill_error from exc
         raise
+
+
+# --- the box's open log ---------------------------------------------------------------------------------------
+
+#: The observe-only audit hook, staged read-only as ``/inputs/sitecustomize.py`` (see :mod:`.box_audit_hook`).
+OPEN_HOOK_SOURCE = Path(__file__).with_name("box_audit_hook.py")
+#: The environment variable naming the open log's descriptor in the box (``fd:<n>``).
+OPEN_LOG_ENV = "MEMORY_BOX_OPEN_LOG"
+#: Bytes of open-log lines kept per call; later lines are still drained (so the hook keeps running) and counted
+#: as dropped.
+BOX_OPEN_LOG_BYTES = 1 << 20
+_OPEN_AREAS = ("/inputs", "/memory")
+_OPEN_MODES = frozenset({"r", "w", "a", "x"})
+_OPEN_LINE_MAX = 4096  # the hook never writes a longer line (one atomic pipe write)
+_OPEN_DRAIN_WAIT_S = 5.0
+
+
+def stage_open_hook(inputs: Path) -> None:
+    """Write the audit hook as ``<inputs>/sitecustomize.py`` (created new, never through a link, read-only)."""
+    data = OPEN_HOOK_SOURCE.read_bytes()
+    fd = os.open(
+        Path(inputs) / "sitecustomize.py",
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o444,
+    )
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+
+
+def _open_row(line: bytes) -> dict | None:
+    """The ``{event, path, mode}`` of one hook line, or None when the line is not one the hook writes. Any other
+    field from the box (a pass id, a call number) is dropped: the host stamps those itself.
+    """
+    if len(line) > _OPEN_LINE_MAX:
+        return None
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or obj.get("event") != "open":
+        return None
+    path, mode = obj.get("path"), obj.get("mode")
+    if not isinstance(path, str) or mode not in _OPEN_MODES:
+        return None
+    if posixpath.normpath(path) != path or not any(
+        path == a or path.startswith(a + "/") for a in _OPEN_AREAS
+    ):
+        return None
+    return {"event": "open", "path": path, "mode": mode}
+
+
+class BoxOpenLog:
+    """The host end of one call's open log: a pipe whose write end the box inherits (``pass_fds``, set
+    non-blocking, named by ``MEMORY_BOX_OPEN_LOG=fd:<n>``), drained by a host thread.
+
+    Lines are kept up to *cap_bytes* (default :data:`BOX_OPEN_LOG_BYTES`); the rest are read and discarded, and
+    counted in ``dropped`` with lines that are not hook lines. A full pipe makes the hook stop (a missing
+    measurement); nothing here can stall the call: the box never blocks on the pipe, and the drain is bounded.
+    Use it as a context manager around :func:`run_confined` and read :attr:`result` after it.
+    """
+
+    def __init__(self, cap_bytes: int | None = None) -> None:
+        self.cap = BOX_OPEN_LOG_BYTES if cap_bytes is None else int(cap_bytes)
+        self.rows: list[dict] = []
+        self.dropped = 0
+        self.seen = 0  # hook lines read, kept or not
+        self.failed = False
+        self.result: dict | None = None
+        self._kept = 0
+        self._buf = b""
+        self._stop = threading.Event()
+        self._r, self._w = os.pipe()
+        try:
+            os.set_blocking(self._w, False)
+            self._thread = threading.Thread(
+                target=self._drain,
+                name="box-open-log",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            os.close(self._r)
+            os.close(self._w)
+            raise
+
+    @property
+    def env(self) -> dict[str, str]:
+        return {OPEN_LOG_ENV: f"fd:{self._w}"}
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self._w,) if self._w is not None else ()
+
+    def __enter__(self) -> "BoxOpenLog":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.finish()
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                ready = select.select(
+                    [self._r],
+                    [],
+                    [],
+                    0 if self._stop.is_set() else 0.2,
+                )[0]
+                if not ready:
+                    if self._stop.is_set():
+                        return
+                    continue
+                chunk = os.read(self._r, 65536)
+                if not chunk:
+                    return
+                self._take(chunk)
+        except (
+            Exception
+        ):  # a broken reader is a missing measurement, never a failed call
+            self.failed = True
+
+    def _take(self, chunk: bytes) -> None:
+        *lines, self._buf = (self._buf + chunk).split(b"\n")
+        if len(self._buf) > _OPEN_LINE_MAX:  # no hook line is this long
+            self._buf = b""
+            self.dropped += 1
+        for line in lines:
+            row = _open_row(line)
+            if row is None:
+                self.dropped += 1
+                continue
+            self.seen += 1
+            if self._kept + len(line) + 1 > self.cap:
+                self.dropped += 1
+                continue
+            self._kept += len(line) + 1
+            self.rows.append(row)
+
+    def finish(self) -> dict:
+        """Close the host's write end, drain what the box wrote and return ``{"rows", "dropped", "dead"}``.
+        ``dead`` is True when no usable hook line arrived (the hook died, was not installed, or the code opened
+        nothing under /inputs or /memory) or the reader failed. Idempotent."""
+        if self.result is not None:
+            return self.result
+        if self._w is not None:
+            os.close(self._w)
+            self._w = None
+        self._thread.join(_OPEN_DRAIN_WAIT_S)
+        self._stop.set()
+        self._thread.join(1.0)
+        if self._thread.is_alive():
+            self.failed = True  # the reader still holds the read end; it is left to the daemon thread
+        else:
+            os.close(self._r)
+            if self._buf:
+                self.dropped += 1
+                self._buf = b""
+        self.result = {
+            "rows": list(self.rows),
+            "dropped": self.dropped,
+            "dead": self.failed or self.seen == 0,
+        }
+        return self.result
+
+
+def box_open_fields(result: dict | None) -> dict:
+    """The tool-event fields of an ``execute_code`` call from its :meth:`BoxOpenLog.finish` result (None: no box
+    ran, so no measurement)."""
+    if result is None:
+        return {"box_opens": 0, "box_opens_dropped": 0, "box_hook_dead": None}
+    return {
+        "box_opens": len(result.get("rows") or []),
+        "box_opens_dropped": int(result.get("dropped") or 0),
+        "box_hook_dead": bool(result.get("dead")),
+    }
+
+
+def append_open_rows(path: Path, rows: list[dict]) -> bool:
+    """Append host-stamped *rows* to the ``box-opens.jsonl`` at *path*: a regular file with one link, created if
+    absent, never opened through a link. Returns False (writing nothing) otherwise or on an OS error.
+    """
+    if not rows:
+        return True
+    try:
+        folder = Path(path).parent
+        folder.mkdir(parents=True, exist_ok=True)
+        if folder.is_symlink() or not folder.is_dir():
+            return False
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o644,
+        )
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                return False
+            data = "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows).encode(
+                "utf-8",
+            )
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        return True
+    except OSError:
+        return False
 
 
 # --- pytest --------------------------------------------------------------------------------------------
