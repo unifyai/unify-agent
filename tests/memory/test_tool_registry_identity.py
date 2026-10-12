@@ -150,9 +150,10 @@ def test_every_registered_tool_is_documented_for_code():
         if spec.kind != "local":
             module, _, function = spec.handler.partition(":")
             assert module.startswith(("unify.memory.", "unify.actor.")) and function == spec.name, spec.name
-    for name in ("read", "grep", "overview", "read_episode", "fixture", "check", "write", "edit", "install"):
+    for name in ("read", "grep", "pool", "stage", "install"):
         assert R.registry()[name].blocking, name
-    for name in ("wait", "ask", "delegate", "stop"):
+    # coroutine handlers run on the event loop and send their own blocking work to the worker pool
+    for name in ("wait", "ask", "delegate", "stop", "overview", "read_episode", "fixture", "check", "write", "edit"):
         assert not R.registry()[name].blocking, name
     assert R.handler_for("actor", "read") == ("unify.actor.tool_handlers:read", True)
     assert R.handler_for("writer", "read") == ("unify.memory.tool_handlers:read", True)
@@ -234,7 +235,7 @@ def test_no_module_outside_the_registry_defines_a_tool():
     assert found == {}
 
 
-# --- C3: the stub holds registry fields only ---
+# --- the stub holds registry fields only ---
 
 PLANTED_ENV = {
     "PLANTED_ROUTE_URL": "https://planted-route-for-the-stub-test.invalid/v1",

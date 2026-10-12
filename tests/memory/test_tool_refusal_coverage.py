@@ -153,21 +153,42 @@ COVERAGE: dict[tuple[str, str], str] = {
 #: The model's own JSON tool keeps today's refusals; it is not a channel tool.
 NOT_CHANNEL_TOOLS = {"execute_code"}
 
+#: Forms the shared specs list for the actor's and a teammate's handlers (their agent record, their request's
+#: answer), which the memory agents' handlers never give: the pass's record answers a refused post as not_posted.
+ACTOR_ONLY = "given only by the actor's and a teammate's handlers (the agent record, the request's answer)"
+
+
+def _actor_only() -> dict[tuple[str, str], str]:
+    from unify.common import tool_registry as reg
+
+    out = {("delegate", f): ACTOR_ONLY for f in reg._SPAWN_FORMS}
+    for tool in ("send", "reply", "ask"):
+        out.update({(tool, f): ACTOR_ONLY for f in reg._RECORD_POST_FORMS})
+    out.update(
+        {
+            ("finish", "bad_answer"): ACTOR_ONLY,
+            ("finish", "answered"): ACTOR_ONLY,
+            ("wait", "bad_timeout"): ACTOR_ONLY,
+            ("stop", "not_allowed"): ACTOR_ONLY,
+        },
+    )
+    return out
+
 
 def _required() -> set[tuple[str, str]]:
     codes = tool_spec.refusal_codes()
     out = {("*", f) for f in codes[tool_spec.GENERAL]}
     for tool, forms in codes.items():
-        if tool == tool_spec.GENERAL or tool in NOT_CHANNEL_TOOLS:
-            continue
-        out.update((tool, f) for f in forms)
+        if tool in tool_handlers.HANDLED:
+            out.update((tool, f) for f in forms)
     return out
 
 
 def test_the_coverage_table_names_every_form_of_every_memory_tool():
     # every form is in the table; a form some builds do not have may be listed, as unreachable data
-    assert _required() <= set(COVERAGE), sorted(_required() - set(COVERAGE))
-    assert all(COVERAGE[k] != R for k in set(COVERAGE) - _required())
+    table = {**_actor_only(), **COVERAGE}
+    assert _required() <= set(table), sorted(_required() - set(table))
+    assert all(table[k] != R for k in set(table) - _required())
     assert set(tool_handlers.HANDLED) | NOT_CHANNEL_TOOLS >= {t for t, _ in _required()} - {"*"}
     for key, how in COVERAGE.items():
         assert how == R or len(how) > 40, key  # an unreachable form says why
