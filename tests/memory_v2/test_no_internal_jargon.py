@@ -77,15 +77,19 @@ RULES: tuple[tuple[str, re.Pattern[str], frozenset[str]], ...] = (
     ("results id", re.compile(r"\bresults-[0-9a-f]{6,}"), EVERYWHERE),
     ("rehearsal id", re.compile(_L + r"dr[0-9]+-"), EVERYWHERE),
     ("label prefix", re.compile(_L + r"b2p?:"), EVERYWHERE),
-    ("model name as a role", re.compile(_L + r"(?:[sS]ol|SOL|[lL]una|LUNA)" + _R), EVERYWHERE),
+    ("model name as a role", re.compile(_L + r"(?:[sS]ol|SOL|[lL]una|LUNA)s?" + _R), EVERYWHERE),
+    ("model name as a role", re.compile(r"(?<=[a-z])(?:Sol|Luna)s?" + _R), frozenset({NAME})),
+    ("version tag", re.compile(r"(?<=[A-Za-z])21" + _R), frozenset({NAME})),
+    ("decision tag", re.compile(_L + r"D[0-9]{1,2}(?=_)"), frozenset({NAME})),
 )
 
 # Plan-step tags in test names and file names (``test_library_p7_off``, ``p1_t7_inputs.py``); elsewhere ``p1`` is an
 # ordinary variable.
 TEST_NAME_RULE = ("plan step tag", re.compile(_L + r"[pP][0-9]{1,2}" + _R))
 
-# A string literal that is a whole model id, such as ``"openai/gpt-5"``: a configuration value.
-MODEL_ID = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.:@+-]+")
+# A string literal that is a whole model id, such as ``"openai/gpt-5"`` or ``"openrouter/openai/gpt-5"``: a
+# configuration value.
+MODEL_ID = re.compile(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.:@+-]+)+")
 
 
 def scanned_files(root: Path = ROOT) -> list[Path]:
@@ -189,7 +193,8 @@ def test_the_rules_catch_tags_and_leave_ordinary_words(tmp_path):
         '"""Consolidate the isolation report (r5 §4, MAIN 11 Oct)."""\n'
         "r1, r2 = 1, 2  # P7: the writer reads both\n"
         "sol_reply = consolidate(r1)\n"
-        'MODEL = "openai/gpt-5"\n'
+        "class FakeSol: _layout21 = D26_TEXT = 1\n"
+        'MODEL = "openrouter/openai/gpt-5-sol"\n'
         "def test_library_p7_off():\n"
         "    pass\n",
         encoding="utf-8",
@@ -200,9 +205,12 @@ def test_the_rules_catch_tags_and_leave_ordinary_words(tmp_path):
     assert any(v.startswith("unify/memory_v2/sample.py:1: 'MAIN'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:2: 'P7'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:3: 'sol'") for v in got)
-    assert any(v.startswith("unify/memory_v2/sample.py:5: 'p7'") for v in got)
+    assert any(v.startswith("unify/memory_v2/sample.py:4: 'Sol'") for v in got)
+    assert any(v.startswith("unify/memory_v2/sample.py:4: '21'") for v in got)
+    assert any(v.startswith("unify/memory_v2/sample.py:4: 'D26'") for v in got)
+    assert any(v.startswith("unify/memory_v2/sample.py:6: 'p7'") for v in got)
     # ordinary names: r1/r2 as variables, "consolidate", "isolation", a model id literal
-    assert not any(":2: 'r" in v or ":4:" in v for v in got)
+    assert not any(":2: 'r" in v or ":5:" in v for v in got)
     assert not any("consolidate" in v or "isolation" in v for v in got)
 
 
