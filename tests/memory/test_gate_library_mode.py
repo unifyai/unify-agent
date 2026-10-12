@@ -11,16 +11,8 @@ import shutil
 
 import pytest
 
-from unify.memory import fixtures as fx
-from unify.memory.blobs import BlobStore
-from unify.memory.episodes import Action
-from unify.memory.evidence import EvidenceStore
-from unify.memory.gate import Gate
-from unify.memory.library_checks import LibraryConfig
-from unify.memory.gitio import Repo
 from tests.memory import library_example_world as w
 from tests.memory.library_example_world import library_example_world  # noqa: F401 (fixture)
-from tests.memory.test_episodes import _ep
 
 pytestmark = pytest.mark.skipif(
     shutil.which("bwrap") is None,
@@ -31,189 +23,6 @@ pytestmark = pytest.mark.skipif(
 JUDGED = "needs example_checks.ExampleChecks.judge"
 #: the manifest takes a function item without ``input``, and the gate reads no Input: line
 PARSED = "needs manifest._parse_library_mode"
-
-# --- the former world -----------------------------------------------------------------------------------------
-# Kept only for the test files that still import it (test_test_output, test_memory_writer, test_pool_start,
-# test_writer_library_curate, test_writer_finish_and_batch_map). Its item declares ``input`` and an action cover,
-# which the library-mode manifest refuses; those files move to library_example_world as they are migrated.
-
-ITEM_ID = "memory.acct.users:user_id"
-E1 = _ep(
-    episode_id="e1",
-    actions=[
-        Action(
-            0,
-            "acct",
-            "me",
-            [],
-            {},
-            {"user_id": "u-1", "name": "Ada"},
-            "ok",
-            "read",
-        ),
-    ],
-)
-E2 = _ep(
-    episode_id="e2",
-    actions=[
-        Action(0, "acct", "me", [], {}, {"user_id": "u-2", "name": "Bo"}, "ok", "read"),
-    ],
-)
-E3 = _ep(
-    episode_id="e3",
-    actions=[
-        Action(
-            -1,
-            "dialogue:user",
-            "say",
-            [],
-            {},
-            "hello world",
-            "ok",
-            "unknown",
-            kind="dialogue",
-        ),
-    ],
-)
-E4 = _ep(
-    episode_id="e4",
-    actions=[
-        Action(
-            -1,
-            "dialogue:user",
-            "say",
-            [],
-            {},
-            "",
-            "ok",
-            "unknown",
-            kind="dialogue",
-        ),
-    ],
-)
-EPS = {e.episode_id: e for e in (E1, E2, E3, E4)}
-
-
-def _lookup(eid, i):
-    ep = EPS.get(eid)
-    return ep.actions[i] if ep is not None and 0 <= i < len(ep.actions) else None
-
-
-MOD = '''"""Accounts."""
-
-
-class MemoryInputError(ValueError):
-    pass
-
-
-def user_id(observation):
-    """The account's user id.
-
-    Effect: read
-    Input: observation
-    """
-    if not isinstance(observation, dict) or "user_id" not in observation:
-        raise MemoryInputError("an acct.me response with a user_id field is needed")
-    return observation["user_id"]
-'''
-TEST = """import json
-from pathlib import Path
-
-import pytest
-
-from memory.acct.users import MemoryInputError, user_id
-
-DATA = Path(__file__).parent / "data"
-INPUTS = [json.loads(x) for x in (DATA / "users.user_id.inputs.jsonl").read_text().splitlines() if x]
-
-
-def test_reads_the_recorded_user_id():
-    observation = json.loads((DATA / "me.json").read_text())
-    assert user_id(observation) == "u-1"
-
-
-@pytest.mark.parametrize("row", INPUTS)
-def test_every_recorded_input_has_a_user_id(row):
-    assert user_id(row["input"]) == row["input"]["user_id"]
-
-
-def test_refuses_a_response_without_a_user_id():
-    with pytest.raises(MemoryInputError):
-        user_id({"name": "Ada"})
-"""
-WEAK_TEST = """import json
-from pathlib import Path
-
-import pytest
-
-from memory.acct.users import MemoryInputError, user_id
-
-DATA = Path(__file__).parent / "data"
-
-
-def test_returns_a_string():
-    assert isinstance(user_id(json.loads((DATA / "me.json").read_text())), str)
-
-
-def test_refuses_a_response_without_a_user_id():
-    with pytest.raises(MemoryInputError):
-        user_id({"name": "Ada"})
-"""
-T = "memory/acct/tests/test_users.py"
-INPUTS = fx.inputs_file(ITEM_ID)
-
-
-@pytest.fixture
-def library_gate_world(tmp_path):
-    mem = Repo.init_bare(tmp_path / "mem.git")
-    ev = EvidenceStore(tmp_path / "e.sqlite")
-    for n, ep in enumerate(EPS.values()):
-        ev.index_episode(ep, str(n + 1) * 40)
-    blobs = BlobStore(tmp_path / "b")
-
-    def gate(**cfg):
-        return Gate(
-            mem,
-            ev,
-            blobs,
-            action_lookup=_lookup,
-            library_mode=LibraryConfig(checks=True, episodes=EPS.get, **cfg),
-        )
-
-    return mem, ev, blobs, gate
-
-
-def _files_and_fixtures(blobs, test=TEST):
-    me, e_me = fx.make(E1, 0, "memory/acct/tests/data/me.json", blob=blobs.get)
-    line, e_in = fx.make(E1, 0, INPUTS, blob=blobs.get, append=True)
-    files = {
-        "memory/acct/__init__.py": '"""Accounts."""\n',
-        "memory/acct/users.py": MOD,
-        T: test,
-        "memory/acct/tests/data/me.json": me.decode(),
-        INPUTS: line.decode(),
-    }
-    return files, {"memory/acct/tests/data/me.json": e_me, INPUTS: e_in}
-
-
-def _man(fixtures, **item):
-    it = {
-        "item": ITEM_ID,
-        "kind": "function",
-        "source_episodes": ["e1"],
-        "tests": [T],
-        "covers": [["e1", 0]],
-        "input": "observation",
-        **item,
-    }
-    return {
-        "items": [it],
-        "deleted": [],
-        "unlisted": [],
-        "support": [],
-        "fixtures": fixtures,
-    }
-
 
 # --- the gate on the shared world ------------------------------------------------------------------------------
 
@@ -268,20 +77,11 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(library_example_world):
     assert any("me_1.json did not come through fixture()" in r for r in res.reasons)
 
 
-WEAK_EXAMPLE_TEST = w.TEST_SOURCE.replace(
-    'assert user_id(load("me_1.json")) == "u-1"',
-    'assert isinstance(user_id(load("me_1.json")), str)',
-).replace(
-    'assert user_id(load("me_2.json")) == "u-2"',
-    'assert isinstance(user_id(load("me_2.json")), str)',
-)
-
-
 @pytest.mark.xfail(reason=PARSED, strict=False)
 def test_no_trusted_exact_assertion_is_refused(library_example_world):
     mem, ev, blobs, gate = library_example_world
-    assert WEAK_EXAMPLE_TEST != w.TEST_SOURCE
-    files, fixtures = w.files_and_fixtures(blobs.get, test=WEAK_EXAMPLE_TEST)
+    assert w.WEAK_TEST_SOURCE != w.TEST_SOURCE
+    files, fixtures = w.files_and_fixtures(blobs.get, test=w.WEAK_TEST_SOURCE)
     res = gate().check(mem.head(), w.candidate(mem, files), w.manifest(fixtures))
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
 
