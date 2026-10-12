@@ -595,14 +595,32 @@ def child_main() -> int:
 # --- the host -------------------------------------------------------------------------------------------------
 
 
-def box_argv(script_dir: Path, binds: list[tuple[str, str, bool]] = ()) -> list[str]:
-    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes; *binds*:
+def _sandbox_run():
+    """The confined runner's module (its seccomp program and file-size bound), imported where it is needed so the
+    box's child does not load it."""
+    try:
+        from . import sandbox_run
+    except ImportError:  # run as a script beside sandbox_run.py
+        import sandbox_run  # type: ignore[no-redef]
+    return sandbox_run
+
+
+def box_argv(
+    script_dir: Path,
+    binds: list[tuple[str, str, bool]] = (),
+    *,
+    seccomp_fd: int,
+) -> list[str]:
+    """bubblewrap around the system python: no network, read-only root, private /tmp, bounded processes and file
+    size, and the confined runner's seccomp filter read from *seccomp_fd* (sockets only AF_UNIX, AF_INET and
+    AF_INET6, since a network namespace does not isolate AF_VSOCK; no new user namespaces; no io_uring); *binds*:
     ``(host path, box path, writable)``."""
     bwrap, prlimit = shutil.which("bwrap"), shutil.which("prlimit")
     if not bwrap or not prlimit:
         raise RuntimeError(
             "bubblewrap and prlimit are required: the actor's code never runs outside a box",
         )
+    fsize = _sandbox_run().RLIMIT_FSIZE_BYTES
     args = [
         bwrap,
         "--unshare-all",
@@ -624,24 +642,37 @@ def box_argv(script_dir: Path, binds: list[tuple[str, str, bool]] = ()) -> list[
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", str(script_dir), "/s",
         *[x for src, dst, rw in binds for x in ("--bind" if rw else "--ro-bind", src, dst)],
         "--chdir", "/tmp", "--clearenv", "--setenv", "PATH", "/usr/bin", "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
-        prlimit, *BOX_LIMITS, "/usr/bin/python3", "-I", "/s/mining_behaviour.py", "--child",
+        "--seccomp", str(seccomp_fd), "--",
+        prlimit, *BOX_LIMITS, f"--fsize={fsize}:{fsize}", "--",
+        "/usr/bin/python3", "-I", "/s/mining_behaviour.py", "--child",
     ]  # fmt: skip
     return args
 
 
 def in_box(job: dict, timeout: float, binds: list[tuple[str, str, bool]] = ()) -> dict:
-    argv = box_argv(Path(__file__).resolve().parent, binds)
-    try:
-        p = subprocess.run(
-            argv,
-            input=json.dumps(job),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=_mining.helper_env(),  # bwrap itself; the box then clears and sets its own
-        )
-    except subprocess.TimeoutExpired:
-        return {"box_error": "box timeout"}
+    import platform
+    import tempfile
+
+    if platform.machine() != "x86_64":
+        raise RuntimeError("the box's seccomp filter is built for x86_64 only")
+    # An unlinked temporary file holds the filter; bubblewrap reads it from the inherited descriptor.
+    with tempfile.TemporaryFile() as bpf:
+        bpf.write(_sandbox_run().seccomp_program())
+        bpf.flush()
+        bpf.seek(0)
+        argv = box_argv(Path(__file__).resolve().parent, binds, seccomp_fd=bpf.fileno())
+        try:
+            p = subprocess.run(
+                argv,
+                input=json.dumps(job),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=_mining.helper_env(),  # bwrap itself; the box then clears and sets its own
+                pass_fds=(bpf.fileno(),),
+            )
+        except subprocess.TimeoutExpired:
+            return {"box_error": "box timeout"}
     if p.returncode:
         return {"box_error": f"box exit {p.returncode}: {p.stderr[-300:]}"}
     try:

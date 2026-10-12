@@ -3,6 +3,7 @@ in-process on test code here; the box is exercised only where bubblewrap exists.
 
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -207,6 +208,51 @@ def test_the_box_has_no_network_and_a_private_tmp(tmp_path):
     r = b.in_box(job, 60)
     assert "box_error" not in r, r
     assert r["cell_errors"] == {}, r["cell_errors"]
+
+
+def _box_cell_errors(code: str) -> dict:
+    job = {"mode": "replay", "cells": [{"index": 0, "code": code, "output": ""}], "targets": {}}
+    r = b.in_box(job, 60)
+    assert "box_error" not in r, r
+    return r["cell_errors"]
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="needs bubblewrap")
+def test_the_box_refuses_an_af_vsock_socket():
+    # a network namespace does not isolate AF_VSOCK; the seccomp filter refuses the family itself
+    code = (
+        "import socket\n"
+        "try:\n    socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)\n"
+        "except OSError as exc:\n    assert exc.errno == 97, exc.errno\n"
+        "else:\n    raise RuntimeError('vsock')\n"
+        "socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()\n"
+    )
+    assert _box_cell_errors(code) == {}
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="needs bubblewrap")
+def test_the_box_refuses_a_write_over_the_file_size_bound(monkeypatch):
+    from unify.memory_v2 import sandbox_run
+
+    monkeypatch.setattr(sandbox_run, "RLIMIT_FSIZE_BYTES", 1024 * 1024)
+    code = (
+        "open('/tmp/small', 'wb').write(b'x' * 1000)\n"
+        "try:\n    open('/tmp/big', 'wb').write(b'x' * (2 * 1024 * 1024))\n"
+        "except OSError as exc:\n    assert exc.errno == 27, exc.errno\n"
+        "else:\n    raise RuntimeError('over the bound')\n"
+    )
+    assert _box_cell_errors(code) == {}
+
+
+def test_the_box_argv_carries_the_seccomp_filter_and_the_file_size_bound(monkeypatch):
+    from unify.memory_v2 import sandbox_run
+
+    monkeypatch.setattr(b.shutil, "which", lambda name: "/usr/bin/" + name)
+    argv = b.box_argv(Path("/s"), [], seccomp_fd=7)
+    assert argv[argv.index("--seccomp") + 1] == "7"
+    assert argv.index("--seccomp") < argv.index("/usr/bin/prlimit")
+    fsize = sandbox_run.RLIMIT_FSIZE_BYTES
+    assert f"--fsize={fsize}:{fsize}" in argv
 
 
 def test_a_cell_that_reads_its_working_directory_replays_in_the_recorded_tree(
