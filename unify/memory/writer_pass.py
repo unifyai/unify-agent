@@ -653,8 +653,11 @@ def writer_tools(
     helper: bool = False,
     similar: bool = False,
     edit_tools: bool = False,
+    in_code: bool | None = None,
 ) -> list[dict]:
-    """The writer's tool JSON. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
+    """The writer's tool JSON. *in_code* (library mode): False gives the tools one by one whatever
+    ``UNIFY_TOOLS_IN_CODE`` says (a pass with tools in code takes its allow-list from them); None follows the
+    setting. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
     (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
     need the candidate pool, *helper* (a helper lane exists) ``delegate``, *similar* (the similar-code index
     exists) ``similar`` and *edit_tools* the ``write`` and ``edit`` file tools. With *library_mode* off: the original
@@ -668,6 +671,7 @@ def writer_tools(
         return agent_profiles.tool_json(
             "curator" if role == "curate" else "writer",
             flags,
+            in_code=in_code,
         )
     description = (
         "Check a manifest against your current /memory files with the gate's cheap checks (manifest, "
@@ -4203,6 +4207,9 @@ class WriterPass:
                 helper=self.helper_turn is not None,
                 similar=bool(self.cfg.similar_index),
                 edit_tools=bool(self.cfg.library_mode and self.cfg.edit_tools),
+                # the pass's own switch decides (cfg.tools_in_code): these are its JSON tools, or with tools in
+                # code its allow-list, and the request then carries execute_code alone (below)
+                in_code=False,
             )
             tool_names = [t["function"]["name"] for t in tools]
             in_code_allow: tuple[str, ...] = ()
