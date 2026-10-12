@@ -183,9 +183,21 @@ def verification_summary(record: Mapping | None) -> dict | None:
     for key in ("drawn_inputs_read", "exact_assertions"):
         if key in v:
             out[key] = v[key]
-    ce = v.get("cross_episode")
+    ce = v.get("cross_episode")  # records written before examples replaced it
     if isinstance(ce, dict):
         out["cross_episode"] = f"{ce.get('ok', 0)}/{ce.get('ran', 0)} ok"
+    ex = v.get("examples")
+    if isinstance(ex, dict):
+        episodes = ex.get("episodes") if isinstance(ex.get("episodes"), list) else []
+        out["examples"] = (
+            f"{ex.get('calls', 0)} calls, {ex.get('grounded_calls', 0)} on recorded values from "
+            f"{len(episodes)} episodes"
+        )
+        pert = ex.get("perturbation")
+        if isinstance(pert, dict):
+            out["unseen_values"] = (
+                f"{pert.get('judged', 0)} calls judged on {pert.get('fields', 0)} fields"
+            )
     m = v.get("mutation")
     out["mutation"] = (
         f"{m.get('killed', 0)}/{m.get('total', 0)} killed"

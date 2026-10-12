@@ -115,16 +115,6 @@ GUIDE_POINTER = (
 # points to. The Tools section is rendered from the tool spec registry (:func:`.tool_spec.tools_section`), so it
 # names exactly the tools the role gets.
 
-#: The input forms of a function's first parameter, in ``manifest.INPUT_KINDS`` order, described without any
-#: environment's vocabulary. Read only by the WRITE brief's input-form bullet; no other text names these forms.
-INPUT_FORMS_LIBRARY: dict[str, str] = {
-    "path": "a path to a work-tree file",
-    "text": "the text of a file or of an output",
-    "bytes": "the raw bytes of a file",
-    "observation": "an observation value, as recorded",
-    "env": "the object through which the request's tools are called",
-}
-
 #: What makes a proposed function one the library's gate can take as it is (the fork's and the helpers' texts
 #: state it): any arguments, its own shape check, and cases whose values are recorded, so that they can become its
 #: tests on fixtures copied from the recording.
@@ -997,8 +987,8 @@ _BENCHMARK = re.compile(
 #: An environment's verdict text, which the harness never matches: upper case only.
 _VERDICT = re.compile(r"\bCORRECT\b")
 
-#: Instructions to check a task's examples. A function docstring's ``Example:`` section is a
-#: doctest over a fixture, not a task's example, and matches none of these.
+#: Instructions to check a task's examples. A function docstring's ``Example:`` line names one of its tests, not a
+#: task's example, and matches none of these.
 _EXAMPLE_CHECKS = (
     re.compile(
         r"\b(check|verify|validate|confirm|test|try|run)\w*\b[^.\n]{0,60}?\bexamples?\b",

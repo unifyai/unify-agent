@@ -169,7 +169,6 @@ def test_the_vocabulary_check_is_live():
 def test_no_benchmark_vocabulary_anywhere():
     for name, text in _texts().items():
         assert pv.benchmark_words(text) == [], name
-    assert pv.benchmark_words(" ".join(pv.INPUT_FORMS_LIBRARY.values())) == []
 
 
 def _contract_texts():

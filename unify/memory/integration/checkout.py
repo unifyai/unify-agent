@@ -122,12 +122,23 @@ def export_actor_library_mode(
             f"memory {sha[:12]} holds entries an export refuses: {refused[:5]}",
         )
     materialise(repo, {p: v for p, v in files.items() if exported(p)}, dest)
+
+    def committed_test(rel: str) -> bytes | None:
+        """A file of the commit by path (the export holds no tests): to re-check each example call it quotes."""
+        if rel not in files:
+            return None
+        try:
+            return repo.show(sha, rel)
+        except GitError:
+            return None
+
     generated = generated_library_mode(
         dest,
         status_of=status_of,
         shapes=shapes,
         history=item_history(repo, sha),
         records=records,
+        tests=committed_test,
     )
     write_files(dest, generated)
     make_read_only(dest)

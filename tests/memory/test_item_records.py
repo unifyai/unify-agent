@@ -163,3 +163,21 @@ def test_the_effect_is_a_record_field_read_through_effect_of():
     get = ir.effect_of(recs)
     assert get(ITEM) == "write"
     assert get("memory.text.dates:day") is None and get("memory.x.y:z") is None
+
+
+def test_show_summarises_the_examples_record():
+    from unify.memory.item_records import verification_summary
+
+    rec = {
+        "verification": {
+            "examples": {
+                "calls": 5,
+                "grounded_calls": 4,
+                "episodes": ["e1", "e2"],
+                "perturbation": {"judged": 4, "fields": 3},
+            },
+        },
+    }
+    out = verification_summary(rec)
+    assert out["examples"] == "5 calls, 4 on recorded values from 2 episodes"
+    assert out["unseen_values"] == "4 calls judged on 3 fields"
