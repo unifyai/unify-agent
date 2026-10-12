@@ -222,22 +222,589 @@ def read_calls(path: Path, loaded_property: bool = True) -> CallRecord:
             )
             unresolved = row.get("unresolved") or []
             if isinstance(unresolved, list):
-                rec.unresolved = [u for u in unresolved if isinstance(u, str)][:100]
+                rec.unresolved = [u[:300] for u in unresolved if isinstance(u, str)][:100]
         else:
             rec.unreadable += 1
     rec.loaded = started and loaded_property
     return rec
 
 
-#: The plugin's source (standard library only), written per run as ``_memory_calls.py``. Filled in with the gate's
-#: verification; until then a run that asks for calls fails loudly rather than recording nothing.
-CALLS_SOURCE = ""
+#: The plugin's source (standard library and pytest only), written per run as ``_memory_calls.py`` into a fresh
+#: host directory mounted read-only at :data:`CALLS_DIR`. The host never imports it (importing it changes nothing,
+#: but its hooks belong to the box's pytest). Unresolved targets are listed in the end line as ``<item> (<what it
+#: is>)``; :func:`unresolved_kind` splits them.
+CALLS_SOURCE = r'''
+"""Record the calls test code makes of the library's functions (the memory gate's runs; see example_calls).
+
+Observe-only: ``sys.monitoring`` events on each target's code object and an audit hook on opens; no code under test is
+wrapped or changed. Standard library and pytest only.
+"""
+import datetime
+import decimal
+import hashlib
+import importlib
+import inspect
+import json
+import os
+import pathlib
+import sys
+import types
+
+import pytest
+from _pytest.junitxml import xml_key
+
+LOADED = "memory_calls_loaded"
+TARGETS_ENV = "MEMORY_CALLS_TARGETS"
+OUT_ENV = "MEMORY_CALLS_OUT"
+ROOT = "/memory"
+MAX_CALL_LINES = 20000
+MAX_LINE_BYTES = 262144
+MAX_RECORD_BYTES = 64 * 1024 * 1024
+ARG_JSON_MAX = 65536
+MAX_OBJECT_DEPTH = 8
+TOOL_IDS = (2, 3, 4)
+END_RESERVE = 65536
+MAX_UNRESOLVED = 100
+MAX_OPENED = 2000
+MAX_STACK = 400
+_GENERATOR_FLAGS = inspect.CO_GENERATOR | inspect.CO_COROUTINE | inspect.CO_ASYNC_GENERATOR
+_MISSING = object()
+_NOT_PLAIN = (type, types.ModuleType, types.FunctionType, types.BuiltinFunctionType, types.MethodType)
+
+STATE = {
+    "out": None,
+    "tool": None,
+    "targets": [],
+    "codes": {},
+    "wrappers": {},
+    "pending": {},
+    "node": None,
+    "collecting": None,
+    "opened": {},
+    "open_seen": set(),
+    "open_lines": 0,
+    "ordinals": {},
+    "infos": {},
+    "kinds": {},
+    "calls": 0,
+    "dropped": 0,
+    "outside": 0,
+    "unattributed_opens": 0,
+    "unresolved": [],
+    "unobservable": None,
+    "ended": False,
+}
+
+
+class Opaque(Exception):
+    """A value with no canonical form."""
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _key(k):
+    if isinstance(k, str):
+        return k
+    if k is None or isinstance(k, (bool, int, float)):
+        return json.dumps(k)  # the key JSON itself would write
+    raise Opaque()
+
+
+def _plain(v):
+    if isinstance(v, _NOT_PLAIN):
+        return False
+    try:
+        d = object.__getattribute__(v, "__dict__")
+    except Exception:
+        return False
+    return type(d) is dict
+
+
+def normalise(v, depth=0):
+    """The JSON value whose canonical text digests *v*; raises Opaque for a value without one."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [normalise(x, depth + 1) for x in v]
+    if isinstance(v, dict):
+        out = {}
+        for k, x in v.items():
+            kk = _key(k)
+            if kk in out:
+                raise Opaque()
+            out[kk] = normalise(x, depth + 1)
+        return out
+    if isinstance(v, (set, frozenset)):
+        return sorted((normalise(x, depth + 1) for x in v), key=canonical)
+    if isinstance(v, (bytes, bytearray)):
+        return {"__bytes__": hashlib.sha256(bytes(v)).hexdigest()}
+    if isinstance(v, decimal.Decimal):
+        return str(v)
+    if isinstance(v, (datetime.date, datetime.datetime)):
+        return v.isoformat()
+    if depth <= MAX_OBJECT_DEPTH and _plain(v):
+        return {"__type__": type(v).__name__, "vars": normalise(dict(vars(v)), depth + 1)}
+    raise Opaque()
+
+
+def _type_name(v):
+    return type(v).__name__[:100]
+
+
+def file_path(v):
+    """The tree-relative path a str (or a path object) argument names, when it names a file under /memory."""
+    if isinstance(v, pathlib.PurePath):
+        v = str(v)
+    if not isinstance(v, str) or not v or len(v) > 4096 or "\0" in v:
+        return None
+    p = os.path.normpath(os.path.join(ROOT, v))
+    if not p.startswith(ROOT + "/"):
+        return None
+    try:
+        if not os.path.isfile(p) or not os.path.realpath(p).startswith(ROOT + "/"):
+            return None
+    except Exception:
+        return None
+    return p[len(ROOT) + 1 :]
+
+
+def describe(name, v):
+    """One argument's record: digest, type, bounded JSON form and the file it names."""
+    rec = {"name": name, "sha": None, "type": _type_name(v), "json": None, "cut": False, "path": file_path(v)}
+    try:
+        n = normalise(v)
+        data = canonical(n).encode("utf-8")
+    except Exception:  # no canonical form, a cycle, too deep, or text that is not UTF-8
+        return rec
+    rec["sha"] = hashlib.sha256(data).hexdigest()
+    if len(data) <= ARG_JSON_MAX:
+        rec["json"] = n
+    else:
+        rec["cut"] = True
+    return rec
+
+
+def outcome_of(exc):
+    """("refused", None) for a MemoryInputError (by name, anywhere in its type's MRO), else ("raised", name)."""
+    t = type(exc)
+    if any(c.__name__ == "MemoryInputError" for c in t.__mro__):
+        return "refused", None
+    return "raised", t.__name__ if t.__module__ == "builtins" else "another exception"
+
+
+def tree_kind(filename, cache={}):
+    """"test" for a file under memory/<package>/tests/, "library" for another file of a package, else "other"."""
+    kind = cache.get(filename)
+    if kind is None:
+        kind = "other"
+        p = os.path.normpath(filename) if filename.startswith("/") else ""
+        if p.startswith(ROOT + "/memory/"):
+            parts = p[len(ROOT) + 1 :].split("/")
+            if len(parts) >= 3:
+                kind = "test" if parts[2] == "tests" else "library"
+        cache[filename] = kind
+    return kind
+
+
+def _rel(filename):
+    p = os.path.normpath(filename)
+    return p[len(ROOT) + 1 :] if p.startswith(ROOT + "/") else p
+
+
+def data_path(p):
+    """The tree-relative path of a fixture under memory/<package>/tests/data/, else None."""
+    if not p.startswith(ROOT + "/memory/"):
+        return None
+    rel = p[len(ROOT) + 1 :]
+    parts = rel.split("/")
+    if len(parts) >= 5 and parts[2] == "tests" and parts[3] == "data":
+        return rel
+    return None
+
+
+def _reading(mode, flags):
+    if isinstance(mode, str):
+        return not any(ch in mode for ch in "wax+")
+    if isinstance(flags, int):
+        return not flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+    return True
+
+
+class Out:
+    """The record file: bounded lines, a bounded file, with room kept for the end line."""
+
+    def __init__(self, path):
+        self.fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        self.size = 0
+
+    def write(self, row, final=False):
+        data = (json.dumps(row, separators=(",", ":"), default=str) + "\n").encode("ascii")
+        if len(data) > MAX_LINE_BYTES:
+            return False
+        if self.size + len(data) > MAX_RECORD_BYTES - (0 if final else END_RESERVE):
+            return False
+        view = memoryview(data)
+        while view:
+            n = os.write(self.fd, view)
+            view = view[n:]
+        self.size += len(data)
+        return True
+
+
+def _info(item):
+    info = STATE["infos"].get(id(item))
+    if info is None or info["item"] is not item:
+        nodeid = item.nodeid
+        name, original = getattr(item, "name", ""), getattr(item, "originalname", None)
+        test = nodeid
+        if original and name != original and nodeid.endswith(name):
+            test = nodeid[: len(nodeid) - len(name)] + original
+        spec = getattr(item, "callspec", None)
+        indices = dict(getattr(spec, "indices", None) or {}) if spec is not None else {}
+        info = {
+            "item": item,
+            "node": nodeid,
+            "test": test,
+            "indices": {str(k): int(v) for k, v in indices.items()},
+            "module": nodeid.split("::", 1)[0],
+        }
+        STATE["infos"][id(item)] = info
+    return info
+
+
+def _note_open(rel):
+    node = STATE["node"]
+    if node is not None:
+        info = _info(node)
+        module, where, line = info["module"], info["node"], {"event": "open", "phase": "test", "node": info["node"]}
+    elif STATE["collecting"] is not None:
+        module = where = STATE["collecting"]
+        line = {"event": "open", "phase": "collect", "module": module}
+    else:
+        STATE["unattributed_opens"] += 1
+        return
+    opened = STATE["opened"].setdefault(module, [])
+    if rel not in opened and len(opened) < MAX_OPENED:
+        opened.append(rel)
+    if (where, rel) not in STATE["open_seen"] and STATE["open_lines"] < MAX_CALL_LINES:
+        STATE["open_seen"].add((where, rel))
+        line["path"] = rel
+        if STATE["out"].write(line):
+            STATE["open_lines"] += 1
+
+
+def audit(event, args):
+    if event != "open":
+        return
+    try:
+        p, mode, flags = args
+        if isinstance(p, int):
+            return
+        if not isinstance(p, str):
+            p = os.fsdecode(p)
+        if not _reading(mode, flags):
+            return
+        if not p.startswith("/"):
+            p = os.path.join(os.getcwd(), p)
+        rel = data_path(os.path.normpath(p))
+        if rel is not None:
+            _note_open(rel)
+    except Exception:  # an odd path or event: this open is not attributed
+        STATE["unattributed_opens"] += 1
+
+
+def _frame(code):
+    f = sys._getframe(2)  # the target's frame: callback, this helper, then the frame the event is about
+    for _ in range(4):
+        if f is None or f.f_code is code:
+            return f
+        f = f.f_back
+    return None
+
+
+def test_site(frame, items):
+    """(file, line) of the test-side frame the call came from, or None when a library frame comes first."""
+    wrappers = set()
+    for item in items:
+        wrappers |= STATE["wrappers"].get(item, set())
+    f, depth = frame.f_back, 0
+    while f is not None and depth < MAX_STACK:
+        kind = tree_kind(f.f_code.co_filename)
+        if kind == "test":
+            return _rel(f.f_code.co_filename), f.f_lineno
+        if kind == "library" and f.f_code not in wrappers:
+            return None
+        f, depth = f.f_back, depth + 1
+    return None
+
+
+def arguments(frame, code):
+    loc = frame.f_locals
+    n = code.co_argcount + code.co_kwonlyargcount
+    out = [describe(name, loc[name]) for name in code.co_varnames[:n] if name in loc]
+    i = n
+    if code.co_flags & inspect.CO_VARARGS:
+        name = code.co_varnames[i]
+        i += 1
+        for j, v in enumerate(loc.get(name) or ()):
+            out.append(describe(f"{name}[{j}]", v))
+    if code.co_flags & inspect.CO_VARKEYWORDS:
+        name = code.co_varnames[i]
+        for k, v in (loc.get(name) or {}).items():
+            out.append(describe(f"{name}.{k}", v))
+    return out
+
+
+def on_start(code, offset):
+    try:
+        items = STATE["codes"].get(code)
+        if not items:
+            return
+        frame = _frame(code)
+        if frame is None:
+            STATE["dropped"] += 1
+            return
+        site = test_site(frame, items)
+        if site is None:
+            return
+        node = STATE["node"]
+        if node is None:
+            STATE["outside"] += 1
+            return
+        STATE["pending"][id(frame)] = (frame, items, node, site, arguments(frame, code))
+    except Exception:
+        STATE["dropped"] += 1
+
+
+def _fits(row):
+    """Cut the largest JSON forms until the line is within MAX_LINE_BYTES; False when it cannot be."""
+    for _ in range(len(row["args"]) + 2):
+        if len(json.dumps(row, separators=(",", ":"), default=str)) + 1 <= MAX_LINE_BYTES:
+            return True
+        sized = [(len(json.dumps(a["json"], default=str)), a) for a in row["args"] if a["json"] is not None]
+        if row["result_json"] is not None:
+            sized.append((len(json.dumps(row["result_json"], default=str)), None))
+        if not sized:
+            return False
+        _, biggest = max(sized, key=lambda s: s[0])
+        if biggest is None:
+            row["result_json"], row["result_cut"] = None, True
+        else:
+            biggest["json"], biggest["cut"] = None, True
+    return len(json.dumps(row, separators=(",", ":"), default=str)) + 1 <= MAX_LINE_BYTES
+
+
+def finish(code, entry, outcome, raised, retval):
+    frame, items, node, (file, line), args = entry
+    info = _info(node)
+    generator = bool(code.co_flags & _GENERATOR_FLAGS)
+    result = describe("result", retval) if outcome == "returned" and not generator else None
+    for item in items:
+        k = (info["node"], item)
+        ordinal = STATE["ordinals"].get(k, 0)
+        STATE["ordinals"][k] = ordinal + 1
+        if STATE["calls"] >= MAX_CALL_LINES:
+            STATE["dropped"] += 1
+            continue
+        row = {
+            "event": "call",
+            "item": item,
+            "node": info["node"],
+            "test": info["test"],
+            "indices": info["indices"],
+            "ordinal": ordinal,
+            "file": file,
+            "line": line,
+            "args": [dict(a) for a in args],
+            "outcome": outcome,
+            "raised": raised,
+            "result_sha": result["sha"] if result else None,
+            "result_type": result["type"] if result else (_type_name(retval) if generator else None),
+            "result_json": result["json"] if result else None,
+            "result_cut": result["cut"] if result else False,
+            "opened": list(STATE["opened"].get(info["module"], [])),
+        }
+        if _fits(row) and STATE["out"].write(row):
+            STATE["calls"] += 1
+        else:
+            STATE["dropped"] += 1
+
+
+def _end_of(code, outcome, raised, retval):
+    if code not in STATE["codes"]:
+        return
+    frame = _frame(code)
+    entry = STATE["pending"].pop(id(frame), None) if frame is not None else None
+    if entry is None:
+        return
+    if entry[0] is not frame:
+        STATE["dropped"] += 1
+        return
+    finish(code, entry, outcome, raised, retval)
+
+
+def on_return(code, offset, retval):
+    try:
+        _end_of(code, "returned", None, retval)
+    except Exception:
+        STATE["dropped"] += 1
+
+
+def on_unwind(code, offset, exc):
+    if code not in STATE["codes"]:
+        return
+    try:
+        outcome, raised = outcome_of(exc)
+        _end_of(code, outcome, raised, None)
+    except Exception:
+        STATE["dropped"] += 1
+
+
+def claim_tool():
+    mon = getattr(sys, "monitoring", None)
+    if mon is None:
+        return "no sys.monitoring"
+    for i in TOOL_IDS:
+        if mon.get_tool(i) is None:
+            try:
+                mon.use_tool_id(i, "memory-calls")
+            except ValueError:
+                continue
+            STATE["tool"] = i
+            return None
+    return "no monitoring tool id"
+
+
+def resolve(item):
+    """Observe *item*; None when it is a Python function, else what it is."""
+    module_name, _, name = item.partition(":")
+    if not module_name or not name:
+        return "not a function id"
+    module = sys.modules.get(module_name)
+    if module is None:
+        try:
+            module = importlib.import_module(module_name)
+        except BaseException:
+            return "its module does not import"
+    obj = getattr(module, name, _MISSING)
+    if obj is _MISSING:
+        return "no such name in its module"
+    layers, fn = [], obj
+    for _ in range(100):
+        layers.append(fn)
+        nxt = getattr(fn, "__wrapped__", _MISSING) if isinstance(fn, types.FunctionType) else _MISSING
+        if nxt is _MISSING:
+            break
+        fn = nxt
+    if not isinstance(fn, types.FunctionType):
+        return _type_name(fn)
+    STATE["codes"].setdefault(fn.__code__, []).append(item)
+    STATE["wrappers"][item] = {f.__code__ for f in layers[:-1] if isinstance(f, types.FunctionType)}
+    return None
+
+
+def _writer(config):
+    xml = config.stash.get(xml_key, None)
+    if xml is None or not hasattr(xml, "add_global_property"):
+        raise pytest.UsageError("_memory_calls needs pytest's junit writer (--junitxml)")
+    return xml
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    xml = _writer(config)
+    path = os.environ.get(OUT_ENV) or ""
+    try:
+        targets = json.loads(os.environ.get(TARGETS_ENV) or "")
+    except ValueError:
+        targets = None
+    if not path or not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+        raise pytest.UsageError("_memory_calls needs MEMORY_CALLS_OUT and a JSON list in MEMORY_CALLS_TARGETS")
+    STATE["targets"] = targets
+    STATE["out"] = Out(path)
+    STATE["unobservable"] = claim_tool()
+    STATE["out"].write({"event": "start", "targets": targets, "unobservable": STATE["unobservable"]})
+    sys.addaudithook(audit)
+    xml.add_global_property(LOADED, "1")
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    before = STATE["collecting"]
+    if isinstance(collector, pytest.Module):
+        STATE["collecting"] = _rel(str(collector.path))
+    try:
+        return (yield)
+    finally:
+        STATE["collecting"] = before
+
+
+def pytest_collection_finish(session):
+    for item in STATE["targets"]:
+        why = resolve(item)
+        if why is not None and len(STATE["unresolved"]) < MAX_UNRESOLVED:
+            STATE["unresolved"].append(f"{item} ({why})")
+    tool = STATE["tool"]
+    if tool is None:
+        return
+    mon = sys.monitoring
+    ev = mon.events
+    mon.register_callback(tool, ev.PY_START, on_start)
+    mon.register_callback(tool, ev.PY_RETURN, on_return)
+    mon.register_callback(tool, ev.PY_YIELD, on_return)
+    mon.register_callback(tool, ev.PY_UNWIND, on_unwind)
+    for code in STATE["codes"]:
+        mon.set_local_events(tool, code, ev.PY_START | ev.PY_RETURN | ev.PY_YIELD)
+    mon.set_events(tool, ev.PY_UNWIND)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    STATE["node"] = item
+    try:
+        return (yield)
+    finally:
+        STATE["node"] = None
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    if STATE["ended"] or STATE["out"] is None:
+        return
+    STATE["ended"] = True
+    tool = STATE["tool"]
+    if tool is not None:
+        mon = sys.monitoring
+        mon.set_events(tool, 0)
+        for code in STATE["codes"]:
+            mon.set_local_events(tool, code, 0)
+        mon.free_tool_id(tool)
+    STATE["dropped"] += len(STATE["pending"])
+    STATE["pending"].clear()
+    STATE["out"].write(
+        {
+            "event": "end",
+            "calls": STATE["calls"],
+            "dropped": STATE["dropped"],
+            "unresolved": STATE["unresolved"],
+            "outside": STATE["outside"],
+            "unattributed_opens": STATE["unattributed_opens"],
+        },
+        final=True,
+    )
+'''
+
+
+def unresolved_kind(entry: str) -> tuple[str, str]:
+    """``(item, what it is)`` of one :attr:`CallRecord.unresolved` entry (``<item> (<what>)``)."""
+    item, sep, rest = entry.partition(" (")
+    return (item, rest[:-1]) if sep and rest.endswith(")") else (entry, "not observed")
 
 
 def plugin_files(dest: Path) -> None:
     """Write the plugin module into *dest* (a fresh host directory mounted at :data:`CALLS_DIR`)."""
-    if not CALLS_SOURCE:
-        raise NotImplementedError("the call-recording plugin is not built yet")
     (Path(dest) / f"{CALLS_MODULE}.py").write_text(CALLS_SOURCE)
 
 
