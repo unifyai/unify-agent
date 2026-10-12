@@ -787,22 +787,35 @@ def limits_now(cell_s: float | None = None) -> Limits:
     )
 
 
-def tool_flags(staging: bool = False, pool: bool = False) -> frozenset[str]:
-    """The tool spec configuration flags of a pass (``fork``: staging exists; ``pool``: the candidate pool is on)."""
-    return frozenset(({"fork"} if staging else set()) | ({"pool"} if pool else set()))
+def tool_flags(
+    staging: bool = False,
+    pool: bool = False,
+    helper: bool = False,
+    similar: bool = False,
+) -> frozenset[str]:
+    """The tool spec configuration flags of a pass (``fork``: staging exists; ``pool``: the candidate pool is on;
+    ``helper``: a helper lane exists, so ``delegate`` is offered; ``similar``: the similar-code index exists)."""
+    return frozenset(
+        ({"fork"} if staging else set())
+        | ({"pool"} if pool else set())
+        | ({"helper"} if helper else set())
+        | ({"similar"} if similar else set()),
+    )
 
 
 def write_brief_now(
     staging: bool = False,
     pool: bool = False,
     cell_s: float | None = None,
+    helper: bool = False,
+    similar: bool = False,
 ) -> str:
     """The WRITE brief from the constants that enforce each number and the tools registered for the role."""
     from . import code_lint, qa
     from .gate import _PYTEST_ENV
     from .tool_spec import tools_section
 
-    flags = tool_flags(staging, pool)
+    flags = tool_flags(staging, pool, helper, similar)
     return write_brief(
         limits=limits_now(cell_s),
         mutation_min=qa.MUTATION_MIN,

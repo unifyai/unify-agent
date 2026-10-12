@@ -489,6 +489,32 @@ def _agent_tool_json(agent: str) -> list[dict]:
     return agent_profiles.tool_json(agent)
 
 
+def _refusal_form(spec: Any, text: str) -> str:
+    """The form code of *spec*'s refusal that *text* is: the form whose fixed opening or closing words match the
+    most of it."""
+    body = text[len("refused: ") :]
+    best, form_of = 0, "refused"
+    for form, template in spec.refusals.items():
+        head, tail = template.split("{", 1)[0], template.rsplit("}", 1)[-1]
+        fixed = max(
+            len(head) if head and body.startswith(head) else 0,
+            len(tail) if tail.strip() and body.endswith(tail) else 0,
+        )
+        if fixed > best:
+            best, form_of = fixed, form
+    return form_of
+
+
+def _delegate_reply(text: str) -> "_wt.Reply":
+    """A ``delegate`` call's reply: the helper's report, or the refusal that started no helper. The helper's staged
+    files are listed in the text under ``/inputs/helpers/<call>/``."""
+    from . import helpers as _helpers
+
+    if not text.startswith("refused: "):
+        return _wt.Reply(text)
+    return _wt.Reply(text, "refused", _refusal_form(_helpers.SPEC, text))
+
+
 def _unread_entry(pool_mod: Any, eid: str) -> Any:
     """The pool's ``unread`` entry for a batch episode the writer never opened (kept until a writer closes it)."""
     e = pool_mod.Entry(
@@ -572,15 +598,19 @@ def writer_tools(
     library_mode: bool = False,
     pool: bool = False,
     role: str = "write",
+    helper: bool = False,
+    similar: bool = False,
 ) -> list[dict]:
     """The writer's tool JSON. With *library_mode* it is rendered from the shared tool spec for the agent of *role*
     (``write``: the writer, ``curate``: the curator) through :mod:`.agent_profiles`; *pool* turns on the tools that
-    need the candidate pool. With *library_mode* off: the original three tools (only ``check``'s text varies).
+    need the candidate pool, *helper* (a helper lane exists) ``delegate`` and *similar* (the similar-code index
+    exists) ``similar``. With *library_mode* off: the original three tools (only ``check``'s text varies).
     """
     if library_mode:
         from . import agent_profiles
+        from .library_prompts import tool_flags
 
-        flags = frozenset({"pool"} if pool else ())
+        flags = tool_flags(pool=pool, helper=helper, similar=similar)
         return agent_profiles.tool_json(
             "curator" if role == "curate" else "writer",
             flags,
@@ -1854,6 +1884,7 @@ class WriterPass:
         # (no helper lane: delegate is not offered; helper_refusal says why)
         self.helper_turn, self.helper_refusal = helper_turn, helper_refusal
         self._helper_rows: list[dict] = []
+        self._delegate_ctx: Any = None  # the current pass run's helpers.DelegateContext, made at its first delegate
         self.load, self.turn, self.cfg = load, model_turn, config
         self.redactor = redactor  # for the transcript: the run's registered secrets
         # the last run's message list, kept for :meth:`transcript`
@@ -2166,6 +2197,94 @@ class WriterPass:
             load=self.load,
             recorded=(lambda: [e for e, _ in since(0)]) if since is not None else None,
         )
+
+    def _similar_call(self, args: dict) -> "_wt.Reply":
+        """The ``similar`` tool on the pass thread; a refusal keeps its form code."""
+        from . import similar as _similar
+
+        text = _similar.handle(args, self.similar_context())
+        if not text.startswith("refused: "):
+            return _wt.Reply(text)
+        return _wt.Reply(text, "refused", _refusal_form(_similar.SPEC, text))
+
+    async def _similar_async(self, args: dict) -> str:
+        """The ``similar`` tool for a helper (its handler is synchronous and bounded)."""
+        from . import similar as _similar
+
+        return _similar.handle(args, self.similar_context())
+
+    def _events_path(self, pass_id: str) -> Path | None:
+        """The pass's ``tool-events.jsonl``, created now if no row has been written yet (so helpers append to the
+        same file the writer created); None when the pass writes no events file."""
+        root = getattr(self.cfg, "pass_record_root", None)
+        if not root or self._events_file is False:
+            return None
+        if isinstance(self._events_file, Path):
+            return self._events_file
+        self._events_file = False
+        try:
+            folder = Path(root) / pass_id
+            for d in (Path(root), folder):
+                d.mkdir(parents=True, exist_ok=True)
+                if d.is_symlink() or not d.is_dir():
+                    return None
+            path = folder / "tool-events.jsonl"
+            fd = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o644,
+            )
+            os.close(fd)
+        except OSError:
+            return None  # a measurement never stops a pass
+        self._events_file = path
+        return path
+
+    async def _delegate_turn(
+        self,
+        tool_calls: list,
+        first: int,
+        pass_id: str,
+        inputs: Path,
+        box: Path,
+        scratch: Path,
+        deadline: float,
+        spend: Any,
+    ) -> dict[int, str]:
+        """Every ``delegate`` call of this turn from index *first* up to the turn's ``finish`` (if any), run
+        together (:func:`.helpers.handle_turn`); call index -> reply. Unreadable arguments are left to the loop."""
+        from . import helpers as _helpers
+
+        picked: list[tuple[int, dict]] = []
+        for i in range(first, len(tool_calls)):
+            tc = tool_calls[i]
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            fn = fn if isinstance(fn, dict) else {}
+            if fn.get("name") == "finish":
+                break
+            if fn.get("name") != "delegate":
+                continue
+            args, _ = _parse_args(fn.get("arguments"))
+            if args is not None:
+                picked.append((i, args))
+        # one context per pass run (its spend object is the run's own), so call ids never repeat within a pass
+        ctx = self._delegate_ctx
+        if ctx is None or ctx.pass_id != pass_id or ctx.spend is not spend:
+            ctx = _helpers.context_for(
+                self,
+                pass_id=pass_id,
+                inputs=inputs,
+                box=box,
+                scratch=scratch,
+                deadline=deadline,
+                spend=spend,
+                events=self._events_path(pass_id),
+            )
+            if self.cfg.similar_index:
+                ctx.similar = self._similar_async
+            self._delegate_ctx = ctx
+        replies = await _helpers.handle_turn([a for _, a in picked], ctx)
+        return {i: r for (i, _), r in zip(picked, replies)}
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
         """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
@@ -2937,6 +3056,8 @@ class WriterPass:
             "staging": bool(getattr(self.cfg, "fork", False)),
             "pool": bool(self.cfg.pool),
             "cell_s": float(self.cfg.cell_timeout_s),
+            "helper": self.helper_turn is not None,
+            "similar": bool(self.cfg.similar_index),
         }
 
     def _keep_cancelled_work(
@@ -3240,8 +3361,12 @@ class WriterPass:
                 library_mode=self.cfg.library_mode,
                 pool=bool(self.cfg.library_mode and self.cfg.pool),
                 role=self._role,
+                helper=self.helper_turn is not None,
+                similar=bool(self.cfg.similar_index),
             )
             tool_names = [t["function"]["name"] for t in tools]
+            # the writer's delegate calls of the current turn, run together at the first one (call index -> reply)
+            delegated: dict[int, str] = {}
             if self.cfg.library_mode:
                 # spec v2.1 §4, §7.2: the writer-chosen tree with its generated helper and index; no channel
                 # folders and no library.json (P2's gate inputs replace previous_gate.json)
@@ -3741,6 +3866,23 @@ class WriterPass:
                             ),
                             "not_run" if content.startswith("not run") else None,
                         )
+                    elif library and name == "similar":
+                        reply = self._similar_call(args)
+                    elif library and name == "delegate":
+                        if n not in delegated:
+                            delegated.update(
+                                await self._delegate_turn(
+                                    tool_calls,
+                                    n,
+                                    pass_id,
+                                    inputs,
+                                    box,
+                                    Path(tmp),
+                                    deadline,
+                                    spend,
+                                ),
+                            )
+                        reply = _delegate_reply(delegated.pop(n))
                     elif library and name == "fixture":
                         calls += 1  # a writer action, against the step guard
                         writing()

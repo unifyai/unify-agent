@@ -169,9 +169,11 @@ def test_the_reply_is_deterministic(tmp_path):
 def test_the_spec_gives_the_tool_to_the_writer_and_helpers_only():
     spec = next(s for s in tool_spec.registry() if s.name == "similar")
     assert spec is similar.SPEC and spec.roles == frozenset({"write", "helper"})
-    assert "similar" in [s.name for s in tool_spec.tools_for("write")]
-    assert "similar" in [s.name for s in tool_spec.tools_for("helper")]
-    assert "similar" not in [s.name for s in tool_spec.tools_for("curate")]
+    on = frozenset({"similar"})  # offered only when the run has an index to search
+    assert "similar" in [s.name for s in tool_spec.tools_for("write", on)]
+    assert "similar" in [s.name for s in tool_spec.tools_for("helper", on)]
+    assert "similar" not in [s.name for s in tool_spec.tools_for("curate", on)]
+    assert "similar" not in [s.name for s in tool_spec.tools_for("write")]
     assert tool_spec.refusal("similar", "unknown_episode", episode="x") == "refused: no recorded episode x."
 
 

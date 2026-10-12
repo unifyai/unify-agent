@@ -193,14 +193,16 @@ EXECUTE_CODE_SPEC = ToolSpec(
 READERS = ("overview", "read_episode", "similar", "read", "grep")
 
 
-def helper_tools() -> list[dict]:
+def helper_tools(similar: bool = True) -> list[dict]:
     """The helper's tool JSON: the registry's ``helper`` tools (its readers, ``stage``, ``done``) with the helper's
-    own ``execute_code`` in place of any other."""
+    own ``execute_code`` in place of any other. *similar*: the pass has a similar-code index, so the helper gets
+    ``similar`` too. A helper never gets ``delegate`` (a writer-only tool)."""
     from .tool_spec import tools_for
 
+    flags = frozenset({"helper", "similar"} if similar else {"helper"})
     specs = [
         s
-        for s in tools_for("helper", frozenset({"helper"}))
+        for s in tools_for("helper", flags)
         if s.name != "execute_code"
     ]
     names = {s.name for s in specs}
@@ -788,7 +790,7 @@ async def _run_helper(
 ) -> None:
     resolve = _resolver(ctx)
     turn = ctx.new_turn(f"helper.{ctx.pass_id}.{call.rsplit('-', 1)[-1]}")  # type: ignore[misc]
-    tools = helper_tools()
+    tools = helper_tools(similar=ctx.similar is not None)
     left = ctx.deadline - time.monotonic()
     messages: list[dict] = [
         {"role": "system", "content": HELPER_BRIEF},
