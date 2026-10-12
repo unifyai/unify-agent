@@ -747,8 +747,9 @@ class PassConfig:
     compact: bool = False
     # UNIFY_MEMORY_LIBRARY_COVERAGE: only "optional" exists (finish never waits on reading); kept for older callers
     coverage_rule: str = "optional"
-    # where the pass's structured records go: <output_dir>/<pass id>/tool-events.jsonl (None: kept in memory only)
-    output_dir: str | None = None
+    # where the pass's structured records go: <pass_record_root>/<pass id>/tool-events.jsonl (None: kept in memory
+    # only, on WriterPass.tool_events)
+    pass_record_root: str | None = None
 
 
 def _json_file(path: Path, default):
@@ -1747,8 +1748,10 @@ class WriterPass:
         self._episodes: dict[str, Episode] = {}
         self._batch: list[str] = []
         self._bmap_rows: list[dict] = []
-        # one structured event per tool call (tool-events.jsonl rows), in call order
+        # one structured event per tool call (tool-events.jsonl rows), in call order; and the pass's events file
+        # (None: not opened yet; False: not written this pass)
         self.tool_events: list[dict] = []
+        self._events_file: Path | None | bool = None
         # v2.1 r5 (r4 §1): request blocks shared by most episodes (id -> text), shown as markers; {} until staged
         self._shared: dict[str, str] = {}
         # r5: S0's facts for the analysts' flags (Task 5 fills them): episodes in a cluster, shapes seen before
@@ -2487,20 +2490,36 @@ class WriterPass:
             "usage": usage,
         }
         self.tool_events.append(row)
-        out = getattr(self.cfg, "output_dir", None)
-        if out:
-            try:
-                folder = Path(out) / pass_id
-                folder.mkdir(parents=True, exist_ok=True)
-                fd = os.open(
-                    folder / "tool-events.jsonl",
-                    os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o644,
-                )
-                with os.fdopen(fd, "a") as fh:
-                    fh.write(json.dumps(row, sort_keys=True) + "\n")
-            except OSError:
-                pass  # a measurement never stops a pass
+        self._write_event(pass_id, row)
+
+    def _write_event(self, pass_id: str, row: dict) -> None:
+        """Append *row* to ``<pass_record_root>/<pass id>/tool-events.jsonl``. The file is created new (never through
+        a link, never over an existing file) at the pass's first event; a failure stops the file, never the pass."""
+        root = getattr(self.cfg, "pass_record_root", None)
+        if not root or self._events_file is False:
+            return
+        try:
+            if self._events_file is None:
+                self._events_file = False
+                folder = Path(root) / pass_id
+                for d in (Path(root), folder):
+                    d.mkdir(parents=True, exist_ok=True)
+                    if d.is_symlink() or not d.is_dir():
+                        return
+                path = folder / "tool-events.jsonl"
+                flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            else:
+                path = self._events_file
+                flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC
+            fd = os.open(path, flags, 0o644)
+            with os.fdopen(fd, "a") as fh:
+                if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+                    self._events_file = False
+                    return
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+            self._events_file = path
+        except OSError:
+            self._events_file = False  # a measurement never stops a pass
 
     def _recorded_ids(self) -> set[str]:
         """The recorded-episode index: every episode id the evidence store has recorded (an episode is listed once it
@@ -2782,6 +2801,7 @@ class WriterPass:
         self._recorded, self._episodes = None, {}
         self._batch = list(req.episodes)
         self.tool_events = []
+        self._events_file = None
         self._shared = {}
         self._analyst_rows = []
         self._s0_summary = None

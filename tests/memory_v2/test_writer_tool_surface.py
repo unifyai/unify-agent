@@ -188,7 +188,7 @@ def test_every_call_is_one_tool_event_with_status_paths_and_usage(tmp_path):
         model,
         library_mode=True,
         max_calls=6,
-        output_dir=str(tmp_path / "out"),
+        pass_record_root=str(tmp_path / "out"),
     )
     writer.load = EPS.__getitem__
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
@@ -232,3 +232,21 @@ def test_the_empty_turn_nudge_names_the_real_tools(tmp_path):
     ]
     assert nudges and "read_episode" in nudges[0] and "fixture" in nudges[0]
     assert "dismiss" not in nudges[0]
+
+
+def test_an_existing_events_file_is_never_written_over(tmp_path):
+    folder = tmp_path / "out" / "p1"
+    folder.mkdir(parents=True)
+    (folder / "tool-events.jsonl").write_text("earlier\n")
+    model = Turns([_call("a", "read", {"path": "/inputs"})])
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_calls=3,
+        pass_record_root=str(tmp_path / "out"),
+    )
+    writer.load = EPS.__getitem__
+    asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
+    assert (folder / "tool-events.jsonl").read_text() == "earlier\n"
+    assert writer.tool_events and writer.tool_events[0]["tool"] == "read"
