@@ -44,7 +44,7 @@ merge) is ``writer_error``. A pass the run guard holds back sends one end event 
 ``reason_codes`` ``["run_guard"]``) and no start event, since no pass started. The full reasons stay
 harness-side in the evidence store's ``passes`` row.
 
-When Sol's route is set but refused (:class:`.switch.SolRouteRefused`: malformed, half set, not what the
+When Sol's route is set but refused (:class:`.switch.WriterRouteRefused`: malformed, half set, not what the
 settings hold, or ``UNILLM_OTEL`` on), no pass ever starts, so each request instead sends one value-free
 event, ``{"type": "consolidation", "phase": "refused", "episode_id", "consolidation_refused":
 "route_not_in_effect", "reason_codes": ["route_not_in_effect"]}``, before the refusal is raised (and recorded
@@ -431,7 +431,7 @@ def writer_settings(settings: Any) -> WriterSettings:
     route with one of its two settings empty, say) starts no pass and makes no call. Sol's route is settled
     against the process environment again first (:func:`.switch.settle_writer_route_env`), so a value that
     reached the environment late (``.env`` loaded by an embedder after unify was imported) is refused here
-    too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.SolRouteRefused`.
+    too, not only on the CLI's path. Every refusal of the route is a :class:`.switch.WriterRouteRefused`.
     """
     settle_writer_route_env(os.environ, settings)
     model = str(getattr(settings, "UNIFY_MEMORY_V2_WRITER_MODEL", "") or "").strip()

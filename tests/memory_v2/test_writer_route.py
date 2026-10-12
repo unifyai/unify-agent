@@ -1073,7 +1073,7 @@ def test_sols_route_refuses_to_start_while_unillm_records_spans(
         UNIFY_MEMORY_V2_WRITER_BASE_URL=WRITER_BASE,
         UNIFY_MEMORY_V2_WRITER_TOKEN=SecretStr(WRITER_TOKEN),
     )
-    with pytest.raises(switch.SolRouteRefused) as info:
+    with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(routed)
     with pytest.raises(writer_pass.WriterRouteError) as built:
         unillm_turn(
@@ -1103,7 +1103,7 @@ def test_a_refused_route_is_flagged_in_the_runs_events(monkeypatch, tmp_path):
         UNIFY_MEMORY_V2_WRITER_TOKEN=SecretStr(""),
     )
     for eid in ("e1", "e2"):
-        with pytest.raises(switch.SolRouteRefused):
+        with pytest.raises(switch.WriterRouteRefused):
             asyncio.run(
                 consolidate.run_due_passes(
                     stores,
@@ -1230,7 +1230,7 @@ def test_writer_settings_settles_again_so_a_late_value_is_refused_off_the_cli(
     settings = SimpleNamespace()  # as read before the late values arrived: neither set
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_BASE_URL", WRITER_BASE)
     monkeypatch.setenv("UNIFY_MEMORY_V2_WRITER_TOKEN", WRITER_TOKEN)
-    with pytest.raises(switch.SolRouteRefused) as info:
+    with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     text = str(info.value)
     token_left = any(k.upper() == _ROUTE_NAMES[0] for k in os.environ)
@@ -1616,7 +1616,7 @@ def test_both_token_settings_refuse_every_pass(fd_route):
     closed = not _is_open(fd)
     assert refusal is not None and closed
     assert "UNIFY_MEMORY_V2_WRITER_TOKEN and UNIFY_MEMORY_V2_WRITER_TOKEN_FD" in refusal
-    with pytest.raises(switch.SolRouteRefused) as info:
+    with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     text = refusal + str(info.value)
     leaked = token in text or WRITER_TOKEN in text
@@ -1630,7 +1630,7 @@ def test_a_descriptor_without_the_base_url_refuses_every_pass(fd_route):
     refusal = switch.settle_writer_route_env({}, settings)
     closed = not _is_open(fd)
     assert refusal is None and closed
-    with pytest.raises(switch.SolRouteRefused) as info:
+    with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     text = str(info.value)
     leaked = token in text
@@ -1663,7 +1663,7 @@ def test_a_descriptor_without_a_bearer_token_refuses_every_pass(fd_route, data, 
     closed = not _is_open(fd)
     assert refusal is not None and closed
     assert rule in refusal and "no consolidation pass starts" in refusal
-    with pytest.raises(switch.SolRouteRefused) as info:
+    with pytest.raises(switch.WriterRouteRefused) as info:
         consolidate.writer_settings(settings)
     body = data.rstrip(b"\n").decode("latin-1")
     text = refusal + str(info.value)
@@ -1699,7 +1699,7 @@ def test_an_unusable_descriptor_refuses_every_pass(fd_route):
         switch._FD_TRIED = False
         settings = _fd_settings(fd)
         refusal = switch.settle_writer_route_env({}, settings)
-        with pytest.raises(switch.SolRouteRefused) as info:
+        with pytest.raises(switch.WriterRouteRefused) as info:
             consolidate.writer_settings(settings)
         text = (refusal or "") + str(info.value)
         leaked = _GOOD in text
@@ -1728,7 +1728,7 @@ def test_a_refused_descriptor_is_flagged_in_the_runs_events(fd_route, tmp_path):
         paths=SimpleNamespace(events=events, errors=tmp_path / "errors.jsonl"),
     )
     settings = _fd_settings(_token_fd(fd_route, b""))
-    with pytest.raises(switch.SolRouteRefused):
+    with pytest.raises(switch.WriterRouteRefused):
         asyncio.run(
             consolidate.run_due_passes(
                 stores,
