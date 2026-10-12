@@ -349,8 +349,12 @@ def _replay(window: int) -> dict:
     }
 
 
+#: a test window only, not a claim about any model: the configured models' windows come from unillm at run time
+REPLAY_WINDOW = 128_000
+
+
 def test_the_recorded_pass_compacts_at_most_once_and_its_cache_rate_is_recorded():
-    r = _replay(128_000)
+    r = _replay(REPLAY_WINDOW)
     print("replay", json.dumps(r))  # the measurement, in the test log
     assert len(r["events"]) <= 1, r
     assert r["rereads"] == [], r

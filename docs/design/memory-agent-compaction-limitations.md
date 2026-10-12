@@ -54,3 +54,9 @@ records exactly what is shared, what is not, and why, with file:line evidence at
    worker on 12 Oct, both `openai/gpt-6-sol@openrouter` and `openai/gpt-6-luna@openrouter` returned None. A run
    that configures those models and sets `UNIFY_MEMORY_LIBRARY_COMPACT=on` compacts only if the run's unillm knows
    their windows; check `get_max_input_tokens` for every configured endpoint before such a run.
+
+Parity. With no window known, a memory agent does not compact, exactly as the agent loop does not: both read the
+same trigger (`context_over_threshold` at `COMPACTION_THRESHOLD`) over the same window source. Giving the configured
+models a window would turn compaction on for the agent loop as well, so it is a change to both, decided for both.
+Each pass records the largest prompt each memory agent sent (`max_prompt_tokens` in the end event and in each
+`helper.json`) beside the window the trigger read (`context_window`, null when unknown), so a run shows the headroom.
