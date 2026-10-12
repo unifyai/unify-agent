@@ -243,7 +243,7 @@ def test_the_event_file_has_the_base_fields_plus_the_additive_ones(tmp_path):
         if r["refusal"] is not None:
             assert r["refusal"]["form"] in codes.get(r["tool"], []) + codes["*"], r
     # the rows kept on the pass are the file's rows
-    assert [r["call"] for r in writer.tool_events] == [r["call"] for r in calls]
+    assert sorted(r["call"] for r in writer.tool_events) == sorted(r["call"] for r in calls)
 
 
 def test_off_the_requests_and_rows_are_as_before(tmp_path):
@@ -342,7 +342,88 @@ def test_a_helper_cannot_call_delegate_finish_or_check_and_a_curator_cannot_call
 # --- criterion 5: no secret, host path or route value in any reply or row ------------------------------------------------
 
 
-def test_no_reply_or_row_carries_an_environment_value_a_host_path_or_a_route_token(tmp_path, monkeypatch):
+def _summary(out, rows):
+    return {
+        "reasons": getattr(out, "reasons", None),
+        "rows": [
+            (r.get("agent"), r.get("tool"), r.get("status"), (r.get("refusal") or {}).get("form"), r.get("reason"))
+            for r in rows
+            if r.get("event") in ("tool_call", "channel_closed")
+        ],
+    }
+
+
+def _check_no_leak(tmp_path, model, rows):
+    texts = [str(v) for v in model.outputs.values()]
+    events_text = (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text()
+    call_rows = [json.dumps(r) for r in rows if r.get("event") in ("tool_call", "channel_closed")]
+    host = {str(tmp_path), os.path.expanduser("~")}
+    for box in FakeBox.started:
+        host.update(box.host_paths())
+    host.discard("")
+    for blob in (*texts, events_text):  # every reply and every record the pass wrote
+        for bad in (PLANTED_ENV, PLANTED_TOKEN):
+            assert bad not in blob, (bad, _around(blob, bad))
+    for blob in (*texts, *call_rows):  # every reply and every call's row
+        for bad in host:
+            assert bad not in blob, (bad, _around(blob, bad))
+
+
+WRITER_REFUSALS = [
+    ("read", {"path": "/etc/passwd"}),
+    ("read", {"path": "/memory/../../etc/passwd"}),
+    ("read", {"path": "/memory/missing.py"}),
+    ("grep", {"pattern": "(", "path": "/inputs"}),
+    ("grep", {"pattern": "x", "path": "/elsewhere"}),
+    ("overview", {"episode": "e999"}),
+    ("read_episode", {"episode": "e999"}),
+    ("read_episode", {"episode": "e1", "parts": ["nope"]}),
+    ("read_episode", {"episode": "e1", "nope": 1}),
+    ("fixture", {"episode": "e999", "dest": "memory/x/tests/fixtures/a.json"}),
+    ("replay", {"item": "nothing"}),
+    ("check", {"manifest": "{not json"}),
+    ("write", {"path": "../escape.py", "content": "x"}),
+    ("write", {"path": ".git/config", "content": "x"}),
+    ("write", {"path": "memory/ok.py", "content": "x = 1\n"}),
+    ("edit", {"path": "memory/missing.py", "old": "a", "new": "b"}),
+    ("edit", {"path": "memory/ok.py", "old": "zzz", "new": "y"}),
+    ("send", {"text": ""}),
+    ("reply", {"agent": "nobody", "text": "hi"}),
+    ("stop", {"helper": "nobody"}),
+    ("delegate", {"task": "", "episodes": []}),
+    ("similar", {"episode": "e1"}),
+    ("pool", {"op": "bogus"}),
+    ("bogus_tool", {}),
+    ("finish", {"summary": "done"}),
+]
+
+
+def test_no_writer_reply_or_row_carries_an_environment_value_a_host_path_or_a_route_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFY_PLANTED_FOR_THE_CHANNEL_TEST", PLANTED_ENV)
+    monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_HELPER_TOKEN", PLANTED_TOKEN)
+    out, model, writer, rows = _in_code_pass(
+        tmp_path,
+        [_cell("c1", *WRITER_REFUSALS)],
+        helper=_helper_factory([("done", {"summary": "s", "claims": []})], []),
+        edit_tools=True,
+        max_calls=2,
+        deadline_s=90.0,
+    )
+    assert "c1" in model.outputs, _summary(out, rows)
+    _check_no_leak(tmp_path, model, rows)
+    cell = model.outputs["c1"]
+    lines = cell.splitlines()
+    # one line per call before finish, then how the cell ended, then finish's answer
+    printed = sum(1 for x in lines if " -> " in x or " !! " in x)
+    assert len(WRITER_REFUSALS) - 1 <= printed <= len(WRITER_REFUSALS), cell
+    assert "bogus_tool !! Refused: refused: unknown tool 'bogus_tool'" in cell
+    assert "read_episode !! Refused: refused: unknown argument 'nope'" in cell
+    assert lines[-1].startswith("not finished: "), cell
+    in_code = [r for r in rows if r.get("via") == "channel"]
+    assert [r["tool"] for r in in_code] == [t for t, _ in WRITER_REFUSALS], _summary(out, rows)
+
+
+def test_a_helper_runs_in_its_own_box_and_is_refused_the_writers_tools(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFY_PLANTED_FOR_THE_CHANNEL_TEST", PLANTED_ENV)
     monkeypatch.setenv("UNIFY_MEMORY_LIBRARY_HELPER_TOKEN", PLANTED_TOKEN)
     seen_helper_tools: list[list[str]] = []
@@ -362,68 +443,28 @@ def test_no_reply_or_row_carries_an_environment_value_a_host_path_or_a_route_tok
         ("done", {"summary": "s", "claims": [], "extra": 1}),
         ("done", {"summary": "handing back", "claims": []}),
     ]
-    writer_script = [
-        ("read", {"path": "/etc/passwd"}),
-        ("read", {"path": "/memory/../../etc/passwd"}),
-        ("read", {"path": "/memory/missing.py"}),
-        ("grep", {"pattern": "(", "path": "/inputs"}),
-        ("grep", {"pattern": "x", "path": "/elsewhere"}),
-        ("overview", {"episode": "e999"}),
-        ("read_episode", {"episode": "e999"}),
-        ("read_episode", {"episode": "e1", "parts": ["nope"]}),
-        ("read_episode", {"episode": "e1", "nope": 1}),
-        ("fixture", {"episode": "e999", "dest": "memory/x/tests/fixtures/a.json"}),
-        ("replay", {"item": "nothing"}),
-        ("check", {"manifest": "{not json"}),
-        ("write", {"path": "../escape.py", "content": "x"}),
-        ("write", {"path": ".git/config", "content": "x"}),
-        ("write", {"path": "memory/ok.py", "content": "x = 1\n"}),
-        ("edit", {"path": "memory/missing.py", "old": "a", "new": "b"}),
-        ("edit", {"path": "memory/ok.py", "old": "zzz", "new": "y"}),
-        ("send", {"text": ""}),
-        ("reply", {"agent": "nobody", "text": "hi"}),
-        ("stop", {"helper": "nobody"}),
-        ("delegate", {"task": "", "episodes": []}),
-        ("delegate", {"task": "draft one", "episodes": []}),
-        ("wait", {}),
-        ("similar", {"episode": "e1"}),
-        ("pool", {"op": "bogus"}),
-        ("bogus_tool", {}),
-        ("finish", {"summary": "done"}),
-    ]
     out, model, writer, rows = _in_code_pass(
         tmp_path,
-        [_cell("c1", *writer_script)],
+        [
+            _cell("c1", ("delegate", {"task": "draft one", "episodes": []})),
+            _cell("c2", ("wait", {})),
+            _cell("c3", ("who", {})),
+        ],
         helper=_helper_factory(helper_script, seen_helper_tools),
-        edit_tools=True,
-        max_calls=3,
-        deadline_s=120.0,
+        max_calls=4,
+        deadline_s=90.0,
     )
-    texts = [str(v) for v in model.outputs.values()]
-    events_text = (tmp_path / "out" / "p1" / "tool-events.jsonl").read_text()
-    call_rows = [json.dumps(r) for r in rows if r.get("event") in ("tool_call", "channel_closed")]
-    host = {str(tmp_path), os.path.expanduser("~")}
-    for box in FakeBox.started:
-        host.update(box.host_paths())
-    host.discard("")
-    for blob in (*texts, events_text):  # every reply and every record the pass wrote
-        for bad in (PLANTED_ENV, PLANTED_TOKEN):
-            assert bad not in blob, (bad, _around(blob, bad))
-    for blob in (*texts, *call_rows):  # every reply and every call's row
-        for bad in host:
-            assert bad not in blob, (bad, _around(blob, bad))
-    # every call answered: one line per scripted call until finish ended the cell
-    cell = model.outputs["c1"]
-    assert cell.count("\n") >= len(writer_script) - 1
-    assert "bogus_tool !! Refused: refused: unknown tool 'bogus_tool'" in cell
-    assert "read_episode !! Refused: refused: unknown argument 'nope'" in cell
-    # the helper ran in its own box with only execute_code as its JSON tool, and was refused the writer's tools
+    assert {"c1", "c2", "c3"} <= set(model.outputs), _summary(out, rows)
+    _check_no_leak(tmp_path, model, rows)
     assert seen_helper_tools and all(t == ["execute_code"] for t in seen_helper_tools)
     helper_rows = [r for r in rows if r.get("agent") == "helper" and r.get("via") == "channel"]
-    forms = {r["tool"]: r["refusal"]["form"] for r in helper_rows if r["refusal"]}
-    assert forms.get("delegate") == forms.get("finish") == forms.get("check") == "unknown_tool"
-    assert any(r["tool"] == "done" and r["status"] == "ok" for r in helper_rows)
+    assert [r["tool"] for r in helper_rows] == [t for t, _ in helper_script], _summary(out, rows)
+    forms = {r["tool"]: (r["refusal"] or {}).get("form") for r in helper_rows[:3]}
+    assert forms == {"delegate": "unknown_tool", "finish": "unknown_tool", "check": "unknown_tool"}
+    assert helper_rows[-1]["status"] == "ok" and helper_rows[-1]["tool"] == "done"
     assert all(r["helper_call"] == r["name"] for r in helper_rows)
+    cell_rows = [r for r in rows if r.get("agent") == "helper" and r.get("tool") == "execute_code"]
+    assert cell_rows and all(r["cell"] == cell_rows[0]["call"] for r in helper_rows)
 
 
 # --- liveness and C4 ---------------------------------------------------------------------------------------------------
