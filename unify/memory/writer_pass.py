@@ -356,85 +356,105 @@ _TOOL_TEMPLATES = [
 FINISH_G1_REFUSALS = 2
 
 
-#: UNIFY_MEMORY_LIBRARY_COMPACT: the conversation size (prompt text, :func:`_prompt_chars`) that triggers a compaction,
-#: and the messages at its end that are never touched. A trigger on size, never on a stream or step count. The
-#: replay of rehearsal 2's writer conversations measured 1.48 prompt characters per billed token (ARC grids are
-#: token-dense), so the intended ~60k tokens is ~90k characters; 240k let the context reach ~150k tokens.
-COMPACT_AT_CHARS = 90_000
-COMPACT_KEEP_LAST = 6
-_COMPACT_STUB = "[compacted: "
+#: UNIFY_MEMORY_LIBRARY_COMPACT: the memory agents (the writer, the curator, each helper) compact their conversation
+#: as the agent loop does (unify/common/_async_tool): once a model call's prompt reaches
+#: ``context_compression.COMPACTION_THRESHOLD`` of the model's context window (the window unillm gives for the
+#: agent's endpoint, ``unillm.get_max_input_tokens``, the agent loop's own source), the agent writes a summary
+#: (``FORK_SUMMARY``: its last request, unchanged, plus ``cache_discipline.COMPRESSION_FORK_INSTRUCTION``), sent by
+#: the agent's own model turn over its own route, and the conversation restarts from the system message and that
+#: summary (``restart_text``); with ``UNIFY_COMPACTION_KEEP_PREFIX=on`` the request messages are kept before it
+#: (``kept_prefix``). A model with no known window is never compacted, as in the agent loop.
+#: The files an agent works with stay where they were; the summary message says so.
+RESTART_POINTER = (
+    "Nothing under /memory, /inputs or /outputs changed: read them again (gate results, fixtures, drafts, staging) "
+    "when you need them."
+)
 
 
-def _compact(
-    messages: list[dict],
-    out_dir: Path,
-    at: int = COMPACT_AT_CHARS,
-    originals: dict[int, str] | None = None,
-) -> int:
-    """Cache-preserving compaction (without it, a long pass re-sends its whole history on each of its hundreds of
-    calls). When the conversation's prompt text (:func:`_prompt_chars`) passes *at*, and the old tool results it may
-    move hold at least half of *at* (a real drop, so a compaction is rare), the oldest tool results (never the system message,
-    the request, the writer's own messages with their reasoning and calls, or the last :data:`COMPACT_KEEP_LAST` messages)
-    are saved under *out_dir*/compacted/ and replaced by a pointer to re-open them with ``read``, until the size is at
-    most half of *at*. The prefix changes only at a compaction, so the provider's cache holds between them. Returns
-    the number of results moved. As defence in depth, nothing is compacted when *out_dir* or its
-    ``compacted/`` is a link or not a directory, and each file is created new, never through a link (a result whose
-    file cannot be made that way stays in the conversation). *originals*, when given, receives each moved result's
-    text by message index, so the transcript keeps what the writer saw before the compaction.
+def compaction_due(prompt_tokens: object, window: object) -> bool:
+    """The agent loop's trigger (``context_over_threshold`` at ``COMPACTION_THRESHOLD``) for a call that used
+    *prompt_tokens* on a model with a context window of *window* tokens; False when either is unknown.
     """
-    # the size is the prompt text, never the provider's opaque fields
-    # (provider_specific_fields, reasoning blobs), which made every call "over size" and compacted once per call
-    sizes = [_prompt_chars(m) for m in messages]
-    total = sum(sizes)
-    if total <= at:
-        return 0
-    eligible = [
-        i
-        for i, m in enumerate(messages[: max(0, len(messages) - COMPACT_KEEP_LAST)])
-        if isinstance(m, dict)
-        and m.get("role") == "tool"
-        and isinstance(m.get("content"), str)
-        and not m["content"].startswith(_COMPACT_STUB)
+    from unify.common._async_tool.context_compression import (
+        COMPACTION_THRESHOLD,
+        context_over_threshold,
+    )
+
+    if (
+        not isinstance(prompt_tokens, int)
+        or isinstance(prompt_tokens, bool)
+        or prompt_tokens <= 0
+    ):
+        return False
+    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
+        return False
+    return context_over_threshold(prompt_tokens, COMPACTION_THRESHOLD, window)
+
+
+@dataclass
+class Compaction:
+    """One compaction's summary call and its outcome: the call's reply and charge (booked like any other call
+    of the agent), the request it sent, and the conversation to restart from (None: the reply held no summary,
+    so the conversation stays as it is)."""
+
+    request: list[dict]
+    reply: object
+    usd: object
+    restart: list[dict] | None
+
+
+async def compact_by_summary(
+    messages: list[dict],
+    turn: Callable[[list[dict], list[dict]], Any],
+    tools: list[dict],
+    pointer: str = RESTART_POINTER,
+) -> Compaction:
+    """The agent loop's summary compaction (``AsyncToolLoopHandle._summarise_as_fork``) for a memory agent: the
+    summary request is *messages*, unchanged, plus the agent loop's instruction, sent through the agent's own
+    model *turn* (its route, its model, its accounting) with its *tools*, so the cached prefix serves all but the
+    instruction. Only message content goes in: what the agent's own calls already sent. The restart is the leading
+    system message and the summary as the agent loop builds it (``restart_text``, here with *pointer*), after the
+    kept request messages when ``UNIFY_COMPACTION_KEEP_PREFIX=on`` (``kept_prefix``, the summary then marked as the
+    loop's own message)."""
+    from unify.common._async_tool import cache_discipline as _cd
+    from unify.common._async_tool import context_compression as _cc
+    from unify.common._async_tool.messages import loop_user_notice
+
+    request = [*messages, {"role": "user", "content": _cd.COMPRESSION_FORK_INSTRUCTION}]
+    reply, usd = await turn(request, tools)
+    summary = (
+        _cd.completion_text(reply.get("content")) if isinstance(reply, dict) else ""
+    )
+    if not summary or (isinstance(reply, dict) and reply.get("tool_calls")):
+        return Compaction(request, reply, usd, None)
+    if _cc.keep_prefix_enabled():
+        system, kept = _cc.kept_prefix(messages)
+        restart = [*system, *kept, loop_user_notice(_cc.restart_text(summary, pointer))]
+    else:
+        system = [
+            m for m in messages[:1] if isinstance(m, dict) and m.get("role") == "system"
+        ]
+        restart = [
+            *system,
+            {"role": "user", "content": _cc.restart_text(summary, pointer)},
+        ]
+    return Compaction(request, reply, usd, restart)
+
+
+def compaction_archive(compaction: Compaction, history: list[dict]) -> list[dict]:
+    """What a compaction takes out of an agent's conversation, for its transcript: the *history* it replaced, then
+    the summary call's instruction and reply, each marked ``"compaction_call": true``.
+    """
+    reply = (
+        compaction.reply
+        if isinstance(compaction.reply, dict)
+        else {"content": repr(compaction.reply)}
+    )
+    return [
+        *history,
+        {**compaction.request[-1], "compaction_call": True},
+        {**reply, "compaction_call": True},
     ]
-    if sum(sizes[i] for i in eligible) < at // 2:
-        return 0  # no real drop to be had: a compaction would only break the cache
-    folder = out_dir / "compacted"
-    if out_dir.is_symlink() or not out_dir.is_dir():
-        return 0
-    if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
-        return 0
-    folder.mkdir(exist_ok=True)
-    moved = 0
-    for i in eligible:
-        if total <= at // 2:
-            break
-        m = messages[i]
-        content = m["content"]
-        name = (
-            re.sub(r"[^A-Za-z0-9_.-]", "_", str(m.get("tool_call_id") or f"m{i}"))[:80]
-            or f"m{i}"
-        )
-        target = folder / f"{i:04d}-{name}.txt"
-        try:
-            fd = os.open(
-                target,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                0o644,
-            )
-        except OSError:
-            continue  # it exists already, or is a link: this result stays in the conversation
-        with os.fdopen(fd, "w") as fh:
-            fh.write(content)
-        if originals is not None:
-            originals[i] = content
-        m["content"] = (
-            f"{_COMPACT_STUB}this result ({len(content)} characters) was moved out of the conversation to keep it "
-            f'short; read it again with read(path="/outputs/compacted/{target.name}")]'
-        )
-        new = _prompt_chars(m)
-        total += new - sizes[i]
-        moved += 1
-    return moved
 
 
 def _prompt_chars(m: object) -> int:
@@ -731,8 +751,8 @@ class PassConfig:
     # UNIFY_MEMORY_LIBRARY_FORK: the episode-end fork stages candidates, so the writer's brief and batch-map rows
     # describe /inputs/staging; off: neither names staging
     fork: bool = False
-    # off by default: UNIFY_MEMORY_LIBRARY_COMPACT moves old tool results out of
-    # the writer's conversation when it grows past COMPACT_AT_CHARS (:func:`_compact`)
+    # off by default: UNIFY_MEMORY_LIBRARY_COMPACT compacts the memory agents' conversations as the agent loop
+    # does (:func:`compact_by_summary`, at :func:`compaction_due`)
     compact: bool = False
     # UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: the writer and the curator get the ``write`` and ``edit`` file tools on
     # /memory (edit_tools.py); off: neither tool exists and every prompt is as before
@@ -791,6 +811,15 @@ class PassOutcome:
     chain: dict | None = None
     # library layout: the gate's {"item", "adopts"} row per landed item
     provenance: list[dict] = field(default_factory=list)
+    # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's (or curator's) compactions, the messages they took out of its
+    # conversation and those messages' prompt characters (summary calls are counted in calls and usd)
+    compactions: int = 0
+    chars_moved: int = 0
+    messages_moved: int = 0
+    # the writer's model calls' prompt tokens and the part of them read from the provider's cache, summed over the
+    # calls that reported both (None: no call did); cache_read_tokens / input_tokens is the cache-hit rate
+    input_tokens: int | None = None
+    cache_read_tokens: int | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -1322,7 +1351,14 @@ def transcript_lines(
     )
     for i, m in enumerate(messages):
         extra: dict = {}
-        if i == 0 and isinstance(brief, str):
+        # the brief, at the start and again after each compaction's restart, is named by its hash
+        is_brief = (
+            isinstance(brief, str)
+            and isinstance(m, dict)
+            and m.get("role") == "system"
+            and m.get("content") == brief
+        )
+        if is_brief:
             m = {
                 "role": "system",
                 "content": f"(brief sha256 {_sha(brief.encode('utf-8'))})",
@@ -1342,7 +1378,7 @@ def transcript_lines(
         try:
             plain = _scrub(red.obj(json.loads(json.dumps(m, default=str))))
             # the first user message and the brief's name are kept whole; every other string is cut
-            whole = i == first_user or (i == 0 and isinstance(brief, str))
+            whole = i == first_user or is_brief
             msg = (
                 plain if whole or string_chars is None else _plain(plain, string_chars)
             )
@@ -1999,7 +2035,14 @@ class WriterPass:
         # what the writer saw, for the transcript: the tool JSON it was given and each compacted tool result's
         # text before compaction (message index -> text)
         self._tools_json: list[dict] = []
-        self._precompact: dict[int, str] = {}
+        # what compactions took out of the writer's conversation, in order (compaction_archive), for the transcript
+        self._archived: list[dict] = []
+        self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
+        self._cache_tokens: list[int] = [
+            0,
+            0,
+            0,
+        ]  # input, cache read, calls that reported both
         # the fixture provenance last derived from the box's files (fixtures.derive_ledger); the manifest's own is ignored
         self.fixtures_made: dict[str, dict] = {}
         # per agent: sha256 of a part shown to that agent in full -> (episode, part), so a byte-identical part is
@@ -2058,11 +2101,10 @@ class WriterPass:
         blobs = getattr(self.gate, "blobs", None)
         store = blobs.put if isinstance(blobs, BlobStore) else None
         lines = transcript_lines(
-            self.messages,
+            [*self._archived, *self.messages],
             pass_id,
             self.redactor,
             tools=self._tools_json,
-            originals=self._precompact,
             store=store,
         )
         # each helper's own transcript, bounded the same way, every line naming the helper; then the pass's record
@@ -2070,7 +2112,7 @@ class WriterPass:
         if ctx is not None and ctx.pass_id == pass_id:
             for name, (messages, tools) in ctx.transcripts.items():
                 lines += transcript_lines(
-                    messages,
+                    [*ctx.archived.get(name, []), *messages],
                     pass_id,
                     self.redactor,
                     tools=tools,
@@ -2081,6 +2123,65 @@ class WriterPass:
         if pr is not None and pr.record.entries:
             lines += record_lines(list(pr.record.entries), pass_id, self.redactor)
         return lines
+
+    def _count_cache(self, usage: dict) -> None:
+        """Add a model call's prompt tokens and cache-read tokens to the pass's sums, when it reported both."""
+        if isinstance(usage.get("input"), int) and isinstance(
+            usage.get("cache_read"),
+            int,
+        ):
+            self._cache_tokens[0] += usage["input"]
+            self._cache_tokens[1] += usage["cache_read"]
+            self._cache_tokens[2] += 1
+
+    def _compaction_event(
+        self,
+        pass_id: str,
+        messages: list[dict],
+        comp: Compaction,
+    ) -> None:
+        """Count a compaction (when it restarted the conversation) and write its ``compaction`` row to the pass's
+        events: the summary call's usage and charge, as a tool call's row carries its model call's, and what it
+        took out of the conversation."""
+        usage = _usage_of(comp.reply, comp.usd)
+        if isinstance(comp.reply, dict):
+            self._count_cache(usage)
+        kept = {id(m) for m in comp.restart or []}
+        out = (
+            [m for m in messages if id(m) not in kept]
+            if comp.restart is not None
+            else []
+        )
+        chars = sum(_prompt_chars(m) for m in out)
+        if comp.restart is not None:
+            self._compaction["compactions"] += 1
+            self._compaction["messages_moved"] += len(out)
+            self._compaction["chars_moved"] += chars
+        self._write_event(
+            pass_id,
+            {
+                "event": "compaction",
+                "agent": self._role_agent(),
+                "pass_id": pass_id,
+                "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "restarted": comp.restart is not None,
+                "messages_before": len(messages),
+                "messages_after": (
+                    len(comp.restart) if comp.restart is not None else len(messages)
+                ),
+                "messages_moved": len(out),
+                "chars_moved": chars,
+                "usage": usage,
+            },
+        )
+
+    def _role_agent(self) -> str:
+        pr = self._pass_record
+        return (
+            pr.root
+            if pr is not None
+            else ("curator" if self._role == "curate" else "writer")
+        )
 
     def transcript_note(self, pass_id: str) -> list[str]:
         """Store the last run's whole transcript (:meth:`transcript`) as chunk files under the pass's record
@@ -2459,7 +2560,7 @@ class WriterPass:
                         root,
                         pr.pass_id,
                         name,
-                        messages,
+                        [*ctx.archived.get(name, []), *messages],
                         redactor=self.redactor,
                         tools=tools,
                         label={"agent": "helper", "helper": name},
@@ -3447,7 +3548,9 @@ class WriterPass:
 
     async def run(self, req: PassRequest, pass_id: str) -> PassOutcome:
         self.messages = []
-        self._tools_json, self._precompact = [], {}
+        self._tools_json, self._archived = [], []
+        self._compaction = {"compactions": 0, "chars_moved": 0, "messages_moved": 0}
+        self._cache_tokens = [0, 0, 0]
         self.fixtures_made = {}
         self._shown_full, self._read_logs = {}, {}
         self._recorded, self._episodes = None, {}
@@ -3653,6 +3756,14 @@ class WriterPass:
             )
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
+                o.compactions = self._compaction["compactions"]
+                o.chars_moved = self._compaction["chars_moved"]
+                o.messages_moved = self._compaction["messages_moved"]
+                if self._cache_tokens[2]:
+                    o.input_tokens, o.cache_read_tokens = (
+                        self._cache_tokens[0],
+                        self._cache_tokens[1],
+                    )
                 o.finished = bool(phase["finish_accepted"])
                 o.provenance = list(self._provenance)
                 if self._role != "curate":
@@ -4037,6 +4148,9 @@ class WriterPass:
                 mark[0], mark[1] = charged(), time.monotonic()
                 return True
 
+            last_prompt: list = [
+                None,
+            ]  # the last model call's prompt tokens (compaction_due)
             while (
                 not finished
                 and stop is None
@@ -4048,13 +4162,51 @@ class WriterPass:
                     cause(CODE_DEADLINE)
                     break
                 calls += 1
-                if self.cfg.library_mode and self.cfg.compact:
-                    _compact(
-                        messages,
-                        Path(tmp) / "outputs",
-                        COMPACT_AT_CHARS,
-                        self._precompact,
+                if (
+                    self.cfg.library_mode
+                    and self.cfg.compact
+                    and compaction_due(
+                        last_prompt[0],
+                        getattr(self.turn, "max_input_tokens", None),
                     )
+                ):
+                    # the agent loop's compaction: a summary call on the writer's own turn, booked as a call
+                    last_prompt[0] = None
+                    try:
+                        comp = await asyncio.wait_for(
+                            compact_by_summary(messages, self.turn, tools),
+                            timeout=remaining(),
+                        )
+                    except TimeoutError:
+                        spend.unknown += 1
+                        stop = f"pass deadline of {self.cfg.deadline_s} s reached during a model call"
+                        cause(CODE_DEADLINE)
+                        break
+                    except (
+                        Exception
+                    ) as exc:  # the call may still have cost money; the conversation stays
+                        spend.unknown += 1
+                        notes.append(
+                            _redact(f"compaction call failed: {type(exc).__name__}")[
+                                :300
+                            ],
+                        )
+                        comp = None
+                    if comp is not None:
+                        cost = _money(comp.usd)
+                        if cost is None:
+                            spend.unknown += 1
+                        else:
+                            spend.usd += cost
+                        self._compaction_event(pass_id, messages, comp)
+                        if comp.restart is not None:
+                            self._archived += compaction_archive(comp, list(messages))
+                            messages[:] = comp.restart
+                    if calls >= max_calls or (
+                        cap is not None and spend.usd + spend.unknown * reserve >= cap
+                    ):
+                        continue  # the summary call took the last call the pass had
+                    calls += 1
                 try:
                     msg, usd = await asyncio.wait_for(
                         self.turn(messages, tools),
@@ -4096,6 +4248,8 @@ class WriterPass:
                 ran = 0
                 readers = 0  # library_mode reader calls in this turn
                 turn_usage: dict | None = _usage_of(msg, usd)
+                last_prompt[0] = turn_usage["input"]
+                self._count_cache(turn_usage)
                 for n, tc in enumerate(tool_calls):
                     if not isinstance(tc, dict):
                         messages.append(
@@ -4890,4 +5044,11 @@ def unillm_turn(
             return msg, _UNKNOWN
         return msg, _usd(sum((Decimal(str(c)) for c in costs), Decimal("0")))
 
+    # the context window the agent loop reads for its compaction trigger, for the same endpoint (None: unknown)
+    try:
+        turn.max_input_tokens = unillm.get_max_input_tokens(endpoint)  # type: ignore[attr-defined]
+    except (
+        Exception
+    ):  # noqa: BLE001 - an unknown window: no compaction, as in the agent loop
+        turn.max_input_tokens = None  # type: ignore[attr-defined]
     return turn

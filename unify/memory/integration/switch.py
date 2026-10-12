@@ -672,8 +672,9 @@ LIBRARY_POOL = "UNIFY_MEMORY_LIBRARY_POOL"
 #: ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory
 #: (edit_tools.py); ``off``: neither tool exists and every prompt is as before.
 LIBRARY_EDIT_TOOLS = "UNIFY_MEMORY_LIBRARY_EDIT_TOOLS"
-#: Prepared, off by default: ``on`` moves old tool results out of the writer's
-#: conversation once it passes a size (writer_pass._compact); ``off``: the conversation is never changed.
+#: Off by default: ``on`` compacts the memory agents' conversations (writer, curator, helpers) as the agent loop
+#: compacts its own (writer_pass.compact_by_summary: its trigger, summary and restart, over each agent's own
+#: route); ``off``: the conversation is never changed.
 LIBRARY_COMPACT = "UNIFY_MEMORY_LIBRARY_COMPACT"
 #: The former reading rule. Finish never waits on reading: empty and ``optional`` are accepted and change nothing;
 #: ``required`` (the removed rule) is refused, so a configuration that still asks for it fails loudly at start-up.

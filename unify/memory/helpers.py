@@ -454,6 +454,10 @@ class DelegateContext:
     replies: dict[str, str] = field(default_factory=dict)
     #: each helper's message list and tool JSON, as it grows (recorded with the writer's transcript)
     transcripts: dict[str, tuple[list, list]] = field(default_factory=dict)
+    #: UNIFY_MEMORY_LIBRARY_COMPACT: helpers compact their conversations as the agent loop does
+    #: (:func:`.writer_pass.compact_by_summary`); what each compaction took out, by helper, for its transcript
+    compact: bool = False
+    archived: dict[str, list] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.pass_record is None:
@@ -517,6 +521,9 @@ def context_for(
         records=writer._helper_rows,
         pass_record=pass_record,
         pool=getattr(writer, "_pool", None),
+        compact=bool(
+            getattr(cfg, "library_mode", False) and getattr(cfg, "compact", False),
+        ),
     )
 
 
@@ -1254,6 +1261,74 @@ def _write_status(path: Path, doc: dict) -> None:
         fh.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
 
 
+async def _compact_helper(
+    ctx: DelegateContext,
+    call: str,
+    turn: Callable[[list, list], Awaitable[tuple[dict, Any]]],
+    messages: list[dict],
+    tools: list[dict],
+    doc: dict,
+) -> None:
+    """A helper's compaction (:func:`.writer_pass.compact_by_summary`): the summary call goes through the helper's
+    own turn (the helper lane's route and model), counts as one of its turns, and its charge joins the helper's
+    and the pass's spend like any call; a ``compaction`` event row carries its usage. On a summary, what it took
+    out is kept for the helper's transcript and the conversation restarts in place."""
+    from .writer_pass import _prompt_chars, compact_by_summary, compaction_archive
+
+    pr = ctx.pass_record
+    pr.calls_in_flight.add(call)
+    try:
+        comp = await asyncio.wait_for(
+            compact_by_summary(messages, turn, tools),
+            timeout=max(0.1, ctx.deadline - time.monotonic()),
+        )
+    except asyncio.CancelledError:
+        doc["unknown_cost_calls"] += 1
+        ctx.spend.unknown += 1
+        raise
+    except (
+        Exception
+    ):  # noqa: BLE001 - a failed summary call may still have cost money; the conversation stays
+        doc["unknown_cost_calls"] += 1
+        ctx.spend.unknown += 1
+        return
+    finally:
+        pr.calls_in_flight.discard(call)
+    doc["turns"] += 1
+    cost = _money(comp.usd)
+    if cost is None:
+        doc["unknown_cost_calls"] += 1
+        ctx.spend.unknown += 1
+    else:
+        doc["_usd"] += cost
+        ctx.spend.usd += cost
+    kept = {id(m) for m in comp.restart or []}
+    out = [m for m in messages if id(m) not in kept] if comp.restart is not None else []
+    if comp.restart is not None:
+        ctx.archived.setdefault(call, []).extend(
+            compaction_archive(comp, list(messages)),
+        )
+        messages[:] = comp.restart
+        doc["compactions"] = doc.get("compactions", 0) + 1
+    _emit(
+        ctx,
+        {
+            "event": "compaction",
+            "agent": "helper",
+            "helper": call,
+            "pass_id": ctx.pass_id,
+            "utc": _utc(),
+            "restarted": comp.restart is not None,
+            "messages_moved": len(out),
+            "chars_moved": sum(_prompt_chars(m) for m in out),
+            "usage": _usage_of(
+                comp.reply if isinstance(comp.reply, dict) else {},
+                comp.usd,
+            ),
+        },
+    )
+
+
 async def _run_helper(
     ctx: DelegateContext,
     call: str,
@@ -1285,6 +1360,9 @@ async def _run_helper(
     ]
     ctx.transcripts[call] = (messages, tools)
     n = 0
+    last_prompt = (
+        None  # the last model call's prompt tokens (writer_pass.compaction_due)
+    )
     while doc["turns"] < ctx.step_guard:
         # asked to stop (the writer finished): no new model call starts; one in flight was allowed to finish
         reason = pr.stopping.get(call)
@@ -1294,6 +1372,14 @@ async def _run_helper(
         if ctx.deadline - time.monotonic() <= 0:
             doc["status"] = "pass wall clock reached"
             return
+        if ctx.compact:
+            from .writer_pass import compaction_due
+
+            if compaction_due(last_prompt, getattr(turn, "max_input_tokens", None)):
+                last_prompt = None
+                await _compact_helper(ctx, call, turn, messages, tools, doc)
+                if doc["turns"] >= ctx.step_guard:
+                    break
         # helpers' model calls run at the same time: each helper waits only for its own call
         pr.calls_in_flight.add(call)
         try:
@@ -1342,6 +1428,11 @@ async def _run_helper(
             )
             continue
         usage = _usage_of(msg, usd)
+        last_prompt = (
+            (msg.get("usage") or {}).get("prompt_tokens")
+            if isinstance(msg.get("usage"), dict)
+            else None
+        )
         finished = False
         for i, tc in enumerate(calls):
             tc = tc if isinstance(tc, dict) else {}

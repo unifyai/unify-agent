@@ -504,10 +504,11 @@ class Limits:
     finish_refusals: int | None = None
     #: repair rounds after the first refused `finish` (None: no set number; only the other limits end them)
     repair_rounds: int | None = None
-    #: the conversation size in characters that moves old tool results out (None: compaction off), and the
-    #: messages at the end that are never moved
-    compact_at_chars: int | None = None
-    compact_keep_last: int = 0
+    #: compaction (the agent loop's, writer_pass.compact_by_summary): the share of the model's context window, in
+    #: percent, a call's prompt reaches before the conversation is summarised (None: compaction off), and whether
+    #: the request messages are kept before the summary (UNIFY_COMPACTION_KEEP_PREFIX=on)
+    compact_threshold_percent: str | None = None
+    compact_keep_prefix: bool = False
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
     stage_bytes: int | None = None
@@ -552,11 +553,13 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
                 else ""
             ),
             "compaction": (
-                f" When the conversation's text grows past {limits.compact_at_chars} characters, the oldest tool "
-                "results (never the system message, the request, your own messages or the last "
-                f"{limits.compact_keep_last} messages) are moved to files under /outputs/compacted/, and each is "
-                'replaced by a note naming its file; `read(path="/outputs/compacted/<file>")` shows it again.'
-                if limits.compact_at_chars is not None
+                f" When a model call's prompt reaches {limits.compact_threshold_percent}% of the model's context "
+                "window, you are asked to summarise the work so far, and the conversation restarts from these "
+                "instructions"
+                + (", the pass's request" if limits.compact_keep_prefix else "")
+                + " and your summary; nothing under /memory, /inputs or /outputs changes, so `read` shows any of it "
+                "again."
+                if limits.compact_threshold_percent is not None
                 else ""
             ),
         },
@@ -910,6 +913,7 @@ def limits_now(
     from . import repair as _repair
     from . import views, writer_pass
     from .integration import fork_worker
+    from unify.common._async_tool import context_compression as _cc
 
     return Limits(
         view_bytes=views.VIEW_BYTES,
@@ -924,8 +928,10 @@ def limits_now(
         finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
         # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
         repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
-        compact_at_chars=writer_pass.COMPACT_AT_CHARS if compact else None,
-        compact_keep_last=writer_pass.COMPACT_KEEP_LAST,
+        compact_threshold_percent=(
+            _num(_cc.COMPACTION_THRESHOLD * 100) if compact else None
+        ),
+        compact_keep_prefix=bool(compact and _cc.keep_prefix_enabled()),
         stage_files=fork_worker.QUOTA_FILES,
         stage_bytes=fork_worker.QUOTA_BYTES,
     )

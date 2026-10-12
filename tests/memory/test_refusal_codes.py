@@ -146,10 +146,11 @@ def test_the_briefs_state_the_operational_limits_from_their_constants():
     stage = (
         f"at most {fork_worker.QUOTA_FILES} files and {library_prompts._num(mib)} MiB"
     )
+    from unify.common._async_tool.context_compression import COMPACTION_THRESHOLD
+
     compaction = (
-        f"grows past {writer_pass.COMPACT_AT_CHARS} characters",
-        f"the last {writer_pass.COMPACT_KEEP_LAST} messages",
-        'read(path="/outputs/compacted/<file>")',
+        f"reaches {library_prompts._num(COMPACTION_THRESHOLD * 100)}% of the model's context window",
+        "nothing under /memory, /inputs or /outputs changes",
     )
     finish_cap = f"up to {writer_pass.FINISH_G1_REFUSALS} times in a pass"
     full = library_prompts.write_brief_now(

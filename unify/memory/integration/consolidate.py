@@ -910,6 +910,13 @@ def _end_event(
                 "helpers": list(outcome.helpers),
                 "staging": outcome.staging,
                 **({"pool": outcome.pool} if outcome.pool is not None else {}),
+                # UNIFY_MEMORY_LIBRARY_COMPACT: the writer's compactions, the messages they took out and those
+                # messages' prompt characters (all 0 with it off); its calls' prompt and cache-read tokens
+                "compactions": int(getattr(outcome, "compactions", 0)),
+                "chars_moved": int(getattr(outcome, "chars_moved", 0)),
+                "messages_moved": int(getattr(outcome, "messages_moved", 0)),
+                "input_tokens": getattr(outcome, "input_tokens", None),
+                "cache_read_tokens": getattr(outcome, "cache_read_tokens", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}

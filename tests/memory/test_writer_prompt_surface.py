@@ -335,22 +335,6 @@ def test_capture_without_a_store_carries_each_text_once():
     assert one["header"]["brief_sha256"] == two["header"]["brief_sha256"]
 
 
-def test_compaction_hands_back_what_it_moved(tmp_path):
-    big = "x" * 60_000
-    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
-    for i in range(4):
-        msgs += [
-            {"role": "assistant", "content": "", "tool_calls": []},
-            {"role": "tool", "tool_call_id": f"c{i}", "content": big + str(i)},
-        ]
-    msgs += [{"role": "assistant", "content": "a"}] * writer_pass.COMPACT_KEEP_LAST
-    originals: dict[int, str] = {}
-    moved = writer_pass._compact(msgs, tmp_path, 90_000, originals)
-    assert moved and len(originals) == moved
-    for i, text in originals.items():
-        assert text.startswith("x") and msgs[i]["content"].startswith("[compacted: ")
-
-
 # --- use records the writer reads ----------------------------------------------------------------------------
 
 

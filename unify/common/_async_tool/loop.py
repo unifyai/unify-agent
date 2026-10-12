@@ -56,6 +56,7 @@ from . import cell_reply as _cell_reply
 from . import bound_request as _bound_request
 from .time_context import create_time_context, TimeContext
 from .context_compression import (
+    COMPACTION_THRESHOLD,
     compress_context,
     _COMPRESSION_SIGNAL,
     context_over_threshold,
@@ -2657,7 +2658,7 @@ async def async_tool_loop_inner(
                     ):
                         _over_threshold = context_over_threshold(
                             _usage.prompt_tokens,
-                            0.7,
+                            COMPACTION_THRESHOLD,
                             _max_input_tokens,
                         )
                         if runtime_state.keep_prefix_unmeasured:

@@ -1,118 +1,286 @@
-"""UNIFY_MEMORY_LIBRARY_COMPACT (off by default): when the writer's conversation passes
-a size, its oldest tool results move out to /outputs/compacted/ behind a pointer to re-open them; the writer's own
-messages (reasoning, decisions, calls), the request and the last messages are never touched; off, nothing changes.
+"""UNIFY_MEMORY_LIBRARY_COMPACT (off by default): the memory agents (the writer, the curator, each helper) compact
+their conversations as the agent loop does: the same trigger (a call's prompt at COMPACTION_THRESHOLD of the model's
+context window), the same summary request (the last request, unchanged, plus the agent loop's instruction) and the
+same restart (the system message and the summary; the request messages too with UNIFY_COMPACTION_KEEP_PREFIX=on).
+The summary call goes through the agent's own model turn (its route, its model) and is booked like any other call;
+its input is message content only; the transcript keeps what the compaction took out.
 """
 
-import json
+from __future__ import annotations
 
-from unify.memory import writer_pass
+import asyncio
+import copy
+import json
+import time
+from decimal import Decimal
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from unify.common._async_tool import cache_discipline, context_compression
+from unify.memory import helpers, transcripts, writer_pass
 from unify.memory.integration import switch
+from unify.memory.trigger import PassRequest
 from unify.memory.writer_pass import PassConfig
 from unify.settings import SETTINGS
-from tests.memory.test_writer_pass import _call
-from tests.memory.test_writer_library_tools import _pass
+from tests.memory.test_writer_library_tools import EPS
+from tests.memory.test_writer_pass import _call, _writer
+
+INSTRUCTION = cache_discipline.COMPRESSION_FORK_INSTRUCTION
+ROUTE_TOKEN = "sk-or-v1-" + "ab" * 32  # pragma: allowlist secret
+ENV_TOKEN = "sk-or-v1-" + "cd" * 32  # pragma: allowlist secret
+SUMMARY = "SUMMARY: read e1 cell 0"
 
 
-def _conv(n_tools, size):
+class Compacting:
+    """A model turn with a known context window: each call reports *prompt* prompt tokens (*cached* of them read
+    from the cache); a request ending with the agent loop's summary instruction is answered with a summary.
+    """
+
+    def __init__(self, turns, window=1_000, prompt=900, cached=600):
+        self.queue, self.prompt, self.cached = list(turns), prompt, cached
+        self.requests: list[list[dict]] = []
+        self.seen: list[dict] = []
+        if window is not None:
+            self.max_input_tokens = window
+        # the lane's configuration, as a real turn holds it: never part of what is sent
+        self.route = SimpleNamespace(
+            base_url="https://lane.invalid/v1",
+            token=ROUTE_TOKEN,
+        )
+
+    def _usage(self):
+        return {
+            "prompt_tokens": self.prompt,
+            "prompt_tokens_details": {"cached_tokens": self.cached},
+        }
+
+    async def __call__(self, messages, tools):
+        self.requests.append(copy.deepcopy(messages))
+        self.seen = messages
+        if messages and messages[-1].get("content") == INSTRUCTION:
+            return {
+                "role": "assistant",
+                "content": SUMMARY,
+                "usage": self._usage(),
+            }, "0.002"
+        msg = (
+            self.queue.pop(0)
+            if self.queue
+            else _call("fin", "finish", {"summary": "done"})
+        )
+        return {**msg, "usage": self._usage()}, "0.001"
+
+
+def _reads(n):
+    return [
+        _call(f"r{i}", "read_episode", {"episode": "e1", "part": "cell:0", "offset": 0})
+        for i in range(n)
+    ]
+
+
+def _run(tmp_path, model, **cfg):
+    (tmp_path / "rec").mkdir(parents=True, exist_ok=True)
+    _, _, writer = _writer(
+        tmp_path,
+        model,
+        library_mode=True,
+        max_calls=12,
+        pass_record_root=str(tmp_path / "rec"),
+        **cfg,
+    )
+    writer.load = EPS.__getitem__
+    out = asyncio.run(
+        writer.run(PassRequest("incremental", "svc", ["e1", "e2"], False), "p1"),
+    )
+    return out, writer
+
+
+def _events(tmp_path):
+    path = tmp_path / "rec" / "p1" / "tool-events.jsonl"
+    return (
+        [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+    )
+
+
+def _summaries(model):
+    return [r for r in model.requests if r and r[-1].get("content") == INSTRUCTION]
+
+
+def test_the_summary_call_goes_through_the_agents_own_turn_and_is_booked(tmp_path):
+    model = Compacting(_reads(3))
+    out, writer = _run(tmp_path, model, compact=True)
+    summaries = _summaries(model)
+    assert summaries
+    first = model.requests.index(summaries[0])
+    before, after = model.requests[first - 1], model.requests[first + 1]
+    # the summary request is the last request sent, unchanged, plus the instruction (the cached prefix holds)
+    assert summaries[0][: len(before)] == before
+    # the next call starts from the system message and the summary, as the agent loop restarts
+    assert after[0]["role"] == "system" and after[0] == before[0]
+    assert after[1]["content"] == context_compression.restart_text(
+        SUMMARY,
+        writer_pass.RESTART_POINTER,
+    )
+    # booked like any other call: counted, its charge in the pass's spend, its usage on a compaction row
+    normal = len(model.requests) - len(summaries)
+    assert out.calls == len(model.requests)
+    assert Decimal(out.usd) == Decimal("0.001") * normal + Decimal("0.002") * len(
+        summaries,
+    )
+    rows = [r for r in _events(tmp_path) if r.get("event") == "compaction"]
+    assert len(rows) == len(summaries) and rows[0]["usage"]["usd"] == "0.002"
+    assert rows[0]["usage"]["input"] == 900 and rows[0]["restarted"] is True
+    assert (
+        out.compactions == len(summaries)
+        and out.messages_moved > 0
+        and out.chars_moved > 0
+    )
+    assert out.input_tokens == 900 * len(model.requests)
+    assert out.cache_read_tokens == 600 * len(model.requests)
+    # the transcript keeps what the compaction took out, and marks the summary call
+    lines = [json.loads(x) for x in writer.transcript("p1")]
+    msgs = [x["message"] for x in lines if "message" in x]
+    assert any(m.get("tool_calls") and m["tool_calls"][0]["id"] == "r0" for m in msgs)
+    marked = [m for m in msgs if m.get("compaction_call")]
+    assert [m["content"] for m in marked[:2]] == [INSTRUCTION, SUMMARY]
+
+
+def test_no_compaction_with_the_switch_off_or_an_unknown_window(tmp_path):
+    for name, model, cfg in (
+        ("off", Compacting(_reads(3)), {}),
+        ("unknown", Compacting(_reads(3), window=None), {"compact": True}),
+    ):
+        out, _ = _run(tmp_path / name, model, **cfg)
+        assert not _summaries(model), name
+        assert out.compactions == 0 and out.messages_moved == 0
+
+
+def test_under_the_threshold_nothing_is_compacted(tmp_path):
+    below = int(1_000 * context_compression.COMPACTION_THRESHOLD) - 1
+    model = Compacting(_reads(3), window=1_000, prompt=below)
+    out, _ = _run(tmp_path, model, compact=True)
+    assert out.compactions == 0 and not _summaries(model)
+
+
+def test_no_credential_reaches_the_summary_input_or_the_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNIFY_MEMORY_WRITER_TOKEN", ENV_TOKEN)
+    model = Compacting(_reads(2))
+    out, writer = _run(tmp_path, model, compact=True)
+    assert out.compactions >= 1
+    sent = json.dumps(_summaries(model))
+    assert (
+        ROUTE_TOKEN not in sent and ENV_TOKEN not in sent and "lane.invalid" not in sent
+    )
+    # message content only: no transport field of any kind
+    transport = (
+        "api_key",
+        "api_base",
+        "base_url",
+        "headers",
+        "extra_headers",
+        "authorization",
+    )
+    assert not any(k in m for r in _summaries(model) for m in r for k in transport)
+    kept = "\n".join(writer.transcript("p1")) + json.dumps(_events(tmp_path))
+    assert ROUTE_TOKEN not in kept and ENV_TOKEN not in kept
+
+
+def test_keep_prefix_keeps_the_request_before_the_summary(monkeypatch):
+    async def turn(messages, tools):
+        return {"role": "assistant", "content": "the summary"}, "0.001"
+
     msgs = [
         {"role": "system", "content": "brief"},
-        {"role": "user", "content": "Pass p1: {}"},
+        {"role": "user", "content": "Pass p1"},
+        _call("a", "read", {"path": "/inputs"}),
+        {"role": "tool", "tool_call_id": "a", "content": "x" * 100},
     ]
-    for i in range(n_tools):
-        msgs.append(
-            {
-                "role": "assistant",
-                "content": f"thinking {i}",
-                "reasoning_content": f"why {i}",
-                "tool_calls": [
-                    {
-                        "id": f"c{i}",
-                        "type": "function",
-                        "function": {"name": "read", "arguments": "{}"},
-                    },
-                ],
-            },
-        )
-        msgs.append(
-            {
-                "role": "tool",
-                "tool_call_id": f"c{i}",
-                "content": f"result {i} " + "x" * size,
-            },
-        )
-    return msgs  # fmt: skip
-
-
-def test_a_small_conversation_is_never_changed(tmp_path):
-    msgs = _conv(3, 100)
-    before = json.dumps(msgs)
+    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_KEEP_PREFIX", "on")
+    comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
+    assert comp.restart[:2] == msgs[:2] and comp.restart[0] is msgs[0]
+    assert comp.restart[2]["content"] == context_compression.restart_text(
+        "the summary",
+        writer_pass.RESTART_POINTER,
+    )
+    monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_KEEP_PREFIX", "")
+    comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
     assert (
-        writer_pass._compact(msgs, tmp_path, at=10_000) == 0
-        and json.dumps(msgs) == before
+        comp.restart[0] is msgs[0]
+        and len(comp.restart) == 2
+        and comp.restart[1]["role"] == "user"
     )
 
 
-def test_old_results_move_out_behind_a_pointer_and_everything_else_stays(tmp_path):
-    msgs = _conv(10, 3_000)
-    keep = json.dumps(msgs[-writer_pass.COMPACT_KEEP_LAST :])
-    asst = [json.dumps(m) for m in msgs if m["role"] != "tool"]
-    original = msgs[3]["content"]
-    moved = writer_pass._compact(msgs, tmp_path, at=20_000)
-    assert moved > 0
-    assert len(json.dumps(msgs)) <= 10_000 or all(
-        m["content"].startswith("[compacted: ")
-        for m in msgs[: -writer_pass.COMPACT_KEEP_LAST]
-        if m["role"] == "tool"
-    )
-    assert [
-        json.dumps(m) for m in msgs if m["role"] != "tool"
-    ] == asst  # reasoning, decisions, calls kept
-    assert json.dumps(msgs[-writer_pass.COMPACT_KEEP_LAST :]) == keep
-    stub = msgs[3]["content"]
-    assert (
-        stub.startswith("[compacted: this result (")
-        and 'read(path="/outputs/compacted/' in stub
-    )
-    name = stub.split("/outputs/compacted/")[1].split('"')[0]
-    assert (
-        tmp_path / "compacted" / name
-    ).read_text() == original  # re-openable, byte for byte
-    assert (
-        writer_pass._compact(msgs, tmp_path, at=20_000) == 0
-        or len(json.dumps(msgs)) > 20_000
-    )  # no churn under the size
+def test_a_reply_without_a_summary_leaves_the_conversation():
+    async def turn(messages, tools):
+        return _call("x", "read", {"path": "/inputs"}), "0.001"
 
-
-def test_the_trigger_is_size_alone(tmp_path):
-    many_small = _conv(60, 10)  # many turns, small: never compacted
-    assert writer_pass._compact(many_small, tmp_path, at=50_000) == 0
-    few_big = _conv(
-        8,
-        30_000,
-    )  # few turns, big: compacted (the last messages are never touched)
-    assert writer_pass._compact(few_big, tmp_path, at=50_000) > 0
-
-
-def test_a_pass_compacts_only_with_the_switch_on(tmp_path, monkeypatch):
-    monkeypatch.setattr(writer_pass, "COMPACT_AT_CHARS", 20_000)
-    turns = [
-        _call(f"r{i}", "read_episode", {"episode": "e1", "part": "cell:0", "offset": 0})
-        for i in range(10)
+    msgs = [
+        {"role": "system", "content": "brief"},
+        {"role": "user", "content": "Pass p1"},
     ]
-    (tmp_path / "on").mkdir()
-    (tmp_path / "off").mkdir()
-    _, on = _pass(tmp_path / "on", turns, max_calls=14, compact=True)
-    _, off = _pass(tmp_path / "off", turns, max_calls=14)
-    stubbed = lambda model: sum(  # noqa: E731
-        1
-        for m in model.seen
-        if m.get("role") == "tool"
-        and str(m.get("content", "")).startswith("[compacted: ")
+    comp = asyncio.run(writer_pass.compact_by_summary(msgs, turn, []))
+    assert comp.restart is None and comp.usd == "0.001"
+
+
+def test_a_helper_compacts_on_its_own_turn_and_books_the_call(tmp_path):
+    calls = []
+
+    async def turn(messages, tools):
+        calls.append(copy.deepcopy(messages))
+        return {
+            "role": "assistant",
+            "content": "helper summary",
+            "usage": {"prompt_tokens": 50},
+        }, "0.003"
+
+    ctx = SimpleNamespace(
+        pass_record=SimpleNamespace(calls_in_flight=set()),
+        deadline=time.monotonic() + 30,
+        spend=SimpleNamespace(usd=Decimal("0"), unknown=0),
+        archived={},
+        events=tmp_path / "tool-events.jsonl",
+        pass_id="p1",
     )
-    assert stubbed(on) > 0 and stubbed(off) == 0
-    assert [m for m in on.seen if m.get("role") == "assistant"] == [
-        m for m in off.seen if m.get("role") == "assistant"
+    doc = {"turns": 3, "_usd": Decimal("0"), "unknown_cost_calls": 0}
+    msgs = [
+        {"role": "system", "content": "helper brief"},
+        {"role": "user", "content": "Task"},
+        _call("a", "overview", {"episode": "e1"}),
+        {"role": "tool", "tool_call_id": "a", "content": "y" * 500},
     ]
+    original = list(msgs)
+    asyncio.run(helpers._compact_helper(ctx, "call-0", turn, msgs, [], doc))
+    assert (
+        calls and calls[0][-1]["content"] == INSTRUCTION and calls[0][:-1] == original
+    )
+    assert (
+        doc["turns"] == 4
+        and doc["_usd"] == Decimal("0.003")
+        and ctx.spend.usd == Decimal("0.003")
+    )
+    assert (
+        msgs[0] is original[0]
+        and len(msgs) == 2
+        and "helper summary" in msgs[1]["content"]
+    )
+    assert ctx.archived["call-0"][: len(original)] == original
+    (row,) = [json.loads(x) for x in ctx.events.read_text().splitlines()]
+    assert (
+        row["event"] == "compaction"
+        and row["helper"] == "call-0"
+        and row["usage"]["usd"] == "0.003"
+    )
+    # the helper's stored transcript keeps all of it
+    m = transcripts.record_transcript(
+        tmp_path,
+        "p1",
+        "call-0",
+        [*ctx.archived["call-0"], *msgs],
+    )
+    assert m["lines"] == 1 + len(ctx.archived["call-0"]) + len(msgs)
 
 
 def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
@@ -124,59 +292,62 @@ def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
         and switch.parse_library_compact("on") == "on"
     )
     assert switch.PARSERS[switch.LIBRARY_COMPACT] is switch.parse_library_compact
-    try:
+    with pytest.raises(ValueError, match="UNIFY_MEMORY_LIBRARY_COMPACT"):
         switch.parse_library_compact("maybe")
-    except ValueError as exc:
-        assert "UNIFY_MEMORY_LIBRARY_COMPACT" in str(exc)
-    else:
-        raise AssertionError("an unknown value was accepted")
 
 
-# --- defence in depth ---------------------------------------------------------------------------------------------
+# --- a recorded pass's sizes, replayed through the trigger (a measurement, no model) -----------------------------
+
+ROWS = json.loads(
+    (Path(__file__).parent / "golden" / "writer_compaction_rereads.json").read_text(),
+)["rows"]
+#: the recorded pass's tool JSON in characters, and characters per token measured over recorded writer
+#: conversations: each call's prompt tokens are estimated from its characters
+TOOLS_CHARS, CHARS_PER_TOKEN = 10_147, 1.48
+KEEP_TURNS = 8
 
 
-def test_a_linked_compacted_folder_is_refused_and_nothing_is_written_through_it(
-    tmp_path,
-):
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    out = tmp_path / "outputs"
-    out.mkdir()
-    (out / "compacted").symlink_to(elsewhere)
-    msgs = _conv(10, 3_000)
-    before = json.dumps(msgs)
-    assert (
-        writer_pass._compact(msgs, out, at=20_000) == 0 and json.dumps(msgs) == before
-    )
-    assert list(elsewhere.iterdir()) == []
-    linked_out = tmp_path / "linked-outputs"
-    linked_out.symlink_to(out)
-    assert (
-        writer_pass._compact(msgs, linked_out, at=20_000) == 0
-        and json.dumps(msgs) == before
-    )
+def _replay(window: int) -> dict:
+    """The recorded pass (it compacted three times under the earlier file-moving policy, its writer re-reading each
+    time what had just been moved) replayed through :func:`.writer_pass.compaction_due`, each compaction leaving
+    the brief and a summary. Returns the compactions (by turn), the re-reads, within KEEP_TURNS turns, of results a
+    compaction took out, and the cache-hit rate (the share of each call's prompt its previous call sent).
+    """
+    convo: list[tuple[int, str | None]] = []  # chars, call key of a tool result
+    events, rereads, turn = [], [], 0
+    taken: dict[str, int] = {}
+    keys: dict[str, str] = {}
+    prev, hits, sent = 0, 0, 0
+    for row in ROWS:
+        role, n = row[0], row[1]
+        if role == "assistant":
+            prompt = int((sum(c for c, _ in convo) + TOOLS_CHARS) / CHARS_PER_TOKEN)
+            hits, sent, prev = hits + min(prev, prompt), sent + prompt, prompt
+            if writer_pass.compaction_due(prompt, window):
+                events.append(turn + 1)
+                taken.update({k: turn for _, k in convo if k})
+                convo = [convo[0], (2_000, None)]  # the brief and a summary
+                prev = int((convo[0][0] + TOOLS_CHARS) / CHARS_PER_TOKEN)
+            turn += 1
+            for cid, _name, key, _reread in row[2]:
+                keys[cid] = key
+                if key in taken and turn - taken[key] <= KEEP_TURNS:
+                    rereads.append((key, taken[key], turn))
+            convo.append((n, None))
+        elif role == "tool":
+            convo.append((n, keys.get(row[2])))
+        else:
+            convo.append((n, None))
+    return {
+        "events": events,
+        "rereads": rereads,
+        "cache_hit_rate": round(hits / sent, 4),
+    }
 
 
-def test_an_existing_file_or_link_is_never_overwritten_or_followed(tmp_path):
-    out = tmp_path / "outputs"
-    (out / "compacted").mkdir(parents=True)
-    victim = tmp_path / "victim.txt"
-    victim.write_text("keep me")
-    msgs = _conv(10, 3_000)
-    (out / "compacted" / "0003-c0.txt").symlink_to(
-        victim,
-    )  # where the first result would go
-    (out / "compacted" / "0005-c1.txt").write_text(
-        "already here",
-    )  # where the second would go
-    first, second = msgs[3]["content"], msgs[5]["content"]
-    moved = writer_pass._compact(msgs, out, at=20_000)
-    assert moved > 0
-    assert (
-        msgs[3]["content"] == first and msgs[5]["content"] == second
-    )  # both stay in the conversation
-    assert (
-        victim.read_text() == "keep me"
-        and (out / "compacted" / "0005-c1.txt").read_text() == "already here"
-    )
-    assert msgs[7]["content"].startswith("[compacted: ")  # the next ones still move
+def test_the_recorded_pass_compacts_at_most_once_and_its_cache_rate_is_recorded():
+    r = _replay(128_000)
+    print("replay", json.dumps(r))  # the measurement, in the test log
+    assert len(r["events"]) <= 1, r
+    assert r["rereads"] == [], r
+    assert 0.0 < r["cache_hit_rate"] <= 1.0

@@ -444,8 +444,8 @@ class ProductionSettings(BaseSettings):
     # ``on`` gives the library writer and the curator the ``write`` and ``edit`` file tools on /memory; ``off``
     # (default): neither tool exists.
     UNIFY_MEMORY_LIBRARY_EDIT_TOOLS: str = "off"
-    # Experimental, off by default: ``on`` moves old tool results out of the memory writer's
-    # conversation once it passes a size; ``off`` (default): never.
+    # Off by default: ``on`` compacts the memory agents' conversations as the agent loop compacts its own
+    # (same trigger, summary and restart; UNIFY_COMPACTION_KEEP_PREFIX applies); ``off`` (default): never.
     UNIFY_MEMORY_LIBRARY_COMPACT: str = "off"
     # The former reading rule: empty or ``optional`` (a no-op; finish never waits on reading). ``required`` is
     # refused at start-up.
