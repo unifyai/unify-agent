@@ -213,3 +213,23 @@ def test_similar_dispatch_returns_the_handlers_answer(tmp_path, monkeypatch):
         rows[1]["status"] == "refused"
         and rows[1]["refusal"]["form"] == "unknown_episode"
     )
+
+
+def test_a_refused_similar_call_leaves_messages_a_model_call_can_copy(
+    tmp_path,
+    monkeypatch,
+):
+    """A refused lookup used to leave its form-carrying text in the messages, which the model call's deep copy
+    could not rebuild (TypeError); tool messages now hold plain text."""
+    import copy
+
+    turns = [_call("u", "similar", {"cell": 0})]  # no episode: refused
+    _, model, writer = _pass(
+        tmp_path,
+        turns,
+        similar_index=str(tmp_path / "similar-index"),
+    )
+    assert model.outputs["u"].startswith("refused: ")
+    tool_messages = [m for m in writer.messages if m.get("role") == "tool"]
+    assert tool_messages and all(type(m["content"]) is str for m in tool_messages)
+    copy.deepcopy(writer.messages)

@@ -1153,7 +1153,10 @@ async def _run_helper(
                 record_box_opens(ctx, row, st.pop("box_audit", None) or None)
             _emit(ctx, row)
             n += 1
-            messages.append({"role": "tool", "tool_call_id": cid, "content": content})
+            # plain text: a reply may be a str subclass carrying its refusal form
+            messages.append(
+                {"role": "tool", "tool_call_id": cid, "content": str(content)},
+            )
         if finished:
             doc["status"] = "ok"
             return

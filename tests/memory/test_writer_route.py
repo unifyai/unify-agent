@@ -1838,3 +1838,23 @@ def test_importing_settings_reads_the_descriptor_and_closes_it(tmp_path):
     held = out.pop("held") == hashlib.sha256(token.encode()).hexdigest()
     assert held
     assert out == {"open": False, "refused": False, "in_env": False, "registered": True}
+
+
+def test_a_local_call_failure_names_where_it_was_raised_and_a_provider_answer_does_not():
+    from unify.memory.writer_pass import _call_failure
+
+    def broken():
+        raise TypeError("cannot copy the messages")
+
+    try:
+        broken()
+    except TypeError as exc:
+        name, category, detail = _call_failure(exc)
+    assert (name, category) == ("TypeError", "other")
+    assert "in broken" in detail and detail.endswith(": cannot copy the messages")
+
+    class _Answer(Exception):
+        status_code = 401
+
+    name, category, detail = _call_failure(_Answer("echo of the request"))
+    assert category == "http_401" and detail == ""

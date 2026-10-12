@@ -4034,7 +4034,12 @@ class WriterPass:
                     if reply is not None:
                         content = reply.text
                     messages.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "content": content},
+                        # plain text: a reply may be a str subclass carrying its refusal form
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": str(content),
+                        },
                     )
                     self._event(pass_id, name, fn.get("arguments"), reply, turn_usage)
                     turn_usage = None
@@ -4199,8 +4204,12 @@ class WriterCallError(RuntimeError):
 _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 
-def _call_failure(exc: BaseException) -> tuple[str, str]:
-    """``(class name, category)`` of a failed call, from its type and status code only, never its text."""
+def _call_failure(exc: BaseException) -> tuple[str, str, str]:
+    """``(class name, category, detail)`` of a failed call. The category comes from its type and status code only.
+    *detail* is empty for an answer from the provider or the route (an HTTP status, a timeout, a connection or
+    authentication failure), whose text may echo the request; for any other failure, an error raised by code in
+    this process, it names where the error was raised and its message, redacted and clipped.
+    """
     name = type(exc).__name__
     name = name if _CLASS_NAME.fullmatch(name) else "Exception"
     status = getattr(exc, "status_code", None)
@@ -4221,7 +4230,16 @@ def _call_failure(exc: BaseException) -> tuple[str, str]:
         category = "auth"
     else:
         category = "other"
-    return name, category
+    detail = ""
+    if category == "other":
+        tb, where = exc.__traceback__, ""
+        while tb is not None:
+            code = tb.tb_frame.f_code
+            where = f"{Path(code.co_filename).name}:{tb.tb_lineno} in {code.co_name}"
+            tb = tb.tb_next
+        message = redact_error(str(exc)).replace("\n", " ")[:200]
+        detail = (f" at {where}" if where else "") + (f": {message}" if message else "")
+    return name, category, detail
 
 
 def _check_route_in_effect(route: WriterRoute) -> None:
@@ -4467,7 +4485,7 @@ def unillm_turn(
             if event.origin == origin:
                 costs.append(event.provider_cost)
 
-        failure: tuple[str, str] | None = None
+        failure: tuple[str, str, str] | None = None
         timed_out = False
         async with unillm.allm_event_hook_scope(hook):
             scope = _WRITER_GATEWAY.set(route) if route is not None else None
@@ -4484,19 +4502,21 @@ def unillm_turn(
             except Exception as exc:
                 if route is None or isinstance(exc, WriterRouteError):
                     raise
-                failure = _call_failure(exc)  # class and category only, never the text
+                failure = _call_failure(
+                    exc,
+                )  # class and category; a local failure also says where
                 timed_out = isinstance(exc, TimeoutError)
             finally:
                 if scope is not None:
                     _WRITER_GATEWAY.reset(scope)
         if failure is not None:
             # raised outside the handler, so the original exception is not chained to it
-            name, category = failure
+            name, category, detail = failure
             if (
                 timed_out
             ):  # still a timeout to the pass, which treats it as its deadline
                 raise TimeoutError("a writer call timed out")
-            raise WriterCallError(f"writer call failed: {name} ({category})")
+            raise WriterCallError(f"writer call failed: {name} ({category}){detail}")
         if any(misrouted):
             raise WriterRouteError(
                 "a writer call did not take the writer's declared route",
