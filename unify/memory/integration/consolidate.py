@@ -922,6 +922,9 @@ def _end_event(
                 # (None: unknown, so no compaction)
                 "max_prompt_tokens": getattr(outcome, "max_prompt_tokens", None),
                 "context_window": getattr(outcome, "context_window", None),
+                # an uncapped pass's refusals the gate repeated for the same reason in consecutive rounds, so no
+                # further repair round was offered for them, and whether that ended repair (None: none)
+                "repair_stuck": getattr(outcome, "repair_stuck", None),
             }
             if outcome is not None and outcome.coverage is not None
             else {}
