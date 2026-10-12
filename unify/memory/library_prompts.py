@@ -296,9 +296,8 @@ _WHAT_TO_WRITE = (
     "or remove it as evidence arrives, so storing a rule that worked is not a final commitment. A function's "
     "linked note says when to use it, its preconditions and its known failures.\n"
     "- Tests go in `memory/<package>/tests/test_<module>.py`: plain pytest, importing only the library and the "
-    "standard library, with fixtures under `memory/<package>/tests/data/`. "
-    + _RUN_TESTS
-    + "\n"
+    "standard library, with fixtures under `memory/<package>/tests/data/`. `tests/` takes no `__init__.py`: "
+    "pytest imports each test file by its path. " + _RUN_TESTS + "\n"
     "- The manifest is /memory/.pass/manifest.json (never committed):\n"
     '  {"items": [{"item": "<id>", "kind": "function" or "note", "input": "<form>", '
     '"source_episodes": [...], "tests": [...], "covers": [...]}], "support": [], "tests_changed": {}, '

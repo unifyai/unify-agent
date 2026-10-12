@@ -383,3 +383,25 @@ def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(
     }
     res = gate(role="curate").check(mem.head(), _candidate(mem, {T: None}), stated)
     assert not any(lost in r for r in res.reasons), res.reasons
+
+
+def test_a_tests_init_file_is_refused_with_the_rule_it_breaks(library_gate_world):
+    from tests.memory.test_gate import _candidate
+
+    mem, ev, blobs, gate = library_gate_world
+    files, fixtures = _files_and_fixtures(blobs)
+    files["memory/acct/tests/__init__.py"] = ""
+    res = gate().merge(
+        mem.head(),
+        _candidate(mem, files),
+        _man(fixtures),
+        "p1",
+        "write",
+        None,
+        "0.01",
+    )
+    assert not res.passed
+    assert (
+        "G1: file memory/acct/tests/__init__.py: tests/ takes no __init__.py: the gate's pytest imports each test "
+        "file by its path"
+    ) in res.reasons, res.reasons

@@ -329,3 +329,38 @@ def test_discovery_never_reads_through_a_link_or_outside_the_tree(tmp_path):
             "memory.web.fetch",
         }
     )
+
+
+def test_every_unplaced_path_says_why():
+    from unify.memory.layout import classify, misplaced
+
+    for path in (
+        "memory/text/tests/__init__.py",
+        "memory/text/notes.txt",
+        "memory/Text/x.py",
+        "memory/find/x.py",
+        "memory/text/tests.py",
+        "memory/tests/x.py",
+        "memory/x.py",
+        "memory/text/sub/x.py",
+        "memory/text/tests/data",
+        "memory/text/tests/deep/x.py",
+        "notes/dates.md",
+        "README.md",
+        "memory/__init__.py",
+        "INDEX.md",
+        "memory/a/../b.py",
+    ):
+        assert classify(path) in (None, "generated"), path
+        assert misplaced(path), path
+    assert "no __init__.py" in misplaced("memory/text/tests/__init__.py")
+    assert "generates" in misplaced("INDEX.md")
+    for placed in (
+        "memory/text/dates.py",
+        "memory/text/__init__.py",
+        "memory/text/tests/test_dates.py",
+        "memory/text/tests/helpers.py",
+        "memory/text/tests/data/a.json",
+        "notes/text/dates.md",
+    ):
+        assert misplaced(placed) is None, placed

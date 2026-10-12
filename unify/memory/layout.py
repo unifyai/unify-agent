@@ -96,6 +96,44 @@ def classify(path: str) -> str | None:
     return None
 
 
+def misplaced(path: str) -> str | None:
+    """Why *path* has no place in the library layout (a sentence the writer can act on), or None when it has one.
+    The same rules as :func:`classify`, worded per case."""
+    kind = classify(path)
+    if kind not in (None, "generated"):
+        return None
+    if kind == "generated":
+        return "the harness generates it in every copy of the library; it is never committed"
+    if (
+        not path
+        or "\\" in path
+        or "\x00" in path
+        or any(c in ("", ".", "..") for c in path.split("/"))
+    ):
+        return "a path component is empty, '.' or '..', or holds a backslash or NUL"
+    parts = path.split("/")
+    if parts[0] == NOTES_ROOT:
+        return "a note is notes/<topic>/<slug>.md, with lower-case topic and slug"
+    if parts[0] != PACKAGE_ROOT:
+        return "the library holds only memory/ and notes/"
+    if len(parts) < 3:
+        return "a module goes in a package: memory/<package>/<module>.py"
+    if not _PACKAGE.match(parts[1]):
+        return "a package name is a lower-case identifier"
+    if parts[1] in RESERVED_PACKAGES:
+        return f"the package name {parts[1]!r} is reserved (memory.{parts[1]} is a name the library already has)"
+    if len(parts) == 3:
+        return "a module is memory/<package>/<module>.py, a lower-case identifier other than tests"
+    if parts[2] != "tests":
+        return "packages have no subpackages; tests go in memory/<package>/tests/"
+    rest = parts[3:]
+    if rest == ["__init__.py"]:
+        return "tests/ takes no __init__.py: the gate's pytest imports each test file by its path"
+    if rest[0] == "data":
+        return "fixtures are files under memory/<package>/tests/data/"
+    return "tests/ holds test_<module>.py files and helper .py files, with fixtures under tests/data/"
+
+
 def exported(path: str) -> bool:
     """Whether the actor's read-only copy holds committed *path*: library modules, package
     docstrings and notes only. Never a tests directory or a fixture, never a generated path (each
