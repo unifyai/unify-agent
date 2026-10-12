@@ -173,9 +173,10 @@ def _summary(record: Any) -> str:
 
 
 def show(item: Any) -> str:
-    """One item in full: a function's source with its docstring, or a note's text. Then its links both ways,
-    its status with, for a function, its effect (and why, for an item left out of the index or given a
-    reason), its verification and use records, and the
+    """One item in full: a function's signature, with an example call quoted from its tests (``Example (from
+    <test id>): <call>``) when one is recorded and still in its test file, then its source with its docstring;
+    or a note's text. Then its links both ways, its status with, for a function, its effect (and why, for an
+    item left out of the index or given a reason), its verification and use records, and the
     subjects of the library commits that changed it, newest first."""
     wanted = _item_id(item)
     data = _json(ITEMS_FILE)
@@ -194,6 +195,9 @@ def show(item: Any) -> str:
             + (f", effect: {effect}" if effect else "")
             + "]",
         ]
+        example = row.get("example")
+        if isinstance(example, dict) and example.get("call"):
+            out.append(f"Example (from {example.get('test')}): {example['call']}")
     else:
         out = [
             f"{wanted}  [{status}]" + (f"  {row['title']}" if row.get("title") else ""),
