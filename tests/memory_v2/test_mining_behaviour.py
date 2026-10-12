@@ -271,3 +271,24 @@ def test_a_cell_that_reads_its_working_directory_replays_in_the_recorded_tree(
         ["a", "1"],
         ["b", "2"],
     ]
+
+
+def test_a_box_failure_is_not_returned_for_caching_and_another_version_is_replayed(
+    tmp_path,
+    monkeypatch,
+):
+    calls = []
+
+    def fake(job, timeout, binds=()):
+        calls.append(job["mode"])
+        return {"box_error": "box timeout"}
+
+    monkeypatch.setattr(b, "in_box", fake)
+    eps = [("e0", "r0", [Cell(0, GRID_A, "", None), Cell(1, FILL_A, "", None)])]
+    old = {"e0": {"snaps": {}, "causes": {}, "fidelity": [0, 0]}}  # no version: replayed again
+    doc, fresh = b.run_behaviour(eps, tmp_path / "out", jobs=1, cached=old)
+    assert calls == ["replay"] and fresh == {}
+    calls.clear()
+    current = {"e0": {"snaps": {}, "causes": {}, "fidelity": [0, 0], "obs": b.OBS_VERSION}}
+    b.run_behaviour(eps, tmp_path / "out", jobs=1, cached=current)
+    assert calls == []

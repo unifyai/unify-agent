@@ -1,15 +1,19 @@
-"""Memory v2.1 r5 S2 (§4): verify a function by replaying the recorded instances it replaces (ASI, CRAFT).
+"""Verify a function by replaying the recorded instances it replaces (as in ASI and CRAFT).
 
 A function item may say which pieces of the actor's recorded code it replaces: ``replaces: [{"episode", "cell",
 "lines": [a, b], "call": "<statement>"}]`` in its manifest entry, where ``call`` is the statement that does the same
-by calling the function (``comps = components(g, 8)``). For each instance, in a bubblewrap box with no network and
-the writer's tree read-only at /library on the import path:
+by calling the function (``comps = components(g, 8)``). For each instance, in a bubblewrap box with no network, the
+confined runner's seccomp filter and the writer's tree read-only at /library on the import path, three runs each
+start in their own pristine copy of the episode's recorded working tree (an empty one when it has none):
 
-1. the episode's successful cells up to and including that cell are replayed twice; if the two runs end with
-   different values, the instance is ``not replayable: nondeterministic``;
-2. they are replayed once more with lines ``a..b`` of the last cell replaced by ``call`` (the function imported);
-3. the instance is **verified** when every value bound before line ``a`` and every name ``call`` assigns ends the
-   same as in the original run. Otherwise it ``differs``.
+1. the episode's successful cells up to and including that cell, twice; if the two runs end with different values
+   or file changes, the instance is ``not replayable: nondeterministic``;
+2. the same with lines ``a..b`` of the last cell replaced by ``call`` (the function imported);
+3. the instance is **verified** when the rewritten run's observation equals the original's: its live-out values
+   (every name bound before line ``a``, every name ``call`` assigns, and every name both runs end with, scalars and
+   empty containers included), its working tree's file deltas, and its stdout when printing is the replaced lines'
+   only effect. Otherwise it ``differs``. Alias groups, deleted names and values that cannot be encoded are
+   recorded as unknown, not compared.
 
 The equivalence needs no reward signal: the recording is the oracle. A verified instance becomes a case of the
 item's harness-written test (:func:`test_source`): the call's inputs as recorded at line ``a``, and its expected
@@ -84,8 +88,20 @@ def _job(ep, inst: dict, fn_import: str, fn: str) -> dict:
     }
 
 
+def _other_effect(first: dict, expect: dict) -> bool:
+    """Whether the replaced lines had an effect besides printing: a value the call's case expects, or a file delta."""
+    return bool(expect) or bool(first.get("files"))
+
+
 def verdict(job: dict, got: dict) -> dict:
-    """The instance's verdict from the three runs, and its test case when verified."""
+    """The instance's verdict from the three runs (:data:`.mining_behaviour.OBS_VERSION`), and its test case when
+    verified.
+
+    Compared: the live-out values (each name bound before the replaced lines, each name the call assigns, and each
+    name both runs end with), the working tree's file deltas, and stdout. stdout decides only when the replaced lines
+    have no other effect; otherwise a stdout difference is reported as ``stdout_differs``. Alias groups, deleted
+    names and values that cannot be encoded are recorded under ``unknown`` and not compared.
+    """
     first, second, third = (
         got.get("first", {}),
         got.get("second", {}),
@@ -94,29 +110,66 @@ def verdict(job: dict, got: dict) -> dict:
     for run, label in ((first, "original"), (third, "rewritten")):
         if "error" in run:
             return {"verdict": f"not replayable: {label} {run['error']}"}
-    if first.get("after") != second.get("after"):
+    if (
+        first.get("obs") != _mb.OBS_VERSION
+        or third.get("obs") != _mb.OBS_VERSION
+    ):
+        return {"verdict": "not replayable: observation version mismatch"}
+    if first.get("after") != second.get("after") or first.get("files") != second.get(
+        "files",
+    ):
         return {"verdict": "not replayable: nondeterministic"}
     if "bound" not in first:
         return {"verdict": "not replayable: line not executed"}
-    before = [n for n in first["bound"] if n in first["after"]]
-    must = sorted(set(before) | set(job["targets"]))
     a1, a3 = first["after"], third.get("after", {})
+    before = [n for n in first["bound"] if n in a1]
+    must = sorted(set(before) | set(job["targets"]) | (set(a1) & set(a3)))
+    unknown = {
+        "original": first.get("unknown") or {},
+        "rewritten": third.get("unknown") or {},
+    }
     if any(n not in a1 or a3.get(n) != a1[n] for n in must):
-        return {"verdict": "differs"}
+        return {"verdict": "differs", "differs_in": "values", "unknown": unknown}
+    if first.get("files") != third.get("files"):
+        return {"verdict": "differs", "differs_in": "files", "unknown": unknown}
     expect = {n: a1[n] for n in job["targets"]}
     expect |= {
         n: a1[n]
         for n in job["names"]
         if n in a1 and first.get("inputs", {}).get(n) != a1[n]
     }
+    tags: dict = {}
+    if _other_effect(first, expect):
+        if first.get("stdout") != third.get("stdout"):
+            tags["stdout_differs"] = True
+    else:
+        if first.get("stdout") != second.get("stdout"):
+            return {"verdict": "not replayable: nondeterministic"}
+        if not any(n for n, _sha in first.get("stdout") or []):
+            return {"verdict": "not replayable: no observed effect", "unknown": unknown}
+        if first.get("stdout") != third.get("stdout"):
+            return {"verdict": "differs", "differs_in": "stdout", "unknown": unknown}
     return {
         "verdict": "verified",
+        **tags,
+        "files": first.get("files") or [],
+        "unknown": unknown,
         "case": {
             "inputs": third.get("inputs", {}),
             "call": job["rewritten_call"],
             "expect": expect,
         },
     }
+
+
+def _world(src: Path | None, dest: Path) -> Path:
+    """A pristine copy of the episode's recorded working tree (an empty one when it has none) at *dest*."""
+    shutil.rmtree(dest, ignore_errors=True)
+    if src is not None:
+        shutil.copytree(src, dest, symlinks=True)
+    else:
+        dest.mkdir(parents=True)
+    return dest
 
 
 def verify(
@@ -128,7 +181,9 @@ def verify(
     trees: dict[str, Path] | None = None,
     scratch: Path,
 ) -> list[dict]:
-    """Each instance's verdict (``verified`` with its case, ``differs`` or ``not replayable: <cause>``)."""
+    """Each instance's verdict (``verified`` with its case, ``differs`` or ``not replayable: <cause>``), each
+    stamped with the observation version (``obs``). A box failure is ``not replayable`` and marked ``transient``:
+    a caller never keeps it as the instance's result."""
     m = _ITEM.match(item)
     if not m:
         return [{"verdict": "refused: not a function item id"}]
@@ -140,6 +195,7 @@ def verify(
             if isinstance(inst, dict)
             else {}
         )
+        at["obs"] = _mb.OBS_VERSION
         try:
             ep = load(str(inst["episode"]))
             job = _job(ep, inst, fn_import, m["fn"])
@@ -151,29 +207,34 @@ def verify(
             )
             continue
         job["rewritten_call"] = str(inst["call"]).strip()
-        binds = [
-            (str(tree), "/library", False),
-        ]  # RUNTIME F-1: /lib is a link on merged-/usr hosts
-        run = None
-        if trees and str(inst["episode"]) in trees:
-            run = scratch / f"w-{inst['episode']}"
-            shutil.rmtree(run, ignore_errors=True)
-            shutil.copytree(trees[str(inst["episode"])], run, symlinks=True)
-            binds.append((str(run), "/w", True))
-            job["cwd"] = "/w"
+        # /lib is a link on merged-/usr hosts, so the library goes at /library
+        binds = [(str(tree), "/library", False)]
+        # three runs (original, original again, rewritten), each in its own pristine copy of the working tree
+        src = (trees or {}).get(str(inst["episode"]))
+        worlds = [
+            _world(src, scratch / f"w-{len(out)}-{k}") for k in (1, 2, 3)
+        ]
+        binds += [(str(w), f"/w{k}", True) for k, w in enumerate(worlds, 1)]
+        job["cwds"] = ["/w1", "/w2", "/w3"]
         try:
             got = _mb.in_box(job, 900, binds)
         finally:
-            if run is not None:
-                shutil.rmtree(run, ignore_errors=True)
+            for w in worlds:
+                shutil.rmtree(w, ignore_errors=True)
         if "box_error" in got:
-            out.append({**at, "verdict": f"not replayable: {got['box_error'][:120]}"})
+            out.append(
+                {
+                    **at,
+                    "verdict": f"not replayable: {got['box_error'][:120]}",
+                    "transient": True,
+                },
+            )
             continue
         out.append({**at, **verdict(job, got)})
     return out
 
 
-_TEST = '''"""Harness-written (memory v2.1 S2): {item} reproduces the recorded instances it replaces."""
+_TEST = '''"""Harness-written: {item} reproduces the recorded instances it replaces."""
 
 import json
 

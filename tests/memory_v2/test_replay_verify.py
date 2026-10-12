@@ -1,4 +1,5 @@
-"""Memory v2.1 r5 S2: a function is verified by replaying the recorded instances it replaces."""
+"""A function is verified by replaying the recorded instances it replaces: values, stdout and file deltas, each run
+in its own pristine working tree."""
 
 import shutil
 from pathlib import Path
@@ -159,3 +160,154 @@ def test_a_bad_entry_is_a_verdict_not_a_crash(tmp_path):
         scratch=tmp_path,
     )
     assert got[0]["verdict"].startswith("refused: ")
+
+
+def _one(tmp_path, cells, lines, call, source, trees=None):
+    ep = _episode("e9", [Cell(i, c, "") for i, c in enumerate(cells)])
+    inst = [{"episode": "e9", "cell": len(cells) - 1, "lines": lines, "call": call}]
+    lib = tmp_path / f"lib-{abs(hash(source)) % 10**8}"
+    pkg = lib / "memory" / "grids"
+    pkg.mkdir(parents=True)
+    (lib / "memory" / "__init__.py").write_text("")
+    (pkg / "__init__.py").write_text("")
+    (pkg / "regions.py").write_text(source)
+    got = rv.verify(
+        {"e9": ep}.__getitem__,
+        "memory.grids.regions:fn",
+        inst,
+        lib,
+        trees=trees,
+        scratch=tmp_path / "scratch",
+    )
+    assert len(got) == 1 and got[0]["obs"] == rv._mb.OBS_VERSION, got
+    return got[0]
+
+
+SCALAR = "vals = [1, 2, 3]\nn = 10\nfor v in vals:\n    n += v\n"
+
+
+@needs_bwrap
+def test_a_scalar_result_is_compared(tmp_path):
+    good = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v)\n")
+    bad = _one(tmp_path, [SCALAR], [3, 4], "n = fn(vals, n)", "def fn(v, n):\n    return n + sum(v) + 1\n")
+    assert good["verdict"] == "verified" and good["case"]["expect"] == {"n": 16}, good
+    assert bad["verdict"] == "differs" and bad["differs_in"] == "values", bad
+
+
+DRAIN = "todo = [1, 2]\ndone = []\nwhile todo:\n    done.append(todo.pop())\n"
+
+
+@needs_bwrap
+def test_a_container_left_empty_is_compared(tmp_path):
+    good = _one(tmp_path, [DRAIN], [3, 4], "fn(todo, done)", "def fn(t, d):\n    while t:\n        d.append(t.pop())\n")
+    bad = _one(tmp_path, [DRAIN], [3, 4], "fn(todo, done)", "def fn(t, d):\n    d.extend(reversed(t))\n")
+    assert good["verdict"] == "verified" and good["case"]["expect"]["todo"] == [], good
+    assert bad["verdict"] == "differs", bad
+
+
+PRINT = "rows = [3, 1]\nfor r in sorted(rows):\n    print(r)\n"
+
+
+@needs_bwrap
+def test_stdout_decides_when_printing_is_the_only_effect(tmp_path):
+    good = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in sorted(rows):\n        print(r)\n")
+    bad = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    for r in rows:\n        print(r)\n")
+    silent = _one(tmp_path, [PRINT], [2, 3], "fn(rows)", "def fn(rows):\n    pass\n")
+    assert good["verdict"] == "verified", good
+    assert bad["verdict"] == "differs" and bad["differs_in"] == "stdout", bad
+    assert silent["verdict"] == "differs" and silent["differs_in"] == "stdout", silent
+
+
+@needs_bwrap
+def test_a_stdout_difference_beside_another_effect_is_a_tag(tmp_path):
+    cell = "vals = [1, 2]\ntotal = sum(vals)\nprint('debug', total)\n"
+    got = _one(tmp_path, [cell], [2, 3], "total = fn(vals)", "def fn(v):\n    return sum(v)\n")
+    assert got["verdict"] == "verified" and got.get("stdout_differs") is True, got
+
+
+SAVE = "text = 'hello'\nwith open('out.txt', 'w') as f:\n    f.write(text)\n"
+
+
+@needs_bwrap
+def test_file_deltas_are_compared(tmp_path):
+    good = _one(tmp_path, [SAVE], [2, 3], "fn(text)", "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t)\n")
+    bad = _one(tmp_path, [SAVE], [2, 3], "fn(text)", "def fn(t):\n    with open('out.txt', 'w') as f:\n        f.write(t + '!')\n")
+    assert good["verdict"] == "verified" and [p for p, _c, _s in good["files"]] == ["out.txt"], good
+    assert good["files"][0][1] == "created"
+    assert bad["verdict"] == "differs" and bad["differs_in"] == "files", bad
+
+
+@needs_bwrap
+def test_each_run_starts_in_its_own_pristine_tree_and_tmp(tmp_path):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "log.txt").write_text("a")
+    cell = (
+        "import os\n"
+        "first = not os.path.exists('/tmp/mark')\n"
+        "open('/tmp/mark', 'w').close()\n"
+        "with open('log.txt', 'a') as f:\n"
+        "    f.write('x')\n"
+        "n = len(open('log.txt').read()) + (0 if first else 100)\n"
+    )
+    got = _one(
+        tmp_path,
+        [cell],
+        [4, 5],
+        "fn('log.txt')",
+        "def fn(p):\n    with open(p, 'a') as f:\n        f.write('x')\n",
+        trees={"e9": tree},
+    )
+    # a shared tree or /tmp would make the second run differ (nondeterministic) and the third see two writes
+    assert got["verdict"] == "verified", got
+    assert (tree / "log.txt").read_text() == "a"  # the recorded tree itself is never written
+
+
+@needs_bwrap
+def test_aliases_are_recorded_as_unknown_and_not_compared(tmp_path):
+    cell = "a = [1, 2]\nb = a\n"
+    got = _one(tmp_path, [cell], [2, 2], "b = fn(a)", "def fn(x):\n    return list(x)\n")
+    assert got["verdict"] == "verified", got
+    assert got["unknown"]["original"]["aliases"] == [["a", "b"]]
+    assert got["unknown"]["rewritten"]["aliases"] == []
+
+
+def test_a_box_failure_is_transient(tmp_path, monkeypatch):
+    monkeypatch.setattr(rv._mb, "in_box", lambda *a, **k: {"box_error": "box timeout"})
+    got = rv.verify(
+        {"e1": EP}.__getitem__,
+        "memory.grids.regions:components",
+        INST,
+        _lib(tmp_path, GOOD),
+        scratch=tmp_path / "scratch",
+    )
+    assert got[0]["verdict"] == "not replayable: box timeout" and got[0]["transient"] is True
+
+
+def test_the_three_runs_get_separate_writable_trees(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(job, timeout, binds):
+        seen["binds"], seen["cwds"] = binds, job["cwds"]
+        return {"box_error": "stop"}
+
+    monkeypatch.setattr(rv._mb, "in_box", fake)
+    rv.verify(
+        {"e1": EP}.__getitem__,
+        "memory.grids.regions:components",
+        INST,
+        _lib(tmp_path, GOOD),
+        scratch=tmp_path / "scratch",
+    )
+    worlds = [(src, dst) for src, dst, rw in seen["binds"] if rw]
+    assert [d for _s, d in worlds] == ["/w1", "/w2", "/w3"] == seen["cwds"]
+    assert len({s for s, _d in worlds}) == 3
+    assert not any(Path(s).exists() for s, _d in worlds)  # removed after the box
+
+
+def test_a_result_of_another_observation_version_is_not_compared():
+    job = {"targets": ["n"], "names": [], "rewritten_call": "n = f()"}
+    run = {"after": {"n": 1}, "bound": [], "stdout": [], "files": [], "obs": 1}
+    assert rv.verdict(job, {"first": run, "second": run, "third": run})["verdict"] == (
+        "not replayable: observation version mismatch"
+    )
