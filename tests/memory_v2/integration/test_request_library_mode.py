@@ -13,7 +13,7 @@ from unify.memory_v2.integration.adapters.worktree import BLOB_CAP
 from unify.memory_v2.integration.paths import Paths
 from unify.memory_v2.redact import Redactor
 from unify.settings import SETTINGS
-from tests.memory_v2 import p1_t7_inputs as inp
+from tests.memory_v2 import recorder_inputs as inp
 from tests.memory_v2.integration.test_request import (
     _begin,
     _finish,
