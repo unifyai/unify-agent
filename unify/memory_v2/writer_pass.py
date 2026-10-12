@@ -1150,6 +1150,10 @@ class PassOutcome:
     pool: dict | None = None
     # UNIFY_MEMORY_LIBRARY_COVERAGE=optional: :func:`_coverage_measures` (measures only); None otherwise
     coverage_measures: dict | None = None
+    # library layout: counts of staged candidates at each hand-off, fork reply to adoption (:func:`.chain.counts`)
+    chain: dict | None = None
+    # library layout: the gate's {"item", "adopts"} row per landed item
+    provenance: list[dict] = field(default_factory=list)
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -2098,12 +2102,19 @@ class WriterPass:
             None  # the pass's /inputs on the host, once staged
         )
         self._staging_counts: dict | None = None
-        # the candidate pool: loaded at staging, fed and saved at the pass's end (pool.py)
+        # the candidate pool (pool.py): loaded and fed with this pass's staging at the pass's start, saved again at
+        # its end with the writer's decisions
         self._pool = None
         self._pool_open: int | None = None
         self._pool_error: str | None = None
-        self._pool_staging: list = []
+        self._pool_at_start: dict | None = None
         self._pool_s0: tuple = ([], {})
+        # this pass's staging by episode (empty with staging off), and the staging root it was read from
+        self._staged_views: dict = {}
+        self._staging_read_root: Path | None = None
+        # the gate's {"item", "adopts"} rows for the items that landed (empty until the merge)
+        self._provenance: list[dict] = []
+        self._chain_rows: list[dict] = []  # the batch map's rows once staging is listed in it
         self._deferred: dict[str, tuple[str, str | None]] = (
             {}
         )  # episode -> (reason, the entry it extends)
@@ -2424,9 +2435,10 @@ class WriterPass:
 
     def _pool_update(self, req: PassRequest, pass_id: str, out: PassOutcome) -> dict:
         """The candidate pool after this pass: the writer's status changes (merged / superseded when the gate landed
-        them, retired when finish was accepted), then, on a WRITE pass, its staging, S0 clusters, deferrals and its
-        draft when nothing landed; one commit on refs/heads/pool. Never raises: a failure is recorded and the pass's
-        result stands."""
+        them, retired and reopened when finish was accepted, and every open entry a landed item adopts merged), then,
+        on a store pass, its deferrals and its draft when nothing landed; one commit on refs/heads/pool. The pass's
+        staging entered the pool at its start (:meth:`_staging_library_mode`). Never raises: a failure is recorded
+        and the pass's result stands."""
         from . import pool as _pool_mod
 
         try:
@@ -2437,12 +2449,11 @@ class WriterPass:
                 pass_id,
                 landed=set(out.items_merged or []),
                 finished=bool(out.finished),
+                provenance=self._provenance,
             )
             new: list = []
             extended: list[str] = []
             if req.kind != "curate":
-                for eid, view in self._pool_staging:
-                    new += _pool_mod.from_staging(eid, view)
                 new += _pool_mod.from_clusters(*self._pool_s0)
                 for e, (r, target) in sorted(self._deferred.items()):
                     if target is None:
@@ -2475,6 +2486,7 @@ class WriterPass:
                 "extended": sorted(set(extended)),
                 "changed": changed,
                 "commit": p.save(pass_id),
+                "at_start": self._pool_at_start,
             }
             if (
                 self.cfg.coverage_rule == "optional"
@@ -2523,10 +2535,13 @@ class WriterPass:
         required,
         sizes,
         spend,
+        *,
+        pass_id: str = "",
     ) -> None:
-        """r5 §4: Sol analysts per flagged episode (``analysts == "writer"``; their spend joins the pass's), then each
-        batch episode's staging copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is
-        untrusted: :mod:`.staging` takes only allowed regular files and nothing staged is run.
+        """Analysts per flagged episode (``analysts == "writer"``; their spend joins the pass's), then, with staging
+        on (:meth:`_staging_on`), each batch episode's staging: entered into the pool at once (so this pass can merge
+        it), copied to ``/inputs/staging/<episode>/`` and listed in batch_map.json. Staging is untrusted:
+        :mod:`.staging` takes only allowed regular files and nothing staged is run.
         """
         from . import analysts as _analysts
         from . import staging as _staging
@@ -2606,6 +2621,24 @@ class WriterPass:
         path = Path(inputs) / "batch_map.json"
         bmap = json.loads(path.read_text())
         counts: dict[str, int] = {}
+        # staging off (no reader leaves any): no staging directory, row field or pool entry reaches the writer
+        staging_on = self._staging_on()
+        views: dict = {}
+        if staging_on:
+            for row in bmap.get("episodes", []):
+                view = _staging.read(root, row["episode_id"])
+                if view is not None:
+                    views[row["episode_id"]] = view
+        self._staged_views, self._staging_read_root = views, root
+        if self._pool is not None and views:
+            # this pass's staging enters the pool now, so the writer can merge it in this same pass
+            try:
+                self._pool_at_start = self._pool.enter_staging(views, pass_id)
+                self._pool_at_start["commit"] = self._pool.save(pass_id)
+            except Exception as exc:  # noqa: BLE001 - the pool never stops a pass
+                self._pool_at_start = {
+                    "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+                }
         # m4k (MAIN 11 Oct, the rehearsal diagnosis): each row points at what else this pass holds about its
         # episode, where the writer reads: staged candidates, S0 clusters its code is in, open pool entries citing it
         s0_refs = _s0_by_episode(
@@ -2615,21 +2648,48 @@ class WriterPass:
         open_pool = self._pool.open_entries() if self._pool is not None else []
         for row in bmap.get("episodes", []):
             eid = row["episode_id"]
-            view = _staging.read(root, eid)
-            if view is not None and self._pool is not None:
-                self._pool_staging.append((eid, view))
-            row["staging"] = _staging.export(view, Path(inputs) / "staging" / eid)
-            row["staging"]["candidates"] = _staged_candidates(row["staging"])
+            src = "none"
+            if staging_on:
+                row["staging"] = _staging.export(
+                    views.get(eid),
+                    Path(inputs) / "staging" / eid,
+                )
+                row["staging"]["candidates"] = _staged_candidates(row["staging"])
+                src = row["staging"].get("source", "none")
             row["s0_clusters"] = s0_refs.get(eid, [])
             row["pool_entries"] = [
                 {"id": e.id, "kind": e.kind, "title": e.title}
                 for e in open_pool
                 if eid in (e.provenance.get("episodes") or [])
             ]
-            src = row["staging"].get("source", "none")
             counts[src] = counts.get(src, 0) + 1
         path.write_text(json.dumps(bmap, sort_keys=True, default=str, indent=1) + "\n")
         self._staging_counts = {"episodes": len(bmap.get("episodes", [])), **counts}
+        self._chain_rows = list(bmap.get("episodes", []))
+
+    def _staging_on(self) -> bool:
+        """Whether any reader leaves staging for this pass: a staging root (the episode-end fork or its offline
+        replay) or analysts. Off, the writer sees no staging directory, batch-map field or staged pool entry."""
+        return bool(self.cfg.staging_root) or self.cfg.analysts == "writer"
+
+    def _chain_counts(self) -> dict:
+        """This store pass's hop counts (:func:`.chain.counts`); reads come from the read tool calls' arguments and
+        from any structured tool or open events the tool layer kept (``self.tool_events``)."""
+        from . import chain as _chain
+
+        pool = self._pool
+        return _chain.counts(
+            views=self._staged_views,
+            root=self._staging_read_root,
+            staged_entry=dict(pool.staged) if pool is not None else {},
+            pool_ids=set(pool.entries) if pool is not None else set(),
+            batch_rows=self._chain_rows,
+            read=_chain.read_paths(
+                self.messages,
+                list(getattr(self, "tool_events", None) or []),
+            ),
+            provenance=self._provenance,
+        )
 
     @staticmethod
     def _library_message_library_mode(box: Path) -> str:
@@ -3143,7 +3203,9 @@ class WriterPass:
         self._staging_counts = None
         self._inputs_dir = None
         self._pool, self._pool_open, self._pool_error = None, None, None
-        self._pool_staging, self._pool_s0 = [], ([], {})
+        self._pool_at_start, self._pool_s0 = None, ([], {})
+        self._staged_views, self._staging_read_root, self._provenance = {}, None, []
+        self._chain_rows = []
         self._deferred, self._pool_manifest = {}, None
         self._cov, self._bmap_rows = None, []
         self._live, self._cancel_patch = None, (None, [])
@@ -3337,6 +3399,12 @@ class WriterPass:
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.finished = bool(phase["finish_accepted"])
+                o.provenance = list(self._provenance)
+                if self._role != "curate":
+                    try:  # measures only: they never fail a pass
+                        o.chain = self._chain_counts()
+                    except Exception as exc:  # noqa: BLE001
+                        o.chain = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
                 o.s0 = self._s0_summary
                 o.staging = self._staging_counts
                 o.analysts = [
@@ -3405,12 +3473,14 @@ class WriterPass:
                 # folders and no library.json (P2's gate inputs replace previous_gate.json)
                 self._library_generated = self._stage_library_library_mode(box, parent)
                 if self.cfg.pool:
-                    # the lead, 11 Oct: every open proposal of earlier passes, read-only for Sol
+                    # every open proposal of earlier passes; this pass's staging joins it below, before it is staged
                     from . import pool as _pool_mod
 
                     try:
                         self._pool = _pool_mod.Pool(self.mem).load()
-                        self._pool_open = self._pool.stage(Path(inputs) / "pool")
+                        if not self.cfg.s0_cache:
+                            # the recurrence miner no longer feeds the pool: its old entries close once
+                            self._pool.close_cluster_entries(pass_id)
                     except (
                         Exception
                     ) as exc:  # noqa: BLE001 - the pool never stops a pass
@@ -3419,7 +3489,7 @@ class WriterPass:
                             f"load: {type(exc).__name__}: {str(exc)[:200]}"
                         )
                 if req.kind != "curate":
-                    # r5: arm C's analysts (when on), then every batch episode's staging, read-only for Sol
+                    # analysts (when on), then every batch episode's staging (pooled at once), read-only for the writer
                     await self._staging_library_mode(
                         req,
                         inputs,
@@ -3428,7 +3498,18 @@ class WriterPass:
                         required,
                         sizes,
                         spend,
+                        pass_id=pass_id,
                     )
+                if self._pool is not None:
+                    try:
+                        self._pool_open = self._pool.stage(Path(inputs) / "pool")
+                    except (
+                        Exception
+                    ) as exc:  # noqa: BLE001 - the pool never stops a pass
+                        self._pool = None
+                        self._pool_error = (
+                            f"stage: {type(exc).__name__}: {str(exc)[:200]}"
+                        )
                 if req.kind == "curate":
                     # memory v2.1 CURATE (P6): the library view, then what the trigger found
                     first = (
@@ -3977,6 +4058,7 @@ class WriterPass:
         )
         if getattr(res, "manifest_invalid", False):
             cause(CODE_MANIFEST_INVALID)
+        self._provenance = list(getattr(res, "provenance", None) or [])
         for check in getattr(res, "refused", []):
             cause(check)  # the gate checks that refused: G1..G6
         # the pass's own notes (left-out entries, deadline, model failures) follow the gate's reasons

@@ -56,8 +56,17 @@ def test_each_row_points_at_its_staged_candidates_and_the_pool_entries_citing_it
             "cases": "/inputs/staging/e2/cases/f.json",
         },
     ]
+    # the pass's own staged candidate entered the pool at the pass's start, so the row names its entry too
+    cid = pool.entry_id(
+        "candidate",
+        json.dumps(
+            {"candidate.py": "def f(x):\n    return x\n", "cases.json": "[]"},
+            sort_keys=True,
+        ),
+    )
     assert row["pool_entries"] == [
-        {"id": did, "kind": "deferred", "title": "episode e2 deferred: seen before"},
+        {"id": cid, "kind": "candidate", "title": "f(x)"},
+        {"id": did, "kind": "deferred", "title": "seen before"},
     ]
     assert row["s0_clusters"] == []
 

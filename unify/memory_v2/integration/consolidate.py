@@ -838,6 +838,12 @@ def _end_event(
             if outcome is not None and outcome.coverage is not None
             else {}
         ),
+        # library layout, store passes: staged candidates at each hand-off, and each landed item's adopted proposals
+        **(
+            {"chain": outcome.chain, "provenance": list(outcome.provenance)}
+            if outcome is not None and getattr(outcome, "chain", None) is not None
+            else {}
+        ),
     }
 
 

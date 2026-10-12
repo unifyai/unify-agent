@@ -36,7 +36,7 @@ def test_the_first_message_shows_the_open_index_and_the_brief_stays_the_same(
     shown = first.split("read it at a marker's offset for more):\n\n", 1)[1]
     assert shown.startswith("# Candidate pool: open entries\n")
     assert (
-        f"- `{did}` deferred: episode e2 deferred: a rule that may come back (1 episode(s): e2; opened in p1)"
+        f"- `{did}` deferred: a rule that may come back (1 episode; opened in p1)"
         in shown
     )
     assert (
@@ -103,7 +103,7 @@ def test_a_deferral_can_add_its_episode_to_an_open_entry(tmp_path, monkeypatch):
         "p3",
     )
     assert (
-        f"`{did}` deferred: episode e2 deferred: a rule that may come back (2 episode(s): e2, e1;"
+        f"`{did}` deferred: a rule that may come back (2 episodes;"
         in m3.outputs["r"]
     )
 
