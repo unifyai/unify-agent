@@ -28,6 +28,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -53,6 +54,11 @@ MAX_STATUSES = 10_000
 #: The most distinct items a request's runtime call counts keep; calls of more are counted as dropped.
 MAX_RUNTIME_ITEMS = 2000
 RUNTIME_OUTCOMES = ("ok", "refused", "error")
+#: The last line of a cell error that names the library's package as a missing name, or as a failed import.
+_NAME_ERROR = re.compile(r"NameError: name 'memory' is not defined")
+_IMPORT_ERROR = re.compile(
+    r"(?:ImportError|ModuleNotFoundError): .*'memory(?:\.[A-Za-z0-9_.]*)?'",
+)
 _ERROR_CHARS = 2000
 
 
@@ -254,6 +260,42 @@ def runtime_calls_empty() -> dict:
         "dropped": 0,
         "records_dropped": 0,
         "malformed": 0,
+        "helpers_failed": 0,
+    }
+
+
+def library_cell_error(error: Any) -> str | None:
+    """``name`` when a cell's error (its traceback text) ended in a ``NameError`` on ``memory``, ``import``
+    when it ended in an ``ImportError`` or ``ModuleNotFoundError`` naming ``memory`` or one of its modules,
+    else None. Only the error's last line is read."""
+    if not isinstance(error, str):
+        return None
+    lines = [line for line in error.splitlines() if line.strip()]
+    last = lines[-1] if lines else ""
+    if _NAME_ERROR.match(last):
+        return "name"
+    if _IMPORT_ERROR.match(last):
+        return "import"
+    return None
+
+
+def library_failures(runtime: Any, cell_errors: Any) -> dict:
+    """The library-mode use record's failure counts: ``library_calls_failed``, the library calls the audit hook
+    saw raise (outcome ``refused`` or ``error``, items and the package's helpers alike);
+    ``library_name_errors``, cells whose error was a ``NameError`` on ``memory``; ``library_import_errors``,
+    cells whose error was a failed import of ``memory`` or of one of its modules. Counts only."""
+    failed = 0
+    if isinstance(runtime, dict):
+        counts = runtime.get("counts")
+        for row in (counts if isinstance(counts, dict) else {}).values():
+            if isinstance(row, dict):
+                failed += _count(row.get("refused")) + _count(row.get("error"))
+        failed += _count(runtime.get("helpers_failed"))
+    errors = cell_errors if isinstance(cell_errors, dict) else {}
+    return {
+        "library_calls_failed": failed,
+        "library_name_errors": _count(errors.get("name")),
+        "library_import_errors": _count(errors.get("import")),
     }
 
 
@@ -270,6 +312,14 @@ def add_runtime_calls(acc: dict, drained: Any) -> None:
         return
     for key in ("dropped", "records_dropped", "malformed"):
         acc[key] += _count(calls.get(key))
+    helpers = calls.get("helpers")
+    for row in (helpers if isinstance(helpers, dict) else {}).values():
+        if isinstance(row, dict):
+            acc["helpers_failed"] = (
+                _count(acc.get("helpers_failed"))
+                + _count(row.get("refused"))
+                + _count(row.get("error"))
+            )
     counts = calls.get("counts")
     if not isinstance(counts, dict):
         return
@@ -331,6 +381,7 @@ def memory_use(
     cell_status: dict | None = None,
     library_mode: bool = False,
     runtime_calls: dict | None = None,
+    cell_errors: dict | None = None,
 ) -> dict:
     """The request's use record (:func:`..analysis.use.request_use`), with *runtime_calls*, the calls the
     actor's cells actually made as the worker's audit hook observed them (:func:`with_runtime_calls`).
@@ -340,8 +391,10 @@ def memory_use(
     the pin, the export's roots and the library's import surface taken before the actor ran, *shown*,
     what the memory-section renderer recorded (its digest is taken again over *shown_text*, the section
     as rendered, through *redactor*, as the transcript's copy of the prompt is), and *cell_status*, each
-    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). A
-    failure is recorded as its exception type, with the items at the pin; it never stops the episode.
+    cell's status from the runtime's structured result by tool call id (``RequestRun.note_result``). In
+    library mode the record also counts failures (:func:`library_failures`, from *runtime_calls* and
+    *cell_errors*, the cells whose error named the library's package). A failure is recorded as its
+    exception type, with the items at the pin; it never stops the episode.
     """
     from ..analysis import use
 
@@ -376,7 +429,10 @@ def memory_use(
             cell_status=cell_status,
             library_mode=library_mode,
         )
-        return with_runtime_calls(record, runtime_calls)
+        record = with_runtime_calls(record, runtime_calls)
+        if library_mode and isinstance(record, dict) and "error" not in record:
+            record.update(library_failures(runtime_calls, cell_errors))
+        return record
     except Exception as exc:  # noqa: BLE001 - telemetry never stops recording
         return {
             "version": use.VERSION,
@@ -451,6 +507,8 @@ class RequestRun:
         self.cell_status: dict[str, dict] = {}
         # The library calls the cells made, from the worker's audit records (note_calls).
         self.runtime_calls: dict = runtime_calls_empty()
+        # Cells whose error named the library's package: ``name`` and ``import`` (library_cell_error).
+        self.cell_errors: dict[str, int] = {"name": 0, "import": 0}
         self.episode_id = ""
         self.started_at = ""
         self.pin = ""
@@ -704,12 +762,19 @@ class RequestRun:
     def note_result(self, call_id: Any, result: Any) -> None:
         """Keep a code cell's status from its ``ExecutionResult`` (``hooks.tool_result``), reduced at once
         to names (``analysis.use.runtime_status``): the use record's only source of refusals, errors and
-        sessions. A plain mapping (the code tool's own result for an empty cell, or when its session
+        sessions. A cell whose error named the library's package is counted (:func:`library_cell_error`). A plain mapping (the code tool's own result for an empty cell, or when its session
         executor raised) is read by ``analysis.use.dict_status``. At most ``MAX_STATUSES`` calls are
         kept; later ones are then unknown.
         """
         from ..analysis import use
 
+        kind = library_cell_error(
+            result.get("error")
+            if isinstance(result, Mapping)
+            else getattr(result, "error", None),
+        )
+        if kind is not None:
+            self.cell_errors[kind] = self.cell_errors.get(kind, 0) + 1
         if call_id is None or len(self.cell_status) >= MAX_STATUSES:
             return
         if isinstance(result, Mapping):
@@ -1049,6 +1114,7 @@ class RequestRun:
             cell_status=dict(self.cell_status),
             library_mode=self.library_mode,
             runtime_calls=self.runtime_calls,
+            cell_errors=dict(self.cell_errors),
         )
         sha = EpisodeWriter(
             stores.episodes,

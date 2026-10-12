@@ -20,6 +20,8 @@ module is imported (:class:`_CallFinder`), so that each call raises the audit ev
 the item id, a short digest of the arguments (never their values) and the outcome: ``ok``, ``refused``
 (a ``MemoryInputError`` left it) or ``error`` (any other exception). The wrapper returns what the function
 returns and re-raises what it raises, unchanged; whatever audit hooks the process has decide what is kept.
+Its own ``index``, ``show`` and ``find`` raise ``memory.helper_call`` the same way, with the ids
+``memory:index``, ``memory:show`` and ``memory:find``.
 """
 
 from __future__ import annotations
@@ -43,6 +45,9 @@ MATCHER_FILE = ".memory/matcher.py"
 SHAPES_FILE = ".memory/shapes.py"
 ITEM_LINE = "- `"
 CALL_EVENT = "memory.call"
+#: The audit event of a call of this package's own helpers (``index``, ``show``, ``find``): the same arguments
+#: as ``memory.call``, kept apart because the helpers are not library items.
+HELPER_EVENT = "memory.helper_call"
 CALL_OUTCOMES = ("ok", "refused", "error")
 REFUSAL = "MemoryInputError"
 DIGEST_CHARS = 16
@@ -424,15 +429,15 @@ def call_outcome(exc: BaseException) -> str:
     )
 
 
-def _emit(item: str, digest: str, outcome: str) -> None:
+def _emit(item: str, digest: str, outcome: str, event: str = CALL_EVENT) -> None:
     try:
-        sys.audit(CALL_EVENT, item, digest, outcome)
+        sys.audit(event, item, digest, outcome)
     except Exception:  # noqa: BLE001 - an audit hook never changes the call
         pass
 
 
-def wrap_call(fn: Any, item: str) -> Any:
-    """*fn* wrapped to raise one ``memory.call`` event per call (module docstring). A call interrupted by
+def wrap_call(fn: Any, item: str, event: str = CALL_EVENT) -> Any:
+    """*fn* wrapped to raise one *event* (``memory.call``) per call (module docstring). A call interrupted by
     something that is not an ``Exception`` (an interrupt, an exit, a cancellation) did not end on its own,
     so it raises no event."""
     if getattr(fn, "__memory_item__", None) is not None:
@@ -445,9 +450,9 @@ def wrap_call(fn: Any, item: str) -> Any:
             try:
                 result = await fn(*args, **kwargs)
             except Exception as exc:
-                _emit(item, digest, call_outcome(exc))
+                _emit(item, digest, call_outcome(exc), event)
                 raise
-            _emit(item, digest, "ok")
+            _emit(item, digest, "ok", event)
             return result
 
     else:
@@ -458,9 +463,9 @@ def wrap_call(fn: Any, item: str) -> Any:
             try:
                 result = fn(*args, **kwargs)
             except Exception as exc:
-                _emit(item, digest, call_outcome(exc))
+                _emit(item, digest, call_outcome(exc), event)
                 raise
-            _emit(item, digest, "ok")
+            _emit(item, digest, "ok", event)
             return result
 
     call.__memory_item__ = item  # type: ignore[attr-defined]
@@ -538,3 +543,6 @@ def _install_call_finder(package: str) -> None:
 # Only as the library package itself: the harness also imports this file as a module of its own.
 if __name__ == "memory":
     _install_call_finder(__name__)
+    index = wrap_call(index, "memory:index", HELPER_EVENT)
+    show = wrap_call(show, "memory:show", HELPER_EVENT)
+    find = wrap_call(find, "memory:find", HELPER_EVENT)

@@ -1,0 +1,322 @@
+"""In library mode every actor cell has the library bound as ``memory``, imported by the first cell that uses it,
+and the request's use record counts the library calls that failed and the cells whose error named ``memory``.
+
+Cells run in the real sandboxed worker (bubblewrap); no model is called.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from tests.actor.code_act.sandbox_world import needs_bwrap, world  # noqa: F401
+from tests.memory.integration.test_actor_export_library_mode import _library_repo
+from tests.memory.test_episodes import _ep
+from unify.actor.execution.session import SessionExecutor
+from unify.memory.integration import hooks
+from unify.memory.integration import request as request_mod
+from unify.memory.integration.adapters.audit import CellAudit
+from unify.memory.integration.checkout import export_actor_library_mode
+from unify.memory.integration.paths import Paths
+from unify.memory.integration.request import (
+    RequestRun,
+    add_runtime_calls,
+    library_cell_error,
+    library_failures,
+    memory_use,
+    runtime_calls_empty,
+)
+from unify.memory.library_export import generated_library_mode
+from unify.settings import SETTINGS
+
+PARSE_DATE = "memory.text.dates:parse_date"
+
+
+def _library_run(monkeypatch, paths: Paths) -> RequestRun:
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_LIBRARY", "on")
+    run = RequestRun("r", paths)
+    run.library_mode = True
+    monkeypatch.setattr(request_mod, "_CURRENT", run)
+    return run
+
+
+def _write_copy(root: Path, files: dict) -> None:
+    for rel, data in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data if isinstance(data, bytes) else data.encode())
+
+
+async def _run(ex: SessionExecutor, run: RequestRun | None, code: str) -> Any:
+    res = await asyncio.wait_for(
+        ex.execute(code=code, state_mode="stateful", session_id=0),
+        timeout=90,
+    )
+    if run is not None:
+        run.note_result(f"c{len(run.cell_status)}", res)
+    return res
+
+
+def _ok(res: Any) -> Any:
+    assert res["error"] is None, res["error"]
+    return res["result"]
+
+
+# --- a real worker -------------------------------------------------------------------------------------------
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_cells_use_memory_with_no_import_line_and_failed_calls_are_counted(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    paths = Paths.under(world["state"])
+    mem, sha = _library_repo(paths.memory)
+    export_actor_library_mode(mem.git_dir, sha, paths.checkout)
+    run = _library_run(monkeypatch, paths)
+    ex = SessionExecutor(environments={})
+    try:
+        out = _ok(
+            await _run(
+                ex,
+                run,
+                "first = repr(memory)\n"
+                "head = memory.index().splitlines()[0]\n"
+                f"shown = memory.show({PARSE_DATE!r}).splitlines()[0]\n"
+                "from memory.text.dates import parse_date\n"
+                "[first, type(memory).__name__, head == memory.index().splitlines()[0], "
+                "'parse_date' in shown, parse_date('2026-10-09')]",
+            ),
+        )
+        assert out[0].startswith("<module 'memory'") and "first use" in out[0]
+        # the name now holds the real package, and ``import memory`` is the same module
+        assert list(out)[1:] == ["module", True, True, "2026-10-09"]
+        assert _ok(await _run(ex, run, "import memory as m\nm is memory")) is True
+        # a library function that raises, and a helper that raises: both counted
+        res = await _run(ex, run, "parse_date(None)")
+        assert "AttributeError" in res["error"]
+        res = await _run(ex, run, "memory.show('memory.nothing.here:f')")
+        assert "LookupError" in res["error"]
+    finally:
+        await ex.close()
+    assert run.runtime_calls["counts"][PARSE_DATE]["ok"] >= 1
+    assert run.runtime_calls["counts"][PARSE_DATE]["error"] == 1
+    assert run.runtime_calls["helpers_failed"] == 1
+    assert library_failures(run.runtime_calls, run.cell_errors) == {
+        "library_calls_failed": 2,
+        "library_name_errors": 0,
+        "library_import_errors": 0,
+    }
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_an_empty_library_is_bound_too(world, monkeypatch, tmp_path):  # noqa: F811
+    paths = Paths.under(world["state"])
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _write_copy(paths.checkout, generated_library_mode(empty))
+    assert (paths.checkout / "memory" / "__init__.py").is_file()
+    run = _library_run(monkeypatch, paths)
+    ex = SessionExecutor(environments={})
+    try:
+        out = _ok(
+            await _run(
+                ex,
+                run,
+                "['The library is empty.' in memory.index(), memory.find({'a': 1})]",
+            ),
+        )
+    finally:
+        await ex.close()
+    assert list(out) == [True, []]
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_a_library_that_fails_to_import_never_breaks_the_session(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    paths = Paths.under(world["state"])
+    # the copy's root is first on the import path: modules named like the worker's own must not shadow them
+    _write_copy(
+        paths.checkout,
+        {
+            "memory/__init__.py": "raise RuntimeError('this library is broken')\n",
+            "json.py": "raise RuntimeError('shadowed json')\n",
+            "os.py": "raise RuntimeError('shadowed os')\n",
+        },
+    )
+    run = _library_run(monkeypatch, paths)
+    ex = SessionExecutor(environments={})
+    try:
+        assert (
+            _ok(await _run(ex, run, "import json, os\njson.dumps({'a': os.sep})"))
+            == '{"a": "/"}'
+        )
+        res = await _run(ex, run, "memory.index()")
+        assert "ImportError" in res["error"] and "this library is broken" in res["error"]
+        assert _ok(await _run(ex, run, "1 + 1")) == 2
+        # the next use tries again, and fails the same way
+        res = await _run(ex, run, "memory.index()")
+        assert "this library is broken" in res["error"]
+    finally:
+        await ex.close()
+    assert run.cell_errors == {"name": 0, "import": 2}
+    assert library_failures(run.runtime_calls, run.cell_errors)["library_import_errors"] == 2
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_a_library_that_never_finishes_importing_is_stopped_by_the_cell_timeout(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    paths = Paths.under(world["state"])
+    _write_copy(paths.checkout, {"memory/__init__.py": "while True:\n    pass\n"})
+    run = _library_run(monkeypatch, paths)
+    ex = SessionExecutor(environments={}, timeout=5)
+    try:
+        assert _ok(await _run(ex, run, "x = 1\nx")) == 1  # starting the worker imports nothing of it
+        res = await _run(ex, run, "memory.index()")
+        assert "timed out after 5" in res["error"] and "killed" in res["error"]
+        assert _ok(await _run(ex, run, "2 + 2")) == 4  # a fresh worker
+    finally:
+        await ex.close()
+
+
+@needs_bwrap
+@pytest.mark.asyncio
+@pytest.mark.timeout(240)
+async def test_without_a_library_cells_have_no_memory_and_a_name_error_is_counted(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    ex = SessionExecutor(environments={})
+    try:
+        assert _ok(await _run(ex, None, "'memory' in globals()")) is False
+    finally:
+        await ex.close()
+    # a library-mode request whose copy has no package: no ``memory`` either, and its NameError is counted
+    paths = Paths.under(world["state"])
+    paths.checkout.mkdir(parents=True)
+    run = _library_run(monkeypatch, paths)
+    assert hooks.worker_globals() == {}
+    ex = SessionExecutor(environments={})
+    try:
+        res = await _run(ex, run, "memory.index()")
+    finally:
+        await ex.close()
+    assert "NameError" in res["error"]
+    assert run.cell_errors == {"name": 1, "import": 0}
+
+
+# --- no worker -----------------------------------------------------------------------------------------------
+
+
+def test_the_init_global_only_in_library_mode_with_a_package(
+    world,  # noqa: F811
+    monkeypatch,
+):
+    from unify.actor.execution.worker import PythonWorker
+
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "on")
+    paths = Paths.under(world["state"])
+    (paths.checkout / "memory").mkdir(parents=True)
+    monkeypatch.setattr(
+        request_mod,
+        "_CURRENT",
+        SimpleNamespace(index="", paths=paths, library_mode=True),
+    )
+    assert hooks.worker_globals() == {}  # no memory/__init__.py
+    (paths.checkout / "memory" / "__init__.py").write_text("")
+    assert hooks.worker_globals() == {"memory": ["lazy_module", "memory"]}
+    assert PythonWorker()._init_message()["globals"]["memory"] == [
+        "lazy_module",
+        "memory",
+    ]
+    # the read-write layout of the other memory mode is left as it was
+    monkeypatch.setattr(request_mod, "_CURRENT", SimpleNamespace(index="", paths=paths))
+    assert hooks.worker_globals() == {}
+    assert "memory" not in PythonWorker()._init_message()["globals"]
+    monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY", "")
+    assert "memory" not in PythonWorker()._init_message()["globals"]
+
+
+def test_helper_calls_are_counted_apart_from_items():
+    audit = CellAudit([])
+    audit.begin()
+    audit("memory.helper_call", ("memory:show", "ab12", "error"))
+    audit("memory.helper_call", ("memory:index", "ab12", "ok"))
+    audit("memory.helper_call", ("memory.text.dates:parse_date", "ab12", "ok"))
+    audit("memory.call", (PARSE_DATE, "ab12", "refused"))
+    calls = audit.drain()["calls"]
+    assert calls["helpers"] == {
+        "memory:show": {"ok": 0, "refused": 0, "error": 1},
+        "memory:index": {"ok": 1, "refused": 0, "error": 0},
+    }
+    assert calls["malformed"] == 1 and set(calls["counts"]) == {PARSE_DATE}
+    audit.begin()
+    audit("memory.call", (PARSE_DATE, "ab12", "ok"))
+    assert "helpers" not in audit.drain()["calls"]  # the block is unchanged without helper calls
+    acc = runtime_calls_empty()
+    add_runtime_calls(acc, {"calls": calls})
+    assert acc["helpers_failed"] == 1
+    assert library_failures(acc, {"name": 1})["library_calls_failed"] == 2
+
+
+@pytest.mark.parametrize(
+    "error, kind",
+    [
+        ("Traceback ...\nNameError: name 'memory' is not defined\n", "name"),
+        ("NameError: name 'memoryx' is not defined", None),
+        ("ModuleNotFoundError: No module named 'memory'", "import"),
+        ("ModuleNotFoundError: No module named 'memory.text.nope'", "import"),
+        ("ImportError: cannot import name 'f' from 'memory.text.dates' (/x)", "import"),
+        ("ImportError: importing the module 'memory' failed (RuntimeError)\n", "import"),
+        ("ModuleNotFoundError: No module named 'pandas'", None),
+        ("NameError: name 'memory' is not defined\nValueError: later", None),
+        (None, None),
+    ],
+)
+def test_cell_errors_naming_the_library_are_classified(error, kind):
+    assert library_cell_error(error) == kind
+
+
+def test_the_library_mode_use_record_carries_the_counts_and_only_there():
+    acc = runtime_calls_empty()
+    add_runtime_calls(
+        acc,
+        {
+            "calls": {
+                "counts": {PARSE_DATE: {"ok": 1, "refused": 1, "error": 2}},
+                "helpers": {"memory:find": {"ok": 0, "refused": 0, "error": 1}},
+            },
+        },
+    )
+    rec = memory_use(
+        _ep(transcript=[], actions=[]),
+        [PARSE_DATE],
+        runtime_calls=acc,
+        cell_errors={"name": 3, "import": 1},
+        library_mode=True,
+    )
+    assert "error" not in rec, rec
+    assert (
+        rec["library_calls_failed"],
+        rec["library_name_errors"],
+        rec["library_import_errors"],
+    ) == (4, 3, 1)
+    off = memory_use(_ep(transcript=[], actions=[]), [PARSE_DATE], runtime_calls=acc)
+    assert not {"library_calls_failed", "library_name_errors"} & set(off)

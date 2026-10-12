@@ -243,6 +243,9 @@ class PythonWorker:
 
         # UNIFY_MEMORY=on: the request's memory export is imported first.
         memory_paths = _mv2.worker_paths()
+        if memory_paths:
+            # UNIFY_MEMORY_LIBRARY=on: the library as ``memory`` in every cell, imported on first use
+            specs.update(_mv2.worker_globals())
         paths = [*memory_paths, *(p for p in sys.path if p)]
         # Packages the harness installs later land here; visible once it exists.
         packages = str(environment.site_packages())
