@@ -109,7 +109,7 @@ REPLAY = (
     "print('REPLAY', env.venmo.me()['user_id'], ep['actions'][0]['index'], req['channel'])\n"
 )
 READ_ONLY = "try:\n    open('/inputs/x', 'w')\nexcept OSError:\n    print('RO')\n"
-# the test command WRITER_SYSTEM gives, run as Sol would run it
+# the test command WRITER_SYSTEM gives, run as the writer would run it
 SUITE = (
     "import subprocess, sys\n"
     "r = subprocess.run([sys.executable, '-m', 'pytest', 'env/venmo/tests', '-q', '-p', 'no:cacheprovider',\n"
@@ -253,7 +253,7 @@ def test_spend_cap_reserves_budget_for_unknown_costs(
     )
     out = asyncio.run(writer.run(PassRequest("incremental", "venmo", [], False), "p3"))
     assert out.calls == calls and not out.passed
-    # ruling R22: money is a pure decimal string; unpriced calls are counted apart
+    # money is a pure decimal string; unpriced calls are counted apart
     assert out.usd == usd and out.unknown_cost_calls == unknown
     notes = [f"note: {unknown} unpriced calls"] if unknown else []
     assert out.reasons == ["no manifest", *notes]
@@ -404,7 +404,7 @@ def test_writer_system_embeds_the_manifest_rules_verbatim():
 
 
 def test_writer_system_states_that_scope_is_shape_not_observed_values():
-    """Spec F3a: refusals name shape only; a value restriction needs a covered environment rejection."""
+    """Refusals name shape only; a value restriction needs a covered environment rejection."""
     assert "Scope is shape, not observed values" in WRITER_SYSTEM
     assert "value domains" not in WRITER_SYSTEM
     assert "outside the function's scope" not in WRITER_SYSTEM
@@ -434,8 +434,8 @@ def test_writer_system_asks_each_function_to_declare_its_input_from_the_one_cons
 
 
 def test_writer_system_states_the_docstring_standard_from_the_constants():
-    """v2.1 (every switch on): the lean docstring standard is generated from its constants; the catalogue is
-    the harness's; growth is never refused for size."""
+    """With the docstring, catalogue and soft-budget switches on: the lean docstring standard is generated from
+    its constants; the catalogue is the harness's; growth is never refused for size."""
     from unify.memory_v2 import docstrings
     from unify.memory_v2.writer_pass import writer_system
 
@@ -462,7 +462,7 @@ def test_writer_system_states_each_switch_only_when_it_is_on(
     catalogue,
     soft,
 ):
-    """Each v2.1 switch adds only its own text to Sol's brief and to the check tool's description."""
+    """Each of those switches adds only its own text to the writer's brief and to the check tool's description."""
     from unify.memory_v2 import docstrings
     from unify.memory_v2.writer_pass import writer_system, writer_tools
 
@@ -487,7 +487,7 @@ def test_writer_system_states_each_switch_only_when_it_is_on(
 
 
 def test_writer_system_lists_the_declared_semantic_types_from_the_one_constant():
-    """D21: values are restricted only through the fixed type list, declared in the manifest."""
+    """Values are restricted only through the fixed type list, declared in the manifest."""
     flat = WRITER_SYSTEM.replace("\n   ", " ")
     assert manifest_module.describe_semantic_types() in flat
     for name in manifest_module.SEMANTIC_TYPES:
@@ -726,7 +726,7 @@ def test_chmod_zero_entries_are_unlocked_measured_and_mirrored(tmp_path):
     cand = ev.db.execute("SELECT candidate FROM passes WHERE pass_id='px'").fetchone()[
         0
     ]
-    # the host restored its own access, so the gate sees (and refuses) exactly what Sol wrote
+    # the host restored its own access, so the gate sees (and refuses) exactly what the writer wrote
     assert mem.run("ls-tree", "-r", "--name-only", cand).split() == [
         "env/venmo/NOTES.md",
         "env/venmo/hidden/x.py",
@@ -967,7 +967,7 @@ def test_pass_notes_reach_the_recorded_row_on_the_gate_path(tmp_path):
 
 # --- the check tool and the pre-created channel folders ----------------------------------------------------
 
-# Outcome-like text in the episode: it must never reach Sol through check (ruling R10).
+# Outcome-like text in the episode: it must never reach the writer through check.
 MARK = "CHECKER-VERDICT-ZX81: the amount paid to Bob was wrong"
 _SLACK = Action(
     0,
@@ -1110,7 +1110,7 @@ def test_writer_fixes_a_misplaced_item_with_check_and_the_pass_merges(tmp_path):
         ep.actions[i] if eid == "e1" and 0 <= i < len(ep.actions) else None
     )
     gate = Gate(mem, ev, BlobStore(tmp_path / "b"), action_lookup=lookup)
-    # the function covers the venmo call, but Sol first puts it in the slack folder
+    # the function covers the venmo call, but the writer first puts it in the slack folder
     misplaced = {
         **MAN,
         "items": [
@@ -1282,8 +1282,8 @@ def test_check_names_a_declared_input_form_the_covers_cannot_give_before_finish(
 
 
 @pytest.mark.parametrize("surfacing", ["index", "catalogue"])
-def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
-    """index (default): v2's "Current index"; catalogue: the README (capped, M9) and never the index."""
+def test_the_writers_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
+    """index (default): v2's "Current index"; catalogue: the README (capped) and never the index."""
     from unify.memory_v2.catalogue import readme_for_writer
     from unify.memory_v2.integration.checkout import export_checkout
 
@@ -1314,7 +1314,7 @@ def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
     first = seen[0][1]["content"]
     export_checkout(mem.git_dir, sha, tmp_path / "co")
     if surfacing == "catalogue":
-        # the README, then (D26) the pass's functions with their cover counts
+        # the README, then the pass's functions with their cover counts
         library = first.split("\n\nFunctions on this pass's channels:\n", 1)[0]
         assert library.endswith("\n\n" + readme_for_writer(tmp_path / "co"))
         assert "Current index" not in first
@@ -1325,7 +1325,7 @@ def test_sols_first_message_follows_the_surfacing_switch(tmp_path, surfacing):
 
 
 def test_test_run_caches_are_never_mirrored_out_of_the_box(tmp_path):
-    # the gate refuses a stray root entry, so a cache Sol's own test run left must never reach the commit
+    # the gate refuses a stray root entry, so a cache the writer's own test run left must never reach the commit
     box, wt = tmp_path / "box", tmp_path / "wt"
     for d in (
         ".hypothesis/examples",
@@ -1431,7 +1431,7 @@ def test_previous_gate_leaves_out_channels_with_no_refusal_of_theirs(tmp_path):
 
 
 def test_previous_gate_reads_the_items_a_landed_pass_refused(tmp_path):
-    # per-item admission: a pass that landed after refusing an item still tells Sol what the gate refused
+    # per-item admission: a pass that landed after refusing an item still tells the writer what the gate refused
     ev = EvidenceStore(tmp_path / "e.sqlite")
     _recorded(ev, "old", None, ["G2: env/venmo:pay covers no recorded action"])
     ev.record_pass(
@@ -1536,7 +1536,7 @@ def test_library_summary_stays_within_its_token_budget(tmp_path):
 def test_library_summary_with_cover_ids_lists_every_functions_ids_past_the_budget(
     tmp_path,
 ):
-    # D26 and the distillation inputs share one file: each function's recorded cover ids are never cut
+    # the hygiene listing and the distillation inputs share one file: each function's recorded cover ids are never cut
     tree = tmp_path / "t"
     _put(
         tree / "env/venmo/__init__.py",
@@ -1608,7 +1608,7 @@ def test_transcript_is_redacted_by_value_before_any_cut_and_bounded():
 def test_transcript_redacts_a_secret_registered_after_its_redactor_was_built(
     monkeypatch,
 ):
-    # Sol's route token is registered with unify.process_secrets and is never in os.environ; the transcript
+    # the writer's route token is registered with unify.process_secrets and is never in os.environ; the transcript
     # applies redact_error at the time it is made, so even a redactor built earlier cannot let it through
     from unify import process_secrets
 

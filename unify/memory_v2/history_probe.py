@@ -1,4 +1,4 @@
-"""The history probe of memory v2.1 (spec §13.4; consumed by the bisect of §10.2, P5).
+"""The history probe of the library mode (consumed by the item bisect, :mod:`.item_bisect`).
 
 The test-quality study found two things:
 - a function's own tests were green on every version the gate refused;
@@ -6,11 +6,12 @@ The test-quality study found two things:
 
 So the probe runs the *later* tests of an item (from a later library commit) on a refused or suspect *version*.
 That is the version's tree, with the later test files and their packages' ``tests/data/`` laid over it. Earlier
-``main`` versions are not probed: later tests are red on them by construction (§13.4).
+``main`` versions are not probed: later tests are red on them by construction.
 
 Every run is the gate's confined pytest run (:func:`.sandbox_run.run_pytest`): the tree read-only at ``/memory``,
 no network, ``-c /dev/null --import-mode=importlib``, one run per test file, each bounded. A refused version is a
-pass row's candidate commit, while git still holds it (:func:`refused_versions`). Suspect versions come from P5.
+pass row's candidate commit, while git still holds it (:func:`refused_versions`). Suspect versions come from
+the item records.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
-"""Memory v2.1 m4j (MAIN-54 for the lead, 11 Oct; diagnosis a1-m4i-s25-pool-diagnosis-20261011.md): the open pool
-index is shown in the first message, a deferral can add evidence to an open entry the writer names, the WRITE brief
-says new items start as experimental and are revised later, and two read_episode refusals are gone.
+"""The writer's library-mode inputs: the open pool index is shown in the first message, a deferral can add evidence
+to an open entry the writer names, the WRITE brief says new items start as experimental and are revised later, and
+two read_episode refusals are gone.
 """
 
 import json
@@ -12,7 +12,7 @@ from tests.memory_v2.test_gate import _candidate
 from tests.memory_v2.test_gate_library_mode import (
     _files_and_fixtures,
     _man,
-    world21,
+    library_gate_world,
 )  # noqa: F401 (a fixture)
 from tests.memory_v2.test_pool import EMPTY, INDEX, _defer, _finish_with, _Stores
 from unify.memory_v2.episodes import Cell
@@ -186,7 +186,7 @@ def test_the_overview_shows_an_end_cell_that_is_not_a_required_part(
     tmp_path,
     monkeypatch,
 ):
-    """Live m4i s25: overview refused with KeyError (<episode>, 'cell:25'): its end cell defines no function and
+    """A live pass's overview was refused with KeyError (<episode>, 'cell:25'): its end cell defines no function and
     carries no signal, so it is not a required part, and crediting it raised."""
     monkeypatch.setitem(EPS, "e7", _episode("e7", [Cell(0, "x = 1\nprint(x)", "1")]))
     assert "cell:0" in batch_map.solution_first(EPS["e7"])[1]
@@ -225,7 +225,7 @@ def test_parts_given_as_text_are_read_as_the_list_they_name(tmp_path):
     )
 
 
-# --- m4k folded into m4j (MAIN for the lead, 11 Oct; writer audit writer-audit-m4i-20261011T1238Z) ---------------
+# --- the brief's inputs, minimal note entries, shared modules and fixture slices ---------------------------------
 
 
 from unify.memory_v2 import fixtures as fx  # noqa: E402
@@ -418,11 +418,11 @@ def user_id(observation):
 
 
 def test_a_shared_module_lands_when_declared_as_support_and_is_refused_when_not(
-    world21,
+    library_gate_world,
 ):
-    """Live m4i: the writer's shared `memory/arc/errors.py` was refused as an undeclared change, so every module
+    """In a live pass the writer's shared `memory/arc/errors.py` was refused as an undeclared change, so every module
     re-implemented its parser and MemoryInputError."""
-    mem, _, blobs, gate = world21
+    mem, _, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     files = {**files, "memory/acct/users.py": USERS, "memory/acct/common.py": HELPER}
     undeclared = gate().merge(

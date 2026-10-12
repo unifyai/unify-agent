@@ -1,4 +1,4 @@
-"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find`` (spec v2.1 §6).
+"""The memory library's helpers: ``memory.index``, ``memory.show`` and ``memory.find``.
 
 The harness generates this file as ``memory/__init__.py`` in every copy of the library; edits are discarded.
 It imports only the standard library and reads only files beside the package: ``INDEX.md``, ``links.json``

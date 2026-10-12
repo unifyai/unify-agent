@@ -1,6 +1,6 @@
-"""UNIFY_MEMORY_LIBRARY_COMPACT (MAIN 11 Oct; prepared, off until the lead decides): when the writer's conversation passes
-a size, its oldest tool results move out to /outputs/compacted/ behind a pointer to re-open them; Sol's own messages
-(reasoning, decisions, calls), the request and the last messages are never touched; off, nothing changes.
+"""UNIFY_MEMORY_LIBRARY_COMPACT (off by default): when the writer's conversation passes
+a size, its oldest tool results move out to /outputs/compacted/ behind a pointer to re-open them; the writer's own
+messages (reasoning, decisions, calls), the request and the last messages are never touched; off, nothing changes.
 """
 
 import json
@@ -132,7 +132,7 @@ def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
         raise AssertionError("an unknown value was accepted")
 
 
-# --- RUNTIME's defence in depth (MAIN 11 Oct) -------------------------------------------------------------------
+# --- defence in depth ---------------------------------------------------------------------------------------------
 
 
 def test_a_linked_compacted_folder_is_refused_and_nothing_is_written_through_it(

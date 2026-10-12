@@ -1,4 +1,4 @@
-"""Whole test output under v2.1 (spec P5): spooled, kept as a blob, shown head-first with a marker; jail unchanged."""
+"""Whole test output in library mode: spooled, kept as a blob, shown head-first with a marker; jail unchanged."""
 
 import io
 import os
@@ -17,7 +17,7 @@ from tests.memory_v2.test_gate_library_mode import (
     TEST,
     _files_and_fixtures,
     _man,
-    world21,
+    library_gate_world,
 )  # noqa: F401 (fixture)
 
 needs_box = pytest.mark.skipif(
@@ -162,8 +162,8 @@ def test_shown_is_v2_without_a_blob():
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
-def test_failing_test_output_is_kept_whole_as_a_blob(world21):
-    mem, ev, blobs, gate = world21
+def test_failing_test_output_is_kept_whole_as_a_blob(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(
         blobs,
         test=TEST.replace('== "u-1"', '== "u-1" and print("z" * 9000)'),

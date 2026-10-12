@@ -138,7 +138,7 @@ def test_required_parts_and_row():
         "request",
         "observation:0",
         "cell:0",
-        "cell:1",  # T8: the source cell of an action that is not a read
+        "cell:1",  # the source cell of an action that is not a read
         "action:0",
     ]
     m = bm.build_batch_map(lambda e: ep, ["e1"])
@@ -264,7 +264,7 @@ def test_row_states_which_observations_are_copies():
     assert row["observation_copies"] == {"2": 0}
 
 
-# --- P1 T8 (a1's blocker): what the actor did is required -----------------------------------------------------
+# --- what the actor did is required ------------------------------------------------------------------
 
 
 def _row(seq, role, content="", **extra):

@@ -1,4 +1,4 @@
-"""Use records per library commit (spec §4.4, D40) and the signals the lifecycle may count (spec §5, §10.1)."""
+"""Use records per library commit and the signals the lifecycle may count."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def _use_rec(rows, unknown=()):
 
 
 def _visible(source, label, regime):
-    """A checker signal that P9 marks agent-visible (``Signal.visible_to_actor``); counted_signals reads only
-    ``source``, ``label`` and that flag, so a stand-in carries them until P9 is integrated.
+    """A checker signal marked agent-visible (``Signal.visible_to_actor``); counted_signals reads only
+    ``source``, ``label`` and that flag, so a stand-in carries just those.
     """
     return SimpleNamespace(
         source=source,
@@ -164,7 +164,7 @@ def test_a_lookup_alone_is_not_a_use():
 
 
 def test_a_checker_verdict_counts_only_when_the_signal_is_marked_visible():
-    """P5 Amendment A: a grader ``checker pass`` without ``visible_to_actor`` is ignored even when the run allows
+    """A grader ``checker pass`` without ``visible_to_actor`` is ignored even when the run allows
     visible checker signals; a flagged pass counts."""
     unflagged = [Signal("s", "e1", "checker", "pass", "t", regime="dense")]
     assert lc.counted_signals(unflagged, "dense", checker_visible=True) == (

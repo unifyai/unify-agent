@@ -1,4 +1,4 @@
-"""Per-kind admission (spec §F3): covers per action kind, channel mapping and recorded-blob export."""
+"""Per-kind admission: covers per action kind, channel mapping and recorded-blob export."""
 
 import asyncio
 import json
@@ -365,7 +365,7 @@ def test_gate_g2_admits_shell_and_dialogue_covers_on_their_channels(
     assert not gate.check(parent, cand, bad).checks["G2"]
 
 
-# --- a pass end to end: Sol reads recorded blobs, writes fixtures, and the gate admits the reader ---------
+# --- a pass end to end: the writer reads recorded blobs, writes fixtures, and the gate admits the reader --
 
 WRITER_LOOKS = (
     "import json\n"

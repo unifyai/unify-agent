@@ -1,4 +1,4 @@
-"""The worker audit hook under memory v2 (integration Task 28, spec §3a).
+"""The worker audit hook under memory v2.
 
 The harness sends ``audit`` in the worker's init message only while a memory-v2 request captures the
 work tree; the child then installs the approved audit adapter (loaded by file path, no ``unify`` import)

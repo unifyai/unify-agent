@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 S2: a function is verified by replaying the recorded instances it replaces."""
+"""Replay verification: a function is verified by replaying the recorded instances it replaces."""
 
 import shutil
 from pathlib import Path

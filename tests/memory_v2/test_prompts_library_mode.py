@@ -1,4 +1,4 @@
-"""The v2.1 prompts (spec §12): one role each, every part present, no benchmark words, no example checking."""
+"""The library-mode prompts: one role each, every part present, no benchmark words, no example checking."""
 
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def test_input_forms_match_the_manifest():
 
 
 def test_rendered_from_the_constants_that_enforce_them():
-    """Needs P2's repair, P3's library_index, P4's code_lint and MUTATION_MIN and P6's curate: runs once integrated."""
+    """Needs repair, library_index, code_lint with MUTATION_MIN, and curate: runs once they are integrated."""
     repair = pytest.importorskip("unify.memory_v2.repair")
     code_lint = pytest.importorskip("unify.memory_v2.code_lint")
     INDEX_VIEW_TOKENS = pytest.importorskip(
@@ -196,7 +196,7 @@ def test_rendered_from_the_constants_that_enforce_them():
 
     text = pv.write_brief_now()
     assert f"at most {views.VIEW_BYTES} bytes" in text
-    # r5 S6: the v2.1 briefs state no check or repair-round counts (the pass enforces none)
+    # the library-mode briefs state no check or repair-round counts (the pass enforces none)
     assert "times per pass" not in text and "while the pass budget lasts" not in text
     assert f"appends {qa.SAMPLE_K} more recorded inputs" in text
     assert f"text of {code_lint.LINT_MIN} or more characters" in text
@@ -205,8 +205,8 @@ def test_rendered_from_the_constants_that_enforce_them():
     assert f"over its budget of {INDEX_VIEW_TOKENS} tokens" in pv.curate_brief_now()
 
 
-def test_amendment_e_no_read_only_instruction():
-    """Read-only is enforced by the mount (P3 Amendment C); no text tells anyone not to write the library."""
+def test_no_text_tells_anyone_not_to_write_the_library():
+    """Read-only is enforced by the mount; no text tells anyone not to write the library."""
     for name, text in _texts().items():
         assert "never write" not in text.lower(), name
         assert "The library is read-only" not in text, name
@@ -216,7 +216,7 @@ def test_amendment_e_no_read_only_instruction():
     )
 
 
-def test_amendment_b_observations_and_what_check_runs():
+def test_the_briefs_name_observations_and_what_check_runs():
     text = _write()
     assert "`request`, `observation:<i>`, `cell:<i>`" in text
     assert "its request, every observation" in text
@@ -224,7 +224,7 @@ def test_amendment_b_observations_and_what_check_runs():
         assert "does not run the tests" not in t, name
     assert "the items' own tests and the recorded inputs the gate draws" in text
     assert "the items' own tests and the recorded inputs the gate draws" in _curate()
-    # the two GUIDE sentences that wait for the lead's decision are kept
+    # the two GUIDE sentences on finding and optionally using an item are kept
     assert (
         "Before you write code for a step, look in the index for an item that does it."
         in pv.GUIDE_LIBRARY

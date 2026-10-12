@@ -1,4 +1,4 @@
-"""Memory v2.1 S0 (design r3): the deterministic code miner."""
+"""The deterministic code miner."""
 
 from unify.memory_v2 import mining as m
 from unify.memory_v2.mining import Cell

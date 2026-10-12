@@ -1,11 +1,12 @@
-"""With UNIFY_MEMORY_LIBRARY off, P5 changes nothing: no note, no lifecycle, v2's use record, P3's copies."""
+"""With UNIFY_MEMORY_LIBRARY off, the item lifecycle changes nothing: no note, no lifecycle, v2's use record and
+library copies."""
 
 from __future__ import annotations
 
 import json
 
 from tests.memory_v2.integration.test_consolidate import (
-    FakeSol,
+    FakeWriter,
     _events,
     _record,
     _run,
@@ -23,7 +24,7 @@ def test_library_off_writes_no_notes_and_never_runs_the_lifecycle(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     called = []
     monkeypatch.setattr(
         lifecycle,

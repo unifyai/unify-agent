@@ -1,8 +1,8 @@
-"""Spec §12.4 (P7 Task 2): the three prompts, and everything else the actor or the writer reads under v2.1, checked
-for conflicting instructions. Each rule lives in its role's prompts only, and no retired v2 rule survives.
+"""The three prompts, and everything else the actor or the writer reads in library mode, checked for conflicting
+instructions. Each rule lives in its role's prompts only, and no retired v2 rule survives.
 
-The surfaces come from P2 (repair and drafts messages), P3 (the rendered section and generated files) and P6
-(the CURATE inputs); those tests run once they are integrated."""
+The surfaces are the repair and drafts messages, the rendered section and generated files, and the CURATE inputs;
+those tests run once they are integrated."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def test_the_library_tool_descriptions_hold_no_retired_rule():
 
 
 def test_the_library_check_description_names_no_channel_and_says_what_it_runs():
-    """P2 Amendment B: under v2.1 check() also runs the items' own tests and the drawn inputs."""
+    """In library mode check() also runs the items' own tests and the drawn inputs."""
     check = next(
         t for t in writer_tools(library_mode=True) if t["function"]["name"] == "check"
     )["function"]["description"]
@@ -141,7 +141,7 @@ def test_v2_settings_that_contradict_library_are_named_only_with_library_on():
 
 
 def test_what_to_read_names_every_part_required_parts_demands():
-    """T8 (P1): replies and changing actions are required parts, so the WRITE brief must say so (MAIN, 9 Oct)."""
+    """Replies and changing actions are required parts, so the WRITE brief must say so."""
     from unify.memory_v2.batch_map import required_parts
     from unify.memory_v2.episodes import Action
     from tests.memory_v2.test_episodes import _ep
@@ -159,7 +159,7 @@ def test_what_to_read_names_every_part_required_parts_demands():
 
 
 def test_the_curate_brief_asks_for_the_retirement_reason_the_gate_requires(tmp_path):
-    """RUNTIME's review B2 (MAIN, 9 Oct): P6's gate refuses a deletion that is neither an alias nor `retired` with a
+    """The CURATE gate refuses a deletion that is neither an alias nor `retired` with a
     one-line reason, so the brief's manifest and its retire bullet name `retired`; and the brief's input paths are
     the files CURATE's inputs are written to."""
     from unify.memory_v2 import curate

@@ -1,4 +1,4 @@
-"""The gate's mutation operators (memory v2.1 stage 5): sites, application, seeded choice, structural negatives.
+"""The gate's mutation operators (stage 5): sites, application, seeded choice, structural negatives.
 
 Pure: every mutant is compiled and executed here in the test process (no model code, no sandbox).
 """

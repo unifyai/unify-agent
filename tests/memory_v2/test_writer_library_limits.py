@@ -1,5 +1,5 @@
-"""Memory v2.1 r5 (S6): an uncapped pass (PassConfig.max_usd None) has no USD cap and no count limits; the
-operational step guard and the deadline end a runaway. A capped pass (v2, or v2.1 with a cap) is unchanged.
+"""In library mode an uncapped pass (PassConfig.max_usd None) has no USD cap and no count limits; the
+operational step guard and the deadline end a runaway. A capped pass (v2, or library mode with a cap) is unchanged.
 """
 
 from decimal import Decimal
@@ -89,7 +89,7 @@ def test_repair_without_a_usd_figure_has_no_round_count():
 def test_the_library_briefs_state_no_count_limits_but_numbers_still_render_when_given():
     text = library_prompts.write_brief_now()
     assert "times per pass" not in text and "while the pass budget lasts" not in text
-    # m4k (MAIN 11 Oct): no sentence about the pass's time (it fed the writer's economy worry); the deadline holds
+    # no sentence about the pass's time (it fed the writer's economy worry); the deadline holds
     assert (
         "time runs out" not in text
         and "The items that pass land, and the rest is kept as a draft" in text

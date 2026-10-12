@@ -1,5 +1,5 @@
-"""P7 Task 3: under v2.1 the writer's system message is its role's brief alone (spec §12); commits carry
-Why/Episodes/Items; a v2.1 run with contradicting v2 switches is refused by name."""
+"""In library mode the writer's system message is its role's brief alone; commits carry
+Why/Episodes/Items; a library-mode run with contradicting v2 switches is refused by name."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _finishing_pass(tmp_path, **cfg):
 
 
 def _briefs_integrated():
-    """write_brief_now and curate_brief_now read P2's, P4's and P6's constants: run once integrated."""
+    """write_brief_now and curate_brief_now read the repair, lint and index modules' constants: run once integrated."""
     for name in (
         "unify.memory_v2.repair",
         "unify.memory_v2.code_lint",
@@ -67,7 +67,7 @@ def test_library_system_message_is_the_write_brief(tmp_path):
 def test_a_curate_pass_gets_the_curate_brief(tmp_path):
     _briefs_integrated()
     _, _, writer = _writer(tmp_path, Turns([]), library_mode=True)
-    writer.cfg.role = "curate"  # P6's PassConfig field
+    writer.cfg.role = "curate"  # a PassConfig field
     assert writer._brief_library_mode() == pv.curate_brief_now()
 
 
@@ -97,7 +97,7 @@ def test_a_request_with_contradicting_switches_is_refused_by_name():
     check_library_switches(
         SimpleNamespace(UNIFY_MEMORY_LIBRARY="on"),
     )  # nothing to refuse
-    check_library_switches(  # v2.1 off: v2's settings are v2's business
+    check_library_switches(  # library mode off: v2's settings are v2's business
         SimpleNamespace(UNIFY_MEMORY_LIBRARY="off", UNIFY_MEMORY_V2_DOCSTRINGS="on"),
     )
     with pytest.raises(MemoryV2Unavailable, match="UNIFY_MEMORY_V2_DOCSTRINGS=on"):

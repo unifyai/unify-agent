@@ -1,7 +1,7 @@
-"""The gate under v2.1: the lean docstring standard (G1), its examples as doctests (G3), the soft size
+"""The gate in the library mode: the lean docstring standard (G1), its examples as doctests (G3), the soft size
 budget (G4), reserved generated paths, and the input shapes a merge records for the export's catalogue.
 
-``lab`` is the gate with every v2.1 switch on (``UNIFY_MEMORY_V2_DOCSTRINGS=on``,
+``lab`` is the gate with every library-mode switch on (``UNIFY_MEMORY_V2_DOCSTRINGS=on``,
 ``UNIFY_MEMORY_V2_SURFACING=catalogue``, ``UNIFY_MEMORY_V2_SOFT_BUDGET=on``); the defaults are covered by
 ``test_library_switch_defaults.py``.
 
@@ -439,7 +439,7 @@ def test_the_runner_requires_the_function_to_be_called(lab):
     ids=["conditional", "self-comparison", "discarded", "wrapped", "bracket-ellipsis"],
 )
 def test_a_vacuous_example_is_refused_before_any_run(lab, example):
-    """Minor (re-review I2): the shown output must be the call's own value, made once, with content."""
+    """The shown output must be the call's own value, made once, with content."""
     mem, _, gate = lab
     module = DOC_MOD.replace(CALL, example)
     assert module != DOC_MOD
@@ -598,7 +598,7 @@ def test_a_refused_merge_records_no_shapes(lab):
     assert ev.commit_shapes(cand) is None
 
 
-# --- N1: a fixture of exactly a low-information recorded shape passes ---------------------------------------
+# --- a fixture of exactly a low-information recorded shape passes -------------------------------------------
 
 PAIRS_MOD = '__all__ = ["read_pairs"]\n' + ERROR_CLASS + '''
 
@@ -708,7 +708,7 @@ def test_total():
 
 
 def _shape_lab(tmp_path, action, eid):
-    """A gate with every v2.1 switch on whose only recorded action is *action* at (*eid*, 0)."""
+    """A gate with every library-mode switch on whose only recorded action is *action* at (*eid*, 0)."""
     mem = Repo.init_bare(tmp_path / "shape-mem.git")
     ev = EvidenceStore(tmp_path / "shape-e.sqlite")
     ev.index_episode(_ep(episode_id=eid, actions=[action]), "4" * 40)
@@ -726,7 +726,7 @@ def _shape_lab(tmp_path, action, eid):
 
 
 def _shape_case(tmp_path, kind, fixture):
-    """(gate, files, manifest) for one N1 shape: a headerless table, a raw grid or a list of scalars."""
+    """(gate, files, manifest) for one low-information shape: a headerless table, a raw grid or a list of scalars."""
     if kind == "pairs":
         blobs = BlobStore(tmp_path / "shape-b")
         sha = blobs.put(b"5,6\n7,8\n")
@@ -799,7 +799,7 @@ def _shape_case(tmp_path, kind, fixture):
     ids=["headerless-csv", "raw-grid", "scalar-list"],
 )
 def test_a_fixture_of_exactly_a_low_information_shape_passes(tmp_path, kind, fixture):
-    """N1: no named key, yet the fixture is the recorded input's shape; the gate admits it."""
+    """No named key, yet the fixture is the recorded input's shape; the gate admits it."""
     mem, gate, files, man, _, _ = _shape_case(tmp_path, kind, fixture)
     channel = man["skeleton"][0].split("/", 1)[1]
     res = gate.merge(
@@ -828,7 +828,7 @@ def test_a_headed_fixture_for_a_headerless_recorded_table_is_refused(tmp_path):
 
 
 # --- a fixture holding a collection of recorded inputs (validation of 394bd9afd, 8 Oct) ----------------------
-# Sol's natural fixture is a JSON list of the recorded observations (or records by name), and an example picks
+# The writer's natural fixture is a JSON list of the recorded observations (or records by name), and an example picks
 # one; the whole file is not shaped like one input, so the check also shapes the collection's elements.
 
 _PICKS = {

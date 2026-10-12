@@ -213,7 +213,7 @@ def test_plain_pytest_refuses_the_gate_kit(tmp_path):
     ]
 
 
-# --- the v2.1 manifest, persisted typed covers (Amendment C) ----------------------------------------------------
+# --- the library-mode manifest, persisted typed covers ----------------------------------------------------------
 
 
 def test_library_manifest_parses_function_ids_and_routes_covers():
@@ -304,7 +304,7 @@ def test_a_deleted_procedure_must_stay_covered(tmp_path):
     v = _checks(tmp_path, [], c_bodies={})
     v.gate.ev, v.run.man.deleted = _stored((gone, proc)), [gone]
     v.g5()
-    # P6 Amendment B's wording: a remaining item holds a procedure only by reproducing it
+    # a remaining item holds a procedure only by reproducing it
     assert [(c, r.split(";")[0], i) for c, r, i in v.run.fails] == [
         (
             "G5",
@@ -373,7 +373,7 @@ def test_a_helper_edit_that_breaks_a_stored_procedure_is_refused(tmp_path):
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap required")
 def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
-    """RUNTIME's review B1: the scope comes from the import graph, where a module depends on its package init."""
+    """The scope comes from the import graph, where a module depends on its package init."""
     from tests.memory_v2.test_procedures import _wt
     from unify.memory_v2 import layout
 
@@ -403,7 +403,7 @@ def test_an_init_rebinding_that_breaks_a_stored_procedure_is_refused(tmp_path):
 
 
 def test_cross_episode_runs_that_do_not_complete_refuse(tmp_path, monkeypatch):
-    """Review R3: a cross-episode check the gate could not complete fails closed."""
+    """A cross-episode check the gate could not complete fails closed."""
     a = SimpleNamespace(status="ok", kind="dialogue", channel="dialogue:user")
     for name, fn in (
         ("_doc", lambda *x: None),
@@ -431,7 +431,7 @@ def test_cross_episode_runs_that_do_not_complete_refuse(tmp_path, monkeypatch):
 
 
 def test_an_unreadable_stored_procedure_refuses_the_behaviour_check(tmp_path):
-    """Review R4: a stored procedure the behaviour check cannot compare fails closed, as _reproduced does."""
+    """A stored procedure the behaviour check cannot compare fails closed, as _reproduced does."""
     job = "memory.calc.sums:total"
     v = _checks(
         tmp_path,

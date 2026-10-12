@@ -1,4 +1,4 @@
-"""CURATE through the whole gate (P6; spec v2.1 §10.4, §9.1; D28 on the import-graph scope, D36)."""
+"""CURATE through the whole gate, including the import-graph scope of its checks."""
 
 import shutil
 from types import SimpleNamespace
@@ -19,7 +19,7 @@ from tests.memory_v2.test_gate_library_mode import (
     MOD,
     T,
     _files_and_fixtures,
-    world21,
+    library_gate_world,
 )  # noqa: F401 (fixture)
 
 needs_bwrap = pytest.mark.skipif(
@@ -152,8 +152,8 @@ def test_v2s_gate_records_no_curation(world):
 
 
 @needs_bwrap
-def test_an_alias_merge_lands_and_records_its_curation(world21):
-    mem, ev, blobs, gate = world21
+def test_an_alias_merge_lands_and_records_its_curation(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent(mem, ev, blobs)
     res = gate(role="curate").merge(
         parent,
@@ -179,8 +179,8 @@ def test_an_alias_merge_lands_and_records_its_curation(world21):
 
 
 @needs_bwrap
-def test_an_alias_that_answers_differently_is_refused(world21):
-    mem, ev, blobs, gate = world21
+def test_an_alias_that_answers_differently_is_refused(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent(mem, ev, blobs)
     wrong = ALIAS_IDS.replace(
         "import user_id as account_id",
@@ -200,8 +200,8 @@ def test_an_alias_that_answers_differently_is_refused(world21):
 
 
 @needs_bwrap
-def test_a_retirement_needs_a_reason_and_keeps_its_covers_covered(world21):
-    mem, ev, blobs, gate = world21
+def test_a_retirement_needs_a_reason_and_keeps_its_covers_covered(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent(mem, ev, blobs)
     gone = _candidate(mem, {IDS: None, T_IDS: None})
     base = dict(
@@ -252,9 +252,9 @@ def test_a_retirement_needs_a_reason_and_keeps_its_covers_covered(world21):
 
 @needs_bwrap
 def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour_is_kept(
-    world21,
+    library_gate_world,
 ):
-    mem, ev, blobs, gate = world21
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent(mem, ev, blobs)
     man = _curate_man(
         items=[_entry(ITEM_ID, [T], [("e1", 0)], ["e1"])],
@@ -281,7 +281,7 @@ def test_an_edit_without_a_red_test_lands_only_in_curate_and_only_when_behaviour
     )
 
 
-# --- D28 on declared aliases (MAIN, 10 Oct): their own recorded inputs and their target's, at least 2 ------
+# --- declared aliases: their own recorded inputs and their target's, at least 2 ------------------------------
 
 
 def _parent_without_alias_tests(mem, ev, blobs, covers):
@@ -296,9 +296,9 @@ def _parent_without_alias_tests(mem, ev, blobs, covers):
 
 @needs_bwrap
 def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_name(
-    world21,
+    library_gate_world,
 ):
-    mem, ev, blobs, gate = world21
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent_without_alias_tests(
         mem,
         ev,
@@ -322,10 +322,10 @@ def test_an_alias_that_answers_differently_is_refused_without_a_test_of_the_old_
 
 
 @needs_bwrap
-def test_an_alias_with_fewer_than_two_recorded_inputs_is_refused(world21):
+def test_an_alias_with_fewer_than_two_recorded_inputs_is_refused(library_gate_world):
     """The probe also reads recorded inputs of the pass's own episodes, so this fixture has two; the alias's probe
     is cut to one to pin the fail-closed rule."""
-    mem, ev, blobs, gate = world21
+    mem, ev, blobs, gate = library_gate_world
     parent = _parent_without_alias_tests(mem, ev, blobs, [(ACCOUNT, "e2", 0)])
     g = gate(role="curate")
     real = g._probe

@@ -1,4 +1,4 @@
-"""CURATE's trigger, inputs, trailers and brief (spec v2.1 §10.3, §10.4, §12.3), and its evidence tables."""
+"""CURATE's trigger, inputs, trailers and brief, and its evidence tables."""
 
 from __future__ import annotations
 

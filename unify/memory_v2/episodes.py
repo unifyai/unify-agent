@@ -1,4 +1,4 @@
-"""Episode records (spec §5): one append-only commit per request in the episodes repo."""
+"""Episode records: one append-only commit per request in the episodes repo."""
 
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ class Action:
     status: str = "unrecorded"  # ok | error | unrecorded
     effect: str = "unknown"  # read | write | unknown
     error: str | None = None
-    # Which of the four action kinds this is (spec §B): a typed tool call, a
+    # Which of the four action kinds this is: a typed tool call, a
     # shell command, a worktree file change, or a dialogue turn. Rows recorded
     # before kinds existed load as "tool".
     kind: str = "tool"
@@ -97,7 +97,7 @@ class Episode:
     actions: list[Action]
     memory_diff: str = ""
     # only from integration.adapters.worktree.WorkTreeRecorder.diff (the records' redactor): text
-    # hunks, never a binary's bytes (R28)
+    # hunks, never a binary's bytes
     worktree_diff: str = ""
     costs: list[CostRow] = field(default_factory=list)
     fingerprints: dict = field(default_factory=dict)
@@ -120,9 +120,9 @@ def _jsonl(rows: list[Any]) -> str:
 #: A reference to a value stored as a blob ({"__capped__": {excerpt, blob, bytes}}, BlobStore.cap_text).
 _REF = "__capped__"
 #: Record format 2 (UNIFY_MEMORY_LIBRARY): a recorded value that is itself a dict with a _REF or _LITERAL key is
-#: written as {_LITERAL: value}, so it is never read as a reference (RUNTIME's T7 checklist, point 2).
+#: written as {_LITERAL: value}, so it is never read as a reference.
 _LITERAL = "__literal__"
-#: The record format a v2.1 writer stamps in meta.json; a record without the key is format 1.
+#: The record format the writer stamps in meta.json in library mode; a record without the key is format 1.
 RECORD_FORMAT = 2
 
 

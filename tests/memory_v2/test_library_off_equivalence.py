@@ -1,4 +1,5 @@
-"""UNIFY_MEMORY_LIBRARY off (the default) keeps every P3 call site on v2's path; P3's surfaces use no benchmark words."""
+"""UNIFY_MEMORY_LIBRARY off (the default) keeps every library-mode call site on v2's path; what the library mode
+shows uses no benchmark words."""
 
 from __future__ import annotations
 
@@ -122,7 +123,7 @@ def test_library_off_keeps_every_call_site_on_v2(tmp_path, monkeypatch):
         ".memory/catalog.json",
         ".memory/shapes.py",
     }
-    # shape rows: v2's ids by default; the v2.1 tree adds none to them
+    # shape rows: v2's ids by default; the library-mode tree adds none to them
     assert (
         set(shape_rows._functions(env)) == {"env/x:f"}
         and shape_rows._functions(env, library_mode=True) == {}

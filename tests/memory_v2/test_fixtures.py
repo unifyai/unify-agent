@@ -142,7 +142,7 @@ def test_make_refuses_a_destination_outside_tests_data(dest):
 def test_make_refuses_bad_slices_and_appending_to_a_copy():
     with pytest.raises(fx.FixtureError, match="outside the"):
         fx.make(EP, 2, DEST, blob=_blob, cut=[999, 1000])  # starts past the record
-    # m4k-c4: a slice ending past the record copies what exists, recorded as the slice it took
+    # a slice ending past the record copies what exists, recorded as the slice it took
     notes: list[str] = []
     data, entry = fx.make(EP, 2, DEST, blob=_blob, cut=[0, 999], notes=notes)
     assert (

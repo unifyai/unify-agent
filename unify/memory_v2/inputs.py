@@ -1,4 +1,4 @@
-"""Recorded inputs for memory-library tests (memory v2.1 stage 5); shipped into the boxes as ``memlab.inputs``.
+"""Recorded inputs for memory-library tests; shipped into the boxes as ``memlab.inputs``.
 
 A test that should hold for every recorded input of its function's family is parametrised over :func:`inputs`::
 
@@ -20,7 +20,7 @@ the function's own tests actually exercised.
 
 Recorded payloads are referenced by blob id instead of being copied into fixtures: :func:`blob` reads
 ``blobs/<id>`` beside the kit (a work-tree file's ``blob_before``/``blob_after``, or an exported
-``response_blobs`` entry): ``/inputs/blobs`` in Sol's box and in the gate, ``<export>/.memlab/blobs`` in the
+``response_blobs`` entry): ``/inputs/blobs`` in the writer's box and in the gate, ``<export>/.memlab/blobs`` in the
 actor's export. A test reads a blob through :func:`blob` (never by its path), so it reads it the same way
 wherever the library's tests run; :func:`from_blob` makes a file input of one.
 

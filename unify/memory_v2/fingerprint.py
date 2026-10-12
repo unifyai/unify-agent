@@ -1,4 +1,4 @@
-"""Environment fingerprints and generation numbers (spec §9, §J1, D14): event-driven drift, never a time limit.
+"""Environment fingerprints and generation numbers: event-driven drift, never a time limit.
 
 A fingerprint maps a key to the shapes and error signatures recorded under it, per action kind:
 

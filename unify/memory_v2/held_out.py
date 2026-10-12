@@ -1,4 +1,4 @@
-"""G2's held-out-value check: scope is shape, not observed values (spec §F3a, D20).
+"""The gate's held-out-value check: scope is shape, not observed values.
 
 An environment function may refuse an input (raise its module's ``MemoryInputError``) only for its shape:
 types, columns or fields, required keys, the call's identity, formats. It must not refuse a value merely
@@ -32,7 +32,7 @@ value only a rejected call used makes the field vary (the conservative side); re
 * a string keeps its literal format parts and varies the rest within its character classes. The literal
   parts are the longest common prefix and suffix of the field's distinct observed values, cut back to
   boundaries between character-class runs (letters, digits, each other character) in every value: ids
-  ``E1243`` and ``E1488`` keep ``E``; ``ENG-0042``, ``OPS-0043`` and ``SAL-0044`` share nothing, so the prefix
+  ``E1243`` and ``E1488`` keep ``E``; ``ENG-0042``, ``FIN-0043`` and ``SAL-0044`` share nothing, so the prefix
   varies. In the varying part letters stay letters of
   the same case and digits stay digits (hex-like parts stay hex); every other character is kept, so a
   value's non-alphanumeric skeleton never changes. The result differs from the original and is absent
@@ -106,22 +106,22 @@ that field); every allowed refusal is noted. Every refusal an exemption allows i
   is not seen; with few covers, more fields hold one value.
 * Numbers change one at a time, so a row-sum or cross-row total check can be flagged; dates move together
   only within a record, so a cross-row order (rows sorted by date) can be flagged.
-* Fixed value domains (months 1–12, probabilities 0–1) are perturbed like any range (open question for
-  the lead).
+* Fixed value domains (months 1–12, probabilities 0–1) are perturbed like any range (an open
+  question).
 * ``"1."``, ``".5"`` and exponent forms are skipped as floats; non-ASCII letters are kept unchanged, so a
   string without ASCII letters or digits is not perturbed.
 * Field names are keys, columns or keyword paths; where a recording keys objects by data (ids as keys, a
   first data row taken for a header) the name in a reason is a recorded value (only key-shaped strings are
   redacted).
-* Under R16 (careless, not malicious) the check is not hidden from the item: the replay's type, the
+* Items are assumed careless, not malicious, so the check is not hidden from the item: the replay's type, the
   ``/cases`` paths and the results file in the same process are visible to code that looks for them.
 
-**Same results (D26).** The gate also uses this runner and its replay, without perturbation, to show that an
+**Same results.** The gate also uses this runner and its replay, without perturbation, to show that an
 edited function still does what its parent version did (:func:`output_cases`, :func:`run_outputs`): each
 recorded input runs on both versions, and what each returns (canonical JSON), refuses or raises, and which
 environment calls it issues, are compared on the host. A recorded tool rejection is replayed as the
 recorded error. A return value that is not JSON, a timeout or a case that did not run cannot be compared.
-Under R16 the comparison is not hidden from the item either.
+For the same reason the comparison is not hidden from the item either.
 
 Bounds: :data:`MAX_COVERS_PER_ITEM` covers (chosen by a hash of item and cover),
 :data:`MAX_FIELDS_PER_COVER` fields per cover, :data:`PER_CASE_S` per call and :data:`ITEM_BUDGET_S` per
@@ -153,7 +153,7 @@ from .manifest import SEMANTIC_TYPES
 from .sandbox_run import SandboxResult, run_confined
 
 MAX_COVERS_PER_ITEM = 8
-# :func:`run_outputs` (the gate's behaviour check, D26/D28): covers compared per function, seconds per tree
+# :func:`run_outputs` (the gate's behaviour check): covers compared per function, seconds per tree
 MAX_OUTPUT_COVERS = 128
 OUTPUTS_BUDGET_S = 120.0
 MAX_FIELDS_PER_COVER = 16
@@ -1073,7 +1073,7 @@ def plan(
     """The cases that check *item* on its covered observations (see the module docstring).
 
     *covers* are the item's validated covers; *seen* every recorded action of the episodes the gate sees;
-    *blob* reads a recorded file blob; *field_types* the item's declared semantic types (D21);
+    *blob* reads a recorded file blob; *field_types* the item's declared semantic types;
     *input_kind* its declared input form (None: each kind's convention); *pool* the recorded observations
     (episode id, action) a field's constancy is judged on, holding the covers (None: the covers, plus
     *seen* under an unknown episode id ``""``, which never counts toward the episodes); *pool_capped*
@@ -1485,7 +1485,7 @@ class Verdict:
         default_factory=list,
     )  # fields refused without an exempting rejection
     notes: list[str] = field(default_factory=list)
-    # declared-type failures (D21), as reason text naming the type and field, never a value
+    # declared-type failures, as reason text naming the type and field, never a value
     failures: list[str] = field(default_factory=list)
 
 

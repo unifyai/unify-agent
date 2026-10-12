@@ -1,4 +1,4 @@
-"""``memlab.inputs`` (memory v2.1 stage 5): recorded inputs for library tests, read on the host here.
+"""``memlab.inputs`` (the library mode's stage 5): recorded inputs for library tests, read on the host here.
 
 The module's box paths (``/inputs``, ``/qa/samples.json``, ``/qa-out/reads.jsonl``) are redirected to temporary
 directories; nothing here runs model code.

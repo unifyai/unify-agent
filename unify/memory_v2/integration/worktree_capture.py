@@ -1,4 +1,4 @@
-"""Work-tree capture for one memory-v2 request (spec §C2 work-tree kind, §E5; integration Task 30).
+"""Work-tree capture for one memory-v2 request (the work-tree action kind).
 
 :meth:`WorktreeCapture.begin` snapshots the request's workspace into ``<UNIFY_HOME>/worktree.git`` (a
 separate bare repo, harness-side, never mounted into a cell) and makes the capture the active one, so
@@ -10,7 +10,7 @@ window holds the stamp, snapshots the workspace again, and returns the adapter's
 and the redacted work-tree diff.
 
 The adapter does all host-side reading (no-follow fds from the root, size caps, shapes in a bounded child,
-text-only exported blobs, R26-R30). This module adds three things:
+text-only exported blobs). This module adds three things:
 
 - the redactor is built by *redactor_factory* at :meth:`finish`, so it knows every secret the request
   learned, and it is set on the recorder before any record is read, shaped, stored or cut;

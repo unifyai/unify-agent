@@ -1,7 +1,8 @@
-"""Pricing a v2.1 pass's model calls after the fact, by lane and window (spec v2.1 §6; P7 Amendment D).
+"""Pricing a library-mode pass's model calls after the fact, by lane and window.
 
-Passes run one at a time (:mod:`.integration.async_pass`) and Sol has its own proxy lane, so a pass's calls are the
-Sol-lane requests of the proxy journal (``UNIFY_MEMORY_V2_WRITER_JOURNAL``) that *started* inside the pass's window.
+Passes run one at a time (:mod:`.integration.async_pass`) and the writer has its own proxy lane, so a pass's calls
+are the writer-lane requests of the proxy journal (``UNIFY_MEMORY_V2_WRITER_JOURNAL``) that *started* inside the
+pass's window.
 The journal is append-only and carries no clock, so the window is a byte range: the journal's size when the pass
 started and when its supervisor recorded its end (:func:`journal_offset`). A request belongs to the pass when its
 ``request_started`` row lies in that range; its terminal row is read wherever it was appended, so a call cancelled
@@ -9,9 +10,9 @@ at the wall bound, whose terminal row the proxy writes late, is still found.
 
 A request is priced by its last row's ``account_charge``. One with no charge (cancelled in flight, a transport
 error, a terminal row not yet written) stays ``unknown``, never zero, and the run guard books it at
-:data:`WRITER_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one Sol request; the 8 Oct rule for
-never-priceable requests). No header is sent and no generation lookup is made: the proxy mints its own attempt id
-and the Sol lane refuses ``GET /generation`` (Amendment D). Money is a decimal string.
+:data:`WRITER_CALL_WORST_CASE_USD` (the guards' tier-1 catalogue maximum for one writer request, so a
+never-priceable request is booked at its worst case). No header is sent and no generation lookup is made: the proxy
+mints its own attempt id and the writer lane refuses ``GET /generation``. Money is a decimal string.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ UNKNOWN = "unknown"
 #: How long a reconciliation keeps re-reading the journal for terminal rows the proxy has not written yet.
 RECONCILE_S = 120.0
 RETRY_S = 5.0
-#: One Sol request's worst case, as the programme guard bounds it (tier 1, catalogue cbb212a9: context x the highest
-#: input-side rate + context x the completion rate, for openai/gpt-6-sol). An unpriced call is booked at this.
+#: One writer request's worst case, as the programme guard bounds it (tier 1, catalogue cbb212a9: context x the
+#: highest input-side rate + context x the completion rate, for the writer's model). An unpriced call is booked at this.
 WRITER_CALL_WORST_CASE_USD = Decimal("13.125")
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "error", "ok"})
 
@@ -59,7 +60,7 @@ def journal_offset(path: str | None) -> int | None:
 
 @dataclass
 class LaneCall:
-    """One Sol-lane request the pass started: its attempt id (the proxy's), its last status, its charge."""
+    """One writer-lane request the pass started: its attempt id (the proxy's), its last status, its charge."""
 
     attempt_id: str
     status: str = "started"
@@ -101,7 +102,7 @@ def lane_calls(
     end: int,
     models: Iterable[str],
 ) -> dict[str, LaneCall]:
-    """The Sol-lane requests whose ``request_started`` row lies in bytes ``[start, end)``, each with its LAST row's
+    """The writer-lane requests whose ``request_started`` row lies in bytes ``[start, end)``, each with its LAST row's
     status, charge and generation id from anywhere in the journal (terminal rows may come later).
     """
     lane = frozenset(m for m in models if m)
@@ -154,7 +155,7 @@ async def reconcile_window(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> dict:
-    """The pass's Sol calls priced from the journal, re-read until each started call has a terminal row or
+    """The pass's writer calls priced from the journal, re-read until each started call has a terminal row or
     *budget_s* has passed. Returns the summary the pass's end event and the run guard's settle line carry:
 
     ``journal`` (``read`` or ``unavailable``: no path, no window, or unreadable; then nothing is priced and the run

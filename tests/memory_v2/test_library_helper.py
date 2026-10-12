@@ -1,4 +1,4 @@
-"""The generated ``memory/__init__.py`` (spec §4.2, §6): index, show and find, run as a cell runs them."""
+"""The generated ``memory/__init__.py``: index, show and find, run as a cell runs them."""
 
 from __future__ import annotations
 
@@ -216,7 +216,7 @@ def test_history_lists_the_commits_that_changed_each_item(tmp_path):
 
 def test_history_subjects_reach_the_actor_redacted(tmp_path):
     """show() prints each item's history to the actor; a commit subject may come from any merge path, so a
-    key-shaped string in it never reaches the export (RUNTIME, P3 Task 3 review)."""
+    key-shaped string in it never reaches the export."""
     key = "sk-or-v1-" + "ab" * 32
     mem = Repo.init_bare(tmp_path / "memory")
     a = _commit(mem, {"memory/text/parse.py": PARSE}, f"add parse ({key})")

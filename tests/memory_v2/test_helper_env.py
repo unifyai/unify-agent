@@ -1,7 +1,7 @@
-"""S0 / S2 helper processes never inherit the pass worker's environment (M3b, 10 Oct: the runner's live token audit
-found ``tar`` and the box's ``bwrap`` holding the Sol base URL). Each spawn site runs through its real code; every
-``subprocess.run`` it makes is answered by a real child (``env -0``) started with exactly the environment the site
-passed, and that child's environment must hold no route name and no sentinel value.
+"""The code miner's and replay verification's helper processes never inherit the pass worker's environment (a live
+token audit found ``tar`` and the box's ``bwrap`` holding the writer's base URL). Each spawn site runs through its
+real code; every ``subprocess.run`` it makes is answered by a real child (``env -0``) started with exactly the
+environment the site passed, and that child's environment must hold no route name and no sentinel value.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from unify.memory_v2 import mining
 from unify.memory_v2 import mining_behaviour
 from unify.memory_v2 import s0_pass
 
-SENTINEL = "http://127.0.0.1:1/sol/v1/sentinel-route"
+SENTINEL = "http://127.0.0.1:1/writer/v1/sentinel-route"
 ROUTE_NAMES = (
     "UNIFY_MEMORY_V2_WRITER_BASE_URL",
     "UNIFY_MEMORY_V2_WRITER_TOKEN_FD",

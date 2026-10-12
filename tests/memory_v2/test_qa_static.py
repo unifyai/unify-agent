@@ -1,4 +1,4 @@
-"""The static stage-5 checks (memory v2.1): stand-in environments, cuts of truncated recordings, blob refs.
+"""The static stage-5 checks: stand-in environments, cuts of truncated recordings, blob refs.
 
 Pure: test sources are parsed, never run.
 """
@@ -98,7 +98,7 @@ def test_clock():
     assert _lines(keyword) == []
 
 
-# a root test kit Sol wrote before the harness provided the replay, re-exporting it: still accepted
+# a root test kit the writer wrote before the harness provided the replay, re-exporting it: still accepted
 REEXPORT_KIT = b"""from memlab.replay import env_from
 """
 
@@ -148,7 +148,7 @@ def test_clock():
     current_datetime(env_from([]))
 """
     assert _lines(via_old_kit, REEXPORT_KIT) == []
-    # the same name, defined by a root kit of Sol's own (test_gate.py's fake): a stand-in
+    # the same name, defined by a root kit of the writer's own (test_gate.py's fake): a stand-in
     assert _lines(via_old_kit, KIT) == [6]
 
 

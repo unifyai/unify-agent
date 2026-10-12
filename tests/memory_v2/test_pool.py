@@ -1,6 +1,6 @@
-"""Memory v2.1 candidate pool (the lead, 11 Oct; ``docs/design/memory-v2.1-candidate-pool.md``): proposals persist
-across passes on the memory repo's ``refs/heads/pool`` until the writer closes them. The design's seven tests:
-persistence, accumulation, status only from the writer, dedup, isolation, determinism and the off path.
+"""The library mode's candidate pool: proposals persist across passes on the memory repo's ``refs/heads/pool`` until
+the writer closes them. The design's seven tests: persistence, accumulation, status only from the writer, dedup,
+isolation, determinism and the off path.
 """
 
 import asyncio
@@ -452,7 +452,7 @@ def test_off_there_is_no_pool_ref_no_inputs_pool_and_the_pass_is_m4hs(
     )
 
 
-# --- RUNTIME H-P1: a crafted pool commit never writes outside /inputs/pool ---------------------------------------
+# --- a crafted pool commit never writes outside /inputs/pool -----------------------------------------------------
 
 
 class _Crafted:

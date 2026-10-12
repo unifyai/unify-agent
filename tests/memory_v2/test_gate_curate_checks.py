@@ -1,4 +1,4 @@
-"""CURATE's gate rules on stub runs (P6; spec v2.1 §10.4, §9.1): no jail, no git."""
+"""CURATE's gate rules on stub runs: no jail, no git."""
 
 from types import SimpleNamespace
 
@@ -288,7 +288,7 @@ def test_the_static_checks_include_curates(tmp_path, monkeypatch):
     assert seen == ["curate"]
 
 
-# -- P6 Amendment B: G5 keeps procedures' typed covers through a remaining item's re-run (D28) ------------------
+# -- G5 keeps procedures' typed covers through a remaining item's re-run ----------------------------------------
 import json  # noqa: E402
 
 from unify.memory_v2 import library_checks as gv  # noqa: E402
@@ -417,7 +417,7 @@ def test_a_listed_cover_is_held_only_by_its_re_run(tmp_path, monkeypatch):
     assert (TOKENS, "c") in seen
 
 
-# --- RUNTIME's review: R5 (generalise and regroup are CURATE's) and S3 --------------------------------------
+# --- generalise and regroup are CURATE's; aliases and status commits ----------------------------------------
 
 GEN_P = {
     "memory/m/__init__.py": '"""M."""\n',

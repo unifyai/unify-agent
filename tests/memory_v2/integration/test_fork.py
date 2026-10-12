@@ -1,6 +1,6 @@
-"""Design r5 §2-§3: the episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded,
+"""The episode-end fork. It runs only under UNIFY_MEMORY_LIBRARY_FORK=on, after the episode is recorded,
 through the actor's own proxy route, in a box whose only writable mount is the episode's staging dir. Nothing flows
-back (F3), off is off (F6), and the worker stages only the allowed files, from text and tool-call replies, executing
+back, off is off, and the worker stages only the allowed files, from text and tool-call replies, executing
 nothing."""
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _token_fd(text=TOKEN + "\n", inheritable=True):
 
 @pytest.fixture
 def lane(monkeypatch):
-    """The fork lane as the controller gets it (RUNTIME C3): the base URL and an inherited pipe with the token,
+    """The fork lane as the controller gets it: the base URL and an inherited pipe with the token,
     settled once; both names leave the environment."""
     sw = _fresh_lane_state(monkeypatch)
     fd = _token_fd()
@@ -162,7 +162,7 @@ def test_the_switch_is_off_by_default_and_takes_only_on_or_off():
         switch.parse_library_fork("maybe")
 
 
-# --- the route (fork-lane design; RUNTIME C3, C5): the key proxy's fork lane only ------------------------------
+# --- the route (fork-lane design): the key proxy's fork lane only ----------------------------------------------
 
 
 def test_without_the_fork_lane_there_is_no_fork(monkeypatch):
@@ -223,7 +223,7 @@ def test_a_bad_fork_route_is_refused_never_used(monkeypatch, kind):
 
 
 def test_the_fork_route_names_never_reach_a_box():
-    """C2: both names are harness-only for the actor's sandbox and for memory's own boxes."""
+    """Both names are harness-only for the actor's sandbox and for memory's own boxes."""
     from unify import sandbox
     from unify.memory_v2 import sandbox_run
 
@@ -275,7 +275,7 @@ def test_parse_reply_reads_text_and_tool_call_blocks_and_refuses_other_paths(tmp
     assert not marker.exists()
 
 
-# The shapes the fork's replies used (0f, replay B2 of 10 Oct: 26 of 31 put the path on the fence line, 4 before the
+# The shapes the fork's replies used (a replay of 10 Oct: 26 of 31 put the path on the fence line, 4 before the
 # fence, 3 inside it); each one stages the same file.
 _SHAPES = {
     "inside": "```python\npath: candidates/double.py\n" + CODE + "```\n",
@@ -422,7 +422,7 @@ def test_the_worker_imports_only_the_standard_library():
     assert names <= set(sys.stdlib_module_names) | {"__future__"}
 
 
-# --- the box (F1, F2) ------------------------------------------------------------------------------------------
+# --- the box ---------------------------------------------------------------------------------------------------
 
 
 def test_the_box_mounts_only_the_worker_and_the_staging_dir_writable(
@@ -498,7 +498,7 @@ def test_f1_the_request_goes_through_a_pipe_with_a_bare_environment(
     assert url == BASE + "/chat/completions"
     assert (
         headers["Authorization"] == "Bearer " + TOKEN
-    )  # C4: the token reaches the worker on its stdin only
+    )  # the token reaches the worker on its stdin only
     assert (
         headers["x-unify-session"] == f"fork.{eid}"
         and headers["x-unify-call-kind"] == "actor_fork"

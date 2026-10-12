@@ -1,4 +1,4 @@
-"""Scope is shape, not observed values (spec §F3a, D20): G2's held-out-value check.
+"""Scope is shape, not observed values: G2's held-out-value check.
 
 The first part needs no sandbox: the perturbations are derived from types alone and are deterministic.
 The second runs the gate (bubblewrap) on items that whitelist recorded values and on items that check
@@ -181,7 +181,7 @@ def _failed_write(index, before, after):
     )
 
 
-# Declared semantic types (D21): month and share (a probability) may be restricted to their domains once
+# Declared semantic types: month and share (a probability) may be restricted to their domains once
 # declared; hours is untagged.
 PERIODS = (
     b"period_id,month,share,hours\n" b"P-1,9,0.25,100.00\n" b"P-2,10,0.50,120.00\n"
@@ -385,7 +385,7 @@ def test_a_file_rejection_compares_rows_by_content_not_position(
     cover,
     varied,
 ):
-    """N8: a reorder or an appended copy varies no field; an appended row varies only its new values."""
+    """A reorder or an appended copy varies no field; an appended row varies only its new values."""
     store, acts = recorded
     p = plan(
         "env/worktree_workspace:r",
@@ -554,7 +554,7 @@ def _first_col(c, store, acts, cover):
 
 
 def test_a_fully_observed_domain_checks_only_the_out_of_domain_side(recorded):
-    """I1: all twelve months recorded: no unseen in-domain value exists, which is not a contradiction."""
+    """All twelve months recorded: no unseen in-domain value exists, which is not a contradiction."""
     store, acts = recorded
     p, by = _declared(acts, store, 18, {"month": "month"})
     assert not p.mismatched and ("month", "in") not in by
@@ -934,7 +934,7 @@ def test_constancy_needs_support_across_episodes_and_resists_chosen_covers():
 
 
 def test_the_same_file_read_in_two_episodes_is_one_observation(recorded):
-    """N2: a shared expenses file read three times in two episodes does not make currency constant."""
+    """A shared expenses file read three times in two episodes does not make currency constant."""
     store, _ = recorded
     sha = store.put(_expenses([5, 7]))
     reads = [
@@ -959,7 +959,7 @@ def _expenses(rows):
 
 
 def test_a_capped_pool_keeps_no_field_constant(recorded, monkeypatch):
-    """N1: an unread observation could vary a field, so a cap makes constancy fail safe."""
+    """An unread observation could vary a field, so a cap makes constancy fail safe."""
     import unify.memory_v2.held_out as held_out
 
     store, _ = recorded
@@ -993,7 +993,7 @@ def test_a_capped_pool_keeps_no_field_constant(recorded, monkeypatch):
 
 
 def test_the_gate_reads_the_stores_episodes_first_in_store_order(tmp_path, monkeypatch):
-    """N1: the manifest's episodes cannot use up the read cap before the store's are read."""
+    """The manifest's episodes cannot use up the read cap before the store's are read."""
     from types import SimpleNamespace
 
     import unify.memory_v2.held_out as held_out
@@ -1077,7 +1077,7 @@ def test_the_declared_input_decides_the_first_argument_form(recorded):
     assert raw.payload["path"].startswith("/cases/files/")
     # the same fields are perturbed whatever the form
     assert {c.field for c in by["text"].cases} == {c.field for c in by["path"].cases}
-    # a form a cover's kind cannot give fails the item (C1)
+    # a form a cover's kind cannot give fails the item
     env = plan(item, _covers(acts, 4), seen=acts, blob=store.get, input_kind="env")
     assert env.cases == []
     assert env.unfit == ["declares input env, which a worktree cover cannot give"]
@@ -1143,7 +1143,7 @@ def test_a_tool_item_declared_on_observations_gets_the_response_perturbed(record
 
 
 def test_a_declared_form_a_cover_cannot_give_fails_the_item(recorded):
-    """C1: a declared form that no covered input can be given in would check nothing."""
+    """A declared form that no covered input can be given in would check nothing."""
     store, acts = recorded
 
     def unfit(cover_idx, kind, covers=None):
@@ -1943,7 +1943,7 @@ ROOM_WHITELIST = """    if obs["room"] != "hall":
 
 @needs_bwrap
 def test_a_declared_form_the_covers_cannot_give_fails_g2(shop):
-    """C1: a dialogue whitelist declared as taking a path would otherwise check nothing."""
+    """A dialogue whitelist declared as taking a path would otherwise check nothing."""
     mem, gate = shop
     mod = _module("parse", "obs", ROOM_WHITELIST, doc="Parse a room.")
     res = _check(mem, gate, "dialogue_user", mod, [5], "parse", input_kind="path")

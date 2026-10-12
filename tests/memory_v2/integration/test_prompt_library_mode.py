@@ -1,4 +1,4 @@
-"""The v2.1 memory section (spec §4.5, §6): GUIDE, then the index view, last in the system prompt (cache rule)."""
+"""The library-mode memory section: GUIDE, then the index view, last in the system prompt (cache rule)."""
 
 from __future__ import annotations
 

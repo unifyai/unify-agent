@@ -1,5 +1,5 @@
 # unify/memory_v2/memory_repo.py
-"""The memory repo's layout, its items, and the harness's remove-only edits (spec §4, §9).
+"""The memory repo's layout, its items, and the harness's remove-only edits.
 
 Limitation (v0): hiding a note item removes the whole NOTES.md file, not one section; notes are
 rewritten by the next pass.
@@ -263,9 +263,9 @@ class MemoryRepo:
         return sha
 
     def status_commit(self, changes: Mapping[str, str], evidence: Sequence[str]) -> str:
-        """memory v2.1 (spec §4.4, §10.1; D10's harness commit): one empty commit on ``main`` recording a
+        """In library mode: one empty commit on ``main`` recording a
         consolidation's status changes, item by item (``Status: <item> <status>``) with the episodes behind them
-        (``Evidence:``). The tree is unchanged: a v2.1 item leaves the index by its status, never by losing its
+        (``Evidence:``). The tree is unchanged: a library item leaves the index by its status, never by losing its
         code, so ``memory.show`` still reaches it. The commit gives the requests after it a new pin, so the
         prompt prefix changes only when a commit lands (cache rule). v2's :meth:`hide` is unchanged.
         """

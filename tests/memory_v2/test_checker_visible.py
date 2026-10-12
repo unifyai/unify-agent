@@ -1,4 +1,4 @@
-"""Memory v2.1 P9 (spec §5): the verdicts a bed shows the actor, posted as agent-visible checker signals.
+"""The verdicts a bed shows the actor, posted as agent-visible checker signals.
 
 The bed's runner sends ``{"checker": {"label": "pass"|"fail"}}`` just before the message that shows the actor the
 same verdict. Under ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` the request keeps it, and at
@@ -109,7 +109,7 @@ def test_signal_note_bytes_unchanged_when_not_visible():
     sig = Signal("e.checker", "e", "checker", "pass", "t", refers_to="e")
     row = asdict(sig)
     del row["visible_to_actor"]
-    assert note_text(sig) == json.dumps(row, sort_keys=True)  # the note as before P9
+    assert note_text(sig) == json.dumps(row, sort_keys=True)  # the note as without visible checker signals
     assert "visible_to_actor" not in note_text(sig)
     vis = Signal("e.checker.1", "e", "checker", "fail", "t", visible_to_actor=True)
     assert json.loads(note_text(vis))["visible_to_actor"] is True
@@ -417,7 +417,7 @@ def test_finish_posts_visible_checkers_only_when_any_were_taken(
     run = _begin(mv2, "none taken")
     _transcript(run)
     _finish(mv2, run)
-    assert calls == []  # no checker line: the episode write is as before P9
+    assert calls == []  # no checker line: the episode write is unchanged
     run = _begin(mv2, "one taken")
     monkeypatch.setattr(run, "_observations_now", lambda: 1)
     run.take_checker({"label": "pass"})
@@ -472,7 +472,7 @@ def test_cli_without_a_memory_run_refuses_the_checker_line(monkeypatch):
     ]
 
 
-# ── review S4: off-path equivalence of the stdin channel ────────────────────
+# ── off-path equivalence of the stdin channel ───────────────────────────────
 
 
 def _off(monkeypatch):
@@ -518,7 +518,7 @@ def test_a_line_that_also_quits_is_never_swallowed(monkeypatch, switches):
     assert [e[0] for e in log] == ["begin", "act", "finish", "abort"]
 
 
-# ── review S2: only verdicts the actor saw are posted ───────────────────────
+# ── only verdicts the actor saw are posted ──────────────────────────────────
 
 
 def _errors(tmp_path):

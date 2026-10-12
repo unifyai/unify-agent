@@ -1,4 +1,4 @@
-"""links.json, INDEX.md and the index view (spec §4.3, §4.5): complete, sorted, deterministic."""
+"""links.json, INDEX.md and the index view: complete, sorted, deterministic."""
 
 from __future__ import annotations
 

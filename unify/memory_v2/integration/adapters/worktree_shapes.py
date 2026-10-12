@@ -1,4 +1,4 @@
-"""File shapes (spec §C3) for the work-tree adapter, computed in a bounded child process.
+"""File shapes for the work-tree adapter, computed in a bounded child process.
 
 The harness never parses a work-tree file itself: :func:`worktree.file_shape` runs this file as a
 script (``python -I -S -B worktree_shapes.py <format> <truncated> [<library dir> ...]``) under

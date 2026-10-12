@@ -205,9 +205,9 @@ GIT_TIMEOUT_S = 120
 
 def git_base_env() -> dict[str, str]:
     """The environment every memory git process starts from: the caller's, without ``GIT_*`` and without any
-    harness-only route name (:data:`.sandbox_run.HARNESS_ONLY_ENV`: Sol's and the fork lane's). git hands what it is
-    given to every process it starts; a local push runs ``git-receive-pack`` under ``sh -c``, so a route name kept
-    here reached a shell (the runner's live token audit, M4 qualification on w174, 11 Oct).
+    harness-only route name (:data:`.sandbox_run.HARNESS_ONLY_ENV`: the writer's and the fork lane's). git hands what
+    it is given to every process it starts; a local push runs ``git-receive-pack`` under ``sh -c``, so a route name
+    kept here reached a shell (found by a live token audit).
     """
     from .sandbox_run import HARNESS_ONLY_ENV
 

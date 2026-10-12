@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 (r4 §4): S0 at the start of a WRITE pass; it never stops a pass."""
+"""The code miner at the start of a WRITE pass; it never stops a pass."""
 
 import asyncio
 import json
@@ -103,9 +103,8 @@ def test_s0_runs_on_every_pass_when_the_loader_is_bound_to_the_calling_thread(
     tmp_path,
     monkeypatch,
 ):
-    """M3c/M4 (11 Oct): S0 died on every pass after the first. The pass's loader reaches a SQLite connection that
-    belongs to the calling thread, and S0 runs in a worker thread; with history to load it raised. RED on
-    f31f504a6."""
+    """The miner must not die on every pass after the first. The pass's loader reaches a SQLite connection that
+    belongs to the calling thread, and the miner runs in a worker thread; with history to load it raised."""
     import sqlite3
 
     monkeypatch.setattr(
@@ -149,7 +148,7 @@ def test_an_unreadable_history_episode_is_s0s_error_and_the_pass_goes_on(
     tmp_path,
     monkeypatch,
 ):
-    """RUNTIME (11 Oct): loading S0's episodes on the pass's thread must keep "S0 never stops a pass"."""
+    """Loading the miner's episodes on the pass's thread must keep "the miner never stops a pass"."""
     monkeypatch.setattr(
         mining_behaviour,
         "in_box",

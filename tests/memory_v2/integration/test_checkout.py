@@ -224,7 +224,7 @@ def test_untouched_generated_files_stay_out_of_the_diff(tmp_path):
 
 
 def test_an_older_commits_bytecode_is_never_exported(tmp_path):
-    """v2.1 I4: a commit from before the gate refused what manifest.unsafe_path names (bytecode, extensions,
+    """A commit from before the gate refused what manifest.unsafe_path names (bytecode, extensions,
     root entries outside the layout) is exported without them, so a cell can never import a sourceless
     ``.pyc`` from the library; the untouched export still diffs empty (what was left out is not something
     the request deleted).
@@ -259,7 +259,7 @@ def test_an_older_commits_bytecode_is_never_exported(tmp_path):
 
 def test_the_export_ships_the_test_kit_when_the_librarys_tests_use_it(tmp_path):
     """A library whose tests import memlab and name a recorded blob: the working model's export holds the
-    same kit (and blob) as the gate and Sol's box, outside the memory diff; a library that does not gets none.
+    same kit (and blob) as the gate and the writer's box, outside the memory diff; a library that does not gets none.
     """
     blobs = BlobStore(tmp_path / "blobs")
     screen = blobs.put(b"recorded screen")

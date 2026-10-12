@@ -1,4 +1,4 @@
-"""Adapter 4, dialogue (spec §C2): the action carried in each reply, paired with the next observation.
+"""Adapter 4, dialogue: the action carried in each reply, paired with the next observation.
 
 A dialogue action is a turn-ending assistant reply (text, no tool calls) followed by the next genuine
 user-role message, which is what the counterpart sent back: a typed environment's observation
@@ -326,7 +326,7 @@ def observation_count(transcript_lines: Iterable[dict]) -> int:
 def answered_observations(transcript_lines: Iterable[dict]) -> list[int]:
     """For each answered reply, in the order of :func:`dialogue_actions` with ``answered_only`` (one entry per
     action it records), the 0-based ordinal, among the transcript's observations, of the observation that
-    answers it. Spec v2.1 §5 (P9): a verdict posted just before the message that shows it to the actor is tied
+    answers it. A verdict posted just before the message that shows it to the actor is tied
     to the dialogue action that message answers. The pairing rule is :func:`dialogue_actions`'s own.
     """
     msgs = _messages(transcript_lines)

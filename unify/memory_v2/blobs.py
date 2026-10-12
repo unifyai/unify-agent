@@ -1,4 +1,4 @@
-"""Content-addressed blob folder for bulk episode payloads (spec §5)."""
+"""Content-addressed blob folder for bulk episode payloads."""
 
 from __future__ import annotations
 

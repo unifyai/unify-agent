@@ -1,4 +1,4 @@
-"""Signals and the job-level promotion rule (spec §8, D7/D8/D15)."""
+"""Signals and the job-level promotion rule."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class Signal:
     regime: str = "dense"
     revealed: bool = True
     reveal_p: str | None = None
-    # Spec v2.1 §5 (P9): the bed showed the actor this same verdict (a checker signal posted from a
+    # The bed showed the actor this same verdict (a checker signal posted from a
     # ``{"checker": ...}`` line). Only such checker signals may be used by the writer, the gate and the
     # lifecycle; a grader the actor never sees (``{"outcome": ...}``) stays False.
     visible_to_actor: bool = False

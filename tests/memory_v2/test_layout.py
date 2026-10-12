@@ -1,4 +1,4 @@
-"""The v2.1 layout (spec §4.1–4.3): path classes, ids, front matter, links as written, discovery, imports."""
+"""The library layout: path classes, ids, front matter, links as written, discovery, imports."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ NOTE = (
     "---\ntitle: Dates\ndescription: How dates are written.\n"
     "uses: [memory.text.dates:parse_date, memory.text.dates:gone]\n---\nDates are YYYY-MM-DD.\n"
 )
-#: The fixture library every v2.1 test of P3 reuses.
+#: The fixture library every library-layout test reuses.
 LIB = {
     "memory/text/__init__.py": '"""Text helpers. More detail follows."""\nfrom .parse import tokens\n',
     "memory/text/parse.py": PARSE,
@@ -255,7 +255,7 @@ def test_import_graph_resolves_absolute_relative_and_package_imports(tmp_path):
         "memory.text.dates": {"memory.text", "memory.text.parse"},
         "memory.text.parse": {
             "memory.text",
-        },  # review B1: a module runs its package init first
+        },  # a module runs its package init first
         "memory.text.report": {"memory.text", "memory.text.dates"},
         "memory.web.fetch": {"memory.text"},
     }

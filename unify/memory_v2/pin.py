@@ -1,4 +1,4 @@
-"""Pinned clock and randomness for the gate's confined runs (memory v2.1 stage 5, determinism).
+"""Pinned clock and randomness for the gate's confined runs (the library mode's stage 5, determinism).
 
 Shipped into the gate's box as ``/inputs/_memv2_pin.py`` and loaded by pytest as a plugin (``-p _memv2_pin`` in
 ``PYTEST_ADDOPTS``) when ``UNIFY_MEMORY_V2_QA_DETERMINISM`` is on, and by the gate's probe whenever a stage-5

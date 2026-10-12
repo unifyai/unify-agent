@@ -110,7 +110,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
     assert calls == {"check": 2, "merge": 1}
     result = model.outputs[
         "r1"
-    ]  # what Sol read: the first 8,000 bytes, marked when there is more
+    ]  # what the writer read: the first 8,000 bytes, marked when there is more
     assert result.startswith(
         "# Gate result: pass p1, round 0, check (not merged)",
     ), result
@@ -123,7 +123,7 @@ def test_repair_round_lands_one_commit_on_the_parent(tmp_path):
         len(repair_msgs) == 1
         and "/inputs/gate/result-0.md" in repair_msgs[0]["content"]
     )
-    # one commit on the parent: the refused round never enters main's history (D13)
+    # one commit on the parent: the refused round never enters main's history
     assert mem.head() == out.commit
     assert mem.run("rev-list", "--count", f"{parent}..{out.commit}").strip() == "1"
     assert "Round:" not in mem.run("log", "-1", "--format=%B", out.commit)
@@ -211,7 +211,7 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
 
     writer.gate.check = slow_check
     out = _run(writer)
-    # the check ran once and was written for Sol; after it, less time was left than a round takes
+    # the check ran once and was written for the writer; after it, less time was left than a round takes
     assert len(seen) == 1 and out.rounds == 1
     assert out.round_results == ["/inputs/gate/result-0.md"]
     assert any(
@@ -231,7 +231,7 @@ def test_gate_time_counts_against_the_deadline(tmp_path):
 
 @needs_bwrap
 def test_check_runs_the_items_own_tests_under_library_mode(tmp_path):
-    """Amendment B: under v2.1 ``check`` also runs the items' own tests (gate.check, no merge): a failing test's
+    """In library mode ``check`` also runs the items' own tests (gate.check, no merge): a failing test's
     output comes back as the head of the gate's full result."""
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")

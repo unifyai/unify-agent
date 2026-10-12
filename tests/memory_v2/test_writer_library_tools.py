@@ -1,6 +1,5 @@
-"""P1 Task 5 (spec v2.1 §7.3–7.4, P1, P5): the writer's read, grep, read_episode and dismiss tools, head-first cell
-output, and coverage at finish. Built on test_writer_pass's own helpers (``_call``, ``Turns``, ``_writer``): the plan's
-``_pass``/``_scripted`` sketches do not exist in that file."""
+"""The writer's read, grep, read_episode and dismiss tools, head-first cell output, and coverage at finish. Built
+on test_writer_pass's own helpers (``_call``, ``Turns``, ``_writer``)."""
 
 import asyncio
 
@@ -197,7 +196,7 @@ def test_reader_calls_use_their_own_budget_not_max_calls(tmp_path):
     assert (
         model.outputs["d"] == "ok"
     )  # dismiss still runs past the budget, so the pass can finish
-    # model turns only, reader calls counted apart; finish is refused twice for its missing manifest (r2 §3)
+    # model turns only, reader calls counted apart; finish is refused twice for its missing manifest
     assert out.reads == 3 and out.calls == 6
     assert out.coverage["missing"] == [] and out.summary == "done"
 
@@ -229,7 +228,7 @@ def test_read_episode_parts_share_one_page(tmp_path):
     assert rest.endswith(
         '== observation:0 ==\nnot shown (page full): read again with parts=["observation:0"]',
     )
-    # m4k: more than 8 parts page instead of refusing; the rest is named for the next call
+    # more than 8 parts page instead of refusing; the rest is named for the next call
     assert model.outputs["many"].endswith('next: parts=["request"]]')
     s = out.coverage
     assert s["bytes_read"] == len(b'"req"') + shown and s["parts_read"] == 1
@@ -256,7 +255,7 @@ def test_read_episode_parts_refuses_the_whole_call_before_any_credit(tmp_path):
     out, model = _pass(tmp_path, turns, max_calls=5)
     assert model.outputs["bogus"].startswith(
         "no part 'bogus' in e1; nothing was read. Its parts:\ne1: 4 part(s)",
-    )  # m4k-c4: an unknown part answers with the episode's parts
+    )  # an unknown part answers with the episode's parts
     assert model.outputs["neg"].startswith("refused: offset must be an integer >= 0")
     assert model.outputs["txt"].startswith("refused: offset must be an integer >= 0")
     assert out.coverage["bytes_read"] == 0 and out.coverage["parts_read"] == 0

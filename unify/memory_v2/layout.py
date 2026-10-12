@@ -1,4 +1,4 @@
-"""The memory v2.1 library layout (spec v2.1 §4.1–4.3): paths, item identity, note front matter, links as
+"""The memory library layout: paths, item identity, note front matter, links as
 written, discovery and the import graph. Pure: it reads and parses files and never runs library code.
 
 One git repository, branch ``main``::
@@ -35,7 +35,7 @@ INDEX_FILE = "INDEX.md"
 LINKS_FILE = "links.json"
 DATA_DIR = ".memory"
 GENERATED_ROOT_FILES = (RESERVED_INIT, INDEX_FILE, LINKS_FILE)
-# Package names a subpackage import would bind over the helpers on ``memory`` (and P8's optional ones).
+# Package names a subpackage import would bind over the helpers on ``memory`` (and the optional ones).
 RESERVED_PACKAGES = frozenset({"index", "show", "find", "search", "suggest", "tests"})
 
 _NAME = r"[a-z][a-z0-9_]*"
@@ -51,9 +51,9 @@ ACTOR_KINDS = frozenset({"module", "package_init", "note"})
 
 
 def classify(path: str) -> str | None:
-    """What *path* (relative, POSIX) is in the v2.1 layout: ``module``, ``package_init``, ``test``,
+    """What *path* (relative, POSIX) is in the library layout: ``module``, ``package_init``, ``test``,
     ``test_helper``, ``fixture``, ``note`` or ``generated``; None when the layout has no place for it, and
-    always for a path with an empty, ``.`` or ``..`` component, a backslash or a NUL (Sol writes manifest paths).
+    always for a path with an empty, ``.`` or ``..`` component, a backslash or a NUL (the writer writes manifest paths).
     """
     if (
         not path
@@ -97,8 +97,8 @@ def classify(path: str) -> str | None:
 
 
 def exported(path: str) -> bool:
-    """Whether the actor's read-only copy holds committed *path* (spec §6): library modules, package
-    docstrings and notes only. Never a tests directory or a fixture (§20 item 3), never a generated path (each
+    """Whether the actor's read-only copy holds committed *path*: library modules, package
+    docstrings and notes only. Never a tests directory or a fixture, never a generated path (each
     copy writes its own), never compiled code or another G6 class, and never a path outside the layout.
     """
     found = unsafe_path(path)
@@ -160,7 +160,7 @@ def _scalar(raw: str) -> str:
 
 
 def parse_front_matter(text: str) -> NoteMeta:
-    """A note's front matter (spec §4.3), strictly. The file starts with a ``---`` line. Then come ``title:``
+    """A note's front matter, strictly. The file starts with a ``---`` line. Then come ``title:``
     and ``description:``, and optionally ``uses: [<item>, ...]``, one line each, each key once and no other
     key. A closing ``---`` line ends it. Raises :class:`FrontMatterError` naming what is wrong.
     """
@@ -280,7 +280,7 @@ _REFUSED_LINK = "refused: a link or a path outside the library"
 
 def _confined(tree: Path, p: Path) -> bool:
     """Whether *p* is a regular path of *tree*: not a link itself, and resolving inside *tree* (a linked
-    directory on the way resolves outside). The harness never reads through a link Sol could commit.
+    directory on the way resolves outside). The harness never reads through a link the writer could commit.
     """
     root = os.path.realpath(tree)
     real = os.path.realpath(p)
@@ -493,7 +493,7 @@ def imported_closure(graph: dict[str, set[str]], module: str) -> set[str]:
 
 
 def dependants(graph: dict[str, set[str]], changed: set[str]) -> set[str]:
-    """*changed* with every module that imports one of them, directly or through others (spec §4.1, D42)."""
+    """*changed* with every module that imports one of them, directly or through others."""
     reverse: dict[str, set[str]] = {}
     for m, targets in graph.items():
         for t in targets:

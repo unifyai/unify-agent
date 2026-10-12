@@ -1,4 +1,4 @@
-"""D43: E = 100k recorded tokens under v2.1; the pass wall bound; the proxy journal path."""
+"""E = 100k recorded tokens in library mode; the pass wall bound; the proxy journal path."""
 
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def test_the_settings_load_with_their_defaults():
 
 
 def test_the_v2_max_calls_map_still_parses():
-    """The v2.1 integer parsers must not replace v2's per-effort validator (it is looked up at call time)."""
+    """The library mode's integer parsers must not replace v2's per-effort validator (it is looked up at call time)."""
     from unify.memory_v2.integration.switch import writer_max_calls_map
 
     assert writer_max_calls_map("low:40,medium:60,high:80") == {

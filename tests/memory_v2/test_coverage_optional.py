@@ -1,7 +1,7 @@
-"""UNIFY_MEMORY_LIBRARY_COVERAGE (MAIN 11 Oct; prepared, ``required`` until the lead decides; the subtractive note
-38c0bd35): ``optional`` lets the writer finish without covering; an episode left neither covered nor dismissed is
-recorded as unread (the pass's coverage and, with the pool, an ``unread`` entry), never dropped; ``dismiss`` stays a
-tool; the pass reports coverage measures that nothing reads back. ``required`` is today's behaviour, byte for byte.
+"""UNIFY_MEMORY_LIBRARY_COVERAGE (default ``required``): ``optional`` lets the writer finish without covering; an
+episode left neither covered nor dismissed is recorded as unread (the pass's coverage and, with the pool, an
+``unread`` entry), never dropped; ``dismiss`` stays a tool; the pass reports coverage measures that nothing reads
+back. ``required`` is today's behaviour, byte for byte.
 """
 
 from unify.memory_v2 import pool, library_prompts as pv, writer_pass

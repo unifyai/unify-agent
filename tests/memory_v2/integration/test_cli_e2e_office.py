@@ -1,4 +1,4 @@
-"""One scripted office visit end to end through the CLI, on the merged online build (integration Task 27).
+"""One scripted office visit end to end through the CLI, on the merged online build.
 
 The work-tree-shaped (office) variant: a workspace holds ``claims.csv``; the actor's one cell reads it and
 writes ``summary.json`` (and drops a stray file into the memory export), then the actor replies. The CLI runs
@@ -7,18 +7,18 @@ in process exactly as the OFF-equivalence test drives it (``Act`` with ``act --p
 to 1 so the first episode makes a pass due; the other switches are at their defaults. After the response an
 outcome whose check reason is ``SENTINEL-7f3a`` is posted, then ``{"quit": true}``.
 
-Sol is a fake model turn put over the turn the consolidation driver builds (``consolidate.unillm_turn``): it
-records every message it is sent and finishes at once with no manifest. What was staged for Sol is copied
-out as it is staged (``WriterPass._stage_inputs``), so the sentinel check covers Sol's inputs too.
+The writer is a fake model turn put over the turn the consolidation driver builds (``consolidate.unillm_turn``): it
+records every message it is sent and finishes at once with no manifest. What was staged for the writer is copied
+out as it is staged (``WriterPass._stage_inputs``), so the sentinel check covers the writer's inputs too.
 
 Checked: the jsonl lines (the accepted outcome, a consolidation start and end with ``no_manifest``, decimal
-USD and Sol's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
+USD and the writer's effort equal to the actor's, then ``ended``); the system prompt ends with the memory section
 (the v2 index under ``UNIFY_MEMORY_V2_SURFACING=index``, the default; the constant guide under
 ``catalogue``, on both visits);
 no review call; one episode commit whose ``actions.jsonl`` has the work-tree rows (a ``read`` of
 ``claims.csv`` with a csv shape and a ``write`` of ``summary.json`` on ``worktree:workspace``), whose
 ``cells.jsonl`` has the cell and whose meta has both snapshots; one pass/fail checker note; one ``passes``
-row; both events in the state dir's ``events.jsonl``; the sentinel nowhere under the home, in Sol's messages
+row; both events in the state dir's ``events.jsonl``; the sentinel nowhere under the home, in the writer's messages
 or in its staged inputs; the export removed after the request, and a second visit's export as clean as the
 first one was before its cell ran.
 """
@@ -62,8 +62,8 @@ from unify.settings import SETTINGS
 
 SENTINEL = "SENTINEL-7f3a"
 EFFORT = "medium"  # the actor's reasoning effort for the run
-WRITER_EFFORT = EFFORT  # Sol's matches the actor's by default (the lead, 8 Oct)
-WRITER_USD = "0.0000005"  # what the fake Sol turn reports per call
+WRITER_EFFORT = EFFORT  # the writer's matches the actor's by default
+WRITER_USD = "0.0000005"  # what the fake writer turn reports per call
 CHANNEL = "worktree:workspace"
 STRAY = "env/stray_note.py"
 PLAIN_DECIMAL = re.compile(r"^[0-9]+(\.[0-9]+)?\Z")
@@ -96,8 +96,8 @@ def _files(root: Path) -> list[str]:
     )
 
 
-class _FakeSol:
-    """Sol's model turn: records what it is sent and what was staged, finishes with no manifest."""
+class _FakeWriter:
+    """The writer's model turn: records what it is sent and what was staged, finishes with no manifest."""
 
     def __init__(self) -> None:
         self.models: list[str] = []
@@ -128,8 +128,8 @@ class _FakeSol:
         return turn
 
 
-def _install_fake_writer(monkeypatch) -> _FakeSol:
-    fake = _FakeSol()
+def _install_fake_writer(monkeypatch) -> _FakeWriter:
+    fake = _FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake.factory)
     original = writer_pass.WriterPass._stage_inputs
 
@@ -279,7 +279,7 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert end["gate_passed"] is False and end["calls"] == 1
     assert isinstance(end["usd"], str) and PLAIN_DECIMAL.match(end["usd"]), end
     assert Decimal(end["usd"]) == Decimal(WRITER_USD)
-    # Sol's effort matches the actor's: the event and the turn Sol was given
+    # the writer's effort matches the actor's: the event and the turn the writer was given
     assert start["writer_effort"] == WRITER_EFFORT
     assert fake.efforts == [WRITER_EFFORT] and len(fake.sent) == 1
     assert fake.models == [start["writer_model"]]
@@ -420,9 +420,9 @@ async def test_one_office_visit_end_to_end(core_world, monkeypatch, surfacing):
     assert not paths.checkout.exists()
 
     # 5. the sentinel is nowhere: the home (files, every git object incl. notes, the evidence db rows),
-    # Sol's messages and staged inputs, and the CLI's output
-    assert fake.staged, "nothing was staged for Sol"
-    assert any(b"claims.csv" in b for b in fake.staged)  # the episode did reach Sol
+    # the writer's messages and staged inputs, and the CLI's output
+    assert fake.staged, "nothing was staged for the writer"
+    assert any(b"claims.csv" in b for b in fake.staged)  # the episode did reach the writer
     dump = dump_home(home)
     assert dump  # the dump read something
     assert SENTINEL.encode() not in dump

@@ -1,4 +1,4 @@
-"""What the import system could load from the library is refused (v2.1 review I4), in every mode.
+"""What the import system could load from the library is refused, in every mode.
 
 The gate refuses before extraction what :func:`unify.memory_v2.manifest.unsafe_path` names (bytecode,
 native code and ``__pycache__`` entries anywhere, ``.pth`` files and start-up hooks under any suffix, and
@@ -7,7 +7,7 @@ refusals; :func:`unify.memory_v2.catalogue.reserved` names the root entries that
 or ``import memory``. The export never writes such a file from an older commit. The gate-level cases are in
 ``test_gate_layout.py``.
 
-These refusals are a declared safety fix applied whatever the v2.1 switches say, so they must refuse nothing
+These refusals are a declared safety fix applied whatever the library-mode switches say, so they must refuse nothing
 a v2 library holds: :func:`test_no_path_of_a_v2_library_fixture_is_refused` checks every library path in the
 v2 suite's fixtures (and the paths the v2 design records name), and
 :func:`test_no_path_of_a_recorded_library_is_refused` checks real libraries when
@@ -29,7 +29,7 @@ import pytest
 from unify.memory_v2 import manifest as m
 from unify.memory_v2.catalogue import reserved
 
-# The probes of the re-review (I4), plus the shapes of each kind of importable artefact.
+# The original probes, plus the shapes of each kind of importable artefact.
 REFUSED = [
     "env/__init__.pyc",  # would turn the env namespace into a package whose code runs on every import
     "sitecustomize.pyc",  # run at interpreter start-up
@@ -353,7 +353,7 @@ def test_startup_hook_names_are_refused_with_any_suffix_anywhere():
 
 def test_writer_and_the_gate_run_pytest_without_bytecode():
     """The gate's confined pytest runs with PYTHONDONTWRITEBYTECODE=1 (set by run_confined) and
-    ``-p no:cacheprovider`` (run_pytest); Sol is told the same command."""
+    ``-p no:cacheprovider`` (run_pytest); the writer is told the same command."""
     from unify.memory_v2 import sandbox_run, writer_pass
 
     src = Path(sandbox_run.__file__).read_text()

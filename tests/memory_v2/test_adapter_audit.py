@@ -1,4 +1,4 @@
-"""The worker audit hook (spec §C2, §C5 option A): raw records only.
+"""The worker audit hook: raw records only.
 
 Audit hooks are permanent, so every hook test runs in a fresh subprocess
 interpreter (``-I``) that loads ``audit.py`` by file path, which also checks

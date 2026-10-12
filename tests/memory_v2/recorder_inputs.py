@@ -1,4 +1,4 @@
-"""P1 Task 7's off-path inputs: one deterministic over-the-cap recording per recorder (dialogue, shell, tool,
+"""The library switch's off-path inputs: one deterministic over-the-cap recording per recorder (dialogue, shell, tool,
 worktree), using only the recorders' default arguments, as they exist at 4675a3c45.
 
 :func:`off_records` is run once at 4675a3c45 (on a keyless worker) to write ``golden/recorder_cuts_off_4675a3c45.json``;

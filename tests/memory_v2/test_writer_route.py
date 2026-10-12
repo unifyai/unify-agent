@@ -1,8 +1,8 @@
-"""Sol's own route: ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``.
+"""The writer's own route: ``UNIFY_MEMORY_V2_WRITER_BASE_URL`` and ``UNIFY_MEMORY_V2_WRITER_TOKEN``.
 
-Unset, Sol's call is built as shipped. Both set, it goes to that base URL with that token and carries
+Unset, the writer's call is built as shipped. Both set, it goes to that base URL with that token and carries
 ``X-Unify-Call-Kind: memory_v2.writer``. One set, or a value in a wrong form, starts no pass. Neither name reaches a
-cell's environment or Sol's box, and no repr, str, log line or error shows the token.
+cell's environment or the writer's box, and no repr, str, log line or error shows the token.
 
 Credentials here are placeholders, and even those are compared by digest and checked through booleans computed
 before the assert, so a failing assert never prints one. No test makes a model call: the client is a fake, and
@@ -47,7 +47,7 @@ def _otel_off_unless_a_test_turns_it_on(monkeypatch):
 
 from unify.memory_v2.writer_pass import WriterRoute, unillm_turn
 
-WRITER_TOKEN = "sol-route-placeholder-token"  # pragma: allowlist secret
+WRITER_TOKEN = "writer-route-placeholder-token"  # pragma: allowlist secret
 WRITER_BASE = "http://127.0.0.1:18081/api/v1"
 ACTOR_KEY = "actor-gateway-placeholder-key"  # pragma: allowlist secret
 ACTOR_BASE = "http://127.0.0.1:18080/api/v1"
@@ -178,7 +178,7 @@ def test_settings_default_to_no_route(monkeypatch):
     assert consolidate.writer_settings(s).route is None
 
 
-# --- both set: Sol's route --------------------------------------------------------------------------------
+# --- both set: the writer's route -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("cost,usd", [(0.0125, "0.0125"), (None, "unknown")])
@@ -222,7 +222,7 @@ def test_route_sends_to_its_base_url_with_its_token_and_header(
     ]
     t = seen["transport"]
     assert t["api_base"] == WRITER_BASE
-    assert t["api_key"] == _digest(WRITER_TOKEN)  # Sol's token, not the actor's key
+    assert t["api_key"] == _digest(WRITER_TOKEN)  # the writer's token, not the actor's key
     assert t["extra_headers"] == {"X-Unify-Call-Kind": "memory_v2.writer"}
     # pricing as shipped: the request still asks the OpenRouter API for its charged cost
     assert t["extra_body"]["usage"]["include"] is True
@@ -257,7 +257,7 @@ def test_a_call_that_misses_the_route_fails_the_turn(monkeypatch, restore_unillm
 
 
 def test_a_forged_header_does_not_select_the_route(actor_gateway, restore_unillm):
-    """The header is an extra check, never the rule: outside a Sol call, a request carrying Sol's call kind
+    """The header is an extra check, never the rule: outside a writer call, a request carrying the writer's call kind
     still goes the actor's way, with the actor's key. On the proxy side, the actor's port applies the actor's
     allow-list whatever headers arrive, so a cell that forges the header reaches nothing new either.
     """
@@ -352,17 +352,17 @@ def test_one_set_starts_no_pass_and_makes_no_call(monkeypatch, base, token, miss
         "http://proxy.internal/\x00v1",
         # plain http to any host but exactly 127.0.0.1: the token would travel in clear
         "http://proxy.internal/v1",
-        "http://localhost:18081/sol/v1",
-        "http://127.0.0.2:18081/sol/v1",
-        "http://10.0.0.1:18081/sol/v1",
-        "http://192.168.4.5/sol/v1",
-        "http://[::1]:18081/sol/v1",
+        "http://localhost:18081/writer/v1",
+        "http://127.0.0.2:18081/writer/v1",
+        "http://10.0.0.1:18081/writer/v1",
+        "http://192.168.4.5/writer/v1",
+        "http://[::1]:18081/writer/v1",
         "http://8.8.8.8/v1",
         "http://169.254.169.254/v1",
         "http://0.0.0.0:8080/v1",
         # plain http to 127.0.0.1 always names its port, as the launcher sends it
-        "http://127.0.0.1/sol/v1",
-        "http://127.0.0.1:/sol/v1",
+        "http://127.0.0.1/writer/v1",
+        "http://127.0.0.1:/writer/v1",
     ],
 )
 def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
@@ -385,10 +385,10 @@ def test_the_base_url_validator_refuses_bad_urls_without_quoting_them(raw):
         (WRITER_BASE + "/", WRITER_BASE),
         ("https://proxy.internal", "https://proxy.internal"),
         ("HTTPS://proxy.internal:8443/api/v1", "HTTPS://proxy.internal:8443/api/v1"),
-        ("http://127.0.0.1:18081/sol/v1", "http://127.0.0.1:18081/sol/v1"),
-        ("http://127.0.0.1:18081/sol/v1/", "http://127.0.0.1:18081/sol/v1"),
-        ("https://localhost:8443/sol/v1", "https://localhost:8443/sol/v1"),
-        ("https://10.0.0.1/sol/v1", "https://10.0.0.1/sol/v1"),
+        ("http://127.0.0.1:18081/writer/v1", "http://127.0.0.1:18081/writer/v1"),
+        ("http://127.0.0.1:18081/writer/v1/", "http://127.0.0.1:18081/writer/v1"),
+        ("https://localhost:8443/writer/v1", "https://localhost:8443/writer/v1"),
+        ("https://10.0.0.1/writer/v1", "https://10.0.0.1/writer/v1"),
     ],
 )
 def test_the_base_url_validator_accepts_http_urls(raw, want):
@@ -482,7 +482,7 @@ def test_the_token_never_shows_in_repr_str_dump_or_log(monkeypatch, caplog):
     assert leaked == []
 
 
-# --- neither name reaches a cell or Sol's box --------------------------------------------------------------
+# --- neither name reaches a cell or the writer's box -------------------------------------------------------
 
 
 def test_a_cells_environment_never_holds_the_route(monkeypatch):
@@ -510,7 +510,7 @@ def test_a_cells_environment_never_holds_the_route(monkeypatch):
     assert kept == {"PATH": "/usr/bin", "TMPDIR": "/tmp"}
 
 
-def test_sols_box_refuses_the_route_in_its_environment():
+def test_the_writers_box_refuses_the_route_in_its_environment():
     for name in ("UNIFY_MEMORY_V2_WRITER_TOKEN", "UNIFY_MEMORY_V2_WRITER_BASE_URL"):
         with pytest.raises(ValueError) as info:
             run_confined(["/bin/true"], env={name: WRITER_TOKEN})
@@ -518,7 +518,7 @@ def test_sols_box_refuses_the_route_in_its_environment():
         assert not leaked
 
 
-# --- concurrency: only Sol's own call takes Sol's route ------------------------------------------------------
+# --- concurrency: only the writer's own call takes its route -------------------------------------------------
 
 
 def _is_actor(t: dict) -> bool:
@@ -536,9 +536,9 @@ def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
     actor_gateway,
     restore_unillm,
 ):
-    """While Sol's call is parked mid-flight: a task created before it, a task created the way the worker
+    """While the writer's call is parked mid-flight: a task created before it, a task created the way the worker
     serves a cell's ``query_llm`` (``worker._serve``: from the running cell's context), a thread and an
-    executor job each prepare the actor's transport; Sol's call, before and after them, prepares its own.
+    executor job each prepare the actor's transport; the writer's call, before and after them, prepares its own.
     """
     import unify.common.llm_client as llm_client
 
@@ -572,7 +572,7 @@ def test_concurrent_actor_tasks_served_calls_and_threads_keep_the_actors_route(
             asyncio.Event(),
         )
 
-        async def actor() -> None:  # created before the Sol call
+        async def actor() -> None:  # created before the writer call
             await go.wait()
             seen["actor"] = _redacted(_prepare())
             seen["served"] = await asyncio.create_task(served())
@@ -633,7 +633,7 @@ def _completion(cost: float = 0.01):
 
     return ChatCompletion.model_validate(
         {
-            "id": "cmpl-sol-route",
+            "id": "cmpl-writer-route",
             "object": "chat.completion",
             "created": 0,
             "model": REAL_MODEL,
@@ -715,7 +715,7 @@ def listener():
 _MESSAGES = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
 
 
-def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_own(
+def test_unillms_real_path_sends_the_writers_call_on_its_route_and_the_actors_on_its_own(
     real_transport,
     listener,
 ):
@@ -737,7 +737,7 @@ def test_unillms_real_path_sends_sols_call_on_its_route_and_the_actors_on_its_ow
         not e["has_key"] and e["api_base"] == WRITER_BASE for e in writer_events
     )
 
-    # an actor call after it, on the same process: the actor's gateway and key, no Sol header
+    # an actor call after it, on the same process: the actor's gateway and key, no writer header
     actor = new_llm_client(
         f"{REAL_MODEL}@openrouter",
         cache=False,
@@ -758,8 +758,8 @@ def test_a_cancelled_routed_call_strips_the_key_from_its_late_event(
     real_transport,
     listener,
 ):
-    """Sol's caller gives up mid-call; unillm leaves the request running and bills it when it returns. Both
-    the cancellation's event and the late one pass through Sol's hook, so no listener sees the token.
+    """The writer's caller gives up mid-call; unillm leaves the request running and bills it when it returns. Both
+    the cancellation's event and the late one pass through the writer's hook, so no listener sees the token.
     """
     turn = unillm_turn(
         REAL_MODEL,
@@ -838,7 +838,7 @@ def test_a_route_not_in_effect_is_refused_before_any_call(
     assert writer_pass._WRITER_GATEWAY.get() is None
 
 
-# --- failed Sol calls leave no credential in notes, error rows or logs --------------------------------------
+# --- failed writer calls leave no credential in notes, error rows or logs -----------------------------------
 
 
 class _EchoingError(Exception):
@@ -933,7 +933,7 @@ def test_pass_notes_and_the_pass_row_hold_no_token(
 
 
 def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_path):
-    """A Sol call that finds the route not in effect ends the pass with ``route_not_in_effect``, which the end
+    """A writer call that finds the route not in effect ends the pass with ``route_not_in_effect``, which the end
     event carries (not the generic ``writer_error``).
     """
     from tests.memory_v2.test_writer_pass import _run as run_pass
@@ -941,7 +941,7 @@ def test_a_route_not_in_effect_in_a_pass_ends_it_with_its_own_reason_code(tmp_pa
 
     async def misrouted(messages, tools):
         raise writer_pass.WriterRouteError(
-            "a Sol call did not take Sol's declared route",
+            "a writer call did not take the writer's declared route",
         )
 
     _mem, _ev, writer = _writer(tmp_path, misrouted)
@@ -996,12 +996,12 @@ def test_unillms_retry_warnings_are_redacted_once_the_route_is_installed(
     )
 
 
-def test_sols_per_call_log_file_is_rewritten_redacted(
+def test_the_writers_per_call_log_file_is_rewritten_redacted(
     monkeypatch,
     tmp_path,
     restore_unillm,
 ):
-    """Sol's client (only) gets unillm's ``on_log_file`` callback, which rewrites the finalised per-call log
+    """The writer's client (only) gets unillm's ``on_log_file`` callback, which rewrites the finalised per-call log
     (``UNILLM_LOG_DIR``; it holds ``str(error)`` as is) with the token and credential structures removed.
     """
     import unify.common.llm_client as llm_client
@@ -1058,7 +1058,7 @@ def test_sols_per_call_log_file_is_rewritten_redacted(
     assert left == sorted([log.name, clean.name])
 
 
-def test_sols_route_refuses_to_start_while_unillm_records_spans(
+def test_the_writers_route_refuses_to_start_while_unillm_records_spans(
     monkeypatch,
     restore_unillm,
 ):
@@ -1328,7 +1328,7 @@ def test_a_route_only_in_dotenv_refuses_every_pass_and_its_token_leaves(
     monkeypatch,
     tmp_path,
 ):
-    """Settings are read before the CLI loads ``.env``: a route only there would silently leave Sol on the
+    """Settings are read before the CLI loads ``.env``: a route only there would silently leave the writer on the
     actor's route, so every pass is refused, naming the settings and never their values.
     """
     from dotenv import load_dotenv
@@ -1764,7 +1764,7 @@ def test_the_descriptor_setting_is_normalised_in_settings_and_parsed_when_settle
     assert held
 
 
-def test_the_descriptor_setting_never_reaches_a_cell_or_sols_box(monkeypatch):
+def test_the_descriptor_setting_never_reaches_a_cell_or_the_writers_box(monkeypatch):
     monkeypatch.setenv(_FD, "7")
     policy = SimpleNamespace(network="", proxy_port=None)
     explicit = sandbox.sandbox_env(

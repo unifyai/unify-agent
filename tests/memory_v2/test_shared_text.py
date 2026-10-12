@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 (r4 §1): request text shared by most episodes is shown once, as a marker with its file."""
+"""Request text shared by most episodes is shown once, as a marker with its file."""
 
 import asyncio
 import json
@@ -23,7 +23,7 @@ def test_a_block_in_most_episodes_becomes_one_marker(tmp_path):
         PRE + "\n\nTask 1: do thing 1",
     )  # counted once per episode
     sh = shared_text.shared(ev)
-    assert PRE in sh.values()  # the block (its long line is a shared unit too, M4)
+    assert PRE in sh.values()  # the block (its long line is a shared unit too)
     marked = shared_text.mark(PRE + "\n\nTask 1: do thing 1", sh)
     bid = next(b for b, t in sh.items() if t == PRE)
     assert marked == shared_text.marker(bid) + "\n\nTask 1: do thing 1"
@@ -93,7 +93,7 @@ def test_batch_map_lists_the_block_file_and_reads_show_the_marker(tmp_path):
 def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical(
     tmp_path,
 ):
-    """RUNTIME B2: the marker alone never covers the block; it is a required part, read once, then credited
+    """The marker alone never covers the block; it is a required part, read once, then credited
     elsewhere by the identical-part credit."""
     eps = {
         f"e{i}": _episode(f"e{i}", request=(PRE + f"\n\nTask {i}",)) for i in range(3)
@@ -112,7 +112,7 @@ def test_a_shared_block_is_a_required_part_shown_once_then_credited_as_identical
 def test_a_shared_line_inside_an_episode_specific_block_and_in_observations_is_marked(
     tmp_path,
 ):
-    """M4 (MAIN, 10 Oct): MED repeated the line-level instructions that sit in blocks with task-specific text."""
+    """At medium effort the writer re-read the line-level instructions that sit in blocks with task-specific text."""
     ev = EvidenceStore(tmp_path / "e.sqlite")
     line = "Reply with exactly one action JSON on the last line."
     obs = "Each demo request returns one more input-output pair of the task."

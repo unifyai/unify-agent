@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 (§2-§4, §6): staging reaches the writer read-only as untrusted input; Sol analysts (arm C)."""
+"""Staging reaches the writer read-only as untrusted input; analysts on the writer's model."""
 
 import asyncio
 import json

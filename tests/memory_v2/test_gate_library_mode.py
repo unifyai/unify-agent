@@ -1,4 +1,4 @@
-"""The whole gate with v2.1 checks, in the jail (bubblewrap) on keyless w139."""
+"""The whole gate with the library mode's checks, in the jail (bubblewrap)."""
 
 import json
 import shutil
@@ -147,7 +147,7 @@ INPUTS = fx.inputs_file(ITEM_ID)
 
 
 @pytest.fixture
-def world21(tmp_path):
+def library_gate_world(tmp_path):
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     for n, ep in enumerate(EPS.values()):
@@ -198,8 +198,8 @@ def _man(fixtures, **item):
     }
 
 
-def test_library_gate_passes_and_records_verification(world21):
-    mem, ev, blobs, gate = world21
+def test_library_gate_passes_and_records_verification(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     res = gate().merge(
         mem.head(),
@@ -225,12 +225,12 @@ def test_library_gate_passes_and_records_verification(world21):
         ev.db.execute("SELECT reasons FROM passes WHERE pass_id='p1'").fetchone()[0],
     )
     assert any(r.startswith("library_mode-verification ") for r in reasons)
-    # P3's deferred item: the landed commit's shapes are frozen under the v2.1 id, for the actor's find
+    # the deferred item: the landed commit's shapes are frozen under the item's id, for the actor's find
     assert ITEM_ID in (ev.commit_shapes(res.merged) or {})
 
 
-def test_a_fixture_not_made_by_fixture_tool_is_refused(world21):
-    mem, ev, blobs, gate = world21
+def test_a_fixture_not_made_by_fixture_tool_is_refused(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     fixtures.pop("memory/acct/tests/data/me.json")
     res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
@@ -238,23 +238,23 @@ def test_a_fixture_not_made_by_fixture_tool_is_refused(world21):
     assert any("me.json did not come through fixture()" in r for r in res.reasons)
 
 
-def test_no_trusted_exact_assertion_is_refused(world21):
-    mem, ev, blobs, gate = world21
+def test_no_trusted_exact_assertion_is_refused(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs, test=WEAK_TEST)
     res = gate().check(mem.head(), _candidate(mem, files), _man(fixtures))
     assert not res.passed and any("[library_mode:exact]" in r for r in res.reasons)
 
 
-def test_curate_due_is_a_note_not_a_refusal(world21):
-    mem, ev, blobs, gate = world21
+def test_curate_due_is_a_note_not_a_refusal(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     res = gate(index_tokens=1).check(mem.head(), _candidate(mem, files), _man(fixtures))
     assert res.passed, res.reasons
     assert res.curate_due and any("G4 CURATE due" in r for r in res.reasons)
 
 
-def test_write_may_not_remove_an_item(world21):
-    mem, ev, blobs, gate = world21
+def test_write_may_not_remove_an_item(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     assert (
         gate()
@@ -309,8 +309,8 @@ def test_first_word_of_the_recorded_line():
 """
 
 
-def test_cross_episode_text_input_that_crashes_is_refused(world21):
-    mem, ev, blobs, gate = world21
+def test_cross_episode_text_input_that_crashes_is_refused(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     rel = fx.inputs_file("memory.talk.words:first_word")
     line, entry = fx.make(E3, 0, rel, blob=blobs.get, append=True)
     files = {
@@ -347,8 +347,8 @@ def test_cross_episode_text_input_that_crashes_is_refused(world21):
     }
 
 
-def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(world21):
-    mem, ev, blobs, gate = world21
+def test_a_deleted_package_test_is_refused_unless_a_reason_is_stated(library_gate_world):
+    mem, ev, blobs, gate = library_gate_world
     files, fixtures = _files_and_fixtures(blobs)
     assert (
         gate()

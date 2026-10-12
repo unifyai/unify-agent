@@ -1,9 +1,9 @@
-"""The library test kit (memory v2.1 stage 5): one versioned ``memlab`` wherever a library's tests run.
+"""The library test kit (library-mode stage 5): one versioned ``memlab`` wherever a library's tests run.
 
 A stored library's tests may import ``memlab`` (``memlab.replay.env_from``/``RecordedEnv``, the harness's
 exact-call replay, so tests never fake the environment themselves; ``memlab.inputs``; the analysis tools) and read recorded payloads by blob id (``memlab.inputs.blob``). Whether they can must never depend on a
 gate switch: a library merged while a stage-5 switch was on must stay testable when every switch is off, in
-another arm, in Sol's box and in the actor's export. So the kit is a property of the library, not of the
+another arm, in the writer's box and in the actor's export. So the kit is a property of the library, not of the
 switches. :func:`stage` writes the same kit (the module set :data:`MODULES` at :data:`KIT_VERSION`, the pin
 plugin, the referenced blobs) under a root directory, and every place a library's tests can run gets it:
 
@@ -11,7 +11,7 @@ plugin, the referenced blobs) under a root directory, and every place a library'
   the parent or the candidate uses the kit (:func:`uses_kit`: it imports ``memlab`` or the pin plugin, or names
   a recorded blob id). A library whose tests never use it is checked with exactly the calls of the screen
   build;
-* **Sol's box**: ``/inputs`` (beside the pass's episodes) under the same condition, the parent library standing
+* **the writer's box**: ``/inputs`` (beside the pass's episodes) under the same condition, the parent library standing
   in for the candidate;
 * **the actor's export**: ``<export>/.memlab``, put on the import path after the export, when the exported
   library's tests use the kit (:func:`stage_for_tree`).
@@ -39,7 +39,7 @@ from .manifest import TESTKIT, TESTS_DIR
 KIT_VERSION = "1"  # bump when a module's public names change; stored tests are checked against the kit
 # (replay.env_from/calls/call_of and RecordedEnv.issued/misses were added within "1": additive, and no stored
 # library used the kit before them)
-# Sol's toolkit before stage 5 (the order matters to nothing); the kit adds memlab.inputs.
+# The writer's toolkit before stage 5 (the order matters to nothing); the kit adds memlab.inputs.
 BASE_MODULES = (
     "analysis",
     "replay.py",

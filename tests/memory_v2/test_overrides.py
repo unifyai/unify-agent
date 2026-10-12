@@ -7,7 +7,7 @@ from pathlib import Path
 
 from unify.memory_v2.analysis.overrides import MAX_NODES, find_overrides
 
-# The stored function of office-v2 family F3 (case note f3-stored-procedure-error-case-20261008.md),
+# The stored function of an office-v2 task family (case note f3-stored-procedure-error-case-20261008.md),
 # reconstructed around its quoted lines: an over-cap claim is paid up to the limit (`pay = limit`), then every
 # claim with a rule is paid nothing (`pay = Decimal("0.00")` under `if rule`), over-cap ones included.
 F3 = '''
@@ -55,7 +55,7 @@ def process_expense_claims(apis, month):
     return {"violations": dict(violation_counts), "totals": {k: str(v) for k, v in totals.items()}}
 '''
 
-# The ARC environment's stored parser (docs/design/memory-v2-end-to-end-example.md §4), verbatim.
+# The ARC environment's stored parser (docs/design/memory-v2-end-to-end-example.md), verbatim.
 DEMO_STATE = '''
 def demo_state(observation):
     """Extract the request count and demonstration pairs from demo feedback.

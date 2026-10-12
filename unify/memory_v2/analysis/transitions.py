@@ -1,4 +1,4 @@
-"""Transition tables over recorded dialogue actions (spec §F2, §I2): (action, next observation) pairs.
+"""Transition tables over recorded dialogue actions: (action, next observation) pairs.
 
 A dialogue action is the action an agent's reply carried (``args[0]``, else the method and arguments)
 paired with the observation that came back (``response``). :func:`transitions` turns exported episodes

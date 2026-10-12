@@ -1,10 +1,10 @@
-"""The detached process that runs one memory v2.1 consolidation pass (spec §6, D43).
+"""The detached process that runs one library-mode consolidation pass.
 
 Started by :func:`.async_pass.maybe_spawn` in its own session (its own process group), with the pass lock on the
 inherited descriptor ``--lock-fd``. It writes ``pass-inflight.json``, runs the due pass through
 :func:`.consolidate.run_due_passes` under a :class:`.async_pass.Supervisor` (wall bound; SIGTERM cancels through
-the abort path) and reconciles its calls from the Sol lane's journal window, appends one result row, clears its in-flight record and
-exits. SIGALRM at
+the abort path) and reconciles its calls from the writer lane's journal window, appends one result row, clears its
+in-flight record and exits. SIGALRM at
 :func:`.async_pass.failsafe_s` ends it whatever happens; the run guard then keeps the pass's whole cap committed.
 Errors go to the state directory's ``pass-worker.log`` by class name only, never by message.
 """
@@ -64,7 +64,7 @@ async def _work(args: argparse.Namespace, stop: asyncio.Event) -> dict | None:
         stores = consolidate.open_stores(paths, busy_timeout_s=ap.BUSY_TIMEOUT_S)
         view = ap.StateView.load(paths.state)
         writer_model = consolidate.writer_settings(SETTINGS).model.split("@", 1)[0]
-        # P7 Amendment D: the pass's calls are the Sol lane's journal rows in the window the supervisor records
+        # the pass's calls are the writer lane's journal rows in the window the supervisor records
         sup = ap.Supervisor(
             wall_s,
             stop,
@@ -133,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:  # noqa: BLE001
         # the class only: a message could carry recorded text
-        print(f"memory v2.1 pass worker: {type(exc).__name__}", file=sys.stderr)
+        print(f"memory library pass worker: {type(exc).__name__}", file=sys.stderr)
         return 1
     finally:
         try:

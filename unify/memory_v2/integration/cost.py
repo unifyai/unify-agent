@@ -1,14 +1,14 @@
-"""Per-call model cost by purpose (integration Task 22): decimal strings, ``unknown`` when unpriced.
+"""Per-call model cost by purpose: decimal strings, ``unknown`` when unpriced.
 
 Two sources, one row shape (:class:`..episodes.CostRow`):
 
 * :class:`CostListener`, registered once per process with ``unillm.add_llm_event_listener``
   (:func:`install`), records the request's own calls while it is active (the CLI runs one request per
-  process). The purpose comes from the call's origin tag: Sol's calls (origin ``memory_v2.writer`` or
+  process). The purpose comes from the call's origin tag: the writer's calls (origin ``memory_v2.writer`` or
   ``memory_v2.writer.<more>``) are
   skipped, because the pass records its own through :func:`recording_turn`; an origin containing
   ``embed`` is ``embedding``; every other call is ``actor``.
-* :func:`recording_turn` wraps Sol's model turn and appends one ``writer`` row per turn.
+* :func:`recording_turn` wraps the writer's model turn and appends one ``writer`` row per turn.
 
 Money is a plain decimal string (never an exponent). A cost that is missing, not a finite non-negative
 number, or in any other form (``"x+unknown"``) is ``"unknown"``; an unknown cost is never zero. Token

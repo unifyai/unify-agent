@@ -21,7 +21,7 @@ def test_round_reserve_is_the_median_of_the_pass_s_own_rounds():
     assert round_reserve(
         [Decimal("0.30"), Decimal("0.10"), Decimal("0.12")],
     ) == Decimal("0.12")
-    # once offline replay has calibrated ROUND_RESERVE (spec §15) the constant is used
+    # once offline replay has calibrated ROUND_RESERVE the constant is used
     assert round_reserve([Decimal("0.30")], Decimal("0.05")) == Decimal("0.05")
     with pytest.raises(ValueError):
         round_reserve([])

@@ -1,8 +1,8 @@
-"""With UNIFY_MEMORY_V2=on and every v2.1 switch at its default, the build is the v2 screen build (9deefbfd1).
+"""With UNIFY_MEMORY_V2=on and every later memory switch at its default, the build is the v2 screen build (9deefbfd1).
 
 The switches: ``UNIFY_MEMORY_V2_SURFACING`` (``index``), ``UNIFY_MEMORY_V2_DOCSTRINGS`` (``off``) and
 ``UNIFY_MEMORY_V2_SOFT_BUDGET`` (``off``). Byte for byte at their defaults: the actor's memory section (the
-v2 index and export line), the export tree (the commit's files and nothing generated), Sol's brief, tools
+v2 index and export line), the export tree (the commit's files and nothing generated), the writer's brief, tools
 and first message (the current index), G4's refusal over the index budget, and the evidence schema.
 
 The goldens (``golden/v2_screen_9deefbfd1.json``) are read out of 9deefbfd1's source by
@@ -143,15 +143,15 @@ def test_each_switch_takes_only_its_values(monkeypatch, name, parse, values):
             ProductionSettings()
 
 
-# --- Sol ---------------------------------------------------------------------------------------------------
+# --- the writer --------------------------------------------------------------------------------------------
 
 
-# Declared changes to v2 behaviour that are not v2.1 switches, merged into the frozen build (memory-v2-int1):
-# D26 (memory-v2-sol-hygiene) gives Sol's brief one paragraph and a longer gate summary, and its first message
-# the pass's functions with their cover counts; use telemetry (memory-v2.1-tele) records each request's use of
-# the library in an ``item_use`` table; the later merges' brief changes are in ``REPLACES`` and ``INSERTS``.
+# Declared changes to v2 behaviour that are not library-mode switches, merged into the frozen build (memory-v2-int1):
+# library hygiene gives the writer's brief one paragraph and a longer gate summary, and its first message the
+# pass's functions with their cover counts; use telemetry records each request's use of the library in an
+# ``item_use`` table; the later merges' brief changes are in ``REPLACES`` and ``INSERTS``.
 # Everything else at the switch defaults is 9deefbfd1's, byte for byte.
-D26_PARAGRAPH = (
+HYGIENE_PARAGRAPH = (
     "Tend the library too. On this pass's channels, read the existing functions and tests (the request lists each\n"
     "function's recorded covers; /inputs/library.json holds them in cover_ids as [episode_id, action_index] lists) and, where\n"
     "it makes the library smaller or clearer: merge near-duplicates into one function (keep an old name that code outside\n"
@@ -168,22 +168,22 @@ D26_PARAGRAPH = (
     "no failing test when an old passing test calls it and it returns exactly what its old version returned on all\n"
     "those inputs.\n\n"
 )
-D26_AFTER = "the library must earn its place.\n\n"
-D26_SUMMARY = (
+HYGIENE_AFTER = "the library must earn its place.\n\n"
+HYGIENE_SUMMARY = (
     "test suite, an index budget, that the library only grows when it covers new recorded calls, and safety. Its rules\n"
     "follow; a pass that breaks one is refused whole.\n",
     "test suite, an index budget, that the library only grows when it covers new recorded calls or shrinks, that what\n"
     "deleted functions covered stays covered, and safety. Its rules follow; a pass that breaks one is refused\n"
     "whole.\n",
 )
-D26_FIRST_MESSAGE_TAIL = (
+HYGIENE_FIRST_MESSAGE_TAIL = (
     "\n\nFunctions on this pass's channels:\n(none yet)"  # no episode: no channel
 )
 TELEMETRY_TABLES = {"item_use"}
 # Merged into memory-v2-int2. Per-item admission and structural Effect (memory-v2-item-admission) extend the
 # Effect: sentence and say which rules refuse an item alone; the distillation inputs (memory-v2-distill-inputs)
-# name library.json and previous_gate.json in /inputs and add two sentences before what to build (D26's covers
-# now live in library.json). Each entry is (old, new), applied once each.
+# name library.json and previous_gate.json in /inputs and add two sentences before what to build (the hygiene
+# paragraph's covers now live in library.json). Each entry is (old, new), applied once each.
 REPLACES = [
     (
         "with index.json naming any skipped) and `memlab`, a\n",
@@ -225,8 +225,8 @@ INSERTS = [
 def _v2_template() -> str:
     """The golden v2 brief template with the declared changes applied (each must apply exactly once)."""
     text = GOLDEN["writer_prompt_template"]
-    assert text.count(D26_AFTER) == 1 and text.count(D26_SUMMARY[0]) == 1
-    text = text.replace(D26_AFTER, D26_AFTER + D26_PARAGRAPH).replace(*D26_SUMMARY)
+    assert text.count(HYGIENE_AFTER) == 1 and text.count(HYGIENE_SUMMARY[0]) == 1
+    text = text.replace(HYGIENE_AFTER, HYGIENE_AFTER + HYGIENE_PARAGRAPH).replace(*HYGIENE_SUMMARY)
     for old, new in REPLACES:
         assert text.count(old) == 1, old
         text = text.replace(old, new)
@@ -259,7 +259,7 @@ def _v2_tools() -> list[dict]:
     return json.loads(text)
 
 
-def test_sols_brief_and_tools_at_the_defaults_are_v2s():
+def test_the_writers_brief_and_tools_at_the_defaults_are_v2s():
     assert writer_pass.WRITER_SYSTEM == _v2_brief()
     assert writer_pass.writer_system() == _v2_brief()
     assert writer_pass._TOOLS == _v2_tools()
@@ -282,7 +282,7 @@ class _FirstTurn:
         raise RuntimeError("recorded")
 
 
-def test_sols_first_message_at_the_defaults_is_the_v2_index(
+def test_the_writers_first_message_at_the_defaults_is_the_v2_index(
     tmp_path,
     world,
 ):  # noqa: F811
@@ -307,7 +307,7 @@ def test_sols_first_message_at_the_defaults_is_the_v2_index(
         .replace("{pass_id}", "p-golden")
         .replace("{json.dumps(req.__dict__)}", json.dumps(req.__dict__))
         .replace("{index}", index)
-        + D26_FIRST_MESSAGE_TAIL
+        + HYGIENE_FIRST_MESSAGE_TAIL
     )
     assert turn.messages[0] == {"role": "system", "content": _v2_brief()}
     assert turn.messages[1] == {"role": "user", "content": want}
@@ -406,7 +406,7 @@ def test_a_merge_at_the_defaults_keeps_the_v2_evidence_schema(
 
 
 def test_memory_library_switch_default_off_and_validated(monkeypatch):
-    """UNIFY_MEMORY_LIBRARY (spec v2.1, P1 Task 6): off by default, ``off``/``on`` (empty means off), else refused."""
+    """UNIFY_MEMORY_LIBRARY: off by default, ``off``/``on`` (empty means off), else refused."""
     from unify.settings import ProductionSettings
 
     monkeypatch.delenv("UNIFY_MEMORY_LIBRARY", raising=False)
@@ -420,8 +420,8 @@ def test_memory_library_switch_default_off_and_validated(monkeypatch):
 
 
 def test_memory_library_checker_visible_default_off_and_validated(monkeypatch):
-    """UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE (spec v2.1 §5; P5 Task 7, the switch P9 reads too): off by default,
-    ``off``/``on``, else refused, as P1's UNIFY_MEMORY_LIBRARY."""
+    """UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE: off by default, ``off``/``on``, else refused, as
+    UNIFY_MEMORY_LIBRARY."""
     from unify.settings import ProductionSettings
 
     monkeypatch.delenv("UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE", raising=False)

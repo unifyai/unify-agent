@@ -1,4 +1,4 @@
-"""Item records at consolidation (spec §4.4, §10; D38, D40): one map per commit, status commits, bisect, copies."""
+"""Item records at consolidation: one map per commit, status commits, bisect, copies."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.memory_v2.integration.test_consolidate import (
-    FakeSol,
+    FakeWriter,
     _record,
     _settings,
     _stores,
@@ -132,7 +132,7 @@ def test_a_consolidation_records_the_map_on_main_and_hides_a_suspect(lib, tmp_pa
         and recs[WEEK]["provenance"]["pass"] == "p1"
     )
     assert out["bisected"] == [WEEK] and probe.calls == [([("v0", head)], [DATES_TEST])]
-    # RUNTIME S1: the map was published before the bisect; the result is stored and reaches the next map
+    # the map was published before the bisect; the result is stored and reaches the next map
     assert recs[WEEK]["bisect"] is None
     assert (
         out["bisects"][WEEK]["bisect"]["introduced"] == head
@@ -246,12 +246,12 @@ def test_after_passes_runs_only_under_library_and_after_a_recorded_pass(
 
 
 def test_a_library_consolidation_records_the_map_of_main(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     settings = _settings()
     settings.UNIFY_MEMORY_LIBRARY = "on"
-    settings.UNIFY_MEMORY_LIBRARY_E = 1  # P7's E (D43: 100k by default)
+    settings.UNIFY_MEMORY_LIBRARY_E = 1  # the pass interval E (100k by default)
     asyncio.run(
         consolidate.run_due_passes(
             stores,
@@ -277,7 +277,7 @@ def test_checker_visibility_is_a_declared_switch():
         checker_visible(SimpleNamespace(UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE="yes"))
 
 
-# --- the bisect bound (MAIN, 9 Oct; AGENTS.md: bounded runtime) ----------------------------------------------
+# --- the bisect bound (bounded runtime) ----------------------------------------------------------------------
 
 
 class _Clock:
@@ -321,7 +321,7 @@ def test_the_bisect_budget_is_shared_across_items_and_the_records_are_written(
     )
     recs = {
         i: r["bisect"] for i, r in out["bisects"].items()
-    }  # published before the bisect (RUNTIME S1)
+    }  # published before the bisect
     assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
     assert calls == [
         600.0,
@@ -366,7 +366,7 @@ def test_a_stop_between_probe_runs_ends_the_bisect_and_the_records_are_written(
     )
     recs = {
         i: r["bisect"] for i, r in out["bisects"].items()
-    }  # published before the bisect (RUNTIME S1)
+    }  # published before the bisect
     assert read_records(stores.memory, out["noted"])[WEEK]["status"] == "suspect"
     assert runs == [DATES_TEST]  # no run starts after the stop
     assert "introduced" in recs[PD] and recs[WEEK] == {
@@ -402,7 +402,7 @@ def test_the_records_are_published_before_the_bisect_and_a_killed_bisect_runs_ag
     lib,
     tmp_path,
 ):
-    """RUNTIME S1 (1): a kill during the bisect never holds back the map; the item is bisected next time, and its
+    """A kill during the bisect never holds back the map; the item is bisected next time, and its
     result reaches the next map written (a commit's map is never rewritten)."""
     stores, head = lib
     for eid in ("e1", "e2"):
@@ -439,7 +439,7 @@ def test_an_item_whose_last_change_is_beyond_the_scan_is_not_promoted(
     tmp_path,
     monkeypatch,
 ):
-    """RUNTIME S1 (2): with its version unknown, three clean uses do not make an item stable; with the history
+    """With its version unknown, three clean uses do not make an item stable; with the history
     found in its own file it is promoted as usual."""
     from unify.memory_v2 import item_bisect, library_export
 

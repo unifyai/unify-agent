@@ -1,4 +1,4 @@
-"""Stage-5 QA-level test checks in the gate (memory v2.1): drawn inputs, mutants, determinism, replay, size.
+"""Stage-5 QA-level test checks in the gate (library mode): drawn inputs, mutants, determinism, replay, size.
 
 The library items are abridged from items the offline sweep merged (docs/design/memory-v2-end-to-end-example.md
 in continual-harness-research): ARC's ``feedback_state`` (a dialogue observation), AppWorld's
@@ -1062,7 +1062,7 @@ def test_preview_refuses_an_assertion_on_the_cut_of_a_truncated_recording(tmp_pa
     )
 
 
-# --- the /inputs mount and Sol's side --------------------------------------------------------------------
+# --- the /inputs mount and the writer's side --------------------------------------------------------------------
 
 
 def test_stage_inputs_mounts_memlab_the_pin_and_only_referenced_recorded_blobs(
@@ -1097,7 +1097,7 @@ def test_stage_inputs_mounts_memlab_the_pin_and_only_referenced_recorded_blobs(
     )
     assert (
         tmp_path / "in" / "memlab" / "analysis"
-    ).is_dir()  # the same kit as Sol's box
+    ).is_dir()  # the same kit as the writer's box
     monkeypatch.setattr(testkit, "MAX_REF_BLOBS", 1)
     _, notes = stage_inputs(
         tmp_path / "in2",
@@ -1281,7 +1281,7 @@ def test_the_recorded_replay_runs_in_the_gate_and_a_stand_in_is_refused(tmp_path
     files, man = _cl(CLOCK_REPLAY_TEST)
     res = _check(tmp_path / "replay", PHONE, files, man, qa=QAConfig(replay=True))
     assert res.passed, res.reasons  # memlab imports in the gate's runs
-    # every switch off: a library whose tests import memlab is checked with the kit all the same (B2)
+    # every switch off: a library whose tests import memlab is checked with the kit all the same
     replay_off = _check(tmp_path / "replay-off", PHONE, files, man)
     assert replay_off.passed, replay_off.reasons
     # the harness's replay helper, under the replay switch and with every switch off (the kit is mounted)
@@ -1311,7 +1311,7 @@ def test_the_probe_never_invents_an_argument_no_recording_names(tmp_path):
     )
 
 
-# --- the test kit: a property of the library, not of the switches (B2) ---------------------------------------
+# --- the test kit: a property of the library, not of the switches ---------------------------------------
 
 
 def test_a_library_whose_tests_use_the_kit_is_checked_the_same_under_every_switch_setting(
@@ -1353,7 +1353,7 @@ def test_a_test_reaching_the_kit_by_a_dynamic_import_gets_it_with_every_switch_o
     tmp_path,
 ):
     """pytest.importorskip("memlab.replay") is a kit import: every switch off, the kit is mounted exactly
-    as for a static import, so the test never skips in one setting and runs in another (N1).
+    as for a static import, so the test never skips in one setting and runs in another.
     """
     assert CLOCK_SKIP_TEST != CLOCK_REPLAY_TEST
     runs = []
@@ -1434,7 +1434,7 @@ def test_tests_import_only_what_the_kit_provides_and_never_name_inputs(tmp_path)
     )
 
 
-# --- equivalence that cannot be judged, and the probe's arguments (I1, I2) -----------------------------------
+# --- equivalence that cannot be judged, and the probe's arguments -----------------------------------
 
 
 def test_mutation_is_not_judged_when_the_probe_gets_no_output(tmp_path):

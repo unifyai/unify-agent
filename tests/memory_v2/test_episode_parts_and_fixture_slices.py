@@ -1,5 +1,5 @@
-"""m4k-c4 (MAIN 12 Oct; 0f's rehearsal-3 LOW read 50352fbb: all 18 tool errors were ``read_episode`` with part
-"parts", refused with a KeyError): asking for an episode's parts answers with the list (each part's size, which are
+"""In one low-effort rehearsal all 18 tool errors were ``read_episode`` with part "parts", refused with a
+KeyError. Asking for an episode's parts answers with the list (each part's size, which are
 required and which are read), shows no content and credits nothing."""
 
 from unify.memory_v2 import batch_map as bm
@@ -70,7 +70,7 @@ def test_the_tool_description_names_the_parts_list():
     assert "'parts' lists the episode's parts" in desc["function"]["description"]
 
 
-# --- rehearsal 3, final read (0f 57e57345): a slice past the record's end, and an unknown part ---------------------
+# --- a slice past the record's end, and an unknown part ------------------------------------------------------------
 
 
 def test_a_slice_past_the_record_copies_what_exists_and_says_it_was_truncated():

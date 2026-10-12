@@ -225,7 +225,7 @@ def test_hooks_open_the_run_under_the_switch(mv2):
         _abort(mv2, run)
 
 
-# ── Sol's effort matches the actor's unless a mismatch ablation fixes it ────
+# ── The writer's effort matches the actor's unless a mismatch ablation fixes it ────
 
 
 @pytest.mark.parametrize(
@@ -242,7 +242,7 @@ def test_the_effort_is_the_actors(mv2, monkeypatch, effort, want):
     _transcript(run)
     _finish(mv2, run)
     _, kw = mv2.fakes.of("run_due_passes")
-    # Sol's effort matches the actor's by default (the lead, 8 Oct)
+    # the writer's effort matches the actor's by default
     assert run.effort == want and kw["effort"] == want
 
 

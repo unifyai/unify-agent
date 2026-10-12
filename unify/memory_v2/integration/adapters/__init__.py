@@ -1,1 +1,1 @@
-"""Per-kind observation adapters (spec §C2)."""
+"""Per-kind observation adapters."""

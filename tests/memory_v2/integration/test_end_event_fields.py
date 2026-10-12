@@ -1,4 +1,4 @@
-"""Memory v2.1 r5: the end event's spend split, analysts, staging and S0 fields."""
+"""The end event's spend split, analysts, staging and code-miner fields."""
 
 from decimal import Decimal
 

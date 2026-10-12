@@ -53,12 +53,12 @@ def begin_request(request: str) -> Any:
 
 
 def can_store(value: T) -> T | bool:
-    """No storage review and no library writes under memory v2: memory changes only through Sol's gate."""
+    """No storage review and no library writes under memory v2: memory changes only through the writer's gate."""
     return False if enabled() else value
 
 
 def system_prompt(text: str) -> str:
-    """*text* with the run's memory section appended, last in the cached prefix (spec §G6): the v2 index,
+    """*text* with the run's memory section appended, last in the cached prefix: the v2 index,
     or under ``UNIFY_MEMORY_V2_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
@@ -113,7 +113,7 @@ def worker_mounts() -> list[Path]:
 
 
 def worker_readonly_mounts() -> list[Path]:
-    """Paths the worker's sandbox binds read-only after its masks: the run's v2.1 library copy (spec v2.1 §6),
+    """Paths the worker's sandbox binds read-only after its masks: the run's library copy (library mode),
     whose root, the parent of ``memory/``, is also first on the import path (:func:`worker_paths`).
     """
     path = _checkout()

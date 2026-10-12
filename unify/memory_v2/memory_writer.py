@@ -1,18 +1,18 @@
-"""One writer for memory ``main``, and the head requests may pin (memory v2.1: spec §4.4, §6; Amendment A of P7).
+"""One writer for memory ``main``, and the head requests may pin (library mode).
 
-* **One writer.** Every v2.1 move of ``main`` (a pass's merge, a status commit, publishing) holds
+* **One writer.** Every library-mode move of ``main`` (a pass's merge, a status commit, publishing) holds
   :func:`main_lock`, an ``flock`` on ``<memory>.main.flock`` beside the bare repo.
 * **Retargeting.** A pass's commit is one commit on the parent it was built on. If ``main`` has since moved only
   by harness status commits (:func:`is_status_commit`: one parent, the same tree as that parent, subject
   ``status: `` and ``Status:`` trailers), the commit is re-made with the same tree and message on the new head and
   the gate is not re-run: no code changed. If any other commit moved ``main``, :class:`StaleParent` is raised and
   nothing is written; the gate refuses the pass and keeps its patch as a draft.
-* **The served head.** v2.1 requests pin ``refs/heads/served``, never ``main``. :func:`publish` advances it to the
-  newest first-parent commit of ``main`` that carries its own item-records map on ``refs/notes/items`` (P5), so no
+* **The served head.** Library-mode requests pin ``refs/heads/served``, never ``main``. :func:`publish` advances it to
+  the newest first-parent commit of ``main`` that carries its own item-records map on ``refs/notes/items``, so no
   request pins a commit whose statuses are still to be written, and every request on one pin sees the same
-  statuses (cache rule). It is created at ``main``'s head by the first v2.1 write, before ``main`` moves.
-* **Lag is visible** (Amendment C): :func:`served_lag` counts the first-parent commits ``served`` is behind
-  ``main``; the driver reports it on every v2.1 end event and warns when it is above 0 after publishing.
+  statuses (cache rule). It is created at ``main``'s head by the first library-mode write, before ``main`` moves.
+* **Lag is visible.** :func:`served_lag` counts the first-parent commits ``served`` is behind
+  ``main``; the driver reports it on every library-mode end event and warns when it is above 0 after publishing.
 * **Copies carry the notes.** A plain ``git clone`` does not fetch ``refs/notes/items``. :func:`archive` writes a
   bundle of every ref and checks that ``main``, ``served`` and the notes are in it; restore with
   ``git clone --mirror <bundle>``.
@@ -30,9 +30,9 @@ from typing import Callable, Iterator
 from .gitio import GitError, Repo
 
 SERVED = "served"
-NOTES_REF = "refs/notes/items"  # P5's item_records.NOTES_REF ("items") as a full ref
+NOTES_REF = "refs/notes/items"  # item_records.NOTES_REF ("items") as a full ref
 LOCK_TIMEOUT_S = 600.0
-STATUS_SUBJECT = "status: "  # P5's MemoryRepo.status_commit subject
+STATUS_SUBJECT = "status: "  # MemoryRepo.status_commit's subject
 _SEP = "\x1e"
 
 
@@ -76,7 +76,7 @@ def _has_ref(repo: Repo, ref: str) -> bool:
 
 
 def served_head(repo: Repo) -> str:
-    """The commit a v2.1 request pins: ``served``, or ``main`` while no v2.1 write has happened yet."""
+    """The commit a library-mode request pins: ``served``, or ``main`` before the first library-mode write."""
     return repo.head(SERVED) if _has_ref(repo, f"refs/heads/{SERVED}") else repo.head()
 
 
@@ -170,10 +170,10 @@ def publish(
 ) -> str:
     """Advance ``served`` to the newest first-parent commit of ``main``, back to ``served``, that has its own
     item-records map, and return ``served``'s commit. Run after the maps are written (the end of
-    ``run_due_passes``, after P5's ``after_passes``)."""
+    ``run_due_passes``, after ``consolidate.after_passes``)."""
     check = has_records
     if check is None:
-        from .item_records import read_records  # P5
+        from .item_records import read_records
 
         check = lambda c: read_records(repo, c) is not None  # noqa: E731
     with main_lock(repo):
@@ -200,7 +200,7 @@ def publish(
 
 
 def served_lag(repo: Repo) -> int:
-    """How many first-parent commits ``served`` is behind ``main`` (P7 Amendment C; 0 while there is no
+    """How many first-parent commits ``served`` is behind ``main`` (0 while there is no
     ``served``). Above 0 after :func:`publish`: commits whose item records were not written, which no request
     can pin yet."""
     if not _has_ref(repo, f"refs/heads/{SERVED}"):

@@ -1,9 +1,10 @@
-"""P7 Amendment A: one writer for memory main; requests pin a served head that advances only after a commit's item
+"""One writer for memory main; requests pin a served head that advances only after a commit's item
 records exist; a pass re-targets over status commits, and is refused as stale over code commits; archives keep
 refs/notes/items.
 
-The first tests need only git: their status commits have the shape P5's ``MemoryRepo.status_commit`` writes. The
-last ones use P4's gate fixtures and P5's records and status commits, and run once those are integrated.
+The first tests need only git: their status commits have the shape ``MemoryRepo.status_commit`` writes. The
+last ones use the library-mode gate fixtures, the item records and real status commits, and run once those are
+integrated.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ import pytest
 from unify.memory_v2 import memory_writer as mw
 from unify.memory_v2.gitio import Repo
 
-try:  # P4's v2.1 gate fixture, visible to request.getfixturevalue once P4 is integrated
-    from tests.memory_v2.test_gate_library_mode import world21  # noqa: F401
+try:  # the library-mode gate fixture, visible to request.getfixturevalue once it is integrated
+    from tests.memory_v2.test_gate_library_mode import library_gate_world  # noqa: F401
 except ImportError:
     pass
 
@@ -51,7 +52,7 @@ def _candidate_on(repo, parent, files):
 
 
 def _status(repo, changes):
-    """A status commit as P5 writes it: empty, subject ``status: ``, ``Status:`` and ``Evidence:`` trailers."""
+    """A status commit: empty, subject ``status: ``, ``Status:`` and ``Evidence:`` trailers."""
     base = repo.head()
     with repo.temp_checkout(base) as wt:
         sha = repo.commit_all(
@@ -75,7 +76,7 @@ def test_served_is_created_at_main_before_main_moves_and_never_moves_without_rec
     mem,
 ):
     base = mem.head()
-    assert mw.served_head(mem) == base  # no v2.1 write yet: main itself
+    assert mw.served_head(mem) == base  # no library-mode write yet: main itself
     c1 = mw.land(mem, _candidate_on(mem, base, EXTRA), base)
     assert mem.head() == c1 and mw.served_head(mem) == base
     assert mw.publish(mem, has_records=lambda c: False) == base
@@ -191,10 +192,10 @@ def test_served_lag_counts_the_first_parent_commits_served_is_behind(mem):
     assert mw.served_lag(mem) == 1
 
 
-# --- with P5's records and status commits, and P4's v2.1 gate (run once integrated) -------------------------
+# --- with item records, real status commits and the library-mode gate (run once integrated) -----------------
 
 
-def test_publish_reads_p5s_records_and_status_commits_are_p5s(mem):
+def test_publish_reads_item_records_and_recognises_memory_repo_status_commits(mem):
     ir = pytest.importorskip("unify.memory_v2.item_records")
     from unify.memory_v2.memory_repo import MemoryRepo
 
@@ -212,9 +213,9 @@ def _gate_library_mode():
 
 
 def test_the_gate_refuses_a_stale_pass_and_keeps_its_patch(request):
-    """P4's v2.1 gate fixture; the candidate is made on a parent that a code commit then moves past."""
+    """The library-mode gate fixture; the candidate is made on a parent that a code commit then moves past."""
     g = _gate_library_mode()
-    mem, ev, blobs, gate = request.getfixturevalue("world21")
+    mem, ev, blobs, gate = request.getfixturevalue("library_gate_world")
     parent = mem.head()
     files, fixtures = g._files_and_fixtures(blobs)
     candidate = g._candidate(mem, files)
@@ -235,7 +236,7 @@ def test_the_gate_retargets_over_a_status_commit(request):
     g = _gate_library_mode()
     from unify.memory_v2.memory_repo import MemoryRepo
 
-    mem, ev, blobs, gate = request.getfixturevalue("world21")
+    mem, ev, blobs, gate = request.getfixturevalue("library_gate_world")
     parent = mem.head()
     files, fixtures = g._files_and_fixtures(blobs)
     candidate = g._candidate(mem, files)

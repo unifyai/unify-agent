@@ -1,4 +1,4 @@
-"""Memory v2.1 S0 tier (b) (design r4 §4): behavioural equivalence. The replay and cross-run functions are called
+"""The code miner's tier (b): behavioural equivalence. The replay and cross-run functions are called
 in-process on test code here; the box is exercised only where bubblewrap exists."""
 
 import json

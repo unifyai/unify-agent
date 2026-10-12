@@ -1,4 +1,4 @@
-"""D42 (spec §4.1): covers without channel equality; D28's behaviour check and reduction by the import graph."""
+"""Covers without channel equality; the behaviour check and reduction by the import graph."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tests.memory_v2.integration.test_consolidate import (
-    FakeSol,
+    FakeWriter,
     _record,
     _settings,
     _stores,
@@ -252,7 +252,7 @@ def test_reduction_drops_importers_under_library_mode(tmp_path):
 
 
 def test_a_package_reexport_does_not_chain_its_other_modules(tmp_path):
-    """P3 Amendment A item 1: two modules re-exported by a package init; refusing an item of one refuses the
+    """Two modules re-exported by a package init; refusing an item of one refuses the
     importers that use its name, not those that use only the other module's names."""
     files = {
         "memory/kit/__init__.py": '"""Kit."""\nfrom .a import fa\nfrom .b import fb\n',
@@ -282,13 +282,13 @@ def test_the_switch_reaches_the_gate(tmp_path, monkeypatch):
             super().__init__(*a, **k)
 
     monkeypatch.setattr(consolidate, "Gate", Recording)
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     for value, seen in (("", False), ("on", True)):
         stores = _stores(tmp_path / (value or "off"))
         sha, _ = _record(stores, "e1")
         settings = _settings()
         settings.UNIFY_MEMORY_LIBRARY = value
-        settings.UNIFY_MEMORY_LIBRARY_E = 1  # P7's E (D43: 100k by default)
+        settings.UNIFY_MEMORY_LIBRARY_E = 1  # a tiny experience budget (100k by default)
         asyncio.run(
             consolidate.run_due_passes(
                 stores,
@@ -302,15 +302,15 @@ def test_the_switch_reaches_the_gate(tmp_path, monkeypatch):
         )
         assert (
             made[-1] is not None
-        ) is seen  # Amendment B: a LibraryConfig when on, None (v2) when off
-        # P4: consolidate builds it with library_checks.config_for, the layout and the checks on
+        ) is seen  # a LibraryConfig when on, None (v2) when off
+        # consolidate builds it with library_checks.config_for, the layout and the checks on
         assert made[-1] is None or (
             isinstance(made[-1], LibraryConfig) and made[-1].layout and made[-1].checks
         )
 
 
 def test_an_init_change_puts_its_packages_modules_in_scope(tmp_path):
-    """RUNTIME's review B1: importing memory.text.parse runs memory/text/__init__.py first, so an __init__.py that
+    """Importing memory.text.parse runs memory/text/__init__.py first, so an __init__.py that
     rebinds a name changes the package's own modules."""
     cand = dict(LIB)
     cand["memory/text/__init__.py"] = (

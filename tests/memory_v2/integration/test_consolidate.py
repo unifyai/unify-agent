@@ -1,6 +1,6 @@
-"""The consolidation driver (integration Task 24, v1): checker pass/fail, size trigger, Sol, gate, events.
+"""The consolidation driver: checker pass/fail, size trigger, the writer, gate, events.
 
-Sol is a fake turn factory monkeypatched over ``consolidate.unillm_turn``: no network and no key. The
+The writer is a fake turn factory monkeypatched over ``consolidate.unillm_turn``: no network and no key. The
 fake ends at once (``finish``) without a manifest, so no sandboxed cell runs; the tests marked
 ``needs_bwrap`` run the real gate.
 """
@@ -31,7 +31,7 @@ from unify.memory_v2.integration.consolidate import (
 from unify.memory_v2.integration.paths import Paths
 from unify.memory_v2.integration.state import State
 from unify.memory_v2.qa import QAConfig
-from unify.memory_v2.writer_pass import WRITER_SYSTEM
+from unify.memory_v2.writer_pass import TRANSCRIPT_REF, WRITER_SYSTEM
 from unify.memory_v2.redact import Redactor
 from unify.memory_v2.signals import Signal
 from unify.memory_v2.trigger import BATCHED_CURSOR
@@ -74,7 +74,7 @@ def _finish():
     }
 
 
-class FakeSol:
+class FakeWriter:
     """A turn factory: each turn ends the pass at once (no manifest), or follows ``script``."""
 
     def __init__(self, usd="0.01", script=None):
@@ -158,7 +158,7 @@ def test_checker_posts_pass_or_fail_only(tmp_path):
     assert post_checker(stores, "e2", sha2, True, "2026-10-08T01:03:00Z") is True
     (line,) = stores.episodes.notes(sha1)
     note = json.loads(line)
-    # P9: visible_to_actor is in a note only when True, so every other note keeps its bytes
+    # visible_to_actor is in a note only when True, so every other note keeps its bytes
     assert set(note) == {f.name for f in fields(Signal)} - {"visible_to_actor"}
     assert (note["source"], note["label"], note["refers_to"]) == (
         "checker",
@@ -186,7 +186,7 @@ def test_checker_posts_nothing_where_the_regime_masks_it(tmp_path):
 
 
 def test_size_trigger_fires_only_at_e(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha1, ep1 = _record(stores, "e1")
@@ -207,7 +207,7 @@ def test_size_trigger_fires_only_at_e(tmp_path, monkeypatch):
 
 
 def test_one_token_short_of_e_runs_nothing(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, ep = _record(stores, "e1")
@@ -222,7 +222,7 @@ def test_pass_without_manifest_is_recorded_failed_and_the_cursor_advances(
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -241,7 +241,7 @@ def test_pass_without_manifest_is_recorded_failed_and_the_cursor_advances(
 
 
 def test_kind_qualified_channels_take_part_in_the_pass(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     blob = stores.blobs.put(CSV)
@@ -288,7 +288,7 @@ def test_run_guard_below_one_cap_runs_nothing_and_leaves_the_pass_due(
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -304,7 +304,7 @@ def test_run_guard_below_one_cap_runs_nothing_and_leaves_the_pass_due(
 
 def test_run_guard_stops_the_second_pass(tmp_path, monkeypatch):
     cap = Decimal(A_TOK)  # E = 1
-    fake = FakeSol(usd=format(cap * Decimal("0.6"), "f"))
+    fake = FakeWriter(usd=format(cap * Decimal("0.6"), "f"))
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     guard = format(cap * Decimal("1.5"), "f")
@@ -326,7 +326,7 @@ def test_run_guard_stops_the_second_pass(tmp_path, monkeypatch):
 
 
 def test_unpriced_calls_count_at_the_reserve_for_the_guard(tmp_path, monkeypatch):
-    fake = FakeSol(usd="unknown")
+    fake = FakeWriter(usd="unknown")
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -336,7 +336,7 @@ def test_unpriced_calls_count_at_the_reserve_for_the_guard(tmp_path, monkeypatch
 
 
 def test_the_guard_never_reads_reason_text(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol(usd="0.0000001"))
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter(usd="0.0000001"))
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     _run(stores, "e1", sha)
@@ -355,7 +355,7 @@ def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol(usd="0.0000001"))
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter(usd="0.0000001"))
     monkeypatch.setattr(
         consolidate,
         "_settle",
@@ -373,7 +373,7 @@ def test_a_pass_that_starts_but_never_settles_counts_its_whole_cap(
 
 
 def test_an_empty_effort_runs_nothing_and_is_logged(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -390,7 +390,7 @@ def test_events_start_and_end_with_decimal_money_and_the_inherited_effort(
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol(usd="1E-7")
+    fake = FakeWriter(usd="1E-7")
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -583,9 +583,9 @@ def test_an_actor_effort_sets_the_pass_cap_and_calls(
     monkeypatch.setattr(SETTINGS, "UNIFY_MEMORY_V2_WRITER_EFFORT", "actor")
     effort = request_mod.writer_effort(
         actor,
-    )  # Sol follows the actor's effort (the default)
+    )  # the writer follows the actor's effort (the default)
     assert effort == actor
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     configs = _spy_configs(monkeypatch)
     stores = _stores(tmp_path)
@@ -616,7 +616,7 @@ def test_a_high_pass_is_capped_at_five_allowances_and_80_calls_at_e_150k(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     configs = _spy_configs(monkeypatch)
     monkeypatch.setattr(
         consolidate.Trigger,
@@ -633,7 +633,7 @@ def test_a_high_pass_is_capped_at_five_allowances_and_80_calls_at_e_150k(
 
 
 def test_the_effort_maps_reach_the_pass(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     configs = _spy_configs(monkeypatch)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -653,7 +653,7 @@ def test_the_effort_maps_reach_the_pass(tmp_path, monkeypatch):
 
 
 def test_the_run_guard_compares_against_the_scaled_cap(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -665,7 +665,7 @@ def test_the_run_guard_compares_against_the_scaled_cap(tmp_path, monkeypatch):
 
 
 def test_an_effort_without_limits_runs_nothing_and_is_logged(tmp_path, monkeypatch):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -684,7 +684,7 @@ def test_the_writer_usage_switch_reaches_the_passes_first_message(
 ):
     from unify.memory_v2.usage import USAGE_HEADING
 
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -694,7 +694,7 @@ def test_the_writer_usage_switch_reaches_the_passes_first_message(
 
 
 def test_emit_failures_never_stop_the_pass(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
 
@@ -706,12 +706,12 @@ def test_emit_failures_never_stop_the_pass(tmp_path, monkeypatch):
     assert "stdout closed" in stores.paths.errors.read_text()
 
 
-# --- (e) Sol's cost rows as notes ------------------------------------------------------------------------
+# --- (e) the writer's cost rows as notes -----------------------------------------------------------------
 
 
 def test_writer_cost_rows_are_notes_on_the_episode_commit(tmp_path, monkeypatch):
     msg = {"role": "assistant", "content": "thinking"}
-    fake = FakeSol(script=[(msg, "0.0000001"), RuntimeError("provider down")])
+    fake = FakeWriter(script=[(msg, "0.0000001"), RuntimeError("provider down")])
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -741,13 +741,13 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
     secret = "planted-fake-token-6c1d2e"  # pragma: allowlist secret
     monkeypatch.setenv("UNIFY_TEST_FAKE_TOKEN", secret)
     msg = {"role": "assistant", "content": f"the token is {secret}"}
-    fake = FakeSol(script=[(msg, "0.0000001"), (_finish(), "0.0000001")])
+    fake = FakeWriter(script=[(msg, "0.0000001"), (_finish(), "0.0000001")])
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     (out,) = _run(stores, "e1", sha)
-    assert secret in json.dumps(fake.seen)  # Sol itself saw it; the record must not
-    rows = [json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")]
+    assert secret in json.dumps(fake.seen)  # the writer itself saw it; the record must not
+    rows = [json.loads(n) for n in stores.episodes.notes(sha, ref=TRANSCRIPT_REF)]
     assert {r["pass_id"] for r in rows} == {"e1.p0"}
     assert [r["message"]["role"] for r in rows] == [
         "system",
@@ -768,7 +768,7 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
 
 
 def test_drift_rides_with_the_pass_and_is_cleared_once_recorded(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     state = State(stores.paths.state, drift={"venmo"}, suspect={"venmo", "slack"})
@@ -777,7 +777,7 @@ def test_drift_rides_with_the_pass_and_is_cleared_once_recorded(tmp_path, monkey
     assert state.suspect == {"venmo", "slack"}  # a failed pass clears no suspect flag
 
 
-# --- R10 -------------------------------------------------------------------------------------------------
+# --- checker text stays out of every record and writer input ---------------------------------------------
 
 
 SENTINEL = "SENTINEL-7f3a"
@@ -789,14 +789,14 @@ def test_checker_text_reaches_no_event_note_evidence_row_or_writer_input(
 ):
     from unify.memory_v2 import writer_pass
 
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     staged = tmp_path / "staged"
     stage = writer_pass.WriterPass._stage_inputs
 
     def keep(self, req, inputs, *tree):
         stage(self, req, inputs, *tree)
-        shutil.copytree(inputs, staged)  # what Sol's box would see at /inputs
+        shutil.copytree(inputs, staged)  # what the writer's box would see at /inputs
 
     monkeypatch.setattr(writer_pass.WriterPass, "_stage_inputs", keep)
     stores = _stores(tmp_path)
@@ -846,7 +846,7 @@ def test_checker_text_reaches_no_event_note_evidence_row_or_writer_input(
         ),
         (["sleep"], ["deadline", "no_manifest"]),
     ],
-    ids=["sol-error", "usd-cap", "deadline"],
+    ids=["writer-error", "usd-cap", "deadline"],
 )
 def test_end_event_reason_codes_come_from_the_outcome(
     tmp_path,
@@ -854,7 +854,7 @@ def test_end_event_reason_codes_come_from_the_outcome(
     script,
     codes,
 ):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol(script=script))
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter(script=script))
     monkeypatch.setattr(consolidate, "DEADLINE_S", 0.3)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -1038,12 +1038,12 @@ def test_every_setting_the_driver_reads_is_a_build_setting():
     )
 
 
-# --- stage-5 test checks (memory v2.1): the switches reach the gate and Sol's brief ------------------------
+# --- library mode: the switches reach the gate and the writer's brief ---------------------------------------
 
 
 @pytest.mark.parametrize("on", [False, True])
-def test_the_qa_switches_reach_the_gate_and_sols_brief(tmp_path, monkeypatch, on):
-    fake = FakeSol()
+def test_the_qa_switches_reach_the_gate_and_the_writers_brief(tmp_path, monkeypatch, on):
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     made = []
     real = consolidate.Gate
@@ -1091,9 +1091,9 @@ def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
     monkeypatch,
     step,
 ):
-    # Sol's proxy serves one Sol call at a time: after a call ended by an error or the deadline (it may still be
-    # running upstream), the session starts no further pass; the request stays due
-    fake = FakeSol(script=[step])
+    # the writer's proxy serves one writer call at a time: after a call ended by an error or the deadline (it may
+    # still be running upstream), the session starts no further pass; the request stays due
+    fake = FakeWriter(script=[step])
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     monkeypatch.setattr(consolidate, "DEADLINE_S", 0.2)
     original = consolidate.Trigger.after_episode
@@ -1111,14 +1111,14 @@ def test_no_further_pass_starts_after_a_call_that_may_still_be_in_flight(
     assert len(outcomes) <= 1
 
 
-# --- memory v2.1 P1 (UNIFY_MEMORY_LIBRARY) ------------------------------------------------------------------
+# --- library mode (UNIFY_MEMORY_LIBRARY) ----------------------------------------------------------------------
 
 
 def _library_settings(raw):
     s = _settings()
     s.UNIFY_MEMORY_LIBRARY = raw
     s.UNIFY_MEMORY_LIBRARY_E = (
-        1  # v2.1's own E (D43, 100k by default): one small episode makes a pass due
+        1  # library mode's own E (100k by default): one small episode makes a pass due
     )
     return s
 
@@ -1132,7 +1132,7 @@ def test_writer_settings_reads_the_library_switch():
 
 
 def test_library_has_its_own_usd_per_token_and_the_off_path_ignores_it():
-    """MAIN, 9 Oct (spec §15, F9): v2's rate by default; the replay can raise v2.1's without a code change."""
+    """v2's rate by default; the replay can raise library mode's without a code change."""
     assert writer_settings(_library_settings("on")).usd_per_token == Decimal(
         "0.00000073",
     )
@@ -1153,7 +1153,7 @@ def test_library_reaches_the_pass_and_its_end_event_records_coverage(
     monkeypatch,
 ):
     fake = (
-        FakeSol()
+        FakeWriter()
     )  # finishes every turn: refused under library_mode until e1 is covered
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
@@ -1180,7 +1180,7 @@ def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_th
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol()  # finishes every turn: under "optional" coverage never refuses it
+    fake = FakeWriter()  # finishes every turn: under "optional" coverage never refuses it
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -1204,7 +1204,7 @@ def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_th
 
 
 def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
     (out,) = _run(stores, "e1", sha)
@@ -1215,7 +1215,7 @@ def test_library_off_leaves_the_end_event_unchanged(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("on", [False, True])
 def test_library_gates_write_passes_with_the_library_checks(tmp_path, monkeypatch, on):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     made = []
 
     class Recording(consolidate.Gate):
@@ -1249,7 +1249,7 @@ def test_library_gates_write_passes_with_the_library_checks(tmp_path, monkeypatc
         assert g.library_mode is None and not g.qa.library_mode
 
 
-# --- memory v2.1: CURATE after WRITE, triggered by library state (P6) ------------------------------------------
+# --- library mode: CURATE after WRITE, triggered by library state ----------------------------------------------
 
 from unify.memory_v2.library_prompts import curate_brief_now
 from tests.memory_v2.test_gate import _merged
@@ -1264,14 +1264,14 @@ DUPLICATE = {
 }
 
 
-def _settings21(on=True, **kw):
+def _settings_library(on=True, **kw):
     s = _settings(**kw)
     s.UNIFY_MEMORY_LIBRARY = "on" if on else "off"
-    s.UNIFY_MEMORY_LIBRARY_E = 1  # v2.1's own E (P7, D43: 100k by default)
+    s.UNIFY_MEMORY_LIBRARY_E = 1  # library mode's own E (100k by default)
     return s
 
 
-def _run21(stores, eid, sha, *, on=True, **kw):
+def _run_library(stores, eid, sha, *, on=True, **kw):
     return asyncio.run(
         run_due_passes(
             stores,
@@ -1279,14 +1279,14 @@ def _run21(stores, eid, sha, *, on=True, **kw):
             sha,
             State(stores.paths.state),
             effort="low",
-            settings=_settings21(on, **kw),
+            settings=_settings_library(on, **kw),
             emit=None,
         ),
     )
 
 
 def _no_records(monkeypatch):
-    # P5's records are not under test here: no suspect item, every item experimental
+    # the item records are not under test here: no suspect item, every item experimental
     monkeypatch.setattr(consolidate, "_lifecycle", lambda stores, sha: (None, {}, {}))
 
 
@@ -1301,13 +1301,13 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol()
+    fake = FakeWriter()
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     _no_records(monkeypatch)
     stores = _stores(tmp_path)
     _merged(stores.memory, DUPLICATE)
     sha, _ = _record(stores, "e1")
-    outs = _run21(stores, "e1", sha)
+    outs = _run_library(stores, "e1", sha)
     assert [o.pass_id for o in outs] == ["e1.p0", "e1.p1"] and _kinds(stores) == [
         "batched",
         "curate",
@@ -1318,23 +1318,23 @@ def test_curate_runs_after_write_when_the_library_state_warrants_it(
     assert fake.seen[-1][0] == {
         "role": "system",
         "content": curate_brief_now(),
-    }  # P7's brief
+    }  # the CURATE brief
     # the library is unchanged and CURATE was shown these reasons: the next WRITE pass runs alone
     sha2, _ = _record(stores, "e2", minute=1)
-    assert [o.pass_id for o in _run21(stores, "e2", sha2)] == ["e2.p0"]
+    assert [o.pass_id for o in _run_library(stores, "e2", sha2)] == ["e2.p0"]
     assert _kinds(stores) == ["batched", "curate", "batched"]
 
 
 def test_no_curate_on_a_library_with_nothing_to_curate(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     _no_records(monkeypatch)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
-    assert [o.pass_id for o in _run21(stores, "e1", sha)] == ["e1.p0"]
+    assert [o.pass_id for o in _run_library(stores, "e1", sha)] == ["e1.p0"]
 
 
 def test_curate_never_runs_with_library_off(tmp_path, monkeypatch):
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     monkeypatch.setattr(
         consolidate,
         "_lifecycle",
@@ -1343,7 +1343,7 @@ def test_curate_never_runs_with_library_off(tmp_path, monkeypatch):
     stores = _stores(tmp_path)
     _merged(stores.memory, DUPLICATE)
     sha, _ = _record(stores, "e1")
-    assert [o.pass_id for o in _run21(stores, "e1", sha, on=False)] == ["e1.p0"]
+    assert [o.pass_id for o in _run_library(stores, "e1", sha, on=False)] == ["e1.p0"]
     found = stores.evidence.db.execute(
         "SELECT 1 FROM sqlite_master WHERE name IN ('curate_seen', 'curations')",
     ).fetchone()
@@ -1354,16 +1354,16 @@ def test_curate_waits_for_the_run_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(
         consolidate,
         "unillm_turn",
-        FakeSol(),
+        FakeWriter(),
     )  # 0.01 USD a call: the WRITE pass commits 0.01
     _no_records(monkeypatch)
     stores = _stores(tmp_path)
     _merged(stores.memory, DUPLICATE)
     sha, _ = _record(stores, "e1")
-    assert [o.pass_id for o in _run21(stores, "e1", sha, guard="0.01")] == ["e1.p0"]
+    assert [o.pass_id for o in _run_library(stores, "e1", sha, guard="0.01")] == ["e1.p0"]
     held = [e for e in _events(stores) if e.get("phase") == "end"][
         -1
-    ]  # v2.1 publishes served after it
+    ]  # library mode publishes served after it
     assert held["pass_id"] == "e1.p1" and held["reason_codes"] == ["run_guard"]
     assert (
         stores.evidence.curate_seen() == set()
@@ -1374,13 +1374,13 @@ def test_no_curate_after_a_write_whose_call_may_still_be_in_flight(
     tmp_path,
     monkeypatch,
 ):
-    fake = FakeSol(script=[RuntimeError("upstream failed")])
+    fake = FakeWriter(script=[RuntimeError("upstream failed")])
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     _no_records(monkeypatch)
     stores = _stores(tmp_path)
     _merged(stores.memory, DUPLICATE)
     sha, _ = _record(stores, "e1")
-    _run21(stores, "e1", sha)
+    _run_library(stores, "e1", sha)
     assert fake.calls == 1 and _kinds(stores) == ["batched"]
 
 
@@ -1388,10 +1388,10 @@ def test_library_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
     tmp_path,
     monkeypatch,
 ):
-    """MAIN, 10 Oct: the replay and the reruns set the writer's reader calls without a code change."""
+    """The replay and the reruns set the writer's reader calls without a code change."""
     from unify.memory_v2.integration.switch import parse_library_max_reads
 
-    monkeypatch.setattr(consolidate, "unillm_turn", FakeSol())
+    monkeypatch.setattr(consolidate, "unillm_turn", FakeWriter())
     for on, value, want in ((True, "", 400), (True, "7", 7), (False, "7", 400)):
         seen = _spy_configs(monkeypatch)
         stores = _stores(tmp_path / f"{on}{value}")
@@ -1411,7 +1411,7 @@ def test_library_max_reads_reaches_the_pass_and_the_off_path_keeps_the_default(
         )
         assert [c.max_reads for c in seen] == [want]
         start = [e for e in _events(stores) if e.get("phase") == "start"][-1]
-        if on:  # the E and read cap the pass ran with, under v2.1 only
+        if on:  # the E and read cap the pass ran with, in library mode only
             assert (start["experience_budget"], start["max_reads"]) == (1, want)
         else:
             assert "experience_budget" not in start and "max_reads" not in start

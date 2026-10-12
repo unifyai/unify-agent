@@ -1,7 +1,7 @@
-"""The library test kit (memory v2.1 stage 5): one versioned ``memlab`` wherever a library's tests run.
+"""The library test kit: one versioned ``memlab`` wherever a library's tests run.
 
 A stored library must never depend on a gate switch: its tests import the same kit in the gate (any switch
-setting), in Sol's box and in the actor's export, and library code never uses it.
+setting), in the writer's box and in the actor's export, and library code never uses it.
 """
 
 import subprocess
@@ -50,7 +50,7 @@ def test_the_kit_is_the_versioned_module_set_the_pin_and_the_named_blobs(
     assert (root / "blobs" / a).read_bytes() == b"recorded a"
     assert (root / "blobs" / b).read_bytes() == b"already staged"
     assert not (root / "blobs" / ("0" * 64)).exists()
-    # Sol's toolkit before stage 5 is the kit without memlab.inputs: one module set everywhere
+    # the writer's earlier toolkit is the kit without memlab.inputs: one module set everywhere
     assert set(testkit.MODULES) == set(_MEMLAB_FILES) | {"inputs.py"}
     monkeypatch.setattr(testkit, "MAX_REF_BLOBS", 1)
     (note,) = _stage(tmp_path / "kit2", store, [a, b])
@@ -203,7 +203,7 @@ def _writer(tmp_path, qa, store):
     ), SimpleNamespace(kind="k", channel="c", episodes=["e9"], lift=False)
 
 
-def test_sols_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(tmp_path):
+def test_the_writers_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(tmp_path):
     store = BlobStore(tmp_path / "store")
     sha = store.put(b"recorded")
     plain = tmp_path / "plain"
@@ -232,7 +232,7 @@ def test_sols_box_gets_the_kit_when_a_switch_is_on_or_the_library_uses_it(tmp_pa
         ).is_dir()  # the toolkit always
         if (
             not kit
-        ):  # every switch off and a library not using the kit: Sol's box as at the screen build
+        ):  # every switch off and a library not using the kit: the writer's box as before the kit
             assert sorted(p.name for p in lab.iterdir()) == sorted(
                 list(_MEMLAB_FILES) + ["__init__.py", "gitio.py"],
             )

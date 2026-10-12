@@ -1,4 +1,4 @@
-"""Deterministic AST mutation operators for the gate's mutation check (memory v2.1 stage 5).
+"""Deterministic AST mutation operators for the gate's mutation check (library-mode stage 5).
 
 A *site* is one place in one function's body where one operator applies. :func:`sites` lists them in a fixed
 order (each statement of the function's body walked breadth first by :func:`ast.walk`), :func:`choose` picks a
@@ -17,7 +17,7 @@ The operators:
 * ``return_none``: ``return <value>`` replaced by a bare ``return`` (``None``).
 
 Only the body of the named top-level function is mutated (its decorators, defaults and annotations are not).
-A gate reason names an operator kind and a line of the committed module, never a value (ruling R10).
+A gate reason names an operator kind and a line of the committed module, never a value.
 
 **Structural negatives** (:func:`negatives`). A surviving mutant is left out of the kill share as likely
 equivalent when the function's outputs do not change. Judged only on recorded inputs the environment

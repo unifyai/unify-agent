@@ -1,4 +1,4 @@
-"""Memory v2.1 r5 (r4 §2, §5): the general-notes sentence, and the solution-first episode overview."""
+"""The library mode's general-notes sentence, and the solution-first episode overview."""
 
 import asyncio
 

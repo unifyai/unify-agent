@@ -1,4 +1,4 @@
-"""P1 Task 7, part 3: UNIFY_MEMORY_LIBRARY reaches the online recorders (dialogue, worktree) and the episode writer.
+"""UNIFY_MEMORY_LIBRARY reaches the online recorders (dialogue, worktree) and the episode writer.
 
 Off, every call is made exactly as at 4675a3c45 (no new keyword is passed); on, the dialogue keeps its full
 observation, the work-tree capture stores files whole, and the writer writes record format 2.

@@ -1,8 +1,8 @@
-"""P1 Task 7 (Amendment B; spec v2.1 P5): under UNIFY_MEMORY_LIBRARY the recorders keep full values, redacted whole.
+"""Under UNIFY_MEMORY_LIBRARY the recorders keep full values, redacted whole.
 
 Off, each recorder cuts exactly as at 4675a3c45 (the golden was written there by :mod:`recorder_inputs`). On, each one
-keeps the value over its old cap whole, and a key planted past that cap is redacted. RUNTIME's checklist points 1
-and 5; the writer and loader (points 2–4, 6) are in test_episodes_library_mode.py."""
+keeps the value over its old cap whole, and a key planted past that cap is redacted. The episode writer and loader
+are tested in test_episodes_library_mode.py."""
 
 import dataclasses
 import json

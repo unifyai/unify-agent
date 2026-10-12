@@ -1,7 +1,7 @@
-"""The request's scratch export of memory main (spec §G1, v0 D13): written freely, diffed, discarded.
+"""The request's scratch export of memory main: written freely, diffed, discarded.
 
 The export is the committed blobs of one memory commit and nothing else: no ``.git`` (a writable ``.git``
-must never steer host git, ruling R21), and no ``git archive`` (whose ``.gitattributes`` export rules can
+must never steer host git), and no ``git archive`` (whose ``.gitattributes`` export rules can
 hide or rewrite files). Diffs run with an explicit ``--git-dir`` and a temporary index, so nothing the
 request wrote into the export is read as git configuration.
 
@@ -12,7 +12,7 @@ untouched export still diffs empty, and records one the request changed.
 When the exported library's tests use the test kit (:mod:`..testkit`: they import ``memlab`` or name a recorded
 blob), the export also holds the kit at ``.memlab/`` (``memlab``, the pin plugin, the blobs the tests name;
 put on the worker's import path after the export, :func:`.hooks.worker_paths`), so the tests the working model
-reads or runs import as they do in the gate and in Sol's box. The kit is harness-owned (the gate's layout rules
+reads or runs import as they do in the gate and in the writer's box. The kit is harness-owned (the gate's layout rules
 admit no ``.memlab`` in a library) and left out of the memory diff.
 """
 
@@ -44,7 +44,7 @@ _EXCLUDE = (
 
 
 def _writable_retry(func, path, exc, *, root: Path) -> None:
-    """``shutil.rmtree``'s error handler: a read-only v2.1 export (:func:`make_read_only`) gets its write bits
+    """``shutil.rmtree``'s error handler: a read-only library-mode export (:func:`make_read_only`) gets its write bits
     back where removal needs them. Any error other than a permission error is raised as before.
 
     Bits are restored only on real directories inside *root*, the export being removed: a path outside it, or
@@ -98,8 +98,8 @@ def export_actor_library_mode(
     shapes=None,
     records=None,
 ) -> dict[str, bytes]:
-    """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha* (spec
-    v2.1 §6). It holds:
+    """``UNIFY_MEMORY_LIBRARY=on``: replace *dest* with the actor's read-only copy of memory commit *sha*. It
+    holds:
 
     - the commit's library modules, package docstrings and notes only (:func:`..layout.exported`): never a
       tests directory, a fixture, compiled code or a path outside the layout;

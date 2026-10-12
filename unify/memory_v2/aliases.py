@@ -1,18 +1,18 @@
-"""Aliases and calls in a v2.1 library (spec v2.1 §10.4, §9.1). Pure AST: nothing is imported or run.
+"""Aliases and calls in a library. Pure AST: nothing is imported or run.
 
-An **alias** keeps an old name working after CURATE merges, generalises or moves an item (§10.4). Three forms count,
+An **alias** keeps an old name working after CURATE merges, generalises or moves an item. Three forms count,
 each a top-level binding of the old name in its module, where the last binding of a name wins:
 
 * a binding, ``old = new``, where ``new`` is a function of the module or a name imported from a library module;
 * an import, ``from memory.<package>.<module> import new as old`` (relative imports too);
 * a forwarding wrapper, ``def old(<parameters>): return new(<arguments>)``, with at most a docstring before the
   return, where each argument is one of ``old``'s parameters, each passed at most once (by position or keyword,
-  starred or not), or a constant. A wrapper is still a function item; P5's record marks it an alias.
+  starred or not), or a constant. A wrapper is still a function item; its item record marks it an alias.
 
 A name imported through a package's re-export (``from memory.p import f``) resolves to the package, not to the
 function; an alias imports from the function's own module. :func:`forwards` lists every forwarding binding of a
-module; the gate (:mod:`.library_checks`) checks a declared alias against it. :func:`calls_function` is the v2.1 form of
-:func:`.snapshot.calls_item`.
+module; the gate (:mod:`.library_checks`) checks a declared alias against it. :func:`calls_function` is the library-mode
+form of :func:`.snapshot.calls_item`.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ def calls_function(source: bytes | str, item: str, package: str = "") -> bool:
 
 
 def uses_name(source: bytes | str, package: str, item: str, modules: set[str]) -> bool:
-    """Whether test code *source* imports *item* by name or calls it (a test of an old name, spec §9.1)."""
+    """Whether test code *source* imports *item* by name or calls it (a test of an old name)."""
     data = source.encode("utf-8") if isinstance(source, str) else source
     found = layout.imports(data, package, modules)
     return (found is not None and item in found[0]) or calls_function(

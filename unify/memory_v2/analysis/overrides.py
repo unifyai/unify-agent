@@ -1,6 +1,6 @@
-"""Detect a function that replaces a value it computed from its input under a condition (memory v2.1, stage 7).
+"""Detect a function that replaces a value it computed from its input under a condition.
 
-The lesson (office-v2 F3, 8 Oct 2026): a stored expense function computed ``pay = limit`` for an over-cap
+The lesson: a stored expense function computed ``pay = limit`` for an over-cap
 claim, then ``if rule: pay = Decimal("0.00")`` paid every claim with a rule nothing, over-cap ones included.
 Its recorded cases passed, because they record what it returned, not whether the policy was right. Such a
 function encodes a decision rule, and the gate asks for independent evidence before it merges one.

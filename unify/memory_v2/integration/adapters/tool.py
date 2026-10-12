@@ -1,4 +1,4 @@
-"""Adapter 1, the tool kind (spec §C2): environment calls recorded through the observer seam.
+"""Adapter 1, the tool kind: environment calls recorded through the observer seam.
 
 :class:`RecordingObserver` implements ``unify.function_manager.primitives.observers.EnvObserver``. It only
 records. ``before()`` always returns ``None``, so it never answers a call. ``complete`` is ``False``, so it

@@ -1,4 +1,4 @@
-"""QA-level test checks in the consolidation gate (memory v2.1 stage 5; plan "Stage 5", spec G3).
+"""QA-level test checks in the consolidation gate (library-mode stage 5, under the gate's check G3).
 
 G3 asks that each new or changed environment function has a test that is red on the parent and green on the
 candidate. It does not judge whether the test is any good: one fixture read many times, a stand-in environment
@@ -49,7 +49,7 @@ neither be flaky nor depend on a pinned value. A second run that times out is no
 
 **The test kit** (:mod:`.testkit`). Every gate pytest run mounts the kit (``memlab``, the pin plugin, the
 blobs the tests name) read-only at ``/inputs`` when a switch is on **or** the library's tests use it, so a
-stored library never depends on a switch setting; the same kit is in Sol's box and the actor's export. New
+stored library never depends on a switch setting; the same kit is in the writer's box and the actor's export. New
 or changed library code that uses it, and tests importing what it does not provide or naming ``/inputs``,
 are refused (``[qa:kit]``).
 
@@ -74,7 +74,7 @@ with no git and no evidence store, the pin plugin, the referenced blobs), the dr
 file. All dynamic checks share one time budget (:data:`BUDGET_S`): an exhausted budget stops the checks and
 refuses the pass as unjudged (``[qa:budget]``), never a pass and never an exception. Reasons and notes carry
 item ids, test paths, counts, operator kinds, line numbers, byte sizes and builtin exception names, never a
-recorded value (R10). All reasons are filed under G3 with a ``[qa:<check>]`` tag.
+recorded value. All reasons are filed under G3 with a ``[qa:<check>]`` tag.
 
 Rejected alternatives: rewriting the consolidator's fixtures to the drawn inputs (expected values would no
 longer match, so only property tests survive); a pytest plugin wrapping library functions to watch their
@@ -83,8 +83,8 @@ mutating by text substitution (cannot be kept syntactically valid). Known limits
 field-name set, so a refusal of a same-named but differently typed value counts as a false refusal; the stand-in
 check resolves only literal data flow (an environment built behind a helper's parameter or an attribute is
 ``unknown``, never refused); the truncation check sees only ``assert`` statements of the test source (an
-expected value kept in a data file is not seen); module code under test shares the probe's process (ruling
-R16: careless, not malicious).
+expected value kept in a data file is not seen); module code under test shares the probe's process (the
+consolidator is assumed careless, not malicious).
 """
 
 from __future__ import annotations
@@ -131,9 +131,9 @@ FLOOR_S = 5.0  # no run starts with less of the budget left
 PROBE_CASE_S = 2  # one call in the probe
 FIXTURE_MAX_BYTES = 64 * 1024
 MIN_KILL = Decimal("0.5")
-# memory v2.1 (spec §13.4, the test-quality study): the mutation kill share is gated per changed function at
+# library mode (from the test-quality study): the mutation kill share is gated per changed function at
 # MUTATION_MIN (0.7 after the first replay). Guard coverage, the kill rate of dropped-guard (``drop_raise``) mutants,
-# is measured and recorded only; GUARD_MIN_KILL is the gate it gets from v2.1.1. MAX_GUARD_MUTANTS bounds the
+# is measured and recorded only; GUARD_MIN_KILL is its planned gate. MAX_GUARD_MUTANTS bounds the
 # extra dropped-guard mutants run to measure it.
 MUTATION_MIN = Decimal("0.6")
 GUARD_MIN_KILL = Decimal("0.5")
@@ -181,7 +181,7 @@ class QAConfig:
     budget_s: float = BUDGET_S
     fixture_max_bytes: int = FIXTURE_MAX_BYTES
     library_mode: bool = (
-        False  # memory v2.1: plain recorded-inputs files, recorded measures, guard coverage
+        False  # library mode: plain recorded-inputs files, recorded measures, guard coverage
     )
     guard_mutants: int = MAX_GUARD_MUTANTS
     clock: Callable[[], float] = field(default=time.monotonic, compare=False)
@@ -209,7 +209,7 @@ class QAConfig:
 
     @property
     def response_blob_bytes(self) -> int:
-        """The size from which Sol's export writes a response as a blob (relative to the fixture bound)."""
+        """The size from which the writer's export writes a response as a blob (relative to the fixture bound)."""
         return max(1, self.fixture_max_bytes // RESPONSE_BLOB_SHARE)
 
     @classmethod
@@ -255,7 +255,7 @@ def pytest_env(cfg: QAConfig, variant: int = 0) -> dict[str, str]:
 
 
 def library_config(base: QAConfig) -> QAConfig:
-    """The stage-5 checks memory v2.1 gates (spec §13.4): drawn inputs ``strict``, mutation at MUTATION_MIN."""
+    """The stage-5 checks the library mode gates: drawn inputs ``strict``, mutation at MUTATION_MIN."""
     return dataclasses.replace(
         base,
         fixtures="strict",
@@ -796,7 +796,7 @@ class QAChecks:
 
     def __init__(self, gate: Any, run: Any) -> None:
         self.gate, self.run, self.cfg = gate, run, gate.qa
-        # memory v2.1: the pass's seed when the gate was given one (every round and the merge draw alike)
+        # library mode: the pass's seed when the gate was given one (every round and the merge draw alike)
         self.seed = getattr(run, "seed", None) or seed_of(run.candidate)
         self.started: float | None = None
 
@@ -1299,7 +1299,7 @@ class QAChecks:
                 self._note("fixtures", text)
 
     def _appended(self, it: Any, drawn: list[dict], samples: Path) -> None:
-        """memory v2.1 (spec §9.1, §13.4): the drawn inputs are appended to a copy of the function's
+        """Library mode: the drawn inputs are appended to a copy of the function's
         recorded-inputs file (:func:`.fixtures.inputs_file`), a plain JSON-lines file its tests read without the
         test kit. Its own tests must pass on them, and in ``strict`` must exercise every one: the passing test
         cases must grow by at least the number appended (each line is one more parametrised case).
@@ -1384,7 +1384,7 @@ class QAChecks:
         run, cfg, item = self.run, self.cfg, it.item
         record = (
             run.verification.setdefault(item, {}) if cfg.library_mode else {}
-        )  # v2.1
+        )  # library mode only
         record["mutation"], record["guard"] = None, None
         tests = self._tests(it)
         if not tests:
@@ -1395,7 +1395,7 @@ class QAChecks:
                 f"{item}'s new or changed tests are not all green in G3; mutants not judged",
             )
             return
-        rel = self._item_path(item)  # v2.1
+        rel = self._item_path(item)
         function = item.split(":", 1)[1]
         source = (run.c_tree / rel).read_text(encoding="utf-8", errors="replace")
         all_sites = mutation.sites(source, function)
@@ -1403,7 +1403,7 @@ class QAChecks:
         extra: list[mutation.Site] = []
         if (
             cfg.library_mode
-        ):  # guard coverage (spec §13.4): every dropped-guard mutant up to the bound, measured only
+        ):  # guard coverage: every dropped-guard mutant up to the bound, measured only
             have = sum(1 for s in chosen if s.op == "drop_raise")
             extra = [s for s in all_sites if s.op == "drop_raise" and s not in chosen][
                 : max(0, cfg.guard_mutants - have)
@@ -1532,7 +1532,7 @@ REWRITES: tuple[tuple[str, str, str], ...] = (
         'env={"PYTHONPATH": "/memory", "PYTHONDONTWRITEBYTECODE": "1"})',
         'env={"PYTHONPATH": "/memory:/inputs", "PYTHONDONTWRITEBYTECODE": "1"})',
     ),
-    # the harness provides the replay (memlab.replay.env_from) wherever the kit is mounted, so Sol no longer
+    # the harness provides the replay (memlab.replay.env_from) wherever the kit is mounted, so the writer no longer
     # writes the root unify_memory_testkit.py to fake the environment (one already in a library stays accepted)
     (
         "on",
@@ -1558,7 +1558,7 @@ REWRITES: tuple[tuple[str, str, str], ...] = (
 
 
 def brief(cfg: QAConfig) -> str:
-    """The paragraph Sol's brief gains for the stage-5 checks that are on ("" when none is)."""
+    """The paragraph the writer's brief gains for the stage-5 checks that are on ("" when none is)."""
     if not cfg.on:
         return ""
     lines = [
@@ -1623,7 +1623,7 @@ def brief(cfg: QAConfig) -> str:
 
 
 def system(base: str, cfg: QAConfig) -> str:
-    """Sol's system prompt with the stage-5 rewrites and paragraph (*base* unchanged when no switch is on)."""
+    """The writer's system prompt with the stage-5 rewrites and paragraph (*base* unchanged when no switch is on)."""
     if not cfg.on:
         return base
     text = base

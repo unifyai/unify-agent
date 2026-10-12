@@ -1,4 +1,4 @@
-"""The lean docstring standard of environment functions (v2.1 stage 3), parsed and checked; pure.
+"""The lean docstring standard of environment functions (stage 3), parsed and checked; pure.
 
 A stored function documents itself well enough that the working model never reads its source: ``help(fn)``
 and ``memory.describe(fn)`` show exactly this docstring. The standard, for every new or changed environment
@@ -454,7 +454,7 @@ def as_catalog(d: Docstring) -> dict:
 
 
 def describe_standard() -> str:
-    """The standard as Sol's brief states it, from the constants above."""
+    """The standard as the writer's brief states it, from the constants above."""
     required = ", ".join(f"`{n}:`" for n in REQUIRED_SECTIONS)
     optional = ", ".join(f"`{n}:`" for n in OPTIONAL_SECTIONS)
     return (

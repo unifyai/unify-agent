@@ -272,7 +272,7 @@ def test_gitattributes_filters_never_run(tmp_path):
     assert tree_files(repo, sha)["pay.csv"]
 
 
-# -- regressions for the review probes (C1, I1-I8, minor items) ----------------------------------
+# -- regressions for the review probes -----------------------------------------------------------
 
 
 def _host_secret(tmp_path):
@@ -548,7 +548,7 @@ def test_writes_are_attributed_per_cell_and_mkdir_has_its_own_row(tmp_path):
     assert rec.blobs.get(rows[0].response["blob_after"]) == b"v2\n"
 
 
-# -- regressions for the re-review (N1-N5) --------------------------------------------------------
+# -- regressions for the re-review ----------------------------------------------------------------
 
 
 def test_root_and_nul_audit_paths_never_abort(tmp_path):
@@ -1134,7 +1134,7 @@ def test_secrets_are_redacted_before_the_parse_cut(tmp_path, monkeypatch):
     assert all(KEY[:12].encode() not in data for data in sent)
 
 
-# -- regressions for re-review 3 (I-C, n2, n4, n6) and controller ruling R27 ---------------------
+# -- regressions for the third review round and the controller's rulings ------------------------
 
 # fake secrets; the sheet's has at most 31 characters, as an Excel sheet title
 SHEET_SECRET = "FAKESHEET-0123456789abcd"  # pragma: allowlist secret
@@ -1245,7 +1245,7 @@ def _tar(members):
 
 
 def _binary_files(secret: bytes) -> dict:
-    """Files whose bytes must never be exported (controller ruling R28): every one fails the text test,
+    """Files whose bytes must never be exported: every one fails the text test,
     and in most the secret is compressed, so no byte scan can see it."""
     import bz2
     import gzip
@@ -1430,7 +1430,7 @@ def test_one_failing_path_in_finish_keeps_the_other_rows(tmp_path, monkeypatch):
     for path, exc in (("conf.json", "RuntimeError"), ("pay.csv", "RecursionError")):
         got = by[path]
         assert got.status == "unrecorded" and got.response["failed"] == exc, path
-        # unknown whether a secret was redacted from it: no raw git id (R30)
+        # unknown whether a secret was redacted from it: no raw git id
         assert got.response["oid_before"] is None, path
         assert got.response["oid_after"] is None, path
     assert rec.skip_counts["write record failed"] == 2
@@ -1664,7 +1664,7 @@ def test_worktree_diff_lists_every_changed_path(tmp_path):
     rec.finish()
     diff = mod.worktree_diff(repo, rec.before, rec.after, redactor=Redactor())
     old, new = (len(f"token={k}\n") for k in (KEY, other))
-    red = hashlib.sha256(b"token=<redacted:key-shaped>\n").hexdigest()  # R30
+    red = hashlib.sha256(b"token=<redacted:key-shaped>\n").hexdigest()  # the redacted text's hash, never the secret's
     assert diff == (
         f"text empty-del.txt: sha256 {EMPTY_SHA} -> absent, bytes 0 -> absent\n"
         f"text empty-new.txt: sha256 absent -> {EMPTY_SHA}, bytes absent -> 0\n"
@@ -1942,7 +1942,7 @@ def test_no_exported_hash_or_id_is_of_raw_text_that_was_redacted(tmp_path, monke
     assert "text big.txt: sha256 " in diff
 
 
-# -- review fix round (online Track A, I2): one blob process and deadlines ------------------------------
+# -- review fix round: one blob process and deadlines ---------------------------------------------------
 
 
 def _many(tmp_path, n=30):

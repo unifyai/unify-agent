@@ -272,7 +272,7 @@ def test_shared_subtrees_are_deterministic():
     assert len(keys) == 1
 
 
-# --- scope-aware renaming (review M1) -------------------------------------------------------------------------
+# --- scope-aware renaming -------------------------------------------------------------------------------------
 
 
 def _au(src: str, names=("f", "g"), **kw):
@@ -358,7 +358,7 @@ def test_annotations_of_assignments_are_dropped():
     assert ast.dump(normalise(a).node) == ast.dump(normalise(b).node)
 
 
-# --- random renamings: the property behind M1 -------------------------------------------------------------
+# --- random renamings: the property behind scope-aware renaming -------------------------------------------
 
 _FREE_CALLS = ("len", "sorted", "abs")
 _PLACEHOLDER = re.compile(r"\b[PVCAT]\d+\b")
@@ -397,7 +397,7 @@ def _random_function(rng: random.Random):
             )
             inner.append((c, outer))
         elif kind == "lambda":
-            # only ever called directly, positionally: its parameter name is not observable (review N4)
+            # only ever called directly, positionally: its parameter name is not observable
             a, outer = f"A{next(n)}", rng.choice(visible)
             lines.append(f"{new} = lambda {a}: {a} + {outer}")
             inner.append((a, outer))
@@ -469,7 +469,7 @@ def test_random_renamings_keep_everything_and_captures_do_not(seed):
 
 @pytest.mark.parametrize("seed", range(40))
 def test_random_escaping_functions_keep_their_parameter_names(seed):
-    # review N4: once a nested function or lambda escapes (passed on, aliased, called with keywords or **), a
+    # once a nested function or lambda escapes (passed on, aliased, called with keywords or **), a
     # caller can pass its parameters by keyword, so renaming one must never look like the same function
     rng = random.Random(1000 + seed)
     kind = rng.choice(("def", "lambda"))
@@ -529,7 +529,7 @@ def test_random_escaping_functions_keep_their_parameter_names(seed):
     ),
 )
 def test_name_sensitive_pairs_never_reach_full_kept_share(src):
-    # review N4: each pair normalised identically before, although the two functions behave differently
+    # each pair normalised identically before, although the two functions behave differently
     g = _au(src)
     assert g is not None and g.kept_share < 1.0 and g.holes
 
@@ -546,7 +546,7 @@ def test_a_renamed_root_parameter_is_an_interface_difference():
     assert g.same_signature and g.signatures[0] == ("a", "/", "b", "*c", "d", "**e")
 
 
-# --- inlining (review M2, M3, M7) -------------------------------------------------------------------------
+# --- inlining ---------------------------------------------------------------------------------------------
 
 
 def test_inlining_keeps_the_final_return_expression_and_its_calls():
@@ -588,11 +588,11 @@ def test_inlining_is_refused_where_a_name_would_change_meaning():
 @pytest.mark.parametrize(
     "callee",
     [
-        # review N5: a mutable default is shared across calls; inlined it would be a fresh list per call
+        # a mutable default is shared across calls; inlined it would be a fresh list per call
         "def p(o, acc=[]):\n    acc.append(o)\n",
         "def p(o, acc={}):\n    acc[o] = 1\n",
         "def p(o, acc=make()):\n    acc.add(o)\n",
-        # review N5: frame introspection would see the caller's frame
+        # frame introspection would see the caller's frame
         "def p(o):\n    log(locals())\n",
         "def p(o):\n    log(vars())\n",
         "def p(o):\n    eval('o')\n",
@@ -665,7 +665,7 @@ def test_a_pair_that_only_shares_an_inlined_helper_is_marked_helper_driven():
 
 
 def test_a_pair_where_one_calls_the_other_is_a_wrapper():
-    # review N8: submit_state calls parse_submit_feedback; most of what they keep is that callee's code
+    # submit_state calls parse_submit_feedback; most of what they keep is that callee's code
     h = antiunify_source(ARC, ["parse_submit_feedback", "submit_state"])
     assert h.wrapper and h.calls == ((1, 0),) and not h.helper_driven
     assert 2 * h.mixed_kept >= h.kept
@@ -679,7 +679,7 @@ def test_a_pair_where_one_calls_the_other_is_a_wrapper():
     assert not g.wrapper
 
 
-# --- literals and names (review M4, L3) -----------------------------------------------------------------------
+# --- literals and names ---------------------------------------------------------------------------------------
 
 
 def test_a_huge_integer_literal_is_keyed_without_repr():
@@ -783,7 +783,7 @@ def _region_flow(src: str, start: str):
 @pytest.mark.parametrize(
     "src, start",
     [
-        # review N2, each reported local with the parameter reaching no return before
+        # each reported local with the parameter reaching no return before
         (
             "def f(p):\n    acc = []\n    view = acc\n    view.append(p)\n    return acc\n",
             "view.append",
@@ -940,7 +940,7 @@ def test_flow_analysis_is_bounded_and_says_so():
 
 
 def _wide_context(n: int) -> str:
-    """Review N3's shape: one test reading n names governing n assignments."""
+    """A wide context: one test reading n names governing n assignments."""
     return (
         "def f(p):\n    if "
         + " or ".join(f"a{i}" for i in range(n))
@@ -957,7 +957,7 @@ def test_a_wide_control_context_costs_linear_work():
     s = flows(fn, {0: [fn.body[0]]})
     assert time.monotonic() - t0 < 1.0
     assert not s.truncated and s.regions[0].kind == "local"
-    # review N3's 24k-node case (15 s and 650 MB before) and the 48k one: refused by the node cap, at once
+    # the 24k-node case (15 s and 650 MB before) and the 48k one: refused by the node cap, at once
     for n in (4000, 8000):
         fn = ast.parse(_wide_context(n)).body[0]
         t0 = time.monotonic()
@@ -966,7 +966,7 @@ def test_a_wide_control_context_costs_linear_work():
         assert s.truncated and s.limit == "nodes" and s.regions[0].kind == "nonlocal"
 
 
-# --- shared subtrees at scale (review M9) ---------------------------------------------------------------------
+# --- shared subtrees at scale ---------------------------------------------------------------------------------
 
 
 def test_shared_subtree_greedy_is_near_linear_on_a_repetitive_library():

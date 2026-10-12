@@ -1,4 +1,4 @@
-"""The actor's copy of a v2.1 library (spec §6, §20 item 3): read-only, no tests or fixtures, generated files."""
+"""The actor's copy of a library-mode library: read-only, no tests or fixtures, generated files."""
 
 from __future__ import annotations
 
@@ -186,7 +186,7 @@ async def test_a_cell_imports_the_library_and_cannot_write_it(
         await ex.close()
     # EROFS comes only from the read-only bind: the owner may chmod a file of mode 0444 on a writable mount
     assert list(out)[:3] == ["2026-10-09", "EROFS", "## memory.web"]
-    # what the actor itself sees (RUNTIME, T4): the library and notes, never its tests or their data
+    # what the actor itself sees: the library and notes, never its tests or their data
     seen = list(out)[3]
     assert set(KEPT) <= set(seen) and not any("tests" in f.split("/") for f in seen)
 
@@ -196,7 +196,7 @@ def test_wrap_argv_binds_late_only_the_memory_checkout_of_the_state_directory(
     world,  # noqa: F811
     tmp_path,
 ):
-    """RUNTIME, P3 Task 4 (S-1): no caller mounts any other host path into a cell through *late_readonly*,
+    """No caller mounts any other host path into a cell through *late_readonly*,
     not even another directory of the state directory (the memory repo, episodes, blobs, evidence).
     """
     policy = sandbox.build_policy(fresh=True)

@@ -65,7 +65,7 @@ def _pass_row(ev, pid, passed, merged, refused, patch):
 def test_stage_drafts_writes_open_drafts_and_the_last_result(tmp_path):
     ev = EvidenceStore(tmp_path / "e.sqlite")
     blobs = BlobStore(tmp_path / "b")
-    # no v2.1 pass yet: no table, the v2 schema
+    # no library-mode pass yet: no table, the v2 schema
     assert ev.pass_rounds() == []
     assert (
         ev.db.execute("SELECT 1 FROM sqlite_master WHERE name='pass_rounds'").fetchone()
@@ -134,7 +134,7 @@ def test_stage_drafts_writes_open_drafts_and_the_last_result(tmp_path):
         .read_text()
         .startswith("# Gate result: pass p1, round 1")
     )
-    # the last pass's full result, landed or not (spec §9.3)
+    # the last pass's full result, landed or not
     assert (
         (inputs / "gate/previous.md").read_text().startswith("# Gate result: pass p2")
     )
@@ -149,7 +149,7 @@ def test_stage_drafts_writes_open_drafts_and_the_last_result(tmp_path):
 
 
 def test_a_corrupt_blob_is_marked_never_staged_as_whole(tmp_path):
-    """RUNTIME (T3, m): a staged patch or result must hash to its id; a damaged one is a marker line."""
+    """A staged patch or result must hash to its id; a damaged one is a marker line."""
     from unify.memory_v2.drafts import _blob
 
     blobs = BlobStore(tmp_path / "b")

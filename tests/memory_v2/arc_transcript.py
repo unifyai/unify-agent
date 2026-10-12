@@ -269,7 +269,7 @@ def visit(
     }
 
 
-# --- a scripted Sol's item on the dialogue channel ----------------------------------------------------
+# --- a scripted writer's item on the dialogue channel -------------------------------------------------
 
 ITEM = "env/env:observation_lines"
 ITEM_MODULE = '''__all__ = ["observation_lines"]
@@ -300,7 +300,7 @@ def test_every_recorded_observation_has_lines():
         lines = observation_lines(observation)
         assert lines and all(line.strip() for line in lines)
 """
-# One Sol cell: read the exported episodes, cover every recorded dialogue observation on the memory
+# One writer cell: read the exported episodes, cover every recorded dialogue observation on the memory
 # channel ``env``, write the item, its test and fixture, and the manifest.
 WRITER_CELL = f"""import json, pathlib
 covers, observations, sources = [], [], []

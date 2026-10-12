@@ -1,4 +1,4 @@
-"""Spec v2.1 §6, P7 Amendment D: a pass's Sol calls are priced from the proxy journal by lane and window; what
+"""A pass's writer calls are priced from the proxy journal by lane and window; what
 cannot be priced stays unknown, never zero, and is booked at the worst case."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from unify.memory_v2.reconcile import (
     reconcile_window,
 )
 
-SOL, LUNA = "openai/gpt-6-sol", "openai/gpt-6-luna"
+WRITER_MODEL, ACTOR_MODEL = "openai/gpt-6-sol", "openai/gpt-6-luna"
 
 
 def _write(path, rows):
@@ -26,7 +26,7 @@ def _write(path, rows):
             fh.write(json.dumps(r) + "\n")
 
 
-def _started(rid, model=SOL):
+def _started(rid, model=WRITER_MODEL):
     return {
         "origin": "request_started",
         "request_attempt_id": rid,
@@ -35,7 +35,7 @@ def _started(rid, model=SOL):
     }
 
 
-def _done(rid, usd, model=SOL):
+def _done(rid, usd, model=WRITER_MODEL):
     return {
         "origin": "response",
         "request_attempt_id": rid,
@@ -56,7 +56,7 @@ async def test_a_cancelled_pass_prices_two_and_books_the_unpriced_one_at_the_wor
         j,
         [
             _started("a"),
-            _started("actor", LUNA),
+            _started("actor", ACTOR_MODEL),
             _done("a", "0.10"),
             _started("b"),
             _started("c"),
@@ -71,14 +71,14 @@ async def test_a_cancelled_pass_prices_two_and_books_the_unpriced_one_at_the_wor
             {
                 "origin": "transport_error",
                 "request_attempt_id": "c",
-                "requested_model": SOL,
+                "requested_model": WRITER_MODEL,
                 "status": "cancelled",
                 "error_type": "client disconnected",
             },
         ],
     )
     j.open("a").write('{"half a line')  # a line still being written is never read
-    out = await reconcile_window(str(j), start, end, models=[SOL], budget_s=0)
+    out = await reconcile_window(str(j), start, end, models=[WRITER_MODEL], budget_s=0)
     assert out == {
         "journal": "read",
         "calls": 3,
@@ -96,10 +96,10 @@ def test_only_writer_lane_requests_started_in_the_window_belong_to_the_pass(tmp_
     start = journal_offset(str(j))
     _write(
         j,
-        [_started("luna", LUNA), _done("x", "1.00")],
+        [_started("actor", ACTOR_MODEL), _done("x", "1.00")],
     )  # x started before the window
     end = journal_offset(str(j))
-    assert lane_calls(str(j), start, end, [SOL]) == {}
+    assert lane_calls(str(j), start, end, [WRITER_MODEL]) == {}
 
 
 @pytest.mark.asyncio
@@ -121,7 +121,7 @@ async def test_reconcile_waits_for_a_late_terminal_row_within_its_budget(tmp_pat
         str(j),
         start,
         end,
-        models=[SOL],
+        models=[WRITER_MODEL],
         budget_s=30,
         clock=lambda: clock[0],
         sleep=sleep,
@@ -136,7 +136,7 @@ async def test_no_journal_prices_nothing_and_never_says_zero(tmp_path):
         (str(tmp_path / "missing.jsonl"), 0, 1),
         (str(tmp_path / "x"), None, None),
     ):
-        out = await reconcile_window(path, start, end, models=[SOL], budget_s=0)
+        out = await reconcile_window(path, start, end, models=[WRITER_MODEL], budget_s=0)
         assert (
             out["journal"] == "unavailable"
             and out["unknown"] is None

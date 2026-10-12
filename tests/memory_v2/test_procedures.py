@@ -273,7 +273,7 @@ def test_dialogue_runner_needs_the_accepted_action_and_a_positive_signal(tmp_pat
     )
     # Amendment D: a checker verdict the bed does not declare visible to the actor is never evidence
     assert "no positive signal" in run(DIALOGUE, 4, good, visible=False).reason
-    # review R1: with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
+    # with the switch on, a checker verdict the actor never saw (a hidden grader) is not evidence either
     hidden = [Signal("s3", "e3", "checker", "pass", "2026-10-09T00:00:00Z")]
     assert "no positive signal" in run(DIALOGUE, 6, hidden).reason
     support = [Signal("s2", "e3", "provenance", "support", "2026-10-09T00:00:00Z")]

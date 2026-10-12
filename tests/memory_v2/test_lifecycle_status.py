@@ -1,4 +1,4 @@
-"""Statuses (spec §10.1), taint (§10.1(c), §11 rule 3) and failure-only provenance (§8.2 rule 3, §11 rule 1)."""
+"""Statuses, taint and failure-only provenance."""
 
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ def test_next_records_restarts_a_new_version_and_reports_changes():
 
 
 def test_curate_aliases_and_retirements_deprecate_items():
-    """P6's decisions reach the records (MAIN, 9 Oct): a live alias is deprecated with alias_of its target; a
+    """CURATE's decisions reach the records: a live alias is deprecated with alias_of its target; a
     retired item still in the tree is deprecated with its reason; a dropped alias no longer forwards.
     """
     items = {WEEK: "function", PD: "function", NOTE: "note"}

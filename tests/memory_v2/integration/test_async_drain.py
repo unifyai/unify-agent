@@ -1,4 +1,4 @@
-"""Spec v2.1 §6 shutdown (P7 Task 9): wait at most the pass's bound, then cancel through the abort path; kill and
+"""Shutdown: wait at most the pass's bound, then cancel through the abort path; kill and
 verify a worker that does not end; never start a pass; report every pass that ended after the last request,
 uncounted."""
 
@@ -178,7 +178,7 @@ def test_drain_archives_the_repo_with_its_notes_once_no_worker_writes(tmp_path):
 
     paths = Paths.under(tmp_path)
     mem = Repo.init_bare(paths.memory)
-    mem.add_note(mem.head(), "{}", ref="items")  # P5's records live on refs/notes/items
+    mem.add_note(mem.head(), "{}", ref="items")  # the item records live on refs/notes/items
     report = ap.drain(paths, archive_to=tmp_path / "out" / "memory.bundle")
     refs = report["archive"]["refs"]
     assert "refs/notes/items" in refs and "refs/heads/main" in refs
