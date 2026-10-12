@@ -311,6 +311,23 @@ _LEAN_ROLE = textwrap.dedent("""
     fixed template), each reply follows that format exactly.
 """).strip()
 
+# The role's and the sandbox section's first lines name the function store;
+# a memory run has none, so it reads these instead (memory/integration/hooks.py).
+_LEAN_ROLE_LIBRARY = (
+    "You solve the request in this conversation by writing and running\n"
+    "Python, with a library of stored functions and procedures to draw on."
+)
+_LEAN_ROLE_LIBRARY_MEMORY = (
+    "You solve the request in this conversation by writing and running\n"
+    "Python cells with `execute_code`. A library of functions and notes from\n"
+    "earlier work, when one exists, is importable in your cells as `memory`."
+)
+_SANDBOX_GLOBALS_INTRO = (
+    "Python in `execute_code` and stored functions runs with the\n"
+    "injected globals below."
+)
+_SANDBOX_GLOBALS_INTRO_MEMORY = "Cells run with the injected globals below."
+
 _LEAN_QUERY_LLM = textwrap.dedent("""
     Use plain Python for exact steps (lookups, filters, arithmetic,
     reshaping) and `query_llm(...)` inside the code for steps that judge

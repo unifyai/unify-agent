@@ -62,13 +62,24 @@ def system_prompt(text: str) -> str:
     or under ``UNIFY_MEMORY_SURFACING=catalogue`` the constant guide (the same bytes for the whole run).
 
     Under memory v2 the sandbox has no ``functions`` object, so the core prompt's pointer to
-    ``functions.search`` is dropped too; the change is the same for every request.
+    ``functions.search`` is dropped too, and the role and the sandbox section no longer name stored
+    functions; the change is the same for every request.
     """
     if not enabled():
         return text
-    from unify.actor.prompt_builders import _CORE_SANDBOX_SEARCH_PYTHON
+    from unify.actor import prompt_builders as _prompts
 
-    text = text.replace(_CORE_SANDBOX_SEARCH_PYTHON, _HELP_ONLY)
+    text = text.replace(_prompts._CORE_SANDBOX_SEARCH_PYTHON, _HELP_ONLY)
+    # No function store either: the role and the sandbox section say what a
+    # cell has instead.
+    text = text.replace(
+        _prompts._LEAN_ROLE_LIBRARY,
+        _prompts._LEAN_ROLE_LIBRARY_MEMORY,
+    )
+    text = text.replace(
+        _prompts._SANDBOX_GLOBALS_INTRO,
+        _prompts._SANDBOX_GLOBALS_INTRO_MEMORY,
+    )
     run = _run()
     index = getattr(run, "index", "") if run is not None else ""
     return f"{text}\n\n{index}" if index else text

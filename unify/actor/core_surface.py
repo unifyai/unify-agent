@@ -1338,6 +1338,9 @@ _SINGLE_CALL_RULE = re.compile(
     r"\n[ \t]*\*\*IMPORTANT — single-call rule\*\*:.*?\n[ \t]*\n",
     re.DOTALL,
 )
+_LIBRARY_FUNCTIONS = re.compile(
+    r"environment globals and FunctionManager-discovered\s+functions still available",
+)
 _SESSION_TOOLS = re.compile(
     r";?\s*choose via\s*``list_sessions\(\)`` / ``inspect_state\(\)``\.",
 )
@@ -1349,7 +1352,14 @@ def execute_code_doc(doc: str) -> str:
     with."""
     doc = _SINGLE_CALL_RULE.sub("\n", doc, count=1)
     doc = _SESSION_TOOLS.sub(".", doc, count=1)
-    doc = doc.replace("FunctionManager-discovered", "library", 1)
+    from unify.memory.integration import hooks as _memory
+
+    if _memory.enabled():
+        # A memory run has no function library: a fresh run keeps the
+        # environment globals only.
+        doc = _LIBRARY_FUNCTIONS.sub("environment globals still available", doc, 1)
+    else:
+        doc = doc.replace("FunctionManager-discovered", "library", 1)
     return doc.rstrip() + "\n"
 
 
