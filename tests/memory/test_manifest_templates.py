@@ -104,3 +104,34 @@ def test_the_fork_and_the_helpers_are_told_the_function_contract_the_gate_enforc
         )
         for form in INPUT_KINDS:
             assert f"`{form}`" in text, form
+
+
+def test_the_write_brief_states_the_material_and_the_reach_as_facts():
+    from unify.memory import writer_pass
+
+    for brief in (
+        lp.write_brief_now(staging=True, pool=True, helper=True, similar=True),
+        lp.write_brief_now(),
+    ):
+        assert (
+            "They are not the only material: functions and notes can also come from any recorded episode"
+            in brief
+        )
+        assert "Any recorded episode can be read, in this batch or not" in brief
+        assert "`overview` and `read_episode` take any recorded id" in brief
+    assert "`similar` finds others with matching code" in lp.write_brief_now(
+        similar=True,
+    )
+    with_helpers = lp.write_brief_now(helper=True)
+    assert (
+        writer_pass.FINISH_WINDOW_SHARE == 0.25
+        and "its last quarter (at least 300 s)" in with_helpers
+    )
+    assert "finishing window" not in lp.write_brief_now()
+    assert (
+        writer_pass.finish_window_s(2100) == 525
+        and writer_pass.finish_window_s(600) == 300
+    )
+    _template(
+        with_helpers,
+    )  # the manifest template still parses out of the changed brief

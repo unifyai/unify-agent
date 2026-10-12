@@ -41,6 +41,7 @@ A helper's failure never fails the pass: :func:`handle` always returns a reply f
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -144,8 +145,10 @@ SPEC = ToolSpec(
         "candidates, cases and notes in the fork's staging format. Its files reach you under "
         "/inputs/helpers/<call>/, and the reply gives its summary, its claims each with the episode parts it rests "
         "on, the files it staged and its spend. A helper's claims are untrusted until you read the parts they point "
-        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time. Helper time "
-        "counts against this pass's wall clock."
+        "to. A helper cannot launch helpers. Several delegate calls in one turn run at the same time, and you "
+        "continue when all of them have handed back. A helper works until it calls done, until the `seconds` you "
+        "give it run out, or until the finishing window at the end of the pass begins, whichever comes first; it "
+        "then hands back what it has staged."
     ),
     parameters={
         "type": "object",
@@ -159,6 +162,13 @@ SPEC = ToolSpec(
                 "items": {"type": "string"},
                 "description": "Ids of recorded episodes the helper starts from.",
             },
+            "seconds": {
+                "type": "number",
+                "description": (
+                    "How long the helper may work, in seconds; it then hands back what it has staged. Default: "
+                    "until the finishing window begins."
+                ),
+            },
         },
         "required": ["task", "episodes"],
     },
@@ -168,7 +178,8 @@ SPEC = ToolSpec(
         "no_episodes": "episodes must be a list of recorded episode ids; no helper started",
         "unknown_episode": "{episode!r} is not a recorded episode; no helper started",
         "no_lane": "no helper can start: {why}",
-        "no_time": "no helper can start: the pass's wall clock is used up",
+        "no_time": "no helper can start: the pass's finishing window has begun",
+        "bad_seconds": "seconds must be a positive number; no helper started",
         "index_unreadable": "the recorded-episode index could not be read ({error}); no helper started",
     },
     requires="helper",
@@ -334,7 +345,6 @@ class DelegateContext:
     records: list[dict] = field(default_factory=list)
     #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
     box_opens: list[dict] = field(default_factory=list)
-    model_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     next_call: int = 0
 
 
@@ -1042,7 +1052,7 @@ async def _run_helper(
             "role": "user",
             "content": (
                 f"Task from the writer:\n{task}\n\nEpisodes to start from: {', '.join(episodes) or '(none)'}\n"
-                f"Wall clock left in this pass: about {max(0, int(left))} s. "
+                f"Time you have: about {max(0, int(left))} s; then you hand back what you have staged. "
                 f"Operational step guard: {ctx.step_guard} model calls."
             ),
         },
@@ -1051,27 +1061,23 @@ async def _run_helper(
     while doc["turns"] < ctx.step_guard:
         left = ctx.deadline - time.monotonic()
         if left <= 0:
-            doc["status"] = "pass wall clock reached"
+            doc["status"] = "time up"
             return
-        async with (
-            ctx.model_lock
-        ):  # helper model calls are serialised across the pass's helpers
-            try:
-                msg, usd = await asyncio.wait_for(
-                    turn(messages, tools),
-                    timeout=max(0.1, ctx.deadline - time.monotonic()),
-                )
-            except asyncio.TimeoutError:
-                doc["unknown_cost_calls"] += 1
-                ctx.spend.unknown += 1
-                doc["status"] = "pass wall clock reached during a model call"
-                return
-            except Exception:
-                doc[
-                    "unknown_cost_calls"
-                ] += 1  # a failed call may still have cost money
-                ctx.spend.unknown += 1
-                raise
+        # helpers' model calls run at the same time: each helper waits only for its own call
+        try:
+            msg, usd = await asyncio.wait_for(
+                turn(messages, tools),
+                timeout=max(0.1, ctx.deadline - time.monotonic()),
+            )
+        except asyncio.TimeoutError:
+            doc["unknown_cost_calls"] += 1
+            ctx.spend.unknown += 1
+            doc["status"] = "time up during a model call"
+            return
+        except Exception:
+            doc["unknown_cost_calls"] += 1  # a failed call may still have cost money
+            ctx.spend.unknown += 1
+            raise
         doc["turns"] += 1
         cost = _money(usd)
         if cost is None:
@@ -1176,6 +1182,13 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         return _refusal(SPEC, "no_lane", why=ctx.lane_refusal)
     if ctx.deadline - time.monotonic() <= 1.0:
         return _refusal(SPEC, "no_time")
+    seconds = args.get("seconds") if isinstance(args, dict) else None
+    if seconds is not None and (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not seconds > 0
+    ):
+        return _refusal(SPEC, "bad_seconds")
     episodes = list(dict.fromkeys(eps))
     try:
         index = set(ctx.recorded())
@@ -1187,6 +1200,14 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
     call = f"call-{ctx.next_call}"
     ctx.next_call += 1
     started = time.monotonic()
+    # this helper's own stop: the start of the finishing window, or sooner when the writer gave it seconds
+    window_start = ctx.deadline
+    stop = (
+        min(window_start, started + float(seconds))
+        if seconds is not None
+        else window_start
+    )
+    run_ctx = dataclasses.replace(ctx, deadline=stop)
     doc: dict = {
         "call": call,
         "pass_id": ctx.pass_id,
@@ -1207,7 +1228,13 @@ async def handle(args: dict, ctx: DelegateContext) -> str:
         tmp = Path(tempfile.mkdtemp(prefix=f"helper-{call}-", dir=ctx.scratch))
         st = _prepare(ctx, episodes, tmp)
         st.update(staging=staging, call=call)
-        await _run_helper(ctx, call, task, episodes, staging, st, doc)
+        await _run_helper(run_ctx, call, task, episodes, staging, st, doc)
+        if doc["status"].startswith("time up"):
+            doc["status"] = (
+                "time up: the seconds it was given ran out"
+                if stop < window_start
+                else "time up: the finishing window began"
+            ) + "; what it staged is kept"
     except asyncio.CancelledError:
         doc["status"] = "cancelled"
         raise

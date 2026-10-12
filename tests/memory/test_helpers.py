@@ -226,7 +226,7 @@ def test_the_helper_box_is_ro_ro_rw_and_holds_only_what_the_task_needs(
     assert call["listing"]["/memory"] == ["INDEX.md"]
 
 
-def test_delegate_calls_in_one_turn_run_concurrently_with_serialised_model_calls(
+def test_delegate_calls_in_one_turn_run_concurrently_and_so_do_their_model_calls(
     tmp_path,
     fake_box,
 ):
@@ -250,7 +250,7 @@ def test_delegate_calls_in_one_turn_run_concurrently_with_serialised_model_calls
         "helper call-1: ok",
     )
     assert script.order == ["A", "B", "A", "B"]  # both helpers were live at once
-    assert script.max_in_flight == 1  # one helper model call in flight at a time
+    assert script.max_in_flight == 2  # both helpers' model calls were in flight at once
     assert len(set(script.prefixes)) == 1  # siblings share the brief byte for byte
     assert (ctx.out_root / "call-1" / "notes.md").read_text() == "lesson B"
     assert ctx.spend.usd == Decimal("0.004") and len(ctx.records) == 2
@@ -703,3 +703,61 @@ def test_a_helpers_episode_reads_record_the_paths_the_writer_records():
     assert helpers.episode_paths("read_episode", {"part": "cell:2"}, "e1") == [
         {"path": "/episodes/e1/cell:2", "mode": "read"},
     ]
+
+
+class _Forever:
+    """A helper that stages one note, then keeps reading until it is stopped."""
+
+    def __init__(self, gap=0.05):
+        self.gap, self.calls = gap, 0
+
+    def factory(self, session=None):
+        async def turn(messages, tools):
+            self.calls += 1
+            await asyncio.sleep(self.gap)
+            if self.calls == 1:
+                return (
+                    _msg(_tc("s", "stage", {"path": "notes.md", "text": "a lesson"})),
+                    "0.001",
+                )
+            return _msg(_tc(f"r{self.calls}", "overview", {"episode": "e1"})), "0.001"
+
+        return turn
+
+
+def test_a_helper_still_working_when_the_finishing_window_begins_hands_back_what_it_staged(
+    tmp_path,
+    fake_box,
+):
+    model = _Forever()
+    ctx = _ctx(
+        tmp_path,
+        model,
+        deadline=time.monotonic() + 1.0,
+    )  # the window begins in 1 s
+    reply = asyncio.run(helpers.handle({"task": "draft area", "episodes": ["e1"]}, ctx))
+    assert reply.startswith(
+        "helper call-0: time up: the finishing window began; what it staged is kept",
+    ), reply
+    assert (ctx.out_root / "call-0" / "notes.md").read_text() == "a lesson"
+    assert model.calls >= 2
+
+
+def test_seconds_bounds_a_helper_and_bad_seconds_start_none(tmp_path, fake_box):
+    ctx = _ctx(tmp_path, _Forever())  # the window is 600 s away
+    started = time.monotonic()
+    reply = asyncio.run(
+        helpers.handle({"task": "draft area", "episodes": ["e1"], "seconds": 0.5}, ctx),
+    )
+    assert reply.startswith(
+        "helper call-0: time up: the seconds it was given ran out",
+    ), reply
+    assert time.monotonic() - started < 30
+    for bad in (0, -1, "10", True):
+        out = asyncio.run(
+            helpers.handle({"task": "x", "episodes": ["e1"], "seconds": bad}, ctx),
+        )
+        assert out == tool_spec.refusal("delegate", "bad_seconds"), bad
+    props = helpers.SPEC.parameters["properties"]
+    assert "seconds" in props and "seconds" not in helpers.SPEC.parameters["required"]
+    assert "finishing window" in helpers.SPEC.description

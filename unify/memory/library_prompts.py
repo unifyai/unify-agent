@@ -501,6 +501,8 @@ class Limits:
     #: messages at the end that are never moved
     compact_at_chars: int | None = None
     compact_keep_last: int = 0
+    #: the shortest finishing window at the end of a pass with helpers (writer_pass.finish_window_s)
+    finish_window_min_s: float = 300.0
     #: what the episode-end fork (and each helper call) can stage: files and bytes
     stage_files: int | None = None
     stage_bytes: int | None = None
@@ -526,7 +528,11 @@ def _limits_text(limits: Limits, helper_time: bool) -> str:
             "total_mib": _num(limits.total_bytes / 1024**2),
             "entries": limits.entries,
             "helper_time": (
-                "; time helpers spend counts toward it" if helper_time else ""
+                "; time helpers spend counts toward it, and its last quarter (at least "
+                f"{_num(limits.finish_window_min_s)} s) is your finishing window: helpers still working when it "
+                "begins stop and hand back what they have staged, so you always have time to check and finish"
+                if helper_time
+                else ""
             ),
             "step_guard": limits.step_guard,
             "check_floor": _num(limits.check_floor_s),
@@ -636,8 +642,9 @@ def write_brief(
         "linked notes in that library. The proposals are "
         + _join(proposals_from)
         + ": starting points that you "
-        "adopt, edit or leave. The episodes are the evidence: what the working model did and what the environment "
-        "answered. You work in a sandbox with no network and no credentials.\n"
+        "adopt, edit or leave. They are not the only material: functions and notes can also come from any "
+        "recorded episode, with no proposal behind them. The episodes are the evidence: what the working model did "
+        "and what the environment answered. You work in a sandbox with no network and no credentials.\n"
     )
     inputs: list[str] = []
     if staging:
@@ -738,7 +745,12 @@ def write_brief(
         )
         + "\n"
         "2. Read the episodes behind what may be worth keeping, starting from each one's `end_parts`, which show "
-        "where it ended and so where an outcome, if any, was shown.\n" + decide + "\n"
+        "where it ended and so where an outcome, if any, was shown. Any recorded episode can be read, in this "
+        "batch or not, whenever a closer look helps: `overview` and `read_episode` take any recorded id"
+        + (", and `similar` finds others with matching code" if has("similar") else "")
+        + ".\n"
+        + decide
+        + "\n"
         "4. Write tests first, against trusted values (rule 5), with fixtures made by `fixture`; see each new test "
         "fail before the code exists, then pass.\n"
         + (
@@ -865,6 +877,7 @@ def limits_now(
         cells_per_turn=getattr(writer_pass, "_MAX_CELLS_PER_TURN", None),
         readers_per_turn=getattr(writer_pass, "READERS_PER_TURN", None),
         finish_refusals=writer_pass.FINISH_G1_REFUSALS if finish_capped else None,
+        finish_window_min_s=writer_pass.FINISH_WINDOW_MIN_S,
         # a capped pass also caps its repair rounds (repair.may_repair); repair_message states the same count
         repair_rounds=_repair.REPAIR_ROUNDS if finish_capped else None,
         compact_at_chars=writer_pass.COMPACT_AT_CHARS if compact else None,

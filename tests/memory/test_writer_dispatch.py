@@ -150,6 +150,10 @@ def test_a_writer_turn_that_delegates_gets_the_helpers_staged_files(tmp_path):
             and f"- candidates/{task}.py" in reply
         )
         assert f"summary: drafted {task}" in reply
+        assert (
+            "s of this pass remain; the finishing window, yours alone, begins in"
+            in reply
+        )
     assert [h["call"] for h in out.helpers] == ["call-0", "call-1", "call-2"]
     assert all(h["files"] == 1 and h["status"] == "ok" for h in out.helpers)
     # no similar index: the helpers are not offered similar either

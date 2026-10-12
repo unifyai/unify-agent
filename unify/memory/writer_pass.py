@@ -90,6 +90,18 @@ EXPORT_TOTAL_BYTES = 32 * 1024**2
 MAX_CHECKS = 5
 # library mode: a pass with no USD cap (PassConfig.max_usd None) has no count limits either; this many model
 # and check calls end a runaway pass, labelled operational (a safety stop), never a design budget
+#: The end of every pass is the writer's own: helpers still working when it begins stop and hand back what they
+#: staged, so the writer always has time to check and finish. Its length: this share of the pass's wall clock, and
+#: never less than FINISH_WINDOW_MIN_S. Stated in the brief and in each delegate reply.
+FINISH_WINDOW_SHARE = 0.25
+FINISH_WINDOW_MIN_S = 300.0
+
+
+def finish_window_s(wall_s: float) -> float:
+    """The finishing window of a pass whose wall clock is *wall_s* seconds."""
+    return max(FINISH_WINDOW_MIN_S, FINISH_WINDOW_SHARE * float(wall_s))
+
+
 STEP_GUARD = 500
 _CHECK_REASONS = 20
 _CHECK_REASON_CHARS = 200
@@ -2287,7 +2299,8 @@ class WriterPass:
                 inputs=inputs,
                 box=box,
                 scratch=scratch,
-                deadline=deadline,
+                # helpers stop where the writer's finishing window begins
+                deadline=deadline - finish_window_s(self.cfg.deadline_s),
                 spend=spend,
                 events=self._events_path(pass_id),
             )
@@ -2295,7 +2308,18 @@ class WriterPass:
                 ctx.similar = self._similar_async
             self._delegate_ctx = ctx
         replies = await _helpers.handle_turn([a for _, a in picked], ctx)
-        return {i: r for (i, _), r in zip(picked, replies)}
+        # every answer states the time left, so the writer knows how much of its pass remains
+        now = time.monotonic()
+        left, window = max(0, int(deadline - now)), max(0, int(ctx.deadline - now))
+        timing = (
+            f"\n{left} s of this pass remain; the finishing window, yours alone, begins in {window} s."
+            if window
+            else f"\n{left} s of this pass remain, all of them yours: the finishing window has begun."
+        )
+        return {
+            i: (r if _form_of(r) else str(r) + timing)
+            for (i, _), r in zip(picked, replies)
+        }
 
     def _replay_call(self, args: dict, box: Path, tmp: Path) -> str:
         """Verify one manifest item's ``replaces`` by replay (:mod:`.replay_verify`); write the verified instances
