@@ -76,6 +76,8 @@ EXPORT_DIR = "helpers"
 WORK_FILE_BYTES = 2 * 1024**2
 WORK_TOTAL_BYTES = 20 * 1024**2
 WORK_ENTRIES = 2000
+#: A helper cell's time, at most (less when the pass's wall clock has less left).
+CELL_TIMEOUT_S = 60.0
 #: The head of a cell's output a helper is shown.
 OUTPUT_BYTES = 8000
 
@@ -95,6 +97,7 @@ HELPER_BRIEF = (
     "{similar}"
     "- `execute_code` runs Python in a fresh process in your own box: no network, /inputs and /memory read-only, "
     "and /work, private to you and writable, as the working directory. Only files persist between calls. "
+    f"A call runs for at most {CELL_TIMEOUT_S:.0f} s. "
     f"/work may hold at most {WORK_ENTRIES} files, each at most {WORK_FILE_BYTES // 1024**2} MiB, "
     f"{WORK_TOTAL_BYTES // 1024**2} MiB in all; past that, execute_code stops for the rest of your task.\n"
     "- `stage(path, text)` hands one file to the writer, at one of three kinds of path: `candidates/<name>.py` (a "
@@ -326,7 +329,7 @@ class DelegateContext:
     episode_reader: Callable[..., Awaitable[str]] | None = None
     similar: Callable[[dict], Awaitable[str]] | None = None
     step_guard: int = 500
-    cell_timeout_s: float = 60.0
+    cell_timeout_s: float = CELL_TIMEOUT_S
     records: list[dict] = field(default_factory=list)
     #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
     box_opens: list[dict] = field(default_factory=list)

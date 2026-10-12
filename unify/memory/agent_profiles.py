@@ -31,6 +31,21 @@ _PASS_LIMITS = [
         "unit": "s",
     },
 ]
+#: A helper's limits: its own /work and cell time, its staging quota, the writer pass's step guard and wall clock.
+_HELPER_LIMITS = [
+    {"limit": "cell time", "value": 60, "unit": "s"},
+    {"limit": "files under /work", "value": 2000, "unit": "files"},
+    {"limit": "file under /work", "value": 2097152, "unit": "bytes"},
+    {"limit": "all files under /work", "value": 20971520, "unit": "bytes"},
+    {"limit": "staged files", "value": 200, "unit": "files"},
+    {"limit": "staged bytes", "value": 4194304, "unit": "bytes"},
+    {"limit": "step guard", "value": 500, "unit": "model calls"},
+    {
+        "limit": "pass wall clock",
+        "value": "UNIFY_MEMORY_LIBRARY_PASS_WALL_S",
+        "unit": "s",
+    },
+]
 #: What any memory prompt may inline: constant text, ids and numbers; never a list past these bounds.
 _INLINE_BOUND = {"items": 10, "bytes": 1000, "tokens": 250}
 _EVENTS = [{"event": "tool_call", "path": "<pass output dir>/tool-events.jsonl"}]
@@ -444,7 +459,8 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "consumer": "writer",
             },
         ],
-        "limits": list(_PASS_LIMITS),
+        # the helper's own limits, as its brief and first message state them (helpers.py constants)
+        "limits": list(_HELPER_LIMITS),
         "inlined": [
             {
                 "what": "helper brief and task (constant per call)",
@@ -512,7 +528,11 @@ AGENT_PROFILES: tuple[dict, ...] = (
                 "consumer": "actor",
             },
         ],
-        "limits": [{"limit": "time left for a check", "value": 60, "unit": "s"}],
+        "limits": [
+            {"limit": "time left for a check", "value": 60, "unit": "s"},
+            # only in a pass with a spend cap; an uncapped pass has no set number (repair.may_repair)
+            {"limit": "repair rounds (capped pass)", "value": 2, "unit": "rounds"},
+        ],
         "inlined": [
             {"what": "repair message (names the result file)", "bound": _INLINE_BOUND},
         ],

@@ -60,7 +60,15 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .fork_worker import FORK_JSON, LOCK_FILE, atomic_json
+from .fork_worker import (
+    FORK_JSON,
+    HTTP_TIMEOUT_S,
+    LOCK_FILE,
+    QUOTA_BYTES,
+    QUOTA_FILES,
+    TURN_GUARD,
+    atomic_json,
+)
 
 FORMAT_EXAMPLE = (
     "```path: candidates/double.py\n"
@@ -94,6 +102,9 @@ INSTRUCTION = (
     "- `notes.md`: each thing that failed and why, and any other lesson, in general terms so it applies beyond this "
     "request, each quoting the short line or error message from this conversation it comes from. If nothing here "
     "is worth keeping, write `notes.md` saying so.\n\n"
+    f"Limits: at most {QUOTA_FILES} files and {QUOTA_BYTES // 1024**2} MiB in all are kept. Each reply has "
+    f"{HTTP_TIMEOUT_S:.0f} s. A reply that calls a tool gets the reply saying tools are not available and another "
+    f"turn, up to {TURN_GUARD} turns in all; then the conversation stops.\n\n"
     "Format: each file is one fenced block. Its opening line is three backticks followed by `path: ` and the "
     "file's relative path; then the file's full content; then a line of three backticks. If a file itself contains "
     "a line of three backticks, open and close its block with four. Example:\n\n"
@@ -116,8 +127,8 @@ ROLLED_FILE = "pass-admission.json"
 
 
 def fork_instruction() -> str:
-    """The fixed instruction appended to the actor's conversation for the fork: what to write, the one block
-    format with an example, and that tools are not available."""
+    """The fixed instruction appended to the actor's conversation for the fork: what to write, its limits, the one
+    block format with an example, and that tools are not available."""
     return INSTRUCTION
 
 

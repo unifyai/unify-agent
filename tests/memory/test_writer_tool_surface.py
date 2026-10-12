@@ -330,3 +330,45 @@ def test_an_existing_events_file_is_never_written_over(tmp_path):
     asyncio.run(writer.run(PassRequest("incremental", "svc", ["e1"], False), "p1"))
     assert (folder / "tool-events.jsonl").read_text() == "earlier\n"
     assert writer.tool_events and writer.tool_events[0]["tool"] == "read"
+
+
+def test_the_profile_limits_are_the_enforcing_constants_and_the_texts_state_them():
+    from unify.memory import helpers, repair
+    from unify.memory.integration import fork, fork_worker
+
+    def limits(agent):
+        return {
+            lim["limit"]: lim["value"]
+            for lim in agent_profiles.profile(agent)["limits"]
+        }
+
+    h = limits("helper")
+    assert (
+        h["cell time"] == helpers.CELL_TIMEOUT_S
+        and h["files under /work"] == helpers.WORK_ENTRIES
+    )
+    assert (
+        h["file under /work"] == helpers.WORK_FILE_BYTES
+        and h["all files under /work"] == helpers.WORK_TOTAL_BYTES
+    )
+    assert (
+        h["staged files"] == fork_worker.QUOTA_FILES
+        and h["staged bytes"] == fork_worker.QUOTA_BYTES
+    )
+    f = limits("fork")
+    assert (
+        f["turns"] == fork_worker.TURN_GUARD
+        and f["call time"] == fork_worker.HTTP_TIMEOUT_S
+    )
+    assert f["staged files per episode"] == fork_worker.QUOTA_FILES
+    assert f["staged bytes per episode"] == fork_worker.QUOTA_BYTES
+    assert limits("gate")["repair rounds (capped pass)"] == repair.REPAIR_ROUNDS
+    text = fork.fork_instruction()
+    for stated in (
+        f"{fork_worker.QUOTA_FILES} files",
+        "4 MiB",
+        "900 s",
+        f"{fork_worker.TURN_GUARD} turns",
+    ):
+        assert stated in text, stated
+    assert f"at most {helpers.CELL_TIMEOUT_S:.0f} s" in helpers.helper_brief(False)
