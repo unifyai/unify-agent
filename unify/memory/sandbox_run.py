@@ -420,36 +420,9 @@ def _kill_box(proc: subprocess.Popen) -> None:
         time.sleep(0.1)
 
 
-def run_confined(
-    argv: list[str],
-    *,
-    ro: dict[Path, str] | None = None,
-    rw: dict[Path, str] | None = None,
-    cwd: str = "/tmp",
-    timeout_s: float = 120.0,
-    env: dict[str, str] | None = None,
-    spool: tuple[Path, Path] | None = None,
-    late_ro: dict[Path, str] | None = None,
-    pass_fds: tuple[int, ...] = (),
-    on_spawn: Callable[[], None] | None = None,
-) -> SandboxResult:
-    """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
-
-    *pass_fds* are host descriptors the box inherits under the same numbers (the write end of an open-log pipe,
-    :class:`BoxOpenLog`); never a descriptor of a host file. *on_spawn* runs once the box has started, before the
-    host waits on it (:meth:`BoxOpenLog.close_write`: the host drops its copy of the write end, so the pipe reaches
-    end of file when the box exits).
-
-    *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
-    read-only (library mode's generated files in the writer's box). Each source must be an
-    existing path that is not a link.
-
-    *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
-    bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
-    ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
-    *spool* (library mode) also writes every byte of stdout and stderr to those two harness-side files (each at
-    most :data:`SPOOL_MAX_BYTES`, marked past it); it changes nothing about the box.
-    """
+def _check_box_request(env: dict[str, str] | None, pass_fds: tuple[int, ...]) -> str:
+    """Refuse what never enters a box (a harness-only variable, a descriptor that is not a pipe) and check the
+    host has what every box needs; returns bubblewrap's path."""
     for name in env or {}:
         if name.upper() in HARNESS_ONLY_ENV:
             raise ValueError(f"{name} never enters the box")
@@ -467,6 +440,21 @@ def run_confined(
         raise RuntimeError("the seccomp filter is built for x86_64 only")
     if not os.access(PRLIMIT, os.X_OK):
         raise RuntimeError(f"{PRLIMIT} is required to bound the box's processes")
+    return bwrap
+
+
+def _box_args(
+    bwrap: str,
+    argv: list[str],
+    *,
+    ro: dict[Path, str] | None,
+    rw: dict[Path, str] | None,
+    late_ro: dict[Path, str] | None,
+    cwd: str,
+    env_fd: int,
+    bpf_fd: int,
+) -> list[str]:
+    """The whole command line of one box: bubblewrap's binds and options, the rlimits, then *argv*."""
     homes = _homes()
     args = [
         bwrap,
@@ -508,6 +496,38 @@ def run_confined(
         "PYTHONDONTWRITEBYTECODE",
         "1",
     ]
+    args += ["--args", str(env_fd), "--seccomp", str(bpf_fd), "--"]
+    # Set inside the box, not by a preexec hook (unsafe in threaded parents). There RLIMIT_NPROC counts
+    # the box's own user namespace; outside it would count all of this user's processes, and
+    # bubblewrap could not create its namespaces on a busy machine.
+    args += [
+        PRLIMIT,
+        f"--as={RLIMIT_AS_BYTES}:{RLIMIT_AS_BYTES}",
+        f"--fsize={RLIMIT_FSIZE_BYTES}:{RLIMIT_FSIZE_BYTES}",
+        f"--nofile={RLIMIT_NOFILE_COUNT}:{RLIMIT_NOFILE_COUNT}",
+        f"--nproc={RLIMIT_NPROC_COUNT}:{RLIMIT_NPROC_COUNT}",
+        "--",
+    ]
+    return args + list(argv)
+
+
+def _spawn_box(
+    argv: list[str],
+    *,
+    ro: dict[Path, str] | None,
+    rw: dict[Path, str] | None,
+    cwd: str,
+    env: dict[str, str] | None,
+    late_ro: dict[Path, str] | None,
+    pass_fds: tuple[int, ...],
+    stdin: int,
+) -> subprocess.Popen:
+    """Start one box (the checks and command line every box shares) and return bubblewrap's process.
+
+    The descriptors the box inherits are exactly the environment and seccomp files bubblewrap reads and closes,
+    the standard streams and *pass_fds* (``close_fds`` stays on); no hook runs in the child before it executes.
+    """
+    bwrap = _check_box_request(env, pass_fds)
     # Unlinked temporary files: the entries never appear in a command line or a named file.
     with tempfile.TemporaryFile() as env_file, tempfile.TemporaryFile() as bpf_file:
         for k, v in (env or {}).items():
@@ -521,28 +541,67 @@ def run_confined(
         bpf_file.flush()
         bpf_file.seek(0)
         env_fd, bpf_fd = env_file.fileno(), bpf_file.fileno()
-        args += ["--args", str(env_fd), "--seccomp", str(bpf_fd), "--"]
-        # Set inside the box, not by a preexec hook (unsafe in threaded parents). There RLIMIT_NPROC counts
-        # the box's own user namespace; outside it would count all of this user's processes, and
-        # bubblewrap could not create its namespaces on a busy machine.
-        args += [
-            PRLIMIT,
-            f"--as={RLIMIT_AS_BYTES}:{RLIMIT_AS_BYTES}",
-            f"--fsize={RLIMIT_FSIZE_BYTES}:{RLIMIT_FSIZE_BYTES}",
-            f"--nofile={RLIMIT_NOFILE_COUNT}:{RLIMIT_NOFILE_COUNT}",
-            f"--nproc={RLIMIT_NPROC_COUNT}:{RLIMIT_NPROC_COUNT}",
-            "--",
-        ]
-        args += list(argv)
-        proc = subprocess.Popen(
+        args = _box_args(
+            bwrap,
+            argv,
+            ro=ro,
+            rw=rw,
+            late_ro=late_ro,
+            cwd=cwd,
+            env_fd=env_fd,
+            bpf_fd=bpf_fd,
+        )
+        return subprocess.Popen(
             args,
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
             env={"PATH": "/usr/bin:/bin"},
             pass_fds=(env_fd, bpf_fd, *pass_fds),
         )
+
+
+def run_confined(
+    argv: list[str],
+    *,
+    ro: dict[Path, str] | None = None,
+    rw: dict[Path, str] | None = None,
+    cwd: str = "/tmp",
+    timeout_s: float = 120.0,
+    env: dict[str, str] | None = None,
+    spool: tuple[Path, Path] | None = None,
+    late_ro: dict[Path, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    on_spawn: Callable[[], None] | None = None,
+) -> SandboxResult:
+    """Run *argv* in a bubblewrap box; ``ro``/``rw`` map host paths to their paths inside the box.
+
+    *pass_fds* are host descriptors the box inherits under the same numbers (the write end of an open-log pipe,
+    :class:`BoxOpenLog`); never a descriptor of a host file. *on_spawn* runs once the box has started, before the
+    host waits on it (:meth:`BoxOpenLog.close_write`: the host drops its copy of the write end, so the pipe reaches
+    end of file when the box exits).
+
+    *late_ro* paths are bound read-only after the ``rw`` binds, so a path inside a writable bind stays
+    read-only (library mode's generated files in the writer's box). Each source must be an
+    existing path that is not a link.
+
+    *env* is the box's whole environment beyond PATH, HOME and PYTHONDONTWRITEBYTECODE. It reaches
+    bubblewrap through an unlinked file (``--args``), not its command line; it must never hold credentials.
+    ``stdout`` and ``stderr`` are bounded tails (:data:`CAPTURE_MAX_BYTES` each), decoded with replacement.
+    *spool* (library mode) also writes every byte of stdout and stderr to those two harness-side files (each at
+    most :data:`SPOOL_MAX_BYTES`, marked past it); it changes nothing about the box.
+    """
+    proc = _spawn_box(
+        argv,
+        ro=ro,
+        rw=rw,
+        cwd=cwd,
+        env=env,
+        late_ro=late_ro,
+        pass_fds=pass_fds,
+        stdin=subprocess.DEVNULL,
+    )
     if on_spawn is not None:
         try:
             on_spawn()
@@ -570,6 +629,90 @@ def run_confined(
         except BaseException as kill_error:
             raise kill_error from exc
         raise
+
+
+#: Bytes of a long-lived box's stderr the host keeps (its last bytes), for a start failure's message.
+BOX_STDERR_TAIL_BYTES = 8192
+
+
+class ConfinedBox:
+    """A box started by :func:`start_confined` and left running: bubblewrap's process, its protocol pipes and a
+    bounded drain of its stderr. :meth:`kill` is the verified kill of :func:`run_confined`'s timeout."""
+
+    def __init__(self, proc: subprocess.Popen) -> None:
+        self.proc = proc
+        self._stderr = _Tail(proc.stderr, cap=BOX_STDERR_TAIL_BYTES)
+
+    @property
+    def pid(self) -> int:
+        return self.proc.pid
+
+    @property
+    def stdin(self):
+        return self.proc.stdin
+
+    @property
+    def stdout(self):
+        return self.proc.stdout
+
+    def running(self) -> bool:
+        """Bubblewrap itself has not exited (its processes may still be checked with :meth:`alive`)."""
+        return self.proc.poll() is None
+
+    def alive(self) -> bool:
+        """Bubblewrap or any process below it is still alive."""
+        if self.proc.poll() is None:
+            return True
+        return bool(_descendants(self.proc.pid))
+
+    def stderr_tail(self, timeout: float = 0.0) -> str:
+        return self._stderr.text(timeout)
+
+    def kill(self) -> None:
+        """SIGKILL the box's process group and every descendant, verified gone (raises otherwise); then close the
+        host's ends of its pipes. Safe to repeat."""
+        _kill_box(self.proc)
+        for stream in (self.proc.stdin, self.proc.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+
+
+def start_confined(
+    argv: list[str],
+    *,
+    ro: dict[Path, str] | None = None,
+    rw: dict[Path, str] | None = None,
+    cwd: str = "/tmp",
+    env: dict[str, str] | None = None,
+    late_ro: dict[Path, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    on_spawn: Callable[[], None] | None = None,
+) -> ConfinedBox:
+    """Start *argv* in the same box as :func:`run_confined` (the same checks, binds, ``--unshare-all``,
+    ``--die-with-parent``, ``--new-session``, ``--clearenv``, seccomp filter and rlimits; only pipe descriptors in
+    *pass_fds*) without waiting for it: the caller talks to it over its stdin and stdout pipes and ends it with
+    :meth:`ConfinedBox.kill`. *on_spawn* runs once the box has started (a failure kills the box)."""
+    proc = _spawn_box(
+        argv,
+        ro=ro,
+        rw=rw,
+        cwd=cwd,
+        env=env,
+        late_ro=late_ro,
+        pass_fds=pass_fds,
+        stdin=subprocess.PIPE,
+    )
+    try:
+        box = ConfinedBox(proc)
+        if on_spawn is not None:
+            on_spawn()
+    except BaseException:
+        _kill_box(proc)
+        raise
+    return box
 
 
 # --- the box's open log ---------------------------------------------------------------------------------------
