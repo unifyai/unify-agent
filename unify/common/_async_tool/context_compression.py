@@ -19,7 +19,7 @@ from unify.function_manager.execution_env import create_base_globals
 COMPACTION_THRESHOLD = 0.85
 #: The fixed number of prompt tokens, unless ``UNIFY_COMPACTION_AT_TOKENS`` sets another: a point where the
 #: conversation is summarised and restarted, not a limit on what an agent may read or write.
-COMPACTION_AT_TOKENS = 75_000
+COMPACTION_AT_TOKENS = 150_000
 
 
 def compaction_at_tokens() -> int:

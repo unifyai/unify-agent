@@ -210,7 +210,7 @@ class ProductionSettings(BaseSettings):
     # The fixed prompt size, in tokens, at which every agent (the agent loop and the memory agents) compacts its
     # context, unless 85% of the model's context window comes first; with no known window it applies alone. A
     # context-management point, not a limit on what an agent reads or writes. A positive whole number.
-    UNIFY_COMPACTION_AT_TOKENS: int = 75_000
+    UNIFY_COMPACTION_AT_TOKENS: int = 150_000
     # Where the actor's session states the host clock. Empty (also
     # ``system``): as shipped, a "Current Time" section near the end of the
     # system prompt, which tells the model to resolve "today" against it and

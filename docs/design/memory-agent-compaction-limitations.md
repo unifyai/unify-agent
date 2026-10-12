@@ -50,7 +50,7 @@ records exactly what is shared, what is not, and why, with file:line evidence at
    `max_calls`).
 5. The trigger. Every agent, the agent loop included, compacts when a model call's prompt reaches whichever comes
    first: 85% of the model's context window (`COMPACTION_THRESHOLD`, from `unillm.get_max_input_tokens`) or a fixed
-   75,000 prompt tokens (`COMPACTION_AT_TOKENS`, set by `UNIFY_COMPACTION_AT_TOKENS`); with no known window the fixed
+   150,000 prompt tokens (`COMPACTION_AT_TOKENS`, set by `UNIFY_COMPACTION_AT_TOKENS`); with no known window the fixed
    point applies alone (`context_compression.compaction_point`, read by the loop through `context_over_threshold`
    and by the memory agents through `writer_pass.compaction_due`). The fixed point is where a conversation is
    summarised and restarted, not a limit on what an agent reads or writes.

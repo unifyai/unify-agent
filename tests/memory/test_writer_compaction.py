@@ -176,7 +176,7 @@ def test_the_brief_states_both_compaction_points():
     brief = lp.write_brief_now(compact=True)
     pct = lp._num(context_compression.COMPACTION_THRESHOLD * 100)
     assert (
-        f"reaches {pct}% of the model's context window or 75,000 tokens, whichever comes first"
+        f"reaches {pct}% of the model's context window or 150,000 tokens, whichever comes first"
         in brief
     )
 
@@ -379,22 +379,22 @@ def _replay(window: int) -> dict:
     }
 
 
-#: a test window only, not a claim about any model: the configured models' windows come from unillm at run time
-REPLAY_WINDOW = 128_000
+#: the window unillm registers for the configured models (gpt-6-sol, gpt-6-luna on openrouter); the run reads it at run time
+REPLAY_WINDOW = 1_050_000
 
 
-def test_the_recorded_pass_compacts_at_the_shared_point_without_forced_rereads_and_its_cache_rate_is_recorded():
-    """Under the shared rule (85% of the window or the fixed point, whichever comes first) the recorded pass, whose
-    prompt grew to about 92k tokens, compacts at the fixed 75,000-token point: once, and no result a compaction took
-    out is re-read within the kept turns."""
+def test_the_recorded_pass_stays_under_the_shared_point_and_its_cache_rate_is_recorded():
+    """Under the shared rule (85% of the window or the fixed point, whichever comes first) and the models' window
+    (1,050,000), the recorded pass, whose prompt grows to about 113k tokens, stays under the fixed 150,000-token point:
+    it does not compact, and nothing is re-read."""
     r = _replay(REPLAY_WINDOW)
     print("replay", json.dumps(r))  # the measurement, in the test log
     assert (
         context_compression.compaction_point(REPLAY_WINDOW)
         == context_compression.COMPACTION_AT_TOKENS
-        == 75_000
+        == 150_000
     )
-    assert r["events"] == [7], r
+    assert r["events"] == [], r
     assert r["rereads"] == [], r
     assert 0.0 < r["cache_hit_rate"] <= 1.0
 
@@ -403,12 +403,12 @@ def test_every_agent_reads_one_compaction_point():
     """The agent loop and the memory agents decide with the same constants and function."""
     cc = context_compression
     # a large window: the fixed point comes first
-    assert cc.compaction_point(1_000_000) == 75_000
+    assert cc.compaction_point(1_000_000) == 150_000
     assert writer_pass.compaction_due(
-        75_000,
+        150_000,
         1_000_000,
-    ) and not writer_pass.compaction_due(74_999, 1_000_000)
-    assert cc.context_over_threshold(75_000, cc.COMPACTION_THRESHOLD, 1_000_000)
+    ) and not writer_pass.compaction_due(149_999, 1_000_000)
+    assert cc.context_over_threshold(150_000, cc.COMPACTION_THRESHOLD, 1_000_000)
     # a smaller window: 85% of it comes first
     assert cc.compaction_point(40_000) == 34_000
     assert writer_pass.compaction_due(
@@ -417,11 +417,11 @@ def test_every_agent_reads_one_compaction_point():
     ) and not writer_pass.compaction_due(33_999, 40_000)
     # no known window: the fixed point alone
     for unknown in (None, 0, "x"):
-        assert cc.compaction_point(unknown) == 75_000
+        assert cc.compaction_point(unknown) == 150_000
         assert writer_pass.compaction_due(
-            75_000,
+            150_000,
             unknown,
-        ) and not writer_pass.compaction_due(74_999, unknown)
+        ) and not writer_pass.compaction_due(149_999, unknown)
     # an unknown prompt size never triggers
     assert not writer_pass.compaction_due(None, 1_000)
 
@@ -432,7 +432,7 @@ def test_the_fixed_point_is_one_setting_with_a_validator(monkeypatch):
     from unify.settings import SETTINGS, ProductionSettings
 
     assert (
-        ProductionSettings.model_fields["UNIFY_COMPACTION_AT_TOKENS"].default == 75_000
+        ProductionSettings.model_fields["UNIFY_COMPACTION_AT_TOKENS"].default == 150_000
     )
     monkeypatch.setattr(SETTINGS, "UNIFY_COMPACTION_AT_TOKENS", 20_000)
     assert context_compression.compaction_point(None) == 20_000
