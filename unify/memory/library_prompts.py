@@ -190,8 +190,9 @@ POOL_KIND_TEXT: dict[str, str] = {
 }
 
 _RUN_TESTS = (
-    'Run the tests as the gate does: `subprocess.run([sys.executable, "-m", "pytest", "memory", "-q", '
-    '"-p", "no:cacheprovider"], env=<<pytest_env>>)`.'
+    'Run the tests as the gate does, from /memory: `subprocess.run([sys.executable, "-m", "pytest", "memory", "-q", '
+    '"-p", "no:cacheprovider", "--rootdir", "/memory"], cwd="/memory", env=<<pytest_env>>)` (without `--rootdir`, '
+    "the empty config file makes /dev the root and the library's imports fail)."
 )
 
 _TRUST = (
