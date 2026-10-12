@@ -747,7 +747,11 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
     sha, _ = _record(stores, "e1")
     (out,) = _run(stores, "e1", sha)
     assert secret in json.dumps(fake.seen)  # Sol itself saw it; the record must not
-    rows = [json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")]
+    head, *rows = [
+        json.loads(n) for n in stores.episodes.notes(sha, ref="sol-transcripts")
+    ]
+    # the header names the brief and the tool JSON by hash; then the messages
+    assert head["pass_id"] == "e1.p0" and head["header"]["brief_sha256"]
     assert {r["pass_id"] for r in rows} == {"e1.p0"}
     assert [r["message"]["role"] for r in rows] == [
         "system",
@@ -761,7 +765,7 @@ def test_writer_transcript_is_kept_redacted_on_the_episode_commit(
         rows[2]["message"]["content"] == "the token is <secret:UNIFY_TEST_FAKE_TOKEN>"
     )
     assert secret not in stores.episodes.run("log", "-p", "--all")
-    assert secret not in json.dumps(rows)
+    assert secret not in json.dumps(rows) and secret not in json.dumps(head)
 
 
 # --- drift and suspect -----------------------------------------------------------------------------------
@@ -1152,9 +1156,7 @@ def test_library_reaches_the_pass_and_its_end_event_records_coverage(
     tmp_path,
     monkeypatch,
 ):
-    fake = (
-        FakeSol()
-    )  # finishes every turn: refused under library_mode until e1 is covered
+    fake = FakeSol()  # finishes every turn: nothing about reading gates finish
     monkeypatch.setattr(consolidate, "unillm_turn", fake)
     stores = _stores(tmp_path)
     sha, _ = _record(stores, "e1")
@@ -1169,7 +1171,7 @@ def test_library_reaches_the_pass_and_its_end_event_records_coverage(
             emit=None,
         ),
     )
-    assert not out.passed and out.coverage["missing"] == ["e1"]
+    assert out.coverage["missing"] == []
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
     assert end["coverage"] == out.coverage
     assert end["reads"] == 0 and end["exported_bytes"] == 0
@@ -1197,7 +1199,7 @@ def test_library_optional_coverage_reaches_the_pass_and_its_end_event_records_th
             emit=None,
         ),
     )
-    assert out.coverage["unread"] == ["e1"] and out.coverage_measures["unread"] == 1
+    assert out.coverage["unread"] == [] and out.coverage_measures["unread"] == 0
     end = [e for e in _events(stores) if e.get("phase") == "end"][-1]
     assert end["coverage"] == out.coverage
     assert end["coverage_measures"] == out.coverage_measures
