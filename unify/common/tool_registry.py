@@ -1655,7 +1655,7 @@ def allow_list(agent: str, flags: frozenset = frozenset()) -> tuple[str, ...]:
 #: record, the roots the request's workspace, and finish answers the request): name -> blocking.
 _ACTOR_HANDLED = {
     "read": True,
-    "grep": True,
+    "grep": False,
     "install": True,
     "send": True,
     "messages": True,

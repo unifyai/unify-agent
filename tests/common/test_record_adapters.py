@@ -106,7 +106,8 @@ def test_the_agent_records_refusals_carry_the_tools_form_codes():
         await pool.close("done")
         return forms
 
-    assert asyncio.run(go()) == ["short_request", "not_main_agent", "helper_limit", "unknown_helper"]
+    # any agent may start agents (h1 too); the record's live limit refuses both later starts
+    assert asyncio.run(go()) == ["short_request", "helper_limit", "helper_limit", "unknown_helper"]
 
 
 def test_the_agent_record_refuses_an_oversized_post_with_its_form():
