@@ -123,6 +123,10 @@ class Refusal(str):
         obj.tool, obj.form = tool, form
         return obj
 
+    def __getnewargs__(self) -> tuple[str, str, str]:
+        # copy.deepcopy and pickle rebuild the object through __new__, which needs the tool and the form too
+        return (str(self), self.tool, self.form)
+
 
 def _variants() -> list[ToolSpec]:
     """Specs that are not in the shared registry but answer as a registered tool name for one agent (a module's

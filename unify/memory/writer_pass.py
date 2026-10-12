@@ -2370,13 +2370,24 @@ class WriterPass:
         data_rel, data = _rv.case_file(item, cases)
         from . import fixtures as _fixtures
 
-        if not _fixtures._no_link_on_the_way(box, data_rel) or (box / data_rel).is_symlink():
-            return _wt.refusal("replay", "not_run", reason=f"a link is on the way to {data_rel}")
+        if (
+            not _fixtures._no_link_on_the_way(box, data_rel)
+            or (box / data_rel).is_symlink()
+        ):
+            return _wt.refusal(
+                "replay",
+                "not_run",
+                reason=f"a link is on the way to {data_rel}",
+            )
         dest = box / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(src)
         (box / data_rel).parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(box / data_rel, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+        fd = os.open(
+            box / data_rel,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o644,
+        )
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
         return "\n".join(
@@ -4050,7 +4061,12 @@ class WriterPass:
                     if reply is not None:
                         content = reply.text
                     messages.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "content": content},
+                        # plain text: a reply may be a str subclass carrying its refusal form
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": str(content),
+                        },
                     )
                     self._event(pass_id, name, fn.get("arguments"), reply, turn_usage)
                     turn_usage = None
@@ -4215,8 +4231,16 @@ class WriterCallError(RuntimeError):
 _CLASS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 
 
-def _call_failure(exc: BaseException) -> tuple[str, str]:
-    """``(class name, category)`` of a failed call, from its type and status code only, never its text."""
+#: Packages whose errors carry a provider's or a transport's text, which may echo the request.
+_CLIENT_LIBRARIES = ("unillm", "litellm", "openai", "httpx", "httpcore", "aiohttp")
+
+
+def _call_failure(exc: BaseException) -> tuple[str, str, str]:
+    """``(class name, category, detail)`` of a failed call. The category comes from its type and status code only.
+    *detail* is empty for an answer from the provider or the route (an HTTP status, a timeout, a connection or
+    authentication failure), whose text may echo the request; for any other failure, an error raised by code in
+    this process, it names where the error was raised and its message, redacted and clipped.
+    """
     name = type(exc).__name__
     name = name if _CLASS_NAME.fullmatch(name) else "Exception"
     status = getattr(exc, "status_code", None)
@@ -4237,7 +4261,20 @@ def _call_failure(exc: BaseException) -> tuple[str, str]:
         category = "auth"
     else:
         category = "other"
-    return name, category
+    detail = ""
+    if category == "other":
+        tb, where, path = exc.__traceback__, "", ""
+        while tb is not None:
+            code = tb.tb_frame.f_code
+            path = code.co_filename
+            where = f"{Path(path).name}:{tb.tb_lineno} in {code.co_name}"
+            tb = tb.tb_next
+        detail = f" at {where}" if where else ""
+        # the message only when the model client did not raise it: a client's error text may echo the request
+        if not any(f"/{lib}/" in path for lib in _CLIENT_LIBRARIES):
+            message = redact_error(str(exc)).replace("\n", " ")[:200]
+            detail += f": {message}" if message else ""
+    return name, category, detail
 
 
 def _check_route_in_effect(route: WriterRoute) -> None:
@@ -4483,7 +4520,7 @@ def unillm_turn(
             if event.origin == origin:
                 costs.append(event.provider_cost)
 
-        failure: tuple[str, str] | None = None
+        failure: tuple[str, str, str] | None = None
         timed_out = False
         async with unillm.allm_event_hook_scope(hook):
             scope = _WRITER_GATEWAY.set(route) if route is not None else None
@@ -4500,19 +4537,21 @@ def unillm_turn(
             except Exception as exc:
                 if route is None or isinstance(exc, WriterRouteError):
                     raise
-                failure = _call_failure(exc)  # class and category only, never the text
+                failure = _call_failure(
+                    exc,
+                )  # class and category; a local failure also says where
                 timed_out = isinstance(exc, TimeoutError)
             finally:
                 if scope is not None:
                     _WRITER_GATEWAY.reset(scope)
         if failure is not None:
             # raised outside the handler, so the original exception is not chained to it
-            name, category = failure
+            name, category, detail = failure
             if (
                 timed_out
             ):  # still a timeout to the pass, which treats it as its deadline
                 raise TimeoutError("a writer call timed out")
-            raise WriterCallError(f"writer call failed: {name} ({category})")
+            raise WriterCallError(f"writer call failed: {name} ({category}){detail}")
         if any(misrouted):
             raise WriterRouteError(
                 "a writer call did not take the writer's declared route",

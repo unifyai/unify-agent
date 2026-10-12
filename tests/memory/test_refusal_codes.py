@@ -231,3 +231,18 @@ def test_an_uncapped_repair_message_states_no_round_count():
     uncapped = repair_message(1, "/inputs/gate/result-0.md", res, None)
     assert "repair round 1." in uncapped
     assert not re.search(r"round \d+ of \d+", uncapped)
+
+
+def test_a_refusal_survives_copy_and_pickle_as_a_model_call_copies_its_messages():
+    import copy
+    import pickle
+
+    from unify.memory.tool_spec import Refusal, refusal
+
+    r = refusal("similar", "args")
+    assert isinstance(r, Refusal)
+    for twin in (
+        copy.deepcopy([{"content": r}])[0]["content"],
+        pickle.loads(pickle.dumps(r)),
+    ):
+        assert twin == r and twin.tool == "similar" and twin.form == "args"
