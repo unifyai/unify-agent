@@ -69,7 +69,7 @@ def test_the_write_template_round_trips_through_the_parser():
         "source_episodes": ["e1"],
         "tests": ["memory/acct/tests/test_users.py"],
         "covers": [["e1", 0]],
-        "adopts": [STAGED],
+        "adopts": [{"ref": STAGED, "how": "generalised"}],
     }
     item_keys, _ = _levels(_template(_briefs()["write"]))
     assert set(item) == item_keys
@@ -91,19 +91,16 @@ def test_the_write_template_round_trips_through_the_parser():
 def test_the_fork_and_the_helpers_are_told_the_function_contract_the_gate_enforces():
     from unify.memory import helpers
     from unify.memory.integration import fork
-    from unify.memory.manifest import INPUT_KINDS
 
+    # drafting agents draft what they saw; generalising and fitting the library is the writer's work
     for text in (
         fork.fork_instruction(),
         helpers.helper_brief(False),
         helpers.helper_brief(True),
     ):
-        assert (
-            "first parameter takes one recorded form" in text
-            and "MemoryInputError" in text
-        )
-        for form in INPUT_KINDS:
-            assert f"`{form}`" in text, form
+        assert lp.CANDIDATE_CONTRACT in text
+        assert "need not be general or library-ready" in text
+        assert "first parameter takes one recorded form" not in text
 
 
 def test_the_write_brief_states_the_material_and_the_reach_as_facts():

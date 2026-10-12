@@ -148,7 +148,11 @@ def test_an_adopted_staged_candidate_merges_in_the_same_pass(tmp_path, monkeypat
     root = tmp_path / "staging-root"
     _stage(root)
     st = _Stores(tmp_path)
-    manifest = {**MAN, "items": [{**ITEM, "adopts": [STAGED]}], "summary": "s"}
+    manifest = {
+        **MAN,
+        "items": [{**ITEM, "adopts": [{"ref": STAGED, "how": "as_is"}]}],
+        "summary": "s",
+    }
     _finish_with(monkeypatch, manifest)
     monkeypatch.setattr(
         st.gate,
@@ -186,7 +190,15 @@ def test_finish_refuses_an_adopt_ref_that_names_nothing_staged(tmp_path, monkeyp
     root = tmp_path / "staging-root"
     _stage(root)
     st = _Stores(tmp_path)
-    bad = {**MAN, "items": [{**ITEM, "adopts": ["staging:e2/candidates/other.py"]}]}
+    bad = {
+        **MAN,
+        "items": [
+            {
+                **ITEM,
+                "adopts": [{"ref": "staging:e2/candidates/other.py", "how": "edited"}],
+            },
+        ],
+    }
     _finish_with(monkeypatch, bad)
     _, model = st.run(
         [
@@ -259,7 +271,18 @@ def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
         "tests": ["memory/acct/tests/test_users.py"],
     }
     man = parse_manifest(
-        {"items": [{**item, "adopts": [STAGED, "pool:" + CID, STAGED]}]},
+        {
+            "items": [
+                {
+                    **item,
+                    "adopts": [
+                        {"ref": STAGED, "how": "merged"},
+                        {"ref": "pool:" + CID, "how": "merged"},
+                        {"ref": STAGED, "how": "merged"},
+                    ],
+                },
+            ],
+        },
         library_mode=True,
     )
     assert man.items[0].adopts == ["staging:e2/candidates/fill.py", "pool:" + CID]
@@ -268,7 +291,10 @@ def test_adopt_refs_parse_to_one_form_and_bad_ones_name_the_forms():
         parse_manifest({"items": [{**item, "adopts": STAGED}]}, library_mode=True)
     # a manifest-wide list would credit no item: it is refused, naming where adopts goes
     with pytest.raises(ManifestError, match="belongs on each item"):
-        parse_manifest({"items": [item], "adopts": [STAGED]}, library_mode=True)
+        parse_manifest(
+            {"items": [item], "adopts": [{"ref": STAGED, "how": "as_is"}]},
+            library_mode=True,
+        )
 
 
 def test_the_brief_puts_adopts_on_each_item():
@@ -304,14 +330,25 @@ def test_staged_refs_map_to_their_entries_and_adoption_closes_on_landing(tmp_pat
     }
     man = {
         **MAN,
-        "items": [{**ITEM, "adopts": ["staging:e2/cases/fill.json", "pool:" + LID]}],
+        "items": [
+            {
+                **ITEM,
+                "adopts": [
+                    {"ref": "staging:e2/cases/fill.json", "how": "generalised"},
+                    {"ref": "pool:" + LID, "how": "informed"},
+                ],
+            },
+        ],
     }
     assert pool.block_problems(man, p) == []
     retire = {**man, "pool": {"retired": {CID: "not needed"}}}
     assert pool.block_problems(retire, p) == [
         f"pool.retired: {CID} is adopted by {ITEM['item']}, which merges it when it lands",
     ]
-    nothing = {**MAN, "items": [{**ITEM, "adopts": ["pool:" + "0" * 16]}]}
+    nothing = {
+        **MAN,
+        "items": [{**ITEM, "adopts": [{"ref": "pool:" + "0" * 16, "how": "as_is"}]}],
+    }
     assert pool.block_problems(nothing, p) == [
         f"{ITEM['item']}: adopts 'pool:{'0' * 16}', which is not a pool entry",
     ]
@@ -546,7 +583,13 @@ def test_the_gate_records_each_landed_items_adopts(library_gate_world):  # noqa:
     res = gate().merge(
         mem.head(),
         _candidate(mem, files),
-        _man(fixtures, adopts=[STAGED, "pool:" + CID]),
+        _man(
+            fixtures,
+            adopts=[
+                {"ref": STAGED, "how": "as_is"},
+                {"ref": "pool:" + CID, "how": "merged"},
+            ],
+        ),
         "p1",
         "write",
         None,
@@ -554,5 +597,78 @@ def test_the_gate_records_each_landed_items_adopts(library_gate_world):  # noqa:
     )
     assert res.passed, res.reasons
     assert res.provenance == [
-        {"item": ITEM_ID, "adopts": ["staging:e2/candidates/fill.py", "pool:" + CID]},
+        {
+            "item": ITEM_ID,
+            "adopts": ["staging:e2/candidates/fill.py", "pool:" + CID],
+            "how": {"staging:e2/candidates/fill.py": "as_is", "pool:" + CID: "merged"},
+        },
     ]
+
+
+def test_adopts_entries_record_how_each_draft_was_used_and_bad_ones_are_refused():
+    item = {
+        "item": "memory.acct.users:user_id",
+        "kind": "function",
+        "tests": ["memory/acct/tests/test_users.py"],
+    }
+    man = parse_manifest(
+        {
+            "items": [
+                {
+                    **item,
+                    "adopts": [
+                        {"ref": STAGED, "how": "generalised"},
+                        {"ref": "pool:" + CID, "how": "merged"},
+                    ],
+                },
+            ],
+        },
+        library_mode=True,
+    )
+    assert man.items[0].adopts == ["staging:e2/candidates/fill.py", "pool:" + CID]
+    assert man.items[0].adopt_how == {
+        "staging:e2/candidates/fill.py": "generalised",
+        "pool:" + CID: "merged",
+    }
+    for bad in (
+        [STAGED],
+        [{"ref": STAGED}],
+        [{"ref": STAGED, "how": "kept"}],
+        [{"ref": STAGED, "how": "as_is", "x": 1}],
+    ):
+        with pytest.raises(ManifestError):
+            parse_manifest({"items": [{**item, "adopts": bad}]}, library_mode=True)
+    with pytest.raises(ManifestError, match="different how"):
+        parse_manifest(
+            {
+                "items": [
+                    {
+                        **item,
+                        "adopts": [
+                            {"ref": STAGED, "how": "as_is"},
+                            {"ref": STAGED, "how": "edited"},
+                        ],
+                    },
+                ],
+            },
+            library_mode=True,
+        )
+
+
+def test_the_brief_frames_proposals_as_material_from_agents_with_a_partial_view():
+    from unify.memory import library_prompts as lp
+
+    brief = lp.write_brief_now(staging=True, pool=True)
+    assert "drafts to build from, not submissions awaiting a verdict" in brief
+    assert "a staged draft by an agent that saw only its own episode" in brief
+    assert (
+        "generalising it is your work, since you alone commit to the shared library"
+        in brief
+    )
+    assert (
+        "adopt, edit or leave" not in brief.lower()
+        and "decided what to keep" not in brief
+    )
+    assert "`retired` closes an entry for good" in brief and "defer it" in brief
+    for how in ("as_is", "edited", "merged", "generalised", "rewritten", "informed"):
+        assert f"`{how}`" in brief

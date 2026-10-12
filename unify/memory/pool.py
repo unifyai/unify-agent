@@ -526,7 +526,11 @@ def _adopts_of(manifest: dict) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for it in manifest.get("items") or []:
         if isinstance(it, dict) and isinstance(it.get("adopts"), list):
-            out[str(it.get("item"))] = [str(r) for r in it["adopts"]]
+            # entries are {"ref", "how"}; the ref names the draft
+            out[str(it.get("item"))] = [
+                str(r.get("ref")) if isinstance(r, dict) else str(r)
+                for r in it["adopts"]
+            ]
     return out
 
 

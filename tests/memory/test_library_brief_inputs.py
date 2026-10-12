@@ -240,7 +240,7 @@ def test_the_end_condition_is_a_decision_not_a_count():
     for text in (pv.write_brief_now(), pv.write_brief_now(staging=True, pool=True)):
         assert "every episode in the batch" not in text and "dismiss" not in text
         assert (
-            "you have decided what to keep from this batch's proposals and episodes"
+            "you have built the best library items you can from this batch, with the proposals as material and the episodes as evidence"
             in text
         )
         assert "kept as a draft" in text  # the drafts rule's phrase stays (RULES)

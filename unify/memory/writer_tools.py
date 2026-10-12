@@ -294,13 +294,14 @@ REPLAY = ToolSpec(
 POOL = ToolSpec(
     name="pool",
     description=(
-        "The candidate pool: open proposals earlier passes left, as files under /inputs/pool/<id>/. "
+        "The candidate pool: drafts earlier passes left open, to build from, as files under /inputs/pool/<id>/. "
         "op='list': one line per open entry (id, kind, episode count, title), optionally of one kind, paged by "
         "offset. op='filter': the entries matching text (in the title or the entry's files), kind or episode. "
         "op='show': one entry's entry.json and the paths of its files. op='decide': records a decision in "
         "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
         "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
-        "(reason), 'defer' (reason; with episodes, those episodes join the entry as more evidence; id='new' with "
+        "(reason; closes the entry for good: it is wrong or not reusable), 'defer' (reason; keeps it open for a later "
+        "pass; with episodes, those episodes join the entry as more evidence; id='new' with "
         "episodes opens a deferred entry for them) or 'open' (removes an earlier decision on that id). Decisions "
         "take effect when the gate judges the pass."
     ),

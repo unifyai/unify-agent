@@ -1107,7 +1107,11 @@ class Gate:
                     if r.get("action") == "rename"
                 }
                 res.provenance = [
-                    {"item": it.item, "adopts": list(it.adopts)}
+                    {
+                        "item": it.item,
+                        "adopts": list(it.adopts),
+                        "how": dict(it.adopt_how),
+                    }
                     | ({"renamed_from": was[it.item]} if it.item in was else {})
                     for it in landed_items
                 ]

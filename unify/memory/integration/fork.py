@@ -94,7 +94,7 @@ INSTRUCTION = (
     "your reply, in the format below. Do not call any tool: tools are not available here, and any call gets only a "
     "reply saying so.\n\n"
     "What to write:\n"
-    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a general function "
+    "- `candidates/<name>.py`: for code you wrote here that ran and worked and could be reused, a function "
     "with a docstring. <name> uses only letters, digits and underscores. Only code that actually ran here; never "
     "say code worked if it did not. " + CANDIDATE_CONTRACT + "\n"
     "- `cases/<name>.json`, with the same <name>: the inputs that function had in this conversation and the "

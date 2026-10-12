@@ -223,6 +223,8 @@ class ManifestItem:
     typed_covers: list = field(default_factory=list)
     # the proposals this item came from (:func:`adopt_ref`): staged files, helper output or pool entries
     adopts: list[str] = field(default_factory=list)
+    #: how each adopted draft was used (ref -> one of ADOPT_HOW), the same refs as ``adopts``
+    adopt_how: dict[str, str] = field(default_factory=dict)
 
     @property
     def channel(self) -> str | None:
@@ -392,6 +394,10 @@ def layout_allowed(path: str) -> bool:
 # an item's ``adopts`` refs: ``staging:<episode>/<file>``, ``helper:<call>/<file>`` or ``pool:<entry id>``, where
 # <file> is a staged file (``candidates/<name>.py``, ``cases/<name>.json`` or ``notes.md``); the same files named by
 # their /inputs path are accepted and stored in the ref form
+#: How an item used a draft (a staged candidate, case or note, a helper's output, a pool entry): as it was, edited,
+#: merged with other drafts or library items, generalised (parametrised), rewritten, or only informing new work.
+ADOPT_HOW = ("as_is", "edited", "merged", "generalised", "rewritten", "informed")
+
 ADOPT_FORMS = (
     "staging:<episode>/candidates/<name>.py, staging:<episode>/cases/<name>.json, staging:<episode>/notes.md, "
     "helper:<call>/<same files>, or pool:<entry id>"
@@ -426,19 +432,33 @@ def adopt_ref(raw: object) -> str:
     return ref
 
 
-def _adopts(raw: object, item: str) -> list[str]:
+def _adopts(raw: object, item: str) -> tuple[list[str], dict[str, str]]:
+    """An item's ``adopts``: entries ``{"ref": <a draft ref>, "how": <one of ADOPT_HOW>}`` -> (refs, ref -> how)."""
     out: list[str] = []
+    how: dict[str, str] = {}
     if raw is None:
-        return out
+        return out, how
+    form = f'{{"ref": <{ADOPT_FORMS}>, "how": <one of {", ".join(ADOPT_HOW)}>}}'
     if not isinstance(raw, list):
-        raise ManifestError(
-            f"{item}: adopts must be a list of refs ({ADOPT_FORMS})"[:400],
-        )
+        raise ManifestError(f"{item}: adopts must be a list of {form}"[:500])
     for r in raw:
-        ref = adopt_ref(r)
+        if not isinstance(r, dict) or set(r) != {"ref", "how"}:
+            raise ManifestError(f"{item}: each adopts entry is {form}, not {r!r}"[:500])
+        if r["how"] not in ADOPT_HOW:
+            raise ManifestError(
+                f"{item}: adopts how {r['how']!r} is not one of {', '.join(ADOPT_HOW)}"[
+                    :300
+                ],
+            )
+        ref = adopt_ref(r["ref"])
+        if ref in how and how[ref] != r["how"]:
+            raise ManifestError(
+                f"{item}: {ref} is adopted twice with different how values"[:300],
+            )
         if ref not in out:
             out.append(ref)
-    return out
+        how[ref] = r["how"]
+    return out, how
 
 
 def _str_list(value: object, what: str) -> list[str]:
@@ -587,7 +607,7 @@ def _parse_library_mode(manifest: dict) -> Manifest:
                 {},
                 form,
                 typed,
-                _adopts(raw.get("adopts"), item),
+                *_adopts(raw.get("adopts"), item),
             ),
         )
     out.support = [safe_rel(p) for p in _str_list(manifest.get("support"), "support")]

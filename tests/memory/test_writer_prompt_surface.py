@@ -241,7 +241,7 @@ def test_trust_and_field_contradictions_are_gone(registry):
     assert "`structural_events`" in write and "`end_parts`" in write
     # the done condition is a decision, not a count
     assert (
-        "when you have decided what to keep from this batch's proposals and episodes, and every item you wrote "
+        "when you have built the best library items you can from this batch, with the proposals as material and the episodes as evidence, and every item you wrote "
         "has passed the gate or is kept as a draft"
     ) in write
 
