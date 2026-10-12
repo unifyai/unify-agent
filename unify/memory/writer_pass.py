@@ -874,6 +874,10 @@ class PassOutcome:
     # refusal of a round was stuck, so repair ended there) and one {"check", "item", "reason", "rounds"} row each);
     # None when none became stuck
     repair_stuck: dict | None = None
+    # library mode: the no-progress rule (loop_stop.AgentNoProgress.report): {"k", "notices", "ended", "at_call"}
+    # when the writer (or curator) made loop_stop.MEMORY_K no-progress model calls in a row at least once; "ended":
+    # 2 * k in a row ended its round and the pass went to its final merge. None when no notice was given
+    no_progress: dict | None = None
 
 
 # --- inputs ------------------------------------------------------------------------------------------------
@@ -4081,6 +4085,16 @@ class WriterPass:
         self._temp_kept = None
         # tools in code (UNIFY_TOOLS_IN_CODE=on, library mode): one JSON tool, the rest called from cells
         in_code = library and bool(getattr(self.cfg, "tools_in_code", False))
+        # library mode: the shared no-progress rule (loop_stop.AgentNoProgress), always on; a capped pass without the
+        # library is bounded by its call and USD caps as before
+        no_progress = None
+        if library:
+            from unify.common._async_tool import loop_stop as _loop_stop
+
+            no_progress = _loop_stop.AgentNoProgress(
+                _loop_stop.terminal_tool("curator" if self._role == "curate" else "writer"),
+                in_code=in_code,
+            )
 
         def cause(code: str) -> None:
             if code not in causes:
@@ -4122,6 +4136,7 @@ class WriterPass:
             if self.cfg.library_mode:
                 o.rounds, o.round_results = round_no + 1, list(round_paths)
                 o.repair_stuck = stuck.report()
+                o.no_progress = no_progress.report() if no_progress is not None else None
                 o.compactions = self._compaction["compactions"]
                 o.chars_moved = self._compaction["chars_moved"]
                 o.messages_moved = self._compaction["messages_moved"]
@@ -4157,6 +4172,7 @@ class WriterPass:
                             "usd_known",
                             "unknown_cost_calls",
                             "seconds",
+                            "no_progress",
                         )
                     }
                     | {"files": len(r.get("files") or [])}
@@ -5010,6 +5026,19 @@ class WriterPass:
                             ),
                         },
                     )
+                if no_progress is not None:
+                    # a call made while a helper of the pass runs is not counted: waiting on it is progress the loop
+                    # cannot see. At the end the round ends as if finish were accepted, without a repair round: the
+                    # final merge lands the items that pass and keeps the rest as a draft
+                    acted = no_progress.after_call(
+                        messages,
+                        in_flight=bool(self._pass_record is not None and self._pass_record.helpers_running()),
+                        act=not finished and stop is None,
+                    )
+                    if acted is not None:
+                        notes.append(no_progress.note(acted))
+                    if acted == "end":
+                        break
                 if finished and self.cfg.library_mode and stop is None and repair():
                     finished = (
                         False  # a repair round: the loop goes on under the same caps

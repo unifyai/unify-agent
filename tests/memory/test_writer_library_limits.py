@@ -4,6 +4,7 @@ operational step guard and the deadline end a runaway. A capped pass (v2, or lib
 
 from decimal import Decimal
 
+from unify.common._async_tool import loop_stop
 from unify.memory import library_prompts, repair, writer_pass
 from unify.memory.writer_pass import CODE_PASS_CAP, CODE_STEP_GUARD
 from tests.memory.test_writer_pass import _call
@@ -18,6 +19,8 @@ def test_an_uncapped_pass_has_no_usd_stop_or_read_limit(tmp_path, monkeypatch):
     # the fake model costs USD 0.001 a call: a USD 0.0025 cap would end it after 3 calls; max_reads 2 would refuse
     # the third read. With no manifest written, the pass ends at the (lowered) operational step guard.
     monkeypatch.setattr(writer_pass, "STEP_GUARD", 30)
+    # twelve identical reads make no progress: the no-progress rule, not under test here, would end them first
+    monkeypatch.setattr(loop_stop, "MEMORY_K", 100)
     turns = _reads(12)
     out, model = _pass(tmp_path, turns, eids=("e2",), max_usd=None, max_reads=2)
     assert CODE_PASS_CAP not in out.codes and out.reads >= 12

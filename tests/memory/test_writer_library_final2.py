@@ -152,10 +152,14 @@ def test_off_finish_is_unchanged(tmp_path):
 
 
 @needs_bwrap
-def test_a_long_read_still_leaves_a_repair_round(tmp_path):
+def test_a_long_read_still_leaves_a_repair_round(tmp_path, monkeypatch):
     """Round 0 spends 13 turns reading and 2 writing: priced on all of it (0.75 USD) no repair round would fit in
     the 0.25 left; priced on the write phase (0.05), the gate's refusal reaches the writer and the repair lands.
     """
+    from unify.common._async_tool import loop_stop
+
+    # twelve identical reads make no progress: the no-progress rule, not under test here, would end them first
+    monkeypatch.setattr(loop_stop, "MEMORY_K", 100)
     mem = Repo.init_bare(tmp_path / "mem.git")
     ev = EvidenceStore(tmp_path / "e.sqlite")
     ep = _e1()
