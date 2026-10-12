@@ -78,7 +78,7 @@ RULES: tuple[tuple[str, re.Pattern[str], frozenset[str]], ...] = (
     ("rehearsal id", re.compile(_L + r"dr[0-9]+-"), EVERYWHERE),
     ("label prefix", re.compile(_L + r"b2p?:"), EVERYWHERE),
     ("model name as a role", re.compile(_L + r"(?:[sS]ol|SOL|[lL]una|LUNA)s?" + _R), EVERYWHERE),
-    ("model name as a role", re.compile(r"(?<=[a-z])(?:Sol|Luna)s?" + _R), frozenset({NAME})),
+    ("model name as a role", re.compile(r"(?:(?<=[a-z])|(?<![A-Za-z0-9]))(?:Sol|Luna)s?(?![a-z0-9])"), TEXT | {NAME}),
     ("version tag", re.compile(r"(?<=[A-Za-z])21" + _R), frozenset({NAME})),
     ("decision tag", re.compile(_L + r"D[0-9]{1,2}(?=_)"), frozenset({NAME})),
 )
@@ -171,7 +171,7 @@ def violations_in(path: Path, root: Path = ROOT) -> list[str]:
                 continue
             for m in rx.finditer(piece):
                 found.append(f"{rel}:{line}: {m.group(0)!r} ({rule}, in a {scope})")
-    return found
+    return list(dict.fromkeys(found))  # one entry when two rules find the same token
 
 
 def all_violations(root: Path = ROOT) -> list[str]:
@@ -193,7 +193,7 @@ def test_the_rules_catch_tags_and_leave_ordinary_words(tmp_path):
         '"""Consolidate the isolation report (r5 §4, MAIN 11 Oct)."""\n'
         "r1, r2 = 1, 2  # P7: the writer reads both\n"
         "sol_reply = consolidate(r1)\n"
-        "class FakeSol: _layout21 = D26_TEXT = 1\n"
+        "class FakeSol(SolRouteRefused): _layout21 = D26_TEXT = 1\n"
         'MODEL = "openrouter/openai/gpt-5-sol"\n'
         "def test_library_p7_off():\n"
         "    pass\n",
@@ -206,6 +206,11 @@ def test_the_rules_catch_tags_and_leave_ordinary_words(tmp_path):
     assert any(v.startswith("unify/memory_v2/sample.py:2: 'P7'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:3: 'sol'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:4: 'Sol'") for v in got)
+    model_rules = [rx for rule, rx, _ in RULES if rule == "model name as a role"]
+    for name in ("FakeSol", "SolRouteRefused", "sols_box", "LUNA"):
+        assert any(rx.search(name) for rx in model_rules), name
+    for word in ("Solve", "isolation", "consoles", "console", "Lunar"):
+        assert not any(rx.search(word) for rx in model_rules), word
     assert any(v.startswith("unify/memory_v2/sample.py:4: '21'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:4: 'D26'") for v in got)
     assert any(v.startswith("unify/memory_v2/sample.py:6: 'p7'") for v in got)
