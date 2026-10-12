@@ -55,6 +55,7 @@ import re
 import shutil
 import stat
 import tempfile
+import textwrap
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -316,7 +317,10 @@ READ_SPEC = ToolSpec(
         "type": "object",
         "properties": {
             "path": {"type": "string"},
-            "offset": {"type": "integer", "description": "byte offset to start the page at"},
+            "offset": {
+                "type": "integer",
+                "description": "byte offset to start the page at",
+            },
         },
         "required": ["path"],
     },
@@ -337,8 +341,14 @@ GREP_SPEC = ToolSpec(
         "type": "object",
         "properties": {
             "pattern": {"type": "string"},
-            "path": {"type": "string", "description": "file or directory to search; default /inputs"},
-            "offset": {"type": "integer", "description": "hit number to start the page at"},
+            "path": {
+                "type": "string",
+                "description": "file or directory to search; default /inputs",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "hit number to start the page at",
+            },
         },
         "required": ["pattern"],
     },
@@ -369,7 +379,11 @@ def helper_tools(similar: bool = True) -> list[dict]:
 
     flags = frozenset({"helper", "similar"} if similar else {"helper"})
     own = {s.name: s for s in VARIANT_SPECS if s.name != "execute_code"}
-    specs = [own.get(s.name, s) for s in tools_for("helper", flags) if s.name != "execute_code"]
+    specs = [
+        own.get(s.name, s)
+        for s in tools_for("helper", flags)
+        if s.name != "execute_code"
+    ]
     names = {s.name for s in specs}
     for s in (STAGE_SPEC, DONE_SPEC):
         if s.name not in names:
@@ -405,7 +419,10 @@ class DelegateContext:
       handler (``async (args) -> str``), or None;
     * ``records``: one row per delegate call, appended here (the pass outcome's ``helpers``);
     * ``pass_record``: the pass's record (:class:`.messaging.PassRecord`; made here when not given), whose pool
-      starts the helpers.
+      starts the helpers;
+    * ``pool``: the pass's pool of drafts (:class:`.pool.Pool`), or None: the closed entries a helper's staged code
+      or episodes resemble are listed in its ``helper.json`` and its reply, as the batch map lists them for an
+      episode.
     """
 
     pass_id: str
@@ -426,6 +443,7 @@ class DelegateContext:
     step_guard: int = 500
     cell_timeout_s: float = CELL_TIMEOUT_S
     records: list[dict] = field(default_factory=list)
+    pool: Any = None
     #: host-stamped open rows from the helpers' boxes (also appended to ``box-opens.jsonl`` beside ``events``)
     box_opens: list[dict] = field(default_factory=list)
     next_call: int = 0
@@ -439,7 +457,10 @@ class DelegateContext:
 
     def __post_init__(self) -> None:
         if self.pass_record is None:
-            self.pass_record = _messaging.PassRecord(root="writer", deadline=self.deadline)
+            self.pass_record = _messaging.PassRecord(
+                root="writer",
+                deadline=self.deadline,
+            )
         pr = self.pass_record
         if pr.pool is None and self.new_turn is not None:
 
@@ -495,6 +516,7 @@ def context_for(
         cell_timeout_s=float(getattr(cfg, "cell_timeout_s", 60.0)),
         records=writer._helper_rows,
         pass_record=pass_record,
+        pool=getattr(writer, "_pool", None),
     )
 
 
@@ -816,7 +838,9 @@ async def plain_episode_reader(
     unknown: list[str] = []
     for item in wanted:
         part, off = (
-            (item.get("part"), item.get("offset", 0)) if isinstance(item, dict) else (item, None)
+            (item.get("part"), item.get("offset", 0))
+            if isinstance(item, dict)
+            else (item, None)
         )
         part = str(part).strip()
         if off is None:
@@ -1070,15 +1094,29 @@ async def _tool(
             return _own_refusal("grep", "bad_pattern", reason=str(exc)[:300]), []
         except FileNotFoundError:
             missing = _own_refusal(name, "not_found", path=vpath[:200])
-            return Refusal(str(missing) + _parent_listing(vpath, roots), name, "not_found"), []
+            return (
+                Refusal(
+                    str(missing) + _parent_listing(vpath, roots),
+                    name,
+                    "not_found",
+                ),
+                [],
+            )
         except (OSError, ValueError, TypeError) as exc:
             # the type and the path asked for only: the error's text names host paths
             return (
-                _own_refusal(name, "unreadable", error=type(exc).__name__, path=vpath[:200]),
+                _own_refusal(
+                    name,
+                    "unreadable",
+                    error=type(exc).__name__,
+                    path=vpath[:200],
+                ),
                 [],
             )
     if name == "overview" and not args.get("episode"):
-        return _batch_overview(ctx, args), [{"path": "/inputs/batch_map.json", "mode": "read"}]
+        return _batch_overview(ctx, args), [
+            {"path": "/inputs/batch_map.json", "mode": "read"},
+        ]
     if name in ("overview", "read_episode"):
         got = resolve(args.get("episode"), name)
         if isinstance(got, str):
@@ -1148,7 +1186,9 @@ def _parent_listing(vpath: str, roots: dict) -> str:
             break
         if real.is_dir():
             names = sorted(x.name + ("/" if x.is_dir() else "") for x in real.iterdir())
-            shown = names[:50] + ([f"... {len(names) - 50} more"] if len(names) > 50 else [])
+            shown = names[:50] + (
+                [f"... {len(names) - 50} more"] if len(names) > 50 else []
+            )
             return f"; {parent} holds: " + (", ".join(shown) or "(nothing)")
         parent = parent.rsplit("/", 1)[0]
     return ""
@@ -1160,7 +1200,10 @@ def _batch_overview(ctx: DelegateContext, args: dict) -> str:
         rows = json.loads((ctx.inputs / "batch_map.json").read_text())["episodes"]
     except (OSError, ValueError, KeyError, TypeError):
         return "this pass has no batch map; give `episode` to read one recorded episode"
-    return _wt.overview_batch(rows if isinstance(rows, list) else [], args.get("offset", 0)).text
+    return _wt.overview_batch(
+        rows if isinstance(rows, list) else [],
+        args.get("offset", 0),
+    ).text
 
 
 def _prepare(ctx: DelegateContext, episodes: list[str], tmp: Path) -> dict:
@@ -1371,7 +1414,8 @@ async def _run_helper(
 
 async def handle(args: dict, ctx: DelegateContext, info: dict | None = None) -> str:
     """The ``delegate`` tool: start one helper and return at once with its name, or the refusal that started none.
-    The helper runs as a task of the pass record's pool; its messages and its last text arrive on the record."""
+    The helper runs as a task of the pass record's pool; its messages and its last text arrive on the record.
+    """
     task = args.get("task") if isinstance(args, dict) else None
     eps = args.get("episodes") if isinstance(args, dict) else None
     if not isinstance(task, str) or not task.strip():
@@ -1514,6 +1558,13 @@ def _finish(
                     "sha256": hashlib.sha256(data).hexdigest(),
                 },
             )
+    if ctx.pool is not None:
+        doc["related_closed"] = _related_closed(
+            ctx.pool,
+            call,
+            staging,
+            doc.get("episodes") or [],
+        )
     doc.update(
         usd=_usd(usd) if not doc["unknown_cost_calls"] else _UNKNOWN,
         usd_known=_usd(usd),
@@ -1536,6 +1587,41 @@ def _finish(
     return row
 
 
+def _related_closed(
+    pool: Any,
+    call: str,
+    staging: _Staging | None,
+    episodes: list[str],
+) -> dict:
+    """The closed pool entries resembling what helper *call* staged (its ``.py`` files and the added Python lines of
+    its ``.diff`` files, labelled ``helper:<name>/<file>``) or citing one of its episodes: ``{"count", "entries"}``
+    with the first :data:`.pool.RELATED_PAGE` links, or ``{"error"}`` when they cannot be computed.
+    """
+    from . import pool as _pool
+
+    try:
+        code: dict[str, frozenset[str]] = {}
+        for rel in sorted(staging.files) if staging is not None else []:
+            if not rel.endswith((".py", ".diff")):
+                continue
+            text = staging.read(rel).decode("utf-8", "replace")
+            label = f"helper:{call}/{rel}"
+            if rel.endswith(".py"):
+                code[label] = _pool.code_units(text)
+            else:
+                for _path, runs in sorted(_bm._diff_python_runs(text).items()):
+                    for _start, lines in runs:
+                        code[label] = code.get(label, frozenset()) | _pool.code_units(
+                            textwrap.dedent("\n".join(lines)),
+                        )
+        links = pool.related_closed(code, episodes)
+    except (
+        Exception
+    ) as exc:  # noqa: BLE001 - the links are reported missing, never shown as none
+        return {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    return {"count": len(links), "entries": links[: _pool.RELATED_PAGE]}
+
+
 def _reply(row: dict) -> str:
     lines = [f"helper {row['call']}: {row['status']}"]
     if row.get("exported"):
@@ -1552,6 +1638,21 @@ def _reply(row: dict) -> str:
         )
         + f"; {row['turns']} model calls; {row['seconds']:.0f} s of the pass's wall clock",
     )
+    rel = row.get("related_closed")
+    if rel is not None:
+        if "error" in rel:
+            lines.append(
+                f"closed pool entries resembling this output: could not be read ({rel['error']})",
+            )
+        elif rel["count"]:
+            lines.append(
+                f"closed pool entries resembling this output ({rel['count']}; all in helper.json, "
+                f"`pool show <id>` for each):",
+            )
+            lines += [
+                f"- {e['id']} ({e['status']}, pass {e.get('closed_in')}): {e.get('reason') or ''}"
+                for e in rel["entries"]
+            ]
     lines.append("summary: " + (row.get("summary") or "(none)"))
     lines.append(claims_text(row.get("claims") or []))
     return "\n".join(lines)

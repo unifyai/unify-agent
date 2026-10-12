@@ -53,7 +53,8 @@ LOAD = {e: _episode(e) for e in ("e2", "e3", "e4")}
 
 def _cid(code: str) -> str:
     return pool.entry_id(
-        "candidate", json.dumps({"candidate.py": code}, sort_keys=True)
+        "candidate",
+        json.dumps({"candidate.py": code}, sort_keys=True),
     )
 
 
@@ -220,11 +221,15 @@ def test_the_writer_decides_reopening_and_nothing_else_applies_to_a_closed_entry
     old, new, _, pdir, box = _staged_pool(tmp_path)
     wt.write_manifest(box, {"items": [], "summary": "s"})
     bad = wt.pool(
-        {"op": "decide", "id": old, "decision": "retired", "reason": "r"}, pdir, box
+        {"op": "decide", "id": old, "decision": "retired", "reason": "r"},
+        pdir,
+        box,
     )
     assert bad.form == "closed_entry" and "retired" in bad.text
     bad = wt.pool(
-        {"op": "decide", "id": new, "decision": "reopened", "reason": "r"}, pdir, box
+        {"op": "decide", "id": new, "decision": "reopened", "reason": "r"},
+        pdir,
+        box,
     )
     assert bad.form == "open_entry"
     bad = wt.pool({"op": "decide", "id": old, "decision": "reopened"}, pdir, box)
@@ -329,3 +334,86 @@ def test_an_unreadable_links_file_is_said_never_shown_as_no_links(tmp_path):
         "Related closed entries: 0"
         in wt.pool({"op": "show", "id": new}, pdir, box).text
     )
+
+
+# --- a helper's output --------------------------------------------------------------------------------------------
+
+
+def _helper_doc(episodes):
+    from decimal import Decimal
+
+    return {
+        "call": "call-1",
+        "pass_id": "p2",
+        "status": "ok",
+        "episodes": episodes,
+        "turns": 1,
+        "unknown_cost_calls": 0,
+        "_usd": Decimal(0),
+        "summary": "",
+        "claims": [],
+        "stopped_by": "done",
+        "calls_cut": 0,
+    }
+
+
+def test_a_helpers_staged_code_is_linked_to_the_closed_entries_it_resembles(tmp_path):
+    from types import SimpleNamespace
+
+    from unify.memory import helpers
+
+    p = pool.Pool(None)
+    old = p.upsert(_candidate("e1", FLOOD), "p1")
+    p.set_status(old.id, "retired", {"reason": REASON}, "p1")
+    staging = helpers._Staging(tmp_path / "out" / "call-1")
+    staging.stage("candidates/fill.py", FILL)
+    staging.stage("candidates/parse.py", PARSE)
+    ctx = SimpleNamespace(pool=p, inputs=tmp_path / "inputs", records=[])
+    row = helpers._finish(ctx, "call-1", staging, _helper_doc(["e4"]), 1.0)
+    rel = row["related_closed"]
+    assert rel["count"] == 1 and rel["entries"][0]["id"] == old.id
+    assert set(rel["entries"][0]["shared_code"]) == {"helper:call-1/candidates/fill.py"}
+    # the writer reads the same links in the exported helper.json and in the delegate reply
+    exported = json.loads(
+        (
+            tmp_path / "inputs" / helpers.EXPORT_DIR / "call-1" / helpers.STATUS_FILE
+        ).read_text(),
+    )
+    assert exported["related_closed"]["entries"][0]["id"] == old.id
+    reply = helpers._reply(row)
+    assert old.id in reply and REASON in reply and "pass p1" in reply
+
+
+def test_a_helper_citing_a_closed_entrys_episode_is_linked_and_unrelated_output_is_not():
+    from unify.memory import helpers
+
+    p = pool.Pool(None)
+    old = p.upsert(_candidate("e1", FLOOD), "p1")
+    p.set_status(old.id, "retired", {"reason": REASON}, "p1")
+    got = helpers._related_closed(p, "call-2", None, ["e1"])
+    assert got["count"] == 1 and got["entries"][0]["shared_episodes"] == ["e1"]
+    assert helpers._related_closed(p, "call-3", None, ["e9"]) == {
+        "count": 0,
+        "entries": [],
+    }
+
+
+def test_links_that_cannot_be_computed_are_reported_never_shown_as_none():
+    from unify.memory import helpers
+
+    class Broken:
+        def related_closed(self, code, episodes):
+            raise OSError("pool unreadable")
+
+    got = helpers._related_closed(Broken(), "call-1", None, ["e1"])
+    assert "error" in got and "count" not in got
+    row = {
+        "call": "call-1",
+        "status": "ok",
+        "usd": "0",
+        "unknown_cost_calls": 0,
+        "turns": 1,
+        "seconds": 1.0,
+        "related_closed": got,
+    }
+    assert "could not be read" in helpers._reply(row)
