@@ -1,7 +1,7 @@
-"""The memory v2.1 gate checks (spec §9.1, §8.2 rule 1, §13.2, §13.4), run by :class:`.gate.Gate` with ``library_mode``.
+"""The library-mode gate checks, run by :class:`.gate.Gate` with ``library_mode``.
 
 With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is v2's. With a :class:`LibraryConfig`, the gate
-(``checks`` on, which needs P3's v2.1 layout, ``layout``) adds these checks:
+(``checks`` on, which needs the library layout, ``layout``) adds these checks:
 
 * **G1:**
   - scope: only ``memory/`` and ``notes/``, never the harness-generated paths;
@@ -28,7 +28,7 @@ With ``Gate(library_mode=None)`` (the default) nothing here runs and the gate is
 
 The stage-5 checks run with drawn inputs ``strict`` and mutation gated at :data:`.qa.MUTATION_MIN`
 (:func:`.qa.library_config`). Measures go to the item verification record (``GateResult.verification``). The merge
-also appends that record to the pass row as one ``library_mode-verification`` line, for P5's item records.
+also appends that record to the pass row as one ``library_mode-verification`` line, for the item records.
 """
 
 from __future__ import annotations
@@ -87,12 +87,12 @@ CROSS_CASES = (
 )
 # Amendment C: the procedure re-runs of the behaviour check, bounded like v2's (held_out.OUTPUTS_BUDGET_S)
 BEHAVIOUR_MAX_PROCEDURES = 16
-OUTPUT_VIEW_BYTES = 4000  # the head of a test run's output kept in memory and quoted (spec P5: explicit, marked)
+OUTPUT_VIEW_BYTES = 4000  # the head of a test run's output kept in memory and quoted (explicit, marked)
 _KEY_SHAPED_BYTES = re.compile(KEY_SHAPED.pattern.encode())
 
 
 def keep_output(outcome: Any, spool: Path, blobs: Any) -> None:
-    """Spec P5 under v2.1: a test run's whole output (stdout, then stderr, as v2 joins them; each spooled up to
+    """In library mode, a test run's whole output (stdout, then stderr, as v2 joins them; each spooled up to
     :data:`.sandbox_run.SPOOL_MAX_BYTES`, marked past it) is kept as a blob, with key-shaped strings redacted line
     by line. The outcome's ``output`` becomes a head-first view of at most :data:`OUTPUT_VIEW_BYTES` bytes, marked
     with the whole size and the blob id. Nothing is kept when the run printed nothing.
@@ -180,19 +180,18 @@ def _no_snapshot(sha: str, dest: Path) -> Path | None:
 
 
 def _index_tokens(tree: Path) -> int:
-    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (P3's renderer and estimator)."""
+    """The tokens of the ``INDEX.md`` the harness would generate for *tree* (the layout's renderer and estimator)."""
     lib = discover(tree)
     return estimate_tokens(render_index(lib, build_links(lib)))
 
 
 @dataclass(frozen=True)
 class LibraryConfig:
-    """The memory v2.1 gate (Amendment E: ``Gate(library_mode=LibraryConfig(...))``; None is v2).
+    """The library-mode gate (``Gate(library_mode=LibraryConfig(...))``; None is v2).
 
-    *layout*: P3's v2.1 library layout. *checks*: this module's checks and stage 5 in v2.1 mode, off until the
+    *layout*: the library layout. *checks*: this module's checks and stage 5 in library mode, off until the
     consolidation builds the gate with :func:`config_for`. *checker_visible*: the bed shows the actor its
-    checker's verdict, so a checker signal may verify a dialogue procedure (P5's ``switch.checker_visible``,
-    Amendments A3 and D).
+    checker's verdict, so a checker signal may verify a dialogue procedure (``switch.checker_visible``).
     """
 
     layout: bool = True
@@ -217,7 +216,7 @@ def config_for(
     role: str = "write",
     checker_visible: bool = False,
 ) -> LibraryConfig:
-    """The v2.1 gate configuration of a run's stores (:mod:`.integration.consolidate`), checks on."""
+    """The library-mode gate configuration of a run's stores (:mod:`.integration.consolidate`), checks on."""
 
     def episodes(eid: str) -> Episode | None:
         try:
@@ -259,7 +258,7 @@ class LibraryChecks:
         run = self.run
         raw = run.manifest_raw if isinstance(run.manifest_raw, dict) else {}
         declared = raw.get("aliases")
-        # P6: a CURATE pass's declared aliases are forwarding stubs that D28 compares strictly, not new code to test
+        # a CURATE pass's declared aliases are forwarding stubs that the behaviour check compares strictly, not new code to test
         forwarding = (
             set(declared)
             if self.cfg.role == "curate" and isinstance(declared, dict)
@@ -464,7 +463,7 @@ class LibraryChecks:
                 )
 
     def _cross_episode(self, it: Any) -> None:
-        """Spec §9.1: an input with nothing to perturb (plain text) also runs on recorded inputs of its family
+        """An input with nothing to perturb (plain text) also runs on recorded inputs of its family
         from episodes outside its provenance. It must return or raise MemoryInputError, never another exception.
         """
         run, form = self.run, it.input
@@ -538,7 +537,7 @@ class LibraryChecks:
                 it.item,
             )
         if ran < len(cases):
-            # review R3: fail closed, as every check the gate could not complete
+            # fail closed, as every check the gate could not complete
             run.fail(
                 "G2",
                 f"{it.item}: the cross-episode check did not complete: {len(cases) - ran} of {len(cases)} recorded "
@@ -724,17 +723,17 @@ class LibraryChecks:
             )
 
     # -- Amendment C: procedures in the behaviour check and in deletion ---------------------------------------
-    # -- CURATE (P6; spec §10.4, §9.1) --------------------------------------------------------------------------
+    # -- CURATE --------------------------------------------------------------------------------------
     def curate(self) -> None:
-        """CURATE's own rules (spec §10.4), static: they read the manifest and both trees and run nothing.
+        """CURATE's own rules, static: they read the manifest and both trees and run nothing.
 
-        A WRITE pass may not declare aliases or retirements (removals and merges belong to CURATE, §9.1). A
+        A WRITE pass may not declare aliases or retirements (removals and merges belong to CURATE). A
         CURATE pass:
         - states why in one line (the ``Why:`` trailer);
         - forwards each declared alias, an item of the parent, to a function of the candidate that is not itself an
           alias (:func:`.aliases.forwards`);
         - gives every deleted item a reason: an alias, or a one-line ``retired`` reason;
-        - lists an old name's tests under its alias's target, which they keep testing through the alias (§9.1);
+        - lists an old name's tests under its alias's target, which they keep testing through the alias;
         - keeps a live alias for one more pass: one added by the pass that made the parent stays;
         - does not grow the library: the items that are not aliases do not increase.
         The aliases, retirements and dropped aliases go to ``run.curations``; :meth:`.gate.Gate.merge` records them
@@ -752,7 +751,7 @@ class LibraryChecks:
                     "G1",
                     "aliases and retirements belong to CURATE; a WRITE pass may not declare them",
                 )
-            # review S3(c): live aliases are checked for every role; dropping one is a removal (CURATE's)
+            # live aliases are checked for every role; dropping one is a removal (CURATE's)
             c_mods = layout.library_modules(run.c_tree)
             for alias in sorted(live):
                 if self._forwards(run.c_tree, alias, c_mods) is None:
@@ -790,7 +789,7 @@ class LibraryChecks:
                 set(aliases) | set(live),
                 p_ids | set(live),
                 c_ids
-                - deleted,  # review S3(a): the target is a kept function of the candidate
+                - deleted,  # the target is a kept function of the candidate
                 c_mods,
             )
             if problem is not None:
@@ -841,7 +840,7 @@ class LibraryChecks:
                         "reason": why,
                     },
                 )
-        # review R5 (spec §10.4: generalising and regrouping are CURATE's): the parent's count leaves out only its live
+        # generalising and regrouping are CURATE's, so the parent's count leaves out only its live
         # aliases, the candidate's every alias; and a new function is the target of an alias this pass declares
         aliased = set(aliases) | set(live)
         n_p = len((p_ids | {n.item_id for n in p_lib.notes}) - set(live))
@@ -901,7 +900,7 @@ class LibraryChecks:
         return rows
 
     def _parent_chain(self) -> set[str]:
-        """Review S3(b): the parent and the commits under it reached through harness status commits only, so a
+        """The parent and the commits under it reached through harness status commits only, so a
         status commit between the alias's pass and this one does not end its "one more pass".
         """
         run = self.run
@@ -956,7 +955,7 @@ class LibraryChecks:
         listed: dict,
         p_mods: set[str],
     ) -> None:
-        """Spec §9.1: the parent's tests of *alias* that the candidate keeps are collected through the alias, so they
+        """The parent's tests of *alias* that the candidate keeps are collected through the alias, so they
         are listed under *target* (they test it, and a failure in them belongs to it).
         """
         run = self.run
@@ -1000,12 +999,12 @@ class LibraryChecks:
         return out
 
     def _procedure_behaviour(self) -> None:
-        """Amendment C, D28: a stored function's ``episode`` covers re-run on the parent's and the candidate's
+        """A stored function's ``episode`` covers re-run on the parent's and the candidate's
         library when the pass changes a library module. A procedure green on the parent and red on the
         candidate is a behaviour change: the function now does its recorded job differently.
 
         Every runner compares with the same recording, so "a different confirmed effect" is green to red. The
-        scope is P3's (D42): the stored functions of each changed module and of every module importing one
+        scope is the import graph's: the stored functions of each changed module and of every module importing one
         (``run.graph``, built by the gate's own behaviour check, :meth:`.gate.Gate._behaviour_targets`), and
         the owner is :meth:`.gate.Gate._behaviour_owner`'s. Without a graph (a run that built none) every stored
         procedure is in scope and the owner is the pass's one edited function, else the pass.
@@ -1056,7 +1055,7 @@ class LibraryChecks:
         for n, (item, cover) in enumerate(targets):
             ep = self.ep(cover.episode)
             if ep is None:
-                # review R4: fail closed, as _reproduced does: a stored procedure that cannot be compared refuses
+                # fail closed, as _reproduced does: a stored procedure that cannot be compared refuses
                 run.fail(
                     "G3",
                     f"behaviour check not completed: {item}'s procedure on {cover.episode} cannot be read",
@@ -1102,9 +1101,9 @@ class LibraryChecks:
                 )
 
     def g5(self) -> None:
-        """Amendment C, D26: a deleted function's typed ``episode`` covers stay covered by a remaining item.
+        """A deleted function's typed ``episode`` covers stay covered by a remaining item.
 
-        P6 Amendment B (D28, as P4 Amendment C): a remaining item vouches for a deleted item's procedure only when
+        As in the behaviour check, a remaining item vouches for a deleted item's procedure only when
         :func:`.procedures.run_procedure` gives on the candidate's library the same outcome (``ok``) as the deleted
         item gave on the parent's. The holders tried are the remaining items that list or store the same cover and,
         for a deleted item that is an alias (declared by this CURATE pass, or live), its target: an alias forwarding a
@@ -1202,8 +1201,8 @@ class LibraryChecks:
         started: float,
         n: int,
     ) -> bool | None:
-        """Whether one of *cands* gives on the candidate the outcome *item* gave on the parent for *cover*
-        (P6 Amendment B). None when the budget ran out (refused)."""
+        """Whether one of *cands* gives on the candidate the outcome *item* gave on the parent for *cover*.
+        None when the budget ran out (refused)."""
         run = self.run
         ep = self.ep(cover.episode)
         if ep is None:
