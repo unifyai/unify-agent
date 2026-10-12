@@ -58,8 +58,12 @@ and reasoning support, and it would require hand-written prices.
 - Deployed to the test worker as `~/unillm-worktrees/harness-cache-8f99d889`. The deploy script stopped
   at its checksum step (`sha256sum: .agents/global-rules: Is a directory`: the repository's
   `.agents/global-rules` is a Git submodule, which `git ls-files` lists). By the script's order of steps,
-  the clone and checkout had completed; its `SHA256SUMS` is incomplete, it was not made read-only, and no
-  SUMS digest was printed (not inspected on the worker).
+  the clone and checkout had completed. The copy was then checked (HEAD exactly the commit, no local change),
+  its `SHA256SUMS` was written over the 139 regular tracked files (the submodule entry left out, as the fixed
+  deploy script now does), verified with `sha256sum -c`, and the copy made read-only. `SHA256SUMS` digest:
+  `b4148a2679b8bda0a0d18f9f7dfb18139431c90281aa42ebb5505beeb6fdf8b1`.
+- With these windows (1,050,000 tokens), 85% of the window is 892,500 tokens, so the fixed 75,000-token point
+  comes first for both models: the window is recorded (`context_window`) and bounds nothing earlier.
 
 ## Tests
 
