@@ -69,10 +69,11 @@ def test_the_curator_gets_only_its_own_tools():
 def test_every_profile_tool_exists_in_the_spec_and_rows_have_the_interface_shape():
     known = {s.name for s in tool_spec.registry()}
     agents = [r["agent"] for r in agent_profiles.AGENT_PROFILES]
-    assert agents == ["actor", "fork", "writer", "curator", "helper", "gate", "harness"]
+    assert agents == ["actor", "teammate", "fork", "writer", "curator", "helper", "gate", "harness"]
     modes = {r["agent"]: r["mode"] for r in agent_profiles.AGENT_PROFILES}
     assert modes == {
         "actor": "consumer",
+        "teammate": "teammate",
         "fork": "fork",
         "writer": "write",
         "curator": "curate",

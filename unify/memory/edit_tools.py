@@ -31,11 +31,13 @@ from pathlib import Path
 
 from . import safe_paths as _safe
 from .layout import DATA_DIR, GENERATED_ROOT_FILES
+from unify.common import tool_registry as _registry
+
 from .tool_spec import ToolSpec
 from .writer_tools import MANIFEST, Reply, path_row, refused
 
 #: the spec flag the tools need (``UNIFY_MEMORY_LIBRARY_EDIT_TOOLS=on``)
-FLAG = "edit"
+FLAG = _registry.EDIT_FLAG
 #: the mode every written file gets
 FILE_MODE = 0o644
 _DIR_MODE = 0o755
@@ -43,70 +45,10 @@ _DIR_MODE = 0o755
 _DIR_FLAGS = _safe.DIR_FLAGS
 _READ_FLAGS = _safe.READ_FLAGS
 _TEMP_FLAGS = _safe.TEMP_FLAGS
-_ROLES = frozenset({"write", "curate"})
 
-_PATH = {
-    "type": "string",
-    "description": "relative to /memory, e.g. memory/<package>/<module>.py",
-}
-
-_PATH_REFUSALS = {
-    "bad_path": "{path!r}: {reason}",
-    "reserved": "{path} is reserved: {reason}",
-    "link": "{path}: {what} is a link",
-    "not_regular": "{path} is not a regular file",
-    "not_directory": "{path}: {where} is not a directory",
-    "not_written": "cannot write {path}: {error}",
-}
-
-WRITE = ToolSpec(
-    name="write",
-    description=(
-        "Write a whole file under /memory: `content` (text) becomes the file at `path`, replacing it if it exists; "
-        "missing directories are made. The file gets mode 0644. Refused: links, .git, the files the harness "
-        "generates, and .pass/ except .pass/manifest.json."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {"path": _PATH, "content": {"type": "string"}},
-        "required": ["path", "content"],
-    },
-    roles=_ROLES,
-    requires=FLAG,
-    refusals={
-        **_PATH_REFUSALS,
-        "bad_content": "content must be a string of UTF-8 text; nothing was written",
-    },
-    summary="write a whole file under /memory (path relative to /memory).",
-)
-
-EDIT = ToolSpec(
-    name="edit",
-    description=(
-        "Replace text in a UTF-8 file under /memory: `old` must occur exactly once in the file and becomes `new`. "
-        "Exact text, no patterns; 0 or several occurrences are refused with the count (add surrounding lines to "
-        "make `old` unique). The same path rules as write."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "path": _PATH,
-            "old": {"type": "string"},
-            "new": {"type": "string"},
-        },
-        "required": ["path", "old", "new"],
-    },
-    roles=_ROLES,
-    requires=FLAG,
-    refusals={
-        **_PATH_REFUSALS,
-        "not_found": "{path} does not exist; nothing was changed (write makes a new file)",
-        "not_text": "{path} is not UTF-8 text; nothing was changed",
-        "bad_old": "{reason}; nothing was changed",
-        "match_count": "`old` occurs {count} times in {path}; it must occur exactly once (nothing was changed)",
-    },
-    summary="replace text that occurs exactly once in a /memory file.",
-)
+# The tools' definitions live in the shared registry (unify/common/tool_registry.py).
+WRITE = _registry.WRITE
+EDIT = _registry.EDIT
 
 SPECS: tuple[ToolSpec, ...] = (WRITE, EDIT)
 NAMES = tuple(s.name for s in SPECS)

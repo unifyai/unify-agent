@@ -1,6 +1,7 @@
-"""The writer's tools: one :class:`.tool_spec.ToolSpec` per tool, and the handlers that need no pass state.
+"""The writer's tools: the handlers that need no pass state. Each tool's definition is in the shared registry
+(:mod:`unify.common.tool_registry`).
 
-Every tool JSON the writer, the curator or a helper receives is rendered from :data:`SPECS` (through
+Every tool JSON the writer, the curator or a helper receives is rendered from the registry (through
 :mod:`.agent_profiles`), and every refusal text comes from a spec's ``refusals`` (or :data:`GENERAL_REFUSALS` for the
 answers the pass loop itself gives), each with a stable form code that the structured tool events record.
 
@@ -24,365 +25,37 @@ from . import fixtures as _fx
 from . import pool as _pool
 from . import safe_paths as _safe
 from . import views as _views
-from .tool_spec import GENERAL, ToolSpec, refusal
+from unify.common import tool_registry as _registry
+
+from .tool_spec import GENERAL, refusal
 from .tool_spec import GENERAL_REFUSALS as _GENERAL_REFUSALS
 
-#: parts per read_episode call (one shared page) and reader calls per model turn; both stated in the descriptions
-READ_PARTS_PER_CALL = 8
-READERS_PER_TURN = 16
-#: cells run per model turn (stated in execute_code's description)
-CELLS_PER_TURN = 8
-#: grep's answer when its search process fails for a reason other than the pattern (a fixed text: the process's
-#: own output can name host paths)
-SEARCH_FAILED = "the search did not complete; nothing is shown (narrow the pattern or the path and search again)"
+#: parts per read_episode call, reader calls per model turn and cells per model turn (stated in the descriptions)
+READ_PARTS_PER_CALL = _registry.READ_PARTS_PER_CALL
+READERS_PER_TURN = _registry.READERS_PER_TURN
+CELLS_PER_TURN = _registry.CELLS_PER_TURN
+#: grep's answer when its search process fails for a reason other than the pattern (a fixed text: the
+#: process's own output can name host paths)
+SEARCH_FAILED = _registry.SEARCH_FAILED
 #: where the manifest lives in the writer's box
 MANIFEST = ".pass/manifest.json"
 
-_W, _C, _H = "write", "curate", "helper"
-_ALL = frozenset({_W, _C, _H})
-_WRITE_CURATE = frozenset({_W, _C})
-
-
-def _obj(props: dict, required: list[str] | None = None) -> dict:
-    out: dict = {"type": "object", "properties": props}
-    if required:
-        out["required"] = required
-    return out
-
-
 _POOL_STATUS = ("open", "closed", "any")
-_OFFSET = {
-    "type": "integer",
-    "description": "byte offset to start the page at (a page marker names the next one)",
-}
 
-EXECUTE_CODE = ToolSpec(
-    name="execute_code",
-    description=(
-        "Run Python code as a script in a fresh confined process: cwd /memory (read-write), /inputs read-only, no "
-        "network, up to the cell time limit stated in the first message. Returns stdout and stderr: the first 8000 "
-        "bytes, with the full output saved as /outputs/cell-<n>.txt, which `read` opens (cells cannot open "
-        f"/outputs). At most {CELLS_PER_TURN} cells run per model turn; more are answered 'not run' and can be sent "
-        "again."
-    ),
-    parameters=_obj({"code": {"type": "string"}}, ["code"]),
-    # a helper's own box differs (/memory read-only, a private /work): its execute_code is specified with the helper
-    roles=_WRITE_CURATE,
-    summary="run Python in a fresh confined process (cwd /memory; /inputs read-only).",
-)
+# The tools' definitions live in the shared registry (unify/common/tool_registry.py); these names stay for callers.
+READ = _registry.READ
+GREP = _registry.GREP
+OVERVIEW = _registry.OVERVIEW
+READ_EPISODE = _registry.READ_EPISODE
+POOL = _registry.POOL
+FIXTURE = _registry.FIXTURE
+REPLAY = _registry.REPLAY
+#: the writer's and curator's execute_code as the model-API tool sends it while UNIFY_TOOLS_IN_CODE is off
+EXECUTE_CODE = _registry.earlier_tool("writer", "execute_code")
+CHECK = _registry.CHECK
+FINISH = _registry.FINISH
 
-CHECK = ToolSpec(
-    name="check",
-    description=(
-        "Check the manifest at /memory/.pass/manifest.json against your current /memory files: the gate's static "
-        "checks (the manifest, the layout and links, fixtures, covers and safety), then the items' own tests and "
-        "the recorded inputs the gate draws. Returns 'ok' or the gate's reasons, with the output of any failing "
-        "test; the full result is saved under /inputs/gate/ and the reply names the file. With `manifest` given, "
-        "that JSON is first written to /memory/.pass/manifest.json (replacing it), so check, finish and the gate "
-        "always judge the same file. Changes nothing else."
-    ),
-    parameters=_obj(
-        {
-            "manifest": {
-                "type": "string",
-                "description": "optional: the manifest JSON, written to /memory/.pass/manifest.json before the check",
-            },
-        },
-    ),
-    roles=_WRITE_CURATE,
-    refusals={
-        "manifest_problem": "{reason}",
-        "too_late": "not run: too little time left before the pass deadline",
-        "stopped": "{reason}",
-    },
-    summary="run the gate's checks on /memory/.pass/manifest.json and your files; changes nothing.",
-)
-
-FINISH = ToolSpec(
-    name="finish",
-    description=(
-        "End the pass: the gate then judges /memory/.pass/manifest.json and your /memory files. Refused, with the "
-        "reason, while the manifest is missing or does not parse. When the gate refuses items you get a repair "
-        "round with its full result."
-    ),
-    parameters=_obj({"summary": {"type": "string"}}, ["summary"]),
-    roles=_WRITE_CURATE,
-    refusals={"manifest_problem": "not finished: {reason}"},
-    summary="end the pass; the gate judges the manifest and files.",
-)
-
-READ = ToolSpec(
-    name="read",
-    description=(
-        "Read a file or list a directory under /inputs, /memory or /outputs. Returns at most 8000 bytes from "
-        f"offset; a marker gives the next offset. Nothing is ever cut silently. At most {READERS_PER_TURN} "
-        "reader calls (read, grep, overview, read_episode, pool) run per model turn; more are answered 'not run' "
-        "and can be sent again."
-    ),
-    parameters=_obj({"path": {"type": "string"}, "offset": _OFFSET}, ["path"]),
-    roles=_ALL,
-    refusals={
-        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
-        "outside_box": "{path} is outside /inputs, /memory and /work",
-        "not_found": "{path} does not exist",
-        "unreadable": "{error} for {path!r}",
-    },
-    summary="read a file or list a directory under /inputs, /memory or /outputs, 8000 bytes a page.",
-)
-
-GREP = ToolSpec(
-    name="grep",
-    description=(
-        "Search files under a path (default /inputs) with a Python regular expression; returns path:line: text "
-        "hits, one bounded page at a time (a marker gives the next offset)."
-    ),
-    parameters=_obj(
-        {
-            "pattern": {"type": "string"},
-            "path": {
-                "type": "string",
-                "description": "file or directory to search; default /inputs",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "hit number to start the page at",
-            },
-        },
-        ["pattern"],
-    ),
-    roles=_ALL,
-    refusals={
-        "outside_roots": "{path} is outside /inputs, /memory and /outputs",
-        "outside_box": "{path} is outside /inputs, /memory and /work",
-        "bad_pattern": "{reason}",
-        "unreadable": "{error} for {path!r}",
-        "search_failed": SEARCH_FAILED,
-    },
-    summary="search files with a regular expression (default under /inputs).",
-)
-
-OVERVIEW = ToolSpec(
-    name="overview",
-    description=(
-        "Without episode: one line per batch episode (its id, observations, cells, actions, errors, staged "
-        "candidates and open pool entries), from /inputs/batch_map.json. With episode (any recorded episode): its "
-        "end first (its last working cell, last action and last observation, in full), then every step, newest "
-        "first, with the part name read_episode reads it by. Paged at 8000 bytes."
-    ),
-    parameters=_obj({"episode": {"type": "string"}, "offset": _OFFSET}),
-    roles=_ALL,
-    refusals={
-        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
-        "not_episode_id": "{episode!r} is not an episode id; nothing was read",
-        "not_recorded": "{episode!r} is not a recorded episode; nothing was read",
-    },
-    summary="the batch at a glance, or one episode's end and every step.",
-)
-
-READ_EPISODE = ToolSpec(
-    name="read_episode",
-    description=(
-        "Read any recorded episode by its id (read-only). Without parts: its table of contents: every part name "
-        "with its size in bytes, and for each part the fixture source id it is copied with and that source's raw "
-        "length in bytes (fixture slices count raw bytes, not the JSON shown here). parts=[...] shows those parts "
-        f"on one page of 8000 bytes, each marked, at most {READ_PARTS_PER_CALL} per call (the rest are named for "
-        "the next call); a part reached with the page full is named, not shown; a part given as "
-        "{\"part\": name, \"offset\": n} continues it. Part names: 'request', 'observation:<i>' (the i-th user "
-        "message after the request; fixture source request:<i+1>, also called observation:<i>), 'cell:<i>', "
-        "'action:<i>' (fixture sources '<i>' for its response or file and 'args:<i>' for its arguments) and "
-        "'diff'. An unknown name is answered with the valid names while the valid parts are shown."
-    ),
-    parameters=_obj(
-        {
-            "episode": {"type": "string"},
-            "parts": {
-                "type": "array",
-                "items": {
-                    "anyOf": [
-                        {"type": "string"},
-                        _obj(
-                            {"part": {"type": "string"}, "offset": {"type": "integer"}},
-                            ["part"],
-                        ),
-                    ],
-                },
-                "description": "the parts to show; omit for the table of contents",
-            },
-            "part": {
-                "type": "string",
-                "description": "one part: the same as parts=[part]",
-            },
-            "offset": {
-                "type": "integer",
-                "description": "with part: the byte offset to continue it at",
-            },
-        },
-        ["episode"],
-    ),
-    roles=_ALL,
-    refusals={
-        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
-        "bad_offset": "offset must be an integer >= 0 (part {part!r}); nothing was shown",
-        "bad_parts": "parts must be a list of part names; nothing was shown",
-        "unknown_part": "no part {names} in {episode}; nothing was shown. Valid: {valid}",
-        "not_episode_id": "{episode!r} is not an episode id; nothing was read",
-        "not_recorded": "{episode!r} is not a recorded episode; nothing was read",
-    },
-    summary="read any recorded episode: its table of contents, or named parts.",
-)
-
-FIXTURE = ToolSpec(
-    name="fixture",
-    description=(
-        "Copy recorded bytes of an episode into a test fixture under memory/<package>/tests/data/. source: an "
-        "action index (its recorded response, or a work-tree action's file), 'args:<i>' (the arguments that action "
-        "was called with), 'request:<j>' (a user message: 0 is the request, then the observations), "
-        "'observation:<i>' (the same message as request:<i+1>) or 'cell:<i>' (the recorded output text of code "
-        "cell i; not a cell that raised); read_episode's table of contents gives each part's source and raw "
-        "length. slice [start, end] keeps raw bytes start to end-1; an end that is null or left out "
-        "runs to the end, and an end past the source is clamped to its length (the reply says so); a start at or "
-        "past the end is refused with the length. append=true adds one line "
-        '{"input": value, "source": ...} to a .jsonl file, such as a function\'s recorded-inputs file '
-        "tests/data/<module>.<function>.inputs.jsonl; replace=true starts the file over with this content. The "
-        "provenance is the files themselves: each appended line names its source, and a copied file is listed in "
-        "/memory/.pass/fixtures.json with its sha256. A file you delete or rewrite loses its provenance (make it "
-        "again with fixture). The gate re-derives every fixture from the recording and refuses one that differs."
-    ),
-    parameters=_obj(
-        {
-            "episode": {"type": "string"},
-            "source": {
-                "type": ["integer", "string"],
-                "description": "'<i>', 'args:<i>', 'request:<j>', 'observation:<i>' or 'cell:<i>'",
-            },
-            "action": {
-                "type": ["integer", "string"],
-                "description": "the same as source",
-            },
-            "dest": {"type": "string"},
-            "slice": {
-                "type": "array",
-                "items": {"type": ["integer", "null"]},
-                "minItems": 1,
-                "maxItems": 2,
-            },
-            "append": {"type": "boolean"},
-            "replace": {"type": "boolean"},
-        },
-        ["episode", "dest"],
-    ),
-    roles=_WRITE_CURATE,
-    refusals={
-        "unknown_episode": "{episode!r} is not a recorded episode; this batch: {batch}",
-        "no_source": "name the recorded value with source (or action)",
-        "bad_fixture": "{reason}",
-        "link": "{what} is a link",
-        "not_input_lines": (
-            "{dest} holds lines that are not fixture input lines; append to it with replace=true to start it "
-            "over, or choose another dest"
-        ),
-    },
-    summary="copy recorded bytes of an episode into a test fixture; its provenance is kept in the files.",
-)
-
-REPLAY = ToolSpec(
-    name="replay",
-    description=(
-        "Verify a function item by replaying the recorded code it replaces. In the item's manifest entry, "
-        'list "replaces": [{"episode", "cell", "lines": [first, last], "call": "<one statement calling the '
-        'function, e.g. result = name(args)>"}]. Each instance is replayed with those lines replaced by the '
-        "call; it is verified when everything the original code left behind is the same. The verified "
-        "instances become a test file under memory/<package>/tests/, which you add to the item's tests."
-    ),
-    parameters=_obj({"item": {"type": "string"}}, ["item"]),
-    roles=frozenset({_W}),
-    refusals={"not_run": "not run: {reason}"},
-    summary="verify an item by replaying the recorded code it replaces; writes the verified cases as a test.",
-)
-
-POOL = ToolSpec(
-    name="pool",
-    description=(
-        "The candidate pool: drafts earlier passes left open, to build from, as files under /inputs/pool/<id>/, and "
-        "the closed entries (merged, superseded or retired), kept with their status. "
-        "op='list': one line per entry (id, kind, episode count, title; a closed one also its status, reason and "
-        "the pass it closed in), optionally of one kind, paged by offset. op='filter': the entries matching text "
-        "(in the title or the entry's files), kind or episode, or related (an entry id or a batch episode id: the "
-        "closed entries linked to it in /inputs/pool/related_closed.json). status: 'open' (the default), 'closed' "
-        "or 'any' (the default with related is 'any'). A closed entry is linked to an entry or a batch episode when "
-        "their code shares a normalised code unit (as `similar` compares code: variable names renamed in order of "
-        "use, literals lifted) or when they cite the same episode. "
-        "op='show': one entry's entry.json, the paths of its files and the closed entries linked to it, "
-        f"{_pool.RELATED_PAGE} at a time from offset. op='decide': records a decision in "
-        "/memory/.pass/manifest.json's pool block and returns that block; decision 'merged' (target: the item this "
-        "manifest lists that holds it), 'superseded' (target: the item or entry that replaces it), 'retired' "
-        "(reason; closes the entry for good: it is wrong or not reusable), 'defer' (reason; keeps it open for a later "
-        "pass; with episodes, those episodes join the entry as more evidence; id='new' with "
-        "episodes opens a deferred entry for them), 'reopened' (reason; opens a closed entry again) or 'open' "
-        "(removes an earlier decision on that id). Decisions take effect when the gate judges the pass."
-    ),
-    parameters=_obj(
-        {
-            "op": {"type": "string", "enum": ["list", "filter", "show", "decide"]},
-            "id": {
-                "type": "string",
-                "description": "an entry id (decide defer also takes 'new')",
-            },
-            "kind": {"type": "string"},
-            "text": {"type": "string"},
-            "episode": {"type": "string"},
-            "status": {"type": "string", "enum": list(_POOL_STATUS)},
-            "related": {
-                "type": "string",
-                "description": "an entry id or a batch episode id: the closed entries linked to it",
-            },
-            "decision": {
-                "type": "string",
-                "enum": [
-                    "merged",
-                    "superseded",
-                    "retired",
-                    "defer",
-                    "reopened",
-                    "open",
-                ],
-            },
-            "target": {"type": "string"},
-            "reason": {"type": "string"},
-            "episodes": {"type": "array", "items": {"type": "string"}},
-            "offset": {
-                "type": "integer",
-                "description": "entry number to start a list page at (show: its first linked closed entry)",
-            },
-        },
-        ["op"],
-    ),
-    roles=frozenset({_W}),
-    requires="pool",
-    refusals={
-        "bad_op": "op must be list, filter, show or decide",
-        "bad_status": "status must be open, closed or any",
-        "unknown_entry": "{id!r} is not a pool entry (op='list' lists the open ones; status='closed' the closed ones)",
-        "closed_entry": "{id!r} is closed ({status}); of the decisions only 'reopened' applies to it",
-        "open_entry": "{id!r} is open; 'reopened' applies only to a closed entry",
-        "bad_decision": "{reason}",
-        "manifest_unreadable": "{reason}; fix /memory/.pass/manifest.json, then decide again",
-    },
-    summary="list, filter, show and decide on candidate-pool entries, open or closed, and see related closed ones.",
-)
-
-SPECS: tuple[ToolSpec, ...] = (
-    READ,
-    GREP,
-    OVERVIEW,
-    READ_EPISODE,
-    POOL,
-    FIXTURE,
-    REPLAY,
-    EXECUTE_CODE,
-    CHECK,
-    FINISH,
-)
+SPECS = (READ, GREP, OVERVIEW, READ_EPISODE, POOL, FIXTURE, REPLAY, EXECUTE_CODE, CHECK, FINISH)
 
 #: Answers the pass loop gives on any tool, by stable form code (defined with the specs in :mod:`.tool_spec`).
 GENERAL_REFUSALS = _GENERAL_REFUSALS

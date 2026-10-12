@@ -74,6 +74,13 @@ if TYPE_CHECKING:
     from unillm.types import PromptCacheParam
 
 
+def _tools_in_code_on() -> bool:
+    """Whether ``UNIFY_TOOLS_IN_CODE=on``."""
+    from unify.settings import SETTINGS
+
+    return getattr(SETTINGS, "UNIFY_TOOLS_IN_CODE", "off") == "on"
+
+
 @dataclass
 class ToolLoopRuntimeState:
     call_counts: Dict[str, int] = field(default_factory=dict)
@@ -137,6 +144,14 @@ class ToolLoopRuntimeState:
     step_cap_ineffective_compactions: int = 0
     step_cap_ineffective_in_a_row: int = 0
     loop_stop_carry: Optional[Any] = None
+    # UNIFY_TOOLS_IN_CODE=on (the actor and its teammates): the loop compacts
+    # by itself before the next model call. ``in_code_tail_from`` is where
+    # the messages after the last request start (its reply first); the
+    # restart's summary request is that request plus those messages
+    # (``in_code_tail``), so the summary covers the whole conversation.
+    in_code_tail_from: Optional[int] = None
+    in_code_tail: Optional[list] = None
+    in_code_compactions: int = 0
 
 
 # How long a cancelled request waits for its running calls to stop before it
@@ -572,6 +587,7 @@ async def async_tool_loop_inner(
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
     bind_request: Any = False,
+    tools_in_code: bool = False,
 ) -> str:
     r"""
     Run a function-calling dialogue between an LLM and a set of Python
@@ -710,6 +726,17 @@ async def async_tool_loop_inner(
         which a restart after compression keeps. Ignored while the switch is
         off; any other loop's cells have no ``request``.
 
+    tools_in_code : ``bool``, default ``False``
+        ``True`` (the actor's and its teammates' task loop,
+        ``UNIFY_TOOLS_IN_CODE=on``): the request's only model-API tool is
+        ``execute_code`` (``tool_registry.json_tools``); the loop compacts by
+        itself when the prompt reaches the compaction point, before the next
+        model call, with the same fork summary and restart message and no
+        forced ``compress_context`` turn; and the answer to a request with a
+        response format comes from a cell's ``tools.finish(answer)`` instead
+        of a response tool (a plain final reply still ends a request).
+        Ignored while the switch is off.
+
     Returns
     -------
     str
@@ -777,10 +804,30 @@ async def async_tool_loop_inner(
         )
 
     runtime_state = runtime_state or ToolLoopRuntimeState()
+    # UNIFY_TOOLS_IN_CODE=on, in the loop that asked for it (the actor's).
+    _in_code = bool(tools_in_code) and _tools_in_code_on()
+    if _in_code:
+        from unify.common import tool_registry as _tool_registry
+
+        # The request's one model-API tool, the same bytes for every agent.
+        fixed_tools_schema = _tool_registry.json_tools("actor")
+        if _rf_norm is not None:
+            _response_format_hint = (
+                "## Response Format\n"
+                "NOTE: After completing all tool calls, submit your final answer "
+                "with `tools.finish(answer)` in a cell, as JSON that conforms to "
+                "the following schema. Do NOT include any extra keys or "
+                "commentary.\n" + json.dumps(_rf_norm.answer_json_schema, indent=2)
+            )
     # UNIFY_REPLY_CHANNEL=code+text: this loop's slot for a cell's reply,
     # ``None`` for a loop that takes none; nothing is set while it is off.
-    _reply_token = _cell_reply.bind(
-        reply_channel and _rf_norm is None,
+    # With the tools in code the slot always exists: ``tools.finish`` fills it.
+    _reply_token = (
+        _cell_reply.bind_always()
+        if _in_code
+        else _cell_reply.bind(
+            reply_channel and _rf_norm is None,
+        )
     )
     _reply_slot = _cell_reply.current() if _reply_token is not None else None
     # UNIFY_BIND_REQUEST=on: this loop's current request, which its cells
@@ -2171,6 +2218,28 @@ async def async_tool_loop_inner(
                     prefix=ICONS["pause"],
                 )
 
+            # UNIFY_TOOLS_IN_CODE=on: over the compaction point the loop
+            # compacts now, before the next model call, with no forced turn:
+            # the handle summarises (the last request and what followed it)
+            # and restarts, as it does after a compress_context call.
+            if _in_code and _over_threshold and enable_compression:
+                tail_from = runtime_state.in_code_tail_from
+                runtime_state.in_code_tail = (
+                    copy.deepcopy(list(client.messages or [])[tail_from:])
+                    if tail_from is not None
+                    else None
+                )
+                runtime_state.in_code_tail_from = None
+                runtime_state.in_code_compactions += 1
+                logger.info(
+                    "Context over the compaction point: compacting before the "
+                    "next model call",
+                    prefix=ICONS["summarize"],
+                )
+                if _continue:
+                    runtime_state.loop_stop_carry = _loop_stop
+                return _COMPRESSION_SIGNAL
+
             # ── C. Build this turn's toolkit ─────────────────────────────
             # Tool policy and tool subset for this turn. Gated policies (e.g.
             # discovery-first gates) keep the model on a narrow required
@@ -2298,7 +2367,7 @@ async def async_tool_loop_inner(
             # and injection succeeded).
             _structured_response_tool_ready = False
 
-            if _rf_norm is not None:
+            if _rf_norm is not None and not _in_code:
                 if persist:
                     _response_tool_desc = _in_code_texts.send_response_description()
                 else:
@@ -2651,6 +2720,12 @@ async def async_tool_loop_inner(
                             COMPACTION_THRESHOLD,
                             _max_input_tokens,
                         )
+                        if _in_code:
+                            # the reply just appended is the first message the
+                            # last request did not carry
+                            runtime_state.in_code_tail_from = (
+                                len(client.messages or []) - 1
+                            )
                         if runtime_state.keep_prefix_unmeasured:
                             runtime_state.keep_prefix_unmeasured = False
                             if _over_threshold:

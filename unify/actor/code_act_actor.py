@@ -4316,6 +4316,9 @@ class CodeActActor(BaseCodeActActor):
                 reply_channel=True,
                 # UNIFY_BIND_REQUEST=on: a cell reads the request as ``request``.
                 bind_request=True,
+                # UNIFY_TOOLS_IN_CODE=on: execute_code is the only model-API
+                # tool, the loop compacts by itself and tools.finish answers.
+                tools_in_code=True,
                 preprocess_msgs=self._preprocess_msgs,
                 prompt_caching=self._prompt_caching,
                 extra_compression_tools=(

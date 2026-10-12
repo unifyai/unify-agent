@@ -558,6 +558,11 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         """
         label = getattr(self, "_log_label", None) or self._loop_id
         last = _cache_discipline.last_sent_request(self._client)
+        # UNIFY_TOOLS_IN_CODE=on: the loop compacted before its next model
+        # call, so what followed the last request (its reply and the cells'
+        # results) is sent after it, unchanged.
+        tail = list(self._runtime_state.in_code_tail or [])
+        self._runtime_state.in_code_tail = None
         if last is None or not last.get("messages"):
             LOGGER.info(
                 f"[{label}] compression fork skipped: no request was recorded; "
@@ -567,6 +572,7 @@ class AsyncToolLoopHandle(ToolLoopHandle):
         request: dict[str, Any] = {
             "messages": [
                 *last["messages"],
+                *tail,
                 {
                     "role": "user",
                     "content": _cache_discipline.compression_fork_instruction(),
@@ -737,6 +743,7 @@ def start_async_tool_loop(
     reply_channel: bool = False,
     on_turn_boundary: Optional[Callable[[], Awaitable[Optional[str]]]] = None,
     bind_request: bool = False,
+    tools_in_code: bool = False,
 ) -> AsyncToolLoopHandle:
     """
     Run ``async_tool_loop_inner`` in its own task and return a handle for it.
@@ -756,7 +763,7 @@ def start_async_tool_loop(
         Text that opens the loop's first user message, and the message that
         restarts it after compression (see ``async_tool_loop_inner``).
 
-    compression_tools_on_demand, reply_channel, bind_request : bool
+    compression_tools_on_demand, reply_channel, bind_request, tools_in_code : bool
         See ``async_tool_loop_inner``; the defaults are as shipped.
 
     on_turn_boundary : optional coroutine function
@@ -847,6 +854,7 @@ def start_async_tool_loop(
             reply_channel=reply_channel,
             on_turn_boundary=on_turn_boundary,
             bind_request=request_slot,
+            tools_in_code=tools_in_code,
         )
 
     task = asyncio.create_task(_loop_wrapper(), name="ToolUseLoop")
@@ -897,6 +905,7 @@ def start_async_tool_loop(
         "reply_channel": reply_channel,
         "on_turn_boundary": on_turn_boundary,
         "bind_request": request_slot,
+        "tools_in_code": tools_in_code,
     }
 
     with suppress(Exception):
