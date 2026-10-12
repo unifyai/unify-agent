@@ -145,7 +145,8 @@ def test_the_actors_record_tools_answer_as_the_memory_agents_do():
         out = {}
         out["no_text"] = th.send(ctx, {"text": " "})
         out["delegate"] = await th.delegate(ctx, {"task": "summarise the second report in two lines"})
-        out["wait"] = await th.wait(ctx, {})
+        out["no_timeout"] = await th.wait(ctx, {})
+        out["wait"] = await th.wait(ctx, {"timeout": 5})
         out["who"] = await th.who(ctx, {})
         out["reply"] = th.reply(ctx, {"agent": "nobody", "text": "hi"})
         out["short"] = await th.delegate(ctx, {"task": "too short"})
@@ -156,6 +157,7 @@ def test_the_actors_record_tools_answer_as_the_memory_agents_do():
     out = asyncio.run(go())
     assert out["no_text"].status == "refused" and out["no_text"].form == "no_text"
     assert out["delegate"].status == "ok" and out["delegate"].text.startswith("started h1")
+    assert out["no_timeout"].form == "bad_timeout"
     assert "h1 (done): h1 did: summarise" in out["wait"].text
     assert "- h1 (teammate, replied)" in out["who"].text
     assert out["reply"].form == "unknown_name"

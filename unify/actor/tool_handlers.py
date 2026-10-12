@@ -210,8 +210,8 @@ def messages(ctx: Any, args: dict) -> Any:
     return _reply(f"no new messages (running now: {', '.join(_running(ctx))})")
 
 
-async def _wait(ctx: Any) -> str:
-    left = _left(ctx)
+async def _wait(ctx: Any, timeout: Optional[float] = None) -> str:
+    left = _left(ctx) if timeout is None else min(_left(ctx), float(timeout))
     if left <= 0:
         return "no new messages; the request's time is used up"
     if not [n for n in _running(ctx) if n != ctx.name]:
@@ -222,7 +222,12 @@ async def _wait(ctx: Any) -> str:
 
 
 async def wait(ctx: Any, args: dict) -> Any:
-    return _reply(await _wait(ctx))
+    """Wait for the next entries for this agent, at most ``timeout`` seconds (required: the agent record's wait has
+    no default)."""
+    timeout = args.get("timeout")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= MAX_WAIT_S:
+        return _refused(refusal("wait", "bad_timeout"))
+    return _reply(await _wait(ctx, timeout))
 
 
 async def who(ctx: Any, args: dict) -> Any:
