@@ -2174,18 +2174,30 @@ class Gate:
         return sorted({it.item for it in run.man.items if it.kind == "function" and it.item in run.c_bodies})
 
     def _call_scope(self, run: _Run) -> set[str]:
-        """Library mode: the stored functions of the changed modules and of every module importing one, in both
-        versions; the behaviour check compares their calls in the parent's tests."""
+        """Library mode: the stored functions of the parent in the changed modules and in every module importing
+        one, whose name the candidate's module still binds (a ``def``, or an import or assignment such as an alias
+        to another function); the behaviour check compares their calls in the parent's tests."""
         if run.graph is None:
             run.graph = layout.merge_graphs(layout.import_graph(run.p_tree), layout.import_graph(run.c_tree))
         changed = {m for p in run.changed if (m := layout.module_of(p)) is not None}
         modules = layout.dependants(run.graph, changed)
+        bound: dict[str, dict[str, bool]] = {}
+
+        def still_bound(item: str) -> bool:
+            module, name = item.split(":", 1)
+            if module not in bound:
+                rel = layout.module_path(module)
+                bound[module] = (
+                    public_bindings((run.c_tree / rel).read_bytes() if rel in run.c_files else None) or {}
+                )
+            return name in bound[module]
+
         return {
             item
             for item, body in run.p_bodies.items()
             if body[0] == "function"
-            and item in run.c_bodies
             and item.split(":", 1)[0] in modules
+            and (item in run.c_bodies or still_bound(item))
         }
 
     def _behaviour(
@@ -2632,12 +2644,24 @@ class Gate:
         """The parent tree (its tests and test kit) with only the candidate's channel modules and notes.
 
         None when it would equal the parent tree. Retired test files are left out.
+
+        Library mode: the candidate's library modules, package inits and notes take the place of the parent's.
         """
+        if self._library_layout:
+            from .layout import classify
+
+            def library(p: str) -> bool:
+                return classify(p) in ("module", "package_init", "note")
+
+        else:
+
+            def library(p: str) -> bool:
+                return bool(MODULE_PATH.match(p) or NOTES_PATH.match(p))
+
         swapped = sorted(
             p
             for p in set(run.p_files) | set(run.c_files)
-            if (MODULE_PATH.match(p) or NOTES_PATH.match(p))
-            and run.p_files.get(p) != run.c_files.get(p)
+            if library(p) and run.p_files.get(p) != run.c_files.get(p)
         )
         retired = set(run.man.deleted_tests)
         if not swapped and not retired:
