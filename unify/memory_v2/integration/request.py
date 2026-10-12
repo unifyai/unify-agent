@@ -16,8 +16,8 @@ passes' start and end events go to the CLI's ``--jsonl`` output when it has one;
 appends them to the state directory's ``events.jsonl`` (``Paths.events``) either way. ``abort`` cleans up
 and records nothing. The harness hooks read the current run (``current()``) for ``index`` and ``paths``.
 
-Only pass/fail of a posted outcome is kept (ruling R10): ``take_outcome`` keeps ``solved`` and drops
-everything else at once, so no checker text reaches an episode, the evidence, Sol or a cell.
+Only pass/fail of a posted outcome is kept: ``take_outcome`` keeps ``solved`` and drops
+everything else at once, so no checker text reaches an episode, the evidence, the writer or a cell.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ _CURRENT: Any = None
 #: ``_build_llm_client``'s ``reasoning_effort`` default).
 CLIENT_DEFAULT_EFFORT = "high"
 LOCK_TIMEOUT_S = 60.0
-#: Memory v2.1: the evidence store's busy wait while a pass worker shares it (async_pass.BUSY_TIMEOUT_S; a
+#: Library mode: the evidence store's busy wait while a pass worker shares it (async_pass.BUSY_TIMEOUT_S; a
 #: constant here keeps the v2 path free of the async module).
 _LIBRARY_BUSY_TIMEOUT_S = 60.0
 #: The most code-cell statuses a run keeps (use telemetry); every cell of a request fits many times over.
@@ -73,7 +73,7 @@ def actor_model() -> str:
 
 
 def check_library_switches(settings: Any) -> None:
-    """Refuse a v2.1 run whose v2 settings contradict the v2.1 prompts or gate (spec §12.4; switch.LIBRARY_CONFLICTS)."""
+    """Refuse a library-mode run whose v2 settings contradict its prompts or gate (switch.LIBRARY_CONFLICTS)."""
     from .switch import library_conflicts
 
     bad = library_conflicts(settings)
@@ -81,12 +81,12 @@ def check_library_switches(settings: Any) -> None:
         raise MemoryV2Unavailable(
             "UNIFY_MEMORY_LIBRARY=on cannot run with "
             + ", ".join(bad)
-            + ": each is a v2 setting that the v2.1 prompts and gate contradict; turn it off",
+            + ": each is a v2 setting that the library mode's prompts and gate contradict; turn it off",
         )
 
 
 def writer_effort(actor: str) -> str:
-    """Sol's reasoning effort for this run: ``UNIFY_MEMORY_V2_WRITER_EFFORT`` when it fixes one (a declared mismatch
+    """The writer's effort for this run: ``UNIFY_MEMORY_V2_WRITER_EFFORT`` when it fixes one (a declared mismatch
     ablation), else the actor's (*actor*; the default ``actor``)."""
     from unify.settings import SETTINGS
 
@@ -101,7 +101,7 @@ def writer_effort(actor: str) -> str:
 def actor_effort() -> str:
     """The actor's reasoning effort for this run, read from the setting the actor's client reads.
 
-    Sol's passes run at this effort too unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (:func:`writer_effort`).
+    Writer passes run at this effort too unless ``UNIFY_MEMORY_V2_WRITER_EFFORT`` fixes another (:func:`writer_effort`).
     """
     from unify.common.llm_client import resolve_default_model
 
@@ -160,7 +160,7 @@ def dialogue_counterpart() -> str:
 
 
 def memory_library_on() -> bool:
-    """Whether ``UNIFY_MEMORY_LIBRARY`` is on (spec v2.1): the recorders keep full values and the episode is
+    """Whether ``UNIFY_MEMORY_LIBRARY`` is on: the recorders keep full values and the episode is
     written in record format 2."""
     from unify.settings import SETTINGS
 
@@ -170,7 +170,7 @@ def memory_library_on() -> bool:
 
 
 def checker_visible_on() -> bool:
-    """Whether the CLI takes ``{"checker": ...}`` lines (spec v2.1 §5, P9): ``UNIFY_MEMORY_LIBRARY`` and
+    """Whether the CLI takes ``{"checker": ...}`` lines: ``UNIFY_MEMORY_LIBRARY`` and
     ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` both on."""
     from unify.settings import SETTINGS
 
@@ -226,7 +226,7 @@ def check_hidden(paths: Any, policy: Any) -> None:
 
 def pinned_items(checkout: Path, library_mode: bool = False) -> list[str]:
     """The ids of the memory functions in the export at *checkout* (listed or not), in id order; with *library_mode* the
-    v2.1 function items (spec §4.2)."""
+    library-mode function items."""
     if library_mode:
         from ..layout import discover
 
@@ -320,7 +320,7 @@ async def wait_after_finish(
     relay: Callable[[dict], None] | None = None,
     events_from: int = 0,
 ) -> dict | None:
-    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on`` (MAIN, 10 Oct): before the CLI exits, wait for the pass slot this request
+    """``UNIFY_MEMORY_LIBRARY_WAIT_SLOT=on``: before the CLI exits, wait for the pass slot this request
     spawned (:func:`.async_pass.wait_slot`), so a host whose sandbox ends the controller's processes with it does
     not kill the worker. Off: returns None at once, as built. Never raises."""
     import asyncio
@@ -340,7 +340,7 @@ async def wait_after_finish(
             events_from=events_from,
         )
     except Exception as exc:  # noqa: BLE001 - the request's end never fails on the wait
-        logger.warning("memory v2.1: waiting for the pass slot failed: %s", exc)
+        logger.warning("memory library mode: waiting for the pass slot failed: %s", exc)
         return None
 
 
@@ -354,9 +354,9 @@ class RequestRun:
         # the export's generated files (relative path -> bytes), left out of memory.diff while unchanged
         self.generated: dict[str, bytes] = {}
         self.surfacing: Any = (
-            None  # the v2.1 switches read at open (switch.SurfacingOptions)
+            None  # the library-mode switches read at open (switch.SurfacingOptions)
         )
-        self.library_mode = False  # UNIFY_MEMORY_LIBRARY, read at open (spec v2.1)
+        self.library_mode = False  # UNIFY_MEMORY_LIBRARY, read at open
         # What the memory section shows (``analysis.use.record_shown``), set where it is rendered (both modes).
         self.shown: dict | None = None
         # The memory functions of the export at the pin, taken before the actor runs (use telemetry).
@@ -378,20 +378,20 @@ class RequestRun:
         self.costs: Any = None
         self.worktree: Any = None
         self._worktree_finished = False
-        # Only the checker's verdict of a posted outcome (R10): True, False or None (none posted).
+        # Only the checker's verdict of a posted outcome: True, False or None (none posted).
         self.solved: bool | None = None
         self.outcome_at: str | None = None
-        # Spec v2.1 §5 (P9): the verdicts the bed showed the actor, one per ``{"checker": ...}`` line, in order:
+        # The verdicts the bed showed the actor, one per ``{"checker": ...}`` line, in order:
         # {"label": "pass"|"fail", "obs": observations in the transcript when it came (or None), "at": time}.
         self.checker_seen: list[dict] = []
         self._lock: int | None = None
         self._scope = contextlib.ExitStack()
         self._closed = False
-        # memory v2.1 (P3's flag; set at open): passes run in a detached worker and the request pins ``served``
+        # library mode (set at open): passes run in a detached worker and the request pins ``served``
         self.library_mode = False
         self._landed: list[dict] = (
             []
-        )  # v2.1: worker results applied at open, reported at finish
+        )  # library mode: worker results applied at open, reported at finish
 
     @property
     def memory_main(self) -> str:
@@ -444,19 +444,19 @@ class RequestRun:
         self.state = State.load(paths.state)
         if (
             self.library_mode
-        ):  # memory v2.1: the read-only copy and the index view (spec v2.1 §4.5, §6)
+        ):  # library mode: the read-only copy and the index view
             from ..memory_writer import served_head
             from .async_pass import apply_results
 
-            # under the request lock (spec §6), before _open_library_mode copies the pin (P7)
+            # under the request lock, before _open_library_mode copies the pin
             self._landed = apply_results(self.state, paths)
-            # P7 Amendment A: the served head, whose item records are already written
+            # the served head, whose item records are already written
             self.pin = served_head(self.stores.memory)
             self.surfacing = surfacing_options(SETTINGS)
             self._open_library_mode(consolidate)
         else:
             self.pin = self.stores.memory.head()
-            # the library test kit beside it when the library's tests use it (memory v2.1 stage 5)
+            # the library test kit beside it when the library's tests use it (library mode, stage 5 checks)
             export_checkout(paths.memory, self.pin, paths.checkout, self.stores.blobs)
             # the use record's view of the pin, taken before anything is generated beside the export and
             # before the actor can edit the scratch copy
@@ -533,7 +533,7 @@ class RequestRun:
                 )
 
     def _open_library_mode(self, consolidate: Any) -> None:
-        """``UNIFY_MEMORY_LIBRARY=on`` (spec v2.1 §4.5, §6). Writes the read-only copy of the pin: no tests, plus the
+        """``UNIFY_MEMORY_LIBRARY=on``. Writes the read-only copy of the pin: no tests, plus the
         generated helper, INDEX.md and links.json (:func:`.checkout.export_actor_library_mode`). The memory section is
         the guide and the index view. No memory.diff is recorded, because the copy cannot be written.
         """
@@ -549,14 +549,14 @@ class RequestRun:
             Exception
         ) as exc:  # noqa: BLE001 - find then matches nothing; the library stays usable
             logger.warning(
-                "memory v2.1: input shapes not read (%s)",
+                "memory library mode: input shapes not read (%s)",
                 type(exc).__name__,
             )
             shapes = None
         from ..gitio import Repo
         from ..item_records import records_at, status_of
 
-        # the item records at the pin (P5): statuses for the index and find, and what memory.show prints
+        # the item records at the pin: statuses for the index and find, and what memory.show prints
         records, _ = records_at(Repo(paths.memory), self.pin)
         self.generated = export_actor_library_mode(
             paths.memory,
@@ -571,12 +571,12 @@ class RequestRun:
         self.surface = use.library_surface(
             paths.checkout,
             library_mode=True,
-        )  # re-exports for the use record (P5)
+        )  # re-exports for the use record
         self.index, self.shown = render_memory_library_mode(paths.checkout)
 
     def _memory_diff(self) -> str:
-        """What the request wrote into its export (v2), or ``""`` under v2.1, whose copy is read-only and records
-        no memory.diff (spec v2.1 §6)."""
+        """What the request wrote into its export (v2), or ``""`` in library mode, whose copy is read-only and records
+        no memory.diff."""
         if self.library_mode:
             return ""
         from .checkout import checkout_diff
@@ -680,7 +680,7 @@ class RequestRun:
         }
 
     def take_checker(self, raw: Any) -> dict:
-        """Keep one verdict the bed showed the actor (spec v2.1 §5, P9); the answer the CLI writes for a
+        """Keep one verdict the bed showed the actor; the answer the CLI writes for a
         ``{"checker": {"label": "pass"|"fail"}}`` line. The bed sends it just before the message that shows the
         actor the same verdict, so the transcript's observation count now is that message's ordinal. Refused,
         with nothing kept, unless ``UNIFY_MEMORY_LIBRARY`` and ``UNIFY_MEMORY_LIBRARY_CHECKER_VISIBLE`` are on, or when
@@ -979,7 +979,7 @@ class RequestRun:
             self.outcome_at or ended_at,
         )
         if self.checker_seen:
-            # Spec v2.1 §5 (P9): the verdicts the actor saw, as agent-visible checker signals
+            # The verdicts the actor saw, as agent-visible checker signals
             consolidate.post_visible_checkers(
                 stores,
                 ep,
@@ -999,7 +999,7 @@ class RequestRun:
         progress: Callable[[str], None],
         emit: Callable[[dict], None] | None,
     ) -> None:
-        """Memory v2.1: one ``landed`` event per worker result applied at open, naming this request (the first
+        """Library mode: one ``landed`` event per worker result applied at open, naming this request (the first
         that ran after it); once."""
         rows, self._landed = self._landed, []
         if not rows:
@@ -1028,7 +1028,7 @@ class RequestRun:
 
         from . import consolidate
 
-        if self.library_mode:  # spec v2.1 §6: never wait for a pass
+        if self.library_mode:  # library mode: never wait for a pass
             self._report_landed(progress, emit)
             try:
                 from .async_pass import maybe_spawn
@@ -1060,7 +1060,7 @@ class RequestRun:
                 eid,
                 sha,
                 self.state,
-                # Sol's effort matches the actor's unless a mismatch ablation fixes it (the lead, 8 Oct)
+                # The writer's effort matches the actor's unless a mismatch ablation fixes it
                 effort=writer_effort(self.effort),
                 settings=SETTINGS,
                 emit=self._emitter(emit),
